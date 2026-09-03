@@ -16,7 +16,7 @@ from neocortex.deduplication import FileSnapshot
 from neocortex.foundation.file_identity import file_key_from_snapshot as file_key
 from .policy import DOCUMENT_OCR_TEXT_MAX_UTF8_BYTES
 from neocortex.safety.route_filters import CandidateSelection
-from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
+from neocortex.persistence.sqlite_immutable import open_sidecar_safe_sqlite_connection
 from neocortex.persistence.sqlite_schema_contract import (
     SQLiteSchemaContract,
     read_metadata_schema_version,
@@ -209,11 +209,10 @@ def connect_image_state(
     readonly: bool = False,
 ) -> sqlite3.Connection:
     if readonly:
-        connection = sqlite3.connect(
-            readonly_sqlite_uri(path),
-            uri=True,
-            timeout=30.0,
-        )
+        try:
+            connection = open_sidecar_safe_sqlite_connection(path, timeout_seconds=30.0)
+        except FileNotFoundError as exc:
+            raise sqlite3.OperationalError(f"unable to open database file: {path}") from exc
     else:
         path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(path, timeout=30.0)

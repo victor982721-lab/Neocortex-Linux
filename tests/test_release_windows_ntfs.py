@@ -406,7 +406,7 @@ def test_snapshot_rejects_handle_facts_drift_during_hashing(
         return replace(facts, **{field: getattr(facts, field) + 1})
 
     proxy.overrides["inspect_handle"] = drift
-    with pytest.raises(ReleaseTransitionError, match="changed|drift"):
+    with pytest.raises(ReleaseTransitionError, match=r"changed|drift"):
         ops.snapshot_by_handle(ntfs_case.desired)
 
 
@@ -428,7 +428,7 @@ def test_layout_rejects_non_ntfs_or_reparse_before_mutation(
         return replace(facts, **{field: value})
 
     proxy.overrides["inspect_handle"] = incompatible
-    with pytest.raises(ReleaseTransitionError, match="NTFS|reparse"):
+    with pytest.raises(ReleaseTransitionError, match=r"NTFS|reparse"):
         _ops(ntfs_module, ntfs_case, proxy=proxy)
 
 
@@ -915,7 +915,7 @@ def test_layout_rejects_physical_component_alias_volume_identity_or_reparse(
     proxy.overrides["inspect_handle"] = incompatible
     with pytest.raises(
         ReleaseTransitionError,
-        match="(?i)layout|canonical|volume|identity|reparse|same file|alias",
+        match=r"(?i)layout|canonical|volume|identity|reparse|same file|alias",
     ):
         _ops(ntfs_module, ntfs_case, proxy=proxy)
 
@@ -1151,7 +1151,7 @@ def test_real_ops_recovery_classifies_native_failure_without_replacement_replay(
 
 def test_parent_guard_spec_is_directory_handle_without_delete_share() -> None:
     native = importlib.import_module(_NATIVE_MODULE_NAME)
-    spec = getattr(native, "_PARENT_GUARD_SPEC")
+    spec = native._PARENT_GUARD_SPEC
     assert spec.creation_disposition == _OPEN_EXISTING
     assert not spec.share_mode & _FILE_SHARE_DELETE
     assert spec.flags_and_attributes & _FILE_FLAG_OPEN_REPARSE_POINT
@@ -1420,7 +1420,7 @@ def test_observations_reject_a_substitute_for_the_bound_parent(
     try:
         with pytest.raises(
             ReleaseTransitionError,
-            match="(?i)layout|parent|identity|canonical|bound",
+            match=r"(?i)layout|parent|identity|canonical|bound",
         ):
             if observation == "snapshot":
                 ops.snapshot_by_handle(substitute)

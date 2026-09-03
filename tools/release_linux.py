@@ -30,6 +30,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 if __package__ in {None, ""}:
     sys.path.insert(0, os.fspath(Path(__file__).resolve().parents[1]))
@@ -48,6 +49,11 @@ from neocortex.runtime.source_staging import (
     parse_git_tracked_paths,
     stage_tracked_source,
 )
+from tools.release_artifacts import (
+    SOURCE_DATE_EPOCH,
+    ArtifactValidationError,
+    validate_release_artifact,
+)
 
 RECEIPT_SCHEMA_VERSION = 1
 RELEASE_PLATFORM_TAG = "linux-x86_64"
@@ -55,8 +61,21 @@ RELEASE_MANIFEST_NAME = "neocortex-release.json"
 RUNTIME_DEPENDENCY_LOCK_NAME = "constraints-linux-cp314.lock"
 RUNTIME_PROFILE = "product-only-v1"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_RELEASE_ID = re.compile(
+    r"(?P<version>"
+    r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    r"(?:-(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+    r"(?:\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+    r")"
+    r"-(?P<source_sha>[0-9a-f]{12}(?:[0-9a-f]{28})?)-cp314-linux-x86_64\Z"
+)
 _LOCKED_REQUIREMENT = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*)==([^\s;]+)$")
 _MAX_RUNTIME_DEPENDENCIES = 512
+_STAGING_STALE_SECONDS = 24 * 60 * 60
+_STAGING_MARKER = ".installing.json"
+_GC_MARKER = ".gc.json"
+_GC_PREFIX = ".gc-"
 _IMPORT_MODULES = (
     "PIL",
     "PySide6",
@@ -257,8 +276,36 @@ def _canonical_json(payload: dict[str, object]) -> bytes:
     ).encode("utf-8")
 
 
+def _ensure_directory(path: Path, *, mode: int = 0o700) -> None:
+    """Create one directory tree without following a pre-existing symlink."""
+
+    candidate = path.expanduser()
+    missing: list[Path] = []
+    cursor = candidate
+    while not os.path.lexists(cursor):
+        missing.append(cursor)
+        parent = cursor.parent
+        if parent == cursor:
+            break
+        cursor = parent
+    if os.path.lexists(cursor):
+        metadata = os.lstat(cursor)
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise LinuxReleaseError(f"release path component is not a real directory: {cursor}")
+    for directory in reversed(missing):
+        try:
+            directory.mkdir(mode=mode)
+        except FileExistsError:
+            metadata = os.lstat(directory)
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                raise LinuxReleaseError(
+                    f"release path component is not a real directory: {directory}"
+                ) from None
+        os.chmod(directory, mode)
+
+
 def _atomic_write(path: Path, payload: bytes, *, mode: int = 0o644) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_directory(path.parent)
     temporary = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
     try:
         with temporary.open("xb") as stream:
@@ -324,6 +371,56 @@ def release_id(source_sha: str) -> str:
     if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
         raise ValueError("release source SHA must contain 40 lowercase hex digits")
     return f"{__version__}-{source_sha[:12]}-cp314-{RELEASE_PLATFORM_TAG}"
+
+
+def parse_release_id(value: str) -> tuple[str, str] | None:
+    """Parse a release directory name without accepting arbitrary path names.
+
+    The installer currently emits a twelve-character source prefix, while
+    accepting a full forty-character source SHA keeps the namespace compatible
+    with older/manual attestations.  Both forms remain bound to the Linux
+    CPython 3.14 platform suffix.
+    """
+
+    match = _RELEASE_ID.fullmatch(value)
+    if match is None:
+        return None
+    return match.group("version"), match.group("source_sha")
+
+
+def _require_release_id(value: str) -> tuple[str, str]:
+    parsed = parse_release_id(value)
+    if parsed is None:
+        raise LinuxReleaseError(f"release identifier is invalid: {value}")
+    return parsed
+
+
+def _validate_tracked_source_links(
+    source_root: Path,
+    relative_paths: tuple[str, ...],
+) -> None:
+    """Reject tracked symlinks whose target escapes the staged source tree."""
+
+    source = source_root.resolve(strict=True)
+    for relative in relative_paths:
+        cursor = source
+        for part in Path(relative).parts:
+            cursor = cursor / part
+            try:
+                metadata = cursor.lstat()
+            except OSError as exc:
+                raise LinuxReleaseError(
+                    f"tracked source owner is unavailable: {relative}"
+                ) from exc
+            if not stat.S_ISLNK(metadata.st_mode):
+                continue
+            target = cursor.resolve(strict=True)
+            try:
+                target.relative_to(source)
+            except ValueError as exc:
+                raise LinuxReleaseError(
+                    f"tracked source symlink escapes source root: {relative}"
+                ) from exc
 
 
 def _venv_python(root: Path) -> Path:
@@ -397,11 +494,13 @@ def _build_wheel(
     runner: CommandRunner = _run,
 ) -> Path:
     staged_source = workspace / "source"
+    tracked_paths = _tracked_source_paths(layout.source_root, runner)
+    _validate_tracked_source_links(layout.source_root, tracked_paths)
     try:
         stage_tracked_source(
             layout.source_root,
             staged_source,
-            _tracked_source_paths(layout.source_root, runner),
+            tracked_paths,
         )
     except SourceStagingError as error:
         raise LinuxReleaseError(str(error)) from error
@@ -409,6 +508,14 @@ def _build_wheel(
     _create_pip_environment(build_environment, pip_wheel, runner=runner)
     python = _venv_python(build_environment)
     constraints = staged_source / "constraints.txt"
+    build_process_environment = os.environ.copy()
+    build_process_environment.update(
+        {
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONHASHSEED": "0",
+            "SOURCE_DATE_EPOCH": str(SOURCE_DATE_EPOCH),
+        }
+    )
     runner(
         (
             python,
@@ -424,6 +531,7 @@ def _build_wheel(
             "wheel",
         ),
         timeout=900,
+        environment=build_process_environment,
     )
     wheelhouse = workspace / "wheelhouse"
     wheelhouse.mkdir()
@@ -439,6 +547,7 @@ def _build_wheel(
             staged_source,
         ),
         timeout=900,
+        environment=build_process_environment,
     )
     wheels = tuple(wheelhouse.glob("neocortex_framework-*.whl"))
     if len(wheels) != 1:
@@ -455,6 +564,9 @@ def _install_wheel(
     pip_wheel: Path,
     runner: CommandRunner = _run,
 ) -> None:
+    if os.path.lexists(release_root):
+        raise LinuxReleaseError(f"release install destination already exists: {release_root}")
+    _ensure_directory(release_root.parent)
     _runtime_dependency_lock(runtime_lock)
     _create_pip_environment(release_root, pip_wheel, runner=runner)
     runner(
@@ -528,7 +640,16 @@ def _verify_python_release(
         timeout=300,
         environment=environment,
     )
-    runner((_venv_command(release_root), "--version"), timeout=60, environment=environment)
+    version_report = runner(
+        (_venv_command(release_root), "--version"), timeout=60, environment=environment
+    )
+    version_text = version_report.stdout.strip()
+    if not version_text.startswith("Neocortex "):
+        raise LinuxReleaseError("release version output is malformed")
+    reported_version = version_text.removeprefix("Neocortex ").strip()
+    release_version = parse_release_id(release_root.name)
+    if release_version is not None and reported_version != release_version[0]:
+        raise LinuxReleaseError("release version does not match its release identifier")
     runner(
         (_venv_command(release_root), "doctor", "platform", "--json"),
         timeout=60,
@@ -563,6 +684,7 @@ def _make_immutable(root: Path) -> None:
 
 
 def _require_immutable(root: Path) -> None:
+    _validate_release_tree(root, expected_tree_sha256=None)
     for current_root, directories, files in os.walk(root, followlinks=False):
         for name in (*directories, *files):
             path = Path(current_root) / name
@@ -572,11 +694,99 @@ def _require_immutable(root: Path) -> None:
         raise LinuxReleaseError(f"release root remains writable: {root}")
 
 
+def _allowed_release_symlink(relative: str, target: str) -> bool:
+    """Allow only the links emitted by a symlinked CPython virtualenv."""
+
+    if relative == "lib64":
+        return target == "lib"
+    # ``𝜋thon`` was emitted by an earlier venv bootstrap and is retained as a
+    # compatibility alias; unlike arbitrary links it is still confined to the
+    # interpreter aliases and must point at the release-local python3 entry.
+    if relative in {"bin/python", "bin/python3.14", "bin/𝜋thon"}:
+        return target == "python3"
+    if relative == "bin/python3":
+        return target in {"/usr/bin/python3", "/usr/bin/python3.14"}
+    return False
+
+
+def _release_tree_entries(root: Path) -> tuple[tuple[str, str, int, str], ...]:
+    """Return a deterministic, symlink-aware release tree inventory."""
+
+    if root.is_symlink() or not root.is_dir():
+        raise LinuxReleaseError(f"release root is not a real directory: {root}")
+    entries: list[tuple[str, str, int, str]] = []
+    for current_root, directories, files in os.walk(root, followlinks=False):
+        # ``os.walk`` otherwise descends in filesystem enumeration order, so
+        # the same release could receive different tree digests on filesystems
+        # that enumerate entries differently.
+        directories.sort()
+        files.sort()
+        current = Path(current_root)
+        for name in (*directories, *files):
+            path = current / name
+            relative = path.relative_to(root).as_posix()
+            metadata = os.lstat(path)
+            mode = stat.S_IMODE(metadata.st_mode)
+            if stat.S_ISLNK(metadata.st_mode):
+                target = os.readlink(path)
+                if not _allowed_release_symlink(relative, target):
+                    raise LinuxReleaseError(f"release contains an unsafe symlink: {relative}")
+                entries.append((relative, "l", mode, target))
+            elif stat.S_ISDIR(metadata.st_mode):
+                entries.append((relative, "d", mode, ""))
+            elif stat.S_ISREG(metadata.st_mode):
+                entries.append((relative, "f", mode, _sha256_file(path)))
+            else:
+                raise LinuxReleaseError(f"release contains a non-regular entry: {relative}")
+    return tuple(entries)
+
+
+def _release_tree_digest(root: Path, *, exclude: frozenset[str] = frozenset()) -> str:
+    entries = tuple(entry for entry in _release_tree_entries(root) if entry[0] not in exclude)
+    digest = hashlib.sha256()
+    for relative, kind, _mode, payload in entries:
+        encoded = relative.encode("utf-8")
+        digest.update(len(encoded).to_bytes(4, "big"))
+        digest.update(encoded)
+        digest.update(kind.encode("ascii"))
+        payload_bytes = payload.encode("utf-8")
+        digest.update(len(payload_bytes).to_bytes(8, "big"))
+        digest.update(payload_bytes)
+    return digest.hexdigest()
+
+
+def _validate_release_tree(root: Path, *, expected_tree_sha256: str | None) -> str:
+    """Validate release entry containment and optionally its recorded digest."""
+
+    digest = _release_tree_digest(root, exclude=frozenset({RELEASE_MANIFEST_NAME}))
+    if expected_tree_sha256 is not None and digest != expected_tree_sha256:
+        raise LinuxReleaseError("release tree digest failed validation")
+    return digest
+
+
+def _remove_bytecode(root: Path) -> None:
+    """Remove interpreter-generated bytecode before release immutability."""
+
+    for current_root, directories, files in os.walk(root, topdown=False, followlinks=False):
+        for name in files:
+            path = Path(current_root) / name
+            if path.suffix in {".pyc", ".pyo"} and not path.is_symlink():
+                path.unlink()
+        for name in directories:
+            path = Path(current_root) / name
+            if path.name == "__pycache__" and not path.is_symlink():
+                shutil.rmtree(path)
+
+
 def _remove_incomplete_release(root: Path) -> None:
     if not os.path.lexists(root):
         return
     if root.is_symlink() or not root.is_dir():
         raise LinuxReleaseError(f"incomplete release path is unsafe: {root}")
+    users = _release_in_use(root)
+    if users:
+        joined = ",".join(str(pid) for pid in users)
+        raise LinuxReleaseError(f"release is in use by host processes: {root} ({joined})")
     root.chmod(0o755)
     for current_root, directories, _files in os.walk(root, followlinks=False):
         for name in directories:
@@ -591,6 +801,20 @@ def _release_in_use(root: Path) -> tuple[int, ...]:
 
     selected = root.resolve(strict=False)
     users: set[int] = set()
+
+    def link_is_in_release(link: Path) -> bool:
+        try:
+            target = os.path.realpath(link)
+        except OSError:
+            return False
+        # Linux appends this marker when a process retains an open descriptor
+        # after its directory entry has been unlinked.  The inode is still in
+        # use and must prevent release collection.
+        if target.endswith(" (deleted)"):
+            target = target[: -len(" (deleted)")]
+        candidate = Path(target)
+        return candidate == selected or candidate.is_relative_to(selected)
+
     for process in Path("/proc").glob("[0-9]*"):
         try:
             pid = int(process.name)
@@ -598,12 +822,21 @@ def _release_in_use(root: Path) -> tuple[int, ...]:
             continue
         for link_name in ("exe", "cwd"):
             try:
-                target = Path(os.path.realpath(process / link_name))
-                if target == selected or target.is_relative_to(selected):
+                if link_is_in_release(process / link_name):
                     users.add(pid)
                     break
             except OSError:
                 continue
+        if pid in users:
+            continue
+        try:
+            descriptors = tuple((process / "fd").iterdir())
+        except OSError:
+            descriptors = ()
+        for descriptor in descriptors:
+            if link_is_in_release(descriptor):
+                users.add(pid)
+                break
         if pid in users:
             continue
         try:
@@ -615,6 +848,197 @@ def _release_in_use(root: Path) -> tuple[int, ...]:
     return tuple(sorted(users))
 
 
+def _release_inventory(layout: LinuxReleaseLayout) -> tuple[Path, ...]:
+    """Enumerate only strict release slots, refusing unknown entries."""
+
+    _ensure_directory(layout.releases)
+    entries: list[Path] = []
+    for path in sorted(layout.releases.iterdir(), key=lambda item: item.name):
+        if path.name == ".staging":
+            continue
+        if parse_release_id(path.name) is None:
+            raise LinuxReleaseError(f"release directory contains unknown entry: {path.name}")
+        if path.is_symlink():
+            raise LinuxReleaseError(f"release path is an unsafe symlink: {path}")
+        if not path.is_dir():
+            raise LinuxReleaseError(f"release path is not a directory: {path}")
+        entries.append(path)
+    return tuple(entries)
+
+
+def _proc_starttime(pid: int) -> str | None:
+    """Read Linux process start ticks for PID identity checks."""
+
+    try:
+        raw = (Path("/proc") / str(pid) / "stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    _prefix, separator, suffix = raw.rpartition(") ")
+    if not separator:
+        return None
+    fields = suffix.split()
+    # ``suffix`` starts at field 3, so field 22 is index 19.
+    return fields[19] if len(fields) > 19 else None
+
+
+def _write_staging_marker(path: Path, *, release_name: str) -> None:
+    marker = {
+        "schema_version": 1,
+        "kind": "linux_release_installing",
+        "release_id": release_name,
+        "pid": os.getpid(),
+        "starttime": _proc_starttime(os.getpid()),
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    _atomic_write(path / _STAGING_MARKER, _canonical_json(marker), mode=0o600)
+
+
+def _staging_marker_status(marker: Path) -> str:
+    """Return ``missing``, ``active``, ``stale`` or ``invalid`` for a marker."""
+
+    if not os.path.lexists(marker):
+        return "missing"
+    try:
+        metadata = marker.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            return "invalid"
+        if metadata.st_size > 16 * 1024:
+            return "invalid"
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return "invalid"
+    if not isinstance(payload, dict):
+        return "invalid"
+    release_name = payload.get("release_id")
+    if (
+        payload.get("schema_version") != 1
+        or payload.get("kind") != "linux_release_installing"
+        or not isinstance(release_name, str)
+        or parse_release_id(release_name) is None
+    ):
+        return "invalid"
+    pid = payload.get("pid")
+    starttime = payload.get("starttime")
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return "invalid"
+    if not isinstance(starttime, str) or not starttime:
+        return "invalid"
+    return "active" if _proc_starttime(pid) == starttime else "stale"
+
+
+def _staging_marker_active(marker: Path) -> bool:
+    return _staging_marker_status(marker) == "active"
+
+
+def _write_gc_marker(
+    transaction: Path,
+    *,
+    current: Path,
+    rollback: Path | None,
+    candidates: tuple[str, ...],
+) -> None:
+    payload = {
+        "schema_version": 1,
+        "kind": "linux_release_gc",
+        "current": current.name,
+        "rollback": None if rollback is None else rollback.name,
+        "candidates": list(candidates),
+        "pid": os.getpid(),
+        "starttime": _proc_starttime(os.getpid()),
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    _atomic_write(transaction / _GC_MARKER, _canonical_json(payload), mode=0o600)
+
+
+def _read_gc_marker(transaction: Path) -> dict[str, object]:
+    marker = transaction / _GC_MARKER
+    try:
+        metadata = marker.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise LinuxReleaseError("release GC marker is unsafe")
+        if metadata.st_size > 16 * 1024:
+            raise LinuxReleaseError("release GC marker exceeds its byte bound")
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except LinuxReleaseError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise LinuxReleaseError("release GC marker is unavailable or malformed") from exc
+    if not isinstance(payload, dict):
+        raise LinuxReleaseError("release GC marker is malformed")
+    if payload.get("schema_version") != 1 or payload.get("kind") != "linux_release_gc":
+        raise LinuxReleaseError("release GC marker is unsupported")
+    current = payload.get("current")
+    rollback = payload.get("rollback")
+    candidates = payload.get("candidates")
+    if not isinstance(current, str) or parse_release_id(current) is None:
+        raise LinuxReleaseError("release GC marker current is invalid")
+    if rollback is not None and (not isinstance(rollback, str) or parse_release_id(rollback) is None):
+        raise LinuxReleaseError("release GC marker rollback is invalid")
+    if rollback == current:
+        raise LinuxReleaseError("release GC marker keeps current as its own rollback")
+    if (
+        not isinstance(candidates, list)
+        or any(not isinstance(item, str) or parse_release_id(item) is None for item in candidates)
+        or len(set(candidates)) != len(candidates)
+    ):
+        raise LinuxReleaseError("release GC marker candidates are invalid")
+    pid = payload.get("pid")
+    starttime = payload.get("starttime")
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        raise LinuxReleaseError("release GC marker PID is invalid")
+    if not isinstance(starttime, str) or not starttime:
+        raise LinuxReleaseError("release GC marker starttime is invalid")
+    return payload
+
+
+def _gc_marker_active(payload: dict[str, object]) -> bool:
+    pid = payload["pid"]
+    starttime = payload["starttime"]
+    assert isinstance(pid, int)
+    assert isinstance(starttime, str)
+    return _proc_starttime(pid) == starttime
+
+
+def _reap_staging(layout: LinuxReleaseLayout) -> tuple[str, ...]:
+    """Remove stale bounded staging workspaces, preserving active workers."""
+
+    if not os.path.lexists(layout.staging):
+        _ensure_directory(layout.staging)
+        return ()
+    if layout.staging.is_symlink() or not layout.staging.is_dir():
+        raise LinuxReleaseError(f"staging path is unsafe: {layout.staging}")
+    removed: list[str] = []
+    now = datetime.now(UTC).timestamp()
+    for path in sorted(layout.staging.iterdir(), key=lambda item: item.name):
+        if path.is_symlink() or not path.is_dir():
+            raise LinuxReleaseError(f"staging entry is unsafe: {path}")
+        if path.name.startswith(_GC_PREFIX):
+            _recover_gc_transaction(layout, path)
+            removed.append(path.name)
+            continue
+        marker = path / _STAGING_MARKER
+        marker_status = _staging_marker_status(marker)
+        if marker_status == "active":
+            raise LinuxReleaseError(f"staging workspace is active: {path}")
+        if marker_status == "invalid":
+            raise LinuxReleaseError(f"staging marker is invalid: {path}")
+        try:
+            age = now - path.stat(follow_symlinks=False).st_mtime
+        except OSError as exc:
+            raise LinuxReleaseError(f"cannot inspect staging workspace: {path}") from exc
+        if age < _STAGING_STALE_SECONDS:
+            # A workspace without a marker may be a live legacy worker. Leave it
+            # intact and make the caller fail closed rather than guessing.
+            raise LinuxReleaseError(f"staging workspace is not stale: {path}")
+        users = _release_in_use(path)
+        if users:
+            joined = ",".join(str(pid) for pid in users)
+            raise LinuxReleaseError(f"staging workspace is in use: {path} ({joined})")
+        _remove_incomplete_release(path)
+        removed.append(path.name)
+    return tuple(removed)
+
+
 def _prune_old_releases(
     layout: LinuxReleaseLayout,
     *,
@@ -623,26 +1047,172 @@ def _prune_old_releases(
 ) -> tuple[str, ...]:
     """Remove releases older than the current/rollback pair after preflight."""
 
-    keep = {current.resolve(strict=True)}
+    transaction, names = _stage_old_releases(layout, current=current, rollback=rollback)
+    try:
+        _commit_old_releases(transaction)
+    except BaseException:
+        _restore_old_releases(transaction)
+        raise
+    return names
+
+
+def _stage_old_releases(
+    layout: LinuxReleaseLayout,
+    *,
+    current: Path,
+    rollback: Path | None,
+) -> tuple[Path, tuple[str, ...]]:
+    """Move GC candidates to a same-filesystem tombstone before receipt commit."""
+
+    current = current.resolve(strict=True)
+    _require_release_id(current.name)
+    releases_root = layout.releases.resolve(strict=True)
+    if current.parent != releases_root:
+        raise LinuxReleaseError("release retention current must be directly under releases")
+    keep = {current}
     if rollback is not None:
-        keep.add(rollback.resolve(strict=True))
-    candidates: list[Path] = []
-    for path in sorted(layout.releases.glob("0.9.0-*")):
-        if path.is_symlink():
-            raise LinuxReleaseError(f"release path is an unsafe symlink: {path}")
-        if not path.is_dir():
-            raise LinuxReleaseError(f"release path is not a directory: {path}")
-        if path.resolve(strict=True) not in keep:
-            candidates.append(path)
+        rollback = rollback.resolve(strict=True)
+        _require_release_id(rollback.name)
+        if rollback.parent != releases_root:
+            raise LinuxReleaseError("release retention rollback must be directly under releases")
+        keep.add(rollback)
+    for item in keep:
+        try:
+            item.relative_to(releases_root)
+        except ValueError as exc:
+            raise LinuxReleaseError("release retention target is outside releases") from exc
+    candidates = [path for path in _release_inventory(layout) if path.resolve() not in keep]
     candidates_tuple = tuple(candidates)
     for path in candidates_tuple:
         users = _release_in_use(path)
         if users:
             joined = ",".join(str(pid) for pid in users)
             raise LinuxReleaseError(f"release is in use by host processes: {path} ({joined})")
-    for path in candidates_tuple:
+    transaction = layout.staging / f".gc-{uuid.uuid4().hex}"
+    _ensure_directory(transaction)
+    try:
+        _write_gc_marker(
+            transaction,
+            current=current,
+            rollback=rollback,
+            candidates=tuple(path.name for path in candidates_tuple),
+        )
+    except BaseException:
+        # No release has been moved yet, so a failed marker write can be
+        # removed directly instead of leaving an unrecoverable tombstone.
+        _remove_incomplete_release(transaction)
+        raise
+    try:
+        for path in candidates_tuple:
+            os.replace(path, transaction / path.name)
+    except BaseException:
+        _restore_old_releases(transaction)
+        raise
+    return transaction, tuple(path.name for path in candidates_tuple)
+
+
+def _restore_old_releases(transaction: Path) -> None:
+    if not os.path.lexists(transaction):
+        return
+    if transaction.is_symlink() or not transaction.is_dir():
+        raise LinuxReleaseError(f"release GC tombstone is unsafe: {transaction}")
+    candidates = _read_gc_marker(transaction).get("candidates")
+    assert isinstance(candidates, list)
+    expected = set(candidates)
+    releases = transaction.parent.parent
+    for path in sorted(transaction.iterdir(), key=lambda item: item.name):
+        if path.name == _GC_MARKER:
+            continue
+        if path.is_symlink() or not path.is_dir():
+            raise LinuxReleaseError(f"release GC tombstone entry is unsafe: {path}")
+        if parse_release_id(path.name) is None:
+            raise LinuxReleaseError(f"release GC tombstone entry is unknown: {path.name}")
+        if path.name not in expected:
+            raise LinuxReleaseError(f"release GC tombstone entry is not recorded: {path.name}")
+        destination = releases / path.name
+        if os.path.lexists(destination):
+            raise LinuxReleaseError(f"release GC restore destination exists: {destination}")
+        os.replace(path, destination)
+    (transaction / _GC_MARKER).unlink(missing_ok=True)
+    transaction.rmdir()
+
+
+def _commit_old_releases(transaction: Path) -> None:
+    if not os.path.lexists(transaction):
+        return
+    if transaction.is_symlink() or not transaction.is_dir():
+        raise LinuxReleaseError(f"release GC tombstone is unsafe: {transaction}")
+    candidates_payload = _read_gc_marker(transaction).get("candidates")
+    assert isinstance(candidates_payload, list)
+    expected = set(candidates_payload)
+    candidates: list[Path] = []
+    for path in sorted(transaction.iterdir(), key=lambda item: item.name):
+        if path.name == _GC_MARKER:
+            continue
+        if path.is_symlink() or not path.is_dir() or parse_release_id(path.name) is None:
+            raise LinuxReleaseError(f"release GC tombstone entry is unsafe: {path}")
+        if path.name not in expected:
+            raise LinuxReleaseError(f"release GC tombstone entry is not recorded: {path.name}")
+        candidates.append(path)
+    for path in candidates:
+        users = _release_in_use(path)
+        if users:
+            joined = ",".join(str(pid) for pid in users)
+            raise LinuxReleaseError(f"release is in use by host processes: {path} ({joined})")
+    for path in candidates:
         _remove_incomplete_release(path)
-    return tuple(path.name for path in candidates_tuple)
+    (transaction / _GC_MARKER).unlink(missing_ok=True)
+    transaction.rmdir()
+
+
+def _gc_receipt_commits(
+    layout: LinuxReleaseLayout,
+    *,
+    current: Path,
+    payload: dict[str, object],
+) -> bool:
+    receipt = _latest_receipt(layout)
+    if receipt is None or receipt.get("result") != "success":
+        return False
+    if receipt.get("release_id") != current.name:
+        return False
+    if receipt.get("retention_policy") != "current_and_immediate_rollback_v1":
+        return False
+    rollback = payload.get("rollback")
+    if rollback is not None and not isinstance(rollback, str):
+        return False
+    expected_retained: list[str] = [current.name]
+    if rollback is not None:
+        expected_retained.append(rollback)
+    retained = receipt.get("retained_releases")
+    pruned = receipt.get("pruned_releases")
+    candidates = payload.get("candidates")
+    if not isinstance(retained, list) or not all(isinstance(item, str) for item in retained):
+        return False
+    retained_names = cast(list[str], retained)
+    return (
+        sorted(retained_names) == sorted(expected_retained)
+        and isinstance(pruned, list)
+        and pruned == candidates
+    )
+
+
+def _recover_gc_transaction(layout: LinuxReleaseLayout, transaction: Path) -> str:
+    """Recover a GC tombstone after an interrupted publication."""
+
+    payload = _read_gc_marker(transaction)
+    if _gc_marker_active(payload):
+        raise LinuxReleaseError(f"release GC workspace is active: {transaction}")
+    current = _current_target(layout)
+    if current is not None and current.name == payload["current"] and _gc_receipt_commits(
+        layout,
+        current=current,
+        payload=payload,
+    ):
+        _commit_old_releases(transaction)
+        return "committed"
+    _restore_old_releases(transaction)
+    return "restored"
 
 
 def _validate_retention_receipt(
@@ -658,12 +1228,26 @@ def _validate_retention_receipt(
         return
     if policy != "current_and_immediate_rollback_v1":
         raise LinuxReleaseError(f"unsupported release retention policy: {policy!r}")
+    _require_release_id(current.name)
+    try:
+        current_resolved = current.resolve(strict=True)
+        releases_root = layout.releases.resolve(strict=True)
+        current_resolved.relative_to(releases_root)
+        if current_resolved.parent != releases_root:
+            raise LinuxReleaseError("retention current is not directly under releases")
+    except ValueError as exc:
+        raise LinuxReleaseError("retention current points outside releases") from exc
     previous = receipt.get("previous_release")
     expected = [current.name]
     if previous is not None:
-        previous_path = Path(str(previous)).resolve(strict=True)
+        previous_path = Path(str(previous))
+        if previous_path.is_symlink():
+            raise LinuxReleaseError("retention rollback is an unsafe symlink")
+        previous_path = previous_path.resolve(strict=True)
         try:
-            previous_path.relative_to(layout.releases.resolve(strict=True))
+            previous_path.relative_to(releases_root)
+            if previous_path.parent != releases_root:
+                raise LinuxReleaseError("retention rollback is not directly under releases")
         except ValueError as exc:
             raise LinuxReleaseError("retention rollback points outside releases") from exc
         expected.append(previous_path.name)
@@ -672,10 +1256,7 @@ def _validate_retention_receipt(
         expected
     ):
         raise LinuxReleaseError("retention receipt does not identify current and rollback")
-    actual_paths = sorted(layout.releases.glob("0.9.0-*"))
-    if any(path.is_symlink() for path in actual_paths):
-        raise LinuxReleaseError("release retention contains an unsafe symlink")
-    actual = sorted(path.name for path in actual_paths if path.is_dir())
+    actual = sorted(path.name for path in _release_inventory(layout))
     if actual != sorted(expected):
         raise LinuxReleaseError(
             "release retention drift: "
@@ -689,8 +1270,11 @@ def _release_lock(layout: LinuxReleaseLayout):
         fcntl = importlib.import_module("fcntl")
     except ImportError as exc:
         raise LinuxReleaseError("release activation requires POSIX fcntl") from exc
-    layout.lock.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_directory(layout.lock.parent)
+    if os.path.lexists(layout.lock) and layout.lock.is_symlink():
+        raise LinuxReleaseError(f"release lock is an unsafe symlink: {layout.lock}")
     with layout.lock.open("a+b") as stream:
+        os.fchmod(stream.fileno(), 0o600)
         fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
         yield stream
         fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
@@ -713,7 +1297,7 @@ def _current_target(layout: LinuxReleaseLayout) -> Path | None:
 
 
 def _replace_current(layout: LinuxReleaseLayout, target: Path | None) -> None:
-    layout.current.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_directory(layout.current.parent)
     temporary = layout.current.parent / f".current.{uuid.uuid4().hex}"
     try:
         if target is None:
@@ -726,12 +1310,28 @@ def _replace_current(layout: LinuxReleaseLayout, target: Path | None) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _launcher_payload(corpus_root: Path, current_release: Path) -> bytes:
+def _launcher_payload(
+    corpus_root: Path,
+    current_release: Path,
+    *,
+    config_home: Path | None = None,
+    state_home: Path | None = None,
+    data_home: Path | None = None,
+) -> bytes:
+    exports = ""
+    for name, value in (
+        ("XDG_CONFIG_HOME", config_home),
+        ("XDG_STATE_HOME", state_home),
+        ("XDG_DATA_HOME", data_home),
+    ):
+        if value is not None:
+            exports += f"export {name}={shlex.quote(str(value))}\n"
     return (
         "#!/bin/sh\n"
         "set -eu\n"
         "export PYTHONDONTWRITEBYTECODE=1\n"
         f"export NEOCORTEX_CORPUS_ROOT={shlex.quote(str(corpus_root))}\n"
+        f"{exports}"
         f'exec {shlex.quote(str(current_release / "bin" / "Neocortex"))} "$@"\n'
     ).encode("utf-8")
 
@@ -787,7 +1387,7 @@ def _restore_path(path: Path, snapshot: _PathSnapshot) -> None:
     path.unlink(missing_ok=True)
     if snapshot.kind == "missing":
         return
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_directory(path.parent)
     if snapshot.kind == "symlink":
         assert isinstance(snapshot.payload, str)
         os.symlink(snapshot.payload, path)
@@ -810,10 +1410,16 @@ def _publish_public_access(
     try:
         _atomic_write(
             layout.launcher,
-            _launcher_payload(corpus_root, layout.current),
+            _launcher_payload(
+                corpus_root,
+                layout.current,
+                config_home=layout.policy.config_directory.parent,
+                state_home=layout.policy.state_directory.parents[1],
+                data_home=layout.policy.data_directory.parent,
+            ),
             mode=0o755,
         )
-        layout.alias.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_directory(layout.alias.parent)
         alias_stage = layout.alias.parent / f".{layout.alias.name}.{uuid.uuid4().hex}"
         try:
             os.symlink(layout.launcher, alias_stage)
@@ -851,7 +1457,7 @@ def _receipt_path(layout: LinuxReleaseLayout, release_name: str, operation: str)
 
 def _write_receipt(layout: LinuxReleaseLayout, payload: dict[str, object]) -> Path:
     path = _receipt_path(layout, str(payload["release_id"]), str(payload["operation"]))
-    _atomic_write(path, _canonical_json(payload))
+    _atomic_write(path, _canonical_json(payload), mode=0o600)
     return path
 
 
@@ -867,6 +1473,68 @@ def _latest_receipt(layout: LinuxReleaseLayout) -> dict[str, object] | None:
         if isinstance(payload, dict) and payload.get("schema_version") == RECEIPT_SCHEMA_VERSION:
             payload["_path"] = str(path)
             return payload
+    return None
+
+
+def _receipt_release_target(
+    layout: LinuxReleaseLayout,
+    value: object,
+    *,
+    label: str,
+) -> Path | None:
+    """Resolve a receipt release path without accepting path ambiguity."""
+
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise LinuxReleaseError(f"receipt {label} is invalid")
+    candidate = Path(value)
+    if not candidate.is_absolute() or candidate.is_symlink():
+        raise LinuxReleaseError(f"receipt {label} is unsafe")
+    try:
+        resolved = candidate.resolve(strict=True)
+        releases_root = layout.releases.resolve(strict=True)
+        if resolved.parent != releases_root:
+            raise LinuxReleaseError(f"receipt {label} is outside releases")
+        _require_release_id(resolved.name)
+    except LinuxReleaseError:
+        raise
+    except (OSError, RuntimeError) as exc:
+        raise LinuxReleaseError(f"receipt {label} is unavailable") from exc
+    return resolved
+
+
+def _repromotion_rollback(
+    layout: LinuxReleaseLayout,
+    *,
+    current: Path,
+    latest: dict[str, object] | None,
+) -> Path | None:
+    """Find the only safe rollback when recovering an already-current release."""
+
+    candidate: Path | None = None
+    if latest is not None:
+        if latest.get("release_id") == current.name:
+            candidate = _receipt_release_target(
+                layout,
+                latest.get("previous_release"),
+                label="previous_release",
+            )
+        else:
+            candidate = _receipt_release_target(
+                layout,
+                latest.get("release_path"),
+                label="release_path",
+            )
+    if candidate is not None and candidate != current:
+        return candidate
+    inventory = [path for path in _release_inventory(layout) if path.resolve() != current]
+    if len(inventory) == 1:
+        return inventory[0].resolve(strict=True)
+    if len(inventory) > 1:
+        raise LinuxReleaseError(
+            "already-current release has no unambiguous rollback after interrupted publication"
+        )
     return None
 
 
@@ -904,6 +1572,11 @@ def _read_release_manifest(
     release_name: str,
     source_sha: str,
 ) -> dict[str, object]:
+    _version, release_sha_prefix = _require_release_id(release_name)
+    if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+        raise LinuxReleaseError("release manifest source SHA is malformed")
+    if not source_sha.startswith(release_sha_prefix):
+        raise LinuxReleaseError("release manifest source SHA does not match its release ID")
     _require_immutable(release_root)
     path = release_root / RELEASE_MANIFEST_NAME
     try:
@@ -928,12 +1601,17 @@ def _read_release_manifest(
         )
     ):
         raise LinuxReleaseError("product-only release contains development-tool metadata")
+    release_version, _ = _require_release_id(release_name)
+    wheel_filename = payload.get("wheel_filename")
+    expected_wheel = f"neocortex_framework-{release_version}-py3-none-any.whl"
+    if wheel_filename != expected_wheel:
+        raise LinuxReleaseError("existing release wheel identity is inconsistent")
     if (
         payload.get("schema_version") != RECEIPT_SCHEMA_VERSION
         or payload.get("kind") != "linux_release_manifest"
         or payload.get("release_id") != release_name
         or payload.get("source_sha") != source_sha
-        or not isinstance(payload.get("wheel_filename"), str)
+        or not isinstance(wheel_filename, str)
         or not isinstance(payload.get("wheel_sha256"), str)
         or not _SHA256.fullmatch(str(payload["wheel_sha256"]))
         or payload.get("pip_bootstrap_wheel_filename") != PIP_BOOTSTRAP_FILENAME
@@ -965,6 +1643,11 @@ def _read_release_manifest(
             or len(entries) != payload["runtime_dependency_count"]
         ):
             raise LinuxReleaseError("existing release dependency lock failed validation")
+    tree_digest = payload.get("release_tree_sha256")
+    if tree_digest is not None:
+        if not isinstance(tree_digest, str) or not _SHA256.fullmatch(tree_digest):
+            raise LinuxReleaseError("existing release tree identity is invalid")
+        _validate_release_tree(release_root, expected_tree_sha256=tree_digest)
     return payload
 
 
@@ -986,21 +1669,56 @@ def _require_corpus_root(corpus_root: Path) -> None:
         raise LinuxReleaseError(f"cannot inspect corpus root {corpus_root}: {exc}") from exc
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
         raise LinuxReleaseError(f"corpus root must be a real directory: {corpus_root}")
+    cursor = corpus_root.parent
+    while cursor != cursor.parent:
+        if os.path.lexists(cursor):
+            metadata = os.lstat(cursor)
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                raise LinuxReleaseError(f"corpus parent is not a real directory: {cursor}")
+        cursor = cursor.parent
 
 
 def _prepare_corpus_root(corpus_root: Path) -> bool:
     """Create the selected corpus root and reject non-directory endpoints."""
 
-    existed = corpus_root.exists()
+    existed = os.path.lexists(corpus_root)
     if existed:
         _require_corpus_root(corpus_root)
         return False
     try:
-        corpus_root.mkdir(parents=True, exist_ok=True)
+        _ensure_directory(corpus_root)
     except OSError as exc:
         raise LinuxReleaseError(f"cannot prepare corpus root {corpus_root}: {exc}") from exc
     _require_corpus_root(corpus_root)
     return True
+
+
+def _validate_layout(layout: LinuxReleaseLayout) -> None:
+    """Validate all writable release roots before any operation begins."""
+
+    paths = (
+        layout.policy.data_directory,
+        layout.policy.state_directory,
+        layout.policy.config_directory,
+        layout.policy.models_directory,
+        layout.policy.runtimes_directory,
+        layout.releases,
+        layout.staging,
+        layout.receipts,
+        layout.current.parent,
+        layout.launcher.parent,
+        layout.alias.parent,
+        layout.desktop.parent,
+        layout.icon.parent,
+    )
+    for path in paths:
+        cursor = path
+        while cursor != cursor.parent:
+            if os.path.lexists(cursor):
+                metadata = os.lstat(cursor)
+                if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                    raise LinuxReleaseError(f"release root component is unsafe: {cursor}")
+            cursor = cursor.parent
 
 
 def install_release(
@@ -1012,62 +1730,86 @@ def install_release(
     runner: CommandRunner = _run,
 ) -> dict[str, object]:
     _require_reference_platform()
-    corpus_root = corpus_root.expanduser().resolve(strict=False)
+    _validate_layout(layout)
+    corpus_root = corpus_root.expanduser()
     if not corpus_root.is_absolute():
         raise LinuxReleaseError("corpus root must be absolute")
-    corpus_root_created = _prepare_corpus_root(corpus_root)
-    source_sha = _source_sha(layout.source_root, runner)
-    source_runtime_lock = layout.source_root / RUNTIME_DEPENDENCY_LOCK_NAME
-    _runtime_dependency_lock(source_runtime_lock)
-    name = release_id(source_sha)
-    final_release = layout.releases / name
-    layout.staging.mkdir(parents=True, exist_ok=True)
-    layout.releases.mkdir(parents=True, exist_ok=True)
-    if final_release.exists():
-        release_artifacts = _read_release_manifest(
-            final_release,
-            release_name=name,
-            source_sha=source_sha,
-        )
-        runtime_lock = _manifest_runtime_dependency_lock(final_release, release_artifacts)
-        candidate_versions = _verify_python_release(
-            final_release,
-            layout,
-            corpus_root,
-            runtime_lock=runtime_lock,
-            runner=runner,
-        )
-        if any(release_artifacts.get(key) != value for key, value in candidate_versions.items()):
-            raise LinuxReleaseError("existing release versions differ from its manifest")
-    else:
-        with tempfile.TemporaryDirectory(prefix=f"{name}-", dir=layout.staging) as temporary:
-            workspace = Path(temporary)
-            pip_wheel = _prepare_pip_bootstrap(workspace)
-            wheel = _build_wheel(
+    with _release_lock(layout):
+        _reap_staging(layout)
+        corpus_root_created = _prepare_corpus_root(corpus_root)
+        source_sha = _source_sha(layout.source_root, runner)
+        source_runtime_lock = layout.source_root / RUNTIME_DEPENDENCY_LOCK_NAME
+        _runtime_dependency_lock(source_runtime_lock)
+        name = release_id(source_sha)
+        final_release = layout.releases / name
+        _ensure_directory(layout.releases)
+        previous = _current_target(layout)
+        latest_receipt = _latest_receipt(layout)
+        release_exists = os.path.lexists(final_release)
+        if release_exists:
+            if final_release.is_symlink() or not final_release.is_dir():
+                raise LinuxReleaseError(f"release slot is unsafe: {final_release}")
+            manifest_path = final_release / RELEASE_MANIFEST_NAME
+            if not manifest_path.is_file():
+                # A process killed before publication may leave an old partial
+                # slot.  It is safe to recover only this exact generated name.
+                _remove_incomplete_release(final_release)
+                release_exists = False
+        if release_exists:
+            release_artifacts = _read_release_manifest(
+                final_release,
+                release_name=name,
+                source_sha=source_sha,
+            )
+            runtime_lock = _manifest_runtime_dependency_lock(final_release, release_artifacts)
+            candidate_versions = _verify_python_release(
+                final_release,
                 layout,
-                workspace,
-                pip_wheel=pip_wheel,
+                corpus_root,
+                runtime_lock=runtime_lock,
                 runner=runner,
             )
-            wheel_sha = _sha256_file(wheel)
-            try:
+            if any(
+                release_artifacts.get(key) != value for key, value in candidate_versions.items()
+            ):
+                raise LinuxReleaseError("existing release versions differ from its manifest")
+        else:
+            with tempfile.TemporaryDirectory(prefix=f"{name}-", dir=layout.staging) as temporary:
+                workspace = Path(temporary)
+                _write_staging_marker(workspace, release_name=name)
+                pip_wheel = _prepare_pip_bootstrap(workspace)
+                wheel = _build_wheel(
+                    layout,
+                    workspace,
+                    pip_wheel=pip_wheel,
+                    runner=runner,
+                )
+                try:
+                    validate_release_artifact(wheel, expected_version=__version__)
+                except ArtifactValidationError as exc:
+                    raise LinuxReleaseError(f"built wheel failed artifact validation: {exc}") from exc
+                wheel_sha = _sha256_file(wheel)
+                candidate_root = workspace / "release"
                 _install_wheel(
-                    final_release,
+                    candidate_root,
                     wheel,
                     layout.source_root / "constraints.txt",
                     source_runtime_lock,
                     pip_wheel=pip_wheel,
                     runner=runner,
                 )
-                runtime_lock = final_release / RUNTIME_DEPENDENCY_LOCK_NAME
+                runtime_lock = candidate_root / RUNTIME_DEPENDENCY_LOCK_NAME
                 shutil.copyfile(source_runtime_lock, runtime_lock)
+                _remove_bytecode(candidate_root)
                 candidate_versions = _verify_python_release(
-                    final_release,
+                    candidate_root,
                     layout,
                     corpus_root,
                     runtime_lock=runtime_lock,
                     runner=runner,
                 )
+                _remove_bytecode(candidate_root)
+                tree_digest = _validate_release_tree(candidate_root, expected_tree_sha256=None)
                 release_artifacts = _release_manifest(
                     release_name=name,
                     source_sha=source_sha,
@@ -1076,47 +1818,57 @@ def install_release(
                     runtime_dependency_lock=runtime_lock,
                     versions=candidate_versions,
                 )
+                release_artifacts["release_tree_sha256"] = tree_digest
                 _atomic_write(
-                    final_release / RELEASE_MANIFEST_NAME,
+                    candidate_root / RELEASE_MANIFEST_NAME,
                     _canonical_json(release_artifacts),
                 )
-                _make_immutable(final_release)
-                _require_immutable(final_release)
+                _make_immutable(candidate_root)
+                _require_immutable(candidate_root)
+                os.replace(candidate_root, final_release)
                 _fsync_directory(layout.releases)
-            except BaseException:
-                _remove_incomplete_release(final_release)
-                raise
 
-    release_artifacts = {
-        **release_artifacts,
-        "release_manifest_sha256": _sha256_file(final_release / RELEASE_MANIFEST_NAME),
-    }
+        release_artifacts = {
+            **release_artifacts,
+            "release_manifest_sha256": _sha256_file(final_release / RELEASE_MANIFEST_NAME),
+        }
 
-    environment = _candidate_environment(layout, corpus_root)
-    if prepare_models:
-        runner(
-            (_venv_command(final_release), "models", "prepare", "--json"),
-            timeout=14_400,
-            environment=environment,
-        )
-    if prepare_models or desktop:
-        runner(
-            (_venv_command(final_release), "models", "status", "--json"),
-            timeout=300,
-            environment=environment,
-        )
+        environment = _candidate_environment(layout, corpus_root)
+        if prepare_models:
+            runner(
+                (_venv_command(final_release), "models", "prepare", "--json"),
+                timeout=14_400,
+                environment=environment,
+            )
+        model_status: dict[str, object] | None = None
+        if prepare_models or desktop:
+            model_status = _decode_json_object(
+                runner(
+                    (_venv_command(final_release), "models", "status", "--json"),
+                    timeout=300,
+                    environment=environment,
+                ),
+                label="model status",
+            )
+            if prepare_models and model_status.get("all_prepared") is not True:
+                raise LinuxReleaseError("model preparation did not produce a complete status")
 
-    with _release_lock(layout):
-        previous = _current_target(layout)
         if previous == final_release.resolve(strict=True):
             operation = "repromote"
+            rollback = _repromotion_rollback(
+                layout,
+                current=final_release,
+                latest=latest_receipt,
+            )
         else:
             operation = "install"
+            rollback = previous
         retained_releases: tuple[str, ...] = (final_release.name,)
-        if operation == "install" and previous is not None:
-            retained_releases = (final_release.name, previous.name)
+        if rollback is not None:
+            retained_releases = (final_release.name, rollback.name)
         public_snapshots: dict[Path, _PathSnapshot] = {}
         _replace_current(layout, final_release)
+        gc_transaction: Path | None = None
         try:
             public_snapshots, public_hashes = _publish_public_access(
                 layout,
@@ -1132,7 +1884,7 @@ def install_release(
                 "release_id": name,
                 "release_path": str(final_release),
                 "source_sha": source_sha,
-                "previous_release": None if previous is None else str(previous),
+                "previous_release": None if rollback is None else str(rollback),
                 "current_link": str(layout.current),
                 "corpus_root": str(corpus_root),
                 "corpus_root_created": corpus_root_created,
@@ -1146,18 +1898,23 @@ def install_release(
                 },
                 "result": "success",
             }
-            pruned_releases = (
-                _prune_old_releases(
-                    layout,
-                    current=final_release,
-                    rollback=previous,
-                )
-                if operation == "install"
-                else ()
+            gc_transaction, pruned_releases = _stage_old_releases(
+                layout,
+                current=final_release,
+                rollback=rollback,
             )
             receipt["pruned_releases"] = pruned_releases
-            receipt_path = _write_receipt(layout, receipt)
+            try:
+                receipt_path = _write_receipt(layout, receipt)
+            except BaseException:
+                if gc_transaction is not None:
+                    _restore_old_releases(gc_transaction)
+                raise
+            if gc_transaction is not None:
+                _commit_old_releases(gc_transaction)
         except BaseException:
+            if gc_transaction is not None and os.path.lexists(gc_transaction):
+                _restore_old_releases(gc_transaction)
             _replace_current(layout, previous)
             for path, snapshot in reversed(tuple(public_snapshots.items())):
                 _restore_path(path, snapshot)
@@ -1172,7 +1929,38 @@ def _require_executable(name: str) -> str:
     return path
 
 
-def verify_release(
+def _decode_json_object(
+    result: subprocess.CompletedProcess[str],
+    *,
+    label: str,
+    allow_failed: bool = False,
+) -> dict[str, object]:
+    if result.returncode != 0:
+        if allow_failed:
+            return {"status": "unavailable", "exit_code": result.returncode}
+        raise LinuxReleaseError(f"{label} command failed")
+    try:
+        payload = json.loads(result.stdout)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise LinuxReleaseError(f"{label} output is malformed") from exc
+    if not isinstance(payload, dict):
+        raise LinuxReleaseError(f"{label} output is not an object")
+    return payload
+
+
+def _receipt_artifact_hash(receipt: dict[str, object], name: str) -> str | None:
+    artifacts = receipt.get("artifacts")
+    if not isinstance(artifacts, dict):
+        return None
+    value = artifacts.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not _SHA256.fullmatch(value):
+        raise LinuxReleaseError(f"installation receipt artifact hash is invalid: {name}")
+    return value
+
+
+def _verify_release_unlocked(
     layout: LinuxReleaseLayout,
     *,
     runner: CommandRunner = _run,
@@ -1199,6 +1987,13 @@ def verify_release(
             source_sha = None
     if not isinstance(source_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", source_sha):
         raise LinuxReleaseError("installation receipt source SHA is invalid")
+    manifest_path = current / RELEASE_MANIFEST_NAME
+    expected_manifest_hash = _receipt_artifact_hash(receipt, "release_manifest_sha256")
+    if (
+        expected_manifest_hash is not None
+        and _sha256_file(manifest_path) != expected_manifest_hash
+    ):
+        raise LinuxReleaseError("release manifest differs from its installation receipt")
     manifest = _read_release_manifest(
         current,
         release_name=current.name,
@@ -1237,11 +2032,22 @@ def verify_release(
     )
     if bool(receipt.get("models_prepared")) and model_report.returncode != 0:
         raise LinuxReleaseError("prepared model status is incomplete")
-    qpdf = runner((_require_executable("qpdf"), "--version"), timeout=60).stdout.splitlines()[0]
-    ffprobe = runner(
+    platform_payload = _decode_json_object(platform_report, label="platform status")
+    models_payload = _decode_json_object(
+        model_report,
+        label="model status",
+        allow_failed=not bool(receipt.get("models_prepared")),
+    )
+    qpdf_report = runner((_require_executable("qpdf"), "--version"), timeout=60)
+    ffprobe_report = runner(
         (_require_executable("ffprobe"), "-version"),
         timeout=60,
-    ).stdout.splitlines()[0]
+    )
+    try:
+        qpdf = qpdf_report.stdout.splitlines()[0]
+        ffprobe = ffprobe_report.stdout.splitlines()[0]
+    except IndexError as exc:
+        raise LinuxReleaseError("native tool version output is malformed") from exc
     tesseract = runner(
         (_require_executable("tesseract"), "--list-langs"),
         timeout=60,
@@ -1251,6 +2057,16 @@ def verify_release(
         raise LinuxReleaseError("Tesseract must expose spa and eng language data")
     if not layout.alias.is_symlink() or layout.alias.resolve(strict=True) != layout.launcher:
         raise LinuxReleaseError("user alias does not resolve to the stable launcher")
+    try:
+        launcher_text = layout.launcher.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise LinuxReleaseError("stable launcher is unavailable") from exc
+    expected_exec = f'exec {shlex.quote(str(current / "bin" / "Neocortex"))} "$@"'
+    if expected_exec not in launcher_text:
+        raise LinuxReleaseError("stable launcher does not target the active release")
+    expected_launcher_hash = _receipt_artifact_hash(receipt, "launcher_sha256")
+    if expected_launcher_hash is not None and _sha256_file(layout.launcher) != expected_launcher_hash:
+        raise LinuxReleaseError("stable launcher differs from its installation receipt")
     if bool(receipt.get("desktop_published")):
         runner(("desktop-file-validate", layout.desktop), timeout=60)
     return {
@@ -1265,19 +2081,45 @@ def verify_release(
         "qpdf": qpdf,
         "ffprobe": ffprobe,
         "tesseract_languages": sorted(languages),
-        "platform": json.loads(platform_report.stdout),
-        "models": json.loads(model_report.stdout),
+        "platform": platform_payload,
+        "models": models_payload,
     }
+
+
+def _require_clean_staging(layout: LinuxReleaseLayout) -> None:
+    if not os.path.lexists(layout.staging):
+        return
+    if layout.staging.is_symlink() or not layout.staging.is_dir():
+        raise LinuxReleaseError(f"staging path is unsafe: {layout.staging}")
+    residual = tuple(layout.staging.iterdir())
+    if residual:
+        raise LinuxReleaseError("release staging contains residual workspaces")
+
+
+def verify_release(
+    layout: LinuxReleaseLayout,
+    *,
+    runner: CommandRunner = _run,
+) -> dict[str, object]:
+    """Verify one stable generation while holding the release activation lock."""
+
+    _validate_layout(layout)
+    with _release_lock(layout):
+        _require_clean_staging(layout)
+        return _verify_release_unlocked(layout, runner=runner)
 
 
 def rollback_release(
     layout: LinuxReleaseLayout,
     *,
     target_release: str | None = None,
+    runner: CommandRunner = _run,
 ) -> dict[str, object]:
     if os.name != "posix" or sys.platform != "linux":
         raise LinuxReleaseError("Linux release rollback is available only on Linux")
+    _validate_layout(layout)
     with _release_lock(layout):
+        _reap_staging(layout)
         current = _current_target(layout)
         if current is None:
             raise LinuxReleaseError("no active release to roll back")
@@ -1290,6 +2132,11 @@ def rollback_release(
             if Path(target_release).name != target_release:
                 raise LinuxReleaseError("rollback release must be one release identifier")
             target = layout.releases / target_release
+        _require_release_id(target.name)
+        if target.parent.resolve(strict=True) != layout.releases.resolve(strict=True):
+            raise LinuxReleaseError("rollback target must be directly under releases")
+        if target.is_symlink():
+            raise LinuxReleaseError("rollback target is an unsafe symlink")
         target = target.resolve(strict=True)
         try:
             target.relative_to(layout.releases.resolve(strict=True))
@@ -1299,8 +2146,45 @@ def rollback_release(
             raise LinuxReleaseError("rollback target is already active")
         if not _venv_command(target).is_file():
             raise LinuxReleaseError("rollback target is not a complete release")
+        manifest_path = target / RELEASE_MANIFEST_NAME
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise LinuxReleaseError("rollback target manifest is unavailable") from exc
+        if not isinstance(manifest, dict) or not isinstance(manifest.get("source_sha"), str):
+            raise LinuxReleaseError("rollback target manifest is malformed")
+        _read_release_manifest(
+            target,
+            release_name=target.name,
+            source_sha=str(manifest["source_sha"]),
+        )
+        target_tree_digest = manifest.get("release_tree_sha256")
+        if target_tree_digest is not None and not isinstance(target_tree_digest, str):
+            raise LinuxReleaseError("rollback target tree identity is invalid")
+        _validate_release_tree(target, expected_tree_sha256=target_tree_digest)
+        latest = _latest_receipt(layout)
+        corpus_root = (
+            Path(str(latest["corpus_root"]))
+            if latest is not None and latest.get("corpus_root") is not None
+            else layout.policy.corpus_root
+        )
+        if os.path.lexists(corpus_root):
+            _require_corpus_root(corpus_root)
+        desktop_published = bool(latest and latest.get("desktop_published"))
+        public_snapshots: dict[Path, _PathSnapshot] = {}
         _replace_current(layout, target)
         try:
+            public_snapshots, public_hashes = _publish_public_access(
+                layout,
+                corpus_root,
+                desktop=desktop_published,
+                runner=runner,
+            )
+            gc_transaction, pruned_releases = _stage_old_releases(
+                layout,
+                current=target,
+                rollback=current,
+            )
             receipt = {
                 "schema_version": RECEIPT_SCHEMA_VERSION,
                 "kind": "linux_release_receipt",
@@ -1311,18 +2195,28 @@ def rollback_release(
                 "source_sha": "rollback",
                 "previous_release": str(current),
                 "current_link": str(layout.current),
-                "corpus_root": str(layout.policy.corpus_root),
+                "corpus_root": str(corpus_root),
                 "models_prepared": False,
-                "desktop_published": layout.desktop.is_file(),
+                "desktop_published": desktop_published,
                 "retention_policy": "current_and_immediate_rollback_v1",
                 "retained_releases": (target.name, current.name),
-                "pruned_releases": (),
-                "artifacts": {},
+                "pruned_releases": pruned_releases,
+                "artifacts": {
+                    "release_manifest_sha256": _sha256_file(target / RELEASE_MANIFEST_NAME),
+                    **public_hashes,
+                },
                 "result": "success",
             }
-            receipt_path = _write_receipt(layout, receipt)
+            try:
+                receipt_path = _write_receipt(layout, receipt)
+            except BaseException:
+                _restore_old_releases(gc_transaction)
+                raise
+            _commit_old_releases(gc_transaction)
         except BaseException:
             _replace_current(layout, current)
+            for path, snapshot in reversed(tuple(public_snapshots.items())):
+                _restore_path(path, snapshot)
             raise
     return {**receipt, "receipt_path": str(receipt_path)}
 
@@ -1390,6 +2284,7 @@ __all__ = [
     "build_parser",
     "install_release",
     "main",
+    "parse_release_id",
     "release_id",
     "rollback_release",
     "verify_release",

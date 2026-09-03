@@ -192,8 +192,9 @@ python3.14 tools/release_linux.py rollback \
   --release 0.9.0-0123456789ab-cp314-linux-x86_64
 ```
 
-Rollback sólo cambia atómicamente el enlace activo y deja un recibo; no elimina
-artefactos.
+Rollback cambia atómicamente el enlace activo, deja un recibo y retira mediante
+GC sólo las releases fuera de `current` y del rollback inmediato, sin tocar una
+release en uso ni staging activo.
 
 ## Uso KDE y piloto
 
@@ -212,9 +213,10 @@ La primera ejecución debe usar una raíz de laboratorio con 20–50 fixtures, u
 sola ruta por vez y un máximo de 10–15 minutos. Compare hashes antes y después;
 nunca use `--apply`, `--organization-apply` ni `--all` en el piloto.
 
-## Copia futura desde Windows
+## Referencia histórica: importación de originales desde Windows
 
-Cuando exista un volumen o backup Windows montado, copie sólo originales a
+Si en el futuro existe un volumen o backup Windows montado, y Víctor autoriza
+expresamente la importación, copie sólo originales a
 ext4, nunca SQLite ni identidades NTFS. No use `--delete`:
 
 ```bash
@@ -225,4 +227,5 @@ rsync -a --checksum --dry-run /medio/windows/Corpus/ \
 ```
 
 El segundo pase debe quedar vacío. Después construya estado Linux nuevo; no
-migre las bases de estado de Windows.
+migre las bases de estado de Windows ni trate esta referencia como soporte
+operativo vigente.

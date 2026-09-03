@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from neocortex.platform import policy as platform_policy
+from neocortex.persistence.sqlite_paths import readonly_sqlite_uri as _CANONICAL_READONLY_SQLITE_URI
 
 from .knowledge_contracts import KnowledgeSnapshot, ResourceRef
 from .knowledge_search_contracts import KnowledgeCandidate, RankingExecution
@@ -135,6 +136,21 @@ def open_direct_readonly_sqlite(
     cleanup_preserving_primary: _CleanupPreservingPrimary,
 ) -> sqlite3.Connection:
     """Open an existing SQLite owner with read-only behavior verified live."""
+
+    # Production callers pass the module's canonical providers.  Route those
+    # calls through the fenced immutable kernel; retaining the injected branch
+    # below keeps the historical extraction seam usable for fixtures and
+    # callers that provide their own connection policy.
+    if (
+        path.is_file()
+        and sqlite_connect is sqlite3.connect
+        and readonly_sqlite_uri is _CANONICAL_READONLY_SQLITE_URI
+        and sqlite_row_factory is sqlite3.Row
+        and sqlite_operational_error is sqlite3.OperationalError
+    ):
+        from neocortex.persistence.sqlite_immutable import open_immutable_sqlite_connection
+
+        return open_immutable_sqlite_connection(path, timeout_seconds=60.0)
 
     connection = sqlite_connect(
         readonly_sqlite_uri(path),

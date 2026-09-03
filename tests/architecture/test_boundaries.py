@@ -59,6 +59,38 @@ def test_subprocess_calls_do_not_enable_shell_execution() -> None:
                 raise AssertionError(f"{module} enables shell=True")
 
 
+def test_readonly_sqlite_opens_are_centralized_in_the_read_kernel() -> None:
+    """Prevent a new product reader from bypassing the fenced SQLite API."""
+
+    allowed_compatibility_seams = {
+        "neocortex.persistence.sqlite_connection",  # injected factory seam
+        "neocortex.knowledge.knowledge_search_inventory",  # injected legacy seam
+        "neocortex.workflow.retention.planner",  # injected test module seam
+        "neocortex.semantic.semantic_plan_owners",  # injected planner seam
+    }
+    for module, path in _modules():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            function = node.func
+            if not (
+                isinstance(function, ast.Attribute)
+                and function.attr == "connect"
+                and isinstance(function.value, ast.Name)
+                and function.value.id == "sqlite3"
+            ):
+                continue
+            source = ast.get_source_segment(path.read_text(encoding="utf-8"), node) or ""
+            if "mode=ro" not in source and "readonly_sqlite_uri" not in source:
+                continue
+            if module == "neocortex.persistence.sqlite_immutable" or module in allowed_compatibility_seams:
+                continue
+            raise AssertionError(
+                f"{module} opens a read-only SQLite owner outside the fenced kernel"
+            )
+
+
 def test_code_tree_contains_only_product_capabilities() -> None:
     forbidden_fragments = (
         "analysis",
@@ -89,6 +121,7 @@ def test_code_tree_has_no_legacy_wrappers_or_orphaned_modules() -> None:
         "code_route.py",
         "code_schema.py",
         "code_state.py",
+        "code_graph_generations.py",
         "ingestion/__init__.py",
         "ingestion/code_analyzer_common.py",
         "ingestion/code_analyzers.py",

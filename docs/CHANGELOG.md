@@ -41,6 +41,10 @@ no se copian aquí para evitar que se conviertan en datos históricos sin contex
 - `Neocortex --status` y la proyección de estado de la interfaz usan lecturas
   immutable; ante un WAL activo se abstienen con código `2` en lugar de crear o
   actualizar sidecars.
+- El benchmark `benchmarks/semantic_staging_benchmark.py` compara la paridad de
+  contenido fuente en una proyección `body` y reporta por separado los chunks de
+  metadata de título; la metadata intencional ya no se interpreta como una
+  divergencia del staging.
 
 ### Validación vigente
 

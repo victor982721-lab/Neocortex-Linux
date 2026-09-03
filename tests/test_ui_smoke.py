@@ -51,6 +51,11 @@ class UiSmokeTests(unittest.TestCase):
             request = window._current_request()
             self.assertFalse(request.apply)
             self.assertEqual(request.routes, ROUTE_ORDER)
+            self.assertEqual(request.profile, "pilot")
+            self.assertEqual(request.max_items, 50)
+            self.assertEqual(request.deadline_seconds, 900.0)
+            self.assertTrue(window.max_items_spin.isEnabled())
+            self.assertTrue(window.deadline_spin.isEnabled())
 
             window.apply_radio.setChecked(True)
             window.scope_combo.setCurrentIndex(1)

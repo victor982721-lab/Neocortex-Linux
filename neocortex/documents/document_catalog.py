@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import codecs
+import hashlib
 import json
 import os
 import sqlite3
@@ -28,6 +29,11 @@ from neocortex.persistence.sqlite_connection import (
     SQLiteWriterPragmas,
     connect_sqlite,
 )
+from neocortex.persistence.sqlite_immutable import (
+    open_immutable_sqlite_connection,
+    preferred_sqlite_read_mode,
+    sqlite_read_session,
+)
 
 from .document_taxonomy import (
     DocumentClassification,
@@ -46,10 +52,12 @@ from .document_catalog_schema import (
 )
 from neocortex.runtime.control.cancellation import CancellationRequested
 from neocortex.foundation.file_identity import decode_file_identity
-from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
 from neocortex.persistence.sqlite_schema_contract import (
     read_metadata_schema_version,
     validate_sqlite_schema_contract,
+)
+from neocortex.platform.content_capability_manifest import (
+    content_capability_for_source,
 )
 
 if TYPE_CHECKING:
@@ -63,7 +71,20 @@ if TYPE_CHECKING:
 MAX_CLASSIFICATION_TEXT_CHARS = 64_000
 CATALOG_WRITE_BATCH = 100
 CATALOG_PROGRESS_INTERVAL = 25
-SourceKind = Literal["pdf", "docx", "xlsx", "pptx", "odt", "text", "audio"]
+SourceKind = Literal[
+    "pdf",
+    "docx",
+    "xlsx",
+    "pptx",
+    "odt",
+    "text",
+    "audio",
+    "video",
+    "image",
+    "archive",
+    "code",
+]
+SourceCoverage = Literal["complete", "partial", "blocked"]
 _CATALOG_WRITE_LOCK = threading.RLock()
 _PATH_COLLATION = sqlite_path_collation()
 _CATALOG_DOCUMENT_COLUMNS = (
@@ -123,6 +144,9 @@ class SourceDocument:
     author: str
     metadata: str
     page_count: int | None = None
+    coverage: SourceCoverage = "complete"
+    text_truncated: bool = False
+    virtual: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +219,20 @@ def connect_document_catalog(
     *,
     readonly: bool = False,
 ) -> sqlite3.Connection:
+    if readonly:
+        # Keep the legacy connection factory sidecar-safe for quiescent
+        # callers.  Callers that need to read a live WAL must use the context
+        # manager below, which owns a temporary snapshot and its cleanup.
+        if not path.is_file():
+            # Preserve the existing-file error contract for callers that use
+            # this low-level connection seam directly.  Context-managed
+            # readers choose the safe temporary snapshot path when needed.
+            return connect_sqlite(
+                path,
+                mode=READONLY_EXISTING,
+                policy=_DOCUMENT_CATALOG_SQLITE_POLICY,
+            )
+        return open_immutable_sqlite_connection(path, timeout_seconds=60.0)
     return connect_sqlite(
         path,
         mode=READONLY_EXISTING if readonly else READWRITE_CREATE,
@@ -204,6 +242,21 @@ def connect_document_catalog(
 
 @contextmanager
 def document_catalog_database(path: Path, *, readonly: bool = False):
+    if readonly:
+        # A normal SQLite ``mode=ro`` connection can create SHM/WAL files on
+        # close.  Public catalog readers therefore use the shared immutable
+        # or temporary-copy kernel; writers retain the connection policy above.
+        mode = preferred_sqlite_read_mode(path)
+        if mode.value == "immutable_strict":
+            connection = connect_document_catalog(path, readonly=True)
+            try:
+                yield connection
+            finally:
+                connection.close()
+        else:
+            with sqlite_read_session(path, mode=mode, timeout_seconds=60.0) as connection:
+                yield connection
+        return
     connection = connect_document_catalog(path, readonly=readonly)
     try:
         yield connection
@@ -324,6 +377,39 @@ def _migrate_identity_text_to_decimal(connection: sqlite3.Connection) -> None:
 # region [02] Incremental cross-format catalog update
 
 
+def _source_coverage(
+    source_kind: SourceKind,
+    source_status: str,
+    *,
+    text_truncated: bool = False,
+    container_status: str | None = None,
+) -> SourceCoverage:
+    """Normalize route-specific status into the catalog coverage contract.
+
+    The catalog may retain a useful partial observation for review, but only
+    an explicitly complete producer result is allowed to enter the complete
+    coverage state.  This small adapter prevents route-specific values such as
+    ``done``, ``indexed`` or ``text_only`` from being interpreted as a fully
+    searchable document by downstream consumers.
+    """
+
+    if source_kind == "image":
+        complete = source_status == "done" and not text_truncated
+    elif source_kind == "archive":
+        complete = source_status == "indexed" and container_status == "complete"
+    elif source_kind == "code":
+        complete = source_status == "complete" and not text_truncated
+    else:
+        complete = source_status in {"complete", "done"} and not text_truncated
+    return "complete" if complete else "partial"
+
+
+def _catalog_source_is_virtual(document: SourceDocument) -> bool:
+    """Return whether ``document.path`` is a logical locator, not a file path."""
+
+    return document.virtual or document.source_kind == "archive"
+
+
 def update_document_catalog_source(
     catalog_path: Path,
     source_path: Path,
@@ -339,6 +425,10 @@ def update_document_catalog_source(
 ) -> CatalogUpdateSummary:
     """Classify one source cache incrementally with bounded text sampling."""
 
+    # Resolve through the canonical capability registry before touching the
+    # catalog, so a new owner cannot silently enter the generic office reader
+    # without declaring its route, state database and consumers.
+    content_capability_for_source(source_kind)
     if max_text_chars < 1:
         raise ValueError("max_text_chars must be positive")
     max_text_chars = min(max_text_chars, MAX_CLASSIFICATION_TEXT_CHARS)
@@ -389,7 +479,11 @@ def update_document_catalog_source(
                     if cancellation is not None:
                         cancellation.checkpoint()
                     candidates += 1
-                    if verify_source_paths and not _source_snapshot_is_current(document):
+                    if (
+                        verify_source_paths
+                        and not _catalog_source_is_virtual(document)
+                        and not _source_snapshot_is_current(document)
+                    ):
                         source_stale += 1
                         continue
                     if _catalog_cache_hit(catalog, document, taxonomy):
@@ -494,6 +588,36 @@ def _source_document_count(
     elif source_kind == "text":
         predicate = "status='complete'"
         parameters = ()
+    elif source_kind == "video":
+        predicate = "status IN ('complete','partial')"
+        parameters = ()
+    elif source_kind == "image":
+        return int(
+            connection.execute("SELECT COUNT(*) FROM images WHERE status='done'")
+            .fetchone()[0]
+        )
+    elif source_kind == "archive":
+        return int(
+            connection.execute(
+                """SELECT COUNT(*) FROM documents AS d
+                JOIN containers AS c ON c.container_key=d.container_key
+                WHERE c.status IN ('complete','partial')
+                AND d.status IN ('indexed','metadata_only','archive')"""
+            ).fetchone()[0]
+        )
+    elif source_kind == "code":
+        # Code publishes one current version per file.  Text-only and bounded
+        # partial analyses remain useful catalog assets, but are explicitly
+        # marked partial by the adapter and can never become a complete
+        # published classification.
+        return int(
+            connection.execute(
+                """SELECT COUNT(*) FROM files AS f
+                JOIN file_versions AS v ON v.version_id=f.current_version_id
+                WHERE f.status='current'
+                AND v.analysis_status IN ('complete','partial','text_only','skipped_limit')"""
+            ).fetchone()[0]
+        )
     else:
         predicate = "format=? AND status='complete'"
         parameters = (source_kind,)
@@ -558,6 +682,22 @@ def update_document_catalog(
         (state_directory / "text.sqlite3", "text"),
         (state_directory / "audio.sqlite3", "audio"),
     )
+    # Asset owners are optional in older installations.  Include them when
+    # present, without changing the established summaries for installations
+    # that have not enabled those routes yet.  Their source-specific adapters
+    # below keep their taxonomies separate while sharing this catalog's
+    # publication boundary.
+    optional_assets: tuple[tuple[Path, SourceKind], ...] = tuple(
+        (
+            state_directory / content_capability_for_source(source_kind).state_database,
+            source_kind,
+        )
+        for source_kind in ("archive", "code", "image", "video")
+        if (
+            state_directory
+            / content_capability_for_source(source_kind).state_database
+        ).is_file()
+    )
     return tuple(
         update_document_catalog_source(
             catalog_path,
@@ -566,7 +706,7 @@ def update_document_catalog(
             framework_run_id=framework_run_id,
             taxonomy_path=taxonomy_path,
         )
-        for source_path, source_kind in sources
+        for source_path, source_kind in (*sources, *optional_assets)
     )
 
 
@@ -829,19 +969,21 @@ def _replace_catalog_projection(
 
 @contextmanager
 def _readonly_source(path: Path):
-    connection = sqlite3.connect(readonly_sqlite_uri(path), uri=True, timeout=60)
     try:
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout=60000")
-        connection.execute("PRAGMA foreign_keys=ON")
-        if int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
-            raise RuntimeError("catalog source reader could not enable foreign keys")
-        connection.execute("PRAGMA query_only=ON")
-        if int(connection.execute("PRAGMA query_only").fetchone()[0]) != 1:
-            raise RuntimeError("catalog source reader is not query-only")
-        yield connection
-    finally:
-        connection.close()
+        mode = preferred_sqlite_read_mode(path)
+        with sqlite_read_session(path, mode=mode, timeout_seconds=60.0) as connection:
+            yield connection
+    except CancellationRequested:
+        # Cancellation is a control signal, not a source-reader failure;
+        # preserve it so the surrounding catalog transaction can roll back
+        # without changing the public cancellation contract.
+        raise
+    except Exception as exc:
+        # Keep the catalog adapter's established error surface while ensuring
+        # all filesystem-sensitive reads are owned by SQLiteReadSession.
+        if isinstance(exc, RuntimeError):
+            raise
+        raise RuntimeError(f"catalog source reader unavailable: {exc}") from exc
 
 
 def _iter_source_documents(
@@ -877,6 +1019,7 @@ def _iter_source_documents(
                 author=str(metadata.get("author") or ""),
                 metadata=_metadata_text(metadata),
                 page_count=(None if row["page_count"] is None else int(row["page_count"])),
+                coverage=_source_coverage("pdf", str(row["status"])),
             )
         return
     if source_kind == "docx":
@@ -949,6 +1092,203 @@ def _iter_source_documents(
                 metadata=_metadata_text(metadata),
             )
         return
+    elif source_kind == "video":
+        rows = connection.execute(
+            """SELECT file_key,path,size,mtime_ns,birthtime_ns,status,
+            processing_signature,title,duration_seconds,format_name,
+            video_streams,audio_streams,subtitle_streams,chapters,frame_count,
+            ocr_frame_count,ocr_text_chars,probe_json,audio_status
+            FROM documents WHERE status IN ('complete','partial') ORDER BY path"""
+        )
+        for row in rows:
+            status = str(row["status"])
+            frame_count = int(row["frame_count"] or 0)
+            ocr_frame_count = int(row["ocr_frame_count"] or 0)
+            ocr_text_chars = int(row["ocr_text_chars"] or 0)
+            probe = str(row["probe_json"] or "{}")
+            fingerprint = hashlib.sha256(
+                f"{frame_count}:{ocr_frame_count}:{ocr_text_chars}:{probe}".encode(
+                    "utf-8", "surrogatepass"
+                )
+            ).hexdigest()
+            metadata = {
+                "duration_seconds": row["duration_seconds"],
+                "format_name": row["format_name"],
+                "video_streams": row["video_streams"],
+                "audio_streams": row["audio_streams"],
+                "subtitle_streams": row["subtitle_streams"],
+                "chapters": row["chapters"],
+                "frame_count": frame_count,
+                "ocr_frame_count": ocr_frame_count,
+                "ocr_text_chars": ocr_text_chars,
+                "audio_status": row["audio_status"],
+            }
+            volume_id, file_id = _split_file_key(str(row["file_key"]))
+            yield SourceDocument(
+                source_kind="video",
+                file_key=str(row["file_key"]),
+                path=str(row["path"]),
+                volume_id=volume_id,
+                file_id=file_id,
+                size=int(row["size"]),
+                mtime_ns=int(row["mtime_ns"]),
+                birthtime_ns=int(row["birthtime_ns"]),
+                source_status=status,
+                processing_signature=str(row["processing_signature"]),
+                text_fingerprint=fingerprint,
+                title=str(row["title"] or ""),
+                author="",
+                metadata=_metadata_text(metadata),
+                coverage=_source_coverage("video", status),
+            )
+        return
+    elif source_kind == "image":
+        rows = connection.execute(
+            """SELECT file_key,path,size,mtime_ns,birthtime_ns,status,
+            processing_signature,mime,category,confidence,ocr_text_xxh3_128,
+            ocr_text_truncated,decode_quality,decode_provenance
+            FROM images WHERE status='done' ORDER BY path"""
+        )
+        for row in rows:
+            truncated = bool(row["ocr_text_truncated"])
+            status = str(row["status"])
+            metadata = {
+                "mime": row["mime"],
+                "category": row["category"],
+                "confidence": row["confidence"],
+                "decode_quality": row["decode_quality"],
+                "decode_provenance": row["decode_provenance"],
+                "ocr_text_truncated": truncated,
+            }
+            volume_id, file_id = _split_file_key(str(row["file_key"]))
+            yield SourceDocument(
+                source_kind="image",
+                file_key=str(row["file_key"]),
+                path=str(row["path"]),
+                volume_id=volume_id,
+                file_id=file_id,
+                size=int(row["size"]),
+                mtime_ns=int(row["mtime_ns"]),
+                birthtime_ns=int(row["birthtime_ns"]),
+                source_status=status,
+                processing_signature=str(row["processing_signature"] or "image-state-v6"),
+                text_fingerprint=(
+                    None
+                    if row["ocr_text_xxh3_128"] is None
+                    else str(row["ocr_text_xxh3_128"])
+                ),
+                title=Path(str(row["path"])).stem,
+                author="",
+                metadata=_metadata_text(metadata),
+                coverage=_source_coverage(
+                    "image",
+                    status,
+                    text_truncated=truncated,
+                ),
+                text_truncated=truncated,
+            )
+        return
+    elif source_kind == "archive":
+        rows = connection.execute(
+            """SELECT d.file_key,d.path,d.container_path,d.member_chain,
+            d.member_path,d.size,d.mtime_ns,d.birthtime_ns,d.status,
+            d.processing_signature,d.text_xxh3_128,d.content_kind,d.media_type,
+            c.status AS container_status
+            FROM documents AS d JOIN containers AS c
+            ON c.container_key=d.container_key
+            WHERE c.status IN ('complete','partial')
+            AND d.status IN ('indexed','metadata_only','archive')
+            ORDER BY d.path"""
+        )
+        for row in rows:
+            status = str(row["status"])
+            container_status = str(row["container_status"])
+            member_path = str(row["member_path"])
+            title = member_path.rsplit("/", 1)[-1]
+            metadata = {
+                "container_path": row["container_path"],
+                "member_chain": row["member_chain"],
+                "content_kind": row["content_kind"],
+                "media_type": row["media_type"],
+                "member_status": status,
+                "container_status": container_status,
+            }
+            volume_id, file_id = _split_file_key(str(row["file_key"]))
+            yield SourceDocument(
+                source_kind="archive",
+                file_key=str(row["file_key"]),
+                path=str(row["path"]),
+                volume_id=volume_id,
+                file_id=file_id,
+                size=int(row["size"]),
+                mtime_ns=int(row["mtime_ns"]),
+                birthtime_ns=int(row["birthtime_ns"]),
+                source_status=status,
+                processing_signature=str(row["processing_signature"]),
+                text_fingerprint=(
+                    None
+                    if row["text_xxh3_128"] is None
+                    else str(row["text_xxh3_128"])
+                ),
+                title=title,
+                author="",
+                metadata=_metadata_text(metadata),
+                coverage=_source_coverage(
+                    "archive",
+                    status,
+                    container_status=container_status,
+                ),
+                virtual=True,
+            )
+        return
+    elif source_kind == "code":
+        rows = connection.execute(
+            """SELECT f.file_id,f.volume_id,f.physical_file_id,f.current_path,
+            v.size,v.mtime_ns,v.birthtime_ns,v.analysis_status,
+            v.processing_signature,v.language,v.artifact_kind,v.text_xxh3_128,
+            v.text_truncated,v.version_id,v.provenance_json
+            FROM files AS f JOIN file_versions AS v
+            ON v.version_id=f.current_version_id
+            WHERE f.status='current'
+            AND v.analysis_status IN ('complete','partial','text_only','skipped_limit')
+            ORDER BY f.current_path"""
+        )
+        for row in rows:
+            status = str(row["analysis_status"])
+            file_key = f"code:{int(row['file_id'])}"
+            metadata = {
+                "language": row["language"],
+                "artifact_kind": row["artifact_kind"],
+                "version_id": row["version_id"],
+                "text_truncated": bool(row["text_truncated"]),
+            }
+            yield SourceDocument(
+                source_kind="code",
+                file_key=file_key,
+                path=str(row["current_path"]),
+                volume_id=str(row["volume_id"]),
+                file_id=str(row["physical_file_id"]),
+                size=int(row["size"]),
+                mtime_ns=int(row["mtime_ns"]),
+                birthtime_ns=int(row["birthtime_ns"]),
+                source_status=status,
+                processing_signature=str(row["processing_signature"]),
+                text_fingerprint=(
+                    None
+                    if row["text_xxh3_128"] is None
+                    else str(row["text_xxh3_128"])
+                ),
+                title=Path(str(row["current_path"])).stem,
+                author="",
+                metadata=_metadata_text(metadata),
+                coverage=_source_coverage(
+                    "code",
+                    status,
+                    text_truncated=bool(row["text_truncated"]),
+                ),
+                text_truncated=bool(row["text_truncated"]),
+            )
+        return
     else:
         rows = connection.execute(
             """SELECT file_key,path,size,mtime_ns,birthtime_ns,status,
@@ -982,6 +1322,7 @@ def _iter_source_documents(
             title=str(row["title"] or ""),
             author=str(row["author"] or ""),
             metadata=_metadata_text(metadata),
+            coverage=_source_coverage(source_kind, str(row["status"])),
         )
 
 
@@ -991,6 +1332,67 @@ def _load_leading_text(
     *,
     max_text_chars: int,
 ) -> str:
+    if document.source_kind == "video":
+        # Video OCR is stored in FTS rows rather than a document blob.  Read a
+        # bounded prefix in timestamp order so a long recording cannot turn a
+        # catalog pass into an unbounded memory operation.
+        video_chunks: list[str] = []
+        remaining = max_text_chars
+        rows = connection.execute(
+            """SELECT body FROM frame_fts WHERE file_key=?
+            ORDER BY timestamp_ms,rowid""",
+            (document.file_key,),
+        )
+        for row in rows:
+            if remaining <= 0:
+                break
+            text = str(row[0] or "")[:remaining]
+            if text:
+                video_chunks.append(text)
+                remaining -= len(text)
+        return "\n".join(video_chunks)
+    if document.source_kind == "code":
+        # Code keeps the current file version and may retain either the
+        # bounded source blob or chunk rows, depending on the analyzer.  The
+        # fallback preserves useful path/symbol evidence without inventing a
+        # complete source when the producer only published text-only output.
+        raw_file_id = document.file_key.removeprefix("code:")
+        try:
+            file_id = int(raw_file_id)
+        except ValueError as exc:
+            raise RuntimeError("code catalog identity is malformed") from exc
+        row = connection.execute(
+            """SELECT v.version_id,v.text_zlib FROM files AS f
+            JOIN file_versions AS v ON v.version_id=f.current_version_id
+            WHERE f.file_id=? AND f.status='current'""",
+            (file_id,),
+        ).fetchone()
+        if row is None:
+            return ""
+        if row["text_zlib"] is not None:
+            return _decompress_prefix(bytes(row["text_zlib"]), max_text_chars)
+        code_chunks: list[str] = []
+        remaining = max_text_chars
+        for chunk in connection.execute(
+            """SELECT text FROM code_chunks WHERE version_id=?
+            ORDER BY chunk_index""",
+            (int(row["version_id"]),),
+        ):
+            if remaining <= 0:
+                break
+            text = str(chunk[0] or "")[:remaining]
+            if text:
+                code_chunks.append(text)
+                remaining -= len(text)
+        return "\n".join(code_chunks)
+    if document.source_kind == "image":
+        row = connection.execute(
+            "SELECT ocr_text_zlib FROM images WHERE file_key=?",
+            (document.file_key,),
+        ).fetchone()
+        if row is None or row[0] is None:
+            return ""
+        return _decompress_prefix(bytes(row[0]), max_text_chars)
     if document.source_kind != "pdf":
         row = connection.execute(
             "SELECT text_zlib FROM documents WHERE file_key=?",
@@ -999,7 +1401,7 @@ def _load_leading_text(
         if row is None or row[0] is None:
             return ""
         return _decompress_prefix(bytes(row[0]), max_text_chars)
-    chunks: list[str] = []
+    pdf_chunks: list[str] = []
     remaining = max_text_chars
     rows = connection.execute(
         """SELECT text_zlib FROM pages WHERE file_key=?
@@ -1010,9 +1412,9 @@ def _load_leading_text(
         if remaining <= 0:
             break
         text = _decompress_prefix(bytes(row[0]), remaining)
-        chunks.append(text)
+        pdf_chunks.append(text)
         remaining -= len(text)
-    return "\n".join(chunks)
+    return "\n".join(pdf_chunks)
 
 
 def _decompress_prefix(blob: bytes, max_chars: int) -> str:
@@ -1040,7 +1442,18 @@ def _metadata_text(metadata: dict[str, object]) -> str:
 
 
 def _split_file_key(file_key: str) -> tuple[str, str]:
-    return decode_file_identity(file_key).decimal_components
+    try:
+        return decode_file_identity(file_key).decimal_components
+    except ValueError:
+        # Archive members and Code files use owner-scoped stable identities,
+        # not filesystem volume/inode keys.  Keep those identities intact in
+        # the catalog instead of guessing numeric components or discarding the
+        # source owner boundary.
+        for owner in ("archive", "code"):
+            prefix = f"{owner}:"
+            if file_key.startswith(prefix) and len(file_key) > len(prefix):
+                return owner, file_key[len(prefix) :]
+        raise
 
 
 def _source_snapshot_is_current(document: SourceDocument) -> bool:
@@ -1079,6 +1492,11 @@ def _catalog_cache_hit(
         return False
     classifier_signature = document_classifier_signature(taxonomy)
     return (
+        # Do not reuse a legacy cache row that predates the coverage contract:
+        # partial or truncated producer output must be reclassified so its
+        # published catalog status is downgraded to ``review``.
+        not (document.coverage != "complete" and str(row["catalog_status"]) == "classified")
+        and
         _catalog_paths_equal(str(row["path"]), document.path)
         and int(row["size"]) == document.size
         and int(row["mtime_ns"]) == document.mtime_ns
@@ -1187,7 +1605,15 @@ def _store_classification(
         sort_keys=True,
         separators=(",", ":"),
     )
-    catalog_status = "review" if classification.uncertainty == "alta" else "classified"
+    # A partial producer observation is retained for evidence and review, but
+    # it must not be published as a complete catalog classification.  Keep the
+    # existing ``review`` contract so Knowledge and organization readers
+    # abstain without introducing a second status vocabulary in the schema.
+    catalog_status = (
+        "review"
+        if classification.uncertainty == "alta" or document.coverage != "complete"
+        else "classified"
+    )
     connection.execute(
         """INSERT INTO catalog_generation_documents(
         generation_id,source_kind,file_key,path,volume_id,file_id,size,mtime_ns,birthtime_ns,
@@ -1444,8 +1870,7 @@ def list_catalog_documents(
 ) -> tuple[CatalogDocumentView, ...]:
     if limit < 1 or limit > 10_000:
         raise ValueError("limit must be between 1 and 10000")
-    connection = connect_document_catalog(catalog_path, readonly=True)
-    try:
+    with document_catalog_database(catalog_path, readonly=True) as connection:
         columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(documents)")}
         predicates = _catalog_query_predicates(
             columns,
@@ -1467,8 +1892,6 @@ def list_catalog_documents(
             limit,
         )
         return tuple(_catalog_document_view(row) for row in rows)
-    finally:
-        connection.close()
 
 
 def _json_labels(value: object, key: str) -> tuple[str, ...]:

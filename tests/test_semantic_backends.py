@@ -79,7 +79,7 @@ def test_backend_boundary_normalizes_non_normalized_model_output() -> None:
         fingerprint_text(text),
         text=text,
     )
-    result = tuple(iter_embedding_batches(_NonNormalizedBackend(), (request,)))[0]
+    result = next(iter_embedding_batches(_NonNormalizedBackend(), (request,)))
     assert result.vector == pytest.approx((0.6, 0.8))
     assert math.sqrt(sum(value * value for value in result.vector)) == pytest.approx(
         1.0

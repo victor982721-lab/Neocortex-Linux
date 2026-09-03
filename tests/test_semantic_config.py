@@ -59,7 +59,7 @@ def test_quality_text_chunking_keeps_measured_jina_headroom() -> None:
 
 @pytest.mark.parametrize("repository_id", (None, 42, True))
 def test_repository_id_rejects_non_string_values(repository_id: object) -> None:
-    with pytest.raises(ValueError, match="^repository_id must be a string$"):
+    with pytest.raises(ValueError, match=r"^repository_id must be a string$"):
         _contract(repository_id=repository_id)
 
 
@@ -90,7 +90,7 @@ def test_repository_id_rejects_noncanonical_owner_name_pairs(
 ) -> None:
     with pytest.raises(
         ValueError,
-        match="^repository_id must be a canonical owner/name pair$",
+        match=r"^repository_id must be a canonical owner/name pair$",
     ):
         _contract(repository_id=repository_id)
 
@@ -99,14 +99,14 @@ def test_repository_id_rejects_noncanonical_owner_name_pairs(
 def test_required_files_rejects_non_tuple_containers(required_files: object) -> None:
     with pytest.raises(
         ValueError,
-        match="^required_files must be a tuple of strings$",
+        match=r"^required_files must be a tuple of strings$",
     ):
         _contract(required_files=required_files)
 
 
 @pytest.mark.parametrize("required_file", (None, 42, True))
 def test_required_files_reject_non_string_entries(required_file: object) -> None:
-    with pytest.raises(ValueError, match="^required model files must be strings$"):
+    with pytest.raises(ValueError, match=r"^required model files must be strings$"):
         _contract(required_files=(required_file,))
 
 
@@ -131,7 +131,7 @@ def test_required_files_reject_unsafe_raw_relative_paths(
 ) -> None:
     with pytest.raises(
         ValueError,
-        match="^required model files must be safe relative paths$",
+        match=r"^required model files must be safe relative paths$",
     ):
         _contract(required_files=(required_file,))
 
@@ -139,12 +139,12 @@ def test_required_files_reject_unsafe_raw_relative_paths(
 def test_required_files_remain_nonempty_and_unique() -> None:
     with pytest.raises(
         ValueError,
-        match="^required_files must be nonempty and unique$",
+        match=r"^required_files must be nonempty and unique$",
     ):
         _contract(required_files=())
     with pytest.raises(
         ValueError,
-        match="^required_files must be nonempty and unique$",
+        match=r"^required_files must be nonempty and unique$",
     ):
         _contract(required_files=("model.onnx", "model.onnx"))
 

@@ -11,12 +11,37 @@ import importlib.metadata
 import os
 import sys
 from collections.abc import Awaitable, Callable
-from typing import Any, cast
+from typing import Annotated, Any, Literal, cast
 
+try:  # MCP is optional in the minimal Linux runtime.
+    from pydantic import BaseModel, ConfigDict, Field as _pydantic_field
+except ImportError:  # pragma: no cover - exercised by minimal installs
+    def _pydantic_field(**_kwargs: object) -> object:  # type: ignore[no-redef]
+        return None
+
+    BaseModel = None  # type: ignore[assignment,misc]
+    ConfigDict = None  # type: ignore[assignment,misc]
+
+from .read_contract import (
+    CodeSearchOutput,
+    ContextOutput,
+    EvidenceOutput,
+    AssetHealthOutput,
+    LineageOutput,
+    ReadContractError,
+    ReadOperation,
+    SearchOutput,
+    StatusOutput,
+    make_error_payload,
+    normalize_read_payload,
+    validate_read_payload,
+)
 from .read_api import (
     code_search_payload,
     context_payload,
     evidence_payload,
+    asset_health_payload,
+    lineage_payload,
     search_payload,
     status_payload,
 )
@@ -31,6 +56,95 @@ write, index, migrate or authorize an action."""
 
 _MAX_MCP_LINE_BYTES = 1_048_576
 _MCP_STDIO_BRIDGE_VERSIONS = frozenset({"1.23.3", "1.29.0"})
+
+_Scope = Literal["personal", "framework", "all"]
+_Query = Annotated[str, _pydantic_field(min_length=1, max_length=4_096)]
+_Limit = Annotated[int, _pydantic_field(ge=1, le=100)]
+_Characters = Annotated[int, _pydantic_field(ge=1, le=1_000_000)]
+_SearchMode = Literal["evidence", "discovery"]
+_CodeMode = Literal[
+    "literal",
+    "fts",
+    "path",
+    "language",
+    "symbol",
+    "definition",
+    "reference",
+    "import",
+    "dependency",
+    "call",
+    "signature",
+    "diagnostic",
+    "complexity",
+    "semantic",
+    "hybrid",
+]
+
+
+if BaseModel is not None:
+
+    class _MCPReadOutput(BaseModel):
+        """Strict top-level MCP response model with a JSON-compatible alias."""
+
+        model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+        schema_: str = _pydantic_field(alias="schema")
+        kind: str
+        operation: str
+        request_id: str
+        scope: _Scope
+        scope_requested: _Scope
+        read_only: Literal[True]
+        coverage: str
+        status: str
+        exit_code: int
+        error: dict[str, Any] | None
+        result: dict[str, Any]
+        scopes: list[dict[str, Any]]
+        federation_policy: str | None = None
+        query: str | None = None
+        mode: str | None = None
+        include_history: bool | None = None
+        limit_per_scope: int | None = None
+        max_characters_per_scope: int | None = None
+        citation_id: str | None = None
+        found: bool | None = None
+        resource_id: str | None = None
+        identifier: str | None = None
+        observed_epoch: dict[str, Any] | None = None
+        modes: list[str] | None = None
+        advisory_only: bool | None = None
+        mutation_authorized: bool | None = None
+
+    class MCPStatusOutput(_MCPReadOutput):
+        kind: Literal["neocortex_scoped_status"]
+
+    class MCPSearchOutput(_MCPReadOutput):
+        kind: Literal["neocortex_scoped_search"]
+
+    class MCPContextOutput(_MCPReadOutput):
+        kind: Literal["neocortex_scoped_context"]
+
+    class MCPEvidenceOutput(_MCPReadOutput):
+        kind: Literal["neocortex_evidence"]
+
+    class MCPCodeSearchOutput(_MCPReadOutput):
+        kind: Literal["neocortex_scoped_code_search"]
+
+    class MCPLineageOutput(_MCPReadOutput):
+        kind: Literal["neocortex_scoped_derivation_lineage"]
+
+    class MCPAssetHealthOutput(_MCPReadOutput):
+        kind: Literal["neocortex_scoped_asset_health"]
+
+else:  # pragma: no cover - minimal install fallback
+    MCPStatusOutput = StatusOutput  # type: ignore[misc,assignment]
+    MCPSearchOutput = SearchOutput  # type: ignore[misc,assignment]
+    MCPContextOutput = ContextOutput  # type: ignore[misc,assignment]
+    MCPEvidenceOutput = EvidenceOutput  # type: ignore[misc,assignment]
+    MCPCodeSearchOutput = CodeSearchOutput  # type: ignore[misc,assignment]
+    MCPLineageOutput = LineageOutput  # type: ignore[misc,assignment]
+    MCPAssetHealthOutput = AssetHealthOutput  # type: ignore[misc,assignment]
 
 
 def _requires_upstream_stdio_transport() -> bool:
@@ -115,17 +229,66 @@ async def _run_fastmcp_over_streams(
     await run_streams(read_stream, write_stream, initialization_options_factory())
 
 
+def _structured_read_payload(
+    value: object,
+    operation: ReadOperation,
+    *,
+    scope: str,
+    query: str | None = None,
+    mode: str | None = None,
+    include_history: bool | None = None,
+    limit: int | None = None,
+) -> dict[str, object]:
+    """Return one validated v1 envelope for FastMCP structured output.
+
+    The MCP adapter is the compatibility boundary for older payload producers,
+    so it may fill only omitted identity/envelope fields.  It never repairs a
+    field that was present but malformed; those become a typed schema error
+    payload instead of an unstructured Python traceback.
+    """
+
+    try:
+        payload = normalize_read_payload(
+            value,
+            operation,
+            scope=scope,
+            allow_legacy_identity=True,
+        )
+        return validate_read_payload(
+            payload,
+            operation,
+            scope=scope,
+            query=query,
+            mode=mode,
+            include_history=include_history,
+            limit=limit,
+        )
+    except (ReadContractError, TypeError, ValueError) as exc:
+        return make_error_payload(
+            operation,
+            scope=scope,
+            message=str(exc) or "MCP read payload failed contract validation",
+        )
+
+
 def create_server() -> Any:
     """Build the MCP server lazily so ordinary CLI use has no MCP import cost."""
 
     try:
         from mcp.server.fastmcp import FastMCP
+        from mcp.server.fastmcp.server import Settings
         from mcp.server.stdio import stdio_server
         from mcp.types import ToolAnnotations
     except ImportError as exc:  # pragma: no cover - package gate in minimal installs
         raise RuntimeError(
             "MCP runtime unavailable; install the canonical NeoCortex full runtime"
         ) from exc
+
+    # FastMCP 1.29 leaves a generic ``lifespan`` annotation unresolved until
+    # its settings model is rebuilt.  Rebuild it at the optional boundary so
+    # strict warning mode does not turn a harmless upstream warning into a
+    # failed server startup.
+    Settings.model_rebuild()
 
     read_only = ToolAnnotations(
         readOnlyHint=True,
@@ -168,8 +331,12 @@ def create_server() -> Any:
         annotations=read_only,
         structured_output=True,
     )
-    def status(scope: str = "all") -> dict[str, object]:
-        return status_payload(scope)
+    def status(scope: _Scope = "all") -> MCPStatusOutput:
+        return _structured_read_payload(
+            status_payload(scope),
+            ReadOperation.STATUS,
+            scope=scope,
+        )  # type: ignore[return-value]
 
     @server.tool(
         name="search",
@@ -182,19 +349,27 @@ def create_server() -> Any:
         structured_output=True,
     )
     def search(
-        query: str,
-        scope: str = "all",
-        limit: int = 10,
-        mode: str = "evidence",
+        query: _Query,
+        scope: _Scope = "all",
+        limit: _Limit = 10,
+        mode: _SearchMode = "evidence",
         include_history: bool = False,
-    ) -> dict[str, object]:
-        return search_payload(
-            query,
-            scope,
-            limit=limit,
+    ) -> MCPSearchOutput:
+        return _structured_read_payload(
+            search_payload(
+                query,
+                scope,
+                limit=limit,
+                mode=mode,
+                include_history=include_history,
+            ),
+            ReadOperation.SEARCH,
+            scope=scope,
+            query=query.strip(),
             mode=mode,
             include_history=include_history,
-        )
+            limit=limit,
+        )  # type: ignore[return-value]
 
     @server.tool(
         name="context",
@@ -204,21 +379,29 @@ def create_server() -> Any:
         structured_output=True,
     )
     def context(
-        query: str,
-        scope: str = "all",
-        limit: int = 8,
-        max_characters: int = 12_000,
-        mode: str = "evidence",
+        query: _Query,
+        scope: _Scope = "all",
+        limit: _Limit = 8,
+        max_characters: _Characters = 12_000,
+        mode: _SearchMode = "evidence",
         include_history: bool = False,
-    ) -> dict[str, object]:
-        return context_payload(
-            query,
-            scope,
-            limit=limit,
-            max_characters=max_characters,
+    ) -> MCPContextOutput:
+        return _structured_read_payload(
+            context_payload(
+                query,
+                scope,
+                limit=limit,
+                max_characters=max_characters,
+                mode=mode,
+                include_history=include_history,
+            ),
+            ReadOperation.CONTEXT,
+            scope=scope,
+            query=query.strip(),
             mode=mode,
             include_history=include_history,
-        )
+            limit=limit,
+        )  # type: ignore[return-value]
 
     @server.tool(
         name="evidence",
@@ -230,19 +413,25 @@ def create_server() -> Any:
         structured_output=True,
     )
     def evidence(
-        query: str,
-        citation_id: str,
-        scope: str = "all",
-        limit: int = 8,
-        max_characters: int = 12_000,
-    ) -> dict[str, object]:
-        return evidence_payload(
-            query,
-            citation_id,
-            scope,
+        query: _Query,
+        citation_id: Annotated[str, _pydantic_field(min_length=1, max_length=4_096)],
+        scope: _Scope = "all",
+        limit: _Limit = 8,
+        max_characters: _Characters = 12_000,
+    ) -> MCPEvidenceOutput:
+        return _structured_read_payload(
+            evidence_payload(
+                query,
+                citation_id,
+                scope,
+                limit=limit,
+                max_characters=max_characters,
+            ),
+            ReadOperation.EVIDENCE,
+            scope=scope,
+            query=query.strip(),
             limit=limit,
-            max_characters=max_characters,
-        )
+        )  # type: ignore[return-value]
 
     @server.tool(
         name="inspect_code",
@@ -252,12 +441,52 @@ def create_server() -> Any:
         structured_output=True,
     )
     def inspect_code(
-        query: str,
-        scope: str = "personal",
-        limit: int = 10,
-        mode: str = "hybrid",
-    ) -> dict[str, object]:
-        return code_search_payload(query, scope, limit=limit, modes=(mode,))
+        query: _Query,
+        scope: _Scope = "personal",
+        limit: _Limit = 10,
+        mode: _CodeMode = "hybrid",
+    ) -> MCPCodeSearchOutput:
+        return _structured_read_payload(
+            code_search_payload(query, scope, limit=limit, modes=(mode,)),
+            ReadOperation.INSPECT_CODE,
+            scope=scope,
+            query=query.strip(),
+            limit=limit,
+        )  # type: ignore[return-value]
+
+    @server.tool(
+        name="lineage",
+        title="Inspect NeoCortex derivation lineage",
+        description="Inspect published derivation lineage for a stable identifier without mutation.",
+        annotations=read_only,
+        structured_output=True,
+    )
+    def lineage(
+        identifier: Annotated[str, _pydantic_field(min_length=1, max_length=4_096)],
+        scope: _Scope = "all",
+    ) -> MCPLineageOutput:
+        return _structured_read_payload(
+            lineage_payload(identifier, scope),
+            ReadOperation.LINEAGE,
+            scope=scope,
+        )  # type: ignore[return-value]
+
+    @server.tool(
+        name="asset_health",
+        title="Inspect NeoCortex asset health",
+        description="Trace one published asset across fixed local owners; no files are modified.",
+        annotations=read_only,
+        structured_output=True,
+    )
+    def asset_health(
+        resource_id: Annotated[str, _pydantic_field(min_length=1, max_length=4_096)],
+        scope: _Scope = "all",
+    ) -> MCPAssetHealthOutput:
+        return _structured_read_payload(
+            asset_health_payload(resource_id, scope),
+            ReadOperation.ASSET_HEALTH,
+            scope=scope,
+        )  # type: ignore[return-value]
 
     return server
 

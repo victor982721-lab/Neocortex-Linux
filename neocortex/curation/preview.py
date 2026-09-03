@@ -23,7 +23,7 @@ from typing import Any
 
 from neocortex.deduplication.persistence.connections import connect as connect_inventory
 from neocortex.deduplication.persistence.validation import validate_inventory_schema
-from neocortex.documents.document_catalog import connect_document_catalog
+from neocortex.documents.document_catalog import document_catalog_database
 from neocortex.documents.document_catalog_schema import document_catalog_schema_contract
 from neocortex.persistence.sqlite_schema_contract import validate_sqlite_schema_contract
 
@@ -524,7 +524,7 @@ def build_curation_preview(state_directory: Path, *, limit: int) -> CurationPrev
                     catalog_path,
                     label="document catalog",
                 ) as catalog_snapshot:
-                    with connect_document_catalog(catalog_snapshot, readonly=True) as catalog:
+                    with document_catalog_database(catalog_snapshot, readonly=True) as catalog:
                         validate_sqlite_schema_contract(
                             catalog,
                             document_catalog_schema_contract(),

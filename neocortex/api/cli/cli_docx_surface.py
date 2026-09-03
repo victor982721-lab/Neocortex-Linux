@@ -4,7 +4,11 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable
 
-__all__ = ["register_docx_arguments", "validate_docx_arguments"]
+__all__ = [
+    "register_docx_arguments",
+    "validate_docx_arguments",
+    "validate_docx_direct_operation",
+]
 
 
 # region [01] Stable flat argument registration
@@ -80,10 +84,29 @@ def validate_docx_arguments(args: argparse.Namespace) -> None:
         raise SystemExit("--docx-memory-wait-timeout cannot be negative")
     if not 1 <= args.docx_search_limit <= 1000:
         raise SystemExit("--docx-search-limit must be between 1 and 1000")
+    if args.docx_search is not None and not args.docx_search.strip():
+        raise SystemExit("--docx-search must be non-empty")
     if args.docx_layout_groups is not None and not 1 <= args.docx_layout_groups <= 100:
         raise SystemExit("--docx-layout-groups must be between 1 and 100")
     if args.docx_missing_pdf is not None and not 1 <= args.docx_missing_pdf <= 1000:
         raise SystemExit("--docx-missing-pdf must be between 1 and 1000")
+
+
+def validate_docx_direct_operation(args: argparse.Namespace) -> None:
+    """Reject framework options silently ignored by direct DOCX reads."""
+
+    if not any(
+        (
+            args.docx_search is not None,
+            args.docx_layout_groups is not None,
+            args.docx_missing_pdf is not None,
+        )
+    ):
+        return
+    if args.apply:
+        raise SystemExit("DOCX direct actions are read-only and cannot be combined with --apply")
+    if args.route != "none":
+        raise SystemExit("DOCX direct actions cannot be combined with --route")
 
 
 # endregion [02]

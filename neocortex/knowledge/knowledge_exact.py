@@ -12,7 +12,6 @@ database.  Missing and incompatible state is reported without creating files.
 
 from __future__ import annotations
 import json
-import os
 import re
 import sqlite3
 import time
@@ -30,7 +29,6 @@ from neocortex.platform.policy import (
 
 from neocortex.code.ingestion.code_detection import LANGUAGE_EXTENSIONS
 from neocortex.code.code_schema import readonly_code_database
-from neocortex.documents.document_catalog import connect_document_catalog
 from neocortex.foundation.file_identity import FileIdentity, FileIdentityError
 from .knowledge_contracts import (
     EvidenceMethod,
@@ -47,11 +45,11 @@ from .knowledge_contracts import (
 from .knowledge_planner import KnowledgePlan
 from .knowledge_snapshot import KnowledgeStatePaths
 from neocortex.semantic.semantic_models import canonical_json, fingerprint_text
-from neocortex.persistence.sqlite_connection import (
-    READONLY_EXISTING,
-    SQLiteConnectionPolicy,
-    connect_sqlite,
+from neocortex.persistence.sqlite_immutable import (
+    preferred_sqlite_read_mode,
+    sqlite_read_session,
 )
+from neocortex.persistence.sqlite_connection import SQLiteConnectionPolicy
 
 # region [01] Public immutable contracts and bounds
 
@@ -1006,31 +1004,22 @@ def _flatten_heads(heads: Sequence[tuple[str, int]]) -> tuple[object, ...]:
 
 @contextmanager
 def _inventory_database(path: Path):
-    connection = connect_sqlite(
+    with sqlite_read_session(
         path,
-        mode=READONLY_EXISTING,
-        policy=_EXACT_INVENTORY_SQLITE_POLICY,
-    )
-    try:
+        mode=preferred_sqlite_read_mode(path),
+        timeout_seconds=_EXACT_INVENTORY_SQLITE_POLICY.timeout_seconds,
+    ) as connection:
         yield connection
-    finally:
-        connection.close()
 
 
 @contextmanager
 def _catalog_database(path: Path):
-    sidecars = (Path(f"{path}-wal"), Path(f"{path}-shm"))
-    if path.is_file() and not any(os.path.lexists(item) for item in sidecars):
-        from neocortex.persistence.sqlite_immutable import immutable_sqlite_database
-
-        with immutable_sqlite_database(path, timeout_seconds=60) as connection:
-            yield connection
-        return
-    connection = connect_document_catalog(path, readonly=True)
-    try:
+    with sqlite_read_session(
+        path,
+        mode=preferred_sqlite_read_mode(path),
+        timeout_seconds=60.0,
+    ) as connection:
         yield connection
-    finally:
-        connection.close()
 
 
 def _physical_resource(

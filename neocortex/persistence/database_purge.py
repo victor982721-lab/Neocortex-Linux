@@ -5,23 +5,44 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
+import sqlite3
 import stat
 import tempfile
 import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import BinaryIO, Literal
 
-from neocortex.persistence.sqlite_backup import backup_sqlite_online
-from neocortex.persistence.sqlite_integrity import SQLiteIntegrityReport
+from neocortex.persistence.sqlite_backup import (
+    SQLiteBackupPolicy,
+    backup_sqlite_online,
+)
+from neocortex.persistence.sqlite_integrity import (
+    IntegrityCheckMode,
+    SQLiteIntegrityPolicy,
+    SQLiteIntegrityReport,
+    check_sqlite_integrity,
+)
+from neocortex.persistence.sqlite_immutable import immutable_sqlite_database
+from neocortex.persistence.state_publication import (
+    StateEpoch,
+    StatePublicationConflictError,
+    StatePublicationError,
+    publication_idempotency_key,
+    read_state_epoch,
+    record_state_publication,
+)
 from neocortex.safety.state_topology_contracts import STATE_STORE_REGISTRY
 
 
 DATABASE_PURGE_SCHEMA = "neocortex.database-purge/v1"
 DATABASE_PURGE_CONFIRMATION = "DELETE_DATABASES"
+DATABASE_BACKUP_SCHEMA = "neocortex.state-backup/v1"
+DATABASE_RESTORE_CONFIRMATION = "RESTORE_DATABASES"
 DATABASE_SIDECAR_SUFFIXES = ("-journal", "-wal", "-shm")
 DATABASE_STORE_NAMES = tuple(
     store.state_owner_id for store in STATE_STORE_REGISTRY.stores
@@ -47,6 +68,14 @@ class DatabasePurgeBusyError(DatabasePurgeError):
 
 class DatabasePurgeChangedError(DatabasePurgeError):
     """The state changed between planning, backup, and deletion."""
+
+
+class DatabaseRestoreError(DatabasePurgeError):
+    """A state restore could not be validated or published safely."""
+
+
+class DatabaseRestoreConfirmationError(DatabaseRestoreError):
+    """The caller did not provide the exact destructive restore token."""
 
 
 FileRole = Literal["database", "sidecar"]
@@ -146,6 +175,113 @@ class DatabasePurgeResult:
             }
         )
         return payload
+
+
+BackupEntryStatus = Literal["backed_up", "absent", "orphan_sidecar_only"]
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseBackupEntry:
+    """One owner entry in a verified state backup manifest."""
+
+    owner: str
+    database_name: str
+    status: BackupEntryStatus
+    source: Path
+    backup: Path | None
+    source_files: tuple[DatabaseFileSnapshot, ...]
+    source_sha256: str | None
+    backup_sha256: str | None
+    backup_size: int | None
+    user_version: int | None
+    schema_version: int | None
+    integrity: SQLiteIntegrityReport | None
+    reason: str | None = None
+
+    def as_payload(self, *, backup_directory: Path | None = None) -> dict[str, object]:
+        backup_value = self.backup
+        if backup_directory is not None and backup_value is not None:
+            try:
+                backup_value = backup_value.relative_to(backup_directory)
+            except ValueError:
+                pass
+        return {
+            "owner": self.owner,
+            "database_name": self.database_name,
+            "status": self.status,
+            "source": str(self.source),
+            "backup": None if backup_value is None else str(backup_value),
+            "source_files": [_source_file_payload(item) for item in self.source_files],
+            "source_sha256": self.source_sha256,
+            "backup_sha256": self.backup_sha256,
+            "backup_size": self.backup_size,
+            "user_version": self.user_version,
+            "schema_version": self.schema_version,
+            "integrity": None if self.integrity is None else self.integrity.as_payload(),
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseBackupResult:
+    """Verified multi-owner backup and its publication evidence."""
+
+    state_directory: Path
+    backup_directory: Path
+    manifest: Path
+    manifest_sha256: str
+    state_epoch: StateEpoch
+    entries: tuple[DatabaseBackupEntry, ...]
+    unknown_sqlite_files: tuple[Path, ...]
+    complete: bool
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "schema": DATABASE_BACKUP_SCHEMA,
+            "state_directory": str(self.state_directory),
+            "backup_directory": str(self.backup_directory),
+            "manifest": str(self.manifest),
+            "manifest_sha256": self.manifest_sha256,
+            "state_epoch": self.state_epoch.as_payload(),
+            "entries": [
+                item.as_payload(backup_directory=self.backup_directory)
+                for item in self.entries
+            ],
+            "unknown_sqlite_files": [str(path) for path in self.unknown_sqlite_files],
+            "complete": self.complete,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseRestoreResult:
+    """Result of a staged, validated multi-owner restore."""
+
+    state_directory: Path
+    backup_directory: Path
+    manifest: Path
+    manifest_sha256: str
+    restored: tuple[str, ...]
+    pre_restore_backup: DatabaseBackupResult | None
+    state_epoch: StateEpoch
+    complete: bool
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "schema": DATABASE_BACKUP_SCHEMA,
+            "mode": "restored",
+            "state_directory": str(self.state_directory),
+            "backup_directory": str(self.backup_directory),
+            "manifest": str(self.manifest),
+            "manifest_sha256": self.manifest_sha256,
+            "restored": list(self.restored),
+            "pre_restore_backup": (
+                None
+                if self.pre_restore_backup is None
+                else self.pre_restore_backup.as_payload()
+            ),
+            "state_epoch": self.state_epoch.as_payload(),
+            "complete": self.complete,
+        }
 
 
 def _reject_symlink_components(path: Path) -> None:
@@ -396,21 +532,681 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _manifest_sha256(path: Path) -> str:
+    """Hash one already-published manifest without following links."""
+
+    metadata = path.lstat()
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise DatabasePurgeError(f"manifest is not a regular file: {path}")
+    return _sha256(path)
+
+
+def _source_file_payload(item: DatabaseFileSnapshot) -> dict[str, object]:
+    payload = item.as_payload()
+    try:
+        payload["sha256"] = _sha256(item.path)
+    except OSError as exc:
+        raise DatabasePurgeError(f"database file cannot be hashed: {item.path}") from exc
+    return payload
+
+
+def _sqlite_metadata(path: Path) -> tuple[int | None, int | None]:
+    """Read version metadata from a standalone backup without creating state."""
+
+    try:
+        with immutable_sqlite_database(path, timeout_seconds=60.0) as connection:
+            user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+            try:
+                schema_row = connection.execute(
+                    "SELECT value FROM metadata WHERE key='schema_version'"
+                ).fetchone()
+            except sqlite3.OperationalError:
+                schema_row = None
+            schema_version = None
+            if schema_row is not None:
+                try:
+                    schema_version = int(schema_row[0])
+                except (TypeError, ValueError):
+                    schema_version = None
+            return user_version, schema_version
+    except (OSError, sqlite3.Error):
+        return None, None
+
+
+def _new_backup_directory(path: str | Path, state_directory: Path) -> Path:
+    selected = _safe_backup_directory(path, state_directory)
+    if os.path.lexists(selected):
+        raise DatabasePurgeError(f"backup directory already exists: {selected}")
+    try:
+        selected.parent.mkdir(parents=True, exist_ok=True)
+        selected.mkdir(mode=0o700)
+        selected.chmod(0o700)
+    except OSError as exc:
+        raise DatabasePurgeError(
+            f"database backup directory could not be created: {selected}"
+        ) from exc
+    return selected
+
+
+def _owner_database_targets(
+    state_directory: Path,
+    stores: tuple[str, ...],
+) -> tuple[DatabasePurgeTarget, ...]:
+    """Build owner targets while preserving absent and orphaned evidence."""
+
+    return _database_targets(state_directory, stores)
+
+
+def _source_files_after_backup(
+    target: DatabasePurgeTarget,
+) -> tuple[DatabaseFileSnapshot, ...]:
+    files: list[DatabaseFileSnapshot] = []
+    for role, path in (
+        ("database", target.database),
+        *(
+            ("sidecar", Path(f"{target.database}{suffix}"))
+            for suffix in DATABASE_SIDECAR_SUFFIXES
+        ),
+    ):
+        snapshot = _snapshot(path, role)  # type: ignore[arg-type]
+        if snapshot is not None:
+            files.append(snapshot)
+    return tuple(files)
+
+
+def _write_state_backup_manifest(
+    backup_directory: Path,
+    payload: dict[str, object],
+) -> Path:
+    path = backup_directory / "state-backup-manifest.json"
+    descriptor, raw_path = tempfile.mkstemp(
+        prefix=".state-backup-manifest-",
+        suffix=".json",
+        dir=backup_directory,
+    )
+    temporary = Path(raw_path)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=True, sort_keys=True, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+        directory_fd = os.open(
+            backup_directory,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    return path
+
+
+def backup_state_owners(
+    state_directory: str | Path,
+    backup_directory: str | Path,
+    *,
+    stores: Sequence[str] | None = None,
+    release_sha: str | None = None,
+    integrity_mode: IntegrityCheckMode = "full",
+    expected_epoch: int | None = None,
+    _assume_locks_held: bool = False,
+) -> DatabaseBackupResult:
+    """Create and verify a bounded backup of all selected state owners.
+
+    The operation never replaces an existing destination.  Each database is
+    copied through SQLite's online backup API and is then validated with the
+    requested quick/full integrity mode.  Source file identities are captured
+    again after every copy, so a writer or a newly-created sidecar causes the
+    set to be reported as incomplete instead of being presented as a coherent
+    backup.  The publication epoch is read-only evidence and is never created
+    by this function.
+    """
+
+    state = _safe_state_directory(state_directory)
+    if integrity_mode not in {"quick", "full"}:
+        raise ValueError("integrity_mode must be 'quick' or 'full'")
+    if release_sha is not None:
+        if (
+            not isinstance(release_sha, str)
+            or len(release_sha) != 40
+            or any(character not in "0123456789abcdefABCDEF" for character in release_sha)
+        ):
+            raise ValueError("release_sha must be a 40-character hexadecimal SHA")
+        release_sha = release_sha.lower()
+    if expected_epoch is not None and (type(expected_epoch) is not int or expected_epoch < 0):
+        raise ValueError("expected_epoch must be a non-negative integer")
+    requested = _requested_stores(stores)
+    conflicts = () if _assume_locks_held else _lock_conflicts(state)
+    if conflicts:
+        raise DatabasePurgeBusyError(conflicts)
+    epoch = read_state_epoch(state)
+    if expected_epoch is not None and epoch.epoch != expected_epoch:
+        raise DatabasePurgeChangedError(
+            f"state publication epoch changed: expected {expected_epoch}, observed {epoch.epoch}"
+        )
+    plan = _owner_database_targets(state, requested)
+    unknown = _unknown_sqlite_files(state, requested)
+    destination = _new_backup_directory(backup_directory, state)
+    entries: list[DatabaseBackupEntry] = []
+    complete = not unknown
+    policy = SQLiteBackupPolicy(
+        integrity=SQLiteIntegrityPolicy(check_mode=integrity_mode)
+    )
+    try:
+        for target in plan:
+            main = next((item for item in target.files if item.role == "database"), None)
+            if main is None:
+                entries.append(
+                    DatabaseBackupEntry(
+                        owner=target.owner,
+                        database_name=target.database_name,
+                        status="orphan_sidecar_only",
+                        source=target.database,
+                        backup=None,
+                        source_files=target.files,
+                        source_sha256=None,
+                        backup_sha256=None,
+                        backup_size=None,
+                        user_version=None,
+                        schema_version=None,
+                        integrity=None,
+                        reason="orphan_sidecar_only",
+                    )
+                )
+                complete = False
+                continue
+            destination_file = destination / target.database_name
+            before = target.files
+            try:
+                result = backup_sqlite_online(
+                    main.path,
+                    destination_file,
+                    policy=policy,
+                )
+            except Exception as exc:
+                raise DatabasePurgeError(
+                    f"verified backup failed for owner {target.owner}: {main.path}"
+                ) from exc
+            after = _source_files_after_backup(target)
+            before_main = next((item for item in before if item.role == "database"), None)
+            after_main = next((item for item in after if item.role == "database"), None)
+            if before_main != after_main:
+                raise DatabasePurgeChangedError(
+                    f"database target changed while backing up: {main.path}"
+                )
+            try:
+                source_sha = _sha256(main.path)
+                backup_sha = _sha256(destination_file)
+                backup_size = destination_file.stat().st_size
+            except OSError as exc:
+                raise DatabasePurgeError(
+                    f"verified backup could not be hashed: {destination_file}"
+                ) from exc
+            user_version, schema_version = _sqlite_metadata(destination_file)
+            entries.append(
+                DatabaseBackupEntry(
+                    owner=target.owner,
+                    database_name=target.database_name,
+                    status="backed_up",
+                    source=main.path,
+                    backup=destination_file,
+                    source_files=after,
+                    source_sha256=source_sha,
+                    backup_sha256=backup_sha,
+                    backup_size=backup_size,
+                    user_version=user_version,
+                    schema_version=schema_version,
+                    integrity=result.integrity,
+                )
+            )
+            if result.integrity.check_mode != integrity_mode or not result.integrity.healthy:
+                complete = False
+        present_owners = {item.owner for item in entries}
+        registry_by_owner = {
+            store.state_owner_id: store for store in STATE_STORE_REGISTRY.stores
+        }
+        for owner in requested:
+            if owner in present_owners:
+                continue
+            store = registry_by_owner[owner]
+            entries.append(
+                DatabaseBackupEntry(
+                    owner=owner,
+                    database_name=store.database_name,
+                    status="absent",
+                    source=state / store.database_name,
+                    backup=None,
+                    source_files=(),
+                    source_sha256=None,
+                    backup_sha256=None,
+                    backup_size=None,
+                    user_version=None,
+                    schema_version=None,
+                    integrity=None,
+                )
+            )
+        observed_epoch = read_state_epoch(state)
+        if observed_epoch != epoch:
+            raise DatabasePurgeChangedError(
+                f"state publication epoch changed while backing up: {epoch.epoch} to {observed_epoch.epoch}"
+            )
+        payload: dict[str, object] = {
+            "schema": DATABASE_BACKUP_SCHEMA,
+            "created_at": datetime.now(UTC).isoformat(),
+            "state_directory": str(state),
+            "release_sha": release_sha,
+            "state_epoch": epoch.as_payload(),
+            "stores": list(requested),
+            "integrity_mode": integrity_mode,
+            "unknown_sqlite_files": [str(path) for path in unknown],
+            "entries": [item.as_payload(backup_directory=destination) for item in entries],
+            "complete": complete,
+        }
+        manifest = _write_state_backup_manifest(destination, payload)
+        return DatabaseBackupResult(
+            state_directory=state,
+            backup_directory=destination,
+            manifest=manifest,
+            manifest_sha256=_manifest_sha256(manifest),
+            state_epoch=epoch,
+            entries=tuple(entries),
+            unknown_sqlite_files=unknown,
+            complete=complete,
+        )
+    except BaseException:
+        # A failed set is intentionally retained for diagnosis, but the source
+        # is never modified by this operation.
+        raise
+
+
+def _load_state_backup_manifest(
+    backup_directory: Path,
+) -> tuple[Path, dict[str, object], str]:
+    manifest = backup_directory / "state-backup-manifest.json"
+    try:
+        metadata = manifest.lstat()
+    except FileNotFoundError as exc:
+        raise DatabaseRestoreError("state backup manifest does not exist") from exc
+    except OSError as exc:
+        raise DatabaseRestoreError("state backup manifest cannot be inspected") from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise DatabaseRestoreError("state backup manifest is not a regular file")
+    if metadata.st_size > 16 * 1024 * 1024:
+        raise DatabaseRestoreError("state backup manifest exceeds its bound")
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise DatabaseRestoreError("state backup manifest is malformed") from exc
+    if not isinstance(payload, dict) or payload.get("schema") != DATABASE_BACKUP_SCHEMA:
+        raise DatabaseRestoreError("state backup manifest schema is incompatible")
+    return manifest, payload, _manifest_sha256(manifest)
+
+
+def _manifest_epoch(payload: dict[str, object]) -> int:
+    value = payload.get("state_epoch")
+    if not isinstance(value, dict):
+        raise DatabaseRestoreError("state backup manifest lacks a state epoch")
+    epoch = value.get("epoch")
+    if type(epoch) is not int or epoch < 0:
+        raise DatabaseRestoreError("state backup manifest epoch is invalid")
+    return epoch
+
+
+def _manifest_entries(
+    payload: dict[str, object],
+    backup_directory: Path,
+    stores: tuple[str, ...],
+    *,
+    integrity_mode: IntegrityCheckMode = "full",
+) -> tuple[dict[str, object], ...]:
+    if payload.get("complete") is not True:
+        raise DatabaseRestoreError("incomplete state backup cannot be restored")
+    unknown = payload.get("unknown_sqlite_files")
+    if not isinstance(unknown, list) or unknown:
+        raise DatabaseRestoreError("state backup contains unknown SQLite files")
+    entries_value = payload.get("entries")
+    if not isinstance(entries_value, list):
+        raise DatabaseRestoreError("state backup entries are missing")
+    by_owner: dict[str, dict[str, object]] = {}
+    registry_by_owner = {item.state_owner_id: item for item in STATE_STORE_REGISTRY.stores}
+    for raw in entries_value:
+        if not isinstance(raw, dict):
+            raise DatabaseRestoreError("state backup entry is not an object")
+        owner = raw.get("owner")
+        database_name = raw.get("database_name")
+        if not isinstance(owner, str) or owner not in registry_by_owner:
+            raise DatabaseRestoreError("state backup entry has an unknown owner")
+        if owner in by_owner:
+            raise DatabaseRestoreError("state backup repeats an owner")
+        expected_name = registry_by_owner[owner].database_name
+        if database_name != expected_name:
+            raise DatabaseRestoreError(
+                f"state backup owner/database mismatch: {owner}"
+            )
+        status = raw.get("status")
+        if status not in {"backed_up", "absent"}:
+            raise DatabaseRestoreError(
+                f"state backup entry cannot be restored: {owner}"
+            )
+        if status == "backed_up":
+            backup_value = raw.get("backup")
+            if not isinstance(backup_value, str) or not backup_value:
+                raise DatabaseRestoreError(f"state backup file is missing: {owner}")
+            candidate = Path(backup_value)
+            if candidate.is_absolute() or any(part == ".." for part in candidate.parts):
+                raise DatabaseRestoreError(f"state backup path escapes its directory: {owner}")
+            selected = backup_directory / candidate
+            try:
+                selected.relative_to(backup_directory)
+                metadata = selected.lstat()
+            except (ValueError, FileNotFoundError) as exc:
+                raise DatabaseRestoreError(f"state backup file is unavailable: {owner}") from exc
+            except OSError as exc:
+                raise DatabaseRestoreError(f"state backup file cannot be inspected: {owner}") from exc
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+                raise DatabaseRestoreError(f"state backup file is not regular: {owner}")
+            expected_sha = raw.get("backup_sha256")
+            expected_size = raw.get("backup_size")
+            if not isinstance(expected_sha, str) or len(expected_sha) != 64:
+                raise DatabaseRestoreError(f"state backup hash is missing: {owner}")
+            if type(expected_size) is not int or expected_size <= 0:
+                raise DatabaseRestoreError(f"state backup size is invalid: {owner}")
+            if metadata.st_size != expected_size or _sha256(selected) != expected_sha:
+                raise DatabaseRestoreError(f"state backup hash mismatch: {owner}")
+            integrity = check_sqlite_integrity(
+                selected,
+                policy=SQLiteIntegrityPolicy(check_mode=integrity_mode),
+            )
+            if not integrity.healthy:
+                raise DatabaseRestoreError(f"state backup integrity failed: {owner}")
+            raw = dict(raw)
+            raw["resolved_backup"] = selected
+        by_owner[owner] = raw
+    missing = sorted(set(stores) - set(by_owner))
+    if missing:
+        raise DatabaseRestoreError(f"state backup lacks owners: {missing[0]}")
+    return tuple(by_owner[owner] for owner in stores)
+
+
+def _restore_live_path(state_directory: Path, database_name: str) -> Path:
+    path = state_directory / database_name
+    try:
+        value = path.lstat()
+    except FileNotFoundError:
+        return path
+    except OSError as exc:
+        raise DatabaseRestoreError(f"restore target cannot be inspected: {database_name}") from exc
+    if stat.S_ISLNK(value.st_mode) or not stat.S_ISREG(value.st_mode):
+        raise DatabaseRestoreError(f"restore target is not a regular file: {database_name}")
+    return path
+
+
+def _restore_stage(
+    entries: tuple[dict[str, object], ...],
+    state_directory: Path,
+) -> tuple[Path, dict[str, Path]]:
+    try:
+        stage_directory = Path(
+            tempfile.mkdtemp(prefix=".neocortex-state-restore-", dir=state_directory.parent)
+        )
+        os.chmod(stage_directory, 0o700)
+    except OSError as exc:
+        raise DatabaseRestoreError("restore staging directory could not be created") from exc
+    staged: dict[str, Path] = {}
+    try:
+        policy = SQLiteBackupPolicy(
+            integrity=SQLiteIntegrityPolicy(check_mode="full")
+        )
+        for entry in entries:
+            if entry.get("status") != "backed_up":
+                continue
+            owner = str(entry["owner"])
+            database_name = str(entry["database_name"])
+            source = entry.get("resolved_backup")
+            if not isinstance(source, Path):
+                raise DatabaseRestoreError(f"restore source is missing: {owner}")
+            destination = stage_directory / database_name
+            backup_sqlite_online(source, destination, policy=policy)
+            verification = check_sqlite_integrity(
+                destination,
+                policy=SQLiteIntegrityPolicy(check_mode="full"),
+            )
+            if not verification.healthy:
+                raise DatabaseRestoreError(f"restore staging integrity failed: {owner}")
+            staged[owner] = destination
+        return stage_directory, staged
+    except BaseException:
+        shutil.rmtree(stage_directory, ignore_errors=True)
+        raise
+
+
+def _restore_commit(
+    entries: tuple[dict[str, object], ...],
+    state_directory: Path,
+    staged: dict[str, Path],
+) -> tuple[Path, list[tuple[Path, Path]], list[Path]]:
+    rollback_directory = Path(
+        tempfile.mkdtemp(prefix=".neocortex-state-restore-old-", dir=state_directory.parent)
+    )
+    os.chmod(rollback_directory, 0o700)
+    moved_old: list[tuple[Path, Path]] = []
+    moved_new: list[Path] = []
+    try:
+        for entry in entries:
+            owner = str(entry["owner"])
+            staged_path = staged.get(owner)
+            if staged_path is None:
+                continue
+            database_name = str(entry["database_name"])
+            live = _restore_live_path(state_directory, database_name)
+            for suffix in ("", *DATABASE_SIDECAR_SUFFIXES):
+                current = live if not suffix else Path(f"{live}{suffix}")
+                if not os.path.lexists(current):
+                    continue
+                old = rollback_directory / f"{database_name}{suffix}"
+                os.replace(current, old)
+                moved_old.append((current, old))
+            os.replace(staged_path, live)
+            moved_new.append(live)
+        # Keep the old files until the cross-owner publication event is
+        # durable.  The caller removes this directory only after that commit.
+        return rollback_directory, moved_old, moved_new
+    except BaseException as exc:
+        _restore_revert(moved_old, moved_new, rollback_directory, exc)
+        raise
+
+
+def _restore_revert(
+    moved_old: list[tuple[Path, Path]],
+    moved_new: list[Path],
+    rollback_directory: Path,
+    primary: BaseException,
+) -> None:
+    """Restore the pre-publication files and retain any rollback note."""
+
+    for path in reversed(moved_new):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    for original, old in reversed(moved_old):
+        try:
+            if old.exists():
+                os.replace(old, original)
+        except OSError as rollback_error:
+            primary.add_note(f"restore rollback failed for {original}: {rollback_error}")
+    shutil.rmtree(rollback_directory, ignore_errors=True)
+
+
+def restore_state_owners(
+    state_directory: str | Path,
+    backup_directory: str | Path,
+    *,
+    stores: Sequence[str] | None = None,
+    apply: bool = False,
+    confirmation: str | None = None,
+    expected_epoch: int | None = None,
+    expected_manifest_sha256: str | None = None,
+) -> DatabaseRestoreResult:
+    """Validate or publish a complete multi-owner state backup.
+
+    Validation is read-only by default.  Applying stages every selected
+    owner, creates a verified pre-restore backup when live state exists, then
+    swaps owner files under the existing state locks.  A filesystem journal
+    records the cross-owner result; a failed swap restores the files moved so
+    far and leaves the staging evidence for diagnosis.
+    """
+
+    state = _safe_state_directory(state_directory)
+    selected = _requested_stores(stores)
+    backup = _safe_backup_directory(backup_directory, state)
+    if not backup.is_dir() or backup.is_symlink():
+        raise DatabaseRestoreError("backup directory must be a real directory")
+    manifest, payload, manifest_sha = _load_state_backup_manifest(backup)
+    if expected_manifest_sha256 is not None:
+        if (
+            not isinstance(expected_manifest_sha256, str)
+            or len(expected_manifest_sha256) != 64
+            or any(
+                character not in "0123456789abcdefABCDEF"
+                for character in expected_manifest_sha256
+            )
+            or manifest_sha != expected_manifest_sha256.lower()
+        ):
+            raise DatabaseRestoreError("state backup manifest hash mismatch")
+    manifest_epoch = _manifest_epoch(payload)
+    entries = _manifest_entries(payload, backup, selected)
+    current_epoch = read_state_epoch(state)
+    if expected_epoch is not None and current_epoch.epoch != expected_epoch:
+        raise DatabaseRestoreError(
+            f"state publication epoch changed: expected {expected_epoch}, observed {current_epoch.epoch}"
+        )
+    if current_epoch.epoch != manifest_epoch:
+        raise DatabaseRestoreError(
+            f"state epoch does not match backup: {current_epoch.epoch} != {manifest_epoch}"
+        )
+    if not apply:
+        if confirmation is not None:
+            raise DatabaseRestoreConfirmationError("confirmation is only valid with --apply")
+        return DatabaseRestoreResult(
+            state_directory=state,
+            backup_directory=backup,
+            manifest=manifest,
+            manifest_sha256=manifest_sha,
+            restored=(),
+            pre_restore_backup=None,
+            state_epoch=current_epoch,
+            complete=True,
+        )
+    if confirmation != DATABASE_RESTORE_CONFIRMATION:
+        raise DatabaseRestoreConfirmationError(
+            f"apply requires confirmation token {DATABASE_RESTORE_CONFIRMATION!r}"
+        )
+    with _held_locks(state):
+        locked_epoch = read_state_epoch(state)
+        if locked_epoch.epoch != current_epoch.epoch:
+            raise DatabaseRestoreError("state changed before restore publication")
+        pre_restore: DatabaseBackupResult | None = None
+        if any(
+            _snapshot(state / store.database_name, "database") is not None
+            for store in STATE_STORE_REGISTRY.stores
+            if store.state_owner_id in selected
+        ):
+            pre_path = (
+                state.parent
+                / "database-backups"
+                / f"pre-restore-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-{time.time_ns()}"
+            )
+            pre_restore = backup_state_owners(
+                state,
+                pre_path,
+                stores=selected,
+                integrity_mode="full",
+                expected_epoch=locked_epoch.epoch,
+                _assume_locks_held=True,
+            )
+            if not pre_restore.complete:
+                raise DatabaseRestoreError("pre-restore backup is incomplete")
+        stage_directory, staged = _restore_stage(entries, state)
+        key = publication_idempotency_key(
+            "database-restore",
+            str(backup),
+            manifest_sha,
+            selected,
+        )
+        restored: tuple[str, ...] = ()
+        rollback_directory: Path | None = None
+        moved_old: list[tuple[Path, Path]] = []
+        moved_new: list[Path] = []
+        try:
+            record_state_publication(
+                state,
+                operation="database-restore",
+                owners=selected,
+                status="partial",
+                idempotency_key=key,
+                expected_epoch=locked_epoch.epoch,
+                manifest_sha256=manifest_sha,
+                detail="restore staged; owner publication in progress",
+            )
+            rollback_directory, moved_old, moved_new = _restore_commit(
+                entries,
+                state,
+                staged,
+            )
+            restored = tuple(
+                str(entry["owner"])
+                for entry in entries
+                if entry.get("status") == "backed_up"
+            )
+            try:
+                record_state_publication(
+                    state,
+                    operation="database-restore",
+                    owners=selected,
+                    status="complete",
+                    idempotency_key=key,
+                    expected_epoch=locked_epoch.epoch,
+                    manifest_sha256=manifest_sha,
+                )
+            except (StatePublicationError, StatePublicationConflictError) as exc:
+                if rollback_directory is not None:
+                    # The complete event is the commit point.  If it cannot
+                    # be recorded, restore the old owner set instead of
+                    # leaving a new set with the previous epoch.
+                    _restore_revert(moved_old, moved_new, rollback_directory, exc)
+                    rollback_directory = None
+                raise
+        except (StatePublicationError, StatePublicationConflictError) as exc:
+            raise DatabaseRestoreError(
+                "restore publication journal could not be committed"
+            ) from exc
+        finally:
+            if rollback_directory is not None:
+                shutil.rmtree(rollback_directory, ignore_errors=True)
+            shutil.rmtree(stage_directory, ignore_errors=True)
+    final_epoch = read_state_epoch(state)
+    return DatabaseRestoreResult(
+        state_directory=state,
+        backup_directory=backup,
+        manifest=manifest,
+        manifest_sha256=manifest_sha,
+        restored=restored,
+        pre_restore_backup=pre_restore,
+        state_epoch=final_epoch,
+        complete=True,
+    )
+
+
 def _integrity_payload(report: SQLiteIntegrityReport) -> dict[str, object]:
     """Convert the bounded SQLite integrity report to JSON-safe evidence."""
-
-    return {
-        "database_path": str(report.database_path),
-        "quick_check_errors": list(report.quick_check_errors),
-        "quick_check_observed_error_count": report.quick_check_observed_error_count,
-        "quick_check_complete": report.quick_check_complete,
-        "foreign_key_violations": [
-            asdict(item) for item in report.foreign_key_violations
-        ],
-        "foreign_key_observed_violation_count": report.foreign_key_observed_violation_count,
-        "foreign_key_check_complete": report.foreign_key_check_complete,
-        "healthy": report.healthy,
-    }
+    return report.as_payload()
 
 
 def _write_manifest(path: Path, payload: dict[str, object]) -> None:
@@ -433,6 +1229,39 @@ def _same_snapshot(expected: DatabaseFileSnapshot, path: Path) -> bool:
     return current == expected
 
 
+def _require_post_backup_source_stable(
+    target: DatabasePurgeTarget,
+    after: tuple[DatabaseFileSnapshot, ...],
+) -> None:
+    """Allow only the empty sidecars SQLite may create during a read.
+
+    The online backup source can cause SQLite to materialize an empty WAL/SHM
+    pair.  Those files must be recaptured before purge; a new non-empty WAL or
+    a changed pre-existing sidecar is evidence of a concurrent writer and is
+    never silently deleted.
+    """
+
+    before_by_path = {item.path: item for item in target.files}
+    after_by_path = {item.path: item for item in after}
+    for path, previous in before_by_path.items():
+        current = after_by_path.get(path)
+        if current is None:
+            raise DatabasePurgeChangedError(
+                f"database sidecar disappeared while backing up: {path}"
+            )
+        if current != previous:
+            raise DatabasePurgeChangedError(
+                f"database sidecar changed while backing up: {path}"
+            )
+    for current in after:
+        if current.role != "sidecar" or current.path in before_by_path:
+            continue
+        if current.path.name.endswith("-wal") and current.size > 0:
+            raise DatabasePurgeBusyError((current.path,))
+        if current.path.name.endswith("-journal") and current.size > 0:
+            raise DatabasePurgeBusyError((current.path,))
+
+
 def _prepare_backup(
     plan: DatabasePurgePlan,
     backup_directory: Path,
@@ -448,29 +1277,29 @@ def _prepare_backup(
             f"database purge backup directory could not be created: {backup_directory}"
         ) from exc
     entries: list[dict[str, object]] = []
+    policy = SQLiteBackupPolicy(
+        integrity=SQLiteIntegrityPolicy(check_mode="full")
+    )
     try:
         for target in plan.targets:
             main = next((item for item in target.files if item.role == "database"), None)
             if main is None:
-                entries.append(
-                    {
-                        "owner": target.owner,
-                        "database": str(target.database),
-                        "backup": None,
-                        "reason": "orphan_sidecar_only",
-                    }
+                raise DatabasePurgeError(
+                    f"cannot purge orphan sidecars without a database backup: {target.database}"
                 )
-                continue
             destination = backup_directory / target.database_name
             try:
-                result = backup_sqlite_online(main.path, destination)
+                result = backup_sqlite_online(main.path, destination, policy=policy)
             except Exception as exc:
                 raise DatabasePurgeError(
                     f"verified backup failed for {main.path}"
                 ) from exc
             if not result.integrity.healthy:
                 raise DatabasePurgeError(f"backup integrity failed: {main.path}")
+            after = _source_files_after_backup(target)
+            _require_post_backup_source_stable(target, after)
             try:
+                source_sha256 = _sha256(main.path)
                 backup_size = destination.stat().st_size
                 backup_sha256 = _sha256(destination)
             except OSError as exc:
@@ -483,8 +1312,13 @@ def _prepare_backup(
                     "database": str(main.path),
                     "backup": str(destination),
                     "source_size": main.size,
+                    "source_sha256": source_sha256,
                     "backup_size": backup_size,
                     "backup_sha256": backup_sha256,
+                    "source_files_after_backup": [_source_file_payload(item) for item in after],
+                    "user_version": _sqlite_metadata(destination)[0],
+                    "schema_version": _sqlite_metadata(destination)[1],
+                    "integrity_mode": result.integrity.check_mode,
                     "integrity": _integrity_payload(result.integrity),
                 }
             )
@@ -497,6 +1331,8 @@ def _prepare_backup(
         "state_directory": str(plan.state_directory),
         "stores": list(plan.stores),
         "plan_digest": plan.plan_digest,
+        "integrity_mode": "full",
+        "state_epoch": read_state_epoch(plan.state_directory).as_payload(),
         "entries": entries,
     }
     try:
@@ -521,6 +1357,59 @@ def _delete_planned_files(plan: DatabasePurgePlan) -> tuple[DatabaseFileSnapshot
             raise DatabasePurgeError(f"database target remains after removal: {item.path}")
         deleted.append(item)
     return tuple(deleted)
+
+
+def _reconcile_post_backup_plan(
+    before: DatabasePurgePlan,
+    after: DatabasePurgePlan,
+) -> DatabasePurgePlan:
+    """Adopt sidecars materialized by backup without accepting owner drift."""
+
+    if before.stores != after.stores:
+        raise DatabasePurgeChangedError("database store selection changed after backup")
+    if before.unknown_sqlite_files != after.unknown_sqlite_files:
+        raise DatabasePurgeChangedError("unknown SQLite files changed after backup")
+    before_targets = {target.owner: target for target in before.targets}
+    after_targets = {target.owner: target for target in after.targets}
+    if set(before_targets) != set(after_targets):
+        raise DatabasePurgeChangedError("database owner set changed after backup")
+    for owner, previous in before_targets.items():
+        current = after_targets[owner]
+        if previous.database != current.database or previous.database_name != current.database_name:
+            raise DatabasePurgeChangedError(f"database target changed after backup: {owner}")
+        previous_main = next((item for item in previous.files if item.role == "database"), None)
+        current_main = next((item for item in current.files if item.role == "database"), None)
+        if previous_main != current_main:
+            raise DatabasePurgeChangedError(f"database target changed after backup: {owner}")
+        _require_post_backup_source_stable(previous, current.files)
+    return replace(after, lock_conflicts=())
+
+
+def _refresh_purge_manifest(
+    manifest: Path,
+    *,
+    initial_plan: DatabasePurgePlan,
+    final_plan: DatabasePurgePlan,
+) -> None:
+    """Bind the purge manifest to the exact sidecar set about to be removed."""
+
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise DatabasePurgeError("database purge manifest could not be reread") from exc
+    if not isinstance(payload, dict):
+        raise DatabasePurgeError("database purge manifest is not an object")
+    payload["initial_plan_digest"] = initial_plan.plan_digest
+    payload["plan_digest"] = final_plan.plan_digest
+    payload["post_backup_targets"] = [
+        target.as_payload() for target in final_plan.targets
+    ]
+    payload["post_backup_file_count"] = len(final_plan.files)
+    payload["post_backup_total_bytes"] = final_plan.total_bytes
+    try:
+        _write_manifest(manifest.parent, payload)
+    except OSError as exc:
+        raise DatabasePurgeError("database purge manifest could not be refreshed") from exc
 
 
 def execute_database_purge(
@@ -562,19 +1451,37 @@ def execute_database_purge(
             plan.state_directory,
         )
         backup_path, _manifest_payload = _prepare_backup(locked_plan, selected_backup)
-        # Recheck every source after the backup and before the first unlink.
-        for item in locked_plan.files:
-            if not _same_snapshot(item, item.path):
-                raise DatabasePurgeChangedError(f"database target changed after backup: {item.path}")
-        deleted = _delete_planned_files(locked_plan)
-        return DatabasePurgeResult(locked_plan, backup_path, backup_path / "database-purge-manifest.json", deleted)
+        # SQLite may have materialized an empty WAL/SHM while creating the
+        # verified copy.  Recapture the complete target set before deletion so
+        # those files cannot become orphaned; any non-empty new sidecar is
+        # treated as a concurrent writer and aborts the purge.
+        post_backup_plan = _reconcile_post_backup_plan(
+            locked_plan,
+            plan_database_purge(locked_plan.state_directory, stores=locked_plan.stores),
+        )
+        _refresh_purge_manifest(
+            backup_path / "database-purge-manifest.json",
+            initial_plan=locked_plan,
+            final_plan=post_backup_plan,
+        )
+        deleted = _delete_planned_files(post_backup_plan)
+        return DatabasePurgeResult(
+            post_backup_plan,
+            backup_path,
+            backup_path / "database-purge-manifest.json",
+            deleted,
+        )
 
 
 __all__ = [
+    "DATABASE_BACKUP_SCHEMA",
     "DATABASE_PURGE_CONFIRMATION",
     "DATABASE_PURGE_SCHEMA",
+    "DATABASE_RESTORE_CONFIRMATION",
     "DATABASE_SIDECAR_SUFFIXES",
     "DATABASE_STORE_NAMES",
+    "DatabaseBackupEntry",
+    "DatabaseBackupResult",
     "DatabaseFileSnapshot",
     "DatabasePurgeBusyError",
     "DatabasePurgeChangedError",
@@ -583,6 +1490,11 @@ __all__ = [
     "DatabasePurgePlan",
     "DatabasePurgeResult",
     "DatabasePurgeTarget",
+    "DatabaseRestoreConfirmationError",
+    "DatabaseRestoreError",
+    "DatabaseRestoreResult",
+    "backup_state_owners",
     "execute_database_purge",
     "plan_database_purge",
+    "restore_state_owners",
 ]

@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from pathlib import Path
 
+from neocortex.api.read_contract import sanitize_untrusted_text
+
 from .models import (
     MAX_PRESENTATION_CHARACTERS,
     MAX_PRESENTATION_ROWS,
@@ -50,10 +52,7 @@ _REASON_LABELS = {
 
 
 def _safe_line(value: object, *, limit: int = 800) -> str:
-    text = " ".join(str(value or "").split())
-    if len(text) <= limit:
-        return text
-    return text[: limit - 3].rstrip() + "..."
+    return sanitize_untrusted_text(value, limit=limit)
 
 
 class _Lines:

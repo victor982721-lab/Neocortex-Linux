@@ -94,6 +94,8 @@ def validate_office_direct_operation(
         raise SystemExit(
             "--office-search is read-only and cannot be combined with --apply"
         )
+    if args.office_search is not None and args.route != "none":
+        raise SystemExit("Office direct actions cannot be combined with --route")
 
 
 # endregion [02]

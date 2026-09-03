@@ -61,7 +61,9 @@ def test_framework_existing_connections_enforce_mode_fk_wal_and_locking(
         assert reader.execute("PRAGMA query_only").fetchone()[0] == 1
         assert reader.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert reader.execute("PRAGMA busy_timeout").fetchone()[0] > 0
-        assert reader.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        # A sidecar-safe snapshot is an immutable temporary owner, so its
+        # journal mode is delete even when the source writer uses WAL.
+        assert reader.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
         with pytest.raises(sqlite3.OperationalError, match="readonly"):
             reader.execute("CREATE TEMP TABLE forbidden(value INTEGER)")
     finally:
@@ -111,8 +113,8 @@ def test_framework_connection_closes_if_configuration_is_interrupted(
 
     connection = _InterruptedConnection()
     monkeypatch.setattr(
-        framework_connection.sqlite3,
-        "connect",
+        framework_connection,
+        "open_sidecar_safe_sqlite_connection",
         lambda *_args, **_kwargs: connection,
     )
 
@@ -257,8 +259,8 @@ def test_lower_layer_factories_close_on_keyboard_interrupt(
 
     connection = _InterruptedConnection()
     monkeypatch.setattr(
-        module.sqlite3,  # type: ignore[attr-defined]
-        "connect",
+        module,
+        "open_sidecar_safe_sqlite_connection",
         lambda *_args, **_kwargs: connection,
     )
     with pytest.raises(KeyboardInterrupt, match=owner):

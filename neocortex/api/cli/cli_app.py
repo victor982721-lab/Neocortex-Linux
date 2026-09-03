@@ -215,6 +215,13 @@ def main(arguments: Sequence[str] | None = None) -> int:
     """Parse, validate and dispatch one NeoCortex command invocation."""
 
     forwarded = list(sys.argv[1:] if arguments is None else arguments)
+    if not forwarded:
+        # An empty invocation is an ambiguous no-op, not permission to start
+        # an inventory run.  Keep this fast path before parser construction so
+        # it cannot create state or import route engines.
+        print("Uso: Neocortex --all, --route ROUTES o una operación directa")
+        print("Use `Neocortex --help` para ver las opciones disponibles.")
+        return 0
     if forwarded == ["--version"]:
         _run_exact_version(forwarded)
         raise AssertionError("argparse version action must exit")
@@ -240,6 +247,19 @@ def main(arguments: Sequence[str] | None = None) -> int:
     direct_exit_code = dispatch_direct(args)
     if direct_exit_code is not None:
         return direct_exit_code
+
+    if not (
+        args.all
+        or args.route != "none"
+        or args.route_only
+        or args.resume_run is not None
+        or args.candidate_run is not None
+    ):
+        # Options such as --root or --state-directory alone do not select an
+        # operation.  Never turn them into an implicit inventory write.
+        print("Uso: Neocortex --all, --route ROUTES o una operación directa")
+        print("Use `Neocortex --help` para ver las opciones disponibles.")
+        return 0
 
 
     from neocortex.progress import LineProgress, RichProgress

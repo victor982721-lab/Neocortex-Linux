@@ -33,7 +33,7 @@ siga el piloto de 20–50 elementos y 10–15 minutos de
 
 Ejecute primero comandos que no recorren el corpus ni escriben estado:
 
-```powershell
+```bash
 Neocortex --version
 Neocortex --help
 Neocortex --ui --help
@@ -56,8 +56,8 @@ Desde la raíz del repositorio, el siguiente comando sirve únicamente para
 diagnosticar el árbol fuente; no sustituye la validación del ejecutable
 instalado:
 
-```powershell
-py -3 -m neocortex --version
+```bash
+python3.14 -m neocortex --version
 ```
 
 En Linux, el diagnóstico equivalente del árbol fuente es
@@ -73,11 +73,9 @@ Neocortex [opciones]
 `--root` selecciona la raíz que se observará. Si se omite, se usa el perfil del
 usuario actual. Confirme siempre la ruta antes de iniciar una corrida:
 
-```powershell
-$Root = 'C:\Datos'
-if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
-    throw "La raíz no existe o no es un directorio: $Root"
-}
+```bash
+Root="$HOME/Documentos/NeoCortex/Pilot"
+test -d "$Root" || { printf 'La raíz no existe: %s\n' "$Root" >&2; exit 2; }
 ```
 
 Las rutas de contenido vigentes en la CLI son:
@@ -96,8 +94,8 @@ Las rutas de contenido vigentes en la CLI son:
 
 El primer piloto usa una sola ruta y un límite explícito:
 
-```powershell
-Neocortex --root $Root --route pdf --MaxCount 25 --strict-exit-codes
+```bash
+Neocortex --root "$Root" --route pdf --MaxCount 25 --strict-exit-codes
 ```
 
 Estos comandos **no son consultas de sólo lectura**: recorren contenido y
@@ -123,8 +121,8 @@ Una corrida normal actualiza el inventario común y después ejecuta las rutas
 seleccionadas. La omisión de `--apply` es el modo predeterminado no mutador del
 corpus. Amplíe a varias rutas sólo después del piloto:
 
-```powershell
-Neocortex --root $Root --route pdf,docx --MaxCount 25 --docx-max-count 25 --strict-exit-codes
+```bash
+Neocortex --root "$Root" --route pdf,docx --MaxCount 25 --docx-max-count 25 --strict-exit-codes
 ```
 
 `InternalPathsPolicy` reserva por ruta e identidad el repositorio, runtime,
@@ -159,7 +157,7 @@ un comando agregador.
 acciones de archivos. Requiere al menos una ruta, usa por defecto el snapshot
 retenido más reciente y rechaza `--apply`:
 
-```powershell
+```bash
 Neocortex --route pdf --route-only
 Neocortex --route pdf --route-only --candidate-run 40
 ```
@@ -167,17 +165,17 @@ Neocortex --route pdf --route-only --candidate-run 40
 `--resume-run RUN_ID` implica `--route-only` y continúa fases incompletas del
 snapshot indicado:
 
-```powershell
+```bash
 Neocortex --resume-run 40
 ```
 
 La ruta code consume el inventario y admite un snapshot con cero candidatos:
 
-```powershell
-$State = 'C:\Estado\Neocortex'
-Neocortex --root $Root --state-directory $State --route code --route-only
-Neocortex --root $Root --state-directory $State --route code --route-only --candidate-run 40
-Neocortex --root $Root --state-directory $State --resume-run 40
+```bash
+State="${XDG_STATE_HOME:-$HOME/.local/state}/Neocortex/state"
+Neocortex --root "$Root" --state-directory "$State" --route code --route-only
+Neocortex --root "$Root" --state-directory "$State" --route code --route-only --candidate-run 40
+Neocortex --root "$Root" --state-directory "$State" --resume-run 40
 ```
 
 Sin `--candidate-run`, code examina el owner durable más reciente de la raíz
@@ -200,9 +198,9 @@ WAL activo se reporta con código `2` en lugar de abrirlo de forma ordinaria.
 
 ### Interfaz gráfica
 
-```powershell
+```bash
 Neocortex --ui
-Neocortex --ui --root $Root
+Neocortex --ui --root "$Root"
 ```
 
 La GUI supervisa el mismo orquestador y expone PDF, DOCX, Office, ZIP,
@@ -339,7 +337,7 @@ idempotentes. El texto del corpus se trata siempre como datos no confiables.
 Los siguientes ejemplos no inician un inventario ni autorizan mutaciones del
 corpus:
 
-```powershell
+```bash
 Neocortex --status
 Neocortex --status --status-run 40 --status-json
 Neocortex doctor capabilities
@@ -421,7 +419,7 @@ puente sin clonar el head ni crear jobs.
 Después de ejecutar la ruta `archive`, estas operaciones consultan únicamente
 `archive.sqlite3`; no recorren el corpus ni crean estado ausente:
 
-```powershell
+```bash
 Neocortex --archive-status
 Neocortex --archive-search 'protección de transformador' --archive-search-limit 50
 Neocortex --archive-list 50 --archive-container 'contenedor.zip'
@@ -456,8 +454,8 @@ Markdown, EML con estructura RFC 5322 y contenedores CFB con extensión conocida
 DOC/XLS/PPT. Es una ruta productora, por lo que recorre el corpus y escribe
 `text.sqlite3`:
 
-```powershell
-Neocortex --root $Root --route text --text-max-count 25 --strict-exit-codes
+```bash
+Neocortex --root "$Root" --route text --text-max-count 25 --strict-exit-codes
 Neocortex --knowledge-search 'mantenimiento de transformador' --knowledge-limit 20
 Neocortex --semantic-index text --semantic-source text --semantic-max-items 25
 Neocortex --catalog-preview 25
@@ -506,7 +504,7 @@ Knowledge ofrece cuatro acciones planas y mutuamente excluyentes. Todas leen el
 estado ya publicado; no recorren el corpus, crean directorios o bases, migran
 esquemas, reparan estado ni descargan modelos:
 
-```powershell
+```bash
 Neocortex --knowledge-status
 Neocortex --knowledge-status --knowledge-json
 Neocortex --knowledge-health 'resource:file:1:2:-1' --knowledge-json
@@ -527,9 +525,9 @@ lectura, Knowledge falla de forma cerrada: no la transforma en owners
 ya no existe y cambios de presencia de la raíz durante una captura. Un archivo
 de owner sólo se declara `absent` cuando su path realmente no existe; si el
 path existe pero es directorio, enlace roto o inaccesible, se aplica el mismo
-fallo fatal. La inspección del sistema de archivos es síncrona: en una ruta UNC
-o unidad de red desconectada, la cancelación sólo puede observarse cuando
-Windows devuelve el control de `stat`/enumeración.
+fallo fatal. La inspección del sistema de archivos es síncrona y se limita al
+perfil Linux vigente; no se habilitan rutas UNC, unidades de red ni el backend
+Windows en la operación cotidiana.
 
 Las opciones de consulta son:
 
@@ -560,7 +558,7 @@ opciones limit/history/mode sólo se admiten con esas dos acciones;
 handler. `--knowledge-json` también se admite con status. Knowledge rechaza
 `--apply`, `--route` y cualquier segunda acción directa. Ejemplos estructurados:
 
-```powershell
+```bash
 Neocortex --knowledge-search 'IEC-61850' --knowledge-mode discovery --knowledge-json
 Neocortex --knowledge-search 'protección de relevador' --knowledge-history --knowledge-limit 100
 Neocortex --knowledge-context 'mantenimiento de interruptor' --knowledge-mode evidence --knowledge-json
@@ -583,7 +581,7 @@ El conciliador de `file_actions` es acotado, paginado por keyset, idempotente y
 de sólo lectura. No crea ni migra `framework.sqlite3` y nunca repite una
 mutación:
 
-```powershell
+```bash
 Neocortex --action-recovery-status --action-recovery-limit 100
 Neocortex --action-recovery-status --action-recovery-after 250 --action-recovery-run 40
 Neocortex --action-recovery-status --action-recovery-json
@@ -605,7 +603,7 @@ o metadata de versión no canónica se rechaza con `2`.
 `status` permanece estrictamente de sólo lectura. Para conservar una observación
 en framework v19 use una operación `record` explícita y separada:
 
-```powershell
+```bash
 Neocortex --action-recovery-record 42 --action-recovery-actor "Victor" --confirm-reconciliation-record
 Neocortex --action-recovery-record 42 --action-recovery-actor "Victor" --confirm-reconciliation-record --action-recovery-json
 Neocortex --action-recovery-record 42 --action-recovery-actor "operador-2" --action-recovery-expected-event 7 --confirm-reconciliation-record
@@ -631,7 +629,7 @@ autorización original.
 `inventory` y `framework` sin crear, migrar, eliminar, hacer checkpoint o
 ejecutar `VACUUM`:
 
-```powershell
+```bash
 Neocortex --retention-status
 Neocortex --retention-status --retention-store semantic --retention-min-age-days 30 --retention-batch-size 100
 Neocortex --retention-status --retention-store semantic --retention-semantic-after 250 --retention-json
@@ -685,9 +683,9 @@ salida `2`.
 La validación rápida de caché usa metadatos por defecto. Para volver a comprobar
 bytes antes de reutilizar resultados se dispone de:
 
-```powershell
-Neocortex --root $Root --route pdf --pdf-cache-validation full
-Neocortex --root $Root --route code --code-cache-validation full
+```bash
+Neocortex --root "$Root" --route pdf --pdf-cache-validation full
+Neocortex --root "$Root" --route code --code-cache-validation full
 ```
 
 `full` aumenta la E/S; no cambia la semántica del contenido ya validado. Para
@@ -698,9 +696,9 @@ Code selecciona proyectos por defecto. Detecta sus raíces mediante manifiestos
 fuertes y excluye archivos fuera de ellas, dependencias instaladas, caches y
 salidas generadas antes de leer contenido:
 
-```powershell
-Neocortex --root $Root --route code
-Neocortex --root $Root --route code --code-scope broad
+```bash
+Neocortex --root "$Root" --route code
+Neocortex --root "$Root" --route code --code-scope broad
 ```
 
 El segundo comando es el override deliberado que restaura la selección textual
@@ -729,7 +727,7 @@ Use los filtros `--select-status`, `--select-error-type`,
 con una ruta y un snapshot compatibles. Consulte la ayuda viva para rangos y
 combinaciones exactos:
 
-```powershell
+```bash
 Neocortex --help
 ```
 
@@ -785,24 +783,24 @@ registrados aunque la corrida general termine con `0`. Automatice primero una
 ruta acotada; `--all` se reserva para cuando cada ruta y su costo ya fueron
 aceptados:
 
-```powershell
-Neocortex --root $Root --route pdf --MaxCount 25 --strict-exit-codes
+```bash
+Neocortex --root "$Root" --route pdf --MaxCount 25 --strict-exit-codes
 ```
 
-## Operaciones que requieren autorización explícita
+## Compatibilidad histórica de mutación (fuera del alcance Linux)
 
-Esta sección describe exclusivamente el backend seguro de Windows. En Linux,
+Esta sección conserva únicamente el contrato histórico del backend seguro de
+Windows. No es una instrucción operativa: en Linux,
 `--apply` y `--organization-apply` se rechazan antes de validar la raíz o crear
 estado con código `2` y razón estable
 `linux_mutation_backend_unavailable`. Inventario, procesamiento, catálogo y
 búsqueda permanecen disponibles; no se usa `Path.rename` como sustituto.
 
-`--apply` permite que una corrida integrada ejecute únicamente las mutaciones
-que satisfacen el contrato físico de `0.9.0`. Los rename de extensión y los
-movimientos de organización requieren NTFS local, mismo volumen, archivo
-regular con un único hard link, ausencia de reparse y operación ligada a handles
-retenidos con *no-replace*. UNC, otros filesystems, directorios, múltiples hard
-links y movimientos entre volúmenes se abstienen.
+El backend histórico sólo permitía que una corrida integrada ejecutara
+mutaciones que satisficieran el contrato físico de `0.9.0`. Los rename de
+extensión y movimientos de organización requerían NTFS local, mismo volumen,
+archivo regular con un único hard link, ausencia de reparse y handles retenidos
+con *no-replace*. Esas condiciones no habilitan mutación en Linux.
 
 Los candidatos de Papelera (duplicados, vacíos y PDF irrecuperables) se siguen
 planeando en dry-run, pero su aplicación está deshabilitada porque la API
@@ -812,7 +810,7 @@ path-bound.
 
 La organización persistida dispone además de una autorización directa distinta:
 
-```powershell
+```text
 Neocortex --organization-apply --organization-max-actions 100
 ```
 
@@ -820,7 +818,7 @@ Un plan que cruzó la frontera nativa sin confirmación queda
 `recovery_required`, reserva su destino y no vuelve a seleccionarse para
 aplicación. Se consulta sin mutar con:
 
-```powershell
+```text
 Neocortex --organization-preview 100 --organization-preview-status recovery_required
 ```
 
@@ -845,8 +843,9 @@ estable. `--curation-preview` rechaza `--apply` y cualquier `--route`.
 `--state-health` comprueba los owners SQLite conocidos mediante lecturas
 inmutables: captura su estado dos veces, usa `immutable=1` sólo cuando los
 sidecars están probadamente inactivos y clasifica ausencias o journals como
-`missing`, `orphaned_sidecars` o `blocked`. Un resultado parcial devuelve
-código `2` y no crea ni migra estado:
+`missing`, `orphaned_sidecars`, `blocked`, `future`, `incompatible`, `corrupt`,
+`unknown` o `unreadable`. Un resultado parcial devuelve código `2` y no crea ni
+migra estado:
 
 ```bash
 Neocortex --state-health
@@ -858,6 +857,27 @@ dos autorizaciones, revise [SECURITY.md](SECURITY.md) y
 [RECOVERY.md](RECOVERY.md), cree un backup SQLite consistente y confirme la raíz
 y los planes. El watcher y `--route-only` rechazan `--apply`.
 
+### Mantenimiento de owners SQLite
+
+La fachada `databases` conserva la separación entre observación y escritura:
+
+```bash
+Neocortex databases status --json
+Neocortex databases backup --backup-directory "$HOME/Neocortex-backups/next" --json
+Neocortex databases restore --backup-directory "$HOME/Neocortex-backups/next" --json
+Neocortex databases purge --json
+```
+
+`status` sólo lee health, epoch y journal. `backup` en preview tampoco crea el
+destino; para escribir exige `--apply --confirm-database-backup
+BACKUP_DATABASES`, y permite `--integrity quick|full` y `--expected-epoch`.
+`restore` valida el conjunto en staging y, para publicar, exige
+`--apply --manifest-sha256 SHA256 --confirm-database-restore
+RESTORE_DATABASES`. El backup general escribe `state-backup-manifest.json`,
+mientras `purge` conserva su propio `database-purge-manifest.json`; no son
+intercambiables. La purga aplicada exige además `--plan-digest` obtenido de su
+preview.
+
 ## Operaciones con otros efectos laterales
 
 - `models prepare` descarga explícita y secuencialmente los modelos gestionados;
@@ -865,8 +885,7 @@ y los planes. El watcher y `--route-only` rechazan `--apply`.
 - `--semantic-prepare-models` adquiere o carga explícitamente modelos.
 - En Linux, audio es local-only por defecto y usa Whisper CPU/int8 del cache
   compartido; no descarga implícitamente durante una ruta.
-- En Windows, una primera ruta de audio puede descargar el modelo Whisper salvo
-  que se use `--audio-local-models-only`.
+- No hay una ruta Windows activa ni descarga de modelos asociada a ella.
 - `--semantic-index`, `--semantic-classify`, `--catalog-documents`,
   `--organization-plan`, `--review-record` y `--review-evidence-sync` escriben
   estado, aunque no muten archivos originales.

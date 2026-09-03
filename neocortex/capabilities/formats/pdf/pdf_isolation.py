@@ -6,11 +6,10 @@ import math
 import os
 import queue
 import shutil
-import sqlite3
 import subprocess
 import tempfile
 import time
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterator, Literal
@@ -43,7 +42,7 @@ from neocortex.safety.ocr_profiles import (
     route_ocr_languages,
     should_use_ocr_fallback,
 )
-from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
+from neocortex.persistence.sqlite_immutable import immutable_sqlite_database
 
 
 # region [01] Process protocol
@@ -1015,17 +1014,8 @@ def _profile_child(path: str, state_path: str, file_key: str, channel) -> None:
 
         with (
             fitz.open(path) as document,
-            closing(
-                sqlite3.connect(
-                    readonly_sqlite_uri(Path(state_path)),
-                    uri=True,
-                    timeout=60,
-                )
-            ) as connection,
+            immutable_sqlite_database(Path(state_path), timeout_seconds=60.0) as connection,
         ):
-            connection.execute("PRAGMA query_only=ON")
-            connection.execute("PRAGMA busy_timeout=60000")
-            connection.execute("PRAGMA foreign_keys=ON")
             if int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
                 raise RuntimeError("PDF profile reader could not enable foreign keys")
             rows = connection.execute(

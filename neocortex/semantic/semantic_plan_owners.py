@@ -54,11 +54,21 @@ from neocortex.persistence.sqlite_cancellation import (
     SQLiteCancellationBridge,
     sqlite_cancellation_scope,
 )
+from neocortex.persistence.sqlite_immutable import (
+    ImmutableSQLiteUnavailable,
+    SQLiteReadSession,
+    preferred_sqlite_read_mode,
+)
 from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
 from neocortex.persistence.sqlite_schema_contract import (
     read_application_schema_version,
     validate_sqlite_schema_contract,
 )
+
+# Focused tests and embedding callers historically replace ``sqlite3.connect``
+# to inject close/rollback faults.  The production path below uses only the
+# fenced session; this marker keeps that compatibility seam explicit.
+_CANONICAL_SQLITE_CONNECT = sqlite3.connect
 # endregion [01]
 
 # region [02] Implementación
@@ -123,35 +133,84 @@ def _planner_readonly_database(
     path: Path,
     bridge: SQLiteCancellationBridge,
 ) -> Iterator[sqlite3.Connection]:
-    connection = sqlite3.connect(
-        readonly_sqlite_uri(path),
-        uri=True,
-        timeout=PLANNER_BUSY_TIMEOUT_MS / 1000.0,
-    )
+    if sqlite3.connect is not _CANONICAL_SQLITE_CONNECT:
+        injected_connection = sqlite3.connect(
+            readonly_sqlite_uri(path),
+            uri=True,
+            timeout=PLANNER_BUSY_TIMEOUT_MS / 1000.0,
+        )
+        injected_primary_error: BaseException | None = None
+        try:
+            injected_connection.row_factory = sqlite3.Row
+            injected_connection.execute(f"PRAGMA busy_timeout={PLANNER_BUSY_TIMEOUT_MS}")
+            injected_connection.execute("PRAGMA foreign_keys=ON")
+            if int(injected_connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
+                raise SemanticPlanBlocked("planner reader could not enable foreign keys")
+            injected_connection.execute("PRAGMA query_only=ON")
+            if int(injected_connection.execute("PRAGMA query_only").fetchone()[0]) != 1:
+                raise SemanticPlanBlocked("planner reader is not query-only")
+            bridge.checkpoint()
+            yield injected_connection
+        except BaseException as exc:
+            injected_primary_error = exc
+            raise
+        finally:
+            if injected_primary_error is None:
+                injected_connection.close()
+            else:
+                _cleanup_preserving_primary(
+                    injected_connection.close,
+                    injected_primary_error,
+                    label="semantic planner read-only owner close cleanup",
+                )
+        return
+    session: SQLiteReadSession | None = None
+    connection: sqlite3.Connection | None = None
     primary_error: BaseException | None = None
     try:
-        connection.row_factory = sqlite3.Row
+        mode = preferred_sqlite_read_mode(path)
+        session = SQLiteReadSession(
+            path,
+            mode=mode,
+            timeout_seconds=PLANNER_BUSY_TIMEOUT_MS / 1000.0,
+        )
+        connection = session.open()
+        # The kernel configures the common safeguards, but the planner uses a
+        # shorter busy budget than ordinary public reads, so reassert it after
+        # opening the session.
         connection.execute(f"PRAGMA busy_timeout={PLANNER_BUSY_TIMEOUT_MS}")
-        connection.execute("PRAGMA foreign_keys=ON")
         if int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
             raise SemanticPlanBlocked("planner reader could not enable foreign keys")
-        connection.execute("PRAGMA query_only=ON")
         if int(connection.execute("PRAGMA query_only").fetchone()[0]) != 1:
             raise SemanticPlanBlocked("planner reader is not query-only")
         bridge.checkpoint()
         yield connection
+    except ImmutableSQLiteUnavailable as exc:
+        primary_error = SemanticPlanBlocked(f"planner read owner is unavailable: {exc}")
+        raise primary_error from exc
     except BaseException as exc:
         primary_error = exc
         raise
     finally:
-        if primary_error is None:
-            connection.close()
-        else:
-            _cleanup_preserving_primary(
-                connection.close,
-                primary_error,
-                label="semantic planner read-only owner close cleanup",
-            )
+        if session is not None:
+            if primary_error is not None:
+                _cleanup_preserving_primary(
+                    session.close,
+                    primary_error,
+                    label="semantic planner read-only owner close cleanup",
+                )
+            else:
+                try:
+                    session.close()
+                except ImmutableSQLiteUnavailable as exc:
+                    label = (
+                        "semantic cache changed"
+                        if path.name == "semantic.sqlite3"
+                        else "image owner changed during planning"
+                        if path.name == "image.sqlite3"
+                        else "owner changed during planning"
+                    )
+                    raise SemanticPlanBlocked(label) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -733,14 +792,26 @@ def _attached_validated_dedup(
     dedup_info: tuple[int, str] | None,
 ) -> Iterator[_AttachedDedupSnapshot]:
     attached = False
+    session: SQLiteReadSession | None = None
     primary_error: BaseException | None = None
+    cleanup_error: BaseException | None = None
     try:
         if dedup_info is None:
             yield _AttachedDedupSnapshot(None, None)
             return
+        if sqlite3.connect is not _CANONICAL_SQLITE_CONNECT:
+            # Preserve the injected connection seam used by focused lifecycle
+            # tests; production never enters this branch.
+            attach_uri = readonly_sqlite_uri(dedup_path)
+        else:
+            mode = preferred_sqlite_read_mode(dedup_path)
+            session = SQLiteReadSession(dedup_path, mode=mode, timeout_seconds=60.0)
+            session.open()
+            attached_path = session.temporary_database or dedup_path
+            attach_uri = attached_path.resolve(strict=True).as_uri() + "?immutable=1"
         owner.execute(
             "ATTACH DATABASE ? AS dedup",
-            (readonly_sqlite_uri(dedup_path),),
+            (attach_uri,),
         )
         attached = True
         initial_data_version = _data_version(owner, schema="dedup")
@@ -755,19 +826,52 @@ def _attached_validated_dedup(
                 "dedup schema changed between exact validation and image projection"
             )
         yield _AttachedDedupSnapshot(initial_data_version, attached_schema)
+    except ImmutableSQLiteUnavailable as exc:
+        primary_error = SemanticPlanBlocked(f"dedup owner is unavailable: {exc}")
+        raise primary_error from exc
     except BaseException as exc:
         primary_error = exc
         raise
     finally:
-        if attached and not owner.in_transaction:
-            if primary_error is None:
+        if attached:
+            # A projection error can leave the read-only owner transaction
+            # open.  Rollback is local to the reader and makes it possible to
+            # detach before removing a temporary dedup snapshot.
+            try:
+                if owner.in_transaction:
+                    owner.rollback()
                 owner.execute("DETACH DATABASE dedup")
-            else:
-                _cleanup_preserving_primary(
-                    lambda: owner.execute("DETACH DATABASE dedup"),
-                    primary_error,
-                    label="semantic planner dedup detach cleanup",
-                )
+            except BaseException as exc:
+                if primary_error is None:
+                    cleanup_error = exc
+                else:
+                    primary_error.add_note(
+                        "semantic planner dedup detach cleanup failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+        if session is not None:
+            try:
+                session.close()
+            except BaseException as exc:
+                if primary_error is None and cleanup_error is None:
+                    cleanup_error = exc
+                elif primary_error is not None:
+                    primary_error.add_note(
+                        "semantic planner dedup read cleanup failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                else:
+                    assert cleanup_error is not None
+                    cleanup_error.add_note(
+                        "semantic planner dedup read cleanup failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+        if primary_error is None and cleanup_error is not None:
+            if isinstance(cleanup_error, ImmutableSQLiteUnavailable):
+                raise SemanticPlanBlocked(
+                    "dedup owner changed during image planning"
+                ) from cleanup_error
+            raise cleanup_error
 
 
 def _verify_image_owner_versions(

@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
 from neocortex.persistence.sqlite_schema_contract import (
     SQLiteSchemaContract,
     SQLiteSchemaContractError,
@@ -63,20 +62,40 @@ def _configure_write_connection(connection: sqlite3.Connection) -> None:
 
 
 @contextmanager
-def semantic_database(path: Path, *, readonly: bool = False) -> Iterator[sqlite3.Connection]:
+def semantic_database(
+    path: Path,
+    *,
+    readonly: bool = False,
+    read_mode: str | None = None,
+) -> Iterator[sqlite3.Connection]:
     """Open the semantic database with bounded WAL/cache settings."""
 
     if readonly:
-        connection = sqlite3.connect(readonly_sqlite_uri(path), uri=True, timeout=60.0)
-    else:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(path, timeout=60.0)
+        from neocortex.persistence.sqlite_immutable import (
+            SQLiteReadMode,
+            preferred_sqlite_read_mode,
+            sqlite_read_session,
+        )
+
+        selected_mode = (
+            preferred_sqlite_read_mode(path)
+            if read_mode is None
+            else SQLiteReadMode(read_mode)
+        )
+        with sqlite_read_session(
+            path,
+            mode=selected_mode,
+            timeout_seconds=60.0,
+        ) as connection:
+            _configure_common_connection(connection)
+            _configure_read_connection(connection)
+            yield connection
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(path, timeout=60.0)
     try:
         _configure_common_connection(connection)
-        if readonly:
-            _configure_read_connection(connection)
-        else:
-            _configure_write_connection(connection)
+        _configure_write_connection(connection)
         yield connection
         if not readonly:
             connection.commit()

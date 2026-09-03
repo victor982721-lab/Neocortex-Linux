@@ -567,7 +567,6 @@ def test_contract_cold_import_stays_free_of_owners_pil_planner_and_service() -> 
             "neocortex.semantic.semantic_service_contracts",
             "neocortex.persistence.sqlite_cancellation",
             "neocortex.persistence",
-            "neocortex.persistence.sqlite_paths",
         }
     )
     assert loaded == baseline

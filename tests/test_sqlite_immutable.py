@@ -9,6 +9,8 @@ import pytest
 from neocortex.persistence import sqlite_immutable
 from neocortex.persistence.sqlite_immutable import (
     ImmutableSQLiteUnavailable,
+    SQLiteReadMode,
+    SQLiteReadSession,
     immutable_sqlite_database,
 )
 
@@ -64,3 +66,71 @@ def test_owner_deleted_after_open_fails_closed_with_typed_error(tmp_path: Path) 
     assert connection is not None
     with pytest.raises(sqlite3.ProgrammingError, match="closed"):
         connection.execute("SELECT 1")
+
+
+def test_snapshot_temp_reads_active_wal_without_touching_source_sidecars(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path)
+    writer = sqlite3.connect(database)
+    try:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("INSERT INTO probe VALUES(8)")
+        writer.commit()
+        wal = Path(f"{database}-wal")
+        shm = Path(f"{database}-shm")
+        before = {
+            database: (database.stat().st_ino, database.stat().st_size, database.read_bytes()),
+            wal: (wal.stat().st_ino, wal.stat().st_size, wal.read_bytes()),
+            shm: (shm.stat().st_ino, shm.stat().st_size, shm.read_bytes()),
+        }
+
+        with SQLiteReadSession(
+            database,
+            mode=SQLiteReadMode.SNAPSHOT_TEMP,
+            temp_root=tmp_path,
+        ) as connection:
+            assert [row[0] for row in connection.execute("SELECT value FROM probe ORDER BY value")] == [
+                7,
+                8,
+            ]
+
+        assert all(
+            (path.stat().st_ino, path.stat().st_size, path.read_bytes()) == snapshot
+            for path, snapshot in before.items()
+        )
+        assert not any(
+            candidate.name.startswith("neocortex-sqlite-read-")
+            for candidate in tmp_path.iterdir()
+        )
+    finally:
+        writer.close()
+
+
+def test_immutable_strict_rejects_live_wal_and_symlink_owner(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    writer = sqlite3.connect(database)
+    try:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("INSERT INTO probe VALUES(9)")
+        writer.commit()
+        with pytest.raises(ImmutableSQLiteUnavailable, match="non-empty WAL"):
+            with SQLiteReadSession(database, mode=SQLiteReadMode.IMMUTABLE_STRICT):
+                pytest.fail("a live WAL must not be read as immutable")
+    finally:
+        writer.close()
+
+    alias = tmp_path / "alias.sqlite3"
+    alias.symlink_to(database)
+    with pytest.raises(ImmutableSQLiteUnavailable, match="stable regular file"):
+        with SQLiteReadSession(alias, mode=SQLiteReadMode.SNAPSHOT_TEMP):
+            pytest.fail("a symlinked owner must not be followed")
+
+
+def test_writer_coordinated_mode_is_explicitly_unavailable_to_read_session(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path)
+    with pytest.raises(ImmutableSQLiteUnavailable, match="writer_coordinated"):
+        with SQLiteReadSession(database, mode=SQLiteReadMode.WRITER_COORDINATED):
+            pytest.fail("writer mode requires an owner transaction")

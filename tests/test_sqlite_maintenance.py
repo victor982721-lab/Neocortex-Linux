@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import itertools
 import os
 import sqlite3
 from collections.abc import Iterator
@@ -377,7 +378,7 @@ def test_online_backup_includes_committed_wal_and_excludes_uncommitted_rows(
     assert progress[-1].remaining_pages == 0
     copied = [item.copied_pages for item in progress]
     assert all(
-        later - earlier <= 3 for earlier, later in zip(copied, copied[1:], strict=False)
+        later - earlier <= 3 for earlier, later in itertools.pairwise(copied)
     )
     with sqlite3.connect(destination) as verification:
         assert verification.execute("SELECT COUNT(*) FROM payload").fetchone() == (180,)

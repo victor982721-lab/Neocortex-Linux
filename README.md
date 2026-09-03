@@ -7,6 +7,10 @@ de procesamiento. El modo predeterminado no modifica el corpus.
 
 ## Empieza aquí
 
+La frontera vigente del programa de confiabilidad está en
+[`docs/ROADMAP_90_DAYS.md`](docs/ROADMAP_90_DAYS.md); sus gates no sustituyen
+las comprobaciones focales ni autorizan mutaciones del corpus.
+
 El flujo personal normal es deliberadamente corto:
 
 1. Comprueba el runtime y el estado de la capacidad que necesitas.
@@ -25,7 +29,7 @@ explícitamente, aunque el resto de la corrida reutilice estado compatible.
 un ciclo de release no son pruebas iniciales. Si el piloto no produce algo útil,
 se detiene y se corrige. La continuación técnica vigente, con el estado
 observado y la siguiente acción única, está en el
-[handoff operativo vigente](https://github.com/victor982721-lab/Neocortex/blob/main/.codex/handoffs/NEOCORTEX_0.7.2_PAUSE_2026-07-30.md).
+[handoff operativo vigente](.codex/handoffs/NEOCORTEX_0.7.2_PAUSE_2026-07-30.md).
 
 Esta precaución aplica al arranque y diagnóstico, no elimina la experiencia
 simple buscada. El flujo cotidiano vigente es `Neocortex --all` en Linux:
@@ -236,16 +240,15 @@ habilitan OCR y recuperación PDF degradables en `documents`; y `tesseract`
 habilita el OCR documental degradable en `image`. El probe ligero sólo busca
 estos ejecutables en `PATH`; no interpreta overrides de una ejecución concreta.
 
-Los wheels nativos del perfil `full` requieren el Microsoft Visual C++ v14
-Redistributable x64 vigente. Después de instalarlo, valida en el mismo runtime
-los imports de PyMuPDF, ONNX Runtime, PySide6, PyAV y CTranslate2 antes de
-promover el launcher; `pip check` por sí solo no detecta una DLL del sistema
-ausente.
+Los wheels nativos del perfil `full` deben validarse en el host Linux destino.
+Antes de promover el launcher, comprueba los imports de PyMuPDF, ONNX Runtime,
+PySide6, PyAV y CTranslate2, además de `pip check`; la presencia de un paquete
+no demuestra por sí sola que sus bibliotecas nativas puedan cargarse.
 
 Para desarrollo sobre el runtime completo:
 
-```powershell
-& "$Venv\Scripts\python.exe" -m pip install -c constraints.txt ".[full,dev]"
+```bash
+"$Venv/bin/python" -m pip install -c constraints.txt ".[full,dev]"
 ```
 
 Los mantenedores pueden combinar dominios para probar el empaquetado, por
@@ -265,7 +268,7 @@ for capability in inspect_runtime_capabilities():
 
 La misma inspección está disponible como doctor canónico de sólo lectura:
 
-```powershell
+```bash
 Neocortex doctor capabilities
 Neocortex doctor capabilities --json
 Neocortex doctor platform --json
@@ -297,9 +300,9 @@ Compruebe siempre el entrypoint de ese entorno antes de operar. Tras activarlo,
 la invocación canónica es `Neocortex`; sin activación puede validar el ejecutable
 por su ruta exacta:
 
-```powershell
-& "$Venv\Scripts\Neocortex.exe" --version
-& "$Venv\Scripts\Neocortex.exe" --help
+```bash
+"$Venv/bin/Neocortex" --version
+"$Venv/bin/Neocortex" --help
 ```
 
 `Neocortex --status` es un diagnóstico del estado persistente, no una prueba de
@@ -317,8 +320,10 @@ Una corrida sin `--apply` actualiza inventarios y cachés, pero preserva los
 archivos originales. El primer uso debe cubrir una sola ruta y como máximo
 20–50 archivos:
 
-```powershell
-Neocortex --root C:\Datos --route pdf --MaxCount 25
+```bash
+Root="$HOME/Documentos/NeoCortex/Pilot"
+test -d "$Root" || { printf 'La raíz no existe: %s\n' "$Root" >&2; exit 2; }
+Neocortex --root "$Root" --route pdf --MaxCount 25
 ```
 
 Las rutas vigentes son `pdf`, `docx`, `office`, `archive`, `text`, `audio`,
@@ -326,7 +331,7 @@ Las rutas vigentes son `pdf`, `docx`, `office`, `archive`, `text`, `audio`,
 Las listas y `--all` se reservan para después de aprobar cada ruta y su
 proyección. Las búsquedas operan sobre estado ya construido, por ejemplo:
 
-```powershell
+```bash
 Neocortex --code-search "dónde se valida el acceso a SQLite" --code-search-mode hybrid
 Neocortex --pdf-search "transformador AND mantenimiento"
 ```
@@ -475,7 +480,7 @@ Audio enlazada.
 Después de construir la ruta `code`, Semantic puede publicar embeddings de sus
 chunks y sincronizar el puente existente de Code en la misma operación:
 
-```powershell
+```bash
 Neocortex --semantic-index text --semantic-source code
 Neocortex --code-search "dónde se valida el acceso a SQLite" --code-search-mode hybrid
 ```
@@ -492,9 +497,9 @@ handles abiertos, la corrida no invalida el estado publicado, pero el status
 quiescente se abstiene hasta que ese lector cierre y una corrida posterior pueda
 retirar los auxiliares.
 Los lectores operativos de una base quiescente usan una instantánea immutable
-con cercas antes/después, por lo que búsqueda y listado ya no crean `-wal` o
-`-shm`; si ya existe un writer activo, leen con SQLite read-only sin borrar ni
-cerrar auxiliares ajenos.
+con cercas antes/después, por lo que búsqueda y listado no crean `-wal` o
+`-shm`; si existe un writer o sidecar activo que no pueda probarse estable, la
+consulta se abstiene y devuelve la cobertura degradada correspondiente.
 
 La búsqueda `semantic` consume únicamente esos enlaces exactos. Si falta el head,
 la cobertura o el modelo local, declara `CODE_SEARCH_CHANNEL available=0` con la
@@ -535,9 +540,9 @@ ante cualquier owner incompatible o corrupto; `search` y `context` sólo se
 abstienen cuando ese owner aparece en `blocking_owners`. Un owner severo ajeno
 a los rankings requeridos permanece visible sin ocultar evidencia sana.
 
-Framework schema 19 es la única compatibilidad legacy explícita: se admite
-sólo en lectura cuando satisface exactamente el contrato estructural esperado,
-se marca `legacy_schema_read_compatible:19->20` y nunca se migra.
+Framework v22 es el contrato vigente; los schemas 19, 20 y 21 sólo se admiten
+en lectura cuando satisfacen exactamente su contrato estructural, se marcan
+`legacy_schema_read_compatible:*->22` y nunca se migran desde una consulta.
 
 Cuando los owners requeridos por la consulta son utilizables, Knowledge captura un
 `KnowledgeSnapshot` lógico —no una transacción distribuida—, construye un plan
@@ -546,7 +551,7 @@ citas y presupuesto explícitos. El modo `evidence`, predeterminado, puede
 conservar varias evidencias concretas del mismo recurso; `discovery` prioriza un
 resultado semantic por recurso.
 
-```powershell
+```bash
 Neocortex --knowledge-status
 Neocortex --knowledge-search "protección diferencial de transformador" --knowledge-mode evidence
 Neocortex --knowledge-context "protección diferencial de transformador" --knowledge-limit 12
@@ -575,7 +580,7 @@ salida y límites verificables.
 El preflight semántico hace un inventario exacto de las cachés durables sin
 cargar modelos, crear jobs ni mutar estado durable:
 
-```powershell
+```bash
 Neocortex --semantic-plan text --semantic-plan-json
 Neocortex --semantic-plan image --semantic-plan-max-scratch-bytes 536870912
 ```
@@ -635,24 +640,18 @@ y segunda corrida incremental.
 ## Uso seguro
 
 `--apply` y `--organization-apply` son autorizaciones explícitas para mutar
-archivos; no son necesarias para indexar o buscar. En `0.9.0`, rename y
-organización sólo operan sobre un archivo regular con un único hard link, en
-NTFS local y en el mismo volumen, mediante handles retenidos y semántica
-*no-replace*. Rutas UNC, otros filesystems, reparses, directorios y movimientos
-entre volúmenes provocan abstención. La planeación en seco conserva candidatos
-de Papelera, pero la aplicación por ruta está deshabilitada y se registra como
-`skipped`; `Send2Trash` ya no es una dependencia.
-
-En Linux ambas autorizaciones se rechazan antes de crear estado, con código `2`
-y razón `linux_mutation_backend_unavailable`. No se degrada el contrato NTFS a
-una operación basada sólo en rutas.
+archivos, pero el backend Linux vigente permanece deshabilitado. Ambas opciones
+se rechazan antes de crear estado, con código `2` y razón
+`linux_mutation_backend_unavailable`; no se degrada el contrato a una operación
+basada sólo en rutas. El backend NTFS histórico se conserva únicamente para
+trazabilidad y no forma parte de la plataforma activa.
 
 Una acción que cruzó la frontera de mutación sin poder confirmar el registro
 queda `recovery_required` y nunca se repite automáticamente. `status` sólo
 clasifica; `record` persiste explícitamente esa observación append-only, sin
 autorizar ni ejecutar una recuperación:
 
-```powershell
+```bash
 Neocortex --action-recovery-status --action-recovery-limit 100
 Neocortex --action-recovery-status --action-recovery-json
 Neocortex --action-recovery-record 42 --action-recovery-actor "Victor" --confirm-reconciliation-record --action-recovery-json
@@ -668,7 +667,7 @@ vigente/anterior, evidencia semántica, el último run válido y holds cross-sto
 la retención de releases se aplica por separado al instalar y conserva sólo
 `current` y el rollback inmediato:
 
-```powershell
+```bash
 Neocortex --retention-status
 Neocortex --retention-status --retention-store semantic --retention-min-age-days 30 --retention-json
 ```
@@ -680,6 +679,18 @@ clasificaciones probabilísticas nunca autorizan por sí solos una mutación.
 Antes de actualizar una instalación con bases existentes, realice un backup
 consistente mediante la API SQLite; no copie sólo el `.sqlite3` si puede existir
 WAL.
+
+### Backup y restauración de bases
+
+`databases backup` y `databases restore` separan preview de aplicación, usan
+manifests y no tocan el corpus. El backup aplicado exige
+`--confirm-database-backup BACKUP_DATABASES`; el restore aplicado exige el
+digest del manifest y `--confirm-database-restore RESTORE_DATABASES`:
+
+```bash
+Neocortex databases backup --backup-directory "$HOME/Neocortex-backups/next" --json
+Neocortex databases restore --backup-directory "$HOME/Neocortex-backups/next" --json
+```
 
 ### Borrado explícito de bases
 
@@ -712,7 +723,7 @@ archivo o falla el backup, el comando se abstiene sin borrar la fuente.
 - [Arquitectura](docs/ARCHITECTURE.md)
 - [Código como contenido](docs/CODE_SUBSYSTEM_CLASSIFICATION.md)
 - [Knowledge Plane](docs/KNOWLEDGE.md)
-- [Handoff operativo vigente](https://github.com/victor982721-lab/Neocortex/blob/main/.codex/handoffs/NEOCORTEX_0.7.2_PAUSE_2026-07-30.md)
+- [Handoff operativo vigente](.codex/handoffs/NEOCORTEX_0.7.2_PAUSE_2026-07-30.md)
 - [Persistencia y migraciones](docs/PERSISTENCE.md)
 - [Recuperación y rollback](docs/RECOVERY.md)
 - [Seguridad y operaciones sobre archivos](docs/SECURITY.md)

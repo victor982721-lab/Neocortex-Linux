@@ -5,6 +5,24 @@ mantenimiento. La estructura de componentes se describe en
 [ARCHITECTURE.md](ARCHITECTURE.md) y los propietarios y versiones de las bases
 en [PERSISTENCE.md](PERSISTENCE.md). La consulta cross-owner de solo lectura se
 documenta en [KNOWLEDGE.md](KNOWLEDGE.md); no se duplican esos contratos aquí.
+La secuencia de cortes y sus gates vivos se mantiene en
+[ROADMAP_90_DAYS.md](ROADMAP_90_DAYS.md).
+
+## Mantenimiento seguro de estado
+
+La consulta de owners y publicaciones no abre SQLite con un lector ordinario:
+
+```bash
+Neocortex databases status --json
+```
+
+Un backup general se previsualiza sin crear el destino y se aplica sólo con
+`--apply --confirm-database-backup BACKUP_DATABASES`; el restore valida en
+staging y exige `--manifest-sha256 SHA256 --confirm-database-restore
+RESTORE_DATABASES` para publicar. La purga de bases sigue siendo independiente,
+backup-first y requiere `--plan-digest` además de `DELETE_DATABASES`. Los
+manifests `state-backup-manifest.json` y `database-purge-manifest.json` no se
+intercambian, y ninguna de estas operaciones toca el corpus.
 
 ## Flujo personal recomendado
 
@@ -71,11 +89,10 @@ artefacto ya descargado en un flujo offline; no relaja la autenticación.
 
 3. Confirme la raíz exacta y que no sea un symlink, junction o punto de
    reanálisis.
-4. El recorrido portable funciona sin USN. Para probar su acelerador opcional,
-   use un volumen NTFS local y los permisos de lectura ya disponibles; no eleve
-   la corrida cotidiana sólo para habilitarlo. Las rutas UNC y otros sistemas de
-   archivos no ofrecen identidad/USN equivalentes, pero sí pueden usar el
-   baseline portable si cumplen el resto de las protecciones de la raíz.
+4. El recorrido Linux portable funciona sin USN y es la única ruta operativa
+   vigente. No configure NTFS/USN ni eleve la corrida cotidiana para habilitar
+   compatibilidad histórica; las rutas Windows permanecen fuera de alcance y
+   sólo se conservan como referencia.
 5. Antes de una actualización, migración o acción sobre archivos, siga
    [RECOVERY.md](RECOVERY.md).
 
@@ -102,18 +119,8 @@ eventos y planes; no es una consulta de sólo lectura. Empiece con un conjunto
 acotado:
 
 ```bash
-$Root = 'C:\Datos'
-if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
-    throw "La raíz no existe o no es un directorio: $Root"
-}
-Neocortex --root $Root --route pdf --MaxCount 25 --strict-exit-codes
-```
-
-Equivalente Linux, siempre sin flags de mutación:
-
-```bash
 Root="$HOME/Documentos/NeoCortex/Pilot"
-test -d "$Root"
+test -d "$Root" || { printf 'La raíz no existe: %s\n' "$Root" >&2; exit 2; }
 Neocortex --root "$Root" --route pdf --MaxCount 25 --strict-exit-codes
 ```
 
@@ -126,7 +133,7 @@ exclusión con la identidad de esas rutas internas.
 
 Después inspeccione la ejecución:
 
-```powershell
+```bash
 Neocortex --status
 Neocortex --status --status-json
 ```
@@ -141,8 +148,8 @@ No existe una consulta de receipt de autoanálisis. `--all` ejecuta el flujo
 seleccionado y, si el corpus no está disponible, informa `corpus_unavailable`
 sin traceback ni creación parcial del estado documental.
 
-```powershell
-Neocortex --root $Root --route pdf,docx --MaxCount 25 --docx-max-count 25 --strict-exit-codes
+```bash
+Neocortex --root "$Root" --route pdf,docx --MaxCount 25 --docx-max-count 25 --strict-exit-codes
 ```
 
 No use una corrida amplia como prueba de instalación. Ayuda, versión y doctors
@@ -202,9 +209,10 @@ Neocortex --state-health --state-health-json
 ```
 
 La consulta clasifica cada base como `healthy`, `missing`,
-`orphaned_sidecars`, `blocked` o `unreadable`, y devuelve `2` si la cobertura
-no es completa. No la ejecutes en paralelo con una unidad que esté escribiendo
-el mismo owner; ante un journal o cambio concurrente se abstiene.
+`orphaned_sidecars`, `active`, `blocked`, `unreadable`, `future`,
+`incompatible`, `corrupt` o `unknown`, y devuelve `2` si la cobertura no es
+completa. No la ejecutes en paralelo con una unidad que esté escribiendo el
+mismo owner; ante un journal o cambio concurrente se abstiene.
 
 La muestra debe combinar texto plano/Markdown, CSV o TSV, HTML/XML/JSON, un EML
 multipart y DOC/XLS/PPT reales. Repita el productor: el segundo resumen debe
@@ -261,14 +269,14 @@ mediante una lectura immutable que no crea ni toca sidecars. Si el framework
 conserva un WAL activo o sidecars no demostrablemente inactivos, devuelve `2` y
 no continúa; el límite se puede ampliar hasta 1000:
 
-```powershell
+```bash
 Neocortex --status --status-limit 20
 Neocortex --status --status-run 40 --status-json
 ```
 
 Para continuar fases incompletas de un run cuyo snapshot siga retenido:
 
-```powershell
+```bash
 Neocortex --resume-run 40
 ```
 
@@ -279,11 +287,11 @@ la operación debe abstenerse; no reconstruya filas SQLite manualmente.
 Code puede reutilizar directamente un inventario durable aunque el snapshot
 conserve cero candidatos MIME:
 
-```powershell
-$State = 'C:\Estado\Neocortex'
-Neocortex --root $Root --state-directory $State --route code --route-only
-Neocortex --root $Root --state-directory $State --route code --route-only --candidate-run 40
-Neocortex --root $Root --state-directory $State --resume-run 40
+```bash
+State="${XDG_STATE_HOME:-$HOME/.local/state}/Neocortex/state"
+Neocortex --root "$Root" --state-directory "$State" --route code --route-only
+Neocortex --root "$Root" --state-directory "$State" --route code --route-only --candidate-run 40
+Neocortex --root "$Root" --state-directory "$State" --resume-run 40
 ```
 
 La selección pública predeterminada es `--code-scope projects`: el inventario
@@ -317,8 +325,8 @@ incremental. El watcher actual dispara corridas de contenido y catálogo; no
 ejecuta `--semantic-index` ni `--semantic-classify` y todavía no demuestra el
 daemon multimodal completo.
 
-```powershell
-Neocortex --root $Root --watch --route pdf
+```bash
+Neocortex --root "$Root" --watch --route pdf
 ```
 
 Opciones y valores predeterminados:
@@ -336,11 +344,11 @@ Opciones y valores predeterminados:
 
 Ejemplo con política explícita para una ruta ya aprobada:
 
-```powershell
-Neocortex --root $Root --watch --route pdf `
-  --watch-bootstrap if-needed `
-  --watch-poll-timeout-seconds 2 `
-  --watch-debounce-seconds 1 `
+```bash
+Neocortex --root "$Root" --watch --route pdf \
+  --watch-bootstrap if-needed \
+  --watch-poll-timeout-seconds 2 \
+  --watch-debounce-seconds 1 \
   --watch-max-debounce-seconds 15
 ```
 
@@ -413,13 +421,13 @@ Para una primera ejecución use límites de tamaño/cantidad compatibles con la
 ruta. Los valores `--*-max-mb` usan megabytes decimales; en PDF `1000` equivale
 a 1 GB:
 
-```powershell
-Neocortex --root $Root --route pdf --MaxMB 1000 --MaxCount 25
-Neocortex --root $Root --route archive --archive-max-mb 1000 --archive-max-count 25
-Neocortex --root $Root --route text --text-max-mb 64 --text-max-count 25
-Neocortex --root $Root --route image --image-max-mb 100 --image-max-count 100
-Neocortex --root $Root --route video --video-max-count 25
-Neocortex --root $Root --route code --code-max-count 500
+```bash
+Neocortex --root "$Root" --route pdf --MaxMB 1000 --MaxCount 25
+Neocortex --root "$Root" --route archive --archive-max-mb 1000 --archive-max-count 25
+Neocortex --root "$Root" --route text --text-max-mb 64 --text-max-count 25
+Neocortex --root "$Root" --route image --image-max-mb 100 --image-max-count 100
+Neocortex --root "$Root" --route video --video-max-count 25
+Neocortex --root "$Root" --route code --code-max-count 500
 ```
 
 No reduzca OCR, límites de texto o validación de caché para declarar éxito sin
@@ -441,7 +449,7 @@ El fastpath del grafo sólo aplica a una corrida completa de `code`, sin
 `--code-max-count` ni filtros de selección. Primero se ejecuta `mark_missing`;
 si no hubo invalidaciones ni trabajo nuevo, todos los candidatos fueron hits
 compatibles con el runtime y el run completo inmediatamente anterior publicó el
-fence tipado exacto con `resolver_signature=code-graph-resolver-v4`, se reutiliza
+fence tipado exacto con `resolver_signature=code-graph-resolver-v7`, se reutiliza
 el conteo de proyectos. Esa versión resuelve símbolos y dependencias mediante
 conjuntos temporales indexados, prioriza ámbito local y rutas relativas exactas,
 y sincroniza los labels FTS distintos en una pasada, no con una consulta o
@@ -510,11 +518,10 @@ Si se interrumpió una operación autorizada sobre archivos, **no la repita
 automáticamente**. Siga la sección de acciones inciertas de
 [RECOVERY.md](RECOVERY.md).
 
-En `0.9.0`, los rename y movimientos admitidos son únicamente de archivos
+El contrato histórico de `0.9.0` para rename y movimientos se limitaba a archivos
 regulares con un hard link en NTFS local y mismo volumen, mediante handles
-retenidos y sin reemplazo. Los demás casos se abstienen. La aplicación de
-candidatos de Papelera está deshabilitada; el dry-run continúa registrando el
-plan y un `--apply` los marca `skipped` sin llamar a `Send2Trash`.
+retenidos y sin reemplazo. Ese backend no está activo en Linux; los candidatos
+de Papelera sólo se conservan en dry-run y no se aplica ninguna mutación física.
 
 Linux no expone aún ese backend de mutación. `--apply` y
 `--organization-apply` se rechazan antes de crear estado con salida `2` y razón
@@ -524,7 +531,7 @@ Linux no expone aún ese backend de mutación. `--apply` y
 
 Diagnóstico cotidiano mínimo, sin modificar el corpus:
 
-```powershell
+```bash
 Neocortex --version
 Neocortex doctor capabilities
 Neocortex doctor platform --json
@@ -550,7 +557,7 @@ decisión humana antes de cualquier cambio persistente.
 Para conservar la observación, no la mutación, use después un `record`
 explícito con actor y confirmación:
 
-```powershell
+```bash
 Neocortex --action-recovery-record 42 --action-recovery-actor "Victor" --confirm-reconciliation-record --action-recovery-json
 ```
 
@@ -563,7 +570,7 @@ verificación y ningún evento autoriza por sí mismo una mutación.
 Los planes documentales `recovery_required` tampoco se reintentan y conservan
 reservado su destino:
 
-```powershell
+```bash
 Neocortex --organization-preview 100 --organization-preview-status recovery_required
 ```
 
@@ -572,7 +579,7 @@ Neocortex --organization-preview 100 --organization-preview-status recovery_requ
 Obtenga primero un plan de sólo lectura. La edad es deliberadamente explícita;
 si se omite, no se declara elegibilidad por antigüedad:
 
-```powershell
+```bash
 Neocortex --retention-status
 Neocortex --retention-status --retention-store semantic --retention-store catalog --retention-min-age-days 30 --retention-batch-size 100
 ```
@@ -601,7 +608,7 @@ idempotente. SQLite no proporciona una transacción atómica entre esas bases.
   holds cross-store explícitos; si no puede hacerlo, falla cerrado sin borrar.
   Conserva siempre la publicación actual y la anterior de cada raíz, además de
   builders, candidatos y scans referenciados.
-- Catálogo v6 y semántica v6 preservan la generación publicada durante staging,
+- Catálogo v7 y semántica v7 preservan la generación publicada durante staging,
   fallo o cancelación. Existe un planificador dry-run, pero no una poda ni
   enforcement de cuotas para generaciones fallidas, canceladas, superseded,
   `ready_partial` o builds abandonados.

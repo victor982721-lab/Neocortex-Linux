@@ -6,7 +6,8 @@ import sqlite3
 from pathlib import Path
 from typing import Protocol
 
-from neocortex.persistence.sqlite_paths import existing_sqlite_uri, readonly_sqlite_uri
+from neocortex.persistence.sqlite_immutable import open_sidecar_safe_sqlite_connection
+from neocortex.persistence.sqlite_paths import existing_sqlite_uri
 
 from ..domain.errors import InventoryError
 
@@ -48,7 +49,10 @@ def connect(path: Path, *, readonly: bool = False) -> sqlite3.Connection:
     """Open a lifecycle connection, creating state only in writable mode."""
 
     if readonly:
-        connection = sqlite3.connect(readonly_sqlite_uri(path), uri=True, timeout=60.0)
+        try:
+            connection = open_sidecar_safe_sqlite_connection(path, timeout_seconds=60.0)
+        except FileNotFoundError as exc:
+            raise sqlite3.OperationalError(f"unable to open database file: {path}") from exc
     else:
         connection = sqlite3.connect(path, timeout=60.0)
     return configure_owner_connection(connection, readonly=readonly)

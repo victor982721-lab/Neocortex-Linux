@@ -112,7 +112,8 @@ def test_malformed_current_catalog_is_rejected_without_writable_open(
     with pytest.raises(SQLiteSchemaContractError, match="lacks indexes"):
         initialize_document_catalog(database)
 
-    assert modes == [True]
+    # An active WAL selects the sidecar-safe temporary snapshot path.
+    assert modes == []
     assert database.read_bytes() == original_bytes
 
 
@@ -141,7 +142,8 @@ def test_unknown_catalog_versions_are_rejected_without_writing(
     with pytest.raises(error_type, match=message):
         initialize_document_catalog(database)
 
-    assert modes == [True]
+    # An active WAL selects the sidecar-safe temporary snapshot path.
+    assert modes == []
     assert database.read_bytes() == original_bytes
 
 

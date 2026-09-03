@@ -294,4 +294,7 @@ def test_missing_state_status_does_not_create_any_path(
     payload = read_api.status_payload("personal")
 
     assert payload["read_only"] is True
+    assert payload["coverage"] == "empty"
+    assert payload["status"] == "empty"
+    assert payload["exit_code"] == int(KnowledgeExitCode.NO_RESULTS)
     assert not missing.exists()

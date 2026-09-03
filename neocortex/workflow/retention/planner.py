@@ -30,6 +30,10 @@ from neocortex.workflow.review.review_task_repository import (
     MAX_REVIEW_TASK_SOURCE_PUBLICATION_HEADS,
     audit_latest_review_task_source_publications_from_connection,
 )
+from neocortex.persistence.sqlite_immutable import (
+    SQLiteReadMode,
+    SQLiteReadSession,
+)
 from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
 from neocortex.persistence.sqlite_schema_contract import validate_sqlite_schema_contract
 # endregion [01]
@@ -54,6 +58,11 @@ STORE_DATABASES: Mapping[RetentionStore, str] = {
     "inventory": "dedup.sqlite3",
     "framework": "framework.sqlite3",
 }
+
+# Tests and embedders historically inject a sqlite-like module to exercise
+# connection failures.  Production always uses the fenced kernel below; this
+# identity marker keeps that compatibility seam explicit and bounded.
+_CANONICAL_SQLITE_MODULE = sqlite3
 
 
 class RetentionPlanningCancelled(RuntimeError):
@@ -189,33 +198,62 @@ def _readonly_snapshot(
     database: Path,
     cancelled: Callable[[], bool] | None,
 ) -> Iterator[sqlite3.Connection]:
-    connection = sqlite3.connect(
-        readonly_sqlite_uri(database),
-        uri=True,
-        timeout=5.0,
-    )
-    try:
-        connection.row_factory = sqlite3.Row
+    if sqlite3 is not _CANONICAL_SQLITE_MODULE:
+        connection = sqlite3.connect(
+            readonly_sqlite_uri(database),
+            uri=True,
+            timeout=5.0,
+        )
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA busy_timeout=5000")
+            connection.execute("PRAGMA foreign_keys=ON")
+            if int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
+                raise RuntimeError("retention snapshot could not enforce foreign_keys")
+            connection.execute("PRAGMA query_only=ON")
+            if int(connection.execute("PRAGMA query_only").fetchone()[0]) != 1:
+                raise RuntimeError("retention snapshot could not enforce query_only")
+            if cancelled is not None:
+                connection.set_progress_handler(lambda: int(cancelled()), 1_000)
+            connection.execute("BEGIN")
+            yield connection
+        finally:
+            try:
+                connection.set_progress_handler(None, 0)
+            finally:
+                try:
+                    if connection.in_transaction:
+                        connection.rollback()
+                finally:
+                    connection.close()
+        return
+    # Retention is a diagnostic reader and may be interleaved with a writer;
+    # always detach a bounded snapshot so a later commit cannot invalidate the
+    # plan or make its close fence look like a reader failure.
+    mode = SQLiteReadMode.SNAPSHOT_TEMP
+    with SQLiteReadSession(
+        database,
+        mode=mode,
+        timeout_seconds=5.0,
+    ) as connection:
+        # The kernel enables these safeguards, while retention keeps its
+        # shorter bounded busy budget and cancellation progress hook.
         connection.execute("PRAGMA busy_timeout=5000")
-        connection.execute("PRAGMA foreign_keys=ON")
         if int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
             raise RuntimeError("retention snapshot could not enforce foreign_keys")
-        connection.execute("PRAGMA query_only=ON")
         if int(connection.execute("PRAGMA query_only").fetchone()[0]) != 1:
             raise RuntimeError("retention snapshot could not enforce query_only")
         if cancelled is not None:
             connection.set_progress_handler(lambda: int(cancelled()), 1_000)
-        connection.execute("BEGIN")
-        yield connection
-    finally:
         try:
-            connection.set_progress_handler(None, 0)
+            connection.execute("BEGIN")
+            yield connection
         finally:
             try:
+                connection.set_progress_handler(None, 0)
+            finally:
                 if connection.in_transaction:
                     connection.rollback()
-            finally:
-                connection.close()
 
 
 def _metadata_version(connection: sqlite3.Connection, label: str) -> int:

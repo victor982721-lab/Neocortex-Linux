@@ -2,7 +2,7 @@
 
 > **Estado del documento.** Esta es la fuente de verdad funcional de la
 > Knowledge Plane read-only introducida en NeoCortex `0.7.0` y actualizada el
-> 11 de agosto de 2026 para los contratos de `0.9.0`. Describe el código y los
+> 3 de septiembre de 2026 para los contratos vigentes. Describe el código y los
 > contratos observables del
 > árbol; no sustituye las pruebas ni convierte una evaluación scripted en
 > evidencia de calidad sobre el corpus real.
@@ -13,7 +13,7 @@ Este documento describe una capacidad implementada, no certifica que cualquier
 estado local esté listo para usarla. Antes de afirmar que Knowledge funciona
 sobre el corpus:
 
-```powershell
+```bash
 Neocortex --knowledge-status --knowledge-json
 ```
 
@@ -312,13 +312,13 @@ control.
 | `text` (aditivo) | `text.sqlite3` | 2 | Documento/FTS actual más revisiones, receipts, materializaciones, heads y outbox owner-local; la vista de contenido sigue siendo no generacional. | FTS y semantic de texto, EML y Office heredado; clasificación vía catálogo y linaje read-only. |
 | `audio` | `audio.sqlite3` | 2 | Conteo, último `updated_ns` y run; no generacional. | FTS de transcripción y segmentos semantic. |
 | `video` | `video.sqlite3` | 2 | Conteo, último `updated_ns` y run; no generacional. | OCR FTS de frames con localizador temporal; el audio enlazado conserva su owner propio. |
-| `image` | `image.sqlite3` | 5 | Conteo, último `updated_ns` y run; no generacional. | Imagen y OCR retenido mediante semantic cuando están publicados. |
+| `image` | `image.sqlite3` | 6 | Conteo, último `updated_ns` y run; no generacional. | Imagen y OCR retenido mediante semantic cuando están publicados. |
 | `semantic` | `semantic.sqlite3` | 7 | Head `ready` por firma de modelo; receipts/outbox nuevos no atribuyen trabajo legacy. | Texto e imagen por espacio/modelo publicado, resueltos contra la revisión DB-local vigente, y linaje parcial de chunks/embeddings. |
-| `code` | `code.sqlite3` | 5 | Archivos actuales, última versión y último run; `best_effort_non_generational`. | FTS, exact typed, estructura, símbolos, relaciones owner-local, evidencia externa y enlaces exactos a chunks Semantic publicados. |
+| `code` | `code.sqlite3` | 7 | Archivos actuales, última versión y último run; `best_effort_non_generational`. | FTS, exact typed, estructura, símbolos, relaciones owner-local, evidencia externa y enlaces exactos a chunks Semantic publicados. |
 
 Los watermarks no generacionales son detectores acotados de cambio, no una
 publicación equivalente a inventario, catálogo o semantic. En particular,
-`code` schema 5 todavía no tiene generación/head de grafo.
+`code` schema 7 todavía no tiene generación/head de grafo.
 
 Cada head de inventario incluye, cuando existe un plan terminado, el token
 `duplicate-plan-v1:<completed_ns>:<groups>:<redundant>:<bytes>`. Así se detecta
@@ -330,8 +330,9 @@ que `begin_duplicate_plan()` borre o reconstruya el plan bajo el mismo
 No existe una transacción distribuida entre estos archivos SQLite.
 `collect_knowledge_snapshot()` hace explícito el límite:
 
-1. abre cada owner por URI `mode=ro` con timeout/busy timeout de 60 s,
-   `foreign_keys=ON` y `query_only=ON`;
+1. abre cada owner con `SQLiteReadSession`, usando `immutable_strict` cuando la
+   topología es quiescente y `snapshot_temp` cuando hay WAL/sidecars, con
+   timeout/busy timeout de 60 s, `foreign_keys=ON` y `query_only=ON`;
 2. valida la versión y el schema exacto esperado; la compatibilidad legacy
    explícita de Framework admite 19, 20 o 21 hacia 22, condicionada al contrato
    estructural exacto y sin migrar ni escribir;
@@ -362,9 +363,10 @@ primer cambio reintenta toda la recuperación una vez. Si vuelve a cambiar,
 conserva los hits como resultado parcial y devuelve
 `consistency=snapshot_changed` con los IDs antes/después y los owners cambiados.
 
-`mode=ro` y `query_only` impiden escrituras SQL intencionales, pero no deben
-describirse como apertura byte-neutra: según el journal y el estado del archivo,
-SQLite puede participar en, crear o actualizar auxiliares `-wal`/`-shm`. Una
+El kernel `SQLiteReadSession` impide escrituras SQL intencionales y mantiene la
+lectura byte-neutra: una base quiescente se abre con `immutable_strict` y una
+base con sidecars activos se copia a `snapshot_temp`, sin crear ni actualizar
+auxiliares del owner. Una
 espera de lock tampoco ejecuta necesariamente el callback cooperativo antes de
 que SQLite devuelva el control.
 
@@ -386,8 +388,9 @@ Límites de la API:
 | valores por filtro | — | 64 |
 | términos exactos | — | 64 |
 
-El planner reconoce rutas Windows/UNC, POSIX y relativas seguras; nombres con
-extensión; seriales con frontera explícita; símbolos cualificados; símbolos
+El planner vigente reconoce rutas POSIX y relativas seguras; los casos
+Windows/UNC se conservan únicamente como compatibilidad histórica. También
+reconoce nombres con extensión, seriales con frontera explícita, símbolos cualificados y símbolos
 bare sólo con contexto de código; huellas e identificadores. Antes de tocar un
 owner, `classify_plan_exact_terms()` normaliza y deduplica cada término como
 `path`, `name`, `identifier`, `serial`, `hash` o `symbol`. Sus pasos posibles
@@ -716,11 +719,11 @@ usarlo y debe conservar las citas.
 
 ## CLI instalada
 
-La interfaz técnica Knowledge sigue siendo option-based; no existe un
-subcomando `knowledge`. La fachada cotidiana ofrece aliases read-only con
-scopes fijos:
+La interfaz técnica Knowledge conserva sus flags legacy, pero la fachada
+cotidiana ofrece el subcomando `knowledge health` y aliases read-only con scopes
+fijos:
 
-```powershell
+```bash
 Neocortex status --scope all
 Neocortex search "mantenimiento de transformadores" --scope personal
 Neocortex ask "¿qué evidencia existe de la prueba FAT?" --scope personal
@@ -732,7 +735,7 @@ rutas arbitrarias, no abre red y no registra herramientas de mutación.
 
 Los flags técnicos permanecen disponibles:
 
-```powershell
+```bash
 Neocortex --knowledge-status
 Neocortex --knowledge-status --knowledge-json
 Neocortex --knowledge-search "mantenimiento de transformadores" --knowledge-limit 20
@@ -891,8 +894,8 @@ limita el archivo a 4 MiB y exige cobertura de todas las categorías.
 
 Ejecución focal:
 
-```powershell
-py -3 -m pytest -q tests/test_knowledge_evaluation.py
+```bash
+python3.14 -m pytest -q tests/test_knowledge_evaluation.py
 ```
 
 Las pruebas funcionales complementarias cubren contratos/Unicode, espacios y
@@ -957,10 +960,10 @@ Limitaciones abiertas:
   `planned_duplicate_of` no prueba duplicación exacta. El caso golden
   `exact_duplicate` prueba la política de fusión con una disposición scripted,
   no que el owner productivo pueda inferirla.
-- Read-only significa ausencia de SQL mutador intencional, no byte-neutralidad:
-  SQLite puede coordinar auxiliares WAL/SHM y una espera de lock puede diferir
-  la cancelación hasta 60 s; `stat` o enumeración UNC también pueden bloquear
-  hasta que Windows devuelva el control.
+- Read-only significa ausencia de SQL mutador intencional y, en el contrato
+  vigente, lectura byte-neutra del owner mediante `SQLiteReadSession`; los
+  ejemplos Windows/UNC de este documento son históricos y no forman parte del
+  alcance Linux activo.
 - No existe `QueryObservation` durable ni feedback writer. MCP/stdio es una
   fachada efímera read-only sobre los mismos contratos.
 - Scores semantic, catálogo y heurísticas no son verdad ni probabilidades

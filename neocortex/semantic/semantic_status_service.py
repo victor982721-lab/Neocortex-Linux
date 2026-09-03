@@ -28,7 +28,7 @@ def semantic_status(
     database = state_directory / SEMANTIC_DATABASE_NAME
     if not database.is_file():
         return SemanticStatus(False)
-    with semantic_database(database, readonly=True) as connection:
+    with semantic_database(database, readonly=True, read_mode="snapshot_temp") as connection:
         # Keep counts, selected generation identifiers, and their summaries on
         # one WAL read snapshot.  Reopening per generation both produced N+1
         # connections and allowed a concurrent publication/prune to mix views.

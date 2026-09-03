@@ -63,7 +63,9 @@ class SQLiteBackupPolicy:
             raise TypeError("integrity must be a SQLiteIntegrityPolicy")
 
 
-_DEFAULT_SQLITE_BACKUP_POLICY = SQLiteBackupPolicy()
+_DEFAULT_SQLITE_BACKUP_POLICY = SQLiteBackupPolicy(
+    integrity=SQLiteIntegrityPolicy(check_mode="full")
+)
 
 
 @dataclass(frozen=True, slots=True)

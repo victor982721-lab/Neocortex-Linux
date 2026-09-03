@@ -10,6 +10,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TextIO
 
+from neocortex.api.read_contract import sanitize_untrusted_text
+
 from ..read_api import (
     ReadScope,
     asset_health_payload,
@@ -73,7 +75,8 @@ def _console_text(value: str, stream: object) -> str:
 
 def _print(value: str = "", *, file: TextIO | None = None) -> None:
     stream = sys.stdout if file is None else file
-    print(_console_text(value, stream), file=stream)
+    safe_value = sanitize_untrusted_text(value, limit=None, single_line=False)
+    print(_console_text(safe_value, stream), file=stream)
 
 
 def _json(payload: Mapping[str, object]) -> None:
@@ -271,13 +274,132 @@ def build_human_parser() -> argparse.ArgumentParser:
     databases = commands.add_parser(
         "databases",
         aliases=("database",),
-        help="previsualiza o elimina las bases SQLite propias de NeoCortex",
+        help="consulta, respalda, restaura o elimina las bases SQLite propias de NeoCortex",
         allow_abbrev=False,
     )
     database_commands = databases.add_subparsers(
         dest="database_command",
         metavar="ACCIÓN",
     )
+    database_status = database_commands.add_parser(
+        "status",
+        help="consulta salud de owners, época y publicaciones sin modificar estado",
+        allow_abbrev=False,
+    )
+    database_status.add_argument(
+        "--state-directory",
+        type=Path,
+        default=default_state_directory(),
+        help="directorio de estado; por defecto, el estado Linux canónico",
+    )
+    database_status.add_argument(
+        "--store",
+        action="append",
+        choices=_DATABASE_STORE_CHOICES,
+        metavar="OWNER",
+        help="owner a consultar; puede repetirse, por defecto todos los owners",
+    )
+    database_status.add_argument(
+        "--publication-limit",
+        type=int,
+        default=10,
+        metavar="N",
+        help="máximo de publicaciones recientes incluidas en JSON (1-100)",
+    )
+    database_status.add_argument("--json", action="store_true", help="emite el contrato JSON")
+
+    backup = database_commands.add_parser(
+        "backup",
+        help="previsualiza o crea un backup verificado de owners SQLite",
+        allow_abbrev=False,
+    )
+    backup.add_argument(
+        "--state-directory",
+        type=Path,
+        default=default_state_directory(),
+        help="directorio de estado; por defecto, el estado Linux canónico",
+    )
+    backup.add_argument(
+        "--backup-directory",
+        type=Path,
+        required=True,
+        help="directorio nuevo fuera del estado donde escribir el backup",
+    )
+    backup.add_argument(
+        "--store",
+        action="append",
+        choices=_DATABASE_STORE_CHOICES,
+        metavar="OWNER",
+        help="owner a respaldar; puede repetirse, por defecto todos los owners",
+    )
+    backup.add_argument(
+        "--integrity",
+        dest="integrity_mode",
+        choices=("quick", "full"),
+        default="full",
+        help="nivel de integridad; full es el valor predeterminado",
+    )
+    backup.add_argument(
+        "--release-sha",
+        metavar="SHA",
+        help="SHA de release que quedará ligado al manifest",
+    )
+    backup.add_argument("--expected-epoch", type=int, metavar="EPOCH")
+    backup.add_argument(
+        "--apply",
+        action="store_true",
+        help="escribe el backup; sin esta opción sólo muestra una vista previa",
+    )
+    backup.add_argument(
+        "--confirm-database-backup",
+        metavar="TOKEN",
+        help="debe ser BACKUP_DATABASES junto con --apply",
+    )
+    backup.add_argument("--json", action="store_true", help="emite el contrato JSON")
+
+    restore = database_commands.add_parser(
+        "restore",
+        help="valida o publica un backup completo en staging",
+        allow_abbrev=False,
+    )
+    restore.add_argument(
+        "--state-directory",
+        type=Path,
+        default=default_state_directory(),
+        help="directorio de estado; por defecto, el estado Linux canónico",
+    )
+    restore.add_argument(
+        "--backup-directory",
+        type=Path,
+        required=True,
+        help="directorio que contiene state-backup-manifest.json",
+    )
+    restore.add_argument(
+        "--store",
+        action="append",
+        choices=_DATABASE_STORE_CHOICES,
+        metavar="OWNER",
+        help="owner a restaurar; puede repetirse, por defecto todos los owners",
+    )
+    restore.add_argument(
+        "--manifest-sha256",
+        dest="expected_manifest_sha256",
+        metavar="SHA256",
+        help="digest SHA-256 del manifest; obligatorio junto con --apply",
+    )
+    restore.add_argument("--expected-epoch", type=int, metavar="EPOCH")
+    restore.add_argument(
+        "--apply",
+        action="store_true",
+        help="publica el backup; sin esta opción sólo valida en modo lectura",
+    )
+    restore.add_argument(
+        "--confirm-database-restore",
+        metavar="TOKEN",
+        help="debe ser RESTORE_DATABASES junto con --apply",
+    )
+    restore.add_argument("--json", action="store_true", help="emite el contrato JSON")
+
     purge = database_commands.add_parser(
         "purge",
         help="borrar bases sólo con backup y confirmación explícita",
@@ -311,6 +433,11 @@ def build_human_parser() -> argparse.ArgumentParser:
         metavar="TOKEN",
         help="debe ser DELETE_DATABASES junto con --apply",
     )
+    purge.add_argument(
+        "--plan-digest",
+        metavar="SHA256",
+        help="digest de la vista previa; obligatorio junto con --apply",
+    )
     purge.add_argument("--json", action="store_true", help="emite el resultado JSON")
 
     agent = commands.add_parser(
@@ -343,7 +470,8 @@ def _scope_label(value: object) -> str:
 def _render_scope_error(entry: Mapping[str, object]) -> None:
     _print(
         f"{_scope_label(entry.get('scope'))}: no se pudo consultar "
-        f"({entry.get('error_type', 'error')}: {entry.get('reason', 'sin detalle')})."
+        f"({sanitize_untrusted_text(entry.get('error_type', 'error'), limit=120)}: "
+        f"{sanitize_untrusted_text(entry.get('reason', 'sin detalle'), limit=400)})."
     )
 
 
@@ -385,8 +513,7 @@ def _run_status(args: argparse.Namespace) -> int:
 
 
 def _single_line(value: object, *, limit: int = 360) -> str:
-    text = " ".join(str(value or "").split())
-    return text if len(text) <= limit else text[: limit - 3].rstrip() + "..."
+    return sanitize_untrusted_text(value, limit=limit)
 
 
 def _locator(evidence: Mapping[str, object]) -> str:
@@ -411,7 +538,10 @@ def _render_hit(hit: Mapping[str, object], *, prefix: str) -> None:
     evidence = hit.get("evidence")
     if not isinstance(resource, dict) or not isinstance(evidence, dict):
         return
-    path = str(resource.get("current_path") or resource.get("resource_id") or "sin ruta")
+    path = sanitize_untrusted_text(
+        resource.get("current_path") or resource.get("resource_id") or "sin ruta",
+        limit=800,
+    )
     name = Path(path).name or path
     _print(f"{prefix} {name} · {_locator(evidence)}")
     _print(f"   Ruta: {path}")
@@ -768,6 +898,24 @@ def _run_database_purge(args: argparse.Namespace) -> int:
     return run_database_purge(args)
 
 
+def _run_database_status(args: argparse.Namespace) -> int:
+    from .database_purge import run_database_status
+
+    return run_database_status(args)
+
+
+def _run_database_backup(args: argparse.Namespace) -> int:
+    from .database_purge import run_database_backup
+
+    return run_database_backup(args)
+
+
+def _run_database_restore(args: argparse.Namespace) -> int:
+    from .database_purge import run_database_restore
+
+    return run_database_restore(args)
+
+
 def run_human_command(arguments: Sequence[str]) -> int:
     parser = build_human_parser()
     args = parser.parse_args(list(arguments))
@@ -790,8 +938,15 @@ def run_human_command(arguments: Sequence[str]) -> int:
         return _run_review_task(args)
     if args.command == "knowledge" and args.knowledge_command == "health":
         return _run_knowledge_health(args)
-    if args.command in {"databases", "database"} and args.database_command == "purge":
-        return _run_database_purge(args)
+    if args.command in {"databases", "database"}:
+        if args.database_command == "status":
+            return _run_database_status(args)
+        if args.database_command == "backup":
+            return _run_database_backup(args)
+        if args.database_command == "restore":
+            return _run_database_restore(args)
+        if args.database_command == "purge":
+            return _run_database_purge(args)
     if args.command == "agent" and args.agent_command == "serve":
         return _run_agent_serve()
     parser.error("falta una acción concreta")

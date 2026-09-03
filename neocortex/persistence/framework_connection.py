@@ -10,7 +10,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from neocortex.persistence.sqlite_paths import existing_sqlite_uri, readonly_sqlite_uri
+from neocortex.persistence.sqlite_immutable import open_sidecar_safe_sqlite_connection
+from neocortex.persistence.sqlite_paths import existing_sqlite_uri
 # endregion [01]
 
 # region [02] Implementación
@@ -26,8 +27,17 @@ def connect_existing_framework(
 
     if timeout_seconds <= 0:
         raise ValueError("framework SQLite timeout must be positive")
-    uri = readonly_sqlite_uri(path) if readonly else existing_sqlite_uri(path)
-    connection = sqlite3.connect(uri, uri=True, timeout=timeout_seconds)
+    if readonly:
+        try:
+            connection = open_sidecar_safe_sqlite_connection(
+                path,
+                timeout_seconds=timeout_seconds,
+            )
+        except FileNotFoundError as exc:
+            raise sqlite3.OperationalError(f"unable to open database file: {path}") from exc
+    else:
+        uri = existing_sqlite_uri(path)
+        connection = sqlite3.connect(uri, uri=True, timeout=timeout_seconds)
     try:
         connection.row_factory = sqlite3.Row
         connection.execute(

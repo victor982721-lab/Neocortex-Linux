@@ -686,7 +686,7 @@ def _review_evidence_example(row: sqlite3.Row) -> ReviewEvidenceExample:
         candidate_evidence=candidate_evidence,
         detector_version=detector_version,
         decision_status=decision_status,  # type: ignore[arg-type]
-        outcome=outcome,  # type: ignore[arg-type]
+        outcome=outcome,
         actor=str(values[18]),
         provenance=provenance,
         note=None if values[20] is None else str(values[20]),

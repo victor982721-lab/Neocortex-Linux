@@ -113,8 +113,9 @@ def test_public_sqlite_factories_enforce_connection_pragmas(
         assert reader.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert reader.execute("PRAGMA query_only").fetchone()[0] == 1
         assert reader.execute("PRAGMA busy_timeout").fetchone()[0] > 0
-        expected_reader_journal = "delete" if case.name == "code" else "wal"
-        assert reader.execute("PRAGMA journal_mode").fetchone()[0] == (expected_reader_journal)
+        # The read kernel uses immutable or a detached delete-mode snapshot;
+        # it never negotiates WAL on the source owner.
+        assert reader.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
         assert reader.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert reader.execute("PRAGMA foreign_key_check").fetchall() == []
         with pytest.raises(sqlite3.OperationalError, match="readonly"):

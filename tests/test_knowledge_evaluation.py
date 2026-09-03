@@ -251,7 +251,7 @@ def test_runner_crosses_live_planner_fusion_context_and_snapshot_service(
     assert context_spy.call_count == 17
     assert service_calls == 1
 
-    for case, observation in zip(suite.cases, report.observations):
+    for case, observation in zip(suite.cases, report.observations, strict=True):
         assert observation.acceptance_passed
         assert not observation.diagnostics
         assert set(case.required_plan_steps).issubset(observation.plan_steps)

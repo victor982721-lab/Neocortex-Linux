@@ -22,7 +22,7 @@ MODULES = tuple(
 
 
 def test_semantic_modules_are_owned_by_the_canonical_tree() -> None:
-    assert len(MODULES) == 37
+    assert len(MODULES) == 38
     for name in MODULES:
         product = importlib.import_module(f"neocortex.semantic.{name}")
         assert Path(product.__file__).resolve().is_relative_to(SEMANTIC_ROOT)

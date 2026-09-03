@@ -17,7 +17,6 @@ import neocortex.integrations.inventory.inventory_boundary as boundary_module
 import neocortex.runtime.orchestration.orchestrator as orchestrator_module
 import neocortex.runtime.control.watcher as watcher_module
 from neocortex.enumeration import JournalCursor
-from neocortex.safety.corpus_access import ProtectedAnalysisRootError
 from neocortex.safety.internal_paths import InternalPathProtectionError
 from neocortex.integrations.inventory.inventory_boundary import (
     NormalInventoryBoundary,

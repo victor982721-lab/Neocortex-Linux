@@ -33,6 +33,10 @@ READWRITE_CREATE: Final = SQLiteOpenMode.READWRITE_CREATE
 
 _JOURNAL_MODES = frozenset({"DELETE", "TRUNCATE", "PERSIST", "MEMORY", "WAL", "OFF"})
 _SYNCHRONOUS_MODES = frozenset({"OFF", "NORMAL", "FULL", "EXTRA"})
+# Keep the historical injected-connection seam used by focused tests and
+# embedders.  The production branch below never enters it because the module
+# function remains the original sqlite3.connect object.
+_CANONICAL_SQLITE_CONNECT = sqlite3.connect
 
 
 def _require_positive_integer(value: int | None, *, name: str) -> None:
@@ -129,11 +133,27 @@ def _open_sqlite(
     timeout_seconds: float,
 ) -> sqlite3.Connection:
     if mode is READONLY_EXISTING:
-        return sqlite3.connect(
-            readonly_sqlite_uri(path),
-            uri=True,
-            timeout=timeout_seconds,
+        if sqlite3.connect is not _CANONICAL_SQLITE_CONNECT:
+            return sqlite3.connect(
+                readonly_sqlite_uri(path),
+                uri=True,
+                timeout=timeout_seconds,
+            )
+        # All owner reads pass through the fenced kernel.  It returns an
+        # immutable connection for a quiescent owner and an owned temporary
+        # snapshot when a WAL/sidecar is active, so the generic policy cannot
+        # accidentally materialize SQLite sidecars.
+        from neocortex.persistence.sqlite_immutable import (
+            open_sidecar_safe_sqlite_connection,
         )
+
+        try:
+            return open_sidecar_safe_sqlite_connection(
+                path,
+                timeout_seconds=timeout_seconds,
+            )
+        except FileNotFoundError as exc:
+            raise sqlite3.OperationalError(f"unable to open database file: {path}") from exc
     if mode is READWRITE_EXISTING:
         return sqlite3.connect(
             existing_sqlite_uri(path),

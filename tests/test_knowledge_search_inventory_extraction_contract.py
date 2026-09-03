@@ -293,7 +293,9 @@ def test_inventory_extraction_module_exists_without_a_facade_cycle() -> None:
     assert spec.origin is not None
     module_path = Path(spec.origin)
     source = module_path.read_text(encoding="utf-8")
-    assert len(source.splitlines()) <= 910
+    # The canonical read path now includes an explicit injected-provider seam
+    # so tests can remain hermetic while production uses the immutable kernel.
+    assert len(source.splitlines()) <= 940
     tree = ast.parse(source)
     imported_modules = {
         node.module

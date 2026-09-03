@@ -46,6 +46,24 @@ CancellationCheck = Callable[[], None]
 ClockNanoseconds = Callable[[], int]
 
 
+def _default_snapshot_collector(
+    paths: KnowledgeStatePaths,
+    *,
+    source_version: str,
+    cancellation_check: CancellationCheck | None = None,
+) -> KnowledgeSnapshot:
+    """Collect the public Knowledge view through the immutable read kernel."""
+
+    return collect_knowledge_snapshot(
+        paths,
+        source_version=source_version,
+        cancellation_check=cancellation_check,
+        # Select immutable_strict for quiescent owners and a detached
+        # snapshot_temp session when a WAL/journal is active.
+        _immutable_owners=None,
+    )
+
+
 class SnapshotCollector(Protocol):
     def __call__(
         self,
@@ -283,7 +301,7 @@ class KnowledgeSearchService:
 
     paths: KnowledgeStatePaths
     source_version: str = __version__
-    snapshot_collector: SnapshotCollector = collect_knowledge_snapshot
+    snapshot_collector: SnapshotCollector = _default_snapshot_collector
     query_planner: QueryPlanner = plan_knowledge_query
     search_executor: SearchExecutor = _default_search_executor
     context_builder: ContextBuilder | None = None

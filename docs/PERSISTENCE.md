@@ -1,6 +1,6 @@
 # Persistencia, esquemas y migraciones
 
-> **Estado del documento.** Contrato actualizado el 30 de agosto de 2026. El
+> **Estado del documento.** Contrato actualizado el 3 de septiembre de 2026. El
 > árbol fuente `0.9.0` declara inventario Dedup v10, framework v22,
 > PDF v13, Text v2, catálogo v7, Code v7 y semántica v7. En una auditoría histórica, bases vivas se
 > inspeccionaron sin
@@ -34,7 +34,10 @@ ejecutable de backup y restauración se mantiene en
 ## Ubicaciones
 
 `neocortex/platform_policy.py` y `app_paths.py` definen la topología canónica
-por usuario. En Windows:
+por usuario. La topología Windows siguiente se conserva sólo como compatibilidad
+histórica; la operación vigente usa Linux/Kubuntu.
+
+En Windows:
 
 ```text
 Fuente:       %USERPROFILE%\Neocortex\Repository
@@ -85,8 +88,11 @@ exclusión podaría la raíz completa.
 
 1. Cada base tiene un único módulo propietario de DDL y migraciones.
 2. Todo writer debe entrar por la factory del propietario.
-3. Los lectores administrativos deben usar URI SQLite `mode=ro` y, cuando la
-   factory lo establezca, `query_only=ON`.
+3. Los lectores administrativos deben usar el kernel `SQLiteReadSession`: una
+   base quiescente se abre como `immutable_strict`, una base con WAL/sidecars
+   activos se copia a `snapshot_temp`, y `writer_coordinated` sólo pertenece a
+   productores bajo lock. Un URI `mode=ro` aislado no acredita neutralidad de
+   bytes y ya no es un patrón válido fuera del kernel.
 4. `PRAGMA foreign_keys` se configura **por conexión**; que una factory lo
    active no protege conexiones abiertas directamente.
 5. No hay foreign keys entre archivos SQLite. La coherencia cruzada se apoya en
@@ -115,7 +121,7 @@ a los archivos vivos.
 | `video.sqlite3` | `video_state`, `VideoRoute` | 2 | documentos, streams, frames, selección, OCR, timestamps, métricas y FTS | `metadata.schema_version`; migraciones secuenciales |
 | `image.sqlite3` | `capabilities.formats.image.state`, `capabilities.formats.image.route.ImageRoute` | **6** | imágenes, estado de extracción, OCR, semántica visual y metadata | `metadata.schema_version`; v6 reconstruye `images` para retirar datos históricos de NudeNet |
 | `document_catalog.sqlite3` | `document_catalog_schema`, `document_catalog` | **7** | runs, generaciones/staging, publicación por fuente, proyección de documentos, historial y planes de organización | `metadata.schema_version`; migraciones secuenciales |
-| `code.sqlite3` | `code_schema`, `code_state`, `code_retention` | **7** | proyectos, runs, archivos/versiones, símbolos, referencias, dependencias, grafo, chunks, FTS, métricas y enlaces semánticos | metadata + `PRAGMA user_version` + `schema_migrations` exacto; las bases nuevas registran las migraciones históricas sin crear tablas de QA |
+| `code.sqlite3` | `code_schema`, `code_state`, `code_retention` | **7** | proyectos, runs, archivos/versiones, símbolos, referencias, dependencias, grafo, chunks, FTS, métricas, enlaces semánticos y ledger generacional `graph_*` | metadata + `PRAGMA user_version` + `schema_migrations` exacto; el ledger `graph_generation_*` es aditivo y no crea tablas de QA |
 | `semantic.sqlite3` | `semantic_schema`, repositorios y servicio semántico | **7** | espacios/modelos, revisiones inmutables, miembros/heads generacionales, jobs, payloads, receipts, derivaciones de chunks y outbox | metadata + `PRAGMA user_version` + `schema_migrations` exacto; 6→7 aditiva sin atribución legacy |
 
 La base del índice MFT es una API auxiliar con ruta elegida por el llamador y
@@ -175,12 +181,13 @@ reconstruye bases.
 ### Snapshot lógico cross-owner de Knowledge
 
 `--knowledge-status`, `--knowledge-search` y `--knowledge-context` abren sólo
-archivos existentes mediante URI SQLite `mode=ro`, habilitan y comprueban
+archivos existentes mediante `SQLiteReadSession`, eligiendo immutable o una
+instantánea temporal estable según los sidecars, habilitan y comprueban
 `foreign_keys`, fijan `query_only=ON`, usan timeout de 60 segundos y cierran la
-conexión incluso ante `BaseException`. Si el directorio de estado no existe, la
-consulta no lo crea. Este contrato evita DDL/DML y creación de bases; no promete
-neutralidad byte por byte de `-shm` cuando SQLite participa en un WAL existente,
-limitación documentada en la sección de inspección viva.
+sesión incluso ante `BaseException`. Si el directorio de estado no existe, la
+consulta no lo crea. Este contrato evita DDL/DML y creación de bases, y deja
+intactos los bytes del owner; cuando hay WAL, la copia temporal puede tener sus
+propios auxiliares efímeros que se eliminan al cerrar la sesión.
 
 No existe una transacción SQLite distribuida entre los diez archivos históricos
 ni los owners aditivos Archive/texto. El snapshot Knowledge es una observación
@@ -262,7 +269,8 @@ evento conserva action/idempotency/run, clasificación, identidad y recibo
 observados, actor, procedencia, firma, timestamps, recomendación y motivo de
 abstención. Una clave XXH3 hace idempotente la misma solicitud y la secuencia
 con FK compuesta aplica CAS sobre el predecesor; triggers impiden update/delete.
-`--action-recovery-status` sigue en `mode=ro` y `query_only`; sólo
+`--action-recovery-status` usa `SQLiteReadSession`, `query_only` y el cierre
+fenced; sólo
 `--action-recovery-record`, con confirmación explícita, abre el writer existente
 y puede aplicar la migración aditiva soportada. El evento declara
 `authorizes_filesystem_mutation=false`: todavía no hay estados durables de
@@ -520,9 +528,10 @@ Si un lector externo retiene sus handles, la limpieza es best-effort: no se
 revierte el run completado ni se fuerza el cierre ajeno, y el status estricto
 continúa absteniéndose hasta una corrida posterior sin ese lector.
 Los lectores operativos de Code evitan crear esos auxiliares: si la base está
-quiescente usan URI immutable y verifican identidad, tamaño, mtime y ausencia de
-sidecars antes y después; si ya hay sidecars usan read-only convencional y los
-dejan intactos. El status estricto conserva su contrato más fuerte.
+quiescente usan `immutable_strict` y verifican identidad, tamaño, mtime y
+ausencia de sidecars antes y después, mientras que un WAL activo se lee desde
+`snapshot_temp`, dejando intactos los bytes publicados. El status estricto
+conserva su contrato más fuerte.
 El lector del owner durable que usa el watcher es aún más estricto: sólo abre
 Framework como snapshot immutable cuando el archivo está cercado y sin
 sidecars. Así puede recargar el checkpoint entre corridas sin volver a crear un
@@ -540,17 +549,17 @@ a una conexión auxiliar.
 | Path index | 60 s | WAL, `synchronous=NORMAL` | `cache_size=-32768`, autocheckpoint 4096 páginas, journal limit 256 MiB | FK/query-only verificados según reader/writer; el esquema no declara relaciones FK |
 | Dedup v10 | 60 s | WAL, `synchronous=NORMAL` | `cache_size=-32768`, autocheckpoint 4096 páginas, journal limit 256 MiB | FK de files/checkpoint a scans; cursor USN opcional todo-o-nada; `foreign_keys=ON` y verificado por la factory |
 | Framework writer | 60 s | WAL, NORMAL | -32768, 4096, 256 MiB | FK local de eventos de acción; otras relaciones lógicas |
-| Framework route / heartbeat | 60 s / 10 s | base existente `mode=rw`; hereda journal del propietario | busy timeout explícito | FK verificado; reader diagnóstico usa `mode=ro` + `query_only` |
-| PDF | 60 s / 60 000 ms | WAL, NORMAL | -32768, 4096, 256 MiB | `foreign_keys=ON`; lector URI ro + query_only |
-| DOCX | 60 s / 60 000 ms | WAL, NORMAL | -32768, 4096, 256 MiB | FK ON; lector URI ro + query_only |
-| Office | 60 s / 60 000 ms | WAL, NORMAL | -32768, 2048, 128 MiB | FK ON; lector URI ro + query_only |
-| Archive | 60 s / 60 000 ms | WAL, NORMAL | -32768, 2048, 128 MiB | FK ON; lector URI ro + query_only |
-| Texto | 60 s / 60 000 ms | WAL, NORMAL | -32768, 2048, 128 MiB | FK ON; lector URI ro + query_only |
-| Audio | 60 s / 60 000 ms | WAL, NORMAL | -65536, 2048, 256 MiB | FK ON; lector URI ro + query_only |
-| Imagen | 30 s / 30 000 ms | WAL, NORMAL | sin cache/autocheckpoint/journal limit explícitos | FK ON; lector URI ro + query_only |
-| Catálogo | 60 s / 60 000 ms | WAL, NORMAL | -32768, 4096, 256 MiB | FK ON para runs/generaciones/publicación; lector URI ro + query_only |
-| Código | 60 s / 60 000 ms | WAL, NORMAL | -32768, 2048, 256 MiB | FK ON; lector URI ro + query_only |
-| Semántica | 60 s / 60 000 ms | WAL, NORMAL | -32768, 2048, 256 MiB | FK ON; lector URI ro + query_only |
+| Framework route / heartbeat | 60 s / 10 s | base existente `mode=rw`; hereda journal del propietario | busy timeout explícito | FK verificado; lector usa `SQLiteReadSession` |
+| PDF | 60 s / 60 000 ms | WAL, NORMAL | -32768, 4096, 256 MiB | `foreign_keys=ON`; kernel immutable/snapshot |
+| DOCX | 60 s / 60 000 ms | WAL, NORMAL | -32768, 4096, 256 MiB | FK ON; kernel immutable/snapshot |
+| Office | 60 s / 60 000 ms | WAL, NORMAL | -32768, 2048, 128 MiB | FK ON; kernel immutable/snapshot |
+| Archive | 60 s / 60 000 ms | WAL, NORMAL | -32768, 2048, 128 MiB | FK ON; kernel immutable/snapshot |
+| Texto | 60 s / 60 000 ms | WAL, NORMAL | -32768, 2048, 128 MiB | FK ON; kernel immutable/snapshot |
+| Audio | 60 s / 60 000 ms | WAL, NORMAL | -65536, 2048, 256 MiB | FK ON; kernel immutable/snapshot |
+| Imagen | 30 s / 30 000 ms | WAL, NORMAL | sin cache/autocheckpoint/journal limit explícitos | FK ON; kernel immutable/snapshot |
+| Catálogo | 60 s / 60 000 ms | WAL, NORMAL | -32768, 4096, 256 MiB | FK ON para runs/generaciones/publicación; kernel immutable/snapshot |
+| Código | 60 s / 60 000 ms | WAL, NORMAL | -32768, 2048, 256 MiB | FK ON; kernel immutable/snapshot |
+| Semántica | 60 s / 60 000 ms | WAL, NORMAL | -32768, 2048, 256 MiB | FK ON; kernel immutable/snapshot |
 
 `journal_size_limit` limita el WAL retenido después de un checkpoint; no reduce
 el tamaño máximo histórico del archivo principal. `wal_autocheckpoint` tampoco
@@ -558,25 +567,27 @@ garantiza un WAL pequeño si un lector mantiene un snapshot antiguo.
 
 ### Factories endurecidas y cobertura residual
 
-El inventario actual clasifica 37 llamadas directas en 21 módulos, dos
-dispatchers abstractos y 132 adquisiciones mediante 20 factories de propietario;
-no dejó propietarios oficiales sin clasificar. Cuatro conexiones `:memory:` son
-probes privados de esquema/FTS y no tienen política de filesystem.
+El inventario actual separa las conexiones de writer, scratch y pruebas de las
+lecturas de owner. Las lecturas públicas y administrativas pasan por
+`SQLiteReadSession`; las conexiones directas restantes son writers, bases
+temporales o seams de inyección cubiertos por pruebas, no atajos de lectura del
+estado publicado.
 
 No existe una factory universal. Las familias probadas son: writer propietario,
 reader operacional, reader diagnóstico estricto, migrador, backup, proceso hijo
 y base temporal. Los writers activan/verifican FK, timeout y su política propia
-de WAL/caché; los readers de diagnóstico usan URI escapada `mode=ro`,
+de WAL/caché; los readers de diagnóstico usan `SQLiteReadSession`,
 `query_only=ON`, FK y cierre ante `BaseException`; writers sobre estado existente
 usan `mode=rw` para no recrear una base desaparecida. `FrameworkState` conserva
 su modo compatible de crear/inicializar y añade `existing_only=True` para
 rehusar creación, aunque una base existente sí puede migrarse.
 
 El contrato no protege SQL externo que evada las factories ni crea relaciones
-que el DDL no declara. Tampoco se afirma que `mode=ro` sea byte-neutro ante un
-WAL/SHM existente. Las pruebas usaron fixtures temporales: no se abrieron bases
-operativas vivas ni se demostró que instalaciones existentes carezcan de
-huérfanos.
+que el DDL no declara. El kernel sí garantiza que las lecturas públicas no
+modifiquen los bytes ni la topología de sidecars del owner; la incidencia del
+URI `mode=ro` histórico queda descrita y aislada en la sección de validación
+histórica. Las pruebas actuales usan fixtures temporales y no abren bases
+operativas vivas.
 
 ## Transacciones, bloqueo y WAL
 
@@ -1059,8 +1070,7 @@ Toda factory debe fijar y probar:
 - timeout y `busy_timeout`;
 - `foreign_keys=ON` cuando el contrato contenga FK;
 - journal/synchronous/cache/autocheckpoint/journal limit para writers;
-- URI `mode=ro` y, cuando aporte defensa adicional, `query_only=ON` para
-  readers;
+- `SQLiteReadSession` con `immutable_strict` o `snapshot_temp` para readers;
 - row factory esperada;
 - commit, rollback ante `BaseException` y cierre.
 
@@ -1079,7 +1089,11 @@ PRAGMA foreign_key_check;
 Además debe validarse el contrato de esquema de su propietario y sus invariantes
 lógicos. No ejecute migraciones sobre el único original para “ver si abre”.
 
-## Validación viva read-only del 24 de julio de 2026
+## Validación histórica read-only del 24 de julio de 2026
+
+Esta sección conserva evidencia de una comprobación anterior, no el contrato
+vigente. Sus fragmentos `mode=ro` explican la incidencia WAL/SHM que motivó el
+kernel actual y no deben copiarse para nuevas lecturas.
 
 ### Preconditions y método
 
@@ -1152,9 +1166,10 @@ base cuyo WAL contenga frames que deban leerse, porque puede omitirlos.
 
 ## Backup consistente
 
-NeoCortex no contiene actualmente un comando general incorporado de backup. El
-procedimiento operativo canónico está en [RECOVERY.md](RECOVERY.md) y usa
-`sqlite3.Connection.backup`.
+La superficie canónica es `Neocortex databases backup`. La vista previa no
+escribe bytes y el modo aplicado exige `--apply` junto con
+`--confirm-database-backup BACKUP_DATABASES`; el destino debe ser nuevo y estar
+fuera de `state`.
 
 Contrato:
 
@@ -1163,12 +1178,18 @@ Contrato:
 3. elegir un destino nuevo fuera de ese árbol;
 4. descubrir todas las bases `*.sqlite3` presentes, sin asumir que code o
    semantic existen;
-5. abrir el origen `mode=ro` y usar la API de backup hacia una base nueva;
+5. abrir el origen mediante el kernel coordinado y usar la API de backup hacia
+   una base nueva;
 6. validar cada destino con integrity, FK y versión/contrato;
 7. conservar una manifestación de nombres, versión de aplicación, fecha y
    resultado;
-8. no borrar un destino parcial si el procedimiento falla: marcarlo incompleto
-   y crear otro después de resolver la causa.
+8. no publicar un destino parcial si el procedimiento falla: conservarlo como
+   evidencia incompleta y crear otro después de resolver la causa.
+
+El resultado genera `state-backup-manifest.json`, que liga owner, schema,
+release SHA opcional, permisos, sidecars, hashes, época lógica e integridad
+`full`. La operación sólo reporta `complete=true` cuando todos los owners
+seleccionados y los artefactos desconocidos quedaron conciliados.
 
 Copiar sólo `archivo.sqlite3` no es válido si existe WAL. La API de backup
 incorpora las páginas confirmadas visibles para SQLite; no requiere copiar
@@ -1184,7 +1205,9 @@ bytes, pero nunca mientras se estén descargando o reemplazando.
 
 ## Restauración
 
-No existe un comando público general de restauración. Restaurar es una operación
+`Neocortex databases restore` valida primero sin mutar y sólo publica con
+`--apply`, `--manifest-sha256 SHA256` y
+`--confirm-database-restore RESTORE_DATABASES`. Restaurar es una operación
 explícita y potencialmente destructiva sobre el estado actual:
 
 1. instalar primero una versión compatible con el backup;
@@ -1198,9 +1221,10 @@ explícita y potencialmente destructiva sobre el estado actual:
    conjuntos;
 8. ejecutar status/doctors antes de cualquier reproceso o acción.
 
-Una restauración lógica puede dejar archivos WAL/SHM del destino controlados por
-SQLite. No los elimine manualmente. La secuencia y el código de referencia están
-en [RECOVERY.md](RECOVERY.md).
+Una restauración staged valida el conjunto completo antes de intercambiar
+owners bajo locks, registra epoch/journal y conserva un backup pre-restauración.
+La secuencia detallada está en [RECOVERY.md](RECOVERY.md); no se eliminan
+sidecars manualmente.
 
 ## Actualización, migración y downgrade
 
@@ -1308,9 +1332,8 @@ bytes estimados sólo suman payload `TEXT`/`BLOB`: son una cota inferior, no
 bytes que el archivo vaya a liberar.
 
 Cada base se lee bajo su propio snapshot estable; no hay snapshot distribuido
-entre archivos. Una apertura `mode=ro` puede crear/tocar SHM al participar en un
-WAL existente. El comando no hace checkpoint, `VACUUM`, delete ni enforcement
-de cuotas, y devuelve `2` si algún store está bloqueado.
+entre archivos. `SQLiteReadSession` usa `immutable_strict` o una copia temporal
+sin tocar los sidecars del owner, y devuelve `2` si algún store está bloqueado.
 
 No existen comandos productivos `--retention-prepare`, `--retention-apply` o
 `--retention-verify`, ni un journal durable de progreso de poda. La ejecución

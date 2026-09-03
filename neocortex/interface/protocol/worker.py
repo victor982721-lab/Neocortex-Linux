@@ -12,12 +12,21 @@ import threading
 import time
 import traceback
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from typing import Any, Callable
+from uuid import uuid4
 
 from neocortex.progress import ProgressEvent
 
 from ..read.issues import route_issue_count
-from .messages import decode_message, encode_message, progress_payload
+from .messages import decode_message, encode_message, progress_payload, sanitize_text
+from ..application.request import (
+    FULL_DEADLINE_SECONDS,
+    FULL_MAX_ITEMS,
+    PILOT_DEADLINE_SECONDS,
+    PILOT_MAX_ITEMS,
+    PROFILE_DEFAULTS,
+)
 
 
 # region [01] Protocol output and cancellation input
@@ -27,11 +36,101 @@ _ACTIVE_PROGRESS_LOCK = threading.Lock()
 _ACTIVE_PROGRESS: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
 _MAX_ACTIVE_PROGRESS = 24
 _HEARTBEAT_INTERVAL_SECONDS = 2.0
+_WORKER_RUN_ID = ""
+_MESSAGE_SEQUENCE = 0
+_ACTIVE_BUDGET: _ExecutionBudget | None = None
+
+
+@dataclass(slots=True)
+class _ExecutionBudget:
+    """Bounded UI execution budget enforced independently of route defaults."""
+
+    orchestrator: Any
+    profile: str
+    max_items: int
+    deadline_seconds: float
+    _stop: threading.Event = field(default_factory=threading.Event, init=False)
+    _thread: threading.Thread | None = None
+    _cancel_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    _cancelled: bool = False
+    reason: str | None = None
+
+    @classmethod
+    def from_environment(cls, orchestrator: Any) -> _ExecutionBudget:
+        profile = os.environ.get("NEOCORTEX_UI_PROFILE", "pilot")
+        if profile not in PROFILE_DEFAULTS:
+            raise ValueError("Invalid UI execution profile")
+        default_items, default_deadline = PROFILE_DEFAULTS[profile]
+        raw_items = os.environ.get("NEOCORTEX_UI_MAX_ITEMS")
+        raw_deadline = os.environ.get("NEOCORTEX_UI_DEADLINE_SECONDS")
+        try:
+            max_items = default_items if raw_items is None else int(raw_items)
+            deadline = default_deadline if raw_deadline is None else float(raw_deadline)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Invalid UI execution budget") from exc
+        max_allowed = PILOT_MAX_ITEMS if profile == "pilot" else FULL_MAX_ITEMS
+        deadline_allowed = (
+            PILOT_DEADLINE_SECONDS if profile == "pilot" else FULL_DEADLINE_SECONDS
+        )
+        if not 1 <= max_items <= max_allowed or not 0.001 <= deadline <= deadline_allowed:
+            raise ValueError("UI execution budget is outside its bounded profile")
+        return cls(orchestrator, profile, max_items, deadline)
+
+    def start(self) -> None:
+        self._thread = threading.Thread(
+            target=self._deadline_loop,
+            name="neocortex-ui-budget",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=min(2.0, self.deadline_seconds + 0.5))
+
+    def observe(self, payload: dict[str, Any]) -> None:
+        total = payload.get("total")
+        completed = payload.get("completed")
+        if (
+            (isinstance(total, int) and total > self.max_items)
+            or (isinstance(completed, int) and completed > self.max_items)
+        ):
+            self.cancel("item_budget")
+
+    def cancel(self, reason: str) -> None:
+        with self._cancel_lock:
+            if self._cancelled or self._stop.is_set():
+                return
+            self._cancelled = True
+            self.reason = reason
+        self.orchestrator.request_cancellation()
+        _thread.interrupt_main()
+
+    def _deadline_loop(self) -> None:
+        if not self._stop.wait(self.deadline_seconds):
+            self.cancel("time_budget")
+
+
+def _reset_protocol_state() -> None:
+    global _WORKER_RUN_ID, _MESSAGE_SEQUENCE
+    worker_run_id = os.environ.get("NEOCORTEX_UI_RUN_ID", "").strip() or uuid4().hex
+    if len(worker_run_id) > 128 or any(ord(character) < 0x20 for character in worker_run_id):
+        raise ValueError("Invalid UI worker run identifier")
+    _WORKER_RUN_ID = worker_run_id
+    _MESSAGE_SEQUENCE = 0
 
 
 def _emit(message_type: str, **payload: Any) -> None:
-    record = encode_message(message_type, **payload)
+    global _MESSAGE_SEQUENCE
     with _OUTPUT_LOCK:
+        _MESSAGE_SEQUENCE += 1
+        record = encode_message(
+            message_type,
+            worker_run_id=_WORKER_RUN_ID or "standalone",
+            sequence=_MESSAGE_SEQUENCE,
+            **payload,
+        )
         sys.stdout.buffer.write(record)
         sys.stdout.buffer.flush()
 
@@ -65,7 +164,11 @@ def _reset_active_progress() -> None:
 
 
 def _progress(event: ProgressEvent) -> None:
-    _emit("progress", **_track_progress(event))
+    payload = _track_progress(event)
+    budget = _ACTIVE_BUDGET
+    if budget is not None:
+        budget.observe(payload)
+    _emit("progress", **payload)
 
 
 def _emit_heartbeats(stop: threading.Event, started_at: float) -> None:
@@ -200,7 +303,7 @@ def _parse_worker_arguments(
 
 def _prepare_framework(
     arguments: Sequence[str],
-) -> tuple[Any, Callable[[Any], bool], _WorkerHeartbeat]:
+) -> tuple[Any, Callable[[Any], bool], _WorkerHeartbeat, _ExecutionBudget]:
     from neocortex.api.cli.cli_config import framework_config_from_args
     from neocortex.api.cli.cli_parser import build_parser
     from neocortex.api.cli.cli_reporting import has_organization_errors
@@ -210,6 +313,9 @@ def _prepare_framework(
     parsed = _parse_worker_arguments(arguments, build_parser, validate_arguments)
     config = framework_config_from_args(parsed)
     orchestrator = FrameworkOrchestrator(config, progress=_progress)
+    budget = _ExecutionBudget.from_environment(orchestrator)
+    global _ACTIVE_BUDGET
+    _ACTIVE_BUDGET = budget
     command_thread = threading.Thread(
         target=_listen_for_commands,
         args=(orchestrator,),
@@ -223,10 +329,15 @@ def _prepare_framework(
         state_directory=str(config.state_directory),
         apply=config.apply_actions,
         route=config.route,
+        request_id=_WORKER_RUN_ID,
+        profile=budget.profile,
+        max_items=budget.max_items,
+        deadline_seconds=budget.deadline_seconds,
     )
     heartbeat = _WorkerHeartbeat()
     heartbeat.start()
-    return orchestrator, has_organization_errors, heartbeat
+    budget.start()
+    return orchestrator, has_organization_errors, heartbeat, budget
 
 
 def _completed_outcome(
@@ -254,9 +365,12 @@ def _exception_outcome(exc: BaseException, stage: str) -> tuple[str, dict[str, A
         "failed",
         {
             "error_type": type(exc).__name__,
-            "detail": str(exc),
-            "stage": stage,
-            "traceback": "".join(traceback.format_exception(exc))[-20_000:],
+            "detail": sanitize_text(exc),
+            "stage": sanitize_text(stage, limit=256),
+            "traceback": sanitize_text(
+                "".join(traceback.format_exception(exc)),
+                limit=20_000,
+            ),
         },
         1,
     )
@@ -266,12 +380,23 @@ def run_worker(arguments: Sequence[str]) -> int:
     _reset_active_progress()
     stage = "preparation"
     heartbeat: _WorkerHeartbeat | None = None
+    budget: _ExecutionBudget | None = None
+    budget_reason: str | None = None
     try:
-        orchestrator, organization_check, heartbeat = _prepare_framework(arguments)
+        _reset_protocol_state()
+        orchestrator, organization_check, heartbeat, budget = _prepare_framework(arguments)
         stage = "execution"
         result = orchestrator.run()
     except KeyboardInterrupt:
-        outcome = ("cancelled", {"detail": "Cancelación cooperativa completada"}, 130)
+        budget_reason = None if budget is None else budget.reason
+        detail = (
+            "Presupuesto de elementos agotado"
+            if budget_reason == "item_budget"
+            else "Presupuesto de tiempo agotado"
+            if budget_reason == "time_budget"
+            else "Cancelación cooperativa completada"
+        )
+        outcome = ("cancelled", {"detail": detail}, 130)
     except _WorkerUsageError as exc:
         outcome = (
             "failed",
@@ -285,6 +410,10 @@ def run_worker(arguments: Sequence[str]) -> int:
     finally:
         if heartbeat is not None:
             heartbeat.stop()
+        if budget is not None:
+            budget.stop()
+        global _ACTIVE_BUDGET
+        _ACTIVE_BUDGET = None
 
     terminal_type, terminal_payload, exit_code = outcome
     _emit(terminal_type, **terminal_payload)

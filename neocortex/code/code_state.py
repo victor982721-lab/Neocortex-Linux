@@ -9,6 +9,7 @@ import zlib
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from neocortex.deduplication import FileSnapshot
 from neocortex.platform.policy import sqlite_path_collation
@@ -34,6 +35,9 @@ from neocortex.persistence.sqlite_cancellation import (
     sqlite_cancellation_scope,
 )
 
+if TYPE_CHECKING:
+    from .code_graph_generations import CodeGraphGenerationStore
+
 # region [01] Repository records and helpers
 
 
@@ -48,6 +52,7 @@ _DERIVED_DIAGNOSTIC_SOURCES = (
     "neocortex-project-graph",
     "neocortex-reference-graph",
 )
+
 
 @dataclass(frozen=True, slots=True)
 class CachedCodeVersion:
@@ -223,9 +228,21 @@ class CodeState:
         self.connection = connect_code_state(self.path, create=False)
         self.retention_policy = retention_policy
         self._version_count_cache: dict[int, tuple[int, int, int]] | None = None
+        self._graph_generation_store: CodeGraphGenerationStore | None = None
 
     def close(self) -> None:
+        self._graph_generation_store = None
         self.connection.close()
+
+    @property
+    def graph_generation_store(self) -> CodeGraphGenerationStore:
+        """Return the additive generation API on this Code owner connection."""
+
+        if self._graph_generation_store is None:
+            from .code_graph_generations import CodeGraphGenerationStore
+
+            self._graph_generation_store = CodeGraphGenerationStore(self.connection)
+        return self._graph_generation_store
 
     def __enter__(self) -> CodeState:
         return self

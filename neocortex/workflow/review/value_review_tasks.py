@@ -25,6 +25,10 @@ from neocortex.persistence.sqlite_schema_contract import (
 )
 
 from neocortex.persistence.framework_schema import SCHEMA_VERSION as FRAMEWORK_SCHEMA_VERSION
+from neocortex.persistence.sqlite_immutable import (
+    ImmutableSQLiteUnavailable,
+    immutable_sqlite_database,
+)
 from neocortex.knowledge.knowledge_contracts import (
     EvidenceMethod,
     EvidenceRef,
@@ -46,7 +50,6 @@ from neocortex.workflow.review.review_task_contracts import (
     ReviewTaskState,
     ReviewTaskVersionHead,
 )
-from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
 from neocortex.workflow.review.value_review import rank_value_observations
 from neocortex.workflow.review.value_review_contracts import (
     VALUE_REVIEW_CONTRACT_VERSION,
@@ -913,13 +916,10 @@ def _read_framework_version(database: Path) -> int | None:
     if not stat.S_ISREG(metadata.st_mode):
         raise ValueReviewTaskStateError("framework state is not a regular file")
     try:
-        connection = sqlite3.connect(readonly_sqlite_uri(database), uri=True, timeout=60.0)
-        try:
+        with immutable_sqlite_database(database, timeout_seconds=60.0) as connection:
             connection.execute("PRAGMA query_only=ON")
             return read_application_schema_version(connection, label="framework")
-        finally:
-            connection.close()
-    except (sqlite3.DatabaseError, SQLiteSchemaContractError) as exc:
+    except (ImmutableSQLiteUnavailable, sqlite3.DatabaseError, SQLiteSchemaContractError) as exc:
         detail = str(exc).casefold()
         reason = (
             "framework_state_busy"

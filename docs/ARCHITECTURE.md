@@ -1,7 +1,7 @@
 # Arquitectura de NeoCortex
 
 > **Estado del documento.** Contrato derivado del árbol inspeccionado el
-> 11 de agosto de 2026. Describe el comportamiento observado y separa los
+> 3 de septiembre de 2026. Describe el comportamiento observado y separa los
 > cambios previstos de los ya implementados. No certifica por sí solo la suite
 > completa ni la instalación empaquetada. El árbol auditado declara la versión
 > `0.9.0`; la versión instalada debe comprobarse con
@@ -551,7 +551,7 @@ para el planner dedicado, la ruta integrada `Neocortex` con sus opciones de inve
 
 La invocación canónica es:
 
-```powershell
+```bash
 Neocortex --help
 ```
 
@@ -582,7 +582,7 @@ conserva schema 1 y no construye el broker.
 La Knowledge Plane se expone mediante operaciones directas mutuamente
 excluyentes y no destructivas:
 
-```powershell
+```bash
 Neocortex --knowledge-status
 Neocortex --knowledge-health "resource:file:1:2:-1" --knowledge-json
 Neocortex --knowledge-search "protección diferencial" --knowledge-mode evidence
@@ -641,7 +641,8 @@ consumidores importan cada ruta desde su módulo canónico.
 Una corrida normal sigue este orden lógico:
 
 1. validar argumentos, raíz, estado y compatibilidad;
-2. adquirir `%STATE%\framework.lock` mediante un lock del sistema operativo;
+2. adquirir `${XDG_STATE_HOME:-$HOME/.local/state}/Neocortex/state/framework.lock`
+   mediante un lock del sistema operativo;
 3. inicializar esquemas y marcar runs/acciones abandonados según la política
    vigente;
 4. abrir el run común y su heartbeat;
@@ -770,15 +771,15 @@ El orden estable es:
 | `text` | texto imprimible, EML y CFB DOC/XLS/PPT | texto visible, título/autor, metadata, errores y FTS | catálogo documental, Knowledge y Semantic |
 | `audio` | audio/vídeo sondeado | transcripción, segmentos y FTS | catálogo documental |
 | `video` | streams visuales sondeados | escenas/keyframes, frames, OCR, timestamps, métricas y FTS | búsqueda directa y revisión; visual-only admitido |
-| `image` | imágenes no documentales o candidatas de documento | clasificación, OCR/evidencia, estado y huella completa Dedup | revisión y Semantic; no catálogo documental actual |
+| `image` | imágenes no documentales o candidatas de documento | clasificación, OCR/evidencia, estado y huella completa Dedup | catálogo multimodal, revisión y Semantic cuando la cobertura está publicada |
 | `code` | archivos de texto/código acotados | proyectos, versiones, AST/símbolos, referencias, grafo, chunks y FTS | búsqueda y puente semántico |
 
-El grafo de código conserva esquema 4 y una transacción global en
-`finalize_graph`. Lectores concurrentes observan el snapshot anterior hasta el
-commit y los fallos por fase revierten el estado completo. Se descartó
-fragmentar esa transacción: antes se requiere un esquema sucesor que defina build,
-membresía, head/CAS, writer, reanudación, publicación, migración, rollback y
-poda como un único contrato.
+El lector legacy del grafo de código conserva schema 7 y el mismo owner ahora
+incluye un ledger generacional aditivo con snapshot de entradas, lotes,
+membresías, checkpoints y head/CAS. Una generación `building` no es visible
+como head, los fallos por fase revierten el lote y la reanudación usa el último
+checkpoint; el grafo transversal entre owners todavía requiere un contrato de
+publicación y rollback posterior.
 
 La reutilización exige la misma ruta observada, metadatos, firma y analizador
 efectivo. Un hit de ruta invariable actualiza sólo presencia/observación y hace
@@ -789,7 +790,7 @@ En una corrida completa sin límite ni selección, `mark_missing` precede al
 grafo. Una finalización real elimina y reconstruye las membresías derivadas y
 sincroniza en una sola sentencia las etiquetas FTS vigentes realmente distintas
 mediante un mapa temporal indexado; las etiquetas históricas permanecen
-inmutables. El resolver v4 materializa conjuntos temporales indexados de
+inmutables. El resolver vigente materializa conjuntos temporales indexados de
 símbolos y dependencias vigentes. Primero enlaza llamadas dentro del mismo
 módulo o clase y módulos relativos por su ruta léxica exacta; después aplica el
 fallback global por nombre cualificado o simple sólo cuando la coincidencia es
@@ -797,7 +798,7 @@ fallback global por nombre cualificado o simple sólo cuando la coincidencia es
 fabrican aristas. Sólo se omite si no cambió
 ninguna entrada,
 todos los candidatos fueron cache hits compatibles con el runtime y un fence
-tipado `code-graph-resolver-v4` identifica exactamente el run completo
+tipado `code-graph-resolver-v7` identifica exactamente el run completo
 inmediatamente anterior con la misma firma. El fence avanza atómicamente con la
 finalización de ese `analysis_run`; ausencia, corrupción, run intermedio o la
 primera corrida sobre una base existente sin fence fallan cerrados hacia
@@ -1015,7 +1016,8 @@ La propiedad de un esquema implica:
 
 - un solo módulo decide DDL y migraciones;
 - los writers deben usar su factory canónica;
-- los lectores deben abrir `mode=ro` cuando no modifican;
+- los lectores deben pasar por `SQLiteReadSession` y declarar
+  `immutable_strict` o `snapshot_temp` cuando no modifican;
 - las relaciones entre bases se expresan mediante identificadores y evidencia,
   no mediante foreign keys cruzadas;
 - un run global no vuelve atómica una publicación local incompleta.
@@ -1029,9 +1031,11 @@ adquisiciones mediante 20 factories de propietario. Consulte
 [PERSISTENCE.md](PERSISTENCE.md) para la matriz exacta y los límites de SQL
 externo/WAL.
 
-Una conexión URI `mode=ro` con `query_only=ON` no debe describirse como
-byte-neutra: SQLite todavía puede participar en `-wal`/`-shm`. La barrera de
-esta continuación validó únicamente bases nuevas dentro del laboratorio; no
+La conexión URI `mode=ro` con `query_only=ON` quedó como compatibilidad histórica
+y no debe describirse como byte-neutra. La barrera actual usa el kernel
+`SQLiteReadSession`: immutable para owners quiescentes y snapshot temporal para
+WAL activo, sin tocar bytes publicados. La validación de esta continuación
+incluye fixtures de ambas topologías; no
 abrió ni migró bases operativas vivas.
 
 ## Recursos y procesos externos

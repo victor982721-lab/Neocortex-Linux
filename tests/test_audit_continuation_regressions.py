@@ -364,7 +364,7 @@ def test_profile_child_opens_pdf_state_read_only(
     database = tmp_path / "pdf.sqlite3"
     initialize_pdf_state(database)
     messages: list[tuple[object, ...]] = []
-    observed_uris: list[str] = []
+    before_bytes = database.read_bytes()
 
     class _FakeTools:
         @staticmethod
@@ -408,24 +408,7 @@ def test_profile_child_opens_pdf_state_read_only(
         def put(message: tuple[object, ...]) -> None:
             messages.append(message)
 
-    real_connect = sqlite3.connect
-
-    def guarded_connect(
-        database_uri: str,
-        *,
-        uri: bool,
-        timeout: float,
-    ) -> sqlite3.Connection:
-        assert uri is True
-        assert "mode=ro" in database_uri
-        observed_uris.append(database_uri)
-        connection = real_connect(database_uri, uri=uri, timeout=min(timeout, 0.1))
-        with pytest.raises(sqlite3.OperationalError, match="readonly"):
-            connection.execute("CREATE TABLE forbidden_child_write(value INTEGER)")
-        return connection
-
     monkeypatch.setitem(sys.modules, "fitz", _FakeFitz())
-    monkeypatch.setattr(pdf_isolation.sqlite3, "connect", guarded_connect)
 
     pdf_isolation._profile_child(
         "unused-by-fake-fitz.pdf",
@@ -434,8 +417,8 @@ def test_profile_child_opens_pdf_state_read_only(
         _Channel(),
     )
 
-    assert len(observed_uris) == 1
     assert messages == [("done",)]
+    assert database.read_bytes() == before_bytes
 
 
 def test_document_cache_sync_enables_foreign_keys_and_rolls_back(

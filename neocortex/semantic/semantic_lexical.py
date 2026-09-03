@@ -23,7 +23,6 @@ from neocortex.persistence.sqlite_cancellation import (
     SQLiteCancellationBridge,
     sqlite_cancellation_scope,
 )
-from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
 
 # region [01] Public contracts and limits
 
@@ -903,15 +902,19 @@ def _search_compiled_source(
     if not stat.S_ISREG(state.st_mode):
         raise ValueError(f"lexical state path is not a regular file: {path}")
 
-    connection = sqlite3.connect(
-        readonly_sqlite_uri(path),
-        uri=True,
-        timeout=60,
-    )
     retrieval_backend = "sqlite_fts5"
     cjk_scanned_rows: int | None = None
-    try:
-        connection.row_factory = sqlite3.Row
+    from neocortex.persistence.sqlite_immutable import (
+        preferred_sqlite_read_mode,
+        sqlite_read_session,
+    )
+
+    rows: list[sqlite3.Row]
+    with sqlite_read_session(
+        path,
+        mode=preferred_sqlite_read_mode(path),
+        timeout_seconds=60.0,
+    ) as connection:
         with sqlite_cancellation_scope(connection, cancellation):
             connection.execute("PRAGMA busy_timeout=60000")
             connection.execute("PRAGMA foreign_keys=ON")
@@ -951,8 +954,6 @@ def _search_compiled_source(
                     applied_query = _all_terms_query(query_plan.cjk_substring_terms)
                     query_strategy = "cjk_substring_all_terms"
                     retrieval_backend = "sqlite_bounded_cjk_substring"
-    finally:
-        connection.close()
     hits: list[ResolvedSearchHit] = []
     for rank_position, row in enumerate(rows, start=1):
         if rank_position % _CANCELLATION_BATCH_ROWS == 0:

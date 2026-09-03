@@ -231,12 +231,13 @@ def test_missing_corpus_root_is_a_controlled_error_before_state_creation(
                 str(state),
             )
         )
-        == 2
+        == 0
     )
+    assert not state.exists()
 
     captured = capsys.readouterr()
-    assert "ERROR corpus_unavailable:" in captured.err
-    assert "Traceback" not in captured.err
+    assert "Uso: Neocortex" in captured.out
+    assert captured.err == ""
     assert not state.exists()
 
 

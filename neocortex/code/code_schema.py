@@ -416,6 +416,105 @@ _V2_DDL = (
 # without deleting their historical rows.
 _PRODUCT_V2_DDL = _V2_DDL[:-2]
 
+# Additive Code-graph publication tables.  They deliberately live in the
+# existing Code owner so legacy readers can continue to query their historical
+# tables without understanding a new owner or a partially-built generation.
+# The graph contract has its own migration ledger, while the enclosing Code
+# schema version remains stable for v1-v7 compatibility.
+_GRAPH_GENERATION_DDL: tuple[str, ...] = (
+    """CREATE TABLE graph_generation_metadata(
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    ) WITHOUT ROWID""",
+    """CREATE TABLE graph_generation_migrations(
+        version INTEGER PRIMARY KEY CHECK(version>0),
+        description TEXT NOT NULL,
+        applied_ns INTEGER NOT NULL CHECK(applied_ns>0)
+    ) WITHOUT ROWID""",
+    """CREATE TABLE graph_input_snapshots(
+        snapshot_id TEXT PRIMARY KEY,
+        source_run_id INTEGER NOT NULL CHECK(source_run_id>=0),
+        input_digest TEXT NOT NULL CHECK(length(input_digest)>0),
+        input_count INTEGER NOT NULL CHECK(input_count>=0),
+        status TEXT NOT NULL CHECK(status IN ('sealed','aborted','pruned')),
+        created_ns INTEGER NOT NULL CHECK(created_ns>0),
+        metadata_json TEXT NOT NULL
+    ) WITHOUT ROWID""",
+    """CREATE TABLE graph_snapshot_inputs(
+        snapshot_id TEXT NOT NULL,
+        input_key TEXT NOT NULL,
+        content_digest TEXT NOT NULL,
+        source_version_id INTEGER,
+        observed_path TEXT,
+        metadata_json TEXT NOT NULL,
+        PRIMARY KEY(snapshot_id,input_key),
+        FOREIGN KEY(snapshot_id) REFERENCES graph_input_snapshots(snapshot_id)
+            ON DELETE CASCADE
+    ) WITHOUT ROWID""",
+    """CREATE INDEX graph_snapshot_inputs_digest_idx
+        ON graph_snapshot_inputs(snapshot_id,content_digest,input_key)""",
+    """CREATE TABLE graph_generations(
+        generation_id TEXT PRIMARY KEY,
+        snapshot_id TEXT NOT NULL,
+        generation_digest TEXT,
+        status TEXT NOT NULL CHECK(status IN (
+            'building','completed','published','aborted','pruned'
+        )),
+        created_ns INTEGER NOT NULL CHECK(created_ns>0),
+        completed_ns INTEGER,
+        metadata_json TEXT NOT NULL,
+        FOREIGN KEY(snapshot_id) REFERENCES graph_input_snapshots(snapshot_id)
+            ON DELETE RESTRICT
+    ) WITHOUT ROWID""",
+    """CREATE TABLE graph_batches(
+        generation_id TEXT NOT NULL,
+        batch_index INTEGER NOT NULL CHECK(batch_index>=0),
+        batch_digest TEXT NOT NULL CHECK(length(batch_digest)>0),
+        item_count INTEGER NOT NULL CHECK(item_count>=0),
+        cursor TEXT,
+        status TEXT NOT NULL CHECK(status IN ('committed','aborted')),
+        created_ns INTEGER NOT NULL CHECK(created_ns>0),
+        committed_ns INTEGER,
+        PRIMARY KEY(generation_id,batch_index),
+        FOREIGN KEY(generation_id) REFERENCES graph_generations(generation_id)
+            ON DELETE CASCADE
+    ) WITHOUT ROWID""",
+    """CREATE TABLE graph_memberships(
+        generation_id TEXT NOT NULL,
+        batch_index INTEGER NOT NULL CHECK(batch_index>=0),
+        item_key TEXT NOT NULL,
+        item_digest TEXT NOT NULL,
+        source_version_id INTEGER,
+        metadata_json TEXT NOT NULL,
+        PRIMARY KEY(generation_id,item_key),
+        FOREIGN KEY(generation_id,batch_index)
+            REFERENCES graph_batches(generation_id,batch_index)
+            ON DELETE CASCADE
+    ) WITHOUT ROWID""",
+    """CREATE INDEX graph_memberships_batch_idx
+        ON graph_memberships(generation_id,batch_index,item_key)""",
+    """CREATE TABLE graph_checkpoints(
+        generation_id TEXT NOT NULL,
+        checkpoint_index INTEGER NOT NULL CHECK(checkpoint_index>=0),
+        batch_index INTEGER NOT NULL CHECK(batch_index>=0),
+        cursor TEXT NOT NULL,
+        checkpoint_digest TEXT NOT NULL CHECK(length(checkpoint_digest)>0),
+        created_ns INTEGER NOT NULL CHECK(created_ns>0),
+        PRIMARY KEY(generation_id,checkpoint_index),
+        FOREIGN KEY(generation_id) REFERENCES graph_generations(generation_id)
+            ON DELETE CASCADE
+    ) WITHOUT ROWID""",
+    """CREATE TABLE graph_heads(
+        head_name TEXT PRIMARY KEY,
+        generation_id TEXT NOT NULL,
+        generation_digest TEXT NOT NULL,
+        revision INTEGER NOT NULL CHECK(revision>=1),
+        updated_ns INTEGER NOT NULL CHECK(updated_ns>0),
+        FOREIGN KEY(generation_id) REFERENCES graph_generations(generation_id)
+            ON DELETE RESTRICT
+    ) WITHOUT ROWID""",
+)
+
 
 _V3_DDL = (
     """CREATE TABLE external_run_contracts(
@@ -832,15 +931,14 @@ def readonly_code_database(
     if not isinstance(close_connection, bool):
         raise TypeError("close_connection must be a boolean")
     selected = Path(path)
-    sidecars = (Path(f"{selected}-wal"), Path(f"{selected}-shm"))
-    if (
-        connect is connect_code_state
-        and selected.is_file()
-        and not any(os.path.lexists(sidecar) for sidecar in sidecars)
-    ):
-        from neocortex.persistence.sqlite_immutable import immutable_sqlite_database
+    if connect is connect_code_state and selected.is_file():
+        from neocortex.persistence.sqlite_immutable import (
+            preferred_sqlite_read_mode,
+            sqlite_read_session,
+        )
 
-        with immutable_sqlite_database(selected, timeout_seconds=60) as connection:
+        mode = preferred_sqlite_read_mode(selected)
+        with sqlite_read_session(selected, mode=mode, timeout_seconds=60) as connection:
             yield connection
         return
     connection = connect(selected, readonly=True, create=False)
@@ -859,6 +957,7 @@ def _execute(connection: sqlite3.Connection, statements: tuple[str, ...]) -> Non
 def _build_current_schema(connection: sqlite3.Connection) -> None:
     _execute(connection, _CURRENT_V1_DDL)
     _execute(connection, _PRODUCT_V2_DDL)
+    _execute(connection, _GRAPH_GENERATION_DDL)
 
 
 def _build_legacy_current_schema(connection: sqlite3.Connection) -> None:
@@ -998,6 +1097,63 @@ def _validate_code_storage_integrity(
         raise RuntimeError(f"{label} failed integrity_check: {integrity!r}")
 
 
+_GRAPH_GENERATION_TABLES = frozenset(
+    {
+        "graph_generation_metadata",
+        "graph_generation_migrations",
+        "graph_input_snapshots",
+        "graph_snapshot_inputs",
+        "graph_generations",
+        "graph_batches",
+        "graph_memberships",
+        "graph_checkpoints",
+        "graph_heads",
+    }
+)
+
+
+def _graph_generation_schema_state(connection: sqlite3.Connection) -> str:
+    observed = {
+        str(row[0])
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        )
+    }
+    present = observed.intersection(_GRAPH_GENERATION_TABLES)
+    if not present:
+        return "absent"
+    if present != _GRAPH_GENERATION_TABLES:
+        raise RuntimeError(
+            "Code graph generation schema is incomplete: "
+            + ",".join(sorted(_GRAPH_GENERATION_TABLES - present))
+        )
+    return "current"
+
+
+def _ensure_graph_generation_schema(
+    connection: sqlite3.Connection,
+    *,
+    applied_ns: int | None = None,
+) -> None:
+    """Install the additive graph contract without rewriting Code evidence."""
+
+    state = _graph_generation_schema_state(connection)
+    if state == "current":
+        return
+    applied = time.time_ns() if applied_ns is None else applied_ns
+    if applied <= 0:
+        raise ValueError("graph generation migration timestamp must be positive")
+    _execute(connection, _GRAPH_GENERATION_DDL)
+    connection.execute(
+        "INSERT INTO graph_generation_metadata(key,value) VALUES('schema_version','1')"
+    )
+    connection.execute(
+        "INSERT INTO graph_generation_migrations(version,description,applied_ns) "
+        "VALUES(1,'additive Code graph generation publication contract',?)",
+        (applied,),
+    )
+
+
 def verify_code_storage_integrity(path: Path) -> None:
     """Run the intentionally expensive whole-owner integrity audit explicitly.
 
@@ -1069,6 +1225,7 @@ def _create_fresh(connection: sqlite3.Connection, applied_ns: int) -> None:
         "product Code schema without development evidence tables",
         applied_ns + 6,
     )
+    _ensure_graph_generation_schema(connection, applied_ns=applied_ns + 7)
 
 
 def _migrate_one_to_two(connection: sqlite3.Connection, applied_ns: int) -> None:
@@ -1242,15 +1399,25 @@ def initialize_code_state(path: Path) -> None:
     """
 
     prior: int | None = None
+    legacy_objects: set[str] = set()
     if path.is_file():
         with code_database(path, readonly=True) as connection:
             prior = _read_version(connection)
             if prior == CODE_SCHEMA_VERSION:
-                validate_code_schema(connection)
-                _validate_migration_history(connection)
-                return
+                legacy_objects = {
+                    str(row[0])
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table' "
+                        "AND name IN ('external_tool_runs','code_experiment_receipts')"
+                    )
+                }
+                if legacy_objects or _graph_generation_schema_state(connection) == "current":
+                    validate_code_schema(connection)
+                    _validate_migration_history(connection)
+                    return
             if prior is not None:
-                _validate_legacy_code_schema(connection, prior)
+                if not (prior == CODE_SCHEMA_VERSION and not legacy_objects):
+                    _validate_legacy_code_schema(connection, prior)
                 _validate_code_storage_integrity(
                     connection,
                     label=f"code v{prior} migration source",
@@ -1299,6 +1466,8 @@ def initialize_code_state(path: Path) -> None:
                 _migrate_six_to_seven(connection, applied_ns + 1)
             elif current == 6:
                 _migrate_six_to_seven(connection, applied_ns)
+            elif current == 7:
+                _ensure_graph_generation_schema(connection, applied_ns=applied_ns)
             else:
                 raise RuntimeError(f"unsupported code migration start: {current}")
             validate_code_schema(connection)

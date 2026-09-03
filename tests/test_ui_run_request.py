@@ -14,7 +14,14 @@ from neocortex.runtime.orchestration.route_selection import (
     BUILTIN_ROUTE_ORDER,
     normalize_route_selection,
 )
-from neocortex.interface.application.request import ROUTE_ORDER, RunRequest
+from neocortex.interface.application.request import (
+    FULL_DEADLINE_SECONDS,
+    FULL_MAX_ITEMS,
+    PILOT_DEADLINE_SECONDS,
+    PILOT_MAX_ITEMS,
+    ROUTE_ORDER,
+    RunRequest,
+)
 # endregion [01]
 
 # region [02] Implementación
@@ -109,6 +116,60 @@ class UiRunRequestTests(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "linux_mutation_backend_unavailable"),
             ):
                 request.validated()
+
+    def test_default_profile_is_a_finite_pilot_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            request = RunRequest(Path(directory), ("pdf",)).validated()
+
+        self.assertEqual(request.profile, "pilot")
+        self.assertEqual(request.max_items, PILOT_MAX_ITEMS)
+        self.assertEqual(request.deadline_seconds, float(PILOT_DEADLINE_SECONDS))
+        self.assertTrue(request.request_id)
+
+    def test_full_profile_is_still_finite_and_serializes_route_caps(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            request = RunRequest(
+                Path(directory),
+                ("code", "pdf"),
+                profile="full",
+            ).validated()
+            arguments = request.cli_arguments()
+
+        self.assertEqual(request.max_items, FULL_MAX_ITEMS)
+        self.assertEqual(request.deadline_seconds, float(FULL_DEADLINE_SECONDS))
+        self.assertEqual(
+            arguments[arguments.index("--pdf-max-count") + 1],
+            str(FULL_MAX_ITEMS),
+        )
+        self.assertEqual(
+            arguments[arguments.index("--code-max-count") + 1],
+            str(FULL_MAX_ITEMS),
+        )
+
+    def test_pilot_rejects_an_unbounded_or_oversized_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "permite entre"):
+                RunRequest(
+                    Path(directory),
+                    ("pdf",),
+                    max_items=PILOT_MAX_ITEMS + 1,
+                ).validated()
+            with self.assertRaisesRegex(ValueError, "tiempo"):
+                RunRequest(
+                    Path(directory),
+                    ("pdf",),
+                    deadline_seconds=PILOT_DEADLINE_SECONDS + 1,
+                ).validated()
+
+    def test_request_id_is_preserved_for_worker_correlation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            request = RunRequest(
+                Path(directory),
+                ("pdf",),
+                request_id="ui-run-42",
+            ).validated()
+
+        self.assertEqual(request.request_id, "ui-run-42")
 
 
 if __name__ == "__main__":

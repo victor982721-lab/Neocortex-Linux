@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
 
-from .document_catalog import connect_document_catalog
+from .document_catalog import document_catalog_database
 from neocortex.persistence.framework_connection import connect_existing_framework
 # endregion [01]
 
@@ -136,8 +136,7 @@ def list_organization_plans(
 ) -> tuple[OrganizationPlanView, ...]:
     if limit < 1 or limit > 10_000:
         raise ValueError("limit must be between 1 and 10000")
-    connection = connect_document_catalog(catalog_path, readonly=True)
-    try:
+    with document_catalog_database(catalog_path, readonly=True) as connection:
         predicate = "" if status is None else "WHERE status=?"
         parameters: tuple[object, ...] = () if status is None else (status,)
         rows = connection.execute(
@@ -165,8 +164,6 @@ def list_organization_plans(
             )
             for row in rows
         )
-    finally:
-        connection.close()
 
 
 def _begin_organization_run(

@@ -19,6 +19,7 @@ from neocortex.deduplication import FileSnapshot
 from neocortex.deduplication.fingerprinting import FULL_ALGORITHM, stat_matches_snapshot
 from neocortex.deduplication.io import native_io_path
 from neocortex.platform.policy import sqlite_path_collation
+from neocortex.platform.content_capability_manifest import CONTENT_CAPABILITIES
 
 from neocortex.foundation.file_identity import FileIdentityError, decode_file_identity
 from .derivation_contracts import MaterializationRef
@@ -36,7 +37,11 @@ from .semantic_quality import (
     clean_title_candidate,
     content_title_from_sample,
 )
-from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
+from neocortex.persistence.sqlite_immutable import (
+    ImmutableSQLiteUnavailable,
+    SQLiteReadSession,
+    preferred_sqlite_read_mode,
+)
 from neocortex.capabilities.formats.text.text_derivation_repository import (
     TextDerivationIntegrityError,
     validate_text_publications_from_connection,
@@ -57,18 +62,27 @@ TEXT_SOURCE_KINDS = (
     "code",
 )
 IMAGE_SOURCE_KIND = "image"
+VIDEO_SOURCE_KIND = "video"
+# Physical Semantic source names are projected from the canonical content
+# manifest.  ``image_ocr`` is a channel inside the image owner, not a second
+# SQLite database, so only catalog-owned source kinds enter this map.
 SOURCE_DATABASE_NAMES = {
-    "pdf": "pdf.sqlite3",
-    "docx": "docx.sqlite3",
-    "xlsx": "office.sqlite3",
-    "pptx": "office.sqlite3",
-    "odt": "office.sqlite3",
-    "audio": "audio.sqlite3",
-    "archive": "archive.sqlite3",
-    "text": "text.sqlite3",
-    "code": "code.sqlite3",
-    IMAGE_SOURCE_KIND: "image.sqlite3",
+    source_kind: capability.state_database
+    for capability in CONTENT_CAPABILITIES
+    for source_kind in capability.catalog_source_kinds
 }
+
+
+def iter_video_source_records(
+    state_directory: Path,
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> Iterator[TextSourceRecord]:
+    """Lazily expose Video frame OCR through the Semantic source namespace."""
+
+    from .video_source import iter_video_source_records as _iter_video
+
+    yield from _iter_video(state_directory, connection=connection)
 SOURCE_ADAPTER_VERSION = "semantic-source-adapters-v3"
 IMAGE_SOURCE_ADAPTER_VERSION = "semantic-image-source-v4-no-nudenet"
 CODE_SOURCE_ADAPTER_VERSION = "semantic-code-source-v1"
@@ -269,23 +283,89 @@ def semantic_source_database(state_directory: Path, source_kind: str) -> Path:
 
 @contextmanager
 def _readonly_database(path: Path):
-    connection = sqlite3.connect(
-        readonly_sqlite_uri(path),
-        uri=True,
-        timeout=60,
-    )
     try:
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout=60000")
-        connection.execute("PRAGMA foreign_keys=ON")
-        if int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
-            raise SemanticSourceError("source reader could not enable foreign keys")
-        connection.execute("PRAGMA query_only=ON")
-        if int(connection.execute("PRAGMA query_only").fetchone()[0]) != 1:
-            raise SemanticSourceError("source reader is not query-only")
-        yield connection
+        mode = preferred_sqlite_read_mode(path)
+        with SQLiteReadSession(
+            path,
+            mode=mode,
+            timeout_seconds=60.0,
+        ) as connection:
+            yield connection
+    except FileNotFoundError as exc:
+        raise sqlite3.OperationalError(f"unable to open database file: {path}") from exc
+    except ImmutableSQLiteUnavailable as exc:
+        raise SemanticSourceError(str(exc)) from exc
+
+
+@contextmanager
+def _attached_readonly_database(
+    connection: sqlite3.Connection,
+    path: Path,
+    *,
+    schema: str,
+):
+    """Attach a second owner through the fenced SQLite read kernel.
+
+    SQLite's ordinary ``mode=ro`` ATTACH URI is not safe for a published owner:
+    opening it can create ``-wal``/``-shm`` files when the owner is live.  A
+    strict owner is attached with ``immutable=1`` after a double filesystem
+    fence; a live owner is first copied by :class:`SQLiteReadSession` and only
+    the detached temporary bytes are attached.  The temporary session remains
+    open until DETACH has completed so its files cannot be removed while the
+    connection still references them.
+    """
+
+    if schema not in {"dedup"}:
+        raise ValueError("unsupported attached SQLite schema")
+    session: SQLiteReadSession | None = None
+    attached = False
+    primary_error: BaseException | None = None
+    try:
+        mode = preferred_sqlite_read_mode(path)
+        session = SQLiteReadSession(path, mode=mode, timeout_seconds=60.0)
+        session.open()
+        attached_path = session.temporary_database or path
+        # The source has already been lstat/fstat fenced by the session.  The
+        # immutable URI is deliberately built here rather than using the old
+        # ``mode=ro`` helper, so this ATTACH cannot create sidecars.
+        attach_uri = attached_path.resolve(strict=True).as_uri() + "?immutable=1"
+        connection.execute(f"ATTACH DATABASE ? AS {schema}", (attach_uri,))
+        attached = True
+        yield
+    except ImmutableSQLiteUnavailable as exc:
+        primary_error = SemanticSourceError(str(exc))
+        raise primary_error from exc
+    except BaseException as exc:
+        primary_error = exc
+        raise
     finally:
-        connection.close()
+        if attached:
+            try:
+                connection.execute(f"DETACH DATABASE {schema}")
+            except BaseException as exc:
+                if primary_error is None:
+                    primary_error = exc
+                else:
+                    try:
+                        primary_error.add_note(
+                            "semantic source attached owner detach failed: "
+                            f"{type(exc).__name__}: {exc}"
+                        )
+                    except Exception:
+                        pass
+        if session is not None:
+            try:
+                session.close()
+            except BaseException as exc:
+                if primary_error is None:
+                    raise
+                try:
+                    primary_error.add_note(
+                        "semantic source attached owner close failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                except Exception:
+                    pass
 
 
 @contextmanager
@@ -293,13 +373,31 @@ def _borrow_or_open_database(
     path: Path,
     connection: sqlite3.Connection | None,
 ):
-    """Use a caller-owned snapshot or open the traditional private reader."""
+    """Use a caller-owned snapshot or open a fenced private reader."""
 
     if connection is not None:
         yield connection
         return
     with _readonly_database(path) as opened:
         yield opened
+
+
+@contextmanager
+def _borrow_or_open_image_with_dedup(
+    image_database: Path,
+    dedup_database: Path | None,
+    connection: sqlite3.Connection | None,
+    *,
+    dedup_attached: bool,
+):
+    """Borrow/open the image owner and safely attach the optional dedup owner."""
+
+    with _borrow_or_open_database(image_database, connection) as opened:
+        if dedup_attached or dedup_database is None or not dedup_database.is_file():
+            yield opened
+            return
+        with _attached_readonly_database(opened, dedup_database, schema="dedup"):
+            yield opened
 
 
 def _decode_text(payload: bytes | memoryview, expected_chars: int) -> str:
@@ -1085,7 +1183,7 @@ def _owner_stamp(path: Path) -> tuple[tuple[str, int, int, int], ...]:
     for suffix in ("", "-wal", "-shm"):
         candidate = Path(str(path) + suffix)
         try:
-            metadata = candidate.stat()
+            metadata = candidate.lstat()
         except FileNotFoundError:
             continue
         values.append((suffix, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns))
@@ -1244,7 +1342,12 @@ def _image_rows(
     dedup_attached: bool = False,
     include_ocr_payload: bool = True,
 ) -> Iterator[sqlite3.Row]:
-    with _borrow_or_open_database(image_database, connection) as connection:
+    with _borrow_or_open_image_with_dedup(
+        image_database,
+        dedup_database,
+        connection,
+        dedup_attached=dedup_attached,
+    ) as connection:
         image_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(images)")}
         run_projection = (
             ",i.last_seen_run_id"
@@ -1263,11 +1366,6 @@ def _image_rows(
         has_dedup = dedup_attached or bool(dedup_database and dedup_database.is_file())
         if has_dedup:
             assert dedup_database is not None
-            if not dedup_attached:
-                connection.execute(
-                    "ATTACH DATABASE ? AS dedup",
-                    (readonly_sqlite_uri(dedup_database),),
-                )
             if _dedup_uses_isolated_generations(connection):
                 # A path may coexist in several roots or unpublished scans.
                 # Reuse only the newest valid checkpoint generation.
@@ -1328,13 +1426,13 @@ def _image_source_head(state_directory: Path) -> SemanticSourceHead:
     row_count = schema_version = 0
     complete = True
     try:
-        with _readonly_database(image_database) as connection:
-            dedup_attached = dedup_database.is_file()
-            if dedup_attached:
-                connection.execute(
-                    "ATTACH DATABASE ? AS dedup",
-                    (readonly_sqlite_uri(dedup_database),),
-                )
+        dedup_attached = dedup_database.is_file()
+        with _borrow_or_open_image_with_dedup(
+            image_database,
+            dedup_database,
+            None,
+            dedup_attached=False,
+        ) as connection:
             before_version = int(connection.execute("PRAGMA data_version").fetchone()[0])
             before_dedup_version = (
                 int(connection.execute("PRAGMA dedup.data_version").fetchone()[0])

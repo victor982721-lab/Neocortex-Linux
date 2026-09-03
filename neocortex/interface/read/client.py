@@ -5,18 +5,115 @@ from __future__ import annotations
 import importlib
 from collections.abc import Mapping
 
+from neocortex.api.read_contract import (
+    ReadContractError,
+    ReadOperation,
+    normalize_read_payload,
+    sanitize_untrusted_text,
+    validate_read_payload,
+)
+
 from .models import ReadClientError, ReadRequest
 
-_EXPECTED_CONTRACTS = {
-    "status": ("neocortex.read-api/v1", "neocortex_scoped_status"),
-    "search": ("neocortex.read-api/v1", "neocortex_scoped_search"),
-    "ask": ("neocortex.read-api/v1", "neocortex_scoped_context"),
-    "review": ("neocortex.value-review/v1", "neocortex_scoped_value_review"),
-}
+
+_COMPLETE_ENVELOPE_FIELDS = frozenset(
+    {
+        "schema",
+        "kind",
+        "operation",
+        "request_id",
+        "scope",
+        "scope_requested",
+        "read_only",
+        "coverage",
+        "status",
+        "exit_code",
+        "error",
+        "result",
+        "scopes",
+    }
+)
+_MAX_SANITIZED_NODES = 20_000
+_MAX_SANITIZED_DEPTH = 16
+_MAX_SANITIZED_STRING = 128_000
+
+
+def _sanitize_nested(value: object, *, depth: int = 0, budget: list[int] | None = None) -> object:
+    """Remove terminal controls from corpus-derived result data.
+
+    Contract metadata is validated before this function runs, so only result,
+    scope details, errors and epoch diagnostics are sanitized.  A node/depth
+    budget keeps an untrusted producer from turning the desktop bridge into an
+    unbounded renderer while preserving the legacy JSON shape.
+    """
+
+    if budget is None:
+        budget = [_MAX_SANITIZED_NODES]
+    budget[0] -= 1
+    if budget[0] < 0 or depth > _MAX_SANITIZED_DEPTH:
+        return "[contenido omitido por límite]"
+    if isinstance(value, str):
+        return sanitize_untrusted_text(value, limit=_MAX_SANITIZED_STRING, single_line=False)
+    if isinstance(value, Mapping):
+        result: dict[object, object] = {}
+        for key, item in value.items():
+            safe_key: object = (
+                sanitize_untrusted_text(key, limit=512)
+                if isinstance(key, str)
+                else key
+            )
+            result[safe_key] = _sanitize_nested(item, depth=depth + 1, budget=budget)
+        return result
+    if isinstance(value, list):
+        return [_sanitize_nested(item, depth=depth + 1, budget=budget) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_nested(item, depth=depth + 1, budget=budget) for item in value]
+    return value
+
+
+def _sanitize_result_sections(payload: Mapping[str, object]) -> dict[str, object]:
+    """Return a safe copy while leaving strict request echoes byte-for-byte."""
+
+    result = dict(payload)
+    budget = [_MAX_SANITIZED_NODES]
+    for key in ("result", "scopes", "error", "observed_epoch"):
+        if key in result:
+            result[key] = _sanitize_nested(result[key], budget=budget)
+    return result
+
+
+def _validate_outcome_consistency(payload: Mapping[str, object]) -> None:
+    """Reject a complete envelope whose status lies about its exit code."""
+
+    expected = {
+        0: ("complete", "ok"),
+        1: ("unavailable", "error"),
+        2: ("unavailable", "usage_error"),
+        3: ("empty", "empty"),
+        4: ("partial", "partial"),
+        5: ("blocked", "snapshot_changed"),
+        6: ("unavailable", "schema_incompatible"),
+        7: ("unavailable", "corrupt"),
+        130: ("blocked", "cancelled"),
+    }
+    code = payload.get("exit_code")
+    if isinstance(code, bool) or not isinstance(code, int) or code not in expected:
+        return
+    coverage, status = expected[code]
+    if payload.get("coverage") != coverage or payload.get("status") != status:
+        raise ReadClientError("El read API devolvió status/coverage incompatibles con exit_code.")
+    if code not in {0, 3} and payload.get("error") is None:
+        raise ReadClientError("El read API no describió el error de un resultado incompleto.")
 
 
 class SharedReadClient:
-    """Call the canonical local facade without accepting caller-owned paths."""
+    """Call and validate the canonical local read facade.
+
+    A producer that emits the complete v1 envelope is checked with strict
+    request echoes and an observed publication epoch.  Older adapters remain
+    accepted through the explicit compatibility path, but are still normalized
+    and validated before a UI can render them.
+    """
 
     def execute(self, request: ReadRequest) -> dict[str, object]:
         selected = request.validated()
@@ -49,45 +146,59 @@ class SharedReadClient:
 
 
 def _validated_payload(request: ReadRequest, value: object) -> dict[str, object]:
-    payload = _mapping_payload(value)
-    _validate_identity(request, payload)
-    _validate_envelope(request, payload)
-    return payload
-
-
-def _mapping_payload(value: object) -> dict[str, object]:
-    if not isinstance(value, Mapping):
-        raise ReadClientError("El read API devolvió una respuesta no estructurada.")
-    return dict(value)
-
-
-def _validate_identity(request: ReadRequest, payload: Mapping[str, object]) -> None:
-    expected_schema, expected_kind = _EXPECTED_CONTRACTS[request.operation]
-    if payload.get("schema") != expected_schema or payload.get("kind") != expected_kind:
-        raise ReadClientError("El read API devolvió un contrato incompatible.")
-    if payload.get("read_only") is not True:
-        raise ReadClientError("El read API no confirmó el modo de solo lectura.")
-    if payload.get("scope_requested") != request.scope:
-        raise ReadClientError("El read API respondió para un scope distinto al solicitado.")
-
-
-def _validate_envelope(request: ReadRequest, payload: Mapping[str, object]) -> None:
-    exit_code = payload.get("exit_code")
-    if isinstance(exit_code, bool) or not isinstance(exit_code, int):
-        raise ReadClientError("El read API no devolvió un código de salida válido.")
-    if not isinstance(payload.get("scopes"), list):
-        raise ReadClientError("El read API no devolvió scopes consultables.")
-    if request.operation == "review":
-        _validate_review(payload)
-
-
-def _validate_review(payload: Mapping[str, object]) -> None:
-    if (
-        payload.get("operation") != "value-preview"
-        or payload.get("advisory_only") is not True
-        or payload.get("mutation_authorized") is not False
-    ):
-        raise ReadClientError("La revisión no confirmó su carácter consultivo.")
+    try:
+        operation = (
+            ReadOperation.CONTEXT
+            if request.operation == "ask"
+            else ReadOperation(request.operation)
+        )
+        legacy_payload = not (
+            isinstance(value, Mapping)
+            and _COMPLETE_ENVELOPE_FIELDS.issubset(value)
+        )
+        if not isinstance(value, Mapping):
+            raise ReadClientError("El read API devolvió una respuesta no estructurada.")
+        if "observed_epoch" in value and not isinstance(value.get("observed_epoch"), Mapping):
+            raise ReadClientError("El read API no devolvió un observed_epoch válido.")
+        payload = normalize_read_payload(value, operation)
+        validated = validate_read_payload(
+            payload,
+            operation,
+            scope=request.scope,
+            # Existing adapters predate the v1 echo fields.  They still get
+            # identity, shape and safety validation, while the strict echo
+            # checks apply as soon as a producer emits the complete envelope.
+            query=None if legacy_payload else request.query or None,
+            mode=(
+                "evidence"
+                if not legacy_payload
+                and operation in {ReadOperation.SEARCH, ReadOperation.CONTEXT}
+                else None
+            ),
+            include_history=(
+                False
+                if not legacy_payload
+                and operation in {ReadOperation.SEARCH, ReadOperation.CONTEXT}
+                else None
+            ),
+            limit=(
+                request.limit
+                if not legacy_payload
+                and operation in {
+                    ReadOperation.SEARCH,
+                    ReadOperation.CONTEXT,
+                    ReadOperation.REVIEW,
+                    ReadOperation.INSPECT_CODE,
+                }
+                else None
+            ),
+            strict_echo=not legacy_payload,
+        )
+        if not legacy_payload:
+            _validate_outcome_consistency(validated)
+        return _sanitize_result_sections(validated)
+    except (ReadContractError, TypeError, ValueError) as exc:
+        raise ReadClientError(str(exc)) from exc
 
 
 __all__ = ["SharedReadClient"]

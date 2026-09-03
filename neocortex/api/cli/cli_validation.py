@@ -16,7 +16,7 @@ from .cli_archive_surface import (
 )
 from .cli_capabilities_surface import validate_capabilities_arguments
 from .cli_code_surface import validate_code_arguments
-from .cli_docx_surface import validate_docx_arguments
+from .cli_docx_surface import validate_docx_arguments, validate_docx_direct_operation
 from .cli_knowledge_surface import validate_knowledge_arguments
 from .cli_models_surface import validate_models_arguments
 from .cli_office_surface import (
@@ -188,6 +188,8 @@ def _validate_pdf_queries(args: argparse.Namespace) -> None:
         raise SystemExit("--pdf-search-limit must be positive")
     if args.pdf_search_limit > 1000:
         raise SystemExit("--pdf-search-limit cannot exceed 1000")
+    if args.pdf_search is not None and not args.pdf_search.strip():
+        raise SystemExit("--pdf-search must be non-empty")
     if args.pdf_layout_groups is not None and not 1 <= args.pdf_layout_groups <= 100:
         raise SystemExit("--pdf-layout-groups must be between 1 and 100")
 
@@ -224,6 +226,8 @@ def _validate_status_operation(args: argparse.Namespace) -> None:
         raise SystemExit("--status-run and --status-json require --status")
     if args.status and args.apply:
         raise SystemExit("--status is read-only and cannot be combined with --apply")
+    if args.status and args.route != "none":
+        raise SystemExit("--status cannot be combined with --route")
 
 
 def _validate_state_health_operation(args: argparse.Namespace) -> None:
@@ -510,6 +514,8 @@ def _validate_review_operations(
         raise SystemExit("--review-decisions is read-only and cannot be combined with --apply")
     if args.review_record is not None and args.apply:
         raise SystemExit("--review-record cannot be combined with --apply")
+    if selected_direct_operations(args, family=DirectOperationFamily.REVIEW) and args.route != "none":
+        raise SystemExit("review operations cannot be combined with --route")
 
 
 def _validate_organization_operations(
@@ -600,11 +606,31 @@ def _validate_direct_operations(args: argparse.Namespace) -> None:
     _validate_watcher_operation(args, explicit)
     _validate_review_operations(args, explicit)
     validate_office_direct_operation(args, explicit)
+    validate_docx_direct_operation(args)
+    _validate_pdf_direct_operation(args)
     validate_archive_direct_operation(args, explicit)
     _validate_organization_operations(args, explicit)
     _validate_curation_operation(args, explicit)
     validate_audio_direct_operation(args)
     validate_video_direct_operation(args)
+
+
+def _validate_pdf_direct_operation(args: argparse.Namespace) -> None:
+    """Reject route/mutation flags that direct PDF queries cannot consume."""
+
+    if not any(
+        (
+            args.pdf_search is not None,
+            args.pdf_layout_groups is not None,
+            args.pdf_doctor,
+            args.pdf_verify,
+        )
+    ):
+        return
+    if args.apply:
+        raise SystemExit("PDF direct actions are read-only and cannot be combined with --apply")
+    if args.route != "none":
+        raise SystemExit("PDF direct actions cannot be combined with --route")
 
 
 def _validate_route_only(args: argparse.Namespace) -> None:

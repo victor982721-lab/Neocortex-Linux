@@ -35,7 +35,8 @@ from neocortex.workflow.review.review import (
 )
 from neocortex.workflow.review.review_evidence import _materialize_review_decision
 from neocortex.safety.route_filters import CandidateSelection, framework_selection_predicate
-from neocortex.persistence.sqlite_paths import existing_sqlite_uri, readonly_sqlite_uri
+from neocortex.persistence.sqlite_immutable import open_sidecar_safe_sqlite_connection
+from neocortex.persistence.sqlite_paths import existing_sqlite_uri
 # endregion [01]
 
 # region [02] Implementación
@@ -101,10 +102,10 @@ class FrameworkRouteState:
 
     def _connect(self, *, readonly: bool) -> sqlite3.Connection:
         if readonly:
-            connection = sqlite3.connect(
-                readonly_sqlite_uri(self.path),
-                uri=True,
-                timeout=60,
+            return open_sidecar_safe_sqlite_connection(
+                self.path,
+                timeout_seconds=60.0,
+                max_attempts=8,
             )
         else:
             connection = sqlite3.connect(

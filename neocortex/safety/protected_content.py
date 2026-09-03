@@ -553,7 +553,9 @@ def _windows_documents_directory() -> Path:
 
     guid = _Guid.from_buffer_copy(_DOCUMENTS_FOLDER_ID.bytes_le)
     allocated = ctypes.c_wchar_p()
-    win_dll = ctypes.WinDLL
+    win_dll = getattr(ctypes, "WinDLL", None)
+    if win_dll is None:
+        raise OSError("Windows DLL loading is unavailable on this platform")
     shell32 = win_dll("shell32", use_last_error=True)
     ole32 = win_dll("ole32", use_last_error=True)
     shell32.SHGetKnownFolderPath.argtypes = (

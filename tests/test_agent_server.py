@@ -20,7 +20,15 @@ def test_agent_server_exposes_only_read_only_fixed_scope_tools() -> None:
     tools = asyncio.run(server.list_tools())
     names = {tool.name for tool in tools}
 
-    assert names == {"status", "search", "context", "evidence", "inspect_code"}
+    assert names == {
+        "status",
+        "search",
+        "context",
+        "evidence",
+        "inspect_code",
+        "lineage",
+        "asset_health",
+    }
     assert not names.intersection({"delete", "move", "rename", "apply", "index", "write"})
     for tool in tools:
         assert tool.annotations is not None
@@ -148,7 +156,9 @@ def test_public_stdio_server_completes_a_real_read_only_protocol_exchange(
     )
     assert process.stdin is not None
     assert process.stdout is not None
+    assert process.stderr is not None
     stdout = process.stdout
+    stderr = process.stderr
     responses: queue.Queue[str] = queue.Queue(maxsize=8)
 
     def collect_responses() -> None:
@@ -209,6 +219,8 @@ def test_public_stdio_server_completes_a_real_read_only_protocol_exchange(
             "context",
             "evidence",
             "inspect_code",
+            "lineage",
+            "asset_health",
         }
         assert all(tool["annotations"]["readOnlyHint"] is True for tool in tools)
 
@@ -232,6 +244,9 @@ def test_public_stdio_server_completes_a_real_read_only_protocol_exchange(
         except subprocess.TimeoutExpired:
             process.terminate()
             process.wait(timeout=10)
+        reader.join(timeout=10)
+        stdout.close()
+        stderr.close()
 
     assert process.returncode == 0
     assert not list(tmp_path.rglob("*"))

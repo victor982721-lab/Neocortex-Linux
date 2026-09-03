@@ -8,6 +8,7 @@ side can be imported first without creating a cycle.
 from __future__ import annotations
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -93,45 +94,71 @@ def code_version_metadata(
     sqlite_cancellation_scope_fn: Callable[..., Any],
     cleanup_preserving_primary_fn: _CleanupPreservingPrimary,
     sqlite_batch_size: int,
+    readonly_session_fn: Callable[..., Any] | None = None,
 ) -> dict[int, sqlite3.Row]:
     """Resolve current physical identity and producer metadata in batches."""
 
     result: dict[int, sqlite3.Row] = {}
     cancellation = cancellation_bridge_type(cancellation_check)
-    connection = connect_code_state_fn(path, readonly=True)
-    primary_error: BaseException | None = None
-    try:
-        with sqlite_cancellation_scope_fn(connection, cancellation):
-            for offset in range(0, len(version_ids), sqlite_batch_size):
-                cancellation.checkpoint()
-                batch = tuple(dict.fromkeys(version_ids[offset : offset + sqlite_batch_size]))
-                if not batch:
-                    continue
-                placeholders = ",".join("?" for _ in batch)
-                rows = connection.execute(
-                    f"""SELECT v.version_id,f.volume_id,f.physical_file_id,v.size,
-                    v.mtime_ns,v.birthtime_ns,v.raw_xxh3_128,v.processing_signature,v.analyzer_id,
-                    v.analyzer_version,v.analysis_status,v.first_observed_run_id,
-                    v.last_observed_run_id
-                    FROM file_versions v JOIN files f ON f.file_id=v.file_id
-                    WHERE v.version_id IN ({placeholders})
-                    AND f.current_version_id=v.version_id AND f.status='current'
-                    AND v.invalidated_ns IS NULL""",
-                    batch,
-                ).fetchall()
-                result.update((int(row["version_id"]), row) for row in rows)
-    except BaseException as exc:
-        primary_error = exc
-        raise
-    finally:
-        if primary_error is None:
-            connection.close()
+    close_direct_connection = False
+    if readonly_session_fn is None:
+        # Canonical production calls use the fenced reader; injected fixtures
+        # and compatibility seams retain their caller-owned connection path.
+        if (
+            path.is_file()
+            and getattr(connect_code_state_fn, "__module__", "") == "neocortex.code.code_schema"
+            and getattr(connect_code_state_fn, "__name__", "") == "connect_code_state"
+        ):
+            from neocortex.persistence.sqlite_immutable import (
+                preferred_sqlite_read_mode,
+                sqlite_read_session,
+            )
+
+            manager: Any = sqlite_read_session(
+                path,
+                mode=preferred_sqlite_read_mode(path),
+                timeout_seconds=60.0,
+            )
         else:
+            manager = nullcontext(connect_code_state_fn(path, readonly=True))
+            close_direct_connection = True
+    else:
+        manager = readonly_session_fn(path)
+    direct_connection: Any | None = None
+    try:
+        with manager as connection:
+            if close_direct_connection:
+                direct_connection = connection
+            with sqlite_cancellation_scope_fn(connection, cancellation):
+                for offset in range(0, len(version_ids), sqlite_batch_size):
+                    cancellation.checkpoint()
+                    batch = tuple(dict.fromkeys(version_ids[offset : offset + sqlite_batch_size]))
+                    if not batch:
+                        continue
+                    placeholders = ",".join("?" for _ in batch)
+                    rows = connection.execute(
+                        f"""SELECT v.version_id,f.volume_id,f.physical_file_id,v.size,
+                        v.mtime_ns,v.birthtime_ns,v.raw_xxh3_128,v.processing_signature,v.analyzer_id,
+                        v.analyzer_version,v.analysis_status,v.first_observed_run_id,
+                        v.last_observed_run_id
+                        FROM file_versions v JOIN files f ON f.file_id=v.file_id
+                        WHERE v.version_id IN ({placeholders})
+                        AND f.current_version_id=v.version_id AND f.status='current'
+                        AND v.invalidated_ns IS NULL""",
+                        batch,
+                    ).fetchall()
+                    result.update((int(row["version_id"]), row) for row in rows)
+    except BaseException as primary_error:
+        if direct_connection is not None:
             cleanup_preserving_primary_fn(
-                connection.close,
+                direct_connection.close,
                 primary_error,
                 label="code metadata connection close cleanup",
             )
+        raise
+    else:
+        if direct_connection is not None:
+            direct_connection.close()
     return result
 
 

@@ -10,20 +10,19 @@ import json
 import os
 import sqlite3
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from neocortex.enumeration import JournalCursor
-from neocortex.deduplication import FileSnapshot, InventoryExclusionPolicy
+from neocortex.deduplication import FileSnapshot
 from neocortex.platform.policy import sqlite_path_collation
 
 from neocortex.platform.content_types import DetectedType
 from neocortex.safety.corpus_access import (
     CorpusAccessPolicy,
     CorpusMutationGuard,
-    path_trees_intersect,
 )
 from neocortex.workflow.actions.file_action_reconciliation_store import (
     RecordedFileActionReconciliation,

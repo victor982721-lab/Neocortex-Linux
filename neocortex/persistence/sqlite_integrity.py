@@ -6,6 +6,7 @@ import math
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from .sqlite_cancellation import (
     CancellationCheck,
@@ -21,6 +22,7 @@ from .sqlite_connection import (
 
 
 MAX_REPORTED_ISSUES = 10_000
+IntegrityCheckMode = Literal["quick", "full"]
 
 
 # region [01] Immutable policy and result contracts
@@ -39,6 +41,7 @@ class SQLiteIntegrityPolicy:
     max_foreign_key_violations: int = 100
     progress_instructions: int = DEFAULT_PROGRESS_INSTRUCTIONS
     timeout_seconds: float = 60.0
+    check_mode: IntegrityCheckMode = "quick"
 
     def __post_init__(self) -> None:
         _require_issue_limit(
@@ -59,6 +62,8 @@ class SQLiteIntegrityPolicy:
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be finite and positive")
         object.__setattr__(self, "timeout_seconds", timeout_seconds)
+        if self.check_mode not in {"quick", "full"}:
+            raise ValueError("check_mode must be 'quick' or 'full'")
 
 
 _DEFAULT_SQLITE_INTEGRITY_POLICY = SQLiteIntegrityPolicy()
@@ -89,6 +94,10 @@ class SQLiteIntegrityReport:
     foreign_key_violations: tuple[SQLiteForeignKeyViolation, ...]
     foreign_key_observed_violation_count: int
     foreign_key_check_complete: bool
+    check_mode: IntegrityCheckMode = "quick"
+    integrity_check_errors: tuple[str, ...] = ()
+    integrity_check_observed_error_count: int = 0
+    integrity_check_complete: bool = True
 
     @property
     def quick_check_truncated(self) -> bool:
@@ -99,8 +108,16 @@ class SQLiteIntegrityReport:
         return not self.foreign_key_check_complete
 
     @property
+    def integrity_check_truncated(self) -> bool:
+        return not self.integrity_check_complete
+
+    @property
     def complete(self) -> bool:
-        return self.quick_check_complete and self.foreign_key_check_complete
+        return (
+            self.quick_check_complete
+            and self.foreign_key_check_complete
+            and (self.check_mode != "full" or self.integrity_check_complete)
+        )
 
     @property
     def healthy(self) -> bool:
@@ -108,7 +125,34 @@ class SQLiteIntegrityReport:
             self.complete
             and not self.quick_check_errors
             and not self.foreign_key_violations
+            and (self.check_mode != "full" or not self.integrity_check_errors)
         )
+
+    def as_payload(self) -> dict[str, object]:
+        """Return bounded JSON-safe integrity evidence."""
+
+        return {
+            "database_path": str(self.database_path),
+            "check_mode": self.check_mode,
+            "quick_check_errors": list(self.quick_check_errors),
+            "quick_check_observed_error_count": self.quick_check_observed_error_count,
+            "quick_check_complete": self.quick_check_complete,
+            "foreign_key_violations": [
+                {
+                    "table": item.table,
+                    "rowid": item.rowid,
+                    "parent": item.parent,
+                    "foreign_key_index": item.foreign_key_index,
+                }
+                for item in self.foreign_key_violations
+            ],
+            "foreign_key_observed_violation_count": self.foreign_key_observed_violation_count,
+            "foreign_key_check_complete": self.foreign_key_check_complete,
+            "integrity_check_errors": list(self.integrity_check_errors),
+            "integrity_check_observed_error_count": self.integrity_check_observed_error_count,
+            "integrity_check_complete": self.integrity_check_complete,
+            "healthy": self.healthy,
+        }
 
 
 # endregion [01]
@@ -179,10 +223,44 @@ def _foreign_key_check(
     return tuple(retained), observed_violations, complete
 
 
+def _integrity_check(
+    connection: sqlite3.Connection,
+    *,
+    maximum_errors: int,
+    cancellation: SQLiteCancellationBridge,
+) -> tuple[tuple[str, ...], int, bool]:
+    """Run SQLite's exhaustive structural check with a bounded result set."""
+
+    retained: list[str] = []
+    observed_errors = 0
+    observed_rows = 0
+    sqlite_limit = maximum_errors + 1
+    cursor = connection.execute(f"PRAGMA integrity_check({sqlite_limit})")
+    try:
+        for row in cursor:
+            cancellation.checkpoint()
+            observed_rows += 1
+            message = str(row[0])
+            if message.casefold() == "ok":
+                continue
+            observed_errors += 1
+            if len(retained) < maximum_errors:
+                retained.append(message)
+    finally:
+        cursor.close()
+    cancellation.checkpoint()
+    if observed_rows == 0:
+        retained.append("integrity_check returned no result")
+        observed_errors = 1
+    complete = observed_errors <= maximum_errors
+    return tuple(retained), observed_errors, complete
+
+
 def check_sqlite_integrity(
     database_path: str | Path,
     *,
     policy: SQLiteIntegrityPolicy = _DEFAULT_SQLITE_INTEGRITY_POLICY,
+    mode: IntegrityCheckMode | None = None,
     cancellation_check: CancellationCheck | None = None,
 ) -> SQLiteIntegrityReport:
     """Inspect one existing database without creating or mutating it.
@@ -194,6 +272,9 @@ def check_sqlite_integrity(
 
     if not isinstance(policy, SQLiteIntegrityPolicy):
         raise TypeError("policy must be a SQLiteIntegrityPolicy")
+    if mode is not None and mode not in {"quick", "full"}:
+        raise ValueError("mode must be 'quick' or 'full'")
+    check_mode = policy.check_mode if mode is None else mode
     path = Path(database_path).resolve(strict=False)
     connection = connect_sqlite(
         path,
@@ -225,6 +306,16 @@ def check_sqlite_integrity(
                         cancellation=cancellation,
                     )
                 )
+                if check_mode == "full":
+                    integrity_errors, integrity_observed, integrity_complete = (
+                        _integrity_check(
+                            connection,
+                            maximum_errors=policy.max_quick_check_errors,
+                            cancellation=cancellation,
+                        )
+                    )
+                else:
+                    integrity_errors, integrity_observed, integrity_complete = (), 0, True
             finally:
                 if connection.in_transaction:
                     connection.rollback()
@@ -238,6 +329,10 @@ def check_sqlite_integrity(
         foreign_key_violations=violations,
         foreign_key_observed_violation_count=violations_observed,
         foreign_key_check_complete=violations_complete,
+        check_mode=check_mode,
+        integrity_check_errors=integrity_errors,
+        integrity_check_observed_error_count=integrity_observed,
+        integrity_check_complete=integrity_complete,
     )
 
 
@@ -246,6 +341,7 @@ def check_sqlite_integrity(
 
 __all__ = [
     "MAX_REPORTED_ISSUES",
+    "IntegrityCheckMode",
     "SQLiteForeignKeyViolation",
     "SQLiteIntegrityPolicy",
     "SQLiteIntegrityReport",

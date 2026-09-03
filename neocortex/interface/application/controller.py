@@ -8,7 +8,15 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
 
-from ..protocol.messages import MAX_MESSAGE_BYTES, MESSAGE_PREFIX, command_record, decode_message
+from ..protocol.messages import (
+    MAX_MESSAGE_BYTES,
+    MESSAGE_PREFIX,
+    WorkerMessageValidator,
+    WorkerProtocolError,
+    command_record,
+    decode_message,
+    sanitize_text,
+)
 from .request import RunRequest
 
 
@@ -34,6 +42,8 @@ class WorkerController(QObject):
         self._stdout_discarding_oversized_line = False
         self._stderr_discarding_oversized_line = False
         self._last_lifecycle = ""
+        self._message_validator = WorkerMessageValidator()
+        self._protocol_failure_reported = False
 
     @property
     def is_running(self) -> bool:
@@ -55,6 +65,10 @@ class WorkerController(QObject):
         environment = QProcessEnvironment.systemEnvironment()
         environment.insert("PYTHONIOENCODING", "utf-8")
         environment.insert("PYTHONUNBUFFERED", "1")
+        environment.insert("NEOCORTEX_UI_RUN_ID", validated.request_id)
+        environment.insert("NEOCORTEX_UI_PROFILE", validated.profile)
+        environment.insert("NEOCORTEX_UI_MAX_ITEMS", str(validated.max_items))
+        environment.insert("NEOCORTEX_UI_DEADLINE_SECONDS", str(validated.deadline_seconds))
         process.setProcessEnvironment(environment)
 
         if getattr(sys, "frozen", False):
@@ -82,6 +96,8 @@ class WorkerController(QObject):
         self._stdout_discarding_oversized_line = False
         self._stderr_discarding_oversized_line = False
         self._last_lifecycle = ""
+        self._message_validator.reset()
+        self._protocol_failure_reported = False
         self._process = process
         process.start()
         if not process.waitForStarted(5_000):
@@ -220,7 +236,7 @@ class WorkerController(QObject):
         return raw
 
     def _consume_line(self, raw: bytes, *, protocol: bool) -> None:
-        text = raw.decode("utf-8", errors="replace").rstrip()
+        text = sanitize_text(raw.decode("utf-8", errors="replace"))
         if not text:
             return
         if protocol and self._consume_protocol_record(raw):
@@ -230,16 +246,28 @@ class WorkerController(QObject):
     def _consume_protocol_record(self, raw: bytes) -> bool:
         try:
             record = decode_message(raw)
-        except (ValueError, TypeError) as exc:
-            self.output_received.emit(f"Registro de progreso inválido: {exc}")
+            if record is None:
+                return False
+            record = dict(self._message_validator.accept(record))
+        except (WorkerProtocolError, ValueError, TypeError) as exc:
+            self._report_protocol_failure(str(exc))
             return True
-        if record is None:
-            return False
         message_type = str(record.get("type", ""))
         if message_type != "progress":
             self._last_lifecycle = message_type
         self.message_received.emit(record)
         return True
+
+    def _report_protocol_failure(self, detail: str) -> None:
+        if self._protocol_failure_reported:
+            return
+        self._protocol_failure_reported = True
+        safe_detail = sanitize_text(detail)
+        self._last_lifecycle = "failed"
+        self.output_received.emit(f"Registro de worker inválido: {safe_detail}")
+        self.message_received.emit(
+            self._message_validator.synthetic_failure(safe_detail, stage="transport")
+        )
 
     def _process_error(self, _error: QProcess.ProcessError) -> None:
         if self._process is not None:
@@ -251,7 +279,9 @@ class WorkerController(QObject):
         _exit_status: QProcess.ExitStatus,
     ) -> None:
         self._flush_remaining_output()
-        lifecycle = self._last_lifecycle or "finished"
+        if not self._message_validator.terminal and not self._protocol_failure_reported:
+            self._report_protocol_failure("Worker finalizó sin registro terminal")
+        lifecycle = self._last_lifecycle or "failed"
         self._dispose_process()
         self.running_changed.emit(False)
         self.execution_finished.emit(exit_code, lifecycle)

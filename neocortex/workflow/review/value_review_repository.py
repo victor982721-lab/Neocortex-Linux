@@ -21,6 +21,11 @@ from typing import TypeVar, cast
 from neocortex.deduplication.persistence.ddl import SCHEMA_VERSION as INVENTORY_SCHEMA_VERSION
 from neocortex.deduplication.persistence.validation import validate_inventory_schema
 from neocortex.persistence.sqlite_schema_contract import read_application_schema_version
+from neocortex.persistence.sqlite_immutable import (
+    ImmutableSQLiteUnavailable,
+    SQLiteReadMode,
+    SQLiteReadSession,
+)
 
 from neocortex.documents import document_catalog_schema
 from neocortex.capabilities.formats.text import text_state
@@ -28,7 +33,6 @@ from neocortex.capabilities.formats.audio import state as audio_state
 from neocortex.capabilities.formats.docx.schema import DOCX_SCHEMA_VERSION, validate_docx_schema
 from neocortex.capabilities.formats.office import state as office_state
 from neocortex.capabilities.formats.pdf.pdf_schema import PDF_SCHEMA_VERSION, validate_pdf_schema
-from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
 from neocortex.persistence.sqlite_schema_contract import (
     SQLiteSchemaContract,
     validate_sqlite_schema_contract,
@@ -662,37 +666,22 @@ def _readonly_connection(path: Path) -> Iterator[sqlite3.Connection]:
     if before != confirmed:
         raise _StateContractError("SQLite owner changed before immutable read")
     _validate_inactive_sidecar_layout(before)
-    # ``immutable=1`` ignores the proven-inactive WAL/SHM pair and therefore
-    # cannot create or update ``-shm``.  Main and every sidecar are observed
-    # twice before opening and once after close; concurrent change fails closed.
+    # The shared kernel opens the already-fenced owner with ``immutable=1`` and
+    # verifies its source fence again after close, so this adapter no longer
+    # owns a second direct ``mode=ro`` connection implementation.
+    session = SQLiteReadSession(
+        path,
+        mode=SQLiteReadMode.IMMUTABLE_STRICT,
+        timeout_seconds=60.0,
+    )
     connection: sqlite3.Connection | None = None
     try:
-        connection = sqlite3.connect(
-            f"{readonly_sqlite_uri(path)}&immutable=1",
-            uri=True,
-            timeout=60.0,
-        )
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout=60000")
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA query_only=ON")
-        connection.execute("PRAGMA trusted_schema=OFF")
-        foreign_keys = connection.execute("PRAGMA foreign_keys").fetchone()
-        query_only = connection.execute("PRAGMA query_only").fetchone()
-        trusted_schema = connection.execute("PRAGMA trusted_schema").fetchone()
-        if (
-            foreign_keys is None
-            or int(foreign_keys[0]) != 1
-            or query_only is None
-            or int(query_only[0]) != 1
-            or trusted_schema is None
-            or int(trusted_schema[0]) != 0
-        ):
-            raise _StateContractError("SQLite read-only safeguards could not be enabled")
+        connection = session.open()
         yield connection
+    except ImmutableSQLiteUnavailable as exc:
+        raise _StateContractError(str(exc)) from exc
     finally:
-        if connection is not None:
-            connection.close()
+        session.close()
         after = _sqlite_read_snapshot(path)
         if before != after:
             raise _StateContractError("SQLite owner changed during immutable read")

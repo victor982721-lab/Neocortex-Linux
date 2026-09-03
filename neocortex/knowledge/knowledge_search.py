@@ -92,6 +92,11 @@ from neocortex.semantic.semantic_lexical import (
 )
 from neocortex.semantic.semantic_models import ResolvedSearchHit, canonical_json, fingerprint_text
 from neocortex.persistence.sqlite_cancellation import SQLiteCancellationBridge, sqlite_cancellation_scope
+from neocortex.persistence.sqlite_immutable import (
+    open_immutable_sqlite_connection,
+    preferred_sqlite_read_mode,
+    sqlite_read_session,
+)
 from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
 
 # region [01] Public search facade and runtime constants
@@ -156,7 +161,6 @@ _CODE_QUERY_CUES = frozenset(
         "symbol",
     }
 )
-
 
 def _duration_ns(clock_ns: Callable[[], int], started_ns: int) -> int:
     finished_ns = clock_ns()
@@ -272,7 +276,7 @@ def _planned_candidate_limit(plan: KnowledgePlan, channel: str) -> int:
 
 
 def _open_direct_readonly_sqlite(path: Path) -> sqlite3.Connection:
-    """Open an existing SQLite owner with read-only behavior verified live."""
+    """Open an existing Knowledge owner through the inventory read seam."""
 
     return _inventory_open_direct_readonly_sqlite(
         path,
@@ -281,6 +285,29 @@ def _open_direct_readonly_sqlite(path: Path) -> sqlite3.Connection:
         sqlite_row_factory=sqlite3.Row,
         sqlite_operational_error=sqlite3.OperationalError,
         cleanup_preserving_primary=_cleanup_preserving_primary,
+    )
+
+
+def _open_code_readonly_for_knowledge(
+    path: Path,
+    *,
+    readonly: bool = False,
+    create: bool = True,
+) -> sqlite3.Connection:
+    """Keep Knowledge's code metadata pass on the shared read kernel."""
+
+    if readonly:
+        return open_immutable_sqlite_connection(path, timeout_seconds=60.0)
+    return connect_code_state(path, readonly=False, create=create)
+
+
+def _code_read_session_for_knowledge(path: Path):
+    """Provide a lifecycle-owning reader for code metadata batches."""
+
+    return sqlite_read_session(
+        path,
+        mode=preferred_sqlite_read_mode(path),
+        timeout_seconds=60.0,
     )
 
 

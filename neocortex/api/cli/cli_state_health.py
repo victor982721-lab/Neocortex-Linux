@@ -31,7 +31,10 @@ def run_state_health(args: argparse.Namespace) -> int:
             f"STATE_HEALTH overall={health.overall} "
             f"healthy={health.healthy_count} missing={health.missing_count} "
             f"orphaned_sidecars={health.orphaned_sidecar_count} "
-            f"blocked={health.blocked_count} unreadable={health.unreadable_count} "
+            f"blocked={health.blocked_count} active={health.active_count} "
+            f"incompatible={health.incompatible_count} future={health.future_count} "
+            f"corrupt={health.corrupt_count} unknown={health.unknown_count} "
+            f"unreadable={health.unreadable_count} "
             f"state={health.state_directory}"
         )
         for owner in health.owners:

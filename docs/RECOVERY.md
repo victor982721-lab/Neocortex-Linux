@@ -1,5 +1,11 @@
 # Recuperación, backup y rollback
 
+> **Contrato vigente:** NeoCortex se opera en Linux/Kubuntu. Las funciones
+> `Neocortex databases status|backup|restore|purge` son la superficie canónica,
+> con `SQLiteReadSession`, manifests, digest y confirmaciones explícitas. Los
+> ejemplos Windows y los scripts `mode=ro` más abajo son evidencia histórica,
+> no instrucciones para una operación nueva.
+
 NeoCortex conserva estado relacionado en varias bases SQLite. Esta guía no
 describe sus esquemas; consulte [PERSISTENCE.md](PERSISTENCE.md). Su objetivo es preservar
 evidencia y evitar que una recuperación repita una acción incierta o pierda
@@ -23,20 +29,19 @@ frames confirmados del WAL.
 
 ## Directorio de estado
 
-La ubicación normal es:
+La ubicación normal en Linux es:
 
 ```text
-%LOCALAPPDATA%\Neocortex\state
+${XDG_STATE_HOME:-$HOME/.local/state}/Neocortex/state
 ```
 
 Confírmela sin modificarla:
 
-```powershell
-$State = Join-Path $env:LOCALAPPDATA 'Neocortex\state'
-Resolve-Path -LiteralPath $State
-Get-ChildItem -LiteralPath $State -File |
-  Where-Object Name -Match '\.sqlite3(?:-wal|-shm)?$' |
-  Select-Object Name, Length, LastWriteTime
+```bash
+State="${XDG_STATE_HOME:-$HOME/.local/state}/Neocortex/state"
+test -d "$State" && find "$State" -maxdepth 1 -type f \\
+  \( -name '*.sqlite3' -o -name '*.sqlite3-wal' -o -name '*.sqlite3-shm' \) \\
+  -printf '%f %s bytes\\n'
 ```
 
 No use el tamaño de WAL o SHM como razón para borrarlos.
@@ -49,7 +54,7 @@ No use el tamaño de WAL o SHM como razón para borrarlos.
    genérico.
 3. Registre, si todavía responde:
 
-   ```powershell
+   ```text
    Neocortex --version
    Neocortex --status --status-json
    ```
@@ -61,7 +66,13 @@ Aunque la API de backup admite writers concurrentes por base, NeoCortex usa
 varias bases relacionadas. Detener writers evita obtener instantes lógicos
 diferentes entre ellas.
 
-## Backup consistente mediante la API SQLite
+## Backup consistente mediante la API SQLite (histórico)
+
+El procedimiento manual siguiente conserva el razonamiento de la incidencia
+original, pero no debe ejecutarse sobre estado vigente. Use `Neocortex databases
+backup --backup-directory ...` para obtener el manifest y las validaciones del
+kernel, y `Neocortex databases restore` para validar o publicar un conjunto con
+digest y confirmación.
 
 El siguiente script usa sólo la biblioteca estándar, rechaza sobrescrituras,
 respalda todas las bases `*.sqlite3` del directorio indicado y valida cada
@@ -144,7 +155,7 @@ if __name__ == "__main__":
 
 Ejecución explícita:
 
-```powershell
+```text
 $State = Join-Path $env:LOCALAPPDATA 'Neocortex\state'
 $Backup = Join-Path $env:USERPROFILE 'NeoCortex_Backups\2026-07-24_190000'
 py -3 .\backup_neocortex_state.py --source $State --destination $Backup
@@ -189,8 +200,10 @@ completitud del corpus.
 
 ## Restauración
 
-No existe un comando público general de restauración. La restauración es una
-operación explícita y potencialmente destructiva sobre el estado actual.
+`Neocortex databases restore` valida el manifest en modo preview y sólo publica
+con `--apply`, `--manifest-sha256 SHA256` y
+`--confirm-database-restore RESTORE_DATABASES`. La restauración es una operación
+explícita y potencialmente destructiva sobre el estado actual.
 
 1. Instale primero una versión de NeoCortex compatible con el backup.
 2. Detenga todos los writers.
@@ -275,14 +288,14 @@ resto de bases de dos generaciones sin una matriz de compatibilidad verificada.
 
 Primero use la consulta de sólo lectura:
 
-```powershell
+```text
 Neocortex --status --status-limit 20
 Neocortex --status --status-run 40 --status-json
 ```
 
 Si el run conserva un snapshot válido y sólo tiene fases de ruta incompletas:
 
-```powershell
+```text
 Neocortex --resume-run 40
 ```
 
@@ -329,7 +342,7 @@ las acciones existentes.
 Después de detener writers y crear el backup, ejecute con la versión `0.6.0`
 validada:
 
-```powershell
+```text
 Neocortex --action-recovery-status --action-recovery-limit 100
 Neocortex --action-recovery-status --action-recovery-after 100 --action-recovery-run 40
 Neocortex --action-recovery-status --action-recovery-json
@@ -356,7 +369,7 @@ activa con una operación status o record de esta familia.
 Después de revisar una fila concreta puede conservar la observación sin
 recuperar ni autorizar el archivo:
 
-```powershell
+```text
 Neocortex --action-recovery-record 42 --action-recovery-actor "Victor" --confirm-reconciliation-record --action-recovery-json
 ```
 
@@ -392,7 +405,7 @@ La organización documental conserva en `organization_plans` un
 `recovery_required` separado. Ese plan reserva el destino y queda excluido de
 la aplicación automática:
 
-```powershell
+```text
 Neocortex --organization-preview 100 --organization-preview-status recovery_required
 ```
 
@@ -409,7 +422,7 @@ no vuelven a mover el archivo.
 3. Trabaje sobre un backup o copia forense consistente.
 4. Ejecute el doctor específico cuando exista:
 
-   ```powershell
+   ```text
    Neocortex --pdf-verify
    Neocortex --code-status --code-json
    Neocortex --semantic-status

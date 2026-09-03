@@ -43,7 +43,17 @@ from PySide6.QtWidgets import (
 from neocortex.runtime.config.app_paths import default_ui_settings_path
 
 from ...application.controller import WorkerController
-from ...application.request import ROUTE_ORDER, RunRequest
+from ...application.request import (
+    FULL_DEADLINE_SECONDS,
+    FULL_MAX_ITEMS,
+    ExecutionProfile,
+    PILOT_DEADLINE_SECONDS,
+    PILOT_MAX_ITEMS,
+    PROFILE_DEFAULTS,
+    ROUTE_ORDER,
+    RunRequest,
+)
+from ...protocol.messages import WorkerProtocolError, sanitize_text, validate_message
 from ...read.client import SharedReadClient
 from ...read.models import (
     ReadClient,
@@ -95,6 +105,9 @@ class MainWindow(QMainWindow):
     root_edit: QLineEdit
     route_toggles: dict[str, RouteToggle]
     scope_combo: QComboBox
+    profile_combo: QComboBox
+    max_items_spin: QSpinBox
+    deadline_spin: QSpinBox
     analysis_radio: QRadioButton
     apply_radio: QRadioButton
     start_button: QPushButton
@@ -516,15 +529,34 @@ class MainWindow(QMainWindow):
         root = str(self._settings.value("execution/root", str(self._default_root)))
         selected = str(self._settings.value("execution/routes", ",".join(ROUTE_ORDER)))
         selected_routes = frozenset(part for part in selected.split(",") if part)
+        profile = str(self._settings.value("execution/profile", "pilot"))
+        profile_index = self.profile_combo.findData(profile)
+        self.profile_combo.setCurrentIndex(0 if profile_index < 0 else profile_index)
+        effective_profile = profile if profile in PROFILE_DEFAULTS else "pilot"
+        default_items, default_deadline = PROFILE_DEFAULTS[effective_profile]
+        max_items = self._setting_int("execution/max_items", default_items)
+        deadline = self._setting_int("execution/deadline_seconds", int(default_deadline))
+        self.max_items_spin.setValue(max_items)
+        self.deadline_spin.setValue(deadline)
         self.root_edit.setText(root)
         for route, toggle in self.route_toggles.items():
             toggle.setChecked(route in selected_routes)
         self.analysis_radio.setChecked(True)
 
+    def _setting_int(self, key: str, default: int) -> int:
+        value = self._settings.value(key, default)
+        try:
+            return max(1, int(str(value)))
+        except (TypeError, ValueError):
+            return default
+
     def _save_settings(self) -> None:
         self._settings.setValue("execution/root", self.root_edit.text().strip())
         selected = [route for route, toggle in self.route_toggles.items() if toggle.isChecked()]
         self._settings.setValue("execution/routes", ",".join(selected))
+        self._settings.setValue("execution/profile", self.profile_combo.currentData())
+        self._settings.setValue("execution/max_items", self.max_items_spin.value())
+        self._settings.setValue("execution/deadline_seconds", self.deadline_spin.value())
         self._settings.sync()
 
     def _root_changed(self, value: str) -> None:
@@ -668,7 +700,39 @@ class MainWindow(QMainWindow):
             routes=routes,
             apply=self.apply_radio.isChecked(),
             route_only=bool(self.scope_combo.currentData()),
+            profile=cast(ExecutionProfile, str(self.profile_combo.currentData())),
+            max_items=self.max_items_spin.value(),
+            deadline_seconds=self.deadline_spin.value(),
         ).validated()
+
+    def _profile_changed(self, _index: int = -1) -> None:
+        profile = str(self.profile_combo.currentData())
+        effective_profile = profile if profile in PROFILE_DEFAULTS else "pilot"
+        defaults = PROFILE_DEFAULTS[effective_profile]
+        default_items, default_deadline = defaults
+        maximum_items = PILOT_MAX_ITEMS if profile == "pilot" else FULL_MAX_ITEMS
+        maximum_deadline = (
+            PILOT_DEADLINE_SECONDS if profile == "pilot" else FULL_DEADLINE_SECONDS
+        )
+        self.max_items_spin.setMaximum(maximum_items)
+        self.deadline_spin.setMaximum(maximum_deadline)
+        # Changing profile should provide a predictable bounded starting point;
+        # users can then tune the two explicit controls within that profile.
+        if self.max_items_spin.value() > maximum_items:
+            self.max_items_spin.setValue(default_items)
+        if self.deadline_spin.value() > maximum_deadline:
+            self.deadline_spin.setValue(int(default_deadline))
+        self.max_items_spin.setToolTip(
+            f"El perfil {profile} limita la ejecución a {maximum_items:,} elementos como máximo."
+        )
+        self.deadline_spin.setToolTip(
+            f"El perfil {profile} limita la ejecución a {maximum_deadline:,} segundos como máximo."
+        )
+        if hasattr(self, "session_log"):
+            self._append_log(
+                f"Perfil {profile}: hasta {self.max_items_spin.value()} elementos y "
+                f"{self.deadline_spin.value()} s."
+            )
 
     def _scope_changed(self, _index: int = -1) -> None:
         route_only = bool(self.scope_combo.currentData())
@@ -699,7 +763,11 @@ class MainWindow(QMainWindow):
         self._save_settings()
         self._clear_progress()
         self.session_log.clear()
-        self._append_log("Iniciando modo " + ("Apply" if request.apply else "Análisis"))
+        self._append_log(
+            f"Iniciando perfil {request.profile} con hasta {request.max_items} elementos "
+            f"y {request.deadline_seconds:g} s · "
+            + ("modo Apply" if request.apply else "modo Análisis")
+        )
         try:
             self._controller.start(request)
         except RuntimeError as exc:
@@ -719,7 +787,19 @@ class MainWindow(QMainWindow):
             self.live_status.set_state("warning", "Cancelando…")
             self._append_log("Cancelación cooperativa solicitada; esperando un límite seguro.")
 
-    def _on_worker_message(self, record: dict[str, Any]) -> None:
+    def _on_worker_message(self, record: object) -> None:
+        if not isinstance(record, dict):
+            self._worker_protocol_failure("El registro del worker no es un objeto")
+            return
+        # WorkerController validates the stateful sequence.  This second
+        # stateless check keeps the presentation safe when tests, plugins, or
+        # alternate controllers inject a record directly.
+        if "protocol" in record or "worker_run_id" in record or "sequence" in record:
+            try:
+                record = dict(validate_message(record))
+            except WorkerProtocolError as exc:
+                self._worker_protocol_failure(str(exc))
+                return
         message_type = str(record.get("type", ""))
         if message_type == "progress":
             self._update_progress(record)
@@ -737,10 +817,28 @@ class MainWindow(QMainWindow):
         }
         handler = handlers.get(message_type)
         if handler is not None:
-            handler(record)
+            try:
+                handler(record)
+            except (TypeError, ValueError, KeyError, OverflowError) as exc:
+                self._worker_protocol_failure(f"Registro incompatible: {exc}")
+        else:
+            self._worker_protocol_failure(f"Tipo de mensaje desconocido: {message_type or 'vacío'}")
 
-    def _worker_started(self, _record: dict[str, Any]) -> None:
-        self._append_log(f"Worker iniciado · PID {self._controller.process_id}")
+    def _worker_protocol_failure(self, detail: str) -> None:
+        safe_detail = sanitize_text(detail)
+        self.live_status.set_state("failed", "Protocolo inválido")
+        self._set_activity("La ejecución falló", safe_detail)
+        self._append_log(f"Registro de worker inválido: {safe_detail}")
+
+    def _worker_started(self, record: dict[str, Any]) -> None:
+        profile = sanitize_text(record.get("profile", "pilot"), limit=32)
+        max_items = record.get("max_items")
+        deadline = record.get("deadline_seconds")
+        if isinstance(max_items, int) and isinstance(deadline, (int, float)):
+            budget = f" · perfil {profile}, {max_items} elementos, {deadline:g} s"
+        else:
+            budget = ""
+        self._append_log(f"Worker iniciado · PID {self._controller.process_id}{budget}")
 
     def _worker_cancel_acknowledged(self, _record: dict[str, Any]) -> None:
         self._append_log("El motor reconoció la solicitud de cancelación.")
@@ -767,11 +865,15 @@ class MainWindow(QMainWindow):
 
     def _worker_cancelled(self, record: dict[str, Any]) -> None:
         self.live_status.set_state("cancelled")
-        self._set_activity("Ejecución cancelada", str(record.get("detail", "")))
-        self._append_log(str(record.get("detail", "Ejecución cancelada")))
+        detail = sanitize_text(record.get("detail", ""))
+        self._set_activity("Ejecución cancelada", detail)
+        self._append_log(detail or "Ejecución cancelada")
 
     def _worker_failed(self, record: dict[str, Any]) -> None:
-        detail = f"{record.get('error_type', 'Error')}: {record.get('detail', '')}"
+        detail = (
+            f"{sanitize_text(record.get('error_type', 'Error'), limit=256)}: "
+            f"{sanitize_text(record.get('detail', ''))}"
+        )
         self.live_status.set_state("failed")
         self._set_activity("La ejecución falló", detail)
         self._append_log(detail)
@@ -899,6 +1001,9 @@ class MainWindow(QMainWindow):
         self.cancel_button.setEnabled(running)
         self.root_edit.setEnabled(not running)
         self.scope_combo.setEnabled(not running)
+        self.profile_combo.setEnabled(not running)
+        self.max_items_spin.setEnabled(not running)
+        self.deadline_spin.setEnabled(not running)
         self.analysis_radio.setEnabled(not running)
         self.apply_radio.setEnabled(not running and not bool(self.scope_combo.currentData()))
         for toggle in self.route_toggles.values():
@@ -923,7 +1028,7 @@ class MainWindow(QMainWindow):
 
     def _append_log(self, text: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
-        self.session_log.appendPlainText(f"{timestamp}  {text}")
+        self.session_log.appendPlainText(f"{timestamp}  {sanitize_text(text)}")
 
     def _clear_progress(self) -> None:
         for item in self._progress_items.values():

@@ -181,7 +181,7 @@ def _connection_counter():
         semantic_item_repository,
         semantic_generation_repository,
     )
-    originals = tuple(module.semantic_database for module in modules)
+    originals = tuple(module.__dict__["semantic_database"] for module in modules)
     observed = {"count": 0}
 
     def wrapper(original):
@@ -195,36 +195,61 @@ def _connection_counter():
 
     try:
         for module, original in zip(modules, originals, strict=True):
-            module.semantic_database = wrapper(original)
+            module.__dict__["semantic_database"] = wrapper(original)
         yield observed
     finally:
         for module, original in zip(modules, originals, strict=True):
-            module.semantic_database = original
+            module.__dict__["semantic_database"] = original
 
 
-def _logical_digest(database: Path) -> str:
-    queries = (
-        """SELECT item_id,source_kind,source_identity,identity_version,path,
-            content_xxh3_128,content_bytes,content_xxh3_64_guard,
-            provenance_json,source_revision_json,refresh_token,active
-        FROM semantic_items ORDER BY item_id""",
-        """SELECT chunk_id,item_id,ordinal,section_kind,section_id,start_char,
-            end_char,text_zlib,text_chars,content_xxh3_128,content_bytes,
-            content_xxh3_64_guard,chunking_signature,provenance_json,
-            refresh_token,active
-        FROM text_chunks ORDER BY chunk_id""",
-        """SELECT generation_id,model_signature,role,entity_kind,entity_id,
-            item_id,content_xxh3_128,content_bytes,content_xxh3_64_guard,status,
-            attempts,max_attempts,lease_owner,lease_until_ns,error_type,error_message
-        FROM embedding_jobs ORDER BY entity_kind,entity_id""",
-    )
-    digest = xxhash.xxh3_128()
+def _logical_digests(database: Path) -> dict[str, str]:
+    """Digest source-owned body and optional metadata projections separately.
+
+    The candidate intentionally adds one ``semantic_metadata_title`` chunk per
+    item.  Comparing a single digest would therefore report a false regression
+    even when all source-owned chunks and jobs are identical.  Keep body parity
+    as the benchmark gate and expose metadata as an explicit, separately
+    measurable projection.
+    """
+
+    digests = {scope: xxhash.xxh3_128() for scope in ("body", "metadata")}
+
+    def update(scope: str, row: tuple[object, ...]) -> None:
+        digest = digests[scope]
+        digest.update(repr(row).encode("utf-8"))
+        digest.update(b"\0")
+
     with semantic_database(database, readonly=True) as connection:
-        for query in queries:
-            for row in connection.execute(query):
-                digest.update(repr(tuple(row)).encode("utf-8"))
-                digest.update(b"\0")
-    return digest.hexdigest()
+        for row in connection.execute(
+            """SELECT item_id,source_kind,source_identity,identity_version,path,
+                content_xxh3_128,content_bytes,content_xxh3_64_guard,
+                provenance_json,source_revision_json,refresh_token,active
+            FROM semantic_items ORDER BY item_id"""
+        ):
+            update("body", tuple(row))
+        for row in connection.execute(
+            """SELECT chunk_id,item_id,ordinal,section_kind,section_id,start_char,
+                end_char,text_zlib,text_chars,content_xxh3_128,content_bytes,
+                content_xxh3_64_guard,chunking_signature,provenance_json,
+                refresh_token,active
+            FROM text_chunks ORDER BY chunk_id"""
+        ):
+            scope = "metadata" if row[3] == "semantic_metadata_title" else "body"
+            update(scope, tuple(row))
+        for row in connection.execute(
+            """SELECT j.generation_id,j.model_signature,j.role,j.entity_kind,
+                j.entity_id,j.item_id,j.content_xxh3_128,j.content_bytes,
+                j.content_xxh3_64_guard,j.status,j.attempts,j.max_attempts,
+                j.lease_owner,j.lease_until_ns,j.error_type,j.error_message,
+                c.section_kind
+            FROM embedding_jobs AS j
+            LEFT JOIN text_chunks AS c
+              ON j.entity_kind='text_chunk' AND c.chunk_id=j.entity_id
+            ORDER BY j.entity_kind,j.entity_id"""
+        ):
+            scope = "metadata" if row[-1] == "semantic_metadata_title" else "body"
+            update(scope, tuple(row))
+    return {scope: digest.hexdigest() for scope, digest in digests.items()}
 
 
 def _validate(database: Path) -> dict[str, object]:
@@ -237,11 +262,51 @@ def _validate(database: Path) -> dict[str, object]:
             )
             for table in ("semantic_items", "text_chunks", "embedding_jobs")
         }
+        projection_counts = {
+            "body": {
+                "text_chunks": int(
+                    connection.execute(
+                        """SELECT COUNT(*) FROM text_chunks
+                        WHERE section_kind<>?""",
+                        ("semantic_metadata_title",),
+                    ).fetchone()[0]
+                ),
+                "embedding_jobs": int(
+                    connection.execute(
+                        """SELECT COUNT(*) FROM embedding_jobs AS j
+                        LEFT JOIN text_chunks AS c
+                          ON j.entity_kind='text_chunk' AND c.chunk_id=j.entity_id
+                        WHERE c.section_kind IS NULL OR c.section_kind<>?""",
+                        ("semantic_metadata_title",),
+                    ).fetchone()[0]
+                ),
+            },
+            "metadata": {
+                "text_chunks": int(
+                    connection.execute(
+                        """SELECT COUNT(*) FROM text_chunks
+                        WHERE section_kind=?""",
+                        ("semantic_metadata_title",),
+                    ).fetchone()[0]
+                ),
+                "embedding_jobs": int(
+                    connection.execute(
+                        """SELECT COUNT(*) FROM embedding_jobs AS j
+                        JOIN text_chunks AS c ON c.chunk_id=j.entity_id
+                        WHERE j.entity_kind='text_chunk' AND c.section_kind=?""",
+                        ("semantic_metadata_title",),
+                    ).fetchone()[0]
+                ),
+            },
+        }
+    logical_digests = _logical_digests(database)
     return {
         "integrity": integrity,
         "foreign_key_errors": foreign_keys,
         "counts": counts,
-        "logical_xxh3_128": _logical_digest(database),
+        "projection_counts": projection_counts,
+        "logical_xxh3_128": logical_digests["body"],
+        "logical_digests": logical_digests,
     }
 
 
@@ -267,6 +332,7 @@ def _run_once(
     tracemalloc.start()
     wall_start = time.perf_counter()
     cpu_start = time.process_time()
+    result: tuple[int, int, int] | tuple[int, int, int, bool]
     with _connection_counter() as connections:
         if mode == "legacy":
             result = _legacy_stage(database, generation_id, records)
@@ -307,14 +373,33 @@ def _median(results: Sequence[dict[str, object]], key: str) -> float:
     return statistics.median(values)
 
 
-def _result_digest(result: Mapping[str, object]) -> str:
+def _result_digest(result: Mapping[str, object], *, scope: str = "body") -> str:
     validation = result.get("validation")
     if not isinstance(validation, Mapping):
         raise TypeError("benchmark validation result must be a mapping")
-    digest = validation.get("logical_xxh3_128")
+    digests = validation.get("logical_digests")
+    if not isinstance(digests, Mapping):
+        raise TypeError("benchmark logical digests must be a mapping")
+    digest = digests.get(scope)
     if not isinstance(digest, str):
-        raise TypeError("benchmark logical digest must be text")
+        raise TypeError(f"benchmark {scope} logical digest must be text")
     return digest
+
+
+def _projection_count(result: Mapping[str, object], scope: str) -> int:
+    validation = result.get("validation")
+    if not isinstance(validation, Mapping):
+        raise TypeError("benchmark validation result must be a mapping")
+    projections = validation.get("projection_counts")
+    if not isinstance(projections, Mapping):
+        raise TypeError("benchmark projection counts must be a mapping")
+    values = projections.get(scope)
+    if not isinstance(values, Mapping):
+        raise TypeError(f"benchmark {scope} projection counts must be a mapping")
+    value = values.get("text_chunks")
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"benchmark {scope} text chunk count must be an integer")
+    return value
 
 
 def main() -> int:
@@ -345,20 +430,34 @@ def main() -> int:
         for mode in ("legacy", "candidate")
     }
     legacy_digest = {
-        _result_digest(result) for result in by_mode["legacy"]
+        _result_digest(result, scope="body") for result in by_mode["legacy"]
     }
     candidate_digest = {
-        _result_digest(result) for result in by_mode["candidate"]
+        _result_digest(result, scope="body") for result in by_mode["candidate"]
+    }
+    metadata_digest_by_mode = {
+        mode: {_result_digest(result, scope="metadata") for result in by_mode[mode]}
+        for mode in ("legacy", "candidate")
     }
     if legacy_digest != candidate_digest or len(legacy_digest) != 1:
-        raise RuntimeError("legacy and candidate logical projections differ")
+        raise RuntimeError("legacy and candidate body projections differ")
 
     legacy_wall = _median(by_mode["legacy"], "wall_seconds")
     candidate_wall = _median(by_mode["candidate"], "wall_seconds")
     legacy_connections = _median(by_mode["legacy"], "write_connections")
     candidate_connections = _median(by_mode["candidate"], "write_connections")
+    legacy_metadata_chunks = float(
+        statistics.median(
+            _projection_count(result, "metadata") for result in by_mode["legacy"]
+        )
+    )
+    candidate_metadata_chunks = float(
+        statistics.median(
+            _projection_count(result, "metadata") for result in by_mode["candidate"]
+        )
+    )
     report = {
-        "benchmark_version": 1,
+        "benchmark_version": 2,
         "items": arguments.items,
         "sections_per_item": arguments.sections_per_item,
         "runs": arguments.runs,
@@ -373,7 +472,13 @@ def main() -> int:
             "write_connection_reduction_fraction": (
                 1.0 - candidate_connections / legacy_connections
             ),
-            "logical_xxh3_128": next(iter(legacy_digest)),
+            "body_logical_xxh3_128": next(iter(legacy_digest)),
+            "metadata_logical_xxh3_128_by_mode": {
+                mode: next(iter(digests))
+                for mode, digests in metadata_digest_by_mode.items()
+            },
+            "metadata_text_chunks_legacy_median": legacy_metadata_chunks,
+            "metadata_text_chunks_candidate_median": candidate_metadata_chunks,
         },
     }
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))

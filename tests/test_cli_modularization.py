@@ -5,7 +5,6 @@ from __future__ import annotations
 import io
 import unittest
 from contextlib import redirect_stderr
-from pathlib import Path
 
 from neocortex.api.cli.cli_config import framework_config_from_args
 from neocortex.api.cli.cli_parser import build_parser

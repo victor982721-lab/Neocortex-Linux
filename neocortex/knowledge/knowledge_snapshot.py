@@ -54,9 +54,13 @@ from neocortex.persistence.sqlite_cancellation import SQLiteCancellationBridge, 
 from neocortex.persistence.sqlite_immutable import (
     ImmutableSQLiteUnavailable,
     SQLiteImmutableFence,
+    SQLiteReadMode,
+    SQLiteReadSession,
+    capture_sqlite_read_fence,
     capture_sqlite_immutable_fence,
+    open_sidecar_safe_sqlite_connection,
+    preferred_sqlite_read_mode,
 )
-from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
 from neocortex.safety.state_topology_contracts import STATE_STORE_REGISTRY
 
 
@@ -369,27 +373,11 @@ def _owner_specs(paths: KnowledgeStatePaths) -> tuple[_OwnerSpec, ...]:
 
 
 def _connect_readonly(path: Path, *, immutable: bool = False) -> sqlite3.Connection:
-    uri = readonly_sqlite_uri(path)
-    if immutable:
-        uri = f"{uri}&immutable=1"
-    connection = sqlite3.connect(
-        uri,
-        uri=True,
-        timeout=60,
-    )
-    try:
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout=60000")
-        connection.execute("PRAGMA foreign_keys=ON")
-        if int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
-            raise RuntimeError("Knowledge reader could not enable foreign keys")
-        connection.execute("PRAGMA query_only=ON")
-        if int(connection.execute("PRAGMA query_only").fetchone()[0]) != 1:
-            raise RuntimeError("Knowledge reader could not enforce query-only mode")
-    except BaseException:
-        connection.close()
-        raise
-    return connection
+    # ``immutable`` remains a source-compatible parameter for old callers;
+    # the central helper selects a detached snapshot automatically when the
+    # owner carries a live WAL or sidecar.
+    del immutable
+    return open_sidecar_safe_sqlite_connection(path, timeout_seconds=60.0)
 
 
 def _observed_schema_version(
@@ -757,14 +745,28 @@ def _capture_available_owner(
     attempt: int,
     between_observations: Callable[[str, int], None] | None,
     cancellation: _CancellationController,
-    immutable: bool,
+    immutable: bool | None,
 ) -> tuple[OwnerSnapshot, tuple[ActiveModel, ...]]:
     immutable_fence: SQLiteImmutableFence | None = None
-    if immutable:
-        immutable_fence = capture_sqlite_immutable_fence(path)
-        if immutable_fence != capture_sqlite_immutable_fence(path):
-            raise ImmutableSQLiteUnavailable("SQLite owner changed before immutable read")
-    connection = _connect_readonly(path, immutable=immutable)
+    read_session: SQLiteReadSession | None = None
+    connection: sqlite3.Connection | None = None
+    if immutable is None and preferred_sqlite_read_mode(path) is SQLiteReadMode.SNAPSHOT_TEMP:
+        read_session = SQLiteReadSession(
+            path,
+            mode=SQLiteReadMode.SNAPSHOT_TEMP,
+            timeout_seconds=60.0,
+        )
+        connection = read_session.open()
+    else:
+        if immutable is None:
+            immutable = True
+        if immutable:
+            immutable_fence = capture_sqlite_immutable_fence(path)
+            if immutable_fence != capture_sqlite_immutable_fence(path):
+                raise ImmutableSQLiteUnavailable("SQLite owner changed before immutable read")
+        assert isinstance(immutable, bool)
+        connection = _connect_readonly(path, immutable=immutable)
+    assert connection is not None
     sqlite_cancellation = SQLiteCancellationBridge(
         cancellation.checkpoint if cancellation.callback is not None else None
     )
@@ -872,7 +874,10 @@ def _capture_available_owner(
             after.active_models,
         )
     finally:
-        connection.close()
+        if read_session is not None:
+            read_session.close()
+        else:
+            connection.close()
         if immutable_fence is not None:
             if immutable_fence != capture_sqlite_immutable_fence(path):
                 raise ImmutableSQLiteUnavailable("SQLite owner changed during immutable read")
@@ -900,6 +905,12 @@ def _owner_state_exists(path: Path) -> bool:
             "contains an inaccessible owner state path",
             detail,
         ) from exc
+    if stat.S_ISLNK(metadata.st_mode):
+        raise KnowledgeStateRootError(
+            path.parent,
+            "contains a symlinked owner state path",
+            str(path),
+        )
     if not stat.S_ISREG(metadata.st_mode):
         raise KnowledgeStateRootError(
             path.parent,
@@ -916,7 +927,7 @@ def _capture_owner(
     attempt: int,
     between_observations: Callable[[str, int], None] | None,
     cancellation: _CancellationController,
-    immutable: bool,
+    immutable: bool | None,
 ) -> tuple[OwnerSnapshot, tuple[ActiveModel, ...]]:
     if not _owner_state_exists(path):
         return (
@@ -927,6 +938,24 @@ def _capture_owner(
             ),
             (),
         )
+    try:
+        if path.stat().st_size == 0:
+            return (
+                OwnerSnapshot(
+                    owner=spec.owner,
+                    state=OwnerAvailability.INCOMPATIBLE,
+                    expected_schema_version=spec.expected_schema,
+                    error_code="schema_version_absent",
+                    warning="SQLite owner is empty",
+                ),
+                (),
+            )
+    except OSError as exc:
+        raise KnowledgeStateRootError(
+            path.parent,
+            "contains an inaccessible owner state path",
+            str(exc),
+        ) from exc
     try:
         return _capture_available_owner(
             path,
@@ -964,7 +993,7 @@ def _capture_vector(
     attempt: int,
     between_observations: Callable[[str, int], None] | None,
     cancellation: _CancellationController,
-    immutable: bool,
+    immutable: bool | None,
 ) -> tuple[tuple[OwnerSnapshot, ...], tuple[ActiveModel, ...]]:
     owners: list[OwnerSnapshot] = []
     models: list[ActiveModel] = []
@@ -982,6 +1011,27 @@ def _capture_vector(
         models.extend(active_models)
         cancellation.checkpoint()
     return tuple(owners), tuple(models)
+
+
+def _owner_file_fences(paths: KnowledgeStatePaths) -> dict[str, SQLiteImmutableFence]:
+    """Capture owner bytes/sidecars without opening SQLite.
+
+    This fence supplements the logical vector: a writer may change metadata
+    that is not part of an owner's published watermark, and that still must
+    force one bounded retry rather than being reported as an unchanged view.
+    """
+
+    result: dict[str, SQLiteImmutableFence] = {}
+    for spec in _owner_specs(paths):
+        path = _owner_path(paths, spec.owner)
+        try:
+            metadata = path.lstat()
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_size <= 0:
+                continue
+            result[spec.owner] = capture_sqlite_read_fence(path)
+        except FileNotFoundError:
+            continue
+    return result
 
 
 def _logical_vector_signature(
@@ -1037,14 +1087,30 @@ def _carry_change_evidence(
     first_owners: tuple[OwnerSnapshot, ...],
     second_owners: tuple[OwnerSnapshot, ...],
     changed_owners: frozenset[str],
+    callback_owners: frozenset[str] = frozenset(),
 ) -> tuple[OwnerSnapshot, ...]:
     first_by_owner = {owner.owner: owner for owner in first_owners}
     result: list[OwnerSnapshot] = []
     for owner in second_owners:
-        if owner.owner not in changed_owners or owner.changed:
+        first = first_by_owner.get(owner.owner)
+        if owner.owner not in changed_owners:
             result.append(owner)
             continue
-        first = first_by_owner.get(owner.owner)
+        if owner.changed:
+            warning = owner.warning
+            if first is not None:
+                first_identity = first.identity_dict()
+                owner_identity = owner.identity_dict()
+                first_identity.pop("identity_changed", None)
+                owner_identity.pop("identity_changed", None)
+                if first_identity != owner_identity:
+                    warning = (
+                        "logical_vector_changed"
+                        if owner.owner not in callback_owners
+                        else "logical_watermark_changed"
+                    )
+            result.append(replace(owner, warning=warning))
+            continue
         if first is not None and first.changed:
             before = first.data_version_before
             after = first.data_version_after
@@ -1057,7 +1123,11 @@ def _carry_change_evidence(
             after = owner.data_version_after
             if after is None or after == before:
                 after = before + 1
-            warning = owner.warning or "logical_vector_changed"
+            warning = (
+                "logical_watermark_changed"
+                if first is not None and first.identity_dict() != owner.identity_dict()
+                else owner.warning or "logical_vector_changed"
+            )
         result.append(
             replace(
                 owner,
@@ -1075,20 +1145,42 @@ def collect_knowledge_snapshot(
     source_version: str,
     cancellation_check: CancellationCheck | None = None,
     _between_observations: Callable[[str, int], None] | None = None,
-    _immutable_owners: bool = False,
+    _immutable_owners: bool | None = False,
 ) -> KnowledgeSnapshot:
     """Capture all registered owners, retrying the global view exactly once."""
 
     cancellation = _CancellationController(cancellation_check)
     cancellation.checkpoint()
     for attempt in (1, 2):
+        watermark_callback_owners: set[str] = set()
+
+        def invoke_between(
+            owner: str,
+            callback_attempt: int,
+            _callback: Callable[[str, int], None] | None = _between_observations,
+            _watermark: set[str] = watermark_callback_owners,
+        ) -> None:
+            before_callback = _owner_file_fences(paths)
+            if _callback is not None:
+                _callback(owner, callback_attempt)
+            after_callback = _owner_file_fences(paths)
+            if before_callback or after_callback:
+                changed_targets = {
+                    target
+                    for target in before_callback.keys() | after_callback.keys()
+                    if before_callback.get(target) != after_callback.get(target)
+                }
+                if owner in changed_targets:
+                    _watermark.add(owner)
+
         cancellation.checkpoint()
         roots_before = paths.validate_roots()
         cancellation.checkpoint()
+        fences_before = _owner_file_fences(paths)
         first_owners, first_models = _capture_vector(
             paths,
             attempt=attempt,
-            between_observations=_between_observations,
+            between_observations=invoke_between if _between_observations is not None else None,
             cancellation=cancellation,
             immutable=_immutable_owners,
         )
@@ -1096,6 +1188,12 @@ def collect_knowledge_snapshot(
         roots_between = paths.validate_roots()
         _require_stable_root_presence(roots_before, roots_between)
         cancellation.checkpoint()
+        fences_between = _owner_file_fences(paths)
+        fence_changed_owners = {
+            owner
+            for owner in fences_before.keys() | fences_between.keys()
+            if fences_before.get(owner) != fences_between.get(owner)
+        }
         second_owners, second_models = _capture_vector(
             paths,
             attempt=attempt,
@@ -1107,6 +1205,23 @@ def collect_knowledge_snapshot(
         roots_after = paths.validate_roots()
         _require_stable_root_presence(roots_between, roots_after)
         cancellation.checkpoint()
+        if fence_changed_owners:
+            second_owners = tuple(
+                replace(
+                    owner,
+                    identity_changed=True,
+                    warning=(
+                        (
+                            owner.warning or "owner_file_fence_changed"
+                            if owner.owner in watermark_callback_owners
+                            else "cross_owner_file_fence_changed"
+                        )
+                    ),
+                )
+                if owner.owner in fence_changed_owners
+                else owner
+                for owner in second_owners
+            )
         logical_changed = _logical_vector_signature(
             first_owners, first_models
         ) != _logical_vector_signature(second_owners, second_models)
@@ -1129,6 +1244,7 @@ def collect_knowledge_snapshot(
                     first_owners,
                     second_owners,
                     changed_owners,
+                    frozenset(watermark_callback_owners),
                 )
                 if changed
                 else second_owners

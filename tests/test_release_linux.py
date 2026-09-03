@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -53,6 +55,22 @@ def _release(layout: LinuxReleaseLayout, name: str) -> Path:
     command = root / "bin" / "Neocortex"
     command.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     command.chmod(0o755)
+    if release_linux.parse_release_id(name) is not None:
+        source_sha = release_linux.parse_release_id(name)[1].ljust(40, "0")
+        manifest = {
+            "schema_version": release_linux.RECEIPT_SCHEMA_VERSION,
+            "kind": "linux_release_manifest",
+            "release_id": name,
+            "source_sha": source_sha,
+            "wheel_filename": "neocortex_framework-0.9.0-py3-none-any.whl",
+            "wheel_sha256": "a" * 64,
+            "pip_bootstrap_wheel_filename": release_linux.PIP_BOOTSTRAP_FILENAME,
+            "pip_bootstrap_wheel_sha256": release_linux.PIP_BOOTSTRAP_SHA256,
+            "pip": release_linux.PIP_BOOTSTRAP_VERSION,
+        }
+        (root / release_linux.RELEASE_MANIFEST_NAME).write_text(
+            json.dumps(manifest) + "\n", encoding="utf-8"
+        )
     return root
 
 
@@ -76,11 +94,202 @@ def test_release_identifier_is_version_sha_python_and_platform_bound() -> None:
         release_linux.release_id("A" * 40)
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "0.9.0-aaaaaaaaaaaa-cp314-linux-x86_64",
+        "0.10.0-bbbbbbbbbbbb-cp314-linux-x86_64",
+        "0.10.0-rc.1-" + "c" * 12 + "-cp314-linux-x86_64",
+        "0.10.0-" + "d" * 40 + "-cp314-linux-x86_64",
+    ],
+)
+def test_release_identifier_parser_is_cross_version_but_strict(name: str) -> None:
+    assert release_linux.parse_release_id(name) is not None
+    assert release_linux.parse_release_id("0.9.0-backup") is None
+    assert release_linux.parse_release_id(name.replace("cp314", "cp313")) is None
+
+
 def test_build_workspace_staging_shares_the_release_filesystem(tmp_path: Path) -> None:
     layout = LinuxReleaseLayout(tmp_path / "source", _policy(tmp_path))
 
     assert layout.staging == layout.releases / ".staging"
     assert layout.staging.parent == layout.releases
+
+
+def test_layout_preflight_rejects_symlinked_release_root(tmp_path: Path) -> None:
+    policy = _policy(tmp_path)
+    external = tmp_path / "external"
+    external.mkdir()
+    policy.data_directory.parent.mkdir(parents=True)
+    policy.data_directory.symlink_to(external, target_is_directory=True)
+    layout = LinuxReleaseLayout(policy.data_directory, policy)
+
+    with pytest.raises(release_linux.LinuxReleaseError, match="root component is unsafe"):
+        release_linux._validate_layout(layout)
+
+
+def test_source_stage_preflight_rejects_external_symlink(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    outside = tmp_path / "outside.py"
+    outside.write_text("secret = True\n", encoding="utf-8")
+    (source / "link.py").symlink_to(outside)
+
+    with pytest.raises(release_linux.LinuxReleaseError, match="escapes source root"):
+        release_linux._validate_tracked_source_links(source, ("link.py",))
+
+
+def test_release_tree_rejects_unallowlisted_symlink(tmp_path: Path) -> None:
+    root = _release(
+        LinuxReleaseLayout(tmp_path / "source", _policy(tmp_path)),
+        release_linux.release_id("a" * 40),
+    )
+    outside = tmp_path / "outside"
+    outside.write_text("not in release\n", encoding="utf-8")
+    (root / "external").symlink_to(outside)
+
+    with pytest.raises(release_linux.LinuxReleaseError, match="unsafe symlink"):
+        release_linux._validate_release_tree(root, expected_tree_sha256=None)
+
+
+def test_staging_reaper_removes_only_stale_workspaces(tmp_path: Path) -> None:
+    layout = LinuxReleaseLayout(tmp_path / "source", _policy(tmp_path))
+    stale = layout.staging / "stale"
+    stale.mkdir(parents=True)
+    (stale / "partial").write_text("partial\n", encoding="utf-8")
+    old = time.time() - release_linux._STAGING_STALE_SECONDS - 1
+    os.utime(stale, (old, old))
+
+    assert release_linux._reap_staging(layout) == ("stale",)
+    assert not stale.exists()
+
+
+def test_staging_reaper_abstains_from_active_workspace(tmp_path: Path) -> None:
+    layout = LinuxReleaseLayout(tmp_path / "source", _policy(tmp_path))
+    active = layout.staging / "active"
+    active.mkdir(parents=True)
+    release_linux._write_staging_marker(active, release_name=release_linux.release_id("a" * 40))
+
+    with pytest.raises(release_linux.LinuxReleaseError, match="active"):
+        release_linux._reap_staging(layout)
+    assert active.is_dir()
+
+
+def test_staging_reaper_rejects_corrupt_marker_even_when_old(tmp_path: Path) -> None:
+    layout = LinuxReleaseLayout(tmp_path / "source", _policy(tmp_path))
+    broken = layout.staging / "broken"
+    broken.mkdir(parents=True)
+    (broken / release_linux._STAGING_MARKER).write_text("{\n", encoding="utf-8")
+    old = time.time() - release_linux._STAGING_STALE_SECONDS - 1
+    os.utime(broken, (old, old))
+
+    with pytest.raises(release_linux.LinuxReleaseError, match="marker is invalid"):
+        release_linux._reap_staging(layout)
+    assert broken.is_dir()
+
+
+def test_release_tree_digest_is_independent_of_filesystem_creation_order(tmp_path: Path) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    for root, names in ((first, ("b", "a")), (second, ("a", "b"))):
+        root.mkdir()
+        for name in names:
+            child = root / "nested" / name
+            child.parent.mkdir(exist_ok=True)
+            child.write_text(f"payload-{name}\n", encoding="utf-8")
+
+    assert release_linux._release_tree_digest(first) == release_linux._release_tree_digest(second)
+
+
+def test_release_in_use_detects_process_holding_release_file_descriptor(tmp_path: Path) -> None:
+    root = tmp_path / "release"
+    root.mkdir()
+    held = root / "held.bin"
+    held.write_bytes(b"held")
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys; f=open(sys.argv[1], 'rb'); print('ready', flush=True); sys.stdin.read(1)",
+            str(held),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert process.stdin is not None
+        assert process.stdout is not None
+        assert process.stdout.readline().strip() == "ready"
+        assert process.poll() is None
+        assert process.pid in release_linux._release_in_use(root)
+    finally:
+        if process.stdin is not None:
+            process.stdin.write("x")
+            process.stdin.close()
+        process.wait(timeout=5)
+
+
+def test_reap_staging_restores_gc_tombstone_after_interrupted_publication(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    layout = LinuxReleaseLayout(source, _policy(tmp_path))
+    current = _release(layout, release_linux.release_id("a" * 40))
+    old = _release(layout, release_linux.release_id("b" * 40))
+    _activate(layout, current)
+
+    transaction, names = release_linux._stage_old_releases(
+        layout,
+        current=current,
+        rollback=None,
+    )
+    assert names == (old.name,)
+    marker = transaction / release_linux._GC_MARKER
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    payload["pid"] = 999_999_999
+    payload["starttime"] = "1"
+    marker.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    assert release_linux._reap_staging(layout) == (transaction.name,)
+    assert old.is_dir()
+    assert not transaction.exists()
+
+
+def test_reap_staging_commits_gc_tombstone_when_receipt_is_durable(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    layout = LinuxReleaseLayout(source, _policy(tmp_path))
+    current = _release(layout, release_linux.release_id("a" * 40))
+    old = _release(layout, release_linux.release_id("b" * 40))
+    _activate(layout, current)
+
+    transaction, names = release_linux._stage_old_releases(
+        layout,
+        current=current,
+        rollback=None,
+    )
+    marker = transaction / release_linux._GC_MARKER
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    payload["pid"] = 999_999_999
+    payload["starttime"] = "1"
+    marker.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    release_linux._write_receipt(
+        layout,
+        {
+            "schema_version": release_linux.RECEIPT_SCHEMA_VERSION,
+            "kind": "linux_release_receipt",
+            "operation": "install",
+            "release_id": current.name,
+            "retention_policy": "current_and_immediate_rollback_v1",
+            "retained_releases": [current.name],
+            "pruned_releases": list(names),
+            "result": "success",
+        },
+    )
+
+    assert release_linux._reap_staging(layout) == (transaction.name,)
+    assert not old.exists()
+    assert not transaction.exists()
 
 
 def test_wheel_build_uses_a_git_owned_source_stage_without_build_residue(
@@ -327,7 +536,7 @@ def test_corpus_root_preparation_creates_once_and_rejects_non_directories(
         release_linux._prepare_corpus_root(invalid)
 
 
-def test_new_virtual_environment_is_created_at_its_final_non_movable_path(
+def test_new_virtual_environment_is_created_in_staging_then_published(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -337,8 +546,9 @@ def test_new_virtual_environment_is_created_at_its_final_non_movable_path(
     layout = LinuxReleaseLayout(source, _policy(tmp_path))
     sha = "e" * 40
     final_release = layout.releases / release_linux.release_id(sha)
-    stale_release = _release(layout, "0.9.0-stale")
+    stale_release = _release(layout, release_linux.release_id("f" * 40))
     installed_at: list[Path] = []
+    validated_wheels: list[Path] = []
 
     monkeypatch.setattr(release_linux, "_require_reference_platform", lambda: None)
     monkeypatch.setattr(release_linux, "_source_sha", lambda *_args, **_kwargs: sha)
@@ -369,10 +579,14 @@ def test_new_virtual_environment_is_created_at_its_final_non_movable_path(
         "_verify_python_release",
         lambda release_root, *_args, **_kwargs: (
             {"pip": release_linux.PIP_BOOTSTRAP_VERSION}
-            if release_root == final_release
-            else pytest.fail("release validation used a movable staging venv")
+            if release_root.parent.name.startswith("0.9.0-")
+            else pytest.fail("release validation used an unexpected path")
         ),
     )
+    def validate_wheel(path: Path, **_kwargs: object) -> None:
+        validated_wheels.append(path)
+
+    monkeypatch.setattr(release_linux, "validate_release_artifact", validate_wheel)
     monkeypatch.setattr(release_linux, "_make_immutable", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(release_linux, "_require_immutable", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
@@ -389,7 +603,10 @@ def test_new_virtual_environment_is_created_at_its_final_non_movable_path(
         desktop=False,
     )
 
-    assert installed_at == [final_release]
+    assert len(installed_at) == 1
+    assert len(validated_wheels) == 1
+    assert installed_at[0] != final_release
+    assert installed_at[0].parent.parent == layout.staging
     assert report["release_path"] == str(final_release)
     assert report["corpus_root"] == str(corpus_root)
     assert report["corpus_root_created"] is True
@@ -419,8 +636,8 @@ def test_release_script_is_directly_executable_from_the_documented_path() -> Non
 
 def test_atomic_current_replacement_preserves_previous_releases(tmp_path: Path) -> None:
     layout = LinuxReleaseLayout(tmp_path / "source", _policy(tmp_path))
-    old = _release(layout, "old")
-    new = _release(layout, "new")
+    old = _release(layout, release_linux.release_id("a" * 40))
+    new = _release(layout, release_linux.release_id("b" * 40))
     _activate(layout, old)
 
     release_linux._replace_current(layout, new)
@@ -434,9 +651,9 @@ def test_prune_old_releases_keeps_current_and_immediate_rollback(
     tmp_path: Path,
 ) -> None:
     layout = LinuxReleaseLayout(tmp_path / "source", _policy(tmp_path))
-    current = _release(layout, "0.9.0-current")
-    rollback = _release(layout, "0.9.0-rollback")
-    old = _release(layout, "0.9.0-old")
+    current = _release(layout, release_linux.release_id("a" * 40))
+    rollback = _release(layout, release_linux.release_id("b" * 40))
+    old = _release(layout, release_linux.release_id("c" * 40))
 
     pruned = release_linux._prune_old_releases(
         layout,
@@ -450,14 +667,27 @@ def test_prune_old_releases_keeps_current_and_immediate_rollback(
     assert not old.exists()
 
 
+def test_prune_old_releases_covers_all_supported_versions(tmp_path: Path) -> None:
+    layout = LinuxReleaseLayout(tmp_path / "source", _policy(tmp_path))
+    current = _release(layout, "0.10.0-" + "a" * 12 + "-cp314-linux-x86_64")
+    rollback = _release(layout, "0.9.0-" + "b" * 12 + "-cp314-linux-x86_64")
+    old = _release(layout, "0.8.0-" + "c" * 12 + "-cp314-linux-x86_64")
+
+    assert release_linux._prune_old_releases(layout, current=current, rollback=rollback) == (
+        old.name,
+    )
+    assert current.is_dir() and rollback.is_dir()
+    assert not old.exists()
+
+
 def test_prune_old_releases_abstains_when_a_release_is_in_use(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     layout = LinuxReleaseLayout(tmp_path / "source", _policy(tmp_path))
-    current = _release(layout, "0.9.0-current")
-    rollback = _release(layout, "0.9.0-rollback")
-    old = _release(layout, "0.9.0-old")
+    current = _release(layout, release_linux.release_id("a" * 40))
+    rollback = _release(layout, release_linux.release_id("b" * 40))
+    old = _release(layout, release_linux.release_id("c" * 40))
     monkeypatch.setattr(release_linux, "_release_in_use", lambda _path: (1234,))
 
     with pytest.raises(release_linux.LinuxReleaseError, match="in use"):
@@ -472,13 +702,13 @@ def test_prune_old_releases_abstains_when_a_release_is_in_use(
 
 def test_prune_old_releases_rejects_unsafe_matching_entries(tmp_path: Path) -> None:
     layout = LinuxReleaseLayout(tmp_path / "source", _policy(tmp_path))
-    current = _release(layout, "0.9.0-current")
-    rollback = _release(layout, "0.9.0-rollback")
+    current = _release(layout, release_linux.release_id("a" * 40))
+    rollback = _release(layout, release_linux.release_id("b" * 40))
     unsafe = layout.releases / "0.9.0-unsafe"
     unsafe.parent.mkdir(parents=True, exist_ok=True)
     unsafe.write_text("not a release", encoding="utf-8")
 
-    with pytest.raises(release_linux.LinuxReleaseError, match="not a directory"):
+    with pytest.raises(release_linux.LinuxReleaseError, match="unknown entry"):
         release_linux._prune_old_releases(
             layout,
             current=current,
@@ -492,8 +722,8 @@ def test_retention_receipt_accepts_exact_current_and_rollback_pair(
     tmp_path: Path,
 ) -> None:
     layout = LinuxReleaseLayout(tmp_path / "source", _policy(tmp_path))
-    current = _release(layout, "0.9.0-current")
-    rollback = _release(layout, "0.9.0-rollback")
+    current = _release(layout, release_linux.release_id("a" * 40))
+    rollback = _release(layout, release_linux.release_id("b" * 40))
     receipt = {
         "retention_policy": "current_and_immediate_rollback_v1",
         "previous_release": str(rollback),
@@ -509,9 +739,9 @@ def test_retention_receipt_accepts_exact_current_and_rollback_pair(
 
 def test_retention_receipt_rejects_an_unpruned_release(tmp_path: Path) -> None:
     layout = LinuxReleaseLayout(tmp_path / "source", _policy(tmp_path))
-    current = _release(layout, "0.9.0-current")
-    rollback = _release(layout, "0.9.0-rollback")
-    _release(layout, "0.9.0-old")
+    current = _release(layout, release_linux.release_id("a" * 40))
+    rollback = _release(layout, release_linux.release_id("b" * 40))
+    _release(layout, release_linux.release_id("c" * 40))
     receipt = {
         "retention_policy": "current_and_immediate_rollback_v1",
         "previous_release": str(rollback),
@@ -575,9 +805,11 @@ def test_failed_rollback_receipt_restores_the_prior_activation(
     source = tmp_path / "source"
     source.mkdir()
     layout = LinuxReleaseLayout(source, _policy(tmp_path))
-    old = _release(layout, "old")
-    new = _release(layout, "new")
+    old = _release(layout, release_linux.release_id("a" * 40))
+    new = _release(layout, release_linux.release_id("b" * 40))
     _activate(layout, new)
+    release_linux._make_immutable(old)
+    release_linux._make_immutable(new)
     monkeypatch.setattr(
         release_linux,
         "_write_receipt",
@@ -599,7 +831,7 @@ def test_failed_install_receipt_restores_current_launcher_and_alias(
     (source / "neocortex" / "interface" / "presentation" / "assets").mkdir(parents=True)
     _write_runtime_lock(source)
     layout = LinuxReleaseLayout(source, _policy(tmp_path))
-    old = _release(layout, "old")
+    old = _release(layout, release_linux.release_id("a" * 40))
     sha = "b" * 40
     new = _release(layout, release_linux.release_id(sha))
     _activate(layout, old)
@@ -660,7 +892,7 @@ def test_failed_model_preparation_never_promotes_or_publishes_access(
     source.mkdir()
     _write_runtime_lock(source)
     layout = LinuxReleaseLayout(source, _policy(tmp_path))
-    old = _release(layout, "old")
+    old = _release(layout, release_linux.release_id("a" * 40))
     sha = "c" * 40
     candidate = _release(layout, release_linux.release_id(sha))
     _activate(layout, old)
@@ -700,13 +932,72 @@ def test_failed_model_preparation_never_promotes_or_publishes_access(
     assert not layout.desktop.exists()
 
 
+def test_repromote_recovers_recorded_rollback_and_prunes_stale_releases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    _write_runtime_lock(source)
+    layout = LinuxReleaseLayout(source, _policy(tmp_path))
+    rollback = _release(layout, release_linux.release_id("a" * 40))
+    current = _release(layout, release_linux.release_id("b" * 40))
+    stale = _release(layout, release_linux.release_id("c" * 40))
+    _activate(layout, current)
+    release_sha = "b" * 40
+
+    monkeypatch.setattr(release_linux, "_require_reference_platform", lambda: None)
+    monkeypatch.setattr(release_linux, "_source_sha", lambda *_args, **_kwargs: release_sha)
+    monkeypatch.setattr(
+        release_linux,
+        "_read_release_manifest",
+        lambda *_args, **_kwargs: {"pip": release_linux.PIP_BOOTSTRAP_VERSION},
+    )
+    monkeypatch.setattr(
+        release_linux,
+        "_verify_python_release",
+        lambda *_args, **_kwargs: {"pip": release_linux.PIP_BOOTSTRAP_VERSION},
+    )
+    monkeypatch.setattr(release_linux, "_publish_public_access", lambda *_args, **_kwargs: ({}, {}))
+    release_linux._write_receipt(
+        layout,
+        {
+            "schema_version": release_linux.RECEIPT_SCHEMA_VERSION,
+            "kind": "linux_release_receipt",
+            "operation": "install",
+            "release_id": current.name,
+            "release_path": str(current.resolve()),
+            "previous_release": str(rollback.resolve()),
+            "retention_policy": "current_and_immediate_rollback_v1",
+            "retained_releases": [current.name, rollback.name],
+            "pruned_releases": [],
+            "result": "success",
+        },
+    )
+
+    report = release_linux.install_release(
+        layout,
+        corpus_root=tmp_path / "corpus",
+        prepare_models=False,
+        desktop=False,
+    )
+
+    assert report["operation"] == "repromote"
+    assert report["previous_release"] == str(rollback.resolve())
+    assert report["pruned_releases"] == (stale.name,)
+    assert rollback.is_dir() and current.is_dir()
+    assert not stale.exists()
+
+
 def test_successful_rollback_records_evidence_and_retains_both_releases(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
     layout = LinuxReleaseLayout(source, _policy(tmp_path))
-    old = _release(layout, "old")
-    new = _release(layout, "new")
+    old = _release(layout, release_linux.release_id("a" * 40))
+    new = _release(layout, release_linux.release_id("b" * 40))
     _activate(layout, new)
+    release_linux._make_immutable(old)
+    release_linux._make_immutable(new)
 
     report = release_linux.rollback_release(layout, target_release=old.name)
 
@@ -715,3 +1006,46 @@ def test_successful_rollback_records_evidence_and_retains_both_releases(tmp_path
     assert Path(str(report["receipt_path"])).is_file()
     assert release_linux._current_target(layout) == old.resolve()
     assert old.is_dir() and new.is_dir()
+
+
+def test_rollback_prunes_stale_releases_and_repairs_launcher(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    layout = LinuxReleaseLayout(source, _policy(tmp_path))
+    old = _release(layout, release_linux.release_id("a" * 40))
+    new = _release(layout, release_linux.release_id("b" * 40))
+    stale = _release(layout, release_linux.release_id("c" * 40))
+    _activate(layout, new)
+    release_linux._make_immutable(old)
+    release_linux._make_immutable(new)
+
+    report = release_linux.rollback_release(layout, target_release=old.name)
+
+    assert report["pruned_releases"] == (stale.name,)
+    assert not stale.exists()
+    assert layout.launcher.is_file()
+    assert str(layout.current / "bin" / "Neocortex") in layout.launcher.read_text(encoding="utf-8")
+
+
+def test_rollback_receipt_failure_restores_gc_tombstones(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    layout = LinuxReleaseLayout(source, _policy(tmp_path))
+    old = _release(layout, release_linux.release_id("a" * 40))
+    new = _release(layout, release_linux.release_id("b" * 40))
+    stale = _release(layout, release_linux.release_id("c" * 40))
+    _activate(layout, new)
+    release_linux._make_immutable(old)
+    release_linux._make_immutable(new)
+    monkeypatch.setattr(
+        release_linux,
+        "_write_receipt",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("synthetic receipt failure")),
+    )
+
+    with pytest.raises(OSError, match="synthetic receipt failure"):
+        release_linux.rollback_release(layout, target_release=old.name)
+
+    assert release_linux._current_target(layout) == new.resolve()
+    assert stale.is_dir()
+    assert not tuple(layout.staging.glob(".gc-*"))

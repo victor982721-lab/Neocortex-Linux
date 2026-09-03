@@ -16,7 +16,6 @@ import pytest
 
 import neocortex.safety.corpus_access as corpus_access_module
 from neocortex.enumeration import JournalCursor
-from neocortex.deduplication import InventoryExclusionPolicy
 from neocortex.safety.corpus_access import (
     CorpusAccessPolicy,
     CorpusMutationGuard,
@@ -32,7 +31,6 @@ from neocortex.safety.protected_content import (
     ProtectedContentPolicy,
     ProtectedPathSpec,
 )
-from neocortex.persistence.framework_route_state import FrameworkRouteState
 from neocortex.persistence.framework_state_writer import FrameworkState
 from tests.internal_paths_test_support import disjoint_internal_paths_policy
 # endregion [01]

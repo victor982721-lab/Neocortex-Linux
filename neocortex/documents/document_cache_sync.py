@@ -7,12 +7,18 @@ import sqlite3
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 from neocortex.platform.policy import sqlite_path_collation
 
 from neocortex.semantic.semantic_schema import SEMANTIC_SCHEMA_VERSION
 from neocortex.persistence.sqlite_paths import existing_sqlite_uri
+from neocortex.persistence.state_publication import (
+    StatePublicationError,
+    publication_idempotency_key,
+    read_state_epoch,
+    record_state_publication,
+)
 
 
 # region [01] Explicit synchronization result schema
@@ -31,6 +37,9 @@ class DocumentCacheSyncResult:
     complete: bool
     updated_rows: int
     databases: tuple[CacheDatabaseSync, ...]
+    publication_epoch: int = 0
+    publication_status: str = "not_published"
+    publication_id: str | None = None
 
     def as_json(self) -> str:
         return json.dumps(
@@ -83,6 +92,12 @@ def synchronize_moved_document(
     if _path_key(old_path) == _path_key(new_path):
         raise ValueError("cache synchronization requires two distinct paths")
     now_ns = time.time_ns()
+    epoch_error: StatePublicationError | None = None
+    try:
+        initial_epoch = read_state_epoch(state_directory)
+    except StatePublicationError as exc:
+        initial_epoch = None
+        epoch_error = exc
     source_database = state_directory / (
         f"{source_kind}.sqlite3"
         if source_kind in {"pdf", "docx", "text", "audio"}
@@ -161,10 +176,67 @@ def synchronize_moved_document(
         )
     )
     complete = not any(item.status == "error" for item in results)
+    publication_epoch = 0 if initial_epoch is None else initial_epoch.epoch
+    publication_status = "not_published"
+    publication_id: str | None = None
+    if epoch_error is not None:
+        results.append(
+            CacheDatabaseSync(
+                "publication",
+                "error",
+                detail=f"{type(epoch_error).__name__}: {epoch_error}",
+            )
+        )
+        complete = False
+        publication_status = "failed"
+    elif initial_epoch is not None:
+        publication_key = publication_idempotency_key(
+            "document-cache-sync",
+            source_kind,
+            file_key,
+            old_path,
+            new_path,
+            volume_id,
+            file_id,
+        )
+        publication_owners = tuple(item.database for item in results)
+        requested_status: Literal["complete", "partial"] = (
+            "complete" if complete else "partial"
+        )
+        try:
+            publication = record_state_publication(
+                state_directory,
+                operation="document-cache-sync",
+                owners=publication_owners,
+                status=requested_status,
+                idempotency_key=publication_key,
+                expected_epoch=initial_epoch.epoch,
+                detail=(
+                    None
+                    if complete
+                    else "one or more owner-local cache transactions remain pending"
+                ),
+            )
+            publication_epoch = publication.epoch
+            publication_status = publication.status
+            publication_id = publication.event_id
+        except StatePublicationError as exc:
+            results.append(
+                CacheDatabaseSync(
+                    "publication",
+                    "error",
+                    detail=f"{type(exc).__name__}: {exc}",
+                )
+            )
+            complete = False
+            publication_status = "failed"
     return DocumentCacheSyncResult(
         complete=complete,
         updated_rows=sum(item.updated_rows for item in results),
         databases=tuple(results),
+        publication_epoch=publication_epoch,
+        publication_status=publication_status,
+        publication_id=publication_id,
     )
 
 

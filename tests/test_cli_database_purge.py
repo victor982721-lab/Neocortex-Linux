@@ -10,7 +10,10 @@ import pytest
 
 from neocortex.api.cli import human
 from neocortex.interface.entrypoint import entrypoint
-from neocortex.persistence.database_purge import DATABASE_PURGE_CONFIRMATION
+from neocortex.persistence.database_purge import (
+    DATABASE_PURGE_CONFIRMATION,
+    plan_database_purge,
+)
 
 
 def _create_database(path: Path) -> None:
@@ -112,6 +115,7 @@ def test_database_purge_cli_applies_with_confirmation_and_reports_backup(
     state.mkdir()
     _create_database(state / "image.sqlite3")
     backup = tmp_path / "backup"
+    plan_digest = plan_database_purge(state, stores=("image",)).plan_digest
 
     assert entrypoint(
         (
@@ -126,6 +130,8 @@ def test_database_purge_cli_applies_with_confirmation_and_reports_backup(
             "--apply",
             "--confirm-database-purge",
             DATABASE_PURGE_CONFIRMATION,
+            "--plan-digest",
+            plan_digest,
             "--json",
         )
     ) == 0
