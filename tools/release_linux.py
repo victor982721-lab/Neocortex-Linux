@@ -703,7 +703,7 @@ def _allowed_release_symlink(relative: str, target: str) -> bool:
     # compatibility alias; unlike arbitrary links it is still confined to the
     # interpreter aliases and must point at the release-local python3 entry.
     if relative in {"bin/python", "bin/python3.14", "bin/𝜋thon"}:
-        return target in {"python3", "python3.14"}
+        return target in {"python3", "python3.14", "/usr/bin/python3.14"}
     if relative == "bin/python3":
         return target in {"python3.14", "/usr/bin/python3", "/usr/bin/python3.14"}
     return False
