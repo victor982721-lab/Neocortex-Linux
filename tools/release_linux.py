@@ -1825,6 +1825,10 @@ def install_release(
                 )
                 _make_immutable(candidate_root)
                 _require_immutable(candidate_root)
+                # ``os.replace`` removes the candidate from its temporary
+                # workspace, so restore the workspace directory's write bit
+                # after hardening the release tree itself.
+                candidate_root.parent.chmod(0o700)
                 os.replace(candidate_root, final_release)
                 _fsync_directory(layout.releases)
 
