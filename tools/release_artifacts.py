@@ -137,7 +137,8 @@ _SECRET_ASSIGNMENT = re.compile(
 )
 _TOKEN = re.compile(
     r"(?:AKIA[0-9A-Z]{16}|github_pat_[A-Za-z0-9_]{16,}"
-    r"|gh[pousr]_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9_-]{16,})"
+    r"|gh[pousr]_[A-Za-z0-9]{16,}"
+    r"|sk-(?:proj|live|test|svcacct)-[A-Za-z0-9_-]{16,})"
 )
 _VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9.!+_]*\Z")
 
