@@ -621,6 +621,25 @@ def test_new_virtual_environment_is_created_in_staging_then_published(
     assert report["artifacts"]["runtime_dependency_count"] == 1
 
 
+def test_virtualenv_console_shebangs_are_rebound_to_final_release(tmp_path: Path) -> None:
+    staging = tmp_path / "staging" / "candidate"
+    final = tmp_path / "releases" / release_linux.release_id("a" * 40)
+    bin_directory = staging / "bin"
+    bin_directory.mkdir(parents=True)
+    script = bin_directory / "Neocortex"
+    script.write_text(
+        f"#!{staging}/bin/python\nprint('ok')\n",
+        encoding="utf-8",
+    )
+    untouched = bin_directory / "plain.txt"
+    untouched.write_text("data\n", encoding="utf-8")
+
+    release_linux._rewrite_virtualenv_shebangs(staging, final)
+
+    assert script.read_text(encoding="utf-8").startswith(f"#!{final}/bin/python\n")
+    assert untouched.read_text(encoding="utf-8") == "data\n"
+
+
 def test_release_script_is_directly_executable_from_the_documented_path() -> None:
     completed = subprocess.run(
         [sys.executable, str(PROJECT_ROOT / "tools" / "release_linux.py"), "--help"],
