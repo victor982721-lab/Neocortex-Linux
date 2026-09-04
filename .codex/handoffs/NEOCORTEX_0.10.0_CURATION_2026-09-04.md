@@ -31,10 +31,11 @@
   run-control con su carrera conocida de heartbeat/SQLite, con un único fallo
   de identidad contra la distribución 0.9.0 todavía instalada en ese momento;
   el foco final de curation/MCP/fachadas/documentación pasa 93 casos.
-- `0.10.0-e93fa5b4ac98-cp314-linux-x86_64` quedó instalada desde el SHA
-  `e93fa5b4ac98da2d54fa7ea6e3551b87bc9bc3df`, `release_linux.py verify`
+- `0.10.0-86216627bb2e-cp314-linux-x86_64` quedó instalada desde el SHA
+  `86216627bb2ecef0fb2fb5c9e96a1d387265a920`, `release_linux.py verify`
   devuelve `verified=true`, `pip check` no reporta requisitos rotos, el alias
-  estable reporta 0.10.0 y se conservan sólo `current` y el rollback 0.9.0.
+  estable reporta 0.10.0 y se conservan sólo `current` y el rollback inmediato
+  `0.10.0-e93fa5b4ac98-cp314-linux-x86_64`.
 - El smoke público sobre fixture aislado confirmó replay equivalente de scan y
   verify, `source_heads=2`, `items_verified=1`, cero `file_actions` y corpus
   byte-identical; el alias estable se usó sólo para version/doctor porque fija
