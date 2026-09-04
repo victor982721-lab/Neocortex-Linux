@@ -49,7 +49,7 @@ def test_project_metadata_uses_package_version_and_installed_command() -> None:
     assert not any("Windows" in classifier for classifier in metadata["project"]["classifiers"])
     assert metadata["project"]["scripts"]["Neocortex"] == ("neocortex.interface.entrypoint:entrypoint")
     assert metadata["tool"]["setuptools"]["dynamic"]["version"] == {"attr": "neocortex.__version__"}
-    assert neocortex.__version__ == "0.10.0"
+    assert neocortex.__version__ == "0.11.0"
 
 
 def test_source_manifest_excludes_release_internal_material() -> None:
