@@ -18,10 +18,16 @@ from neocortex.persistence.framework_schema import (
     validate_framework_schema_v22,
 )
 from neocortex.workflow.authorization.contracts import (
+    AUTHORIZATION_EFFECTS_SCHEMA_VERSION,
+    AUTHORIZATION_SOURCE_HEADS_SCHEMA_VERSION,
     AuthorizationGrant,
+    AuthorizationEffect,
+    AuthorizationRootSnapshot,
     AuthorizationReviewTaskHead,
     REVIEW_TASK_HEADS_SCHEMA_VERSION,
+    _snapshot_from_dict,
     review_task_heads_digest,
+    authorized_effects_digest,
 )
 from neocortex.workflow.review.review_task_contracts import CanonicalJsonObject
 
@@ -189,9 +195,144 @@ def _heads_from_receipt(
     return heads, digest
 
 
+def _root_snapshot_from_receipt(value: object) -> AuthorizationRootSnapshot | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise AuthorizationGrantRepositoryError("AuthorizationGrant root snapshot is invalid")
+    try:
+        root = str(value["root"])
+        volume_id = int(str(value["volume_id"]), 16)
+        file_id = int(str(value["file_id"]), 16)
+        birthtime_ns = value["birthtime_ns"]
+        result = AuthorizationRootSnapshot(root, volume_id, file_id, birthtime_ns)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise AuthorizationGrantRepositoryError("AuthorizationGrant root snapshot is malformed") from exc
+    if result.to_dict() != value:
+        raise AuthorizationGrantRepositoryError("AuthorizationGrant root snapshot is not canonical")
+    return result
+
+
+def _source_heads_from_receipt(
+    payload: dict[str, object],
+) -> tuple[tuple[CanonicalJsonObject, ...] | None, str | None]:
+    present = {
+        key
+        for key in (
+            "source_heads_schema_version",
+            "source_heads",
+            "source_heads_digest",
+        )
+        if key in payload
+    }
+    if not present:
+        return None, None
+    if present != {
+        "source_heads_schema_version",
+        "source_heads",
+        "source_heads_digest",
+    }:
+        raise AuthorizationGrantRepositoryError("AuthorizationGrant source-head manifest is incomplete")
+    if payload["source_heads_schema_version"] != AUTHORIZATION_SOURCE_HEADS_SCHEMA_VERSION:
+        raise AuthorizationGrantRepositoryError("AuthorizationGrant source-head manifest version is unsupported")
+    raw_heads = payload["source_heads"]
+    if not isinstance(raw_heads, list) or not raw_heads:
+        raise AuthorizationGrantRepositoryError("AuthorizationGrant source heads are invalid")
+    try:
+        heads = tuple(CanonicalJsonObject.from_mapping(item) for item in raw_heads)
+        digest = payload["source_heads_digest"]
+        if not isinstance(digest, str):
+            raise AuthorizationGrantRepositoryError("AuthorizationGrant source-head digest is not text")
+        from neocortex.workflow.authorization.contracts import _source_heads_digest
+
+        expected = _source_heads_digest(heads)
+    except (TypeError, ValueError) as exc:
+        raise AuthorizationGrantRepositoryError("AuthorizationGrant source-head manifest is invalid") from exc
+    if digest != expected or [head.to_dict() for head in heads] != raw_heads:
+        raise AuthorizationGrantRepositoryError("AuthorizationGrant source-head manifest digest is invalid")
+    return heads, digest
+
+
+def _effect_from_payload(value: object) -> AuthorizationEffect:
+    if not isinstance(value, dict):
+        raise AuthorizationGrantRepositoryError("authorized_effects contains a non-object")
+    try:
+        effect = AuthorizationEffect(
+            effect_id=str(value["effect_id"]),
+            item_id=str(value["item_id"]),
+            task_id=str(value["task_id"]),
+            ordinal=value["ordinal"],
+            action=str(value["action"]),
+            kind=str(value["kind"]),
+            source=_snapshot_from_dict(value["source"], label="effect.source"),
+            source_digest=str(value["source_digest"]),
+            target_path=None if value.get("target_path") is None else str(value["target_path"]),
+            keeper=(
+                None
+                if value.get("keeper") is None
+                else _snapshot_from_dict(value["keeper"], label="effect.keeper")
+            ),
+            keeper_digest=(
+                None if value.get("keeper_digest") is None else str(value["keeper_digest"])
+            ),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise AuthorizationGrantRepositoryError("authorized_effects contains an invalid effect") from exc
+    if value != effect.to_dict():
+        raise AuthorizationGrantRepositoryError("authorized_effects contains a non-canonical effect")
+    return effect
+
+
+def _effects_from_receipt(
+    payload: dict[str, object],
+) -> tuple[tuple[AuthorizationEffect, ...] | None, str | None]:
+    present = {
+        key
+        for key in (
+            "authorized_effects_schema_version",
+            "authorized_effects",
+            "authorized_effects_digest",
+        )
+        if key in payload
+    }
+    if not present:
+        return None, None
+    if present != {
+        "authorized_effects_schema_version",
+        "authorized_effects",
+        "authorized_effects_digest",
+    }:
+        raise AuthorizationGrantRepositoryError("AuthorizationGrant effect manifest is incomplete")
+    if payload["authorized_effects_schema_version"] != AUTHORIZATION_EFFECTS_SCHEMA_VERSION:
+        raise AuthorizationGrantRepositoryError("AuthorizationGrant effect manifest version is unsupported")
+    raw_effects = payload["authorized_effects"]
+    if not isinstance(raw_effects, list) or not raw_effects:
+        raise AuthorizationGrantRepositoryError("AuthorizationGrant effects are invalid")
+    try:
+        effects = tuple(_effect_from_payload(item) for item in raw_effects)
+        digest = payload["authorized_effects_digest"]
+        if not isinstance(digest, str):
+            raise AuthorizationGrantRepositoryError("AuthorizationGrant effect digest is not text")
+        expected = authorized_effects_digest(effects)
+    except (TypeError, ValueError) as exc:
+        raise AuthorizationGrantRepositoryError("AuthorizationGrant effect manifest is invalid") from exc
+    if digest != expected or [effect.to_dict() for effect in effects] != raw_effects:
+        raise AuthorizationGrantRepositoryError("AuthorizationGrant effect manifest digest is invalid")
+    return effects, digest
+
+
 def _grant_from_row(row: sqlite3.Row) -> AuthorizationGrant:
     receipt_json = str(row["receipt_json"])
     review_task_heads, review_task_heads_digest = _heads_from_receipt(receipt_json)
+    try:
+        receipt_payload = json.loads(receipt_json)
+    except (TypeError, ValueError) as exc:
+        raise AuthorizationGrantRepositoryError("AuthorizationGrant receipt is invalid JSON") from exc
+    if not isinstance(receipt_payload, dict):
+        raise AuthorizationGrantRepositoryError("AuthorizationGrant receipt is not an object")
+    root_snapshot = _root_snapshot_from_receipt(receipt_payload.get("root_snapshot"))
+    source_heads, source_heads_digest = _source_heads_from_receipt(receipt_payload)
+    authorized_effects, authorized_effects_digest_value = _effects_from_receipt(receipt_payload)
     try:
         grant = AuthorizationGrant(
             grant_id=str(row["grant_id"]),
@@ -214,6 +355,11 @@ def _grant_from_row(row: sqlite3.Row) -> AuthorizationGrant:
             expires_ns=int(row["expires_ns"]),
             review_task_heads=review_task_heads,
             review_task_heads_digest=review_task_heads_digest,
+            root_snapshot=root_snapshot,
+            source_heads=source_heads,
+            source_heads_digest=source_heads_digest,
+            authorized_effects=authorized_effects,
+            authorized_effects_digest=authorized_effects_digest_value,
         )
     except (TypeError, ValueError, OverflowError) as exc:
         raise AuthorizationGrantRepositoryError("persisted AuthorizationGrant is invalid") from exc

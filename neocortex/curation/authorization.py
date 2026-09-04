@@ -27,6 +27,7 @@ from neocortex.curation.lifecycle import (
     _validate_actor,
 )
 from neocortex.curation.preview import CurationItem, CurationPlanPage, build_curation_plan_page
+from neocortex.deduplication import FileChangedError, FileSnapshot, files_equal_exact, full_fingerprint, snapshot_path
 from neocortex.runtime.control.locking import FrameworkRunLock
 from neocortex.workflow.authorization.contracts import (
     AUTHORIZATION_ACTIONS,
@@ -34,16 +35,23 @@ from neocortex.workflow.authorization.contracts import (
     AUTHORIZATION_SELECTOR_SIGNATURE,
     AUTHORIZATION_SCOPE,
     AUTHORIZATION_TASK_TYPE,
+    AuthorizationEffect,
+    AuthorizationRootSnapshot,
     AuthorizationReviewTaskHead,
     AuthorizationGrant,
     MAX_AUTHORIZATION_ITEMS,
     review_task_heads_digest,
+    authorized_effects_digest,
 )
 from neocortex.workflow.authorization.repository import (
     AuthorizationGrantResult,
     issue_authorization_grant,
 )
-from neocortex.workflow.review.review_task_contracts import ReviewTaskRecord, ReviewTaskState
+from neocortex.workflow.review.review_task_contracts import (
+    CanonicalJsonObject,
+    ReviewTaskRecord,
+    ReviewTaskState,
+)
 from neocortex.workflow.review.review_task_repository import (
     lookup_review_task_version_heads,
     read_review_task,
@@ -166,6 +174,10 @@ def _validate_requested_effect(item: CurationItem, action: str) -> int:
                 "duplicate group lacks full-hash verification for trash authorization"
             )
     else:
+        if item.kind != "organization_plan":
+            raise CurationAuthorizationError(
+                "move/rename is supported only for organization proposals"
+            )
         destination = item.destination_path
         if not isinstance(destination, str) or not destination.startswith("/"):
             raise CurationAuthorizationError("move/rename requires an absolute destination")
@@ -175,6 +187,178 @@ def _validate_requested_effect(item: CurationItem, action: str) -> int:
     if isinstance(size, bool) or not isinstance(size, int) or size < 0:
         return 0
     return size
+
+
+def _snapshot_from_item_evidence(item: CurationItem) -> FileSnapshot:
+    """Rehydrate one inventory snapshot from the reviewed item evidence."""
+
+    identity = item.evidence.get("identity")
+    if not isinstance(identity, Mapping):
+        raise CurationAuthorizationError("curation item lacks physical identity evidence")
+    try:
+        volume_id = int(str(identity["volume_id"]), 16)
+        file_id = int(str(identity["file_id"]), 16)
+        birthtime_ns = int(identity["birthtime_ns"])
+        size = item.evidence["size"]
+        mtime_ns = item.evidence["mtime_ns"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise CurationAuthorizationError("curation item physical identity is malformed") from exc
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in (volume_id, file_id, size, mtime_ns)
+    ) or birthtime_ns < -1:
+        raise CurationAuthorizationError("curation item physical identity is invalid")
+    return FileSnapshot(
+        item.source_path,
+        volume_id,
+        file_id,
+        size,
+        mtime_ns,
+        birthtime_ns,
+    )
+
+
+def _snapshot_from_member(value: object, *, item_id: str) -> FileSnapshot:
+    if not isinstance(value, Mapping):
+        raise CurationAuthorizationError(f"duplicate item {item_id} has malformed member evidence")
+    identity = value.get("identity")
+    if not isinstance(identity, Mapping):
+        raise CurationAuthorizationError(f"duplicate item {item_id} member lacks identity")
+    try:
+        path = value["path"]
+        volume_id = int(str(identity["volume_id"]), 16)
+        file_id = int(str(identity["file_id"]), 16)
+        birthtime_ns = int(identity["birthtime_ns"])
+        size = value["size"]
+        mtime_ns = value["mtime_ns"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise CurationAuthorizationError(f"duplicate item {item_id} member is malformed") from exc
+    if (
+        not isinstance(path, str)
+        or not path.startswith("/")
+        or any(
+            isinstance(number, bool) or not isinstance(number, int) or number < 0
+            for number in (volume_id, file_id, size, mtime_ns)
+        )
+        or birthtime_ns < -1
+    ):
+        raise CurationAuthorizationError(f"duplicate item {item_id} member identity is invalid")
+    return FileSnapshot(path, volume_id, file_id, size, mtime_ns, birthtime_ns)
+
+
+def _full_digest(snapshot: FileSnapshot) -> str:
+    try:
+        current = snapshot_path(snapshot.path)
+        if current != snapshot:
+            raise CurationAuthorizationSnapshotChanged(
+                f"source changed before authorization: {snapshot.path}"
+            )
+        digest = full_fingerprint(current)
+    except FileChangedError as exc:
+        raise CurationAuthorizationSnapshotChanged(
+            f"source changed while hashing: {snapshot.path}"
+        ) from exc
+    except OSError as exc:
+        raise CurationAuthorizationUnavailable(
+            f"source cannot be hashed: {snapshot.path}"
+        ) from exc
+    return "xxh3_128_full_v1:" + digest.hex()
+
+
+def _effect_manifest(
+    items: tuple[CurationItem, ...],
+    task_ids: tuple[str, ...],
+    action: str,
+) -> tuple[tuple[AuthorizationEffect, ...], int]:
+    """Expand reviewed items into immutable, byte-verified physical effects."""
+
+    effects: list[AuthorizationEffect] = []
+    total_bytes = 0
+    for item, task_id in zip(items, task_ids, strict=True):
+        if item.kind == "duplicate_group":
+            if item.evidence.get("members_truncated") is True:
+                raise CurationAuthorizationError(
+                    "duplicate group evidence is truncated and cannot be authorized"
+                )
+            members = item.evidence.get("members")
+            if not isinstance(members, list) or not members:
+                raise CurationAuthorizationError("duplicate group lacks complete member evidence")
+            keep: FileSnapshot | None = None
+            redundant: list[FileSnapshot] = []
+            for raw_member in members:
+                member = _snapshot_from_member(raw_member, item_id=item.item_id)
+                role = raw_member.get("role") if isinstance(raw_member, Mapping) else None
+                if role == "keep":
+                    if keep is not None:
+                        raise CurationAuthorizationError("duplicate group has multiple keepers")
+                    keep = member
+                elif role == "redundant":
+                    redundant.append(member)
+                else:
+                    raise CurationAuthorizationError("duplicate group member role is unsupported")
+            if keep is None or not redundant:
+                raise CurationAuthorizationError("duplicate group lacks keeper or redundant members")
+            keeper_digest = _full_digest(keep)
+            for source in redundant:
+                source_digest = _full_digest(source)
+                try:
+                    if not files_equal_exact(source, keep):
+                        raise CurationAuthorizationError(
+                            "duplicate group member is no longer byte-identical to its keeper"
+                        )
+                except FileChangedError as exc:
+                    raise CurationAuthorizationSnapshotChanged(
+                        f"duplicate member changed during authorization: {source.path}"
+                    ) from exc
+                effects.append(
+                    AuthorizationEffect(
+                        effect_id=f"{item.item_id}:effect:{len(effects) + 1}",
+                        item_id=item.item_id,
+                        task_id=task_id,
+                        ordinal=len(effects) + 1,
+                        action=action,
+                        kind=item.kind,
+                        source=source,
+                        source_digest=source_digest,
+                        keeper=keep,
+                        keeper_digest=keeper_digest,
+                    )
+                )
+                total_bytes += source.size
+        elif item.kind in {"empty_file", "organization_plan"}:
+            source = _snapshot_from_item_evidence(item)
+            if item.kind == "organization_plan":
+                # Historical catalog rows can carry a best-effort identity;
+                # bind the grant to the live source while retaining the
+                # ReviewTask input fingerprint as the plan evidence fence.
+                try:
+                    source = snapshot_path(item.source_path)
+                except OSError as exc:
+                    raise CurationAuthorizationSnapshotChanged(
+                        f"organization source is unavailable: {item.source_path}"
+                    ) from exc
+            source_digest = _full_digest(source)
+            effects.append(
+                AuthorizationEffect(
+                    effect_id=f"{item.item_id}:effect:{len(effects) + 1}",
+                    item_id=item.item_id,
+                    task_id=task_id,
+                    ordinal=len(effects) + 1,
+                    action=action,
+                    kind=item.kind,
+                    source=source,
+                    source_digest=source_digest,
+                    target_path=item.destination_path,
+                )
+            )
+            total_bytes += source.size
+        else:
+            raise CurationAuthorizationError(f"curation item kind is not effect-capable: {item.kind}")
+    if not effects:
+        raise CurationAuthorizationError("authorization produced no physical effects")
+    if len(effects) > MAX_AUTHORIZATION_ITEMS:
+        raise CurationAuthorizationError("authorization exceeds the physical effect bound")
+    return tuple(effects), total_bytes
 
 
 @dataclass(frozen=True, slots=True)
@@ -306,13 +490,26 @@ def authorize_curation_items(
             )
         if max_bytes_value < total_known_bytes:
             raise CurationAuthorizationError("max_bytes is below the reviewed item size")
+        authorized_effects, effect_bytes = _effect_manifest(tuple(items), tuple(record.task.task_id for record in records), action)
+        if max_bytes_value < effect_bytes:
+            raise CurationAuthorizationError("max_bytes is below the authorized effect size")
+        try:
+            root_snapshot_value = snapshot_path(page.root)
+        except (FileNotFoundError, OSError) as exc:
+            raise CurationAuthorizationUnavailable("curation plan root cannot be snapshotted") from exc
+        source_heads = tuple(CanonicalJsonObject.from_mapping(head.to_dict()) for head in page.source_heads)
+        if not source_heads:
+            raise CurationAuthorizationUnavailable("curation plan has no source-head manifest")
+        from neocortex.workflow.authorization.contracts import _source_heads_digest
+
+        source_heads_digest = _source_heads_digest(source_heads)
         semantic = {
             "action": action,
             "actor": actor_text,
             "backend": AUTHORIZATION_BACKEND,
             "expires_ns": expires_ns,
             "item_ids": list(ids),
-            "max_actions": len(ids),
+            "max_actions": len(authorized_effects),
             "max_bytes": max_bytes_value,
             "plan_digest": digest,
             "snapshot_id": page.snapshot_id,
@@ -320,6 +517,16 @@ def authorize_curation_items(
             "task_ids": [record.task.task_id for record in records],
             "review_task_heads": [head.to_dict() for head in review_task_heads],
             "review_task_heads_digest": review_task_heads_digest(tuple(review_task_heads)),
+            "root_snapshot": {
+                "root": page.root,
+                "volume_id": f"{root_snapshot_value.volume_id:x}",
+                "file_id": f"{root_snapshot_value.file_id:x}",
+                "birthtime_ns": root_snapshot_value.birthtime_ns,
+            },
+            "source_heads": [head.to_dict() for head in source_heads],
+            "source_heads_digest": source_heads_digest,
+            "authorized_effects": [effect.to_dict() for effect in authorized_effects],
+            "authorized_effects_digest": authorized_effects_digest(authorized_effects),
         }
         key = authorization_key
         if key is None:
@@ -343,12 +550,21 @@ def authorize_curation_items(
             backend=AUTHORIZATION_BACKEND,
             item_ids=ids,
             task_ids=tuple(record.task.task_id for record in records),
-            max_actions=len(ids),
+            max_actions=len(authorized_effects),
             max_bytes=max_bytes_value,
             issued_ns=issued_ns,
             expires_ns=expires_ns,
             review_task_heads=tuple(review_task_heads),
             review_task_heads_digest=review_task_heads_digest(tuple(review_task_heads)),
+            root_snapshot=AuthorizationRootSnapshot(
+                root=page.root,
+                volume_id=root_snapshot_value.volume_id,
+                file_id=root_snapshot_value.file_id,
+                birthtime_ns=root_snapshot_value.birthtime_ns,
+            ),
+            source_heads=source_heads,
+            source_heads_digest=source_heads_digest,
+            authorized_effects=authorized_effects,
         )
         result = issue_authorization_grant(database, grant)
         return CurationAuthorizationOutcome(result=result, items=tuple(items))

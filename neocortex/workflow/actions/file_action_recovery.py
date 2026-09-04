@@ -10,10 +10,11 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 
-from neocortex.deduplication import FileSnapshot, snapshot_path
+from neocortex.deduplication import FileSnapshot, full_fingerprint, snapshot_path
 from neocortex.persistence.framework_connection import connect_existing_framework
 from neocortex.persistence.framework_schema import SCHEMA_VERSION as FRAMEWORK_SCHEMA_VERSION
 # endregion [01]
@@ -78,6 +79,16 @@ class _RecordedAction:
     source_path: str
     target_path: str | None
     recorded_status: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ExpectedIdentity:
+    volume_id: int
+    file_id: int
+    size: int
+    mtime_ns: int
+    birthtime_ns: int
+    source_digest: str | None
 
 
 def _result(
@@ -253,7 +264,12 @@ def _classify_row(row: sqlite3.Row) -> FileActionReconciliation:
             detail=f"source observation failed: {source_state[1]}",
         )
     if action.action_type.startswith("trash_"):
-        return _classify_trash(action, source_state, row["effect_receipt_json"])
+        return _classify_trash(
+            action,
+            source_state,
+            row["effect_receipt_json"],
+            expected,
+        )
     if action.target_path is None:
         return _result(
             action,
@@ -277,7 +293,7 @@ def _parse_expected_identity(
     *,
     source_path: str,
     target_path: str | None,
-) -> tuple[int, int]:
+) -> _ExpectedIdentity:
     if raw is None:
         raise ValueError("legacy action has no expected physical identity")
     try:
@@ -286,9 +302,22 @@ def _parse_expected_identity(
         version = int(document["schema_version"])
         volume_id = int(str(source["volume_id"]), 16)
         file_id = int(str(source["file_id"]), 16)
+        size = int(source["size"])
+        mtime_ns = int(source["mtime_ns"])
+        birthtime_ns = int(source["birthtime_ns"])
+        source_digest = document.get("source_digest")
+        if source_digest is not None and not isinstance(source_digest, str):
+            raise ValueError("expected source digest is not text")
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("expected physical identity evidence is malformed") from exc
-    if version != 1 or volume_id < 0 or file_id < 0:
+    if (
+        version != 1
+        or volume_id < 0
+        or file_id < 0
+        or size < 0
+        or mtime_ns < 0
+        or birthtime_ns < -1
+    ):
         raise ValueError("expected physical identity evidence is unsupported")
     if _path_key(str(source.get("path", ""))) != _path_key(source_path):
         raise ValueError("expected identity source path conflicts with the action")
@@ -297,29 +326,59 @@ def _parse_expected_identity(
         None if target_path is None else _path_key(target_path)
     ):
         raise ValueError("expected identity target path conflicts with the action")
-    return volume_id, file_id
+    return _ExpectedIdentity(
+        volume_id,
+        file_id,
+        size,
+        mtime_ns,
+        birthtime_ns,
+        source_digest,
+    )
 
 
 def _path_key(path: str) -> str:
     return os.path.normcase(os.path.abspath(path))
 
 
-def _observe_path(path: str, expected: tuple[int, int]) -> tuple[str, str | None]:
+def _observe_path(path: str, expected: _ExpectedIdentity) -> tuple[str, str | None]:
     try:
+        metadata = os.lstat(path)
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            return "error", "observed path is not a regular non-link file"
+        if metadata.st_nlink != 1:
+            return "error", "observed path has additional hard links"
         current = snapshot_path(path)
     except FileNotFoundError:
         return "missing", None
     except OSError as exc:
         return "error", f"{type(exc).__name__}: {exc}"
-    if current.identity == expected:
-        return "expected", None
-    return "different", f"observed identity={current.volume_id:x}:{current.file_id:x}"
+    if (
+        current.volume_id != expected.volume_id
+        or current.file_id != expected.file_id
+        or current.size != expected.size
+        or current.mtime_ns != expected.mtime_ns
+        or current.birthtime_ns != expected.birthtime_ns
+    ):
+        return (
+            "different",
+            f"observed identity={current.volume_id:x}:{current.file_id:x};"
+            f"size={current.size};mtime_ns={current.mtime_ns}",
+        )
+    if expected.source_digest is not None:
+        try:
+            digest = "xxh3_128_full_v1:" + full_fingerprint(current).hex()
+        except OSError as exc:
+            return "error", f"full digest observation failed: {type(exc).__name__}: {exc}"
+        if digest != expected.source_digest:
+            return "different", "observed full digest differs from the mutation evidence"
+    return "expected", None
 
 
 def _classify_trash(
     action: _RecordedAction,
     source_state: tuple[str, str | None],
     raw_receipt: object,
+    expected: _ExpectedIdentity,
 ) -> FileActionReconciliation:
     if source_state[0] == "expected":
         return _result(
@@ -335,7 +394,12 @@ def _classify_trash(
             recommendation="preserve_evidence_and_review_manually",
             detail=f"source path now names another object; {source_state[1]}",
         )
-    if _valid_success_receipt(raw_receipt, operation="trash", action=action):
+    if _valid_success_receipt(
+        raw_receipt,
+        operation="trash",
+        action=action,
+        expected=expected,
+    ):
         return _result(
             action,
             classification="confirmed",
@@ -389,6 +453,7 @@ def _valid_success_receipt(
     *,
     operation: str,
     action: _RecordedAction,
+    expected: _ExpectedIdentity,
 ) -> bool:
     if raw is None:
         return False
@@ -396,7 +461,7 @@ def _valid_success_receipt(
         receipt = json.loads(str(raw))
     except (TypeError, ValueError):
         return False
-    return bool(
+    valid = bool(
         isinstance(receipt, dict)
         and receipt.get("schema_version") == 1
         and receipt.get("operation") == operation
@@ -406,6 +471,43 @@ def _valid_success_receipt(
         and (None if receipt.get("target_path") is None else _path_key(str(receipt["target_path"])))
         == (None if action.target_path is None else _path_key(action.target_path))
     )
+    if not valid:
+        return False
+    if action.action_type == "trash_curation":
+        trash = receipt.get("trash")
+        if (
+            not isinstance(trash, dict)
+            or receipt.get("source_digest") != expected.source_digest
+            or not isinstance(trash.get("trash_path"), str)
+            or not isinstance(trash.get("info_path"), str)
+            or not Path(trash["trash_path"]).is_absolute()
+            or not Path(trash["info_path"]).is_absolute()
+        ):
+            return False
+        try:
+            trash_stat = os.lstat(trash["trash_path"])
+            info_stat = os.lstat(trash["info_path"])
+            if (
+                stat.S_ISLNK(trash_stat.st_mode)
+                or not stat.S_ISREG(trash_stat.st_mode)
+                or stat.S_ISLNK(info_stat.st_mode)
+                or not stat.S_ISREG(info_stat.st_mode)
+            ):
+                return False
+            observed = snapshot_path(trash["trash_path"])
+            digest = "xxh3_128_full_v1:" + full_fingerprint(observed).hex()
+        except OSError:
+            return False
+        return bool(
+            observed.volume_id == expected.volume_id
+            and observed.size == expected.size
+            and digest == expected.source_digest
+            and trash.get("volume_id") == f"{observed.volume_id:x}"
+            and trash.get("file_id") == f"{observed.file_id:x}"
+            and trash.get("size") == observed.size
+            and trash.get("digest") == expected.source_digest
+        )
+    return True
 
 
 __all__ = [

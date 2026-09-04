@@ -53,6 +53,26 @@ _EXPORTS = {
         "CurationAuthorizationUnavailable",
     ),
     "authorize_curation_items": (".authorization", "authorize_curation_items"),
+    "CURATION_APPLY_SCHEMA": (".application", "CURATION_APPLY_SCHEMA"),
+    "CURATION_RECONCILE_SCHEMA": (".application", "CURATION_RECONCILE_SCHEMA"),
+    "ApplyCandidate": (".application", "ApplyCandidate"),
+    "AppliedEffect": (".application", "AppliedEffect"),
+    "BackendOutcome": (".application", "BackendOutcome"),
+    "CurationApplicationError": (".application", "CurationApplicationError"),
+    "CurationApplicationCancelled": (".application", "CurationApplicationCancelled"),
+    "CurationApplicationResult": (".application", "CurationApplicationResult"),
+    "CurationApplicationSnapshotChanged": (
+        ".application",
+        "CurationApplicationSnapshotChanged",
+    ),
+    "CurationApplicationUnavailable": (
+        ".application",
+        "CurationApplicationUnavailable",
+    ),
+    "KioTrashBackend": (".application", "KioTrashBackend"),
+    "PosixRenameBackend": (".application", "PosixRenameBackend"),
+    "apply_authorization_grant": (".application", "apply_authorization_grant"),
+    "reconcile_curation_actions": (".application", "reconcile_curation_actions"),
 }
 
 
@@ -71,9 +91,19 @@ def __dir__() -> list[str]:
 
 
 __all__ = [
+    "CURATION_APPLY_SCHEMA",
     "CURATION_PREVIEW_SCHEMA_VERSION",
+    "CURATION_RECONCILE_SCHEMA",
     "CURATION_REVIEW_SCHEMA_VERSION",
     "CURATION_VERIFICATION_SCHEMA_VERSION",
+    "AppliedEffect",
+    "ApplyCandidate",
+    "BackendOutcome",
+    "CurationApplicationCancelled",
+    "CurationApplicationError",
+    "CurationApplicationResult",
+    "CurationApplicationSnapshotChanged",
+    "CurationApplicationUnavailable",
     "CurationAuthorizationError",
     "CurationAuthorizationOutcome",
     "CurationAuthorizationSnapshotChanged",
@@ -94,10 +124,14 @@ __all__ = [
     "CurationVerificationResult",
     "CurationVerificationSnapshotChanged",
     "CurationVerificationUnavailable",
+    "KioTrashBackend",
+    "PosixRenameBackend",
+    "apply_authorization_grant",
     "authorize_curation_items",
     "build_curation_plan_page",
     "build_curation_preview",
     "decide_curation_item",
+    "reconcile_curation_actions",
     "review_curation_page",
     "verify_curation_page",
 ]

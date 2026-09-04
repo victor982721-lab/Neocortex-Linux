@@ -12,6 +12,8 @@ import hashlib
 import json
 from dataclasses import dataclass
 
+from neocortex.deduplication.domain.models import FileSnapshot
+
 from neocortex.workflow.review.review_task_contracts import CanonicalJsonObject
 
 
@@ -29,6 +31,12 @@ MAX_AUTHORIZATION_JSON_BYTES = 65_536
 REVIEW_TASK_HEADS_SCHEMA_VERSION = 1
 REVIEW_TASK_HEADS_SCHEMA = "neocortex.authorization-review-task-heads/v1"
 REVIEW_TASK_HEAD_DIGEST_SCHEMA = "neocortex.authorization-review-task-head/v1"
+AUTHORIZATION_SOURCE_HEADS_SCHEMA_VERSION = 1
+AUTHORIZATION_SOURCE_HEADS_SCHEMA = "neocortex.authorization-source-heads/v1"
+AUTHORIZATION_EFFECTS_SCHEMA_VERSION = 1
+AUTHORIZATION_EFFECTS_SCHEMA = "neocortex.authorization-effects/v1"
+MAX_AUTHORIZATION_EFFECTS = 100
+_FULL_DIGEST_PREFIX = "xxh3_128_full_v1:"
 
 
 def _text(label: str, value: object, limit: int) -> str:
@@ -103,6 +111,61 @@ def _identifiers(label: str, values: object) -> tuple[str, ...]:
     if len(set(result)) != len(result):
         raise ValueError(f"{label} cannot contain duplicates")
     return result
+
+
+def _absolute_path(label: str, value: object, limit: int = MAX_AUTHORIZATION_ROOT_CHARS) -> str:
+    text = _text(label, value, limit)
+    if not text.startswith("/"):
+        raise ValueError(f"{label} must be an absolute path")
+    return text
+
+
+def _snapshot_dict(snapshot: FileSnapshot) -> dict[str, object]:
+    return {
+        "birthtime_ns": snapshot.birthtime_ns,
+        "file_id": f"{snapshot.file_id:x}",
+        "mtime_ns": snapshot.mtime_ns,
+        "path": snapshot.path,
+        "size": snapshot.size,
+        "volume_id": f"{snapshot.volume_id:x}",
+    }
+
+
+def _snapshot_from_dict(value: object, *, label: str) -> FileSnapshot:
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be an object")
+    try:
+        path = _absolute_path(f"{label}.path", value["path"])
+        volume_id = int(str(value["volume_id"]), 16)
+        file_id = int(str(value["file_id"]), 16)
+        size = value["size"]
+        mtime_ns = value["mtime_ns"]
+        birthtime_ns = value["birthtime_ns"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"{label} is malformed") from exc
+    if any(
+        isinstance(number, bool) or not isinstance(number, int) or number < 0
+        for number in (volume_id, file_id, size, mtime_ns)
+    ):
+        raise ValueError(f"{label} contains invalid non-negative fields")
+    if isinstance(birthtime_ns, bool) or not isinstance(birthtime_ns, int) or birthtime_ns < -1:
+        raise ValueError(f"{label}.birthtime_ns is invalid")
+    snapshot = FileSnapshot(path, volume_id, file_id, size, mtime_ns, birthtime_ns)
+    if _snapshot_dict(snapshot) != value:
+        raise ValueError(f"{label} is not canonical")
+    return snapshot
+
+
+def _full_digest(label: str, value: object) -> str:
+    text = _text(label, value, 64)
+    suffix = text[len(_FULL_DIGEST_PREFIX) :]
+    if (
+        len(text) != len(_FULL_DIGEST_PREFIX) + 32
+        or not text.startswith(_FULL_DIGEST_PREFIX)
+        or any(character not in "0123456789abcdef" for character in suffix)
+    ):
+        raise ValueError(f"{label} must be {_FULL_DIGEST_PREFIX}<32 lowercase hex characters>")
+    return text
 
 
 def _head_digest_payload(head: "AuthorizationReviewTaskHead") -> dict[str, object]:
@@ -251,6 +314,154 @@ def review_task_heads_digest(heads: tuple[AuthorizationReviewTaskHead, ...]) -> 
     return "sha256:" + hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
 
+def _source_heads_digest(heads: tuple[CanonicalJsonObject, ...]) -> str:
+    payload = {
+        "schema_version": AUTHORIZATION_SOURCE_HEADS_SCHEMA_VERSION,
+        "schema": AUTHORIZATION_SOURCE_HEADS_SCHEMA,
+        "heads": [head.to_dict() for head in heads],
+    }
+    return "sha256:" + hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def authorized_effects_digest(effects: tuple["AuthorizationEffect", ...]) -> str:
+    """Return the ordered digest of a grant's physical effect manifest."""
+
+    if not isinstance(effects, tuple) or not effects:
+        raise ValueError("authorized_effects must be a non-empty immutable tuple")
+    if any(not isinstance(effect, AuthorizationEffect) for effect in effects):
+        raise ValueError("authorized_effects must contain AuthorizationEffect values")
+    payload = {
+        "schema_version": AUTHORIZATION_EFFECTS_SCHEMA_VERSION,
+        "schema": AUTHORIZATION_EFFECTS_SCHEMA,
+        "effects": [effect.to_dict() for effect in effects],
+    }
+    return "sha256:" + hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorizationRootSnapshot:
+    """Physical identity of the corpus root captured with a consumable grant."""
+
+    root: str
+    volume_id: int
+    file_id: int
+    birthtime_ns: int
+
+    def __post_init__(self) -> None:
+        _absolute_path("root_snapshot.root", self.root)
+        for label, value in (
+            ("root_snapshot.volume_id", self.volume_id),
+            ("root_snapshot.file_id", self.file_id),
+        ):
+            _nonnegative_integer(label, value)
+        if isinstance(self.birthtime_ns, bool) or not isinstance(self.birthtime_ns, int):
+            raise ValueError("root_snapshot.birthtime_ns must be an integer")
+        if self.birthtime_ns < -1:
+            raise ValueError("root_snapshot.birthtime_ns must be -1 or non-negative")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "birthtime_ns": self.birthtime_ns,
+            "file_id": f"{self.file_id:x}",
+            "root": self.root,
+            "volume_id": f"{self.volume_id:x}",
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorizationEffect:
+    """One physical effect expanded from one reviewed curation item."""
+
+    effect_id: str
+    item_id: str
+    task_id: str
+    ordinal: int
+    action: str
+    kind: str
+    source: FileSnapshot
+    source_digest: str
+    target_path: str | None = None
+    keeper: FileSnapshot | None = None
+    keeper_digest: str | None = None
+
+    def __post_init__(self) -> None:
+        _text("effect_id", self.effect_id, MAX_AUTHORIZATION_IDENTIFIER_CHARS)
+        _text("effect.item_id", self.item_id, MAX_AUTHORIZATION_IDENTIFIER_CHARS)
+        _text("effect.task_id", self.task_id, MAX_AUTHORIZATION_IDENTIFIER_CHARS)
+        _positive_integer("effect.ordinal", self.ordinal)
+        if self.action not in AUTHORIZATION_ACTIONS:
+            raise ValueError("effect action is unsupported")
+        _text("effect.kind", self.kind, 128)
+        if not isinstance(self.source, FileSnapshot):
+            raise ValueError("effect source must be a FileSnapshot")
+        _absolute_path("effect.source.path", self.source.path)
+        for label, value in (
+            ("effect.source.volume_id", self.source.volume_id),
+            ("effect.source.file_id", self.source.file_id),
+            ("effect.source.size", self.source.size),
+            ("effect.source.mtime_ns", self.source.mtime_ns),
+        ):
+            _nonnegative_integer(label, value)
+        if isinstance(self.source.birthtime_ns, bool) or not isinstance(self.source.birthtime_ns, int):
+            raise ValueError("effect.source.birthtime_ns must be an integer")
+        if self.source.birthtime_ns < -1:
+            raise ValueError("effect.source.birthtime_ns must be -1 or non-negative")
+        _full_digest("effect.source_digest", self.source_digest)
+        if self.target_path is not None:
+            _absolute_path("effect.target_path", self.target_path)
+        if self.keeper is not None:
+            if not isinstance(self.keeper, FileSnapshot):
+                raise ValueError("effect keeper must be a FileSnapshot")
+            _absolute_path("effect.keeper.path", self.keeper.path)
+            if self.keeper.identity == self.source.identity:
+                raise ValueError("effect keeper must not have the source identity")
+            for label, value in (
+                ("effect.keeper.volume_id", self.keeper.volume_id),
+                ("effect.keeper.file_id", self.keeper.file_id),
+                ("effect.keeper.size", self.keeper.size),
+                ("effect.keeper.mtime_ns", self.keeper.mtime_ns),
+            ):
+                _nonnegative_integer(label, value)
+            if isinstance(self.keeper.birthtime_ns, bool) or not isinstance(self.keeper.birthtime_ns, int):
+                raise ValueError("effect.keeper.birthtime_ns must be an integer")
+            if self.keeper.birthtime_ns < -1:
+                raise ValueError("effect.keeper.birthtime_ns must be -1 or non-negative")
+            if self.keeper_digest is None:
+                raise ValueError("effect keeper_digest is required with keeper")
+            _full_digest("effect.keeper_digest", self.keeper_digest)
+        elif self.keeper_digest is not None:
+            raise ValueError("effect keeper_digest requires keeper")
+        if self.action == "trash":
+            if self.target_path is not None:
+                raise ValueError("trash effects cannot have a target path")
+            if self.kind == "duplicate_group" and self.keeper is None:
+                raise ValueError("duplicate trash effects require a keeper")
+            if self.kind == "empty_file" and self.keeper is not None:
+                raise ValueError("empty-file trash effects cannot have a keeper")
+        elif self.action in {"move", "rename"}:
+            if self.target_path is None or self.keeper is not None:
+                raise ValueError("move/rename effects require a target and no keeper")
+            if self.target_path == self.source.path:
+                raise ValueError("effect target must differ from its source")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "action": self.action,
+            "effect_id": self.effect_id,
+            "item_id": self.item_id,
+            "kind": self.kind,
+            "keeper": None if self.keeper is None else _snapshot_dict(self.keeper),
+            "keeper_digest": self.keeper_digest,
+            "ordinal": self.ordinal,
+            "schema": AUTHORIZATION_EFFECTS_SCHEMA,
+            "schema_version": AUTHORIZATION_EFFECTS_SCHEMA_VERSION,
+            "source": _snapshot_dict(self.source),
+            "source_digest": self.source_digest,
+            "target_path": self.target_path,
+            "task_id": self.task_id,
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class AuthorizationGrant:
     grant_id: str
@@ -273,6 +484,11 @@ class AuthorizationGrant:
     expires_ns: int
     review_task_heads: tuple[AuthorizationReviewTaskHead, ...] | None = None
     review_task_heads_digest: str | None = None
+    root_snapshot: AuthorizationRootSnapshot | None = None
+    source_heads: tuple[CanonicalJsonObject, ...] | None = None
+    source_heads_digest: str | None = None
+    authorized_effects: tuple[AuthorizationEffect, ...] | None = None
+    authorized_effects_digest: str | None = None
 
     def __post_init__(self) -> None:
         _text("grant_id", self.grant_id, MAX_AUTHORIZATION_IDENTIFIER_CHARS)
@@ -301,8 +517,12 @@ class AuthorizationGrant:
         object.__setattr__(self, "item_ids", item_ids)
         object.__setattr__(self, "task_ids", task_ids)
         max_actions = _positive_integer("max_actions", self.max_actions)
-        if max_actions != len(item_ids):
-            raise ValueError("max_actions must equal the authorized item count")
+        if max_actions != (
+            len(self.authorized_effects)
+            if self.authorized_effects is not None
+            else len(item_ids)
+        ):
+            raise ValueError("max_actions must equal the authorized effect count")
         object.__setattr__(self, "max_actions", max_actions)
         object.__setattr__(self, "max_bytes", _nonnegative_integer("max_bytes", self.max_bytes))
         issued_ns = _positive_integer("issued_ns", self.issued_ns)
@@ -346,6 +566,59 @@ class AuthorizationGrant:
                     raise ValueError("review_task_heads_digest does not match the manifest")
             object.__setattr__(self, "review_task_heads_digest", expected_heads_digest)
             object.__setattr__(self, "review_task_heads", heads)
+        root_snapshot = self.root_snapshot
+        if root_snapshot is not None and not isinstance(root_snapshot, AuthorizationRootSnapshot):
+            raise ValueError("root_snapshot must be an AuthorizationRootSnapshot")
+        if root_snapshot is not None and root_snapshot.root != root:
+            raise ValueError("root_snapshot root must match the grant root")
+        source_heads = self.source_heads
+        source_heads_digest = self.source_heads_digest
+        if source_heads is None:
+            if source_heads_digest is not None:
+                raise ValueError("source_heads_digest requires source_heads")
+        else:
+            if not isinstance(source_heads, tuple) or not source_heads:
+                raise ValueError("source_heads must be a non-empty immutable tuple")
+            if any(not isinstance(head, CanonicalJsonObject) for head in source_heads):
+                raise ValueError("source_heads must contain canonical JSON objects")
+            expected_source_heads_digest = _source_heads_digest(source_heads)
+            if source_heads_digest is not None:
+                _digest("source_heads_digest", source_heads_digest)
+                if source_heads_digest != expected_source_heads_digest:
+                    raise ValueError("source_heads_digest does not match the manifest")
+            object.__setattr__(self, "source_heads_digest", expected_source_heads_digest)
+            object.__setattr__(self, "source_heads", source_heads)
+        effects = self.authorized_effects
+        effects_digest = self.authorized_effects_digest
+        if effects is None:
+            if effects_digest is not None:
+                raise ValueError("authorized_effects_digest requires authorized_effects")
+        else:
+            if not isinstance(effects, tuple) or not 1 <= len(effects) <= MAX_AUTHORIZATION_EFFECTS:
+                raise ValueError("authorized_effects must be a non-empty immutable tuple")
+            if any(not isinstance(effect, AuthorizationEffect) for effect in effects):
+                raise ValueError("authorized_effects must contain AuthorizationEffect values")
+            effect_item_ids = {effect.item_id for effect in effects}
+            if effect_item_ids != set(item_ids):
+                raise ValueError("authorized effects contain an item outside the grant")
+            if tuple(effect.ordinal for effect in effects) != tuple(range(1, len(effects) + 1)):
+                raise ValueError("authorized effect ordinals must be contiguous")
+            item_to_task = dict(zip(item_ids, task_ids, strict=True))
+            if any(item_to_task.get(effect.item_id) != effect.task_id for effect in effects):
+                raise ValueError("authorized effect task does not match its item")
+            if any(effect.action != self.action for effect in effects):
+                raise ValueError("authorized effects action differs from grant action")
+            if sum(effect.source.size for effect in effects) > self.max_bytes:
+                raise ValueError("max_bytes is below the authorized effect size")
+            if len({effect.effect_id for effect in effects}) != len(effects):
+                raise ValueError("authorized effects cannot contain duplicate effect_id")
+            expected_effects_digest = authorized_effects_digest(effects)
+            if effects_digest is not None:
+                _digest("authorized_effects_digest", effects_digest)
+                if effects_digest != expected_effects_digest:
+                    raise ValueError("authorized_effects_digest does not match the manifest")
+            object.__setattr__(self, "authorized_effects_digest", expected_effects_digest)
+            object.__setattr__(self, "authorized_effects", effects)
         self.to_json()
 
     def to_dict(self) -> dict[str, object]:
@@ -380,6 +653,24 @@ class AuthorizationGrant:
                     "review_task_heads_digest": self.review_task_heads_digest,
                 }
             )
+        if self.root_snapshot is not None:
+            payload["root_snapshot"] = self.root_snapshot.to_dict()
+        if self.source_heads is not None:
+            payload.update(
+                {
+                    "source_heads_schema_version": AUTHORIZATION_SOURCE_HEADS_SCHEMA_VERSION,
+                    "source_heads": [head.to_dict() for head in self.source_heads],
+                    "source_heads_digest": self.source_heads_digest,
+                }
+            )
+        if self.authorized_effects is not None:
+            payload.update(
+                {
+                    "authorized_effects_schema_version": AUTHORIZATION_EFFECTS_SCHEMA_VERSION,
+                    "authorized_effects": [effect.to_dict() for effect in self.authorized_effects],
+                    "authorized_effects_digest": self.authorized_effects_digest,
+                }
+            )
         return payload
 
     def to_json(self) -> str:
@@ -397,17 +688,25 @@ class AuthorizationGrant:
 __all__ = (
     "AUTHORIZATION_ACTIONS",
     "AUTHORIZATION_BACKEND",
+    "AUTHORIZATION_EFFECTS_SCHEMA",
+    "AUTHORIZATION_EFFECTS_SCHEMA_VERSION",
     "AUTHORIZATION_GRANT_SCHEMA",
     "AUTHORIZATION_GRANT_SCHEMA_VERSION",
     "AUTHORIZATION_SCOPE",
     "AUTHORIZATION_SELECTOR_SIGNATURE",
+    "AUTHORIZATION_SOURCE_HEADS_SCHEMA",
+    "AUTHORIZATION_SOURCE_HEADS_SCHEMA_VERSION",
     "AUTHORIZATION_TASK_TYPE",
+    "MAX_AUTHORIZATION_EFFECTS",
     "MAX_AUTHORIZATION_ITEMS",
     "REVIEW_TASK_HEADS_SCHEMA",
     "REVIEW_TASK_HEADS_SCHEMA_VERSION",
     "REVIEW_TASK_HEAD_DIGEST_SCHEMA",
+    "AuthorizationEffect",
     "AuthorizationGrant",
     "AuthorizationReviewTaskHead",
+    "AuthorizationRootSnapshot",
+    "authorized_effects_digest",
     "review_task_head_digest",
     "review_task_heads_digest",
 )

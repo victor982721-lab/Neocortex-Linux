@@ -264,6 +264,34 @@ def build_human_parser() -> argparse.ArgumentParser:
     curate_authorize.add_argument("--max-bytes", required=True, type=int, metavar="BYTES")
     curate_authorize.add_argument("--authorization-key", metavar="KEY")
     curate_authorize.add_argument("--json", action="store_true", help="emite el contrato JSON completo")
+    curate_apply = curate_commands.add_parser(
+        "apply",
+        help="consume un grant exacto con un backend Linux inyectado y límites contenidos",
+        allow_abbrev=False,
+    )
+    curate_apply.add_argument("grant_id", metavar="GRANT_ID")
+    curate_apply.add_argument(
+        "--confirm-grant-id",
+        required=True,
+        metavar="GRANT_ID",
+        help="repite exactamente el grant que se autoriza a consumir",
+    )
+    curate_apply.add_argument("--json", action="store_true", help="emite el contrato JSON completo")
+    curate_reconcile = curate_commands.add_parser(
+        "reconcile",
+        help="registra observaciones de recovery sin reintentar ni mutar el corpus",
+        allow_abbrev=False,
+    )
+    curate_reconcile.add_argument("--actor", required=True, metavar="ACTOR")
+    curate_reconcile.add_argument("--limit", type=_curation_limit, default=100, metavar="N")
+    curate_reconcile.add_argument("--after-action-id", type=int, default=0, metavar="ID")
+    curate_reconcile.add_argument("--run-id", type=int, metavar="RUN_ID")
+    curate_reconcile.add_argument(
+        "--confirm-reconcile",
+        action="store_true",
+        help="confirma la escritura del evento de conciliación",
+    )
+    curate_reconcile.add_argument("--json", action="store_true", help="emite el contrato JSON completo")
 
     inspect = commands.add_parser(
         "inspect",
@@ -1125,6 +1153,62 @@ def _run_curation_authorize(args: argparse.Namespace) -> int:
     return _exit_code(payload)
 
 
+def _run_curation_apply(args: argparse.Namespace) -> int:
+    """Keep the public CLI fail-closed until an explicit backend is injected."""
+
+    try:
+        from neocortex.api.curation_application_api import curation_apply_payload
+
+        payload = curation_apply_payload(
+            args.grant_id,
+            confirm_grant_id=args.confirm_grant_id,
+        )
+    except Exception as exc:  # pragma: no cover - adapter catches ordinary failures
+        _print(f"curate apply: {_single_line(exc, limit=800)}", file=sys.stderr)
+        return 2
+    if args.json:
+        _print(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        return _exit_code(payload)
+    _print(
+        f"CURATION_APPLY status={payload.get('status', 'unavailable')} "
+        f"grant={payload.get('grant_id', '-')}"
+    )
+    error = _mapping(payload.get("error"))
+    if error is not None and error.get("message"):
+        _print(f"Estado: {error['message']}", file=sys.stderr)
+    _print("La CLI no selecciona KIO ni otro backend físico automáticamente.")
+    return _exit_code(payload)
+
+
+def _run_curation_reconcile(args: argparse.Namespace) -> int:
+    try:
+        from neocortex.api.curation_application_api import curation_reconcile_payload
+
+        payload = curation_reconcile_payload(
+            actor=args.actor,
+            limit=args.limit,
+            after_action_id=args.after_action_id,
+            run_id=args.run_id,
+            confirm=args.confirm_reconcile,
+        )
+    except Exception as exc:  # pragma: no cover - adapter catches ordinary failures
+        _print(f"curate reconcile: {_single_line(exc, limit=800)}", file=sys.stderr)
+        return 2
+    if args.json:
+        _print(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        return _exit_code(payload)
+    result = _mapping(payload.get("result")) or {}
+    _print(
+        f"CURATION_RECONCILE status={payload.get('status', 'unavailable')} "
+        f"events={result.get('count', 0)}"
+    )
+    error = _mapping(payload.get("error"))
+    if error is not None and error.get("message"):
+        _print(f"Estado: {error['message']}", file=sys.stderr)
+    _print("La conciliación sólo registró evidencia; no reintentó ni modificó archivos.")
+    return _exit_code(payload)
+
+
 def _run_review_task(args: argparse.Namespace) -> int:
     if args.scope == ReadScope.ALL.value:
         _print(
@@ -1253,6 +1337,10 @@ def run_human_command(arguments: Sequence[str]) -> int:
         return _run_curation_decide(args)
     if args.command == "curate" and args.curate_command == "authorize":
         return _run_curation_authorize(args)
+    if args.command == "curate" and args.curate_command == "apply":
+        return _run_curation_apply(args)
+    if args.command == "curate" and args.curate_command == "reconcile":
+        return _run_curation_reconcile(args)
     if args.command == "inspect" and args.inspect_command == "code":
         return _run_inspect_code(args)
     if args.command == "inspect" and args.inspect_command == "lineage":
