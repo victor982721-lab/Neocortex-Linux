@@ -63,7 +63,10 @@ def _release(layout: LinuxReleaseLayout, name: str) -> Path:
             "kind": "linux_release_manifest",
             "release_id": name,
             "source_sha": source_sha,
-            "wheel_filename": "neocortex_framework-0.9.0-py3-none-any.whl",
+            "wheel_filename": (
+                f"neocortex_framework-{release_linux.parse_release_id(name)[0]}-"
+                "py3-none-any.whl"
+            ),
             "wheel_sha256": "a" * 64,
             "pip_bootstrap_wheel_filename": release_linux.PIP_BOOTSTRAP_FILENAME,
             "pip_bootstrap_wheel_sha256": release_linux.PIP_BOOTSTRAP_SHA256,
@@ -132,7 +135,9 @@ def _wheelhouse_fixture(tmp_path: Path, *specs: tuple[str, str]) -> Path:
 
 
 def test_release_identifier_is_version_sha_python_and_platform_bound() -> None:
-    assert release_linux.release_id("a" * 40) == (f"0.9.0-{'a' * 12}-cp314-linux-x86_64")
+    assert release_linux.release_id("a" * 40) == (
+        f"{release_linux.__version__}-{'a' * 12}-cp314-linux-x86_64"
+    )
     with pytest.raises(ValueError):
         release_linux.release_id("A" * 40)
 
@@ -451,7 +456,9 @@ def test_wheel_build_uses_a_git_owned_source_stage_without_build_residue(
             assert (staged / "neocortex/__init__.py").is_file()
             assert not (staged / "build").exists()
             wheelhouse = Path(command[command.index("--outdir") + 1])
-            (wheelhouse / "neocortex_framework-0.9.0-py3-none-any.whl").write_bytes(b"wheel")
+            (
+                wheelhouse / f"neocortex_framework-{release_linux.__version__}-py3-none-any.whl"
+            ).write_bytes(b"wheel")
         return subprocess.CompletedProcess(command, 0, "", "")
 
     wheel = release_linux._build_wheel(
@@ -499,7 +506,7 @@ def test_release_install_uses_the_runtime_lock_as_a_second_constraint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     release_root = tmp_path / "release"
-    wheel = tmp_path / "neocortex_framework-0.9.0-py3-none-any.whl"
+    wheel = tmp_path / f"neocortex_framework-{release_linux.__version__}-py3-none-any.whl"
     constraints = tmp_path / "constraints.txt"
     runtime_lock = tmp_path / release_linux.RUNTIME_DEPENDENCY_LOCK_NAME
     pip_wheel = tmp_path / release_linux.PIP_BOOTSTRAP_FILENAME
@@ -550,7 +557,9 @@ def test_release_install_excludes_build_only_wheels_from_runtime_requirements(
     )
     project_directory = tmp_path / "project"
     project_directory.mkdir()
-    project_wheel = project_directory / "neocortex_framework-0.9.0-py3-none-any.whl"
+    project_wheel = (
+        project_directory / f"neocortex_framework-{release_linux.__version__}-py3-none-any.whl"
+    )
     project_wheel.write_bytes(b"project-wheel")
     constraints = tmp_path / "constraints.txt"
     constraints.write_text("pip==26.2.1\n", encoding="utf-8")
@@ -615,7 +624,7 @@ def test_runtime_dependency_verifier_rejects_inventory_drift(tmp_path: Path) -> 
 
 def test_product_release_manifest_excludes_development_tool_metadata(tmp_path: Path) -> None:
     lock = _write_runtime_lock(tmp_path)
-    wheel = tmp_path / "neocortex_framework-0.9.0-py3-none-any.whl"
+    wheel = tmp_path / f"neocortex_framework-{release_linux.__version__}-py3-none-any.whl"
     wheel.write_bytes(b"wheel")
 
     manifest = release_linux._release_manifest(
@@ -748,7 +757,7 @@ def test_new_virtual_environment_is_created_in_staging_then_published(
     def build_wheel(_layout, workspace, **_kwargs):
         wheelhouse = workspace / "wheelhouse"
         wheelhouse.mkdir()
-        wheel = wheelhouse / "neocortex_framework-0.9.0-py3-none-any.whl"
+        wheel = wheelhouse / f"neocortex_framework-{release_linux.__version__}-py3-none-any.whl"
         wheel.write_bytes(b"project")
         return wheel
 
@@ -766,7 +775,7 @@ def test_new_virtual_environment_is_created_in_staging_then_published(
         "_verify_python_release",
         lambda release_root, *_args, **_kwargs: (
             {"pip": release_linux.PIP_BOOTSTRAP_VERSION}
-            if release_root.parent.name.startswith("0.9.0-")
+            if release_root.parent.name.startswith(f"{release_linux.__version__}-")
             else pytest.fail("release validation used an unexpected path")
         ),
     )
