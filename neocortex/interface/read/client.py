@@ -6,10 +6,12 @@ import importlib
 from collections.abc import Mapping
 
 from neocortex.api.read_contract import (
+    MAX_SANITIZED_PAYLOAD_NODES,
     ReadContractError,
     ReadOperation,
+    expected_read_outcome,
     normalize_read_payload,
-    sanitize_untrusted_text,
+    sanitize_untrusted_payload,
     validate_read_payload,
 )
 
@@ -33,11 +35,6 @@ _COMPLETE_ENVELOPE_FIELDS = frozenset(
         "scopes",
     }
 )
-_MAX_SANITIZED_NODES = 20_000
-_MAX_SANITIZED_DEPTH = 16
-_MAX_SANITIZED_STRING = 128_000
-
-
 def _sanitize_nested(value: object, *, depth: int = 0, budget: list[int] | None = None) -> object:
     """Remove terminal controls from corpus-derived result data.
 
@@ -47,35 +44,17 @@ def _sanitize_nested(value: object, *, depth: int = 0, budget: list[int] | None 
     unbounded renderer while preserving the legacy JSON shape.
     """
 
-    if budget is None:
-        budget = [_MAX_SANITIZED_NODES]
-    budget[0] -= 1
-    if budget[0] < 0 or depth > _MAX_SANITIZED_DEPTH:
-        return "[contenido omitido por límite]"
-    if isinstance(value, str):
-        return sanitize_untrusted_text(value, limit=_MAX_SANITIZED_STRING, single_line=False)
-    if isinstance(value, Mapping):
-        result: dict[object, object] = {}
-        for key, item in value.items():
-            safe_key: object = (
-                sanitize_untrusted_text(key, limit=512)
-                if isinstance(key, str)
-                else key
-            )
-            result[safe_key] = _sanitize_nested(item, depth=depth + 1, budget=budget)
-        return result
-    if isinstance(value, list):
-        return [_sanitize_nested(item, depth=depth + 1, budget=budget) for item in value]
-    if isinstance(value, tuple):
-        return [_sanitize_nested(item, depth=depth + 1, budget=budget) for item in value]
-    return value
+    # Keep this private compatibility wrapper for callers/tests that used the
+    # old helper name, but make the implementation shared with the MCP and
+    # human CLI boundaries so JSON keys and unknown values are safe too.
+    return sanitize_untrusted_payload(value, depth=depth, budget=budget)
 
 
 def _sanitize_result_sections(payload: Mapping[str, object]) -> dict[str, object]:
     """Return a safe copy while leaving strict request echoes byte-for-byte."""
 
     result = dict(payload)
-    budget = [_MAX_SANITIZED_NODES]
+    budget = [MAX_SANITIZED_PAYLOAD_NODES]
     for key in ("result", "scopes", "error", "observed_epoch"):
         if key in result:
             result[key] = _sanitize_nested(result[key], budget=budget)
@@ -85,21 +64,13 @@ def _sanitize_result_sections(payload: Mapping[str, object]) -> dict[str, object
 def _validate_outcome_consistency(payload: Mapping[str, object]) -> None:
     """Reject a complete envelope whose status lies about its exit code."""
 
-    expected = {
-        0: ("complete", "ok"),
-        1: ("unavailable", "error"),
-        2: ("unavailable", "usage_error"),
-        3: ("empty", "empty"),
-        4: ("partial", "partial"),
-        5: ("blocked", "snapshot_changed"),
-        6: ("unavailable", "schema_incompatible"),
-        7: ("unavailable", "corrupt"),
-        130: ("blocked", "cancelled"),
-    }
     code = payload.get("exit_code")
-    if isinstance(code, bool) or not isinstance(code, int) or code not in expected:
+    if isinstance(code, bool) or not isinstance(code, int):
         return
-    coverage, status = expected[code]
+    try:
+        coverage, status = expected_read_outcome(code)
+    except (KeyError, ValueError):
+        return
     if payload.get("coverage") != coverage or payload.get("status") != status:
         raise ReadClientError("El read API devolvió status/coverage incompatibles con exit_code.")
     if code not in {0, 3} and payload.get("error") is None:

@@ -11,6 +11,7 @@ read-only/storage boundary.
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
+import math
 import re
 from typing import Any, Literal, NotRequired, Required, TypedDict
 from uuid import uuid4
@@ -19,6 +20,13 @@ from uuid import uuid4
 READ_CONTRACT_SCHEMA = "neocortex.read-api/v1"
 VALUE_REVIEW_SCHEMA = "neocortex.value-review/v1"
 _ANSI_ESCAPE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+# Result payloads are ultimately rendered by a terminal, Qt widget or MCP
+# client.  Keep the defensive copy bounded independently from each adapter so
+# a malformed producer cannot turn a read into an unbounded rendering job.
+MAX_SANITIZED_PAYLOAD_NODES = 20_000
+MAX_SANITIZED_PAYLOAD_DEPTH = 16
+MAX_SANITIZED_PAYLOAD_STRING = 128_000
 
 ReadScopeName = Literal["personal", "framework", "all"]
 ReadApiSchema = Literal["neocortex.read-api/v1"]
@@ -252,6 +260,54 @@ def sanitize_untrusted_text(
     return text[: max(0, limit - 3)].rstrip() + "..."
 
 
+def sanitize_untrusted_payload(
+    value: object,
+    *,
+    depth: int = 0,
+    budget: list[int] | None = None,
+) -> object:
+    """Copy a producer result into a bounded JSON/render-safe value.
+
+    The read contract deliberately permits extensible result objects, so a
+    structural validator cannot enumerate every nested field.  This helper is
+    the common last-mile boundary for terminal, UI and MCP adapters: strings
+    lose ANSI/C0 controls, object keys become JSON-safe strings, non-finite
+    floats are replaced, and unknown objects cannot escape as renderer-hostile
+    values.
+    """
+
+    if budget is None:
+        budget = [MAX_SANITIZED_PAYLOAD_NODES]
+    budget[0] -= 1
+    if budget[0] < 0 or depth > MAX_SANITIZED_PAYLOAD_DEPTH:
+        return "[contenido omitido por límite]"
+    if isinstance(value, str):
+        return sanitize_untrusted_text(
+            value,
+            limit=MAX_SANITIZED_PAYLOAD_STRING,
+            single_line=False,
+        )
+    if isinstance(value, Mapping):
+        result: dict[str, object] = {}
+        for key, item in value.items():
+            safe_key = sanitize_untrusted_text(str(key), limit=512, single_line=True)
+            result[safe_key] = sanitize_untrusted_payload(item, depth=depth + 1, budget=budget)
+        return result
+    if isinstance(value, (list, tuple)):
+        return [sanitize_untrusted_payload(item, depth=depth + 1, budget=budget) for item in value]
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    return sanitize_untrusted_text(value, limit=MAX_SANITIZED_PAYLOAD_STRING, single_line=False)
+
+
+def expected_read_outcome(code: int) -> tuple[str, str]:
+    """Return the only valid coverage/status pair for one public exit code."""
+
+    return _coverage_for_code(code).value, _status_for_code(code)
+
+
 def _operation_descriptor(operation: str | ReadOperation) -> ReadOperationDescriptor:
     try:
         selected = operation if isinstance(operation, ReadOperation) else ReadOperation(operation)
@@ -390,6 +446,17 @@ def normalize_read_payload(
     normalized.setdefault("status", _status_for_code(code))
     normalized.setdefault("error", _error_from_scopes([_as_mapping(item, label="scope") for item in scopes]) if scopes else None)
     normalized.setdefault("result", {"scopes": scopes})
+    # Older producers did not expose publication epochs.  Preserve their
+    # compatibility while making the omission explicit rather than allowing a
+    # consumer to mistake an unobserved epoch for a stable one.
+    normalized.setdefault(
+        "observed_epoch",
+        {
+            "schema": "neocortex.read-observed-epoch/v1",
+            "status": "unavailable",
+            "reason": "producer_did_not_report_epoch",
+        },
+    )
     return normalized
 
 
@@ -424,14 +491,13 @@ def validate_read_payload(
     if operation_value not in valid_operations:
         raise ReadContractError("read payload operation differs from requested operation")
     _valid_text(payload.get("request_id"), label="request_id")
-    _valid_exit_code(payload.get("exit_code"), label="exit_code")
-    if not isinstance(payload.get("coverage"), str) or payload["coverage"] not in {
-        item.value for item in ReadCoverage
-    }:
-        raise ReadContractError("coverage is not a supported value")
+    code = _valid_exit_code(payload.get("exit_code"), label="exit_code")
+    expected_coverage, expected_status = expected_read_outcome(code)
+    if payload.get("coverage") != expected_coverage:
+        raise ReadContractError("status/coverage is incompatible with exit_code")
     status_value = payload.get("status")
-    if not isinstance(status_value, str) or not status_value.strip():
-        raise ReadContractError("status must be a non-empty string")
+    if status_value != expected_status:
+        raise ReadContractError("status/coverage is incompatible with exit_code")
     scopes_value = payload.get("scopes")
     if not isinstance(scopes_value, list):
         raise ReadContractError("scopes must be a list")
@@ -448,6 +514,8 @@ def validate_read_payload(
         scope_entries.append(entry)
     if not isinstance(payload.get("result"), Mapping):
         raise ReadContractError("result must be an object")
+    if "observed_epoch" in payload and not isinstance(payload.get("observed_epoch"), Mapping):
+        raise ReadContractError("observed_epoch must be an object")
     if descriptor.query:
         response_query_value = payload.get("query")
         if response_query_value is None and not strict_echo:
@@ -487,6 +555,8 @@ def validate_read_payload(
             raise ReadContractError("review payload is not consultivo/advisory")
         if payload.get("mutation_authorized") is not False:
             raise ReadContractError("review payload is not consultivo: authorizes mutation")
+    if code not in {int(ReadExitCode.SUCCESS), int(ReadExitCode.NO_RESULTS)} and payload.get("error") is None:
+        raise ReadContractError("read payload must describe an incomplete outcome")
     if payload.get("error") is not None:
         error = _as_mapping(payload["error"], label="error")
         _valid_text(error.get("code"), label="error.code")
@@ -531,6 +601,9 @@ def make_error_payload(
 
 
 __all__ = [
+    "MAX_SANITIZED_PAYLOAD_DEPTH",
+    "MAX_SANITIZED_PAYLOAD_NODES",
+    "MAX_SANITIZED_PAYLOAD_STRING",
     "READ_CONTRACT_SCHEMA",
     "READ_OPERATION_DESCRIPTORS",
     "VALUE_REVIEW_SCHEMA",
@@ -552,8 +625,10 @@ __all__ = [
     "ReviewOutput",
     "SearchOutput",
     "StatusOutput",
+    "expected_read_outcome",
     "make_error_payload",
     "normalize_read_payload",
+    "sanitize_untrusted_payload",
     "sanitize_untrusted_text",
     "validate_read_payload",
 ]

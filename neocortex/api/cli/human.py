@@ -10,7 +10,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TextIO
 
-from neocortex.api.read_contract import sanitize_untrusted_text
+from neocortex.api.read_contract import sanitize_untrusted_payload, sanitize_untrusted_text
 
 from ..read_api import (
     ReadScope,
@@ -80,7 +80,8 @@ def _print(value: str = "", *, file: TextIO | None = None) -> None:
 
 
 def _json(payload: Mapping[str, object]) -> None:
-    _print(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+    safe_payload = sanitize_untrusted_payload(payload)
+    _print(json.dumps(safe_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
 
 
 def _exit_code(payload: Mapping[str, object]) -> int:

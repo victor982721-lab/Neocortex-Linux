@@ -34,6 +34,7 @@ from .read_contract import (
     StatusOutput,
     make_error_payload,
     normalize_read_payload,
+    sanitize_untrusted_payload,
     validate_read_payload,
 )
 from .read_api import (
@@ -58,7 +59,10 @@ _MAX_MCP_LINE_BYTES = 1_048_576
 _MCP_STDIO_BRIDGE_VERSIONS = frozenset({"1.23.3", "1.29.0"})
 
 _Scope = Literal["personal", "framework", "all"]
-_Query = Annotated[str, _pydantic_field(min_length=1, max_length=4_096)]
+_Query = Annotated[
+    str,
+    _pydantic_field(min_length=1, max_length=4_096, pattern=r"(?s).*\S.*"),
+]
 _Limit = Annotated[int, _pydantic_field(ge=1, le=100)]
 _Characters = Annotated[int, _pydantic_field(ge=1, le=1_000_000)]
 _SearchMode = Literal["evidence", "discovery"]
@@ -254,7 +258,7 @@ def _structured_read_payload(
             scope=scope,
             allow_legacy_identity=True,
         )
-        return validate_read_payload(
+        validated = validate_read_payload(
             payload,
             operation,
             scope=scope,
@@ -263,11 +267,17 @@ def _structured_read_payload(
             include_history=include_history,
             limit=limit,
         )
+        return cast(dict[str, object], sanitize_untrusted_payload(validated))
     except (ReadContractError, TypeError, ValueError) as exc:
-        return make_error_payload(
-            operation,
-            scope=scope,
-            message=str(exc) or "MCP read payload failed contract validation",
+        return cast(
+            dict[str, object],
+            sanitize_untrusted_payload(
+                make_error_payload(
+                    operation,
+                    scope=scope,
+                    message=str(exc) or "MCP read payload failed contract validation",
+                )
+            ),
         )
 
 
@@ -414,7 +424,10 @@ def create_server() -> Any:
     )
     def evidence(
         query: _Query,
-        citation_id: Annotated[str, _pydantic_field(min_length=1, max_length=4_096)],
+        citation_id: Annotated[
+            str,
+            _pydantic_field(min_length=1, max_length=4_096, pattern=r"(?s).*\S.*"),
+        ],
         scope: _Scope = "all",
         limit: _Limit = 8,
         max_characters: _Characters = 12_000,
@@ -462,7 +475,10 @@ def create_server() -> Any:
         structured_output=True,
     )
     def lineage(
-        identifier: Annotated[str, _pydantic_field(min_length=1, max_length=4_096)],
+        identifier: Annotated[
+            str,
+            _pydantic_field(min_length=1, max_length=4_096, pattern=r"(?s).*\S.*"),
+        ],
         scope: _Scope = "all",
     ) -> MCPLineageOutput:
         return _structured_read_payload(
@@ -479,7 +495,10 @@ def create_server() -> Any:
         structured_output=True,
     )
     def asset_health(
-        resource_id: Annotated[str, _pydantic_field(min_length=1, max_length=4_096)],
+        resource_id: Annotated[
+            str,
+            _pydantic_field(min_length=1, max_length=4_096, pattern=r"(?s).*\S.*"),
+        ],
         scope: _Scope = "all",
     ) -> MCPAssetHealthOutput:
         return _structured_read_payload(

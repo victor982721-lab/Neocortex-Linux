@@ -19,6 +19,7 @@ from neocortex.workflow.review.value_review_port import (
     read_value_review_task_queue,
     refresh_value_review_tasks,
 )
+from neocortex.api.read_contract import sanitize_untrusted_payload, sanitize_untrusted_text
 
 from ..read_api import (
     FEDERATION_POLICY,
@@ -291,7 +292,7 @@ def _console_text(value: str, stream: object) -> str:
 
 def _print(value: str = "", *, file: TextIO | None = None) -> None:
     stream = sys.stdout if file is None else file
-    print(_console_text(value, stream), file=stream)
+    print(_console_text(sanitize_untrusted_text(value, limit=None, single_line=False), stream), file=stream)
 
 
 def _size(value: object) -> str:
@@ -425,7 +426,7 @@ def run_value_review(
     if json_output:
         _print(
             json.dumps(
-                payload,
+                sanitize_untrusted_payload(payload),
                 ensure_ascii=False,
                 sort_keys=True,
                 separators=(",", ":"),
