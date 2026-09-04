@@ -547,39 +547,6 @@ def verify_curation_page(
         selected = tuple(by_id[item_id] for item_id in item_ids)
     elif len(selected) > max_items:
         raise CurationVerificationUnavailable("curation verification page exceeds its item bound")
-    if page.next_cursor is not None and item_ids is None:
-        return CurationVerificationResult(
-            page.plan_digest,
-            page.snapshot_id,
-            "partial",
-            "partial",
-            page.items_total,
-            0,
-            0,
-            len(selected),
-            0,
-            0,
-            tuple(
-                CurationVerificationItem(
-                    item.item_id,
-                    item.kind,
-                    item.source_path,
-                    (
-                        cast(VerificationMode, item.evidence.get("verification_mode"))
-                        if item.kind == "duplicate_group"
-                        and item.evidence.get("verification_mode") in VALID_VERIFICATION_MODES
-                        else None
-                    ),
-                    None,
-                    "not_verified",
-                    "page_incomplete",
-                    0,
-                    0,
-                )
-                for item in selected
-            ),
-            page.source_heads,
-        )
     remaining_files = max_files
     remaining_bytes = max_bytes
     results: list[CurationVerificationItem] = []
@@ -618,7 +585,7 @@ def verify_curation_page(
         "snapshot_changed"
         if failed_count
         else "partial"
-        if skipped_count or page.coverage != "complete"
+        if skipped_count or page.coverage != "complete" or page.next_cursor is not None
         else "complete"
     )
     coverage: Literal["complete", "partial"] = "complete" if status == "complete" else "partial"
