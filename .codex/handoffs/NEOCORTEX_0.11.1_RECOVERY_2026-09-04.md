@@ -27,7 +27,7 @@
 
 ## Gates restantes
 
-- Publicar el SHA final y construir la release `0.11.1` desde ese SHA usando el
+- Publicar el SHA final (`90ce8f8`) y construir la release `0.11.1` desde ese SHA usando el
   wheelhouse Linux local, con manifest, launcher, smoke/replay y rollback.
 - Mantener el restore de owners SQLite separado de este restore de archivos,
   y no usar `os.replace` ni eliminar owners ausentes por inferencia.
