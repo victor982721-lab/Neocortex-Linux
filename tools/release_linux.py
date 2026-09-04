@@ -1448,11 +1448,14 @@ def _publish_public_access(
         paths.extend((layout.icon, layout.desktop))
     snapshots = {path: _snapshot_path(path) for path in paths}
     try:
+        current_release = _current_target(layout)
+        if current_release is None:
+            raise LinuxReleaseError("cannot publish public access without an active release")
         _atomic_write(
             layout.launcher,
             _launcher_payload(
                 corpus_root,
-                layout.current,
+                current_release,
                 config_home=layout.policy.config_directory.parent,
                 state_home=layout.policy.state_directory.parents[1],
                 data_home=layout.policy.data_directory.parent,

@@ -795,6 +795,8 @@ def test_launcher_works_through_user_alias_when_alias_lives_elsewhere(tmp_path: 
         timeout=10,
     )
     assert completed.returncode == 0
+    launcher_text = layout.launcher.read_text(encoding="utf-8")
+    assert f"exec {release / 'bin' / 'Neocortex'} \"$@\"" in launcher_text
 
 
 def test_desktop_entry_quotes_launcher_paths_with_spaces(tmp_path: Path) -> None:
@@ -1044,7 +1046,7 @@ def test_rollback_prunes_stale_releases_and_repairs_launcher(tmp_path: Path) -> 
     assert report["pruned_releases"] == (stale.name,)
     assert not stale.exists()
     assert layout.launcher.is_file()
-    assert str(layout.current / "bin" / "Neocortex") in layout.launcher.read_text(encoding="utf-8")
+    assert str(old / "bin" / "Neocortex") in layout.launcher.read_text(encoding="utf-8")
 
 
 def test_rollback_receipt_failure_restores_gc_tombstones(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
