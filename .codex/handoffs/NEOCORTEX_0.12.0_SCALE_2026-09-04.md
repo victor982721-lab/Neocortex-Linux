@@ -3,8 +3,9 @@
 ## Estado
 
 - La release instalada y vigente sigue siendo `0.11.1-976bae8c9ba1-cp314-linux-x86_64`.
-- La primera tranche ejecutable de 0.12 está publicada en `main` y
-  `origin/main` (`c9c043d8179920ed84703061be6b2cd0b6cbca35`), con
+- La primera tranche ejecutable de 0.12 está en el commit funcional
+  `c9c043d8179920ed84703061be6b2cd0b6cbca35`; la documentación y el handoff
+  actual se publican en el `main` final de esta transición, con
   `CurationWorkBudget` opcional para la verificación exacta,
   contabilidad incremental de items/archivos/bytes, deadline monotónico,
   cancelación cooperativa y razones bounded para resultados parciales.
