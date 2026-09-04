@@ -111,6 +111,9 @@ def _video_source_head(state_directory: Path) -> "SemanticSourceHead":
         digest=observed.digest,
         complete=observed.complete,
         reason=observed.reason,
+        coverage=observed.coverage,
+        source_status=observed.source_status,
+        truncated=observed.truncated,
     )
 
 
@@ -157,6 +160,26 @@ class SemanticSourceHead:
     digest: str
     complete: bool
     reason: str | None = None
+    # ``coverage`` is deliberately separate from ``complete``.  A source may
+    # have been enumerated without errors while an upstream route only
+    # published a bounded/partial projection (for example truncated image
+    # OCR).  Generation finalization consumes this field and must not turn
+    # that projection into a complete published head.
+    coverage: str = "complete"
+    source_status: str | None = None
+    truncated: bool = False
+
+    def __post_init__(self) -> None:
+        if self.coverage not in {"complete", "partial", "blocked"}:
+            raise ValueError("semantic source coverage is invalid")
+        if not isinstance(self.truncated, bool):
+            raise ValueError("semantic source truncation must be boolean")
+        if self.complete and self.coverage != "complete":
+            raise ValueError("a complete source head must have complete coverage")
+        if self.source_status is not None and (
+            not isinstance(self.source_status, str) or not self.source_status.strip()
+        ):
+            raise ValueError("semantic source status cannot be blank when present")
 
     def as_payload(self) -> dict[str, object]:
         return {
@@ -169,6 +192,9 @@ class SemanticSourceHead:
             "digest": self.digest,
             "complete": self.complete,
             "reason": self.reason,
+            "coverage": self.coverage,
+            "source_status": self.source_status,
+            "truncated": self.truncated,
         }
 
 
@@ -1254,6 +1280,8 @@ def _text_source_head(state_directory: Path, source_kind: str) -> SemanticSource
             "sha256:" + hasher.hexdigest(),
             False,
             type(exc).__name__,
+            "blocked",
+            "blocked",
         )
     hasher.update(SEMANTIC_SOURCE_HEAD_PROTOCOL.encode("ascii"))
     hasher.update(source_kind.encode("ascii"))
@@ -1266,6 +1294,10 @@ def _text_source_head(state_directory: Path, source_kind: str) -> SemanticSource
         row_count,
         "sha256:" + hasher.hexdigest(),
         True,
+        None,
+        "complete",
+        "complete",
+        False,
     )
 
 
@@ -1392,7 +1424,8 @@ def _image_rows(
             else ",NULL AS last_seen_run_id"
         )
         image_projection = f"""i.file_key,i.path,i.size,i.mtime_ns,i.birthtime_ns,
-            i.processing_signature,i.category,i.document_candidate{run_projection}"""
+            i.processing_signature,i.status AS source_status,i.category,
+            i.document_candidate{run_projection}"""
         if "ocr_text_zlib" in image_columns:
             ocr_payload = "i.ocr_text_zlib" if include_ocr_payload else "NULL"
             ocr_projection = f""",{ocr_payload} AS ocr_text_zlib,i.ocr_text_chars,
@@ -1462,6 +1495,9 @@ def _image_source_head(state_directory: Path) -> SemanticSourceHead:
     hasher = hashlib.sha256()
     row_count = schema_version = 0
     complete = True
+    truncated = False
+    missing_full_digest = False
+    source_statuses: set[str] = set()
     try:
         dedup_attached = dedup_database.is_file()
         with _borrow_or_open_image_with_dedup(
@@ -1478,6 +1514,16 @@ def _image_source_head(state_directory: Path) -> SemanticSourceHead:
             )
             schema_version = int(connection.execute("PRAGMA schema_version").fetchone()[0])
             before_stamp = (_owner_stamp(image_database), _owner_stamp(dedup_database))
+            status_rows = connection.execute(
+                "SELECT status,COUNT(*) AS count FROM images GROUP BY status ORDER BY status"
+            ).fetchall()
+            for status_row in status_rows:
+                status = str(status_row["status"])
+                source_statuses.add(status)
+                _update_head_digest(hasher, status)
+                _update_head_digest(hasher, int(status_row["count"]))
+                if status != "done":
+                    complete = False
             rows = _image_rows(
                 image_database,
                 dedup_database,
@@ -1488,6 +1534,9 @@ def _image_source_head(state_directory: Path) -> SemanticSourceHead:
             for row in rows:
                 if row["full_digest"] is None:
                     complete = False
+                    missing_full_digest = True
+                if bool(row["ocr_text_truncated"]):
+                    truncated = True
                 for name in (
                     "file_key",
                     "path",
@@ -1495,6 +1544,7 @@ def _image_source_head(state_directory: Path) -> SemanticSourceHead:
                     "mtime_ns",
                     "birthtime_ns",
                     "processing_signature",
+                    "source_status",
                     "category",
                     "document_candidate",
                     "ocr_text_chars",
@@ -1527,6 +1577,9 @@ def _image_source_head(state_directory: Path) -> SemanticSourceHead:
             "sha256:" + hasher.hexdigest(),
             False,
             type(exc).__name__,
+            "blocked",
+            "blocked",
+            truncated,
         )
     hasher.update(SEMANTIC_SOURCE_HEAD_PROTOCOL.encode("ascii"))
     hasher.update(IMAGE_SOURCE_KIND.encode("ascii"))
@@ -1539,7 +1592,18 @@ def _image_source_head(state_directory: Path) -> SemanticSourceHead:
         row_count,
         "sha256:" + hasher.hexdigest(),
         complete,
-        None if complete else "dedup_full_fingerprint_missing",
+        None
+        if complete
+        else (
+            "dedup_full_fingerprint_missing"
+            if missing_full_digest
+            else "image_ocr_truncated"
+            if truncated
+            else "image_source_not_complete"
+        ),
+        "complete" if complete else "partial",
+        "done" if source_statuses == {"done"} else "partial",
+        truncated,
     )
 
 
@@ -1597,6 +1661,9 @@ def iter_image_source_records(
         fingerprint_basis = "raw-full-xxh3-128-size-descriptor-v1"
         raw_content_xxh3_128 = raw_digest.hex()
         processing_signature = str(row["processing_signature"] or "unprocessed")
+        source_status = str(row["source_status"] or "unknown")
+        ocr_truncated = bool(row["ocr_text_truncated"])
+        coverage = "complete" if source_status == "done" and not ocr_truncated else "partial"
         source_revision: dict[str, object] = {
             "volume_id": snapshot.volume_id,
             "file_id": snapshot.file_id,
@@ -1606,6 +1673,9 @@ def iter_image_source_records(
             "fingerprint_algorithm": fingerprint_basis,
             "fingerprint_digest": fingerprint.xxh3_128,
             "raw_content_xxh3_128": raw_content_xxh3_128,
+            "source_status": source_status,
+            "coverage": coverage,
+            "ocr_text_truncated": ocr_truncated,
         }
         if row["processing_signature"] is not None:
             source_revision["processing_signature"] = str(row["processing_signature"])
@@ -1625,6 +1695,9 @@ def iter_image_source_records(
             provenance={
                 "adapter": IMAGE_SOURCE_ADAPTER_VERSION,
                 "processing_signature": processing_signature,
+                "source_status": source_status,
+                "coverage": coverage,
+                "ocr_text_truncated": ocr_truncated,
                 "category": row["category"],
                 "document_candidate": bool(row["document_candidate"]),
                 "fingerprint_basis": fingerprint_basis,
@@ -1647,7 +1720,9 @@ def iter_image_source_records(
                 provenance={
                     "adapter": IMAGE_SOURCE_ADAPTER_VERSION,
                     "processing_signature": processing_signature,
-                    "truncated": bool(row["ocr_text_truncated"]),
+                    "source_status": source_status,
+                    "coverage": coverage,
+                    "truncated": ocr_truncated,
                 },
             )
         yield ImageSourceRecord(item, ocr_section)

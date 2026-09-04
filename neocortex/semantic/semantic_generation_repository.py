@@ -3219,10 +3219,69 @@ class _EmbeddingGenerationFinalization:
     completed_ns: int
 
 
+_COMPLETE_SOURCE_STATUSES = frozenset({"complete", "done", "no_speech"})
+
+
+def _source_coverage_failure(provenance: Mapping[str, object]) -> str | None:
+    """Return a reason when a source head is not safe to publish as complete.
+
+    Source enumeration can finish successfully even when an upstream route
+    only exposed a partial projection.  Keep that distinction at the
+    generation boundary: callers may request ``ready_partial`` explicitly,
+    but no Video/Image coverage gap can become a normal ``ready`` head.
+    Older generations without ``source_heads`` remain compatible and are
+    judged by their existing job/error contract.
+    """
+
+    raw_heads = provenance.get("source_heads")
+    if raw_heads is None:
+        return None
+    if not isinstance(raw_heads, list):
+        return "source_head_ledger_invalid"
+    for index, raw_head in enumerate(raw_heads):
+        if not isinstance(raw_head, Mapping):
+            return f"source_head_{index}_invalid"
+        source_kind = str(raw_head.get("source_kind", ""))
+        # The multimodal route contract carries explicit coverage semantics.
+        # Keep legacy text-owner fixtures/generations compatible: their
+        # ``complete`` bit describes enumeration/readability, not the Video or
+        # Image projection completeness guarded here.
+        if source_kind not in {"video", "image", "image_ocr"}:
+            continue
+        complete = raw_head.get("complete")
+        coverage = raw_head.get("coverage")
+        if coverage is None:
+            coverage = "complete" if complete is True else "partial"
+        if coverage not in {"complete", "partial", "blocked"}:
+            return f"source_head_{index}_coverage_invalid"
+        # A blocked owner cannot be enumerated in the first place and is
+        # surfaced by the route/planner before generation finalization.  The
+        # publication guard below is specifically for an enumerated but
+        # incomplete multimodal projection, represented by ``partial``.
+        if coverage == "blocked":
+            continue
+        raw_truncated = raw_head.get("truncated", False)
+        if not isinstance(raw_truncated, bool):
+            return f"source_head_{index}_truncation_invalid"
+        raw_status = raw_head.get("source_status")
+        if raw_status is not None and (
+            not isinstance(raw_status, str) or not raw_status.strip()
+        ):
+            return f"source_head_{index}_status_invalid"
+        status_incomplete = (
+            raw_status is not None
+            and raw_status.casefold() not in _COMPLETE_SOURCE_STATUSES
+        )
+        if complete is not True or coverage != "complete" or raw_truncated or status_incomplete:
+            return f"source_coverage_incomplete:{source_kind}"
+    return None
+
+
 def _finalization_status(
     summary: GenerationSummary,
     *,
     allow_partial: bool,
+    provenance: Mapping[str, object] | None = None,
 ) -> tuple[bool, str]:
     if "enumeration=bounded-v1" in summary.processing_signature and (
         summary.cursor.get("protocol") != "bounded-v1"
@@ -3231,11 +3290,16 @@ def _finalization_status(
         raise SemanticStateError("bounded generation source enumeration is not complete")
     if summary.unfinished:
         raise SemanticStateError(f"generation still has {summary.unfinished} unfinished jobs")
-    if (summary.errors or summary.stale) and not allow_partial:
+    source_failure = (
+        None if provenance is None else _source_coverage_failure(provenance)
+    )
+    if (summary.errors or summary.stale or source_failure is not None) and not allow_partial:
+        details = f"source coverage {source_failure}" if source_failure else None
         raise SemanticStateError(
             f"generation has {summary.errors} errors and {summary.stale} stale jobs"
+            + (f"; {details}" if details else "")
         )
-    partial = bool(summary.errors or summary.stale)
+    partial = bool(summary.errors or summary.stale or source_failure is not None)
     return partial, "ready_partial" if partial else "ready"
 
 
@@ -3254,9 +3318,8 @@ def _load_generation_finalization(
         model.modality,
     )
     summary = _generation_summary_row(connection, generation_id)
-    partial, status = _finalization_status(summary, allow_partial=allow_partial)
     generation = connection.execute(
-        """SELECT base_generation_id,base_clone_complete
+        """SELECT base_generation_id,base_clone_complete,provenance_json
         FROM embedding_generations WHERE generation_id=?""",
         (generation_id,),
     ).fetchone()
@@ -3264,6 +3327,17 @@ def _load_generation_finalization(
         raise KeyError(f"unknown embedding generation {generation_id}")
     if not bool(generation["base_clone_complete"]):
         raise SemanticStateError("generation base snapshot is not fully cloned")
+    try:
+        provenance = json.loads(str(generation["provenance_json"]))
+    except (TypeError, ValueError) as exc:
+        raise SemanticStateError("embedding generation provenance is invalid") from exc
+    if not isinstance(provenance, dict):
+        raise SemanticStateError("embedding generation provenance must be an object")
+    partial, status = _finalization_status(
+        summary,
+        allow_partial=allow_partial,
+        provenance=provenance,
+    )
     expected_head = (
         None if generation["base_generation_id"] is None else int(generation["base_generation_id"])
     )

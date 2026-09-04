@@ -13,7 +13,7 @@ import hashlib
 import json
 import sqlite3
 import stat
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,7 +24,9 @@ from .semantic_sources import TextSourceRecord
 from neocortex.platform.content_capability_manifest import content_capability_for_source
 from neocortex.persistence.sqlite_immutable import (
     ImmutableSQLiteUnavailable,
+    SQLiteReadSession,
     immutable_sqlite_database,
+    preferred_sqlite_read_mode,
 )
 
 
@@ -51,6 +53,8 @@ class VideoSourceHead:
     digest: str
     coverage: VideoCoverage
     reason: str | None = None
+    source_status: str = "complete"
+    truncated: bool = False
 
     @property
     def complete(self) -> bool:
@@ -67,7 +71,33 @@ class VideoSourceHead:
             "coverage": self.coverage,
             "complete": self.complete,
             "reason": self.reason,
+            "source_status": self.source_status,
+            "truncated": self.truncated,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class _AudioSegment:
+    """Bounded transcript evidence copied out of the linked Audio owner."""
+
+    file_key: str
+    processing_signature: str
+    status: str
+    segment_index: int
+    start_ms: int
+    end_ms: int
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class _AudioDependencySnapshot:
+    """Read-only dependency projection for the video source adapter."""
+
+    declared: bool
+    available: bool
+    documents: Mapping[str, tuple[str, str]]
+    segments: Mapping[str, tuple[_AudioSegment, ...]]
+    reason: str | None = None
 
 
 def _owner_stamp(path: Path) -> tuple[tuple[str, int, int, int], ...]:
@@ -120,9 +150,146 @@ def _readonly_video_database(path: Path) -> Iterator[sqlite3.Connection]:
         raise VideoSourceBlocked(str(exc)) from exc
 
 
-def _item_from_row(row: sqlite3.Row) -> SemanticItem:
+def _audio_dependency_declared() -> bool:
+    """Read the canonical manifest instead of duplicating route topology."""
+
+    capability = content_capability_for_source(VIDEO_SOURCE_KIND)
+    return any(
+        dependency.capability_id == "audio"
+        for dependency in capability.route_dependencies
+    )
+
+
+@contextmanager
+def _readonly_audio_database(path: Path) -> Iterator[sqlite3.Connection]:
+    """Open the optional Audio owner through the shared sidecar-safe kernel."""
+
+    try:
+        mode = preferred_sqlite_read_mode(path)
+        with SQLiteReadSession(path, mode=mode, timeout_seconds=60.0) as connection:
+            yield connection
+    except ImmutableSQLiteUnavailable as exc:
+        raise VideoSourceBlocked(f"audio dependency is unavailable: {exc}") from exc
+
+
+def _audio_dependency_snapshot(
+    state_directory: Path,
+    linked_keys: Sequence[str],
+) -> _AudioDependencySnapshot:
+    """Capture linked Audio rows without touching the live owner sidecars.
+
+    The dependency is optional for visual-only videos.  When a Video row says
+    that an audio stream exists but its complete Audio projection is missing,
+    we retain the visual evidence and mark its coverage partial rather than
+    silently presenting it as complete.
+    """
+
+    declared = _audio_dependency_declared()
+    selected_keys = tuple(dict.fromkeys(key for key in linked_keys if key))
+    if not declared or not selected_keys:
+        return _AudioDependencySnapshot(declared, True, {}, {})
+    audio_capability = content_capability_for_source("audio")
+    audio_path = state_directory / audio_capability.state_database
+    if not audio_path.is_file():
+        return _AudioDependencySnapshot(
+            declared,
+            False,
+            {},
+            {},
+            "audio_state_missing",
+        )
+    documents: dict[str, tuple[str, str]] = {}
+    segments: dict[str, list[_AudioSegment]] = {}
+    try:
+        with _readonly_audio_database(audio_path) as connection:
+            # Keep each IN list below SQLite's portable variable limit.
+            for offset in range(0, len(selected_keys), 500):
+                keys = selected_keys[offset : offset + 500]
+                placeholders = ",".join("?" for _ in keys)
+                rows = connection.execute(
+                    f"""SELECT file_key,processing_signature,status
+                    FROM documents WHERE file_key IN ({placeholders})""",
+                    keys,
+                ).fetchall()
+                for row in rows:
+                    documents[str(row["file_key"])] = (
+                        str(row["processing_signature"]),
+                        str(row["status"]),
+                    )
+                rows = connection.execute(
+                    f"""SELECT file_key,segment_index,start_ms,end_ms,text
+                    FROM segments WHERE file_key IN ({placeholders}) AND trim(text)<>''
+                    ORDER BY file_key,segment_index""",
+                    keys,
+                ).fetchall()
+                for row in rows:
+                    key = str(row["file_key"])
+                    processing_signature, status = documents.get(key, ("", "unknown"))
+                    segments.setdefault(key, []).append(
+                        _AudioSegment(
+                            key,
+                            processing_signature,
+                            status,
+                            int(row["segment_index"]),
+                            int(row["start_ms"]),
+                            int(row["end_ms"]),
+                            str(row["text"]),
+                        )
+                    )
+    except (OSError, sqlite3.Error, RuntimeError, VideoSourceBlocked) as exc:
+        return _AudioDependencySnapshot(
+            declared,
+            False,
+            {},
+            {},
+            type(exc).__name__,
+        )
+    return _AudioDependencySnapshot(
+        declared,
+        True,
+        documents,
+        {key: tuple(values) for key, values in segments.items()},
+    )
+
+
+def _video_row_coverage(
+    row: sqlite3.Row,
+    audio: _AudioDependencySnapshot,
+) -> tuple[VideoCoverage, str | None]:
+    """Return coverage and a stable reason for one Video document."""
+
+    if str(row["status"]) != "complete":
+        return "partial", "video_source_status_partial"
+    if int(row["audio_streams"] or 0) <= 0:
+        return "complete", None
+    audio_key = row["audio_file_key"]
+    if audio_key is None or not str(audio_key):
+        return "partial", "audio_link_missing"
+    declared_audio_status = row["audio_status"]
+    if declared_audio_status is None or str(declared_audio_status) not in {
+        "complete",
+        "no_speech",
+    }:
+        return "partial", "audio_source_status_partial"
+    if not audio.available:
+        return "partial", audio.reason or "audio_dependency_unavailable"
+    linked = audio.documents.get(str(audio_key))
+    if linked is None:
+        return "partial", "audio_projection_missing"
+    _processing_signature, status = linked
+    if status not in {"complete", "no_speech"}:
+        return "partial", "audio_source_status_partial"
+    return "complete", None
+
+
+def _item_from_row(
+    row: sqlite3.Row,
+    *,
+    coverage: VideoCoverage,
+    coverage_reason: str | None,
+    audio_dependency: _AudioDependencySnapshot,
+) -> SemanticItem:
     source_status = str(row["status"])
-    coverage = "complete" if source_status == "complete" else "partial"
     processing_signature = str(row["processing_signature"])
     source_identity = str(row["file_key"])
     descriptor = "\0".join(
@@ -135,6 +302,10 @@ def _item_from_row(row: sqlite3.Row) -> SemanticItem:
             str(row["birthtime_ns"]),
             str(row["frame_count"]),
             str(row["ocr_text_chars"]),
+            str(row["audio_file_key"] or ""),
+            str(row["audio_processing_signature"] or ""),
+            str(row["audio_status"] or ""),
+            coverage,
         )
     )
     return SemanticItem(
@@ -154,6 +325,9 @@ def _item_from_row(row: sqlite3.Row) -> SemanticItem:
             "ocr_text_chars": int(row["ocr_text_chars"]),
             "audio_file_key": row["audio_file_key"],
             "audio_status": row["audio_status"],
+            "audio_dependency_declared": audio_dependency.declared,
+            "audio_dependency_available": audio_dependency.available,
+            "coverage": coverage,
         },
         provenance={
             "adapter": VIDEO_SOURCE_ADAPTER_VERSION,
@@ -165,11 +339,18 @@ def _item_from_row(row: sqlite3.Row) -> SemanticItem:
             "frame_count": int(row["frame_count"]),
             "ocr_frame_count": int(row["ocr_frame_count"]),
             "audio_status": row["audio_status"],
+            "audio_dependency_declared": audio_dependency.declared,
+            "coverage_reason": coverage_reason,
         },
     )
 
 
-def _frame_section(row: sqlite3.Row, *, source_status: str) -> TextSection:
+def _frame_section(
+    row: sqlite3.Row,
+    *,
+    source_status: str,
+    coverage: VideoCoverage,
+) -> TextSection:
     timestamp_ms = int(row["timestamp_ms"])
     frame_index = int(row["frame_index"])
     return TextSection(
@@ -179,7 +360,7 @@ def _frame_section(row: sqlite3.Row, *, source_status: str) -> TextSection:
         provenance={
             "adapter": VIDEO_SOURCE_ADAPTER_VERSION,
             "source_status": source_status,
-            "coverage": "complete" if source_status == "complete" else "partial",
+            "coverage": coverage,
             "locator": {
                 "kind": "video_frame",
                 "frame_index": frame_index,
@@ -190,11 +371,39 @@ def _frame_section(row: sqlite3.Row, *, source_status: str) -> TextSection:
     )
 
 
+def _audio_section(
+    segment: _AudioSegment,
+    *,
+    coverage: VideoCoverage,
+) -> TextSection:
+    """Project a linked Audio transcript with a time-based locator."""
+
+    return TextSection(
+        section_kind="video_audio_transcript",
+        section_id=str(segment.segment_index),
+        text=segment.text,
+        provenance={
+            "adapter": VIDEO_SOURCE_ADAPTER_VERSION,
+            "dependency": "audio",
+            "source_status": segment.status,
+            "coverage": coverage,
+            "processing_signature": segment.processing_signature,
+            "locator": {
+                "kind": "audio_segment",
+                "segment_index": segment.segment_index,
+                "start_ms": segment.start_ms,
+                "end_ms": segment.end_ms,
+            },
+        },
+    )
+
+
 def _video_rows(connection: sqlite3.Connection) -> Iterator[sqlite3.Row]:
     rows = connection.execute(
         """SELECT d.file_key,d.path,d.mime,d.size,d.mtime_ns,d.birthtime_ns,
         d.processing_signature,d.status,d.title,d.duration_seconds,d.frame_count,
-        d.ocr_frame_count,d.ocr_text_chars,d.audio_file_key,d.audio_status,
+        d.ocr_frame_count,d.ocr_text_chars,d.audio_streams,d.audio_file_key,
+        d.audio_processing_signature,d.audio_status,
         fr.frame_index,f.timestamp_ms,f.body,0 AS ocr_text_truncated
         FROM documents d JOIN frame_fts f ON f.file_key=d.file_key
         JOIN frames fr ON fr.file_key=f.file_key AND fr.timestamp_ms=f.timestamp_ms
@@ -209,7 +418,7 @@ def iter_video_source_records(
     *,
     connection: sqlite3.Connection | None = None,
 ) -> Iterator[TextSourceRecord]:
-    """Yield frame OCR as Semantic text evidence with explicit locators."""
+    """Yield Video OCR and any declared, complete linked Audio evidence."""
 
     path = state_directory / content_capability_for_source(VIDEO_SOURCE_KIND).state_database
     if not path.is_file():
@@ -217,12 +426,30 @@ def iter_video_source_records(
     borrowed = connection is not None
     context = _borrowed_connection(connection) if borrowed else _readonly_video_database(path)
     with context as owner:
+        linked_keys = tuple(
+            dict.fromkeys(
+                str(row[0])
+                for row in owner.execute(
+                    """SELECT audio_file_key FROM documents
+                    WHERE audio_file_key IS NOT NULL
+                    AND status IN ('complete','partial')
+                    ORDER BY audio_file_key"""
+                ).fetchall()
+            )
+        )
+        audio_dependency = _audio_dependency_snapshot(state_directory, linked_keys)
         current_file_key: str | None = None
         current_item: SemanticItem | None = None
         for row in _video_rows(owner):
             file_key = str(row["file_key"])
             if file_key != current_file_key:
-                current_item = _item_from_row(row)
+                coverage, coverage_reason = _video_row_coverage(row, audio_dependency)
+                current_item = _item_from_row(
+                    row,
+                    coverage=coverage,
+                    coverage_reason=coverage_reason,
+                    audio_dependency=audio_dependency,
+                )
                 current_file_key = file_key
                 title = str(row["title"] or "").strip()
                 if title:
@@ -235,19 +462,25 @@ def iter_video_source_records(
                             provenance={
                                 "adapter": VIDEO_SOURCE_ADAPTER_VERSION,
                                 "source_status": str(row["status"]),
-                                "coverage": (
-                                    "complete"
-                                    if str(row["status"]) == "complete"
-                                    else "partial"
-                                ),
+                                "coverage": coverage,
+                                "coverage_reason": coverage_reason,
                                 "locator": {"kind": "video_title"},
                             },
                         ),
                     )
+                for segment in audio_dependency.segments.get(file_key, ()):
+                    yield TextSourceRecord(
+                        current_item,
+                        _audio_section(segment, coverage=coverage),
+                    )
             assert current_item is not None
             yield TextSourceRecord(
                 current_item,
-                _frame_section(row, source_status=str(row["status"])),
+                _frame_section(
+                    row,
+                    source_status=str(row["status"]),
+                    coverage=coverage,
+                ),
             )
 
 
@@ -265,6 +498,7 @@ def video_source_head(state_directory: Path) -> VideoSourceHead:
     digest = hashlib.sha256()
     row_count = 0
     statuses: set[str] = set()
+    coverage_reasons: set[str] = set()
     coverage: VideoCoverage
     reason: str | None
     try:
@@ -273,14 +507,57 @@ def video_source_head(state_directory: Path) -> VideoSourceHead:
             rows = connection.execute(
                 """SELECT file_key,path,size,mtime_ns,birthtime_ns,processing_signature,
                 status,title,duration_seconds,frame_count,ocr_frame_count,ocr_text_chars,
-                audio_file_key,audio_status FROM documents ORDER BY file_key"""
+                audio_streams,audio_file_key,audio_processing_signature,audio_status
+                FROM documents ORDER BY file_key"""
+            ).fetchall()
+            linked_keys = tuple(
+                dict.fromkeys(
+                    str(row["audio_file_key"])
+                    for row in rows
+                    if row["audio_file_key"] is not None
+                )
             )
+            audio_dependency = _audio_dependency_snapshot(state_directory, linked_keys)
             for row in rows:
                 status = str(row["status"])
                 statuses.add(status)
+                row_coverage, row_reason = _video_row_coverage(row, audio_dependency)
+                # A route-owned ``partial`` status is expected source
+                # metadata, not a read failure; preserve the historical
+                # ``reason=None`` contract while the explicit coverage field
+                # carries the publication guard.
+                if row_reason is not None and row_reason != "video_source_status_partial":
+                    coverage_reasons.add(row_reason)
                 digest.update(
                     json.dumps(
                         {key: row[key] for key in row.keys()},
+                        ensure_ascii=True,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                digest.update(
+                    json.dumps(
+                        {
+                            "file_key": str(row["file_key"]),
+                            "coverage": row_coverage,
+                            "reason": row_reason,
+                            "audio": [
+                                {
+                                    "processing_signature": segment.processing_signature,
+                                    "status": segment.status,
+                                    "segment_index": segment.segment_index,
+                                    "start_ms": segment.start_ms,
+                                    "end_ms": segment.end_ms,
+                                    "text": segment.text,
+                                }
+                                for segment in audio_dependency.segments.get(
+                                    str(row["audio_file_key"]), ()
+                                )
+                            ],
+                        },
                         ensure_ascii=True,
                         sort_keys=True,
                         separators=(",", ":"),
@@ -295,9 +572,15 @@ def video_source_head(state_directory: Path) -> VideoSourceHead:
     except (OSError, sqlite3.Error, TypeError, ValueError, VideoSourceBlocked) as exc:
         coverage = "blocked"
         reason = type(exc).__name__
+        source_status = "blocked"
     else:
-        coverage = "partial" if "partial" in statuses or "error" in statuses else "complete"
-        reason = None
+        coverage = (
+            "partial"
+            if "partial" in statuses or "error" in statuses or coverage_reasons
+            else "complete"
+        )
+        reason = sorted(coverage_reasons)[0] if coverage_reasons else None
+        source_status = "complete" if coverage == "complete" else "partial"
     return VideoSourceHead(
         source_kind=VIDEO_SOURCE_KIND,
         database_name=path.name,
@@ -306,6 +589,8 @@ def video_source_head(state_directory: Path) -> VideoSourceHead:
         digest="sha256:" + digest.hexdigest(),
         coverage=coverage,
         reason=reason,
+        source_status=source_status,
+        truncated=False,
     )
 
 
