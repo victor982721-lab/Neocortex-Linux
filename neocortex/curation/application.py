@@ -11,6 +11,7 @@ closed unless a controlled test/application integration supplies one).
 from __future__ import annotations
 
 import errno
+import ctypes
 import hashlib
 import json
 import os
@@ -108,6 +109,12 @@ class BackendOutcome:
             raise ValueError("unsupported backend outcome status")
         if not self.reason or self.reason.strip() != self.reason:
             raise ValueError("backend outcome reason must be non-empty and trimmed")
+        if len(self.reason.encode("utf-8")) > 512:
+            raise ValueError("backend outcome reason is too long")
+        if self.detail is not None and len(self.detail.encode("utf-8")) > 4_096:
+            raise ValueError("backend outcome detail is too long")
+        if self.receipt_json is not None and len(self.receipt_json.encode("utf-8")) > 65_536:
+            raise ValueError("backend outcome receipt is too long")
         if self.status == "applied" and not self.receipt_json:
             raise ValueError("applied backend outcome requires a receipt")
 
@@ -132,7 +139,13 @@ class MutationBackend(Protocol):
 
 
 def _canonical_json(value: object) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _grant_digest(grant: AuthorizationGrant) -> str:
@@ -268,6 +281,22 @@ def _validate_effect_physical(effect: AuthorizationEffect, root: Path) -> None:
             raise CurationApplicationError("curation target is on another filesystem")
 
 
+def _member_matches_snapshot(value: object, snapshot: FileSnapshot, *, role: str) -> bool:
+    if not isinstance(value, Mapping) or value.get("role") != role:
+        return False
+    identity = value.get("identity")
+    if not isinstance(identity, Mapping):
+        return False
+    return (
+        value.get("path") == snapshot.path
+        and value.get("size") == snapshot.size
+        and value.get("mtime_ns") == snapshot.mtime_ns
+        and identity.get("volume_id") == f"{snapshot.volume_id:x}"
+        and identity.get("file_id") == f"{snapshot.file_id:x}"
+        and identity.get("birthtime_ns") == snapshot.birthtime_ns
+    )
+
+
 def _revalidate_review_heads(
     database: Path,
     grant: AuthorizationGrant,
@@ -304,7 +333,14 @@ def _revalidate_review_heads(
         if record is None or record.current_event.event_id != head.event_id:
             raise CurationApplicationSnapshotChanged("a ReviewTask record changed")
         decision = head.decision
-        if decision is None or decision.to_dict().get("decision") != "resolved":
+        decision_payload = None if decision is None else decision.to_dict()
+        if (
+            decision_payload is None
+            or decision_payload.get("decision") != "resolved"
+            or decision_payload.get("selector_signature") != expected.selector_signature
+            or decision_payload.get("source_snapshot_fingerprint")
+            != expected.source_snapshot_fingerprint
+        ):
             raise CurationApplicationError("a ReviewTask is not resolved")
         try:
             items[expected.item_id] = _item_from_task(record, expected.item_id, grant.plan_digest)
@@ -394,12 +430,21 @@ def _grant_context(
                 raise CurationApplicationSnapshotChanged("authorized empty-file source changed")
         elif effect.kind == "duplicate_group":
             evidence = getattr(item, "evidence", {})
-            if not isinstance(evidence, Mapping) or evidence.get("keep_path") != (
-                None if effect.keeper is None else effect.keeper.path
+            members = None if not isinstance(evidence, Mapping) else evidence.get("members")
+            if not isinstance(members, list) or not any(
+                _member_matches_snapshot(member, effect.source, role="redundant")
+                for member in members
+            ):
+                raise CurationApplicationSnapshotChanged("authorized duplicate source changed")
+            if effect.keeper is None or not any(
+                _member_matches_snapshot(member, effect.keeper, role="keep")
+                for member in members
             ):
                 raise CurationApplicationSnapshotChanged("authorized duplicate keeper changed")
-        else:
-            raise CurationApplicationError("authorized effect kind is unsupported")
+            if effect.kind != getattr(item, "kind", None):
+                raise CurationApplicationSnapshotChanged("authorized effect kind changed")
+            if effect.kind not in {"duplicate_group", "empty_file", "organization_plan"}:
+                raise CurationApplicationError("authorized effect kind is unsupported")
     return root, grant.authorized_effects
 
 
@@ -452,7 +497,8 @@ def _lookup_action_by_intent(
         True,
     )
     row = state._connection.execute(  # type: ignore[attr-defined]
-        "SELECT action_id,status FROM file_actions WHERE idempotency_key=?",
+        """SELECT action_id,status,action_type,source_path,target_path,
+        apply_requested,evidence FROM file_actions WHERE idempotency_key=?""",
         (key,),
     ).fetchone()
     if row is None:
@@ -460,7 +506,9 @@ def _lookup_action_by_intent(
         # Framework run id.  The canonical intent itself is grant/effect bound,
         # so a replay in another operational run must still reuse the old row.
         rows = state._connection.execute(  # type: ignore[attr-defined]
-            "SELECT action_id,status FROM file_actions WHERE evidence=? ORDER BY action_id LIMIT 2",
+            """SELECT action_id,status,action_type,source_path,target_path,
+            apply_requested,evidence FROM file_actions WHERE evidence=?
+            ORDER BY action_id LIMIT 2""",
             (intent,),
         ).fetchall()
         if len(rows) > 1:
@@ -468,6 +516,15 @@ def _lookup_action_by_intent(
         row = None if not rows else rows[0]
     if row is None:
         return None
+    expected_action_type = _action_type(effect.action)
+    if (
+        str(row[2]) != expected_action_type
+        or str(row[3]) != effect.source.path
+        or (None if row[4] is None else str(row[4])) != effect.target_path
+        or row[5] != 1
+        or str(row[6]) != intent
+    ):
+        raise CurationApplicationError("grant effect intent conflicts with an existing action")
     return int(row[0]), str(row[1])
 
 
@@ -560,13 +617,73 @@ def _validate_receipt(
     return _canonical_json(payload)
 
 
+def _validate_applied_effect(
+    receipt_json: str,
+    grant: AuthorizationGrant,
+    effect: AuthorizationEffect,
+    root: Path,
+) -> None:
+    """Reobserve an already-applied row before honoring a replay."""
+
+    receipt = json.loads(_validate_receipt(receipt_json, grant, effect))
+    if os.path.lexists(effect.source.path):
+        raise CurationApplicationError("stored applied receipt conflicts with a present source")
+    if effect.target_path is not None:
+        target = Path(effect.target_path)
+        if not target.is_absolute():
+            raise CurationApplicationError("stored rename target is not absolute")
+        _validate_effect_paths(root, effect)
+        target_snapshot = _validate_regular_unique(
+            FileSnapshot(
+                str(target),
+                effect.source.volume_id,
+                effect.source.file_id,
+                effect.source.size,
+                effect.source.mtime_ns,
+                effect.source.birthtime_ns,
+            ),
+            role="stored rename target",
+        )
+        if _digest_snapshot(target_snapshot) != effect.source_digest:
+            raise CurationApplicationError("stored rename target digest changed")
+        return
+    trash = receipt.get("trash")
+    if not isinstance(trash, dict):
+        raise CurationApplicationError("stored trash receipt lacks destination evidence")
+    trash_path = Path(str(trash.get("trash_path", "")))
+    info_path = Path(str(trash.get("info_path", "")))
+    if not trash_path.is_absolute() or not info_path.is_absolute():
+        raise CurationApplicationError("stored trash receipt paths are invalid")
+    try:
+        trash_stat = os.lstat(trash_path)
+        info_stat = os.lstat(info_path)
+        if (
+            stat.S_ISLNK(trash_stat.st_mode)
+            or not stat.S_ISREG(trash_stat.st_mode)
+            or trash_stat.st_nlink != 1
+            or stat.S_ISLNK(info_stat.st_mode)
+            or not stat.S_ISREG(info_stat.st_mode)
+            or info_stat.st_nlink != 1
+        ):
+            raise CurationApplicationError("stored trash destination is not regular")
+        observed = snapshot_path(trash_path)
+        if (
+            observed.volume_id != effect.source.volume_id
+            or observed.size != effect.source.size
+            or _digest_snapshot(observed) != effect.source_digest
+        ):
+            raise CurationApplicationError("stored trash destination identity or digest changed")
+    except OSError as exc:
+        raise CurationApplicationError("stored trash destination disappeared") from exc
+
+
 class PosixRenameBackend:
     """Same-filesystem, no-replace rename backend for contained fixtures.
 
-    Linux Python has no portable ``renameat2`` wrapper.  The backend uses the
-    kernel no-replace property of ``link(2)`` followed by an unlink, retaining
-    ``recovery_required`` if the two-step sequence is interrupted.  It never
-    overwrites an existing target and never falls back to copy/delete.
+    Linux Python has no high-level ``renameat2`` wrapper, so the backend binds
+    the syscall through libc and resolves both parent directories component by
+    component from an ``O_NOFOLLOW`` root descriptor.  If the host lacks the
+    primitive it abstains rather than falling back to copy/delete.
     """
 
     name = "posix-link-unlink-no-replace-v1"
@@ -577,38 +694,69 @@ class PosixRenameBackend:
             return BackendOutcome("blocked", "rename_action_requires_target")
         source = Path(effect.source.path)
         target = Path(effect.target_path)
-        linked = False
+        root_fd: int | None = None
+        source_parent_fd: int | None = None
+        target_parent_fd: int | None = None
         try:
+            _validate_effect_paths(candidate.root, effect)
             if os.path.lexists(target):
                 return BackendOutcome("blocked", "destination_exists")
             _validate_effect_physical(effect, candidate.root)
             if os.stat(target.parent, follow_symlinks=False).st_dev != effect.source.volume_id:
                 return BackendOutcome("blocked", "exdev_same_filesystem_required")
-            os.link(source, target, follow_symlinks=False)
-            linked = True
-            os.unlink(source)
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | os.O_NOFOLLOW
+            flags |= getattr(os, "O_CLOEXEC", 0)
+            root_fd = os.open(candidate.root, flags)
+            source_parts = source.relative_to(candidate.root).parts
+            target_parts = target.relative_to(candidate.root).parts
+            source_parent_fd, source_name = _open_parent_dirfd(root_fd, source_parts)
+            target_parent_fd, target_name = _open_parent_dirfd(root_fd, target_parts)
+            libc = ctypes.CDLL(None, use_errno=True)
+            renameat2 = getattr(libc, "renameat2", None)
+            if renameat2 is None:
+                return BackendOutcome("blocked", "renameat2_unavailable")
+            renameat2.argtypes = [
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            ]
+            renameat2.restype = ctypes.c_int
+            if renameat2(
+                source_parent_fd,
+                os.fsencode(source_name),
+                target_parent_fd,
+                os.fsencode(target_name),
+                1,
+            ) != 0:
+                error_number = ctypes.get_errno()
+                if error_number == errno.EEXIST:
+                    return BackendOutcome("blocked", "destination_exists")
+                if error_number == errno.EXDEV:
+                    return BackendOutcome("blocked", "exdev_same_filesystem_required")
+                return BackendOutcome(
+                    "blocked",
+                    "rename_syscall_failed",
+                    os.strerror(error_number),
+                )
         except CurationApplicationError as exc:
             return BackendOutcome("blocked", "rename_preflight_failed", str(exc))
         except FileExistsError:
             return BackendOutcome("blocked", "destination_exists")
         except OSError as exc:
-            if not linked and exc.errno == errno.EXDEV:
+            if exc.errno == errno.EXDEV:
                 return BackendOutcome("blocked", "exdev_same_filesystem_required")
-            if linked:
-                return BackendOutcome(
-                    "recovery_required",
-                    "rename_unlink_effect_ambiguous",
-                    f"{type(exc).__name__}: {exc}",
-                )
             return BackendOutcome("blocked", "rename_preflight_failed", f"{type(exc).__name__}: {exc}")
         except BaseException as exc:
-            if linked:
-                return BackendOutcome(
-                    "recovery_required",
-                    "rename_interrupted_after_link",
-                    f"{type(exc).__name__}: effect outcome is unknown",
-                )
             return BackendOutcome("blocked", "rename_interrupted_before_effect", type(exc).__name__)
+        finally:
+            for descriptor in (source_parent_fd, target_parent_fd, root_fd):
+                if descriptor is not None:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
         try:
             if os.path.lexists(source):
                 raise CurationApplicationError("rename source remains present")
@@ -644,6 +792,25 @@ class PosixRenameBackend:
             return BackendOutcome("recovery_required", "rename_effect_unverified", str(exc))
 
 
+def _open_parent_dirfd(root_fd: int, parts: tuple[str, ...]) -> tuple[int, str]:
+    """Open a descendant parent without following any intermediate symlink."""
+
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        raise CurationApplicationError("rename path has no safe relative leaf")
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | os.O_NOFOLLOW
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    current = os.dup(root_fd)
+    try:
+        for part in parts[:-1]:
+            child = os.open(part, flags, dir_fd=current)
+            os.close(current)
+            current = child
+        return current, parts[-1]
+    except BaseException:
+        os.close(current)
+        raise
+
+
 class KioTrashBackend:
     """Injected KIO trash adapter requiring structured destination evidence."""
 
@@ -670,6 +837,8 @@ class KioTrashBackend:
         effect = candidate.effect
         if effect.action != "trash":
             return BackendOutcome("blocked", "kio_backend_supports_trash_only")
+        if self._runner is None:
+            return BackendOutcome("blocked", "kio_runner_not_injected")
         kwargs: dict[str, object] = {
             "verifier": self._verifier,
             "timeout_seconds": self._timeout_seconds,
@@ -832,7 +1001,8 @@ def apply_authorization_grant(
                 run_id,
                 effective_state,
             )
-            if sum(effect.source.size for effect in authorized_effects) > grant.max_bytes:
+            total_effect_bytes = sum(effect.source.size for effect in authorized_effects)
+            if total_effect_bytes > grant.max_bytes or total_effect_bytes > CURATION_APPLY_MAX_BYTES:
                 raise CurationApplicationError("grant byte budget is exceeded")
             planned: list[tuple[AuthorizationEffect, int | None, str, str | None]] = []
             preflight_failed = False
@@ -850,6 +1020,11 @@ def apply_authorization_grant(
                 action_id = None if existing is None else existing[0]
                 status = "new" if existing is None else existing[1]
                 expected: str | None = None
+                if status == "applied":
+                    _stored_status, stored_receipt = _read_action_row(effective_state, action_id)  # type: ignore[arg-type]
+                    if stored_receipt is None:
+                        raise CurationApplicationError("stored applied action has no receipt")
+                    _validate_applied_effect(stored_receipt, grant, effect, root)
                 if status in {"new", "started"}:
                     try:
                         expected = _expected_identity_for_effect(effect, root)
@@ -894,6 +1069,24 @@ def apply_authorization_grant(
                 for effect, action_id, status in prepared:
                     if cancellation_check is not None and cancellation_check():
                         cancelled = True
+                        processed_ids = {
+                            item.action_id for item in effects if item.action_id is not None
+                        }
+                        for pending_effect, pending_id, pending_status in prepared:
+                            if pending_status == "started" and pending_id not in processed_ids:
+                                effective_state.finish_file_action(
+                                    pending_id,
+                                    "skipped",
+                                    "apply cancelled before the mutation frontier",
+                                )
+                                effects.append(
+                                    AppliedEffect(
+                                        pending_effect.effect_id,
+                                        pending_id,
+                                        "blocked",
+                                        "cancelled_before_effect",
+                                    )
+                                )
                         break
                     if status == "applied":
                         effects.append(
@@ -935,6 +1128,15 @@ def apply_authorization_grant(
                         break
                     frontier_crossed = False
                     try:
+                        current_now = clock_ns()
+                        if (
+                            isinstance(current_now, bool)
+                            or not isinstance(current_now, int)
+                            or current_now <= 0
+                            or current_now >= grant.expires_ns
+                        ):
+                            raise CurationApplicationError("authorization grant expired before effect")
+                        _check_root_snapshot(grant.root_snapshot, root)  # type: ignore[arg-type]
                         expected = _expected_identity_for_effect(effect, root)
                         effective_state.mark_file_actions_applying(((action_id, expected),))
                         frontier_crossed = True
@@ -968,17 +1170,18 @@ def apply_authorization_grant(
                             )
                         break
                     except BaseException as exc:
-                        effective_state.require_file_action_recovery(
-                            (action_id,),
-                            f"apply exception: {type(exc).__name__}: {exc}",
-                        )
+                        detail = f"apply exception: {type(exc).__name__}: {exc}"
+                        if frontier_crossed:
+                            effective_state.require_file_action_recovery((action_id,), detail)
+                        else:
+                            effective_state.finish_file_action(action_id, "failed", detail)
                         effects.append(
                             AppliedEffect(
                                 effect.effect_id,
                                 action_id,
-                                "recovery_required",
-                                "apply_exception",
-                                str(exc),
+                                "recovery_required" if frontier_crossed else "blocked",
+                                "apply_exception" if frontier_crossed else "preflight_failed",
+                                detail,
                             )
                         )
                         break
