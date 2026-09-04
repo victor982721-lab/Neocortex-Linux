@@ -673,6 +673,7 @@ def test_prune_old_releases_keeps_current_and_immediate_rollback(
     current = _release(layout, release_linux.release_id("a" * 40))
     rollback = _release(layout, release_linux.release_id("b" * 40))
     old = _release(layout, release_linux.release_id("c" * 40))
+    old.chmod(0o555)
 
     pruned = release_linux._prune_old_releases(
         layout,

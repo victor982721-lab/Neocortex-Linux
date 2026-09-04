@@ -1138,6 +1138,12 @@ def _stage_old_releases(
         raise
     try:
         for path in candidates_tuple:
+            # An immutable release root is intentionally not writable.  Some
+            # POSIX filesystems nevertheless require the directory being
+            # renamed to have its write bit set, so temporarily make only the
+            # tombstoned root writable; its contents remain immutable until
+            # the bounded removal path handles them.
+            path.chmod(0o755)
             os.replace(path, transaction / path.name)
     except BaseException:
         _restore_old_releases(transaction)
