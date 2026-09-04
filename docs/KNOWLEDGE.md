@@ -1,8 +1,7 @@
 # Knowledge
 
-> Contrato funcional derivado del árbol auditado el 3 de septiembre de 2026.
-> Describe publicaciones existentes; no certifica que el estado local tenga
-> cobertura útil.
+> Contrato funcional de las publicaciones existentes; no certifica que el
+> estado local tenga cobertura útil.
 
 ## Propósito
 

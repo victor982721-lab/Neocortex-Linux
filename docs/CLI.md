@@ -62,10 +62,11 @@ Neocortex curate authorize PLAN_ID \
 
 `--item-id` puede repetirse hasta 100 veces; `--action` acepta `trash`, `move` o
 `rename`, y `--authorization-key` permite una key de idempotencia explícita. El
-grant liga plan/snapshot, root, ReviewTask heads, actor, acción, backend,
-presupuestos y expiración en `curation_authorization_grants` dentro de Framework.
-Trash de duplicados exige `verification_mode=full_hash`; move/rename exige
-destino absoluto. La respuesta declara `actions_authorized=true` y
+grant valida el plan, el snapshot y los heads actuales de ReviewTask al emitirse,
+pero actualmente persiste los identificadores de tarea y no una versión, evento
+ni digest inmutable de cada head; esa ligadura durable queda pendiente antes de
+`apply`. Trash de duplicados exige `verification_mode=full_hash`; move/rename
+exige destino absoluto. La respuesta declara `actions_authorized=true` y
 `physical_effect_applied=false`: no crea `file_actions`, no invoca KIO y no toca
 corpus ni sistemas externos.
 

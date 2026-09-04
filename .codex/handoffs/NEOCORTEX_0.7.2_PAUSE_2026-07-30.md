@@ -1,4 +1,7 @@
-# NeoCortex — handoff operativo vigente
+# NeoCortex — handoff histórico de pausa
+
+> **Estado:** histórico. No usar como operación activa; el handoff vigente es
+> `.codex/handoffs/NEOCORTEX_0.9.0_CURATION_2026-09-04.md`.
 
 > Actualizado: 2026-09-03, America/Mexico_City. El basename se conserva para no
 > romper referencias, pero no representa la versión actual. Pendiente durable:

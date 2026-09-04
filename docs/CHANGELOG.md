@@ -17,6 +17,9 @@ fuera de `docs/`.
 - Se documentó para `0.11.0` la promoción de la foundation KIO ya preparada a
   una Papelera KDE same-filesystem y reversible, con plan, autorización y
   recovery, sin `gio trash` ni fallback destructivo.
+- Se reconciliaron los punteros de arquitectura, Knowledge, roadmap y handoff
+  con la línea vigente de `main`; el handoff de pausa anterior permanece como
+  referencia histórica.
 
 ### Producto en el árbol posterior a 0.9.0
 

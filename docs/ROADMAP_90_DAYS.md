@@ -144,16 +144,19 @@ Criterios de aceptación:
 
 ## Orden inmediato
 
-1. Validar y promover plan/review/decide desde el SHA final sin ampliar su
-   autoridad.
-2. Completar scan/verify, deduplicación exacta y cobertura del plan 0.10.0.
-3. Implementar `apply → verify → reconcile` como consumidor estricto del grant;
+1. Completar `scan/verify`, deduplicación exacta y cobertura del plan 0.10.0;
+   ningún candidato fast puede presentarse como duplicado bytewise.
+2. Persistir `verification_mode`, source heads y razones de abstención en el
+   plan, manteniendo el grant separado de ReviewTask.
+3. Añadir status/verificación consultable y límites uniformes antes de ampliar
+   el recorrido de curación.
+4. Implementar `apply → verify → reconcile` como consumidor estricto del grant;
    nunca derivar autoridad directamente de ReviewTask.
-4. Integrar la foundation KIO preparada y completar sus pruebas de producto con
+5. Integrar la foundation KIO preparada y completar sus pruebas de producto con
    runner/verificador inyectados y fixtures same-filesystem; reservar cualquier
    prueba contra KIO real para un gate explícito posterior.
-5. Habilitar 0.11.0 sólo para lotes pequeños y revisión humana.
-6. Medir una carga grande antes de promover watcher o escala automática.
+6. Habilitar 0.11.0 sólo para lotes pequeños y revisión humana, y medir una
+   carga grande antes de promover watcher o escala automática.
 
 ## Límites
 

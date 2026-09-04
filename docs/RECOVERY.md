@@ -50,11 +50,11 @@ Primero valida sin publicar:
 Neocortex databases restore --backup-directory "$Backup" --json
 ```
 
-Restore comprueba manifest, hashes, schemas y compatibilidad en staging. La
-publicación exige `--apply`, el SHA-256 del manifest y
-`--confirm-database-restore RESTORE_DATABASES`. El CAS se compara con el epoch
-actual esperado; el epoch histórico del backup no se reutiliza como identidad
-del destino.
+Restore comprueba manifest, hashes, schemas y compatibilidad en staging para las
+entradas que pueden prepararse. La publicación exige `--apply`, el SHA-256 del
+manifest y `--confirm-database-restore RESTORE_DATABASES`. El CAS se compara con
+el epoch actual esperado; el epoch histórico del backup no se reutiliza como
+identidad del destino.
 
 Después verifica:
 
@@ -63,8 +63,11 @@ Neocortex databases status --json
 Neocortex --state-health --state-health-json
 ```
 
-Una ausencia declarada en el backup debe restaurarse como ausencia, no conservar
-silenciosamente una base vieja del destino.
+Las entradas `absent` quedan registradas en el manifest, pero el consumidor
+actual no las convierte automáticamente en eliminación de una base existente,
+por lo que no debe presentarse todavía como restore completo de ausencias. La
+resolución identity-bound de ese caso permanece como gate de persistencia antes
+de autorizar una publicación que pueda retirar un owner.
 
 ## Purge
 

@@ -1,8 +1,7 @@
 # Arquitectura de NeoCortex
 
-> Contrato derivado de `HEAD 3ce58a3c978ab890039cc4da204dc62762735592`
-> el 3 de septiembre de 2026. Describe lo implementado; las entregas futuras
-> viven en [ROADMAP_90_DAYS.md](ROADMAP_90_DAYS.md).
+> Describe la arquitectura implementada en el checkout vigente; las entregas
+> futuras viven en [ROADMAP_90_DAYS.md](ROADMAP_90_DAYS.md).
 
 ## Principios
 
