@@ -89,6 +89,9 @@ class DatabaseFileSnapshot:
     device: int
     inode: int
     mtime_ns: int
+    mode: int
+    uid: int
+    gid: int
 
     def as_payload(self) -> dict[str, object]:
         return {
@@ -98,6 +101,12 @@ class DatabaseFileSnapshot:
             "device": self.device,
             "inode": self.inode,
             "mtime_ns": self.mtime_ns,
+            # Keep the source ownership and permission bits in the manifest;
+            # the backup bytes alone are not enough to reproduce a state
+            # owner safely during restore.
+            "mode": self.mode,
+            "uid": self.uid,
+            "gid": self.gid,
         }
 
 
@@ -360,6 +369,9 @@ def _snapshot(path: Path, role: FileRole) -> DatabaseFileSnapshot | None:
         device=int(metadata.st_dev),
         inode=int(metadata.st_ino),
         mtime_ns=int(metadata.st_mtime_ns),
+        mode=int(stat.S_IMODE(metadata.st_mode)),
+        uid=int(metadata.st_uid),
+        gid=int(metadata.st_gid),
     )
 
 
@@ -530,6 +542,28 @@ def _sha256(path: Path) -> str:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _fsync_directory(path: Path) -> None:
+    """Durably commit directory-entry changes made by maintenance actions."""
+
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+    except OSError as exc:
+        raise DatabasePurgeError(
+            f"database maintenance directory cannot be synchronized: {path}"
+        ) from exc
+    try:
+        os.fsync(descriptor)
+    except OSError as exc:
+        raise DatabasePurgeError(
+            f"database maintenance directory cannot be synchronized: {path}"
+        ) from exc
+    finally:
+        os.close(descriptor)
 
 
 def _manifest_sha256(path: Path) -> str:
@@ -858,6 +892,34 @@ def _manifest_epoch(payload: dict[str, object]) -> int:
     return epoch
 
 
+def _manifest_source_mode(raw: dict[str, object], owner: str) -> int | None:
+    """Read optional source permission bits while keeping v1 compatibility."""
+
+    source_files = raw.get("source_files")
+    if source_files is None:
+        # Manifests produced before permission evidence was added remain
+        # readable, but restore cannot claim to preserve their mode.
+        return None
+    if not isinstance(source_files, list):
+        raise DatabaseRestoreError(f"state backup source files are invalid: {owner}")
+    database_file: dict[str, object] | None = None
+    for item in source_files:
+        if not isinstance(item, dict):
+            raise DatabaseRestoreError(f"state backup source file is invalid: {owner}")
+        if item.get("role") == "database":
+            if database_file is not None:
+                raise DatabaseRestoreError(
+                    f"state backup repeats the database source file: {owner}"
+                )
+            database_file = item
+    if database_file is None or "mode" not in database_file:
+        return None
+    mode = database_file.get("mode")
+    if isinstance(mode, bool) or not isinstance(mode, int) or not 0 <= mode <= 0o7777:
+        raise DatabaseRestoreError(f"state backup source mode is invalid: {owner}")
+    return mode
+
+
 def _manifest_entries(
     payload: dict[str, object],
     backup_directory: Path,
@@ -895,6 +957,8 @@ def _manifest_entries(
                 f"state backup entry cannot be restored: {owner}"
             )
         if status == "backed_up":
+            raw = dict(raw)
+            raw["source_mode"] = _manifest_source_mode(raw, owner)
             backup_value = raw.get("backup")
             if not isinstance(backup_value, str) or not backup_value:
                 raise DatabaseRestoreError(f"state backup file is missing: {owner}")
@@ -925,7 +989,6 @@ def _manifest_entries(
             )
             if not integrity.healthy:
                 raise DatabaseRestoreError(f"state backup integrity failed: {owner}")
-            raw = dict(raw)
             raw["resolved_backup"] = selected
         by_owner[owner] = raw
     missing = sorted(set(stores) - set(by_owner))
@@ -979,6 +1042,18 @@ def _restore_stage(
             )
             if not verification.healthy:
                 raise DatabaseRestoreError(f"restore staging integrity failed: {owner}")
+            source_mode = entry.get("source_mode")
+            if source_mode is not None:
+                if type(source_mode) is not int:
+                    raise DatabaseRestoreError(
+                        f"restore staging permissions are invalid: {owner}"
+                    )
+                try:
+                    os.chmod(destination, source_mode, follow_symlinks=False)
+                except OSError as exc:
+                    raise DatabaseRestoreError(
+                        f"restore staging permissions could not be applied: {owner}"
+                    ) from exc
             staged[owner] = destination
         return stage_directory, staged
     except BaseException:
@@ -1268,6 +1343,7 @@ def _prepare_backup(
 ) -> tuple[Path, dict[str, object]]:
     if backup_directory.exists():
         raise DatabasePurgeError(f"backup directory already exists: {backup_directory}")
+    initial_epoch = read_state_epoch(plan.state_directory)
     try:
         backup_directory.parent.mkdir(parents=True, exist_ok=True)
         backup_directory.mkdir(mode=0o700)
@@ -1325,6 +1401,11 @@ def _prepare_backup(
     except BaseException:
         # Keep a failed backup directory for diagnosis; no source is deleted.
         raise
+    observed_epoch = read_state_epoch(plan.state_directory)
+    if observed_epoch != initial_epoch:
+        raise DatabasePurgeChangedError(
+            "state publication epoch changed while preparing database backup"
+        )
     manifest_payload: dict[str, object] = {
         "schema": DATABASE_PURGE_SCHEMA,
         "created_at": datetime.now(UTC).isoformat(),
@@ -1332,7 +1413,7 @@ def _prepare_backup(
         "stores": list(plan.stores),
         "plan_digest": plan.plan_digest,
         "integrity_mode": "full",
-        "state_epoch": read_state_epoch(plan.state_directory).as_payload(),
+        "state_epoch": initial_epoch.as_payload(),
         "entries": entries,
     }
     try:
@@ -1356,6 +1437,8 @@ def _delete_planned_files(plan: DatabasePurgePlan) -> tuple[DatabaseFileSnapshot
         if item.path.exists() or item.path.is_symlink():
             raise DatabasePurgeError(f"database target remains after removal: {item.path}")
         deleted.append(item)
+    if deleted:
+        _fsync_directory(plan.state_directory)
     return tuple(deleted)
 
 

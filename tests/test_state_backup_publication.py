@@ -101,6 +101,16 @@ def test_publication_epoch_is_read_only_until_a_complete_event(tmp_path: Path) -
             idempotency_key="different",
             expected_epoch=0,
         )
+    with pytest.raises(StatePublicationConflictError, match="different manifest"):
+        record_state_publication(
+            state,
+            operation="cache-sync",
+            owners=("text",),
+            status="complete",
+            idempotency_key=key,
+            manifest_sha256="0" * 64,
+            expected_epoch=1,
+        )
 
 
 def test_backup_state_owners_writes_complete_manifest_with_absent_owners(tmp_path: Path) -> None:
@@ -124,6 +134,35 @@ def test_backup_state_owners_writes_complete_manifest_with_absent_owners(tmp_pat
     assert next(entry for entry in payload["entries"] if entry["owner"] == "semantic")["status"] == "absent"
     assert not (state / "state-epoch.json").exists()
     assert not (state / "state-publication-journal.jsonl").exists()
+
+
+def test_backup_manifest_records_source_permissions_and_restore_preserves_them(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    database = state / "image.sqlite3"
+    _create_database(database, "image")
+    database.chmod(0o640)
+
+    backup = backup_state_owners(state, tmp_path / "backup", stores=("image",))
+    payload = json.loads(backup.manifest.read_text(encoding="utf-8"))
+    entry = payload["entries"][0]
+    source_file = next(item for item in entry["source_files"] if item["role"] == "database")
+    assert source_file["mode"] == 0o640
+
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE payload SET value='changed'")
+    restored = restore_state_owners(
+        state,
+        backup.backup_directory,
+        stores=("image",),
+        apply=True,
+        confirmation=DATABASE_RESTORE_CONFIRMATION,
+    )
+
+    assert restored.complete is True
+    assert database.stat().st_mode & 0o7777 == 0o640
 
 
 def test_backup_rejects_orphan_sidecar_as_incomplete_source(tmp_path: Path) -> None:

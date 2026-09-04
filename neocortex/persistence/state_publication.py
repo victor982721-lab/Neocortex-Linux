@@ -368,6 +368,24 @@ def _atomic_write_json(path: Path, value: Mapping[str, object]) -> None:
         raise
 
 
+def _fsync_directory(path: Path) -> None:
+    """Durably commit an append that may have created a new journal file."""
+
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+    except OSError as exc:
+        raise StatePublicationError("publication directory cannot be synchronized") from exc
+    try:
+        os.fsync(descriptor)
+    except OSError as exc:
+        raise StatePublicationError("publication directory cannot be synchronized") from exc
+    finally:
+        os.close(descriptor)
+
+
 def _append_journal(path: Path, publication: StatePublication) -> None:
     encoded = json.dumps(
         publication.as_payload(), ensure_ascii=True, sort_keys=True, separators=(",", ":")
@@ -393,6 +411,7 @@ def _append_journal(path: Path, publication: StatePublication) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.chmod(path, 0o600)
+        _fsync_directory(path.parent)
     except OSError as exc:
         raise StatePublicationError("publication journal cannot be appended") from exc
 
@@ -448,6 +467,10 @@ def record_state_publication(
         journal = _read_journal(selected)
         for prior in reversed(journal):
             if prior.status == "complete" and prior.idempotency_key == digest:
+                if prior.manifest_sha256 != manifest_sha256:
+                    raise StatePublicationConflictError(
+                        "idempotency key is already bound to a different manifest"
+                    )
                 return prior
         epoch = current.epoch + (1 if status == "complete" else 0)
         created_ns = time.time_ns()
