@@ -429,7 +429,15 @@ def test_agent_curation_scan_and_verify_forward_canonical_envelopes(
             "scan_id": 1,
             "source_heads": [],
         },
-        "result": {"page": {"items": []}},
+        "result": {
+            "plan_digest": plan_id,
+            "snapshot_id": "sha256:" + "b" * 64,
+            "scan_id": 1,
+            "root": "/fixture",
+            "source_heads": [],
+            "page": {"items": []},
+            "source": "published_curation_plan",
+        },
         "error": None,
         "exit_code": 0,
     }

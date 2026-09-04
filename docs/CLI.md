@@ -217,7 +217,8 @@ Neocortex agent serve
 ```
 
 El servidor stdio expone consultas read-only como status, search, context,
-evidence, `curation_plan`, Code, lineage y salud de assets. También expone
+evidence, `curation_plan`, `curation_scan`, `curation_verify`, Code, lineage y
+salud de assets. También expone
 `curation_review` y `curation_decide`: escriben sólo ReviewTask advisory, están
 marcadas no destructivas y mantienen `actions_authorized=false`. `evidence`
 puede recibir `evidence_id` y `expected_snapshot_id`; ningún tool aplica acciones

@@ -365,6 +365,21 @@ if BaseModel is not None:
         page: _MCPCurationReviewPage | None = None
         publication: _MCPCurationPublication | None = None
 
+    class _MCPCurationSourceHead(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        coverage: Literal["complete", "partial", "unavailable"]
+        digest: str
+        head_id: str | None
+        item_count: int
+        kind: str
+        metadata: dict[str, Any]
+        owner: str
+        reason: str | None
+        revision: int | None
+        root: str | None
+        verification_mode: Literal["legacy_unknown", "fast", "partial", "full_hash"] | None
+
     class _MCPCurationVerificationSnapshot(BaseModel):
         model_config = ConfigDict(extra="forbid")
 
@@ -373,7 +388,92 @@ if BaseModel is not None:
         root: str | None = None
         scan_id: int | None = None
         cursor: str | None = None
-        source_heads: list[dict[str, Any]] = []
+        source_heads: list[_MCPCurationSourceHead] = []
+
+    class _MCPCurationPlanItem(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        item_id: str
+        kind: str
+        status: str
+        action: str
+        source_path: str
+        destination_path: str | None
+        reason: str
+        evidence: dict[str, Any]
+
+    class _MCPCurationPlanPage(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        limit: int | None = None
+        cursor: str | None = None
+        next_cursor: str | None = None
+        complete: bool = False
+        plan_digest: str | None = None
+        items_total: int = 0
+        items: list[_MCPCurationPlanItem] = []
+        inventory_files: int | None = None
+        duplicate_groups: int | None = None
+        duplicate_members: int | None = None
+        reclaimable_bytes: int | None = None
+        organization_plans: int | None = None
+        empty_files: int | None = None
+
+    class _MCPCurationScanResult(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        plan_digest: str | None = None
+        snapshot_id: str | None = None
+        scan_id: int | None = None
+        root: str | None = None
+        source_heads: list[_MCPCurationSourceHead] = []
+        page: _MCPCurationPlanPage | None = None
+        source: Literal["published_curation_plan"]
+
+    class _MCPCurationVerificationError(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        code: Literal[
+            "invalid_request",
+            "invalid_cursor",
+            "snapshot_changed",
+            "schema_incompatible",
+            "corrupt",
+            "unavailable",
+            "partial",
+            "not_verified",
+        ]
+        message: str
+        retryable: bool
+
+    class _MCPCurationVerificationItem(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        checked_files: int
+        item_id: str
+        kind: str
+        observed_mode: Literal["full_hash"] | None
+        persisted_mode: Literal["legacy_unknown", "fast", "partial", "full_hash"] | None
+        reason: str
+        source_path: str
+        status: Literal["verified", "source_changed", "not_verified", "not_applicable"]
+        verified_files: int
+
+    class _MCPCurationVerificationResult(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        bytes_checked: int
+        coverage: Literal["complete", "partial"]
+        files_checked: int
+        items: list[_MCPCurationVerificationItem]
+        items_failed: int
+        items_skipped: int
+        items_total: int
+        items_verified: int
+        plan_digest: str
+        snapshot_id: str
+        source_heads: list[_MCPCurationSourceHead]
+        status: Literal["complete", "partial", "snapshot_changed"]
 
     class _MCPCurationVerificationEffects(BaseModel):
         model_config = ConfigDict(extra="forbid")
@@ -408,8 +508,8 @@ if BaseModel is not None:
         effects: _MCPCurationVerificationEffects
         trust: _MCPCurationVerificationTrust
         snapshot: _MCPCurationVerificationSnapshot | None
-        result: dict[str, Any] | None
-        error: dict[str, Any] | None
+        result: _MCPCurationScanResult | None
+        error: _MCPCurationVerificationError | None
         exit_code: int
 
     class MCPCurationVerifyOutput(BaseModel):
@@ -430,8 +530,8 @@ if BaseModel is not None:
         effects: _MCPCurationVerificationEffects
         trust: _MCPCurationVerificationTrust
         snapshot: _MCPCurationVerificationSnapshot | None
-        result: dict[str, Any] | None
-        error: dict[str, Any] | None
+        result: _MCPCurationVerificationResult | None
+        error: _MCPCurationVerificationError | None
         exit_code: int
 
 else:  # pragma: no cover - minimal install fallback

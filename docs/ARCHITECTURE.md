@@ -185,7 +185,7 @@ de la frontera de efecto produce un estado conciliable, no un reintento ciego.
 - la cobertura y precisión de localizadores varían por formato;
 - varias fuentes todavía tienen publicación no generacional;
 - progreso, límites y replay no son uniformes en todas las rutas;
-- MCP expone plan/review/decide, pero no autorización con actor autenticado;
+- MCP expone plan/scan/verify y review/decide, pero no autorización con actor autenticado;
 - falta el consumidor físico `apply → verify → reconcile` del grant durable;
 - Linux carece del backend reversible aplicado.
 
