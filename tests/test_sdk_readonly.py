@@ -68,6 +68,9 @@ CURATION_EXPORTS = (
     "CURATION_REVIEW_API_SCHEMA",
     "CURATION_SCAN_API_SCHEMA",
     "CURATION_VERIFY_API_SCHEMA",
+    "CURATION_CHECKPOINT_CREATE_API_SCHEMA",
+    "CURATION_CHECKPOINT_RESUME_API_SCHEMA",
+    "CURATION_CHECKPOINT_STATUS_API_SCHEMA",
     "CurationApplyOutput",
     "CurationPlanOutput",
     "CurationPlanPage",
@@ -85,6 +88,9 @@ CURATION_EXPORTS = (
     "curation_recovery_status_payload",
     "curation_restore_payload",
     "curation_restore_preview_payload",
+    "curation_checkpoint_create_payload",
+    "curation_checkpoint_resume_payload",
+    "curation_checkpoint_status_payload",
 )
 
 EXPECTED_EXPORTS = (
@@ -99,6 +105,9 @@ EXPECTED_EXPORTS = (
     "CURATION_REVIEW_API_SCHEMA",
     "CURATION_SCAN_API_SCHEMA",
     "CURATION_VERIFY_API_SCHEMA",
+    "CURATION_CHECKPOINT_CREATE_API_SCHEMA",
+    "CURATION_CHECKPOINT_RESUME_API_SCHEMA",
+    "CURATION_CHECKPOINT_STATUS_API_SCHEMA",
     *LEGACY_EXPORTS[:9],
     "CurationApplyOutput",
     "CurationPlanOutput",
@@ -120,6 +129,9 @@ EXPECTED_EXPORTS = (
     "curation_review_payload",
     "curation_scan_payload",
     "curation_verify_payload",
+    "curation_checkpoint_create_payload",
+    "curation_checkpoint_resume_payload",
+    "curation_checkpoint_status_payload",
     LEGACY_EXPORTS[-1],
 )
 

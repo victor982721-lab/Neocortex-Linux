@@ -16,9 +16,14 @@ fuera de `docs/`.
   separados `persisted_mode` y `observed_mode`.
 - La planificación de duplicados descarta un candidato mutado durante la
   comparación exacta, evitando que se convierta en representante o redundante.
-- Las pruebas de fixtures cubren replay, paginación, límites, cancelación y la
-  lectura fenced de previews de restore; checkpoints durables y benchmark de
-  escala todavía no forman parte de esta tranche.
+- Se añadió el contrato durable `neocortex.curation-checkpoint/v1` con JSON
+  canónico, escritura atómica no-replace, root/source/plan/snapshot digests,
+  batch digest, presupuesto acumulado, validación de drift y sucesores
+  deterministas para reanudación por página en API/SDK.
+- La verificación usa buffers fijos y almacenamiento temporal para el keeper, y
+  el benchmark opt-in reproduce 100,001 archivos sintéticos con throughput,
+  memoria, batches, commits y ETA; no se ejecuta sobre el corpus ni se registra
+  como herramienta MCP.
 
 ## 0.11.1 — 2026-09-04
 

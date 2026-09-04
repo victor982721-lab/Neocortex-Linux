@@ -13,11 +13,13 @@ import errno
 import math
 import os
 import stat
+import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, cast
+from types import MappingProxyType
+from typing import Any, BinaryIO, Literal, cast
 
 from neocortex.deduplication.domain.errors import FileChangedError
 from neocortex.deduplication.domain.models import (
@@ -36,6 +38,7 @@ CURATION_VERIFICATION_SCHEMA_VERSION = 1
 MAX_VERIFICATION_ITEMS = 100
 MAX_VERIFICATION_FILES = 512
 MAX_VERIFICATION_BYTES = 128 * 1024 * 1024
+_READ_CHUNK_SIZE = 1024 * 1024
 
 VerificationStatus = Literal["verified", "source_changed", "not_verified", "not_applicable"]
 WorkStopReason = Literal["budget_exhausted", "cancelled", "deadline_exceeded"]
@@ -181,6 +184,19 @@ class _WorkBudgetState:
         self.bytes_checked += count
 
 
+@dataclass(slots=True)
+class _VerificationMetrics:
+    """Bounded payload-buffer metrics for one verification page."""
+
+    chunks: int = 0
+    peak_buffer: int = 0
+    keeper_replays: int = 0
+
+    def observe_chunk(self, source_size: int, reference_size: int = 0) -> None:
+        self.chunks += 1
+        self.peak_buffer = max(self.peak_buffer, source_size + reference_size)
+
+
 @dataclass(frozen=True, slots=True)
 class CurationVerificationItem:
     """Verification result for one curation item."""
@@ -225,6 +241,19 @@ class CurationVerificationResult:
     bytes_checked: int
     items: tuple[CurationVerificationItem, ...]
     source_heads: tuple[CurationSourceHead, ...] = ()
+    metrics: Mapping[str, int] | None = None
+
+    def __post_init__(self) -> None:
+        if self.metrics is not None:
+            if any(
+                not isinstance(key, str)
+                or isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 0
+                for key, value in self.metrics.items()
+            ):
+                raise ValueError("verification metrics must contain non-negative integers")
+            object.__setattr__(self, "metrics", MappingProxyType(dict(self.metrics)))
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -240,6 +269,7 @@ class CurationVerificationResult:
             "snapshot_id": self.snapshot_id,
             "source_heads": [head.to_dict() for head in self.source_heads],
             "status": self.status,
+            "metrics": (None if self.metrics is None else dict(self.metrics)),
         }
 
 
@@ -388,7 +418,11 @@ def _open_regular_file_beneath(root: Path, path: Path) -> int:
     if not relative.parts:
         raise CurationVerificationSnapshotChanged("curation source path is the root")
     nofollow = getattr(os, "O_NOFOLLOW", 0)
-    common_flags = os.O_RDONLY | os.O_CLOEXEC | nofollow
+    # ``O_NONBLOCK`` prevents a final-component swap to a FIFO from hanging a
+    # supposedly bounded verification before the cooperative deadline can be
+    # observed.  The descriptor is still required to be a regular, single-link
+    # file immediately after opening.
+    common_flags = os.O_RDONLY | os.O_CLOEXEC | nofollow | getattr(os, "O_NONBLOCK", 0)
     directory_fd: int | None = None
     try:
         directory_fd = os.open(
@@ -408,6 +442,10 @@ def _open_regular_file_beneath(root: Path, path: Path) -> int:
             common_flags,
             dir_fd=directory_fd,
         )
+        opened = os.fstat(file_fd)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
+            os.close(file_fd)
+            raise OSError(errno.ELOOP, "curation source is not a regular single-link file")
         os.close(directory_fd)
         directory_fd = None
         return file_fd
@@ -437,8 +475,15 @@ def _read_stable_payload(
     *,
     root: Path,
     work: _WorkBudgetState,
-) -> tuple[bytes, str]:
-    """Read and fingerprint one file exactly once through a safe descriptor."""
+    destination: BinaryIO,
+    metrics: _VerificationMetrics,
+) -> str:
+    """Stream one file into a temporary reference and return its digest.
+
+    The destination is temporary storage, never a corpus path.  Keeping the
+    reference outside process memory lets every later member compare against
+    the keeper without retaining a second copy of the file.
+    """
 
     try:
         import xxhash
@@ -450,37 +495,131 @@ def _read_stable_payload(
     descriptor = _open_regular_file_beneath(root, path)
     try:
         before = os.fstat(descriptor)
-        if not stat_matches_snapshot(snapshot, before):
-            raise CurationVerificationSnapshotChanged(
-                f"curation source identity changed: {path}"
-            )
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or not stat_matches_snapshot(snapshot, before)
+        ):
+            raise CurationVerificationSnapshotChanged(f"curation source identity changed: {path}")
         hasher = xxhash.xxh3_128()
-        chunks: list[bytes] = []
         remaining = snapshot.size
         while remaining:
             work.before_read()
             try:
-                chunk = os.read(descriptor, min(1024 * 1024, remaining))
+                chunk = os.read(descriptor, min(_READ_CHUNK_SIZE, remaining))
             except OSError as exc:
                 raise CurationVerificationUnavailable(
                     f"curation source cannot be read: {path}",
                     reason_code="io_unavailable",
                 ) from exc
             if not chunk:
-                raise CurationVerificationSnapshotChanged(
-                    f"curation source ended early: {path}"
-                )
-            chunks.append(chunk)
+                raise CurationVerificationSnapshotChanged(f"curation source ended early: {path}")
             hasher.update(chunk)
             work.record_bytes(len(chunk))
+            try:
+                written = destination.write(chunk)
+            except OSError as exc:
+                raise CurationVerificationUnavailable(
+                    "temporary curation verification storage cannot be written",
+                    reason_code="temporary_storage_unavailable",
+                ) from exc
+            if written != len(chunk):
+                raise CurationVerificationUnavailable(
+                    "temporary curation verification storage wrote a short chunk",
+                    reason_code="temporary_storage_unavailable",
+                )
+            metrics.observe_chunk(len(chunk))
             remaining -= len(chunk)
         after = os.fstat(descriptor)
-        if not stat_matches_snapshot(snapshot, after):
+        if (
+            not stat.S_ISREG(after.st_mode)
+            or after.st_nlink != 1
+            or not stat_matches_snapshot(snapshot, after)
+        ):
             raise CurationVerificationSnapshotChanged(
-                f"curation source changed while reading: {path}"
+                f"curation source identity changed: {path}"
+            )
+        try:
+            destination.flush()
+        except OSError as exc:
+            raise CurationVerificationUnavailable(
+                "temporary curation verification storage cannot be flushed",
+                reason_code="temporary_storage_unavailable",
+            ) from exc
+        work.before_read()
+        return hasher.digest().hex()
+    finally:
+        os.close(descriptor)
+
+
+def _compare_stable_file(
+    path: Path,
+    snapshot: Any,
+    *,
+    root: Path,
+    reference: BinaryIO,
+    work: _WorkBudgetState,
+    metrics: _VerificationMetrics,
+) -> tuple[bool, str]:
+    """Hash and compare one source file against a temporary keeper stream."""
+
+    try:
+        import xxhash
+    except ImportError as exc:  # pragma: no cover - dependency is in releases
+        raise CurationVerificationUnavailable(
+            "exact curation verification requires xxhash",
+            reason_code="dependency_unavailable",
+        ) from exc
+    descriptor = _open_regular_file_beneath(root, path)
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or not stat_matches_snapshot(snapshot, before)
+        ):
+            raise CurationVerificationSnapshotChanged(f"curation source identity changed: {path}")
+        hasher = xxhash.xxh3_128()
+        equal = True
+        remaining = snapshot.size
+        reference.seek(0)
+        while remaining:
+            work.before_read()
+            try:
+                chunk = os.read(descriptor, min(_READ_CHUNK_SIZE, remaining))
+            except OSError as exc:
+                raise CurationVerificationUnavailable(
+                    f"curation source cannot be read: {path}",
+                    reason_code="io_unavailable",
+                ) from exc
+            if not chunk:
+                raise CurationVerificationSnapshotChanged(f"curation source ended early: {path}")
+            work.record_bytes(len(chunk))
+            try:
+                reference_chunk = reference.read(len(chunk))
+            except OSError as exc:
+                raise CurationVerificationUnavailable(
+                    "temporary curation verification storage cannot be read",
+                    reason_code="temporary_storage_unavailable",
+                ) from exc
+            hasher.update(chunk)
+            if chunk != reference_chunk:
+                equal = False
+            metrics.observe_chunk(len(chunk), len(reference_chunk))
+            remaining -= len(chunk)
+        if reference.read(1):
+            equal = False
+        after = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(after.st_mode)
+            or after.st_nlink != 1
+            or not stat_matches_snapshot(snapshot, after)
+        ):
+            raise CurationVerificationSnapshotChanged(
+                f"curation source identity changed: {path}"
             )
         work.before_read()
-        return b"".join(chunks), hasher.digest().hex()
+        return equal, hasher.digest().hex()
     finally:
         os.close(descriptor)
 
@@ -490,6 +629,7 @@ def _duplicate_verification(
     *,
     root: Path,
     work: _WorkBudgetState,
+    metrics: _VerificationMetrics,
 ) -> CurationVerificationItem:
     evidence = item.evidence
     raw_mode = evidence.get("verification_mode")
@@ -544,29 +684,40 @@ def _duplicate_verification(
         keep_path, keep_snapshot = _snapshot_for_member(keep, root=root)
         work.reserve_file(keep_snapshot.size)
         checked += 1
-        keep_payload, keep_digest = _read_stable_payload(
-            keep_path,
-            keep_snapshot,
-            root=root,
-            work=work,
-        )
-        if keep_digest != str(evidence.get("full_fingerprint")):
-            raise CurationVerificationSnapshotChanged(
-                f"curation source content changed: {keep_path}"
+        with tempfile.TemporaryFile(mode="w+b") as keeper_stream:
+            keep_digest = _read_stable_payload(
+                keep_path,
+                keep_snapshot,
+                root=root,
+                work=work,
+                destination=keeper_stream,
+                metrics=metrics,
             )
-        verified += 1
-        for member in typed_members:
-            if member is keep:
-                continue
-            path, snapshot = _snapshot_for_member(member, root=root)
-            work.reserve_file(snapshot.size)
-            checked += 1
-            payload, digest = _read_stable_payload(path, snapshot, root=root, work=work)
-            if digest != keep_digest or payload != keep_payload:
+            if keep_digest != str(evidence.get("full_fingerprint")):
                 raise CurationVerificationSnapshotChanged(
-                    f"curation duplicate content changed: {path}"
+                    f"curation source content changed: {keep_path}"
                 )
             verified += 1
+            for member in typed_members:
+                if member is keep:
+                    continue
+                path, snapshot = _snapshot_for_member(member, root=root)
+                work.reserve_file(snapshot.size)
+                checked += 1
+                metrics.keeper_replays += 1
+                equal, digest = _compare_stable_file(
+                    path,
+                    snapshot,
+                    root=root,
+                    reference=keeper_stream,
+                    work=work,
+                    metrics=metrics,
+                )
+                if digest != keep_digest or not equal:
+                    raise CurationVerificationSnapshotChanged(
+                        f"curation duplicate content changed: {path}"
+                    )
+                verified += 1
     except CurationVerificationError as exc:
         status: VerificationStatus = (
             "source_changed" if isinstance(exc, CurationVerificationSnapshotChanged) else "not_verified"
@@ -672,6 +823,7 @@ def verify_curation_page(
         max_files=max_files,
         max_bytes=max_bytes,
     )
+    metrics = _VerificationMetrics()
     results: list[CurationVerificationItem] = []
     for index, item in enumerate(selected):
         try:
@@ -699,6 +851,7 @@ def verify_curation_page(
             item,
             root=root,
             work=work,
+            metrics=metrics,
         )
         results.append(result)
         if result.reason in {"budget_exhausted", "cancelled", "deadline_exceeded"}:
@@ -736,6 +889,13 @@ def verify_curation_page(
         bytes_checked,
         tuple(results),
         page.source_heads,
+        {
+            "files": files_checked,
+            "bytes": bytes_checked,
+            "chunks": metrics.chunks,
+            "peak_buffer": metrics.peak_buffer,
+            "keeper_replays": metrics.keeper_replays,
+        },
     )
 
 

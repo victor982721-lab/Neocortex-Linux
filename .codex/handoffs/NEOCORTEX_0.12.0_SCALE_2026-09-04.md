@@ -3,20 +3,28 @@
 ## Estado
 
 - La release instalada y vigente sigue siendo `0.11.1-976bae8c9ba1-cp314-linux-x86_64`.
-- La primera tranche ejecutable de 0.12 está en el commit de código
-  `ea47e46`: `CurationWorkBudget` opcional para la verificación exacta,
+- La primera tranche ejecutable de 0.12 está publicada en `main` y
+  `origin/main` (`8a1b70ac176579f24d291e932810a35c0b3be103`), con
+  `CurationWorkBudget` opcional para la verificación exacta,
   contabilidad incremental de items/archivos/bytes, deadline monotónico,
   cancelación cooperativa y razones bounded para resultados parciales.
 - `curate scan` conserva cardinalidad y errores tipados, falla cerrado cuando un
   productor combina error con cobertura completa y la CLI muestra por separado
   `persisted_mode` y `observed_mode`.
+- El contrato `neocortex.curation-checkpoint/v1` ya permite crear, leer, validar
+  y reanudar páginas mediante API/SDK, con root/source/plan/snapshot digests,
+  batch digest, presupuesto acumulado, escritura no-replace y sucesores
+  deterministas; no es un checkpoint DFS de inventario.
+- El benchmark opt-in completó 100,001 archivos sintéticos, 800,008 bytes,
+  98 batches/commits y 17,290 archivos/s, con digest de fixture
+  `1e82ea93bc55f9a5e3fa9f35561ee103d2d41bd3aa9554e0c2bb0db65d4e06ab`.
 - La planificación de duplicados descarta un candidato que cambia durante la
   comparación exacta, evitando grupos falsos; los previews de restore leen
   grants y acciones por una única sesión SQLite fenced, también con WAL activo.
 
 ## Validación local
 
-- Foco curation/dedup: **210 passed, 6 skipped, 6 subtests passed**.
+- Foco curation/dedup: **232 passed, 6 skipped, 6 subtests passed**.
 - Incluye fixtures de 48 entradas, replay/paginación, límites, cancelación,
   lectura read-only con snapshot temporal y regresión de mutación exacta.
 - Ruff, `compileall` y `git diff --check` pasan para las superficies cambiadas.
@@ -25,10 +33,11 @@
 
 ## Gates restantes para 0.12.0
 
-- Persistir checkpoints durables con root identity, source heads, plan digest,
-  cursor, batch digest, presupuesto y publicación únicamente terminal.
-- Implementar reanudación/replay contra una corrida limpia, streaming con
-  memoria acotada y un benchmark sintético de más de 100,000 elementos.
+- Implementar checkpoint/reanudación DFS de inventario y eliminar la
+  reconstrucción O(n) por página, conservando el contrato page-level ya
+  publicado.
+- Integrar límites globales de disco temporal y cancelación durante flush/commit,
+  y comparar el resume de inventario contra una corrida limpia.
 - Mantener MCP sin `authorize`, `apply`, restore ni conciliación escrita, y
   mantener KIO/GUI de escritorio como gates humanos separados.
 - Sólo después de esos gates: versionar `0.12.0`, construir desde el SHA final,

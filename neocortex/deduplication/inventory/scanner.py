@@ -16,6 +16,7 @@ from .traversal import FileObservation, InventoryTraversal, RootIdentity, ScanCo
 
 
 DEFAULT_BATCH_SIZE = 5000
+MAX_BATCH_SIZE = 10_000
 FILE_UPSERT_SQL = """
     INSERT INTO files(path, volume_id, file_id, size, mtime_ns, birthtime_ns, scan_id)
     VALUES(?, ?, ?, ?, ?, ?, ?)
@@ -28,6 +29,16 @@ FILE_UPSERT_SQL = """
 """
 
 type InventoryRow = tuple[str, bytes, bytes, int, int, int, int]
+
+
+def _validated_batch_size(value: object) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 1 <= value <= MAX_BATCH_SIZE
+    ):
+        raise ValueError(f"batch_size must be between 1 and {MAX_BATCH_SIZE}")
+    return value
 
 
 def id_blob(value: int) -> bytes:
@@ -52,7 +63,7 @@ class InventoryBatch:
         self._connection = connection
         self._scan_id = scan_id
         self._volume_blob = id_blob(volume_id)
-        self._batch_size = batch_size
+        self._batch_size = _validated_batch_size(batch_size)
         self._rows: list[InventoryRow] = []
 
     def append(self, observation: FileObservation) -> None:
@@ -95,8 +106,10 @@ class InventoryScanner:
         exclusion_policy: InventoryExclusionPolicy | None = None,
         progress: ProgressCallback | None = None,
     ) -> ScanSummary:
-        if batch_size <= 0:
-            raise ValueError("batch_size must be positive")
+        # Reject the request before policy compilation, root inspection or the
+        # durable scan row is created.  This keeps one unbounded batch from
+        # turning into an unbounded transaction or sidecar.
+        batch_size = _validated_batch_size(batch_size)
         effective_policy = resolve_inventory_exclusion_policy(
             excluded_paths,
             exclusion_policy,
@@ -234,6 +247,7 @@ class InventoryScanner:
 __all__ = [
     "DEFAULT_BATCH_SIZE",
     "FILE_UPSERT_SQL",
+    "MAX_BATCH_SIZE",
     "InventoryBatch",
     "InventoryRow",
     "InventoryScanner",

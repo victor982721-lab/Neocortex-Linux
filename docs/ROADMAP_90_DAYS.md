@@ -151,11 +151,18 @@ escritorio o el corpus real.
   comparación exacta;
 - fixtures de replay, paginación, límites, cancelación y previews SQLite
   fenced, todos contenidos en temporales.
+- contrato `neocortex.curation-checkpoint/v1` con manifests canónicos bounded,
+  validación de root/source/plan/snapshot drift, batch digests, presupuesto
+  acumulado y sucesor idempotente por página mediante API/SDK;
+- streaming de verificación con buffers fijos y benchmark opt-in de 100,001
+  archivos sintéticos, con throughput, memoria, batches, commits y ETA.
 
 **Entregas aún requeridas para cerrar 0.12.0:**
 
-- streaming y batches medidos en el camino crítico;
-- checkpoints y reanudación sin reconstrucciones O(n) innecesarias;
+- checkpoint DFS/owner durable de inventario y reanudación sin reconstrucciones
+  O(n) innecesarias;
+- integración del presupuesto global con el camino crítico y límites de disco
+  temporales;
 - procedencia y localizadores estructurales para más formatos;
 - búsqueda visual y temporal calibrada;
 - cobertura generacional ampliada a owners que hoy son best-effort;
@@ -173,12 +180,13 @@ Criterios de aceptación:
 
 ## Orden inmediato
 
-1. Completar streaming y checkpoints durables con root identity, source heads,
-   plan digest, cursor, presupuesto, batch digest y publicación sólo terminal.
-2. Comparar cancelación/reanudación contra una corrida limpia, con replay sin
-   duplicar filas, efectos ni bytes verificados.
-3. Ejecutar el benchmark sintético de más de 100,000 elementos y registrar
-   throughput, memoria, commits, ETA y límites observados, sin corpus personal.
+1. Diseñar el checkpoint DFS/owner durable de inventario, con cursor estable de
+   directorios, publicación terminal y rechazo de swaps de ancestros.
+2. Integrar el presupuesto global con el proceso que produce batches, incluyendo
+   disco temporal y cancelación durante flush/commit.
+3. Comparar reanudación de inventario contra una corrida limpia, sin duplicar
+   filas ni omitir entradas, y conservar el benchmark 100,001 ya ejecutado como
+   baseline reproducible.
 4. Mantener `verification_mode` explícito, cerrar las regresiones SQLite de estos
    lectores y conservar MCP sin autoridad de mutación.
 5. Promover KIO/restore de escritorio y sincronización de caches sólo mediante

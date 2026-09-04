@@ -107,6 +107,13 @@ La CLI ordinaria devuelve `backend_unavailable` sin un run firmado y un backend
 inyectado, por diseño fail-closed; los tests de 0.11 ejecutan el mismo contrato
 sólo sobre raíces temporales contenidas.
 
+La tranche 0.12 añade a `neocortex.api.public` y `neocortex.sdk` las funciones
+`curation_checkpoint_create_payload`, `curation_checkpoint_status_payload` y
+`curation_checkpoint_resume_payload`. Su uso exige un directorio de estado
+explícito, conserva root/source/plan/snapshot digests y publica sucesores
+idempotentes por página; no selecciona el corpus por defecto, no crea efectos y
+no está registrado en MCP.
+
 ## Plataforma y rutas
 
 La única plataforma objetivo vigente es Kubuntu/Linux.

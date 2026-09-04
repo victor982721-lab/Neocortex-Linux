@@ -133,8 +133,10 @@ La primera tranche 0.12 mantiene `curate scan` y `curate verify` sin efectos y
 con límites bounded. La verificación exacta contabiliza items, archivos y bytes
 reales, admite deadline/cancelación en la API Python mediante
 `CurationWorkBudget` y devuelve las razones `budget_exhausted`, `cancelled` o
-`deadline_exceeded`; la CLI conserva sus límites seguros por defecto y aún no
-expone un checkpoint durable ni una reanudación pública.
+`deadline_exceeded`. Los checkpoints y su reanudación por página se consumen
+mediante `neocortex.api.public` o `neocortex.sdk`, exigen un directorio de estado
+explícito para no seleccionar el corpus por accidente y no se exponen en MCP;
+la CLI conserva sus límites seguros por defecto.
 
 ## Efectos
 

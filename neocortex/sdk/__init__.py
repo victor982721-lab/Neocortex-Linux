@@ -55,6 +55,14 @@ if TYPE_CHECKING:
         curation_scan_payload as curation_scan_payload,
         curation_verify_payload as curation_verify_payload,
     )
+    from neocortex.api.curation_checkpoint_api import (
+        CURATION_CHECKPOINT_CREATE_API_SCHEMA as CURATION_CHECKPOINT_CREATE_API_SCHEMA,
+        CURATION_CHECKPOINT_RESUME_API_SCHEMA as CURATION_CHECKPOINT_RESUME_API_SCHEMA,
+        CURATION_CHECKPOINT_STATUS_API_SCHEMA as CURATION_CHECKPOINT_STATUS_API_SCHEMA,
+        curation_checkpoint_create_payload as curation_checkpoint_create_payload,
+        curation_checkpoint_resume_payload as curation_checkpoint_resume_payload,
+        curation_checkpoint_status_payload as curation_checkpoint_status_payload,
+    )
     from neocortex.api.public import (
         CapabilityFailure as CapabilityFailure,
         ContextBundle as ContextBundle,
@@ -96,7 +104,7 @@ if TYPE_CHECKING:
     from neocortex.curation.preview import CurationPlanPage as CurationPlanPage
     from neocortex.curation.preview import CurationSourceHead as CurationSourceHead
 
-__all__ = (
+__all__ = (  # noqa: RUF022
     "CURATION_APPLY_API_SCHEMA",
     "CURATION_APPLY_SCHEMA",
     "CURATION_AUTHORIZATION_API_SCHEMA",
@@ -108,6 +116,9 @@ __all__ = (
     "CURATION_REVIEW_API_SCHEMA",
     "CURATION_SCAN_API_SCHEMA",
     "CURATION_VERIFY_API_SCHEMA",
+    "CURATION_CHECKPOINT_CREATE_API_SCHEMA",
+    "CURATION_CHECKPOINT_RESUME_API_SCHEMA",
+    "CURATION_CHECKPOINT_STATUS_API_SCHEMA",
     "DERIVATION_CONTRACT_SCHEMA_VERSION",
     "CapabilityFailure",
     "ContextBundle",
@@ -162,6 +173,9 @@ __all__ = (
     "curation_review_payload",
     "curation_scan_payload",
     "curation_verify_payload",
+    "curation_checkpoint_create_payload",
+    "curation_checkpoint_resume_payload",
+    "curation_checkpoint_status_payload",
     "plan_knowledge_query",
 )
 
@@ -272,6 +286,30 @@ _CURATION_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "curation_verify_payload": (
         "neocortex.api.curation_verification_api",
         "curation_verify_payload",
+    ),
+    "CURATION_CHECKPOINT_CREATE_API_SCHEMA": (
+        "neocortex.api.curation_checkpoint_api",
+        "CURATION_CHECKPOINT_CREATE_API_SCHEMA",
+    ),
+    "CURATION_CHECKPOINT_RESUME_API_SCHEMA": (
+        "neocortex.api.curation_checkpoint_api",
+        "CURATION_CHECKPOINT_RESUME_API_SCHEMA",
+    ),
+    "CURATION_CHECKPOINT_STATUS_API_SCHEMA": (
+        "neocortex.api.curation_checkpoint_api",
+        "CURATION_CHECKPOINT_STATUS_API_SCHEMA",
+    ),
+    "curation_checkpoint_create_payload": (
+        "neocortex.api.curation_checkpoint_api",
+        "curation_checkpoint_create_payload",
+    ),
+    "curation_checkpoint_resume_payload": (
+        "neocortex.api.curation_checkpoint_api",
+        "curation_checkpoint_resume_payload",
+    ),
+    "curation_checkpoint_status_payload": (
+        "neocortex.api.curation_checkpoint_api",
+        "curation_checkpoint_status_payload",
     ),
 }
 

@@ -164,9 +164,11 @@ humano no debe convertirse de nuevo en datos mediante parsing.
 La primera tranche 0.12 incorpora `CurationWorkBudget` como límite opcional de la
 verificación exacta, con contabilidad de items, archivos y bytes, deadline
 monotónico y cancelación cooperativa. Un corte por presupuesto conserva los
-resultados ya observados y materializa el resto como `not_verified`; todavía no
-existe un checkpoint durable público ni se presenta esta tranche como escala
-verificada de 100,000 elementos.
+resultados ya observados y materializa el resto como `not_verified`. El contrato
+`neocortex.curation-checkpoint/v1` publica manifests bounded con root/source/plan
+digests, cursor, batch digest y presupuesto, y la API/SDK puede validar drift y
+crear un sucesor idempotente por página; esto no convierte la enumeración DFS en
+un checkpoint de inventario ni sustituye el benchmark de desarrollo.
 
 No existe una superficie de exportación o ZIP para el lifecycle de curación;
 Archive/ZIP sigue siendo únicamente una ruta de contenido.

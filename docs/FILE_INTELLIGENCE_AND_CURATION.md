@@ -238,8 +238,31 @@ La primera tranche 0.12 añade límites opcionales de trabajo a la verificación
 exacta mediante `CurationWorkBudget`, con contabilidad de items, archivos y
 bytes, deadline monotónico y cancelación cooperativa. Las observaciones previas
 se conservan cuando el presupuesto se agota y el resto queda `not_verified`, sin
-crear efectos ni modificar el corpus; los checkpoints durables y la reanudación
-pública siguen pendientes del cierre de 0.12.0.
+crear efectos ni modificar el corpus. El contrato durable
+`neocortex.curation-checkpoint/v1` permite crear, leer, validar y reanudar el
+siguiente lote paginado desde API/SDK, enlazando root identity, source heads,
+plan/snapshot digest, cursor, batch digest y contadores acumulados, con sucesores
+deterministas y escritura atómica no-replace. Su alcance es la página publicada:
+no afirma checkpoint DFS de inventario ni habilita MCP, KIO o mutación.
+
+La secuencia controlada desde Python es:
+
+```python
+created = curation_checkpoint_create_payload(
+    "verify", plan_id=PLAN_ID, limit=100, state_directory=FIXTURE_STATE
+)
+status = curation_checkpoint_status_payload(
+    created["result"]["checkpoint_id"], state_directory=FIXTURE_STATE
+)
+next_page = curation_checkpoint_resume_payload(
+    created["result"]["checkpoint_id"], state_directory=FIXTURE_STATE
+)
+```
+
+Crear y reanudar escriben únicamente manifests de estado con efectos de corpus
+nulos, exigen un directorio explícito de fixtures y no aceptan overrides de
+presupuesto al reanudar; el estado y la evidencia de la página se revalidan
+antes de publicar el sucesor.
 
 No existe una interfaz de exportación ni un paquete ZIP de curación. `--json`
 serializa la respuesta de una operación; no crea un artefacto durable.
