@@ -174,7 +174,10 @@ def test_payload_modules_form_one_way_relative_import_dag() -> None:
 def test_payload_modules_support_both_cold_import_orders(
     module_order: tuple[str, str],
 ) -> None:
-    repository = Path(contracts.__file__).resolve().parents[1]
+    # The subprocess must receive the project root, not the ``neocortex``
+    # package directory, because isolated Python does not retain the cwd on
+    # ``sys.path``.
+    repository = Path(contracts.__file__).resolve().parents[2]
     script = textwrap.dedent(
         f"""
         import importlib

@@ -3,6 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
+
+
+VerificationMode = Literal["legacy_unknown", "fast", "partial", "full_hash"]
+VALID_VERIFICATION_MODES = frozenset(
+    {"legacy_unknown", "fast", "partial", "full_hash"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +65,7 @@ class DuplicateGroup:
     keep: FileSnapshot
     redundant: tuple[FileSnapshot, ...]
     full_fingerprint: str
+    verification_mode: VerificationMode = "legacy_unknown"
 
     @property
     def reclaimable_bytes(self) -> int:
@@ -84,6 +92,7 @@ class DedupPlan:
     total_groups: int | None = None
     total_redundant_files: int | None = None
     total_reclaimable_bytes: int | None = None
+    verification_mode: VerificationMode = "legacy_unknown"
 
     @property
     def group_count(self) -> int:
@@ -103,10 +112,12 @@ class DedupPlan:
 
 
 __all__ = [
+    "VALID_VERIFICATION_MODES",
     "DedupPlan",
     "DuplicateGroup",
     "FileSnapshot",
     "InventoryCheckpoint",
     "PlanStatistics",
     "ScanSummary",
+    "VerificationMode",
 ]

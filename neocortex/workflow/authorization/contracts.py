@@ -8,8 +8,11 @@ creating a ``file_actions`` attempt.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
+
+from neocortex.workflow.review.review_task_contracts import CanonicalJsonObject
 
 
 AUTHORIZATION_GRANT_SCHEMA_VERSION = 1
@@ -23,6 +26,9 @@ MAX_AUTHORIZATION_ITEMS = 100
 MAX_AUTHORIZATION_IDENTIFIER_CHARS = 512
 MAX_AUTHORIZATION_ROOT_CHARS = 4_096
 MAX_AUTHORIZATION_JSON_BYTES = 65_536
+REVIEW_TASK_HEADS_SCHEMA_VERSION = 1
+REVIEW_TASK_HEADS_SCHEMA = "neocortex.authorization-review-task-heads/v1"
+REVIEW_TASK_HEAD_DIGEST_SCHEMA = "neocortex.authorization-review-task-head/v1"
 
 
 def _text(label: str, value: object, limit: int) -> str:
@@ -99,6 +105,152 @@ def _identifiers(label: str, values: object) -> tuple[str, ...]:
     return result
 
 
+def _head_digest_payload(head: "AuthorizationReviewTaskHead") -> dict[str, object]:
+    return {
+        "schema_version": REVIEW_TASK_HEADS_SCHEMA_VERSION,
+        "schema": REVIEW_TASK_HEAD_DIGEST_SCHEMA,
+        "item_id": head.item_id,
+        "logical_key": head.logical_key,
+        "task_id": head.task_id,
+        "task_version": head.task_version,
+        "state": head.state,
+        "event_id": head.event_id,
+        "source_snapshot_fingerprint": head.source_snapshot_fingerprint,
+        "source_input_fingerprint": head.source_input_fingerprint,
+        "selector_signature": head.selector_signature,
+        "decision": None if head.decision is None else head.decision.to_dict(),
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorizationReviewTaskHead:
+    """Immutable ReviewTask head captured when a grant is issued.
+
+    The manifest is deliberately a compact projection of the owner-local
+    ``ReviewTaskVersionHead``.  Its digest is calculated over every field that
+    a future effect consumer must revalidate, while the aggregate digest also
+    binds the ordered item/task mapping in the parent grant receipt.
+    """
+
+    item_id: str
+    logical_key: str
+    task_id: str
+    task_version: int
+    state: str
+    event_id: str
+    source_snapshot_fingerprint: str
+    source_input_fingerprint: str
+    selector_signature: str
+    decision: CanonicalJsonObject | None
+    head_digest: str | None = None
+
+    def __post_init__(self) -> None:
+        _text("head.item_id", self.item_id, MAX_AUTHORIZATION_IDENTIFIER_CHARS)
+        _text("head.logical_key", self.logical_key, MAX_AUTHORIZATION_IDENTIFIER_CHARS)
+        _text("head.task_id", self.task_id, MAX_AUTHORIZATION_IDENTIFIER_CHARS)
+        task_version = _positive_integer("head.task_version", self.task_version)
+        object.__setattr__(self, "task_version", task_version)
+        _text("head.state", self.state, 128)
+        if self.state != "resolved":
+            raise ValueError("authorization ReviewTask heads must be resolved")
+        _text("head.event_id", self.event_id, MAX_AUTHORIZATION_IDENTIFIER_CHARS)
+        source_snapshot_fingerprint = _source_fingerprint(self.source_snapshot_fingerprint)
+        object.__setattr__(self, "source_snapshot_fingerprint", source_snapshot_fingerprint)
+        _text(
+            "head.source_input_fingerprint",
+            self.source_input_fingerprint,
+            1_024,
+        )
+        _text(
+            "head.selector_signature",
+            self.selector_signature,
+            MAX_AUTHORIZATION_IDENTIFIER_CHARS,
+        )
+        if self.decision is not None and not isinstance(self.decision, CanonicalJsonObject):
+            raise ValueError("head.decision must be a CanonicalJsonObject when present")
+        if self.decision is None or self.decision.to_dict().get("decision") != "resolved":
+            raise ValueError("resolved authorization ReviewTask heads require a resolved decision")
+        if self.head_digest is not None:
+            _digest("head_digest", self.head_digest)
+        expected = _head_digest(self)
+        if self.head_digest is not None and self.head_digest != expected:
+            raise ValueError("head_digest does not match the immutable ReviewTask head")
+        object.__setattr__(self, "head_digest", expected)
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        item_id: str,
+        logical_key: str,
+        task_id: str,
+        task_version: int,
+        state: str,
+        event_id: str,
+        source_snapshot_fingerprint: str,
+        source_input_fingerprint: str,
+        selector_signature: str,
+        decision: CanonicalJsonObject | None,
+    ) -> "AuthorizationReviewTaskHead":
+        return cls(
+            item_id=item_id,
+            logical_key=logical_key,
+            task_id=task_id,
+            task_version=task_version,
+            state=state,
+            event_id=event_id,
+            source_snapshot_fingerprint=source_snapshot_fingerprint,
+            source_input_fingerprint=source_input_fingerprint,
+            selector_signature=selector_signature,
+            decision=decision,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": REVIEW_TASK_HEADS_SCHEMA_VERSION,
+            "schema": REVIEW_TASK_HEADS_SCHEMA,
+            "item_id": self.item_id,
+            "logical_key": self.logical_key,
+            "task_id": self.task_id,
+            "task_version": self.task_version,
+            "state": self.state,
+            "event_id": self.event_id,
+            "source_snapshot_fingerprint": self.source_snapshot_fingerprint,
+            "source_input_fingerprint": self.source_input_fingerprint,
+            "selector_signature": self.selector_signature,
+            "decision": None if self.decision is None else self.decision.to_dict(),
+            "head_digest": self.head_digest,
+        }
+
+
+def _head_digest(head: AuthorizationReviewTaskHead) -> str:
+    payload = _head_digest_payload(head)
+    return "sha256:" + hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def review_task_head_digest(head: AuthorizationReviewTaskHead) -> str:
+    """Return the canonical digest of one captured ReviewTask head."""
+
+    if not isinstance(head, AuthorizationReviewTaskHead):
+        raise TypeError("head must be an AuthorizationReviewTaskHead")
+    return _head_digest(head)
+
+
+def review_task_heads_digest(heads: tuple[AuthorizationReviewTaskHead, ...]) -> str:
+    """Return the ordered, versioned digest for one grant head manifest."""
+
+    if not isinstance(heads, tuple) or not 1 <= len(heads) <= MAX_AUTHORIZATION_ITEMS:
+        raise ValueError("review_task_heads must be a non-empty immutable tuple")
+    if any(not isinstance(head, AuthorizationReviewTaskHead) for head in heads):
+        raise ValueError("review_task_heads must contain AuthorizationReviewTaskHead values")
+    payload = {
+        "schema_version": REVIEW_TASK_HEADS_SCHEMA_VERSION,
+        "schema": REVIEW_TASK_HEADS_SCHEMA,
+        "heads": [head.to_dict() for head in heads],
+    }
+    return "sha256:" + hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True, slots=True)
 class AuthorizationGrant:
     grant_id: str
@@ -119,6 +271,8 @@ class AuthorizationGrant:
     max_bytes: int
     issued_ns: int
     expires_ns: int
+    review_task_heads: tuple[AuthorizationReviewTaskHead, ...] | None = None
+    review_task_heads_digest: str | None = None
 
     def __post_init__(self) -> None:
         _text("grant_id", self.grant_id, MAX_AUTHORIZATION_IDENTIFIER_CHARS)
@@ -157,10 +311,45 @@ class AuthorizationGrant:
             raise ValueError("expires_ns must be later than issued_ns")
         object.__setattr__(self, "issued_ns", issued_ns)
         object.__setattr__(self, "expires_ns", expires_ns)
+        heads = self.review_task_heads
+        heads_digest = self.review_task_heads_digest
+        if heads is None:
+            if heads_digest is not None:
+                raise ValueError("review_task_heads_digest requires review_task_heads")
+        else:
+            if not isinstance(heads, tuple) or not 1 <= len(heads) <= MAX_AUTHORIZATION_ITEMS:
+                raise ValueError("review_task_heads must be a non-empty immutable tuple")
+            if len(heads) != len(item_ids):
+                raise ValueError("review_task_heads must match the authorized item count")
+            if any(not isinstance(head, AuthorizationReviewTaskHead) for head in heads):
+                raise ValueError("review_task_heads must contain AuthorizationReviewTaskHead values")
+            if tuple(head.item_id for head in heads) != item_ids:
+                raise ValueError("review_task_heads must preserve item_ids order")
+            if tuple(head.task_id for head in heads) != task_ids:
+                raise ValueError("review_task_heads must preserve task_ids order")
+            if any(
+                head.source_snapshot_fingerprint != self.source_snapshot_fingerprint
+                or head.selector_signature != self.selector_signature
+                for head in heads
+            ):
+                raise ValueError("review_task_heads are not bound to the grant source fence")
+            if len({head.item_id for head in heads}) != len(heads):
+                raise ValueError("review_task_heads cannot contain duplicate item_ids")
+            if len({head.logical_key for head in heads}) != len(heads):
+                raise ValueError("review_task_heads cannot contain duplicate logical_keys")
+            if len({head.task_id for head in heads}) != len(heads):
+                raise ValueError("review_task_heads cannot contain duplicate task_ids")
+            expected_heads_digest = review_task_heads_digest(heads)
+            if heads_digest is not None:
+                _digest("review_task_heads_digest", heads_digest)
+                if heads_digest != expected_heads_digest:
+                    raise ValueError("review_task_heads_digest does not match the manifest")
+            object.__setattr__(self, "review_task_heads_digest", expected_heads_digest)
+            object.__setattr__(self, "review_task_heads", heads)
         self.to_json()
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "schema_version": AUTHORIZATION_GRANT_SCHEMA_VERSION,
             "schema": AUTHORIZATION_GRANT_SCHEMA,
             "kind": "authorization_grant",
@@ -183,6 +372,15 @@ class AuthorizationGrant:
             "issued_ns": self.issued_ns,
             "expires_ns": self.expires_ns,
         }
+        if self.review_task_heads is not None:
+            payload.update(
+                {
+                    "review_task_heads_schema_version": REVIEW_TASK_HEADS_SCHEMA_VERSION,
+                    "review_task_heads": [head.to_dict() for head in self.review_task_heads],
+                    "review_task_heads_digest": self.review_task_heads_digest,
+                }
+            )
+        return payload
 
     def to_json(self) -> str:
         return _bounded_json(self.to_dict())
@@ -205,5 +403,11 @@ __all__ = (
     "AUTHORIZATION_SELECTOR_SIGNATURE",
     "AUTHORIZATION_TASK_TYPE",
     "MAX_AUTHORIZATION_ITEMS",
+    "REVIEW_TASK_HEADS_SCHEMA",
+    "REVIEW_TASK_HEADS_SCHEMA_VERSION",
+    "REVIEW_TASK_HEAD_DIGEST_SCHEMA",
     "AuthorizationGrant",
+    "AuthorizationReviewTaskHead",
+    "review_task_head_digest",
+    "review_task_heads_digest",
 )

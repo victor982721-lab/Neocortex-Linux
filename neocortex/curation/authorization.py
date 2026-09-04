@@ -34,8 +34,10 @@ from neocortex.workflow.authorization.contracts import (
     AUTHORIZATION_SELECTOR_SIGNATURE,
     AUTHORIZATION_SCOPE,
     AUTHORIZATION_TASK_TYPE,
+    AuthorizationReviewTaskHead,
     AuthorizationGrant,
     MAX_AUTHORIZATION_ITEMS,
+    review_task_heads_digest,
 )
 from neocortex.workflow.authorization.repository import (
     AuthorizationGrantResult,
@@ -129,20 +131,25 @@ def _item_from_task(record: ReviewTaskRecord, item_id: str, plan_digest: str) ->
         raise CurationAuthorizationError("curation ReviewTask lacks its item snapshot")
     if raw_item.get("item_id") != item_id:
         raise CurationAuthorizationError("curation ReviewTask item identity is contradictory")
+    required_text = ("item_id", "kind", "status", "action", "source_path", "reason")
+    if any(not isinstance(raw_item.get(field), str) for field in required_text):
+        raise CurationAuthorizationError("curation item snapshot contains non-text fields")
+    destination = raw_item.get("destination_path")
+    if destination is not None and not isinstance(destination, str):
+        raise CurationAuthorizationError("curation item destination is malformed")
+    evidence = raw_item.get("evidence")
+    if not isinstance(evidence, Mapping):
+        raise CurationAuthorizationError("curation item evidence is malformed")
     try:
         return CurationItem(
-            item_id=str(raw_item["item_id"]),
-            kind=str(raw_item["kind"]),
-            status=str(raw_item["status"]),
-            action=str(raw_item["action"]),
-            source_path=str(raw_item["source_path"]),
-            destination_path=(
-                None
-                if raw_item.get("destination_path") is None
-                else str(raw_item["destination_path"])
-            ),
-            reason=str(raw_item["reason"]),
-            evidence=dict(raw_item.get("evidence", {})),
+            item_id=raw_item["item_id"],
+            kind=raw_item["kind"],
+            status=raw_item["status"],
+            action=raw_item["action"],
+            source_path=raw_item["source_path"],
+            destination_path=destination,
+            reason=raw_item["reason"],
+            evidence=dict(evidence),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise CurationAuthorizationError("curation item snapshot is malformed") from exc
@@ -245,6 +252,7 @@ def authorize_curation_items(
             raise CurationAuthorizationError("every authorized item needs a published ReviewTask")
         records: list[ReviewTaskRecord] = []
         items: list[CurationItem] = []
+        review_task_heads: list[AuthorizationReviewTaskHead] = []
         total_known_bytes = 0
         for item_id in ids:
             head = by_key[_logical_key(item_id)]
@@ -267,10 +275,35 @@ def authorize_curation_items(
                 )
             if record.source_snapshot_fingerprint != fence.source_snapshot_fingerprint:
                 raise CurationAuthorizationSnapshotChanged("ReviewTask source snapshot changed")
+            if (
+                head.task_id != record.task.task_id
+                or head.task_version != record.task.task_version
+                or head.event_id != record.current_event.event_id
+                or head.source_snapshot_fingerprint != record.source_snapshot_fingerprint
+                or head.source_input_fingerprint != record.source.fingerprint
+                or head.selector_signature != record.selector_signature
+            ):
+                raise CurationAuthorizationSnapshotChanged(
+                    "ReviewTask head changed during authorization"
+                )
             item = _item_from_task(record, item_id, digest)
             total_known_bytes += _validate_requested_effect(item, action)
             records.append(record)
             items.append(item)
+            review_task_heads.append(
+                AuthorizationReviewTaskHead.create(
+                    item_id=item_id,
+                    logical_key=head.logical_key,
+                    task_id=head.task_id,
+                    task_version=head.task_version,
+                    state=head.state.value,
+                    event_id=head.event_id,
+                    source_snapshot_fingerprint=head.source_snapshot_fingerprint,
+                    source_input_fingerprint=head.source_input_fingerprint,
+                    selector_signature=head.selector_signature,
+                    decision=head.decision,
+                )
+            )
         if max_bytes_value < total_known_bytes:
             raise CurationAuthorizationError("max_bytes is below the reviewed item size")
         semantic = {
@@ -285,6 +318,8 @@ def authorize_curation_items(
             "snapshot_id": page.snapshot_id,
             "source_snapshot_fingerprint": fence.source_snapshot_fingerprint,
             "task_ids": [record.task.task_id for record in records],
+            "review_task_heads": [head.to_dict() for head in review_task_heads],
+            "review_task_heads_digest": review_task_heads_digest(tuple(review_task_heads)),
         }
         key = authorization_key
         if key is None:
@@ -312,6 +347,8 @@ def authorize_curation_items(
             max_bytes=max_bytes_value,
             issued_ns=issued_ns,
             expires_ns=expires_ns,
+            review_task_heads=tuple(review_task_heads),
+            review_task_heads_digest=review_task_heads_digest(tuple(review_task_heads)),
         )
         result = issue_authorization_grant(database, grant)
         return CurationAuthorizationOutcome(result=result, items=tuple(items))

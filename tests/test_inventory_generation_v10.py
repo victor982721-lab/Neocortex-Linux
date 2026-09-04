@@ -1,4 +1,4 @@
-"""Identity-query indexes and migration contracts for inventory schema v10.
+"""Identity-query indexes and migration contracts for inventory schema v11.
 
 Every database is a bounded synthetic ``tmp_path`` fixture.  The regression
 executes the production Knowledge inventory query and inspects SQLite's query
@@ -17,7 +17,7 @@ from neocortex.deduplication.domain.errors import InventoryError
 from neocortex.deduplication.persistence import (
     inventory_schema_contract as persistent_inventory_schema_contract,
 )
-from neocortex.deduplication.persistence.ddl import V9_DDL
+from neocortex.deduplication.persistence.ddl import V10_DDL, V9_DDL
 from neocortex.deduplication.persistence.migrations import MIGRATIONS
 from neocortex.knowledge import knowledge_search_inventory
 
@@ -47,7 +47,7 @@ def test_schema_persistence_api_and_versioned_migration_registry_are_explicit() 
     )
     assert {version: migration.__module__ for version, migration in MIGRATIONS.items()} == {
         version: f"neocortex.deduplication.persistence.migrations.v{version}_to_v{version + 1}"
-        for version in range(1, 10)
+        for version in range(1, 11)
     }
 
 
@@ -60,13 +60,18 @@ def _create_populated_v9(
     root: Path,
     *,
     unexpected_index: bool = False,
+    ddl: tuple[str, ...] = V9_DDL,
+    schema_version: int = 9,
 ) -> None:
     keep_path = str(root / "keep.bin")
     redundant_path = str(root / "redundant.bin")
     with sqlite3.connect(database) as connection:
-        for statement in V9_DDL:
+        for statement in ddl:
             connection.execute(statement)
-        connection.execute("INSERT INTO metadata(key,value) VALUES('schema_version','9')")
+        connection.execute(
+            "INSERT INTO metadata(key,value) VALUES('schema_version',?)",
+            (str(schema_version),),
+        )
         connection.execute(
             """INSERT INTO scans(
             scan_id,root,root_volume_id,root_file_id,root_birthtime_ns,
@@ -105,7 +110,11 @@ def _create_populated_v9(
             VALUES(?,9,NULL,NULL,NULL,1,40)""",
             (str(root),),
         )
-        connection.execute("INSERT INTO duplicate_plan_summaries VALUES(9,1,1,10,20)")
+        connection.execute(
+            """INSERT INTO duplicate_plan_summaries(
+            scan_id,group_count,redundant_files,reclaimable_bytes,completed_ns)
+            VALUES(9,1,1,10,20)"""
+        )
         connection.execute(
             """INSERT INTO planned_duplicate_groups(
             group_id,scan_id,size,keep_path,redundant_count,
@@ -146,7 +155,9 @@ def _indexes(connection: sqlite3.Connection) -> dict[str, str]:
     }
 
 
-def test_fresh_v10_has_exact_identity_indexes_and_integrity(tmp_path: Path) -> None:
+def test_fresh_v11_has_exact_identity_indexes_and_verification_mode(
+    tmp_path: Path,
+) -> None:
     database = tmp_path / "inventory-v10.sqlite3"
 
     inventory_schema_module.initialize_inventory_schema(database)
@@ -155,14 +166,19 @@ def test_fresh_v10_has_exact_identity_indexes_and_integrity(tmp_path: Path) -> N
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
-        ).fetchone() == ("10",)
+        ).fetchone() == ("11",)
+        columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(duplicate_plan_summaries)")
+        }
+        assert "verification_mode" in columns
         assert _indexes(connection) == _NEW_INDEXES
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         inventory_schema_module.validate_inventory_schema(connection)
 
 
-def test_populated_v9_to_v10_preserves_rows_bytes_and_foreign_keys(
+def test_populated_v9_to_v11_preserves_rows_bytes_and_foreign_keys(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "inventory-v9.sqlite3"
@@ -179,7 +195,10 @@ def test_populated_v9_to_v10_preserves_rows_bytes_and_foreign_keys(
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
-        ).fetchone() == ("10",)
+        ).fetchone() == ("11",)
+        assert connection.execute(
+            "SELECT verification_mode FROM duplicate_plan_summaries WHERE scan_id=9"
+        ).fetchone() == ("legacy_unknown",)
         assert connection.execute(
             "SELECT COUNT(*),COALESCE(SUM(size),0) FROM files"
         ).fetchone() == (2, 20)
@@ -196,7 +215,31 @@ def test_populated_v9_to_v10_preserves_rows_bytes_and_foreign_keys(
         inventory_schema_module.validate_inventory_schema(connection)
 
 
-def test_schema_one_migrates_sequentially_through_v10(tmp_path: Path) -> None:
+def test_populated_v10_to_v11_adds_unknown_verification_mode(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "inventory-v10.sqlite3"
+    root = tmp_path / "historical-root"
+    _create_populated_v9(database, root, ddl=V10_DDL, schema_version=10)
+
+    inventory_schema_module.initialize_inventory_schema(database)
+    migrated = database.read_bytes()
+    inventory_schema_module.initialize_inventory_schema(database)
+
+    assert database.read_bytes() == migrated
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT value FROM metadata WHERE key='schema_version'"
+        ).fetchone() == ("11",)
+        assert connection.execute(
+            "SELECT verification_mode FROM duplicate_plan_summaries WHERE scan_id=9"
+        ).fetchone() == ("legacy_unknown",)
+        assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        inventory_schema_module.validate_inventory_schema(connection)
+
+
+def test_schema_one_migrates_sequentially_through_v11(tmp_path: Path) -> None:
     database = tmp_path / "inventory-v1.sqlite3"
     with sqlite3.connect(database) as connection:
         connection.executescript(
@@ -212,7 +255,7 @@ def test_schema_one_migrates_sequentially_through_v10(tmp_path: Path) -> None:
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
-        ).fetchone() == ("10",)
+        ).fetchone() == ("11",)
         assert _indexes(connection) == _NEW_INDEXES
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         inventory_schema_module.validate_inventory_schema(connection)

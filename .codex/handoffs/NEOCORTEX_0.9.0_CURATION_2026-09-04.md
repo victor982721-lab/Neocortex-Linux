@@ -13,9 +13,11 @@
 - Linux/Kubuntu es la única plataforma activa. No se usa GitHub Actions, no se
   envían corpus o secretos a proveedores externos y no se procesa el corpus real
   durante los pilotos.
-- `curate plan`, `curate review`, `curate decide` y `curate authorize` escriben
-  sólo el estado contractual previsto; `apply → verify → reconcile` aún no
-  tiene consumidor físico y `--apply`/`--organization-apply` se abstienen.
+- `curate scan`, `curate plan` y `curate verify` consultan evidencia publicada y
+  archivos regulares sin crear efectos; `curate review`, `curate decide` y
+  `curate authorize` escriben sólo el estado contractual previsto. El tramo
+  físico `apply → verify → reconcile` aún no tiene consumidor y
+  `--apply`/`--organization-apply` se abstienen.
 
 ## Decisiones vigentes
 
@@ -30,17 +32,16 @@
 5. La foundation KIO permanece preparada pero no integrada ni ejecutada contra
    la Papelera real.
 
-## Siguiente gate: 0.10.x
+## 0.10.x implementado en el checkout
 
-1. Persistir `verification_mode` y separar candidatos fast de duplicados
+1. `verification_mode` queda persistido y separa candidatos fast, parciales y
    bytewise verificados.
-2. Completar `curate scan`/`curate verify` con snapshots, source heads,
-   identidad física, paginación, límites y razones de abstención.
-3. Persistir los heads/digests de ReviewTask que se validaron al emitir un
-   grant, sin exponer autorización por MCP mientras falte un principal
-   autenticado.
-4. Validar replay e idempotencia sobre fixtures de 20–50 elementos, sin
-   `file_actions`, KIO ni mutación del corpus.
+2. `curate scan`/`curate verify` exponen snapshots, `source_heads`, identidad,
+   límites y razones de abstención, sin `file_actions`, KIO ni mutación del corpus.
+3. Los grants nuevos persisten heads/digests de ReviewTask; autorización por MCP
+   continúa omitida hasta resolver un principal autenticado.
+4. El gate restante es la consolidación final de superficies, regresiones SQLite
+   y release 0.10.x; `apply` físico pertenece a 0.11.0.
 
 Los riesgos de fences SQLite, restore de owners ausentes, carreras de workers,
 aislamiento de procesos y reproducibilidad de release siguen abiertos y deben

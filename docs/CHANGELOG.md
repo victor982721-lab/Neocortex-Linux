@@ -48,6 +48,15 @@ fuera de `docs/`.
   AuthorizationGrant append-only dentro de la extensión Framework
   `curation_authorization_grants`. Exigen plan vigente, ReviewTasks resueltas,
   actor, acción, expiración y presupuestos; el replay equivalente es idempotente.
+- `curate scan`/`curation_scan` consultan el plan publicado con un envelope
+  acotado, y `curate verify`/`curation_verify` comprueban identidad, hash completo
+  y bytes de grupos duplicados sin crear efectos ni `file_actions`.
+- Scan, plan y verify exponen el mismo manifiesto `source_heads` de inventario y
+  catálogo, ligado al digest del plan con revisión, cobertura, modo y razón
+  de cada owner.
+- Los grants nuevos conservan un manifiesto inmutable de heads de ReviewTask,
+  con versiones, eventos, fingerprints y digest agregado; los grants históricos
+  sin ese manifiesto permanecen legacy y no son consumibles por un futuro `apply`.
 - Emitir el grant no crea `file_actions`, no llama KIO y conserva
   `physical_effect_applied=false`. MCP no expone authorize hasta resolver un
   principal autenticado; la brecha siguiente es `apply → verify → reconcile`.

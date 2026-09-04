@@ -37,6 +37,7 @@ def _curation_payload() -> dict[str, object]:
             "root": "/fixture",
             "scan_id": 7,
             "missing_owners": [],
+            "source_heads": [],
         },
         "page": {
             "limit": 2,
@@ -217,6 +218,8 @@ def test_agent_server_exposes_read_and_human_gated_curation_tools() -> None:
         "lineage",
         "asset_health",
         "curation_plan",
+        "curation_scan",
+        "curation_verify",
         "curation_review",
         "curation_decide",
     }
@@ -261,6 +264,29 @@ def test_agent_server_exposes_read_and_human_gated_curation_tools() -> None:
         "page",
         "error",
     }.issubset(curation.outputSchema["required"])
+
+    scan = next(tool for tool in tools if tool.name == "curation_scan")
+    assert set(scan.inputSchema["properties"]) == {"limit", "cursor"}
+    assert scan.annotations.readOnlyHint is True
+    assert scan.outputSchema is not None
+    assert scan.outputSchema["properties"]["operation"]["const"] == "curation-scan"
+
+    verify = next(tool for tool in tools if tool.name == "curation_verify")
+    assert set(verify.inputSchema["properties"]) == {
+        "plan_id",
+        "item_ids",
+        "limit",
+        "cursor",
+    }
+    assert verify.annotations.readOnlyHint is True
+    assert verify.outputSchema is not None
+    assert verify.outputSchema["properties"]["operation"]["const"] == "curation-verify"
+    item_ids_schema = verify.inputSchema["properties"]["item_ids"]
+    assert any(
+        branch.get("minItems") == 1
+        for branch in item_ids_schema.get("anyOf", [])
+        if isinstance(branch, dict)
+    )
 
     evidence = next(tool for tool in tools if tool.name == "evidence")
     assert {"evidence_id", "expected_snapshot_id"}.issubset(
@@ -545,6 +571,8 @@ def test_public_stdio_server_completes_a_real_read_only_protocol_exchange(
             "lineage",
             "asset_health",
             "curation_plan",
+            "curation_scan",
+            "curation_verify",
             "curation_review",
             "curation_decide",
         }

@@ -26,6 +26,7 @@ from neocortex.deduplication import (
     partial_fingerprint,
     snapshot_path,
 )
+from neocortex.deduplication.persistence.ddl import SCHEMA_VERSION as INVENTORY_SCHEMA_VERSION
 # endregion [01]
 
 # region [02] Implementación
@@ -190,7 +191,7 @@ class PlannerTests(unittest.TestCase):
                 for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
             }
             connection.close()
-            self.assertEqual(version, "10")
+            self.assertEqual(version, "11")
             self.assertIn("planned_duplicate_groups", tables)
             self.assertIn("planned_duplicate_members", tables)
             self.assertIn("inventory_checkpoints", tables)
@@ -238,7 +239,7 @@ class PlannerTests(unittest.TestCase):
                 version = connection.execute(
                     "SELECT value FROM metadata WHERE key='schema_version'"
                 ).fetchone()[0]
-            self.assertEqual(version, "10")
+            self.assertEqual(version, str(INVENTORY_SCHEMA_VERSION))
 
     def test_reuses_inventory_checkpoint_and_advances_it_with_changes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -382,6 +383,8 @@ class PlannerTests(unittest.TestCase):
                 self.assertEqual(Path(group.keep.path).name, "newer.dat")
                 self.assertEqual([Path(item.path).name for item in group.redundant], ["older.dat"])
                 self.assertEqual(group.reclaimable_bytes, len(b"duplicate-content"))
+                self.assertEqual(plan.verification_mode, "full_hash")
+                self.assertEqual(group.verification_mode, "full_hash")
                 self.assertNotIn(
                     "same_size_not_duplicate.dat",
                     {Path(item.path).name for item in group.redundant},
@@ -402,6 +405,8 @@ class PlannerTests(unittest.TestCase):
                 self.assertEqual(first.statistics.full_hash_files, 2)
                 self.assertEqual(second.statistics.partial_hash_files, 0)
                 self.assertEqual(second.statistics.full_hash_files, 0)
+                self.assertEqual(first.verification_mode, "full_hash")
+                self.assertEqual(second.verification_mode, "full_hash")
 
     def test_persists_full_plan_and_only_materializes_preview(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -438,10 +443,12 @@ class PlannerTests(unittest.TestCase):
                     preview_limit=0,
                 )
                 groups = list(index.iter_duplicate_groups(scan.scan_id))
-            self.assertEqual(plan.redundant_files, 1049)
-            self.assertEqual(sum(len(group.redundant) for group in groups), 1049)
-            self.assertLessEqual(max(len(group.redundant) for group in groups), 1024)
-            self.assertEqual(len({group.keep.path for group in groups}), 1)
+                self.assertEqual(plan.redundant_files, 1049)
+                self.assertEqual(sum(len(group.redundant) for group in groups), 1049)
+                self.assertLessEqual(max(len(group.redundant) for group in groups), 1024)
+                self.assertEqual(len({group.keep.path for group in groups}), 1)
+                self.assertEqual(plan.verification_mode, "fast")
+                self.assertTrue(all(group.verification_mode == "fast" for group in groups))
 
     def test_zero_byte_files_bypass_hash_deduplication(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -472,6 +479,33 @@ class PlannerTests(unittest.TestCase):
                     plan = DedupPlanner(index).plan(scan.scan_id, exact_compare=False)
             self.assertEqual(plan.group_count, 1)
             self.assertEqual(plan.statistics.exact_compare_files, 0)
+            self.assertEqual(plan.verification_mode, "fast")
+
+    def test_failed_candidate_persists_partial_verification_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "corpus"
+            root.mkdir()
+            (root / "a.bin").write_bytes(b"different-candidate")
+            (root / "b.bin").write_bytes(b"duplicate-candidate")
+            (root / "c.bin").write_bytes(b"duplicate-candidate")
+
+            with DedupIndex(Path(directory) / "state.db") as index:
+                scan = index.scan(root)
+                planner = DedupPlanner(index, partial_threshold=0)
+                original_fingerprint = planner._fingerprint
+
+                def fingerprint(snapshot, *, partial):
+                    if Path(snapshot.path).name == "a.bin":
+                        raise FileChangedError("candidate changed")
+                    return original_fingerprint(snapshot, partial=partial)
+
+                with patch.object(planner, "_fingerprint", side_effect=fingerprint):
+                    plan = planner.plan(scan.scan_id, exact_compare=False)
+                groups = tuple(index.iter_duplicate_groups(scan.scan_id))
+
+            self.assertEqual(plan.group_count, 1)
+            self.assertEqual(plan.verification_mode, "partial")
+            self.assertEqual(groups[0].verification_mode, "partial")
 
 
 if __name__ == "__main__":

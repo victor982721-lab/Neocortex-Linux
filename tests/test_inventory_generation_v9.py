@@ -112,7 +112,7 @@ def test_fresh_current_schema_publishes_a_snapshot_without_inventing_usn(
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
-        ).fetchone() == ("10",)
+        ).fetchone() == (str(inventory_schema_module.SCHEMA_VERSION),)
         assert connection.execute(
             "SELECT volume,journal_id,next_usn,valid FROM inventory_checkpoints"
         ).fetchone() == (None, None, None, 1)
@@ -157,7 +157,7 @@ def test_v8_to_current_preserves_published_evidence_and_is_idempotent(
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
-        ).fetchone() == ("10",)
+        ).fetchone() == (str(inventory_schema_module.SCHEMA_VERSION),)
         assert connection.execute(
             """SELECT root,scan_id,volume,journal_id,next_usn,valid,updated_ns
             FROM inventory_checkpoints"""

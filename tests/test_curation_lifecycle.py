@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import closing
 from dataclasses import replace
@@ -14,7 +15,11 @@ from neocortex.curation.authorization import (
     CurationAuthorizationError,
     authorize_curation_items,
 )
-from neocortex.workflow.authorization.repository import read_authorization_grant
+from neocortex.workflow.authorization.repository import (
+    AuthorizationGrantConflict,
+    issue_authorization_grant,
+    read_authorization_grant,
+)
 from neocortex.curation.preview import build_curation_plan_page
 from neocortex.deduplication import DedupIndex, DedupPlanner, InventoryCheckpoint
 from neocortex.documents.document_catalog import initialize_document_catalog
@@ -313,6 +318,16 @@ def test_authorization_grant_requires_review_and_is_append_only(tmp_path: Path) 
     assert outcome.idempotent is False
     assert outcome.grant.action == "move"
     assert outcome.grant.item_ids == (organization.item.item_id,)
+    assert outcome.grant.review_task_heads is not None
+    assert len(outcome.grant.review_task_heads) == 1
+    captured_head = outcome.grant.review_task_heads[0]
+    assert captured_head.item_id == organization.item.item_id
+    assert captured_head.task_id == outcome.grant.task_ids[0]
+    assert captured_head.task_version == 1
+    assert captured_head.state == "resolved"
+    assert captured_head.event_id
+    assert captured_head.head_digest is not None
+    assert outcome.grant.review_task_heads_digest is not None
     retry = authorize_curation_items(
         state,
         framework,
@@ -325,9 +340,20 @@ def test_authorization_grant_requires_review_and_is_append_only(tmp_path: Path) 
         clock_ns=lambda: 9_000,
     )
     assert retry.idempotent is True
+    assert retry.grant.review_task_heads == outcome.grant.review_task_heads
+    assert retry.grant.review_task_heads_digest == outcome.grant.review_task_heads_digest
     loaded = read_authorization_grant(framework, grant_id=outcome.grant.grant_id)
     assert loaded == outcome.grant
     with closing(sqlite3.connect(framework)) as connection:
+        receipt_json = str(
+            connection.execute(
+                "SELECT receipt_json FROM curation_authorization_grants WHERE grant_id=?",
+                (outcome.grant.grant_id,),
+            ).fetchone()[0]
+        )
+        receipt = json.loads(receipt_json)
+        assert receipt["review_task_heads"] == [captured_head.to_dict()]
+        assert receipt["review_task_heads_digest"] == outcome.grant.review_task_heads_digest
         assert connection.execute(
             "SELECT COUNT(*) FROM curation_authorization_grants"
         ).fetchone() == (1,)
@@ -344,6 +370,70 @@ def test_authorization_grant_requires_review_and_is_append_only(tmp_path: Path) 
                 (outcome.grant.grant_id,),
             )
         connection.rollback()
+
+
+def test_authorization_replay_rejects_changed_review_head_without_mutating_receipt(
+    tmp_path: Path,
+) -> None:
+    state, framework, plan_digest = _state(tmp_path)
+    reviewed = lifecycle.review_curation_page(
+        state,
+        framework,
+        plan_digest=plan_digest,
+        limit=100,
+        clock_ns=lambda: 1_000,
+    )
+    for offset, item in enumerate(reviewed.items, start=1):
+        assert item.current_event_id is not None
+        lifecycle.decide_curation_item(
+            state,
+            framework,
+            plan_digest=plan_digest,
+            item_id=item.item.item_id,
+            expected_event_id=item.current_event_id,
+            decision="resolved",
+            decision_scope="permanent",
+            actor="victor",
+            clock_ns=lambda offset=offset: 2_000 + offset,
+        )
+    organization = next(item for item in reviewed.items if item.item.kind == "organization_plan")
+    outcome = authorize_curation_items(
+        state,
+        framework,
+        plan_digest=plan_digest,
+        item_ids=(organization.item.item_id,),
+        action="move",
+        actor="victor",
+        expires_ns=10_000,
+        max_bytes=4,
+        clock_ns=lambda: 4_000,
+    )
+    assert outcome.grant.review_task_heads is not None
+    with closing(sqlite3.connect(framework)) as connection:
+        original_receipt = str(
+            connection.execute(
+                "SELECT receipt_json FROM curation_authorization_grants WHERE grant_id=?",
+                (outcome.grant.grant_id,),
+            ).fetchone()[0]
+        )
+    changed_head = replace(
+        outcome.grant.review_task_heads[0],
+        event_id=outcome.grant.review_task_heads[0].event_id + "-changed",
+        head_digest=None,
+    )
+    changed_grant = replace(
+        outcome.grant,
+        review_task_heads=(changed_head,),
+        review_task_heads_digest=None,
+    )
+    with pytest.raises(AuthorizationGrantConflict, match="idempotency key changed payload"):
+        issue_authorization_grant(framework, changed_grant)
+    with closing(sqlite3.connect(framework)) as connection:
+        assert connection.execute(
+            "SELECT receipt_json FROM curation_authorization_grants WHERE grant_id=?",
+            (outcome.grant.grant_id,),
+        ).fetchone() == (original_receipt,)
+        assert connection.execute("SELECT COUNT(*) FROM file_actions").fetchone() == (0,)
 
 
 def test_authorization_rejects_unverified_trash_and_public_api_projects_grant(

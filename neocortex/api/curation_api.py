@@ -72,6 +72,7 @@ class CurationSnapshotPayload(TypedDict):
     root: Required[str | None]
     scan_id: Required[int | None]
     missing_owners: Required[list[str]]
+    source_heads: Required[list[dict[str, Any]]]
 
 
 class CurationPlanItemPayload(TypedDict):
@@ -221,6 +222,31 @@ def _safe_text_list(value: object, *, label: str) -> list[str]:
         _safe_required_text(item, label=f"{label} item", limit=4_096)
         for item in value
     ]
+
+
+def _safe_source_heads(value: object) -> list[dict[str, Any]]:
+    """Project the bounded owner-head manifest without shared-page truncation."""
+
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)):
+        raise TypeError("curation plan source_heads must be a list")
+    result: list[dict[str, Any]] = []
+    for head in value:
+        if isinstance(head, Mapping):
+            payload = head
+        else:
+            to_dict = getattr(head, "to_dict", None)
+            if not callable(to_dict):
+                raise TypeError("curation plan source head lacks its public mapping")
+            payload = to_dict()
+        if not isinstance(payload, Mapping):
+            raise TypeError("curation plan source head mapping is invalid")
+        safe = sanitize_untrusted_payload(payload, budget=[256])
+        if not isinstance(safe, dict):
+            raise TypeError("curation plan source head sanitization is invalid")
+        result.append(cast(dict[str, Any], safe))
+    return result
 
 
 def _safe_evidence(value: object) -> dict[str, Any]:
@@ -463,6 +489,7 @@ def _success_payload(
         limit=MAX_CURATION_PATH_CHARS,
     )
     missing_owners = _safe_text_list(page.missing_owners, label="missing_owners")
+    source_heads = _safe_source_heads(getattr(page, "source_heads", ()))
     items_total = _safe_nonnegative_int(page.items_total, label="items_total")
     if items_total < len(items):
         raise ValueError("curation plan total is smaller than its page")
@@ -491,6 +518,7 @@ def _success_payload(
             "root": root,
             "scan_id": _safe_optional_nonnegative_int(page.scan_id, label="scan_id"),
             "missing_owners": missing_owners,
+            "source_heads": source_heads,
         },
         "page": {
             "limit": page_limit,
@@ -570,6 +598,7 @@ def _error_payload(
             "root": None,
             "scan_id": None,
             "missing_owners": [],
+            "source_heads": [],
         },
         "page": {
             "limit": limit,

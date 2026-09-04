@@ -26,51 +26,57 @@ incierta, pero no cuenta como funcionalidad entregada para los casos soportados.
 |---|---|
 | Inventario e identidad Linux | Implementado; generaciones, snapshots y conciliación de scans abandonados |
 | Extracción multimodal | Implementada con cobertura desigual por formato |
-| Deduplicación | Planificación implementada; la prueba exacta y disposición pública necesitan un contrato uniforme |
+| Deduplicación | Planificación y `curate verify` implementados; la disposición pública sigue bloqueada hasta `apply` |
 | Catálogo y organización | Planes disponibles; recorrido end-to-end parcial |
 | Knowledge y contexto para agentes | Implementado read-only; cobertura/localizadores varían por owner |
 | Review | **IMPLEMENTED:** `curate review` publica ReviewTasks y `curate decide` añade decisiones humanas por CAS |
-| Curación integrada | **CURRENT:** plan read-only; **IMPLEMENTED:** review/decide advisory y AuthorizationGrant durable; **TARGET:** apply/verify/reconcile |
+| Curación integrada | **CURRENT:** scan/plan/verify; **IMPLEMENTED:** review/decide advisory y AuthorizationGrant durable; **TARGET:** apply/verify/reconcile físico |
 | Mutación Linux | Foundation KIO preparada; no integrada/promovida, y `--apply`/`--organization-apply` se abstienen |
 | Backup/restore/purge | Implementados mediante `Neocortex databases` |
-| MCP | **IMPLEMENTED:** plan/review/decide; authorize se omite hasta resolver un principal autenticado |
+| MCP | **IMPLEMENTED:** plan/scan/verify/review/decide; authorize se omite hasta resolver un principal autenticado |
 
 ## 0.10.0 — Evidencia y plan de curación
 
 **Resultado:** una persona o agente puede inspeccionar, paginar y revisar un plan
 completo sin mutar el corpus.
 
-**IMPLEMENTED en el checkout:** `curate plan` consulta el digest paginado;
-`curate review` publica páginas idempotentes como ReviewTask y `curate decide`
-registra `resolved`/`dismissed` mediante digest y event-head CAS. API, SDK y MCP
-proyectan los mismos envelopes. Review/decide escriben sólo Framework,
-mantienen `actions_authorized=false` y crean cero `file_actions`.
+**IMPLEMENTED en el checkout:** `curate scan` y `curate plan` consultan el digest
+paginado; `curate verify` revalida identidad, hash completo y bytes de grupos
+duplicados sin escribir estado; `curate review` publica páginas idempotentes como
+ReviewTask y `curate decide` registra `resolved`/`dismissed` mediante digest y
+event-head CAS. API, SDK y MCP proyectan estas operaciones. Scan/plan/verify son
+read-only; review/decide escriben sólo Framework, mantienen
+`actions_authorized=false` y crean cero `file_actions`.
+
+Las superficies de scan, plan y verify comparten `source_heads` para inventario y
+catálogo, con revisión, digest, cobertura, modo de verificación y razón de
+abstención; verify admite `--cursor` para recorrer páginas posteriores sin
+confundirlas con un cambio del snapshot.
 
 `curate authorize` y `curation_authorize_payload` validan plan completo,
 ReviewTasks resueltas, acción, actor, expiración y presupuestos, y persisten un
-grant append-only en la extensión Framework. Está expuesto por CLI/API/SDK, no
-por MCP; declara autoridad acotada, pero `physical_effect_applied=false` y crea
-cero `file_actions`.
+grant append-only con manifiesto de heads, versiones, eventos, fingerprints y
+digest agregado en la extensión Framework. Está expuesto por CLI/API/SDK, no por
+MCP; declara autoridad acotada, pero `physical_effect_applied=false` y crea cero
+`file_actions`.
 
 Entregas restantes:
 
-1. completar `curate scan` y `curate verify` alrededor del plan/review ya
-   implementado;
-2. proyección común de tipo real, procedencia, valor, duplicado, versión,
+1. proyección común de tipo real, procedencia, valor, duplicado, versión,
    similitud, disposición y evidencia;
-3. `verification_mode` explícito; ningún candidato fast se publica como
-   duplicado bytewise;
-4. ampliar el plan inmutable ya paginado con source heads y reason codes;
-5. añadir consultas MCP de status/verificación y resolver autenticación antes de
-   considerar un tool de autorización;
-6. límites uniformes de elementos, tiempo, RAM y disco, con progreso y
+2. ampliar el plan inmutable ya paginado con reason codes y localizadores
+   públicos comprobables;
+3. resolver autenticación antes de considerar un tool MCP de autorización;
+4. límites uniformes de elementos, tiempo, RAM y disco, con progreso y
    cancelación;
-7. localizadores públicos comprobables por cada capacidad declarada.
+5. corregir la paridad de `--all`, `resume` y las fachadas públicas;
+6. cerrar las regresiones de fences SQLite y restore que afectan la siguiente
+   cohorte física.
 
 Criterios de aceptación:
 
-- fixture heterogéneo de 20–50 elementos recorre plan, review y decide con
-  paginación/replay, y después incorpora scan/verify;
+- fixture heterogéneo de 20–50 elementos recorre scan, plan, verify, review y
+  decide con paginación/replay;
 - segunda corrida no rehace trabajo compatible;
 - cada propuesta enlaza evidencia y explica incertidumbre;
 - igualdad exacta exige comparación byte a byte;
@@ -144,18 +150,16 @@ Criterios de aceptación:
 
 ## Orden inmediato
 
-1. Completar `scan/verify`, deduplicación exacta y cobertura del plan 0.10.0;
-   ningún candidato fast puede presentarse como duplicado bytewise.
-2. Persistir `verification_mode`, source heads y razones de abstención en el
-   plan, manteniendo el grant separado de ReviewTask.
-3. Añadir status/verificación consultable y límites uniformes antes de ampliar
-   el recorrido de curación.
-4. Implementar `apply → verify → reconcile` como consumidor estricto del grant;
+1. Consolidar la verificación de snapshots, source heads, límites y envelopes de
+   `scan/verify` en las superficies públicas.
+2. Mantener `verification_mode` explícito y ningún candidato fast como duplicado
+   bytewise, además de cerrar las regresiones SQLite que afecten estos lectores.
+3. Implementar `apply → verify → reconcile` como consumidor estricto del grant;
    nunca derivar autoridad directamente de ReviewTask.
-5. Integrar la foundation KIO preparada y completar sus pruebas de producto con
+4. Integrar la foundation KIO preparada y completar sus pruebas de producto con
    runner/verificador inyectados y fixtures same-filesystem; reservar cualquier
    prueba contra KIO real para un gate explícito posterior.
-6. Habilitar 0.11.0 sólo para lotes pequeños y revisión humana, y medir una
+5. Habilitar 0.11.0 sólo para lotes pequeños y revisión humana, y medir una
    carga grande antes de promover watcher o escala automática.
 
 ## Límites

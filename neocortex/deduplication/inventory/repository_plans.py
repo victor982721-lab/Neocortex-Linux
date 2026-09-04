@@ -9,7 +9,12 @@ from collections.abc import Iterable, Iterator
 from neocortex.platform.policy import sqlite_path_collation
 
 from ..domain.errors import InventoryError
-from ..domain.models import DuplicateGroup, FileSnapshot
+from ..domain.models import (
+    VALID_VERIFICATION_MODES,
+    DuplicateGroup,
+    FileSnapshot,
+    VerificationMode,
+)
 from .scan import id_blob as _id_blob
 
 
@@ -189,16 +194,22 @@ class PlanRepositoryMixin:
         group_count: int,
         redundant_files: int,
         reclaimable_bytes: int,
+        verification_mode: VerificationMode,
     ) -> None:
+        if verification_mode not in VALID_VERIFICATION_MODES:
+            raise InventoryError("dedup inventory plan has an invalid verification mode")
         with self._connection:
             self._connection.execute(
-                "INSERT OR REPLACE INTO duplicate_plan_summaries VALUES(?,?,?,?,?)",
+                "INSERT OR REPLACE INTO duplicate_plan_summaries"
+                "(scan_id,group_count,redundant_files,reclaimable_bytes,completed_ns,"
+                "verification_mode) VALUES(?,?,?,?,?,?)",
                 (
                     scan_id,
                     group_count,
                     redundant_files,
                     reclaimable_bytes,
                     time.time_ns(),
+                    verification_mode,
                 ),
             )
 
@@ -206,10 +217,13 @@ class PlanRepositoryMixin:
         """Stream a persisted plan in descending reclaimable-byte order."""
 
         rows = self._connection.execute(
-            "SELECT g.group_id,g.size,g.full_fingerprint,m.member_order,m.path,"
+            "SELECT g.group_id,g.size,g.full_fingerprint,s.verification_mode,"
+            "m.member_order,m.path,"
             "m.volume_id,m.file_id,m.size,m.mtime_ns,m.birthtime_ns "
             "FROM planned_duplicate_groups g JOIN planned_duplicate_members m "
-            "ON m.group_id=g.group_id WHERE g.scan_id=? "
+            "ON m.group_id=g.group_id "
+            "JOIN duplicate_plan_summaries s ON s.scan_id=g.scan_id "
+            "WHERE g.scan_id=? "
             f"ORDER BY g.reclaimable_bytes DESC,g.keep_path COLLATE {_PATH_COLLATION},"
             "g.group_id,m.member_order",
             (scan_id,),
@@ -222,6 +236,7 @@ class PlanRepositoryMixin:
             group_id,
             size,
             digest,
+            verification_mode,
             _order,
             path,
             volume,
@@ -231,7 +246,13 @@ class PlanRepositoryMixin:
             birth,
         ) in rows:
             if current_group is not None and group_id != current_group:
-                yield DuplicateGroup(group_size, members[0], tuple(members[1:]), fingerprint)
+                yield DuplicateGroup(
+                    group_size,
+                    members[0],
+                    tuple(members[1:]),
+                    fingerprint,
+                    verification_mode,
+                )
                 members = []
             current_group = group_id
             group_size = size
@@ -247,7 +268,13 @@ class PlanRepositoryMixin:
                 )
             )
         if current_group is not None:
-            yield DuplicateGroup(group_size, members[0], tuple(members[1:]), fingerprint)
+            yield DuplicateGroup(
+                group_size,
+                members[0],
+                tuple(members[1:]),
+                fingerprint,
+                verification_mode,
+            )
 
 
 __all__ = ["PlanRepositoryMixin"]

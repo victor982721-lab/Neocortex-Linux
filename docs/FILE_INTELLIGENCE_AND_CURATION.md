@@ -45,10 +45,12 @@ Cada etapa produce un artefacto durable o una abstención explicable:
 9. **Verificar:** demostrar origen/destino/Papelera, identidad, bytes y conteos.
 10. **Conciliar:** ante caída o ambigüedad, observar antes de reintentar.
 
-**IMPLEMENTED** alcanza `plan → review → decide → authorize`: plan consulta,
-review publica tareas advisory, decide registra una decisión humana y authorize
-emite un grant durable separado. **TARGET** comienza en `apply`; ni una decisión
-ReviewTask ni la existencia del grant demuestran un efecto físico.
+**IMPLEMENTED** alcanza `scan → plan → verify → review → decide → authorize`:
+scan y plan consultan publicaciones acotadas, verify comprueba evidencia física
+actual sin mutarla, review publica tareas advisory, decide registra una decisión
+humana y authorize emite un grant durable separado. **TARGET** comienza en
+`apply`; ni una decisión ReviewTask ni la existencia del grant demuestran un
+efecto físico.
 
 ## Evidencia y autoridad
 
@@ -73,15 +75,20 @@ La fuente `0.9.0` aporta inventario, extracción multimodal, catálogos, búsque
 Knowledge, Semantic, Code como contenido, planes de duplicados/organización,
 Review, receipts y recuperación parcial.
 
-- **CURRENT:** `curate plan`, `curation_plan` y `--curation-preview` consultan el
-  plan local paginado sin escribir estado o corpus.
+- **CURRENT:** `curate scan`, `curate plan`, `curation_scan`, `curation_plan` y
+  `--curation-preview` consultan el plan local paginado sin escribir estado o
+  corpus.
+- **IMPLEMENTED:** `curate verify` y `curation_verify` comprueban identidad,
+  hash completo y bytes de los grupos duplicados del plan actual, con límites y
+  abstenciones tipadas, sin escribir estado, `ReviewTask`, grants o `file_actions`.
 - **IMPLEMENTED:** `curate review` publica páginas con cobertura completa como
   `ReviewTask` advisory; `curate decide` añade por CAS una decisión humana
   `resolved` o `dismissed`. Sólo escriben Framework, nunca `file_actions`, corpus
   o sistemas externos, y `actions_authorized` permanece `false`.
 - **IMPLEMENTED:** `curate authorize` emite un `AuthorizationGrant` inmutable en
   la extensión `curation_authorization_grants` de Framework. El grant liga plan,
-  snapshot, tareas resueltas, actor, acción, límites y expiración; declara
+  snapshot, tareas resueltas y heads con versión, evento, fingerprints y digest
+  agregado, además de actor, acción, límites y expiración; declara
   `actions_authorized=true` y `physical_effect_applied=false`.
 - **TARGET:** `apply → verify → reconcile` consumirá y revalidará el grant.
 
@@ -91,7 +98,7 @@ Las brechas principales son:
 - varios formatos pierden localizadores estructurales al llegar a búsqueda;
 - igualdad, versión, procedencia, valor y disposición no tienen una proyección
   pública unificada;
-- MCP ya expone plan y las escrituras advisory `curation_review` y
+- MCP expone plan, scan, verify y las escrituras advisory `curation_review` y
   `curation_decide`, pero no `authorize`: falta un principal autenticado;
 - Linux no aplica movimientos ni Papelera;
 - progreso, cancelación y replay no son uniformes en todos los productores.
@@ -121,12 +128,25 @@ runner, resolver y verificador inyectados sobre fixtures contenidos.
 **CURRENT — consulta:**
 
 ```text
+Neocortex curate scan [--limit N] [--cursor TOKEN] [--json]
 Neocortex curate plan [--limit N] [--cursor TOKEN] [--json]
-MCP: curation_plan
+MCP: curation_plan, curation_scan
 ```
 
 El `PLAN_ID` consumido por las operaciones siguientes es el `plan_digest`
 `sha256:<64 hex>` devuelto por plan.
+
+**IMPLEMENTED — verificación exacta:**
+
+```text
+Neocortex curate verify PLAN_ID [--item-id ITEM_ID ...] [--limit N]
+  [--cursor TOKEN] [--json]
+MCP: curation_verify
+```
+
+`curate verify` lee el plan publicado y los archivos regulares dentro de su
+raíz, devuelve `source_heads`, `persisted_mode`, `observed_mode`, conteos y
+razones de abstención, y mantiene `actions_authorized=false`.
 
 **IMPLEMENTED — ReviewTask advisory:**
 
@@ -166,9 +186,10 @@ sistemas externos.
 No hay tool MCP de autorización: aceptar un `actor` aportado por un agente no
 resuelve autenticación del principal humano.
 
-**TARGET — no implementado:** `apply → verify → reconcile` deberá revalidar
-grant, expiración, digest, ReviewTask heads e identidades físicas inmediatamente
-antes del efecto y conservar resultados conciliables.
+**TARGET — no implementado:** el tramo físico `apply → verify → reconcile`
+deberá consumir el grant, revalidar expiración, digest, ReviewTask heads e
+identidades físicas inmediatamente antes del efecto y conservar resultados
+conciliables.
 
 No existe una interfaz de exportación ni un paquete ZIP de curación. `--json`
 serializa la respuesta de una operación; no crea un artefacto durable.

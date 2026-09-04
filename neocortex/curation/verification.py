@@ -1,0 +1,652 @@
+"""Bounded verification of published curation candidates.
+
+The verifier is deliberately read-only with respect to the corpus and its
+owners.  It consumes one already-published :class:`CurationPlanPage`, checks
+the recorded physical identities, hashes the current regular files and then
+performs the byte comparison required for an exact duplicate claim.  It never
+creates ReviewTasks, AuthorizationGrants or ``file_actions``.
+"""
+
+from __future__ import annotations
+
+import errno
+import os
+import stat
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Literal, cast
+
+from neocortex.deduplication.domain.errors import FileChangedError
+from neocortex.deduplication.domain.models import (
+    VALID_VERIFICATION_MODES,
+    VerificationMode,
+)
+from neocortex.deduplication.fingerprinting import (
+    snapshot_path,
+    stat_matches_snapshot,
+)
+
+from .preview import CurationItem, CurationPlanPage, CurationSourceHead
+
+
+CURATION_VERIFICATION_SCHEMA_VERSION = 1
+MAX_VERIFICATION_ITEMS = 100
+MAX_VERIFICATION_FILES = 512
+MAX_VERIFICATION_BYTES = 128 * 1024 * 1024
+
+VerificationStatus = Literal["verified", "source_changed", "not_verified", "not_applicable"]
+
+
+class CurationVerificationError(RuntimeError):
+    """The published curation evidence cannot be verified safely."""
+
+
+class CurationVerificationSnapshotChanged(CurationVerificationError):
+    """The plan or one of its physical sources changed during verification."""
+
+
+class CurationVerificationUnavailable(CurationVerificationError):
+    """The requested verification could not run with the available evidence."""
+
+    def __init__(self, message: str, *, reason_code: str = "verification_unavailable") -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
+
+
+@dataclass(frozen=True, slots=True)
+class CurationVerificationItem:
+    """Verification result for one curation item."""
+
+    item_id: str
+    kind: str
+    source_path: str
+    persisted_mode: VerificationMode | None
+    observed_mode: Literal["full_hash"] | None
+    status: VerificationStatus
+    reason: str
+    checked_files: int
+    verified_files: int
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "checked_files": self.checked_files,
+            "item_id": self.item_id,
+            "kind": self.kind,
+            "observed_mode": self.observed_mode,
+            "persisted_mode": self.persisted_mode,
+            "reason": self.reason,
+            "source_path": self.source_path,
+            "status": self.status,
+            "verified_files": self.verified_files,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CurationVerificationResult:
+    """Bounded result for a page or selected items."""
+
+    plan_digest: str
+    snapshot_id: str
+    coverage: Literal["complete", "partial"]
+    status: Literal["complete", "partial", "snapshot_changed"]
+    items_total: int
+    items_verified: int
+    items_failed: int
+    items_skipped: int
+    files_checked: int
+    bytes_checked: int
+    items: tuple[CurationVerificationItem, ...]
+    source_heads: tuple[CurationSourceHead, ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "bytes_checked": self.bytes_checked,
+            "coverage": self.coverage,
+            "files_checked": self.files_checked,
+            "items": [item.to_dict() for item in self.items],
+            "items_failed": self.items_failed,
+            "items_skipped": self.items_skipped,
+            "items_total": self.items_total,
+            "items_verified": self.items_verified,
+            "plan_digest": self.plan_digest,
+            "snapshot_id": self.snapshot_id,
+            "source_heads": [head.to_dict() for head in self.source_heads],
+            "status": self.status,
+        }
+
+
+def _bounded_root(value: object) -> Path:
+    if not isinstance(value, str) or not value or not value.startswith("/"):
+        raise CurationVerificationUnavailable(
+            "curation plan root is not absolute",
+            reason_code="root_invalid",
+        )
+    return Path(os.path.abspath(value))
+
+
+def _assert_safe_path_components(root: Path, path: Path) -> None:
+    """Reject a root or ancestor symlink before opening corpus content.
+
+    A lexical ``relative_to`` check is insufficient when a directory below the
+    root is replaced by a symlink.  Walk every directory component with
+    ``lstat``; the final component is checked separately by the caller and by
+    the descriptor-based reader below.
+    """
+
+    try:
+        root_stat = root.lstat()
+    except FileNotFoundError as exc:
+        raise CurationVerificationSnapshotChanged(
+            f"curation root disappeared: {root}"
+        ) from exc
+    except OSError as exc:
+        raise CurationVerificationUnavailable(
+            f"curation root cannot be inspected: {root}",
+            reason_code="source_inspection_unavailable",
+        ) from exc
+    if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
+        raise CurationVerificationSnapshotChanged(
+            f"curation root is not a regular directory: {root}"
+        )
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise CurationVerificationSnapshotChanged(
+            "curation source path escapes the published root"
+        ) from exc
+    current = root
+    for component in relative.parts[:-1]:
+        current /= component
+        try:
+            component_stat = current.lstat()
+        except FileNotFoundError as exc:
+            raise CurationVerificationSnapshotChanged(
+                f"curation source ancestor disappeared: {current}"
+            ) from exc
+        except OSError as exc:
+            raise CurationVerificationUnavailable(
+                f"curation source ancestor cannot be inspected: {current}",
+                reason_code="source_inspection_unavailable",
+            ) from exc
+        if stat.S_ISLNK(component_stat.st_mode):
+            raise CurationVerificationSnapshotChanged(
+                f"curation source ancestor is a symlink: {current}"
+            )
+        if not stat.S_ISDIR(component_stat.st_mode):
+            raise CurationVerificationSnapshotChanged(
+                f"curation source ancestor is not a directory: {current}"
+            )
+
+
+def _bounded_path(value: object, *, root: Path) -> Path:
+    if not isinstance(value, str) or not value or not value.startswith("/"):
+        raise CurationVerificationSnapshotChanged("curation source path is not absolute")
+    path = Path(os.path.abspath(value))
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise CurationVerificationSnapshotChanged(
+            "curation source path escapes the published root"
+        ) from exc
+    return path
+
+
+def _identity_numbers(value: object) -> tuple[int, int, int]:
+    if not isinstance(value, dict):
+        raise CurationVerificationSnapshotChanged("curation member identity is invalid")
+    try:
+        volume = int(str(value["volume_id"]), 16)
+        file_id = int(str(value["file_id"]), 16)
+        birthtime = int(value["birthtime_ns"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise CurationVerificationSnapshotChanged(
+            "curation member identity is invalid"
+        ) from exc
+    return volume, file_id, birthtime
+
+
+def _snapshot_for_member(
+    member: dict[str, object],
+    *,
+    root: Path,
+) -> tuple[Path, Any]:
+    path = _bounded_path(member.get("path"), root=root)
+    _assert_safe_path_components(root, path)
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError as exc:
+        raise CurationVerificationSnapshotChanged(
+            f"curation source disappeared: {path}"
+        ) from exc
+    except OSError as exc:
+        raise CurationVerificationUnavailable(
+            f"curation source cannot be inspected: {path}",
+            reason_code="source_inspection_unavailable",
+        ) from exc
+    if stat.S_ISLNK(mode) or not stat.S_ISREG(mode):
+        raise CurationVerificationSnapshotChanged(
+            f"curation source is not a regular file: {path}"
+        )
+    try:
+        current = snapshot_path(path)
+    except (FileChangedError, OSError, ValueError) as exc:
+        raise CurationVerificationSnapshotChanged(
+            f"curation source cannot be snapshotted: {path}"
+        ) from exc
+    expected_volume, expected_file, expected_birth = _identity_numbers(member.get("identity"))
+    expected_size = member.get("size")
+    expected_mtime = member.get("mtime_ns")
+    if (
+        current.volume_id != expected_volume
+        or current.file_id != expected_file
+        or current.birthtime_ns != expected_birth
+        or current.size != expected_size
+        or current.mtime_ns != expected_mtime
+    ):
+        raise CurationVerificationSnapshotChanged(
+            f"curation source identity changed: {path}"
+        )
+    return path, current
+
+
+def _open_regular_file_beneath(root: Path, path: Path) -> int:
+    """Open ``path`` through no-following directory descriptors.
+
+    This closes the ancestor-symlink race between the lexical/lstat checks and
+    the actual read.  The returned descriptor is owned by the caller.
+    """
+
+    relative = path.relative_to(root)
+    if not relative.parts:
+        raise CurationVerificationSnapshotChanged("curation source path is the root")
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    common_flags = os.O_RDONLY | os.O_CLOEXEC | nofollow
+    directory_fd: int | None = None
+    try:
+        directory_fd = os.open(
+            root,
+            common_flags | os.O_DIRECTORY,
+        )
+        for component in relative.parts[:-1]:
+            next_fd = os.open(
+                component,
+                common_flags | os.O_DIRECTORY,
+                dir_fd=directory_fd,
+            )
+            os.close(directory_fd)
+            directory_fd = next_fd
+        file_fd = os.open(
+            relative.parts[-1],
+            common_flags,
+            dir_fd=directory_fd,
+        )
+        os.close(directory_fd)
+        directory_fd = None
+        return file_fd
+    except OSError as exc:
+        if directory_fd is not None:
+            try:
+                os.close(directory_fd)
+            except OSError:
+                pass
+        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise CurationVerificationSnapshotChanged(
+                f"curation source path contains a symlink or non-directory: {path}"
+            ) from exc
+        if exc.errno in {errno.ENOENT, errno.ESTALE}:
+            raise CurationVerificationSnapshotChanged(
+                f"curation source disappeared: {path}"
+            ) from exc
+        raise CurationVerificationUnavailable(
+            f"curation source cannot be opened: {path}",
+            reason_code="io_unavailable",
+        ) from exc
+
+
+def _read_stable_payload(
+    path: Path,
+    snapshot: Any,
+    *,
+    root: Path,
+) -> tuple[bytes, str]:
+    """Read and fingerprint one file exactly once through a safe descriptor."""
+
+    try:
+        import xxhash
+    except ImportError as exc:  # pragma: no cover - dependency is in releases
+        raise CurationVerificationUnavailable(
+            "exact curation verification requires xxhash",
+            reason_code="dependency_unavailable",
+        ) from exc
+    descriptor = _open_regular_file_beneath(root, path)
+    try:
+        before = os.fstat(descriptor)
+        if not stat_matches_snapshot(snapshot, before):
+            raise CurationVerificationSnapshotChanged(
+                f"curation source identity changed: {path}"
+            )
+        hasher = xxhash.xxh3_128()
+        chunks: list[bytes] = []
+        remaining = snapshot.size
+        while remaining:
+            try:
+                chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            except OSError as exc:
+                raise CurationVerificationUnavailable(
+                    f"curation source cannot be read: {path}",
+                    reason_code="io_unavailable",
+                ) from exc
+            if not chunk:
+                raise CurationVerificationSnapshotChanged(
+                    f"curation source ended early: {path}"
+                )
+            chunks.append(chunk)
+            hasher.update(chunk)
+            remaining -= len(chunk)
+        after = os.fstat(descriptor)
+        if not stat_matches_snapshot(snapshot, after):
+            raise CurationVerificationSnapshotChanged(
+                f"curation source changed while reading: {path}"
+            )
+        return b"".join(chunks), hasher.digest().hex()
+    finally:
+        os.close(descriptor)
+
+
+def _duplicate_verification(
+    item: CurationItem,
+    *,
+    root: Path,
+    files_left: int,
+    bytes_left: int,
+) -> tuple[CurationVerificationItem, int, int]:
+    evidence = item.evidence
+    raw_mode = evidence.get("verification_mode")
+    mode: VerificationMode | None = (
+        cast(VerificationMode, raw_mode)
+        if isinstance(raw_mode, str) and raw_mode in VALID_VERIFICATION_MODES
+        else None
+    )
+    members = evidence.get("members")
+    if not isinstance(members, list) or bool(evidence.get("members_truncated")):
+        return (
+            CurationVerificationItem(
+                item.item_id,
+                item.kind,
+                item.source_path,
+                mode,
+                None,
+                "not_verified",
+                "evidence_truncated",
+                0,
+                0,
+            ),
+            files_left,
+            bytes_left,
+        )
+    if not members or len(members) > MAX_VERIFICATION_FILES:
+        return (
+            CurationVerificationItem(
+                item.item_id,
+                item.kind,
+                item.source_path,
+                mode,
+                None,
+                "not_verified",
+                "member_count_out_of_bounds",
+                0,
+                0,
+            ),
+            files_left,
+            bytes_left,
+        )
+    try:
+        typed_members = [cast(dict[str, object], member) for member in members]
+        keep = next(member for member in typed_members if member.get("role") == "keep")
+    except (StopIteration, TypeError):
+        return (
+            CurationVerificationItem(
+                item.item_id,
+                item.kind,
+                item.source_path,
+                mode,
+                None,
+                "not_verified",
+                "keep_member_missing",
+                0,
+                0,
+            ),
+            files_left,
+            bytes_left,
+        )
+    checked = 0
+    verified = 0
+    try:
+        keep_path, keep_snapshot = _snapshot_for_member(keep, root=root)
+        if keep_snapshot.size > bytes_left or files_left <= 0:
+            raise CurationVerificationUnavailable(
+                "verification budget exceeded",
+                reason_code="verification_budget_exceeded",
+            )
+        checked += 1
+        files_left -= 1
+        bytes_left -= keep_snapshot.size
+        keep_payload, keep_digest = _read_stable_payload(
+            keep_path,
+            keep_snapshot,
+            root=root,
+        )
+        if keep_digest != str(evidence.get("full_fingerprint")):
+            raise CurationVerificationSnapshotChanged(
+                f"curation source content changed: {keep_path}"
+            )
+        verified += 1
+        for member in typed_members:
+            if member is keep:
+                continue
+            path, snapshot = _snapshot_for_member(member, root=root)
+            if snapshot.size > bytes_left or files_left <= 0:
+                raise CurationVerificationUnavailable(
+                    "verification budget exceeded",
+                    reason_code="verification_budget_exceeded",
+                )
+            checked += 1
+            files_left -= 1
+            bytes_left -= snapshot.size
+            payload, digest = _read_stable_payload(path, snapshot, root=root)
+            if digest != keep_digest or payload != keep_payload:
+                raise CurationVerificationSnapshotChanged(
+                    f"curation duplicate content changed: {path}"
+                )
+            verified += 1
+    except CurationVerificationError as exc:
+        status: VerificationStatus = (
+            "source_changed" if isinstance(exc, CurationVerificationSnapshotChanged) else "not_verified"
+        )
+        return (
+            CurationVerificationItem(
+                item.item_id,
+                item.kind,
+                item.source_path,
+                mode,
+                None,
+                status,
+                (
+                    "source_changed"
+                    if status == "source_changed"
+                    else getattr(exc, "reason_code", "verification_unavailable")
+                ),
+                checked,
+                verified,
+            ),
+            files_left,
+            bytes_left,
+        )
+    except (FileChangedError, OSError, ValueError):
+        return (
+            CurationVerificationItem(
+                item.item_id,
+                item.kind,
+                item.source_path,
+                mode,
+                None,
+                "source_changed",
+                "source_changed",
+                checked,
+                verified,
+            ),
+            files_left,
+            bytes_left,
+        )
+    return (
+        CurationVerificationItem(
+            item.item_id,
+            item.kind,
+            item.source_path,
+            mode,
+            "full_hash",
+            "verified",
+            "exact_content_verified",
+            checked,
+            verified,
+        ),
+        files_left,
+        bytes_left,
+    )
+
+
+def verify_curation_page(
+    page: CurationPlanPage,
+    *,
+    item_ids: tuple[str, ...] | None = None,
+    max_items: int = MAX_VERIFICATION_ITEMS,
+    max_files: int = MAX_VERIFICATION_FILES,
+    max_bytes: int = MAX_VERIFICATION_BYTES,
+) -> CurationVerificationResult:
+    """Verify duplicate candidates from one already-published plan page."""
+
+    if not isinstance(page, CurationPlanPage):
+        raise TypeError("page must be a CurationPlanPage")
+    if not 1 <= max_items <= MAX_VERIFICATION_ITEMS:
+        raise ValueError("max_items is outside the verification bound")
+    if not 1 <= max_files <= MAX_VERIFICATION_FILES:
+        raise ValueError("max_files is outside the verification bound")
+    if not 1 <= max_bytes <= MAX_VERIFICATION_BYTES:
+        raise ValueError("max_bytes is outside the verification bound")
+    root = _bounded_root(page.root)
+    selected = page.items
+    if item_ids is not None:
+        if not item_ids:
+            raise ValueError("item_ids cannot be empty")
+        if len(item_ids) > max_items or len(set(item_ids)) != len(item_ids):
+            raise ValueError("item_ids are outside the verification bound")
+        by_id = {item.item_id: item for item in page.items}
+        missing = [item_id for item_id in item_ids if item_id not in by_id]
+        if missing:
+            raise CurationVerificationSnapshotChanged("curation item is not in the published page")
+        selected = tuple(by_id[item_id] for item_id in item_ids)
+    elif len(selected) > max_items:
+        raise CurationVerificationUnavailable("curation verification page exceeds its item bound")
+    if page.next_cursor is not None and item_ids is None:
+        return CurationVerificationResult(
+            page.plan_digest,
+            page.snapshot_id,
+            "partial",
+            "partial",
+            page.items_total,
+            0,
+            0,
+            len(selected),
+            0,
+            0,
+            tuple(
+                CurationVerificationItem(
+                    item.item_id,
+                    item.kind,
+                    item.source_path,
+                    (
+                        cast(VerificationMode, item.evidence.get("verification_mode"))
+                        if item.kind == "duplicate_group"
+                        and item.evidence.get("verification_mode") in VALID_VERIFICATION_MODES
+                        else None
+                    ),
+                    None,
+                    "not_verified",
+                    "page_incomplete",
+                    0,
+                    0,
+                )
+                for item in selected
+            ),
+            page.source_heads,
+        )
+    remaining_files = max_files
+    remaining_bytes = max_bytes
+    results: list[CurationVerificationItem] = []
+    for item in selected:
+        if item.kind != "duplicate_group":
+            results.append(
+                CurationVerificationItem(
+                    item.item_id,
+                    item.kind,
+                    item.source_path,
+                    None,
+                    None,
+                    "not_applicable",
+                    "not_duplicate_kind",
+                    0,
+                    0,
+                )
+            )
+            continue
+        result, remaining_files, remaining_bytes = _duplicate_verification(
+            item,
+            root=root,
+            files_left=remaining_files,
+            bytes_left=remaining_bytes,
+        )
+        results.append(result)
+    verified_count = sum(item.status == "verified" for item in results)
+    failed_count = sum(item.status == "source_changed" for item in results)
+    # Non-duplicate entries (empty files and organization proposals) are
+    # intentionally outside bytewise duplicate verification; they must not
+    # downgrade a page whose applicable duplicate groups were all verified.
+    skipped_count = sum(item.status == "not_verified" for item in results)
+    files_checked = sum(item.checked_files for item in results)
+    bytes_checked = max_bytes - remaining_bytes
+    status: Literal["complete", "partial", "snapshot_changed"] = (
+        "snapshot_changed"
+        if failed_count
+        else "partial"
+        if skipped_count or page.coverage != "complete"
+        else "complete"
+    )
+    coverage: Literal["complete", "partial"] = "complete" if status == "complete" else "partial"
+    return CurationVerificationResult(
+        page.plan_digest,
+        page.snapshot_id,
+        coverage,
+        status,
+        page.items_total,
+        verified_count,
+        failed_count,
+        skipped_count,
+        files_checked,
+        bytes_checked,
+        tuple(results),
+        page.source_heads,
+    )
+
+
+__all__ = (
+    "CURATION_VERIFICATION_SCHEMA_VERSION",
+    "MAX_VERIFICATION_BYTES",
+    "MAX_VERIFICATION_FILES",
+    "MAX_VERIFICATION_ITEMS",
+    "CurationVerificationError",
+    "CurationVerificationItem",
+    "CurationVerificationResult",
+    "CurationVerificationSnapshotChanged",
+    "CurationVerificationUnavailable",
+    "verify_curation_page",
+)

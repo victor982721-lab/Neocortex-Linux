@@ -17,7 +17,13 @@ from neocortex.persistence.framework_schema import (
     SCHEMA_VERSION as FRAMEWORK_SCHEMA_VERSION,
     validate_framework_schema_v22,
 )
-from neocortex.workflow.authorization.contracts import AuthorizationGrant
+from neocortex.workflow.authorization.contracts import (
+    AuthorizationGrant,
+    AuthorizationReviewTaskHead,
+    REVIEW_TASK_HEADS_SCHEMA_VERSION,
+    review_task_heads_digest,
+)
+from neocortex.workflow.review.review_task_contracts import CanonicalJsonObject
 
 
 class AuthorizationGrantRepositoryError(RuntimeError):
@@ -40,6 +46,19 @@ _COLUMNS = (
     "task_ids_json,max_actions,max_bytes,issued_ns,expires_ns,receipt_json,"
     "extension_schema_version"
 )
+
+
+def _canonical_json(value: object) -> str:
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError) as exc:
+        raise AuthorizationGrantRepositoryError("AuthorizationGrant JSON is not canonical") from exc
 
 
 def _require_framework(connection: sqlite3.Connection) -> None:
@@ -69,7 +88,110 @@ def _json_array(value: object, label: str) -> tuple[str, ...]:
     return tuple(payload)
 
 
+def _head_from_payload(value: object) -> AuthorizationReviewTaskHead:
+    if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
+        raise AuthorizationGrantRepositoryError("review_task_heads contains a non-object")
+    decision = value.get("decision")
+    text_fields = (
+        "item_id",
+        "logical_key",
+        "task_id",
+        "state",
+        "event_id",
+        "source_snapshot_fingerprint",
+        "source_input_fingerprint",
+        "selector_signature",
+    )
+    if any(not isinstance(value.get(field), str) for field in text_fields):
+        raise AuthorizationGrantRepositoryError("review_task_heads contains non-text identity fields")
+    task_version = value.get("task_version")
+    if isinstance(task_version, bool) or not isinstance(task_version, int):
+        raise AuthorizationGrantRepositoryError("review_task_heads task_version is not an integer")
+    head_digest = value.get("head_digest")
+    if head_digest is not None and not isinstance(head_digest, str):
+        raise AuthorizationGrantRepositoryError("review_task_heads head_digest is not text")
+    try:
+        head = AuthorizationReviewTaskHead(
+            item_id=value["item_id"],
+            logical_key=value["logical_key"],
+            task_id=value["task_id"],
+            task_version=task_version,
+            state=value["state"],
+            event_id=value["event_id"],
+            source_snapshot_fingerprint=value["source_snapshot_fingerprint"],
+            source_input_fingerprint=value["source_input_fingerprint"],
+            selector_signature=value["selector_signature"],
+            decision=(
+                None
+                if decision is None
+                else CanonicalJsonObject.from_mapping(decision)
+            ),
+            head_digest=head_digest,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise AuthorizationGrantRepositoryError("review_task_heads contains an invalid head") from exc
+    if value != head.to_dict():
+        raise AuthorizationGrantRepositoryError("review_task_heads contains a non-canonical head")
+    return head
+
+
+def _heads_from_receipt(
+    receipt_json: str,
+) -> tuple[tuple[AuthorizationReviewTaskHead, ...] | None, str | None]:
+    try:
+        payload = json.loads(receipt_json)
+    except (TypeError, ValueError) as exc:
+        raise AuthorizationGrantRepositoryError("AuthorizationGrant receipt is invalid JSON") from exc
+    if not isinstance(payload, dict) or any(not isinstance(key, str) for key in payload):
+        raise AuthorizationGrantRepositoryError("AuthorizationGrant receipt is not an object")
+    try:
+        canonical = _canonical_json(payload)
+    except (TypeError, ValueError) as exc:
+        raise AuthorizationGrantRepositoryError("AuthorizationGrant receipt is not canonical") from exc
+    if canonical != receipt_json:
+        raise AuthorizationGrantRepositoryError("AuthorizationGrant receipt is not canonical")
+    present = {
+        key
+        for key in (
+            "review_task_heads_schema_version",
+            "review_task_heads",
+            "review_task_heads_digest",
+        )
+        if key in payload
+    }
+    if not present:
+        # Grants written before the head manifest remain readable as legacy
+        # facts, but an effect consumer must reject them as unbound.
+        return None, None
+    if present != {
+        "review_task_heads_schema_version",
+        "review_task_heads",
+        "review_task_heads_digest",
+    }:
+        raise AuthorizationGrantRepositoryError("AuthorizationGrant head manifest is incomplete")
+    if payload["review_task_heads_schema_version"] != REVIEW_TASK_HEADS_SCHEMA_VERSION:
+        raise AuthorizationGrantRepositoryError("AuthorizationGrant head manifest version is unsupported")
+    raw_heads = payload["review_task_heads"]
+    if not isinstance(raw_heads, list):
+        raise AuthorizationGrantRepositoryError("AuthorizationGrant heads are not an array")
+    try:
+        heads = tuple(_head_from_payload(item) for item in raw_heads)
+        digest = payload["review_task_heads_digest"]
+        if not isinstance(digest, str):
+            raise AuthorizationGrantRepositoryError(
+                "AuthorizationGrant head manifest digest is not text"
+            )
+        expected = review_task_heads_digest(heads)
+    except (TypeError, ValueError) as exc:
+        raise AuthorizationGrantRepositoryError("AuthorizationGrant head manifest is invalid") from exc
+    if digest != expected:
+        raise AuthorizationGrantRepositoryError("AuthorizationGrant head manifest digest is invalid")
+    return heads, digest
+
+
 def _grant_from_row(row: sqlite3.Row) -> AuthorizationGrant:
+    receipt_json = str(row["receipt_json"])
+    review_task_heads, review_task_heads_digest = _heads_from_receipt(receipt_json)
     try:
         grant = AuthorizationGrant(
             grant_id=str(row["grant_id"]),
@@ -90,10 +212,12 @@ def _grant_from_row(row: sqlite3.Row) -> AuthorizationGrant:
             max_bytes=int(row["max_bytes"]),
             issued_ns=int(row["issued_ns"]),
             expires_ns=int(row["expires_ns"]),
+            review_task_heads=review_task_heads,
+            review_task_heads_digest=review_task_heads_digest,
         )
     except (TypeError, ValueError, OverflowError) as exc:
         raise AuthorizationGrantRepositoryError("persisted AuthorizationGrant is invalid") from exc
-    if int(row["extension_schema_version"]) != 1 or str(row["receipt_json"]) != grant.to_json():
+    if int(row["extension_schema_version"]) != 1 or receipt_json != grant.to_json():
         raise AuthorizationGrantRepositoryError("persisted AuthorizationGrant receipt is not canonical")
     return grant
 

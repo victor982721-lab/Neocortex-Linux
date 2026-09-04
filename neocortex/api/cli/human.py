@@ -80,8 +80,9 @@ def _print(value: str = "", *, file: TextIO | None = None) -> None:
     print(_console_text(safe_value, stream), file=stream)
 
 
-def _json(payload: Mapping[str, object]) -> None:
-    safe_payload = sanitize_untrusted_payload(payload)
+def _json(payload: Mapping[str, object], *, budget_nodes: int | None = None) -> None:
+    budget = None if budget_nodes is None else [budget_nodes]
+    safe_payload = sanitize_untrusted_payload(payload, budget=budget)
     _print(json.dumps(safe_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
 
 
@@ -189,6 +190,30 @@ def build_human_parser() -> argparse.ArgumentParser:
     curate_plan.add_argument("--limit", type=_curation_limit, default=50, metavar="N")
     curate_plan.add_argument("--cursor", metavar="TOKEN")
     curate_plan.add_argument("--json", action="store_true", help="emite el contrato JSON completo")
+    curate_scan = curate_commands.add_parser(
+        "scan",
+        help="inspecciona el plan publicado y sus cabezas de estado, sin mutar archivos",
+        allow_abbrev=False,
+    )
+    curate_scan.add_argument("--limit", type=_curation_limit, default=50, metavar="N")
+    curate_scan.add_argument("--cursor", metavar="TOKEN")
+    curate_scan.add_argument("--json", action="store_true", help="emite el contrato JSON completo")
+    curate_verify = curate_commands.add_parser(
+        "verify",
+        help="verifica por bytes los candidatos duplicados de un plan publicado",
+        allow_abbrev=False,
+    )
+    curate_verify.add_argument("plan_id", metavar="PLAN_ID")
+    curate_verify.add_argument(
+        "--item-id",
+        action="append",
+        dest="item_ids",
+        metavar="ITEM_ID",
+        help="limita la verificación a un item; puede repetirse",
+    )
+    curate_verify.add_argument("--limit", type=_curation_limit, default=100, metavar="N")
+    curate_verify.add_argument("--cursor", metavar="TOKEN")
+    curate_verify.add_argument("--json", action="store_true", help="emite el contrato JSON completo")
     curate_review = curate_commands.add_parser(
         "review",
         help="publica una página del plan como tareas de revisión, sin tocar archivos",
@@ -933,6 +958,75 @@ def _run_curation_plan(args: argparse.Namespace) -> int:
     return 0 if coverage == "complete" else 2
 
 
+def _run_curation_scan(args: argparse.Namespace) -> int:
+    try:
+        from neocortex.api.curation_verification_api import curation_scan_payload
+
+        payload = curation_scan_payload(limit=args.limit, cursor=args.cursor)
+    except Exception as exc:  # pragma: no cover - adapter contract covers normal failures
+        _print(f"curate scan: {_single_line(exc, limit=800)}", file=sys.stderr)
+        return 2
+    if args.json:
+        _json(payload, budget_nodes=100_000)
+        return _exit_code(payload)
+    result = _mapping(payload.get("result")) or {}
+    _print(
+        f"CURATION_SCAN status={payload.get('status', 'unavailable')} "
+        f"coverage={payload.get('coverage', 'unavailable')} "
+        f"scan={result.get('scan_id') or '-'} "
+        f"digest={result.get('plan_digest') or '-'}"
+    )
+    page = _mapping(result.get("page")) or {}
+    _print(
+        f"items={page.get('items_total', 0)} page_items={len(_mapping_rows(page.get('items')))} "
+        f"next_cursor={page.get('next_cursor') or '-'}"
+    )
+    error = _mapping(payload.get("error"))
+    if error is not None and error.get("message"):
+        _print(f"Estado: {error['message']}", file=sys.stderr)
+    _print("La inspección de curation sólo leyó estado publicado; no modificó corpus ni archivos.")
+    return _exit_code(payload)
+
+
+def _run_curation_verify(args: argparse.Namespace) -> int:
+    try:
+        from neocortex.api.curation_verification_api import curation_verify_payload
+
+        payload = curation_verify_payload(
+            args.plan_id,
+            item_ids=args.item_ids,
+            limit=args.limit,
+            cursor=args.cursor,
+        )
+    except Exception as exc:  # pragma: no cover - adapter contract covers normal failures
+        _print(f"curate verify: {_single_line(exc, limit=800)}", file=sys.stderr)
+        return 2
+    if args.json:
+        _json(payload, budget_nodes=100_000)
+        return _exit_code(payload)
+    result = _mapping(payload.get("result")) or {}
+    _print(
+        f"CURATION_VERIFY status={payload.get('status', 'unavailable')} "
+        f"coverage={payload.get('coverage', 'unavailable')} "
+        f"verified={result.get('items_verified', 0)} "
+        f"failed={result.get('items_failed', 0)} "
+        f"skipped={result.get('items_skipped', 0)}"
+    )
+    for item in _mapping_rows(result.get("items")):
+        persisted_mode = item.get("persisted_mode") or "-"
+        observed_mode = item.get("observed_mode") or "-"
+        _print(
+            f"ITEM id={item.get('item_id', '-')} status={item.get('status', '-')} "
+            f"persisted_mode={persisted_mode} observed_mode={observed_mode} "
+            f"reason={item.get('reason', '-')}"
+        )
+    error = _mapping(payload.get("error"))
+    if error is not None and error.get("message"):
+        _print(f"Estado: {error['message']}", file=sys.stderr)
+    _print("La verificación sólo leyó corpus y estado; no creó ReviewTask, grants ni file_actions.")
+    return _exit_code(payload)
+
+
 def _run_curation_review(args: argparse.Namespace) -> int:
     try:
         from neocortex.api.curation_lifecycle_api import curation_review_payload
@@ -1149,6 +1243,10 @@ def run_human_command(arguments: Sequence[str]) -> int:
         return _run_ask(args)
     if args.command == "curate" and args.curate_command == "plan":
         return _run_curation_plan(args)
+    if args.command == "curate" and args.curate_command == "scan":
+        return _run_curation_scan(args)
+    if args.command == "curate" and args.curate_command == "verify":
+        return _run_curation_verify(args)
     if args.command == "curate" and args.curate_command == "review":
         return _run_curation_review(args)
     if args.command == "curate" and args.curate_command == "decide":

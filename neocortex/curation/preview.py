@@ -21,8 +21,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, Literal, cast
 
+from neocortex.deduplication.domain.models import VALID_VERIFICATION_MODES, VerificationMode
 from neocortex.deduplication.persistence.validation import validate_inventory_schema
 from neocortex.documents.document_catalog_schema import document_catalog_schema_contract
 from neocortex.persistence.sqlite_immutable import (
@@ -126,6 +127,7 @@ class CurationPreview:
     items_truncated: bool
     preview_fingerprint: str
     items: tuple[CurationItem, ...]
+    source_heads: tuple["CurationSourceHead", ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -145,6 +147,7 @@ class CurationPreview:
             "root": self.root,
             "scan_id": self.scan_id,
             "schema_version": self.schema_version,
+            "source_heads": [head.to_dict() for head in self.source_heads],
         }
 
 
@@ -170,6 +173,7 @@ class CurationPlanPage:
     plan_digest: str
     items_total: int
     items: tuple[CurationItem, ...]
+    source_heads: tuple["CurationSourceHead", ...] = ()
 
     @property
     def items_truncated(self) -> bool:
@@ -196,6 +200,42 @@ class CurationPlanPage:
             "scan_id": self.scan_id,
             "schema_version": self.schema_version,
             "snapshot_id": self.snapshot_id,
+            "source_heads": [head.to_dict() for head in self.source_heads],
+        }
+
+
+SourceHeadCoverage = Literal["complete", "partial", "unavailable"]
+
+
+@dataclass(frozen=True, slots=True)
+class CurationSourceHead:
+    """One owner-local head captured by the published curation snapshot."""
+
+    owner: str
+    kind: str
+    head_id: str | None
+    digest: str
+    root: str | None
+    revision: int | None
+    item_count: int
+    coverage: SourceHeadCoverage
+    reason: str | None = None
+    verification_mode: VerificationMode | None = None
+    metadata: tuple[tuple[str, object], ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "coverage": self.coverage,
+            "digest": self.digest,
+            "head_id": self.head_id,
+            "item_count": self.item_count,
+            "kind": self.kind,
+            "metadata": dict(self.metadata),
+            "owner": self.owner,
+            "reason": self.reason,
+            "revision": self.revision,
+            "root": self.root,
+            "verification_mode": self.verification_mode,
         }
 
 
@@ -215,6 +255,7 @@ class _DuplicatePlanState:
     reclaimable_bytes: int
     completed_ns: int | None
     dangling_groups: int
+    verification_mode: VerificationMode
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,6 +282,48 @@ def _canonical_json(value: object) -> str:
         allow_nan=False,
         sort_keys=True,
         separators=(",", ":"),
+    )
+
+
+def _source_head(
+    *,
+    owner: str,
+    kind: str,
+    head_id: str | None,
+    root: str | None,
+    revision: int | None,
+    item_count: int,
+    coverage: SourceHeadCoverage,
+    reason: str | None = None,
+    verification_mode: VerificationMode | None = None,
+    extra: dict[str, object] | None = None,
+) -> CurationSourceHead:
+    payload: dict[str, object] = {
+        "coverage": coverage,
+        "head_id": head_id,
+        "item_count": item_count,
+        "kind": kind,
+        "owner": owner,
+        "reason": reason,
+        "revision": revision,
+        "root": root,
+        "verification_mode": verification_mode,
+    }
+    metadata = tuple(sorted((extra or {}).items()))
+    payload["metadata"] = dict(metadata)
+    digest = "sha256:" + hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+    return CurationSourceHead(
+        owner=owner,
+        kind=kind,
+        head_id=head_id,
+        digest=digest,
+        root=root,
+        revision=revision,
+        item_count=item_count,
+        coverage=coverage,
+        reason=reason,
+        verification_mode=verification_mode,
+        metadata=metadata,
     )
 
 
@@ -347,17 +430,21 @@ def _duplicate_plan_state(
         int(actual[2]),
     )
     summary = connection.execute(
-        """SELECT group_count,redundant_files,reclaimable_bytes,completed_ns
+        """SELECT group_count,redundant_files,reclaimable_bytes,completed_ns,
+        verification_mode
         FROM duplicate_plan_summaries WHERE scan_id=?""",
         (scan_id,),
     ).fetchone()
     if summary is None:
-        return _DuplicatePlanState(False, 0, 0, 0, None, actual_groups)
+        return _DuplicatePlanState(False, 0, 0, 0, None, actual_groups, "legacy_unknown")
 
     expected_groups = int(summary[0])
     expected_redundant = int(summary[1])
     expected_reclaimable = int(summary[2])
     completed_ns = int(summary[3])
+    verification_mode = str(summary[4])
+    if verification_mode not in VALID_VERIFICATION_MODES:
+        raise CurationStateError("duplicate plan verification mode is invalid")
     stored_members = int(
         connection.execute(
             """SELECT COUNT(*) FROM planned_duplicate_members m
@@ -372,7 +459,15 @@ def _duplicate_plan_state(
         and stored_members == expected_groups + expected_redundant
     )
     if not complete:
-        return _DuplicatePlanState(False, 0, 0, 0, completed_ns, actual_groups)
+        return _DuplicatePlanState(
+            False,
+            0,
+            0,
+            0,
+            completed_ns,
+            actual_groups,
+            cast(VerificationMode, verification_mode),
+        )
     return _DuplicatePlanState(
         True,
         expected_groups,
@@ -380,6 +475,7 @@ def _duplicate_plan_state(
         expected_reclaimable,
         completed_ns,
         0,
+        cast(VerificationMode, verification_mode),
     )
 
 
@@ -388,10 +484,10 @@ def _duplicate_item(
     scan_id: int,
     row: Any,
     digest: Any,
+    verification_mode: VerificationMode,
 ) -> CurationItem:
     group_id = int(row[0])
     redundant_count = int(row[3])
-    verification_mode = "legacy_unknown"
     _digest_record(
         digest,
         "duplicate_group",
@@ -462,6 +558,7 @@ def _iter_duplicate_items(
     connection: sqlite3.Connection,
     scan_id: int,
     digest: Any,
+    verification_mode: VerificationMode,
 ) -> Iterator[tuple[_SortKey, CurationItem]]:
     rows = connection.execute(
         """SELECT group_id,size,keep_path,redundant_count,reclaimable_bytes,
@@ -470,7 +567,7 @@ def _iter_duplicate_items(
         (scan_id,),
     )
     for row in rows:
-        item = _duplicate_item(connection, scan_id, row, digest)
+        item = _duplicate_item(connection, scan_id, row, digest, verification_mode)
         yield (
             (0, -int(row[4]), str(row[2]), int(row[0])),
             item,
@@ -627,6 +724,114 @@ def _organization_summary(
             scope=scope,
         )
     )
+
+
+def _source_heads(
+    *,
+    missing_owners: tuple[str, ...],
+    inventory_head: _InventoryHead | None,
+    duplicate_plan: _DuplicatePlanState | None,
+    catalog: sqlite3.Connection | None,
+    organization_scope: _OrganizationPlanScope | None,
+    organization_plans: int,
+) -> tuple[CurationSourceHead, ...]:
+    """Build the canonical owner-head manifest used by every curation page."""
+
+    heads: list[CurationSourceHead] = []
+    if inventory_head is None:
+        if "dedup.sqlite3" in missing_owners:
+            heads.append(
+                _source_head(
+                    owner="dedup.sqlite3",
+                    kind="inventory",
+                    head_id=None,
+                    root=None,
+                    revision=None,
+                    item_count=0,
+                    coverage="unavailable",
+                    reason="owner_missing",
+                )
+            )
+    else:
+        duplicate_complete = bool(duplicate_plan and duplicate_plan.complete)
+        duplicate_mode = None if duplicate_plan is None else duplicate_plan.verification_mode
+        inventory_coverage: SourceHeadCoverage = (
+            "complete"
+            if duplicate_complete and duplicate_mode != "partial"
+            else "partial"
+        )
+        inventory_reason = (
+            None
+            if inventory_coverage == "complete"
+            else "duplicate_plan_incomplete"
+            if duplicate_plan is None or not duplicate_complete
+            else "duplicate_verification_partial"
+        )
+        heads.append(
+            _source_head(
+                owner="dedup.sqlite3",
+                kind="inventory",
+                head_id=f"scan:{inventory_head.scan_id}",
+                root=inventory_head.root,
+                revision=inventory_head.scan_id,
+                item_count=inventory_head.inventory_files,
+                coverage=inventory_coverage,
+                reason=inventory_reason,
+                verification_mode=duplicate_mode,
+                extra={
+                    "checkpoint_updated_ns": inventory_head.checkpoint_updated_ns,
+                    "duplicate_groups": 0 if duplicate_plan is None else duplicate_plan.groups,
+                    "duplicate_members": (
+                        0 if duplicate_plan is None else duplicate_plan.redundant_members
+                    ),
+                    "reclaimable_bytes": (
+                        0 if duplicate_plan is None else duplicate_plan.reclaimable_bytes
+                    ),
+                },
+            )
+        )
+
+    if catalog is None:
+        if "document_catalog.sqlite3" in missing_owners:
+            heads.append(
+                _source_head(
+                    owner="document_catalog.sqlite3",
+                    kind="catalog",
+                    head_id=None,
+                    root=None,
+                    revision=None,
+                    item_count=0,
+                    coverage="unavailable",
+                    reason="owner_missing",
+                )
+            )
+    elif organization_scope is None:
+        heads.append(
+            _source_head(
+                owner="document_catalog.sqlite3",
+                kind="catalog",
+                head_id=None,
+                root=None,
+                revision=None,
+                item_count=0,
+                coverage="partial",
+                reason="no_compatible_published_plan",
+            )
+        )
+    else:
+        heads.append(
+            _source_head(
+                owner="document_catalog.sqlite3",
+                kind="catalog",
+                head_id=f"catalog-run:{organization_scope.catalog_run_id}",
+                root=organization_scope.organization_root,
+                revision=organization_scope.catalog_run_id,
+                item_count=organization_plans,
+                coverage="complete",
+                extra={"organization_plans": organization_plans},
+            )
+        )
+    return tuple(heads)
 
 
 def _iter_organization_items(
@@ -788,6 +993,7 @@ def _plan_envelope(
     organization_plans: int,
     organization_scope: _OrganizationPlanScope | None,
     empty_files: int,
+    source_heads: tuple[CurationSourceHead, ...],
 ) -> dict[str, object]:
     return {
         "contract": _PLAN_CONTRACT,
@@ -802,7 +1008,7 @@ def _plan_envelope(
                 "groups": duplicate_plan.groups,
                 "reclaimable_bytes": duplicate_plan.reclaimable_bytes,
                 "redundant_members": duplicate_plan.redundant_members,
-                "verification_mode": "legacy_unknown",
+                "verification_mode": duplicate_plan.verification_mode,
             }
         ),
         "empty_files": empty_files,
@@ -827,6 +1033,7 @@ def _plan_envelope(
             }
         ),
         "schema_version": CURATION_PLAN_PAGE_SCHEMA_VERSION,
+        "source_heads": [head.to_dict() for head in source_heads],
     }
 
 
@@ -878,9 +1085,21 @@ def _build_plan_page_from_connections(
         )
     )
     empty_files = _empty_file_summary(inventory, head.scan_id)
+    source_heads = _source_heads(
+        missing_owners=missing_owners,
+        inventory_head=head,
+        duplicate_plan=duplicate_plan,
+        catalog=catalog,
+        organization_scope=organization_scope,
+        organization_plans=organization_plans,
+    )
     coverage = (
         "complete"
-        if not missing_owners and duplicate_plan.complete
+        if (
+            not missing_owners
+            and duplicate_plan.complete
+            and duplicate_plan.verification_mode != "partial"
+        )
         else "partial"
     )
     digest = hashlib.sha256()
@@ -895,6 +1114,7 @@ def _build_plan_page_from_connections(
             organization_plans=organization_plans,
             organization_scope=organization_scope,
             empty_files=empty_files,
+            source_heads=source_heads,
         ),
     )
 
@@ -905,7 +1125,12 @@ def _build_plan_page_from_connections(
     items_total = 0
 
     if duplicate_plan.complete:
-        for key, item in _iter_duplicate_items(inventory, head.scan_id, digest):
+        for key, item in _iter_duplicate_items(
+            inventory,
+            head.scan_id,
+            digest,
+            duplicate_plan.verification_mode,
+        ):
             items_total += 1
             _consume_page_item(
                 key,
@@ -981,6 +1206,7 @@ def _build_plan_page_from_connections(
         plan_digest=plan_digest,
         items_total=items_total,
         items=tuple(page_items),
+        source_heads=source_heads,
     )
 
 
@@ -991,6 +1217,14 @@ def _unavailable_plan_page(
     cursor: str | None,
     cursor_state: _CursorState | None,
 ) -> CurationPlanPage:
+    source_heads = _source_heads(
+        missing_owners=missing_owners,
+        inventory_head=None,
+        duplicate_plan=None,
+        catalog=None,
+        organization_scope=None,
+        organization_plans=0,
+    )
     digest = hashlib.sha256()
     _digest_record(
         digest,
@@ -1003,6 +1237,7 @@ def _unavailable_plan_page(
             organization_plans=0,
             organization_scope=None,
             empty_files=0,
+            source_heads=source_heads,
         ),
     )
     plan_digest = "sha256:" + digest.hexdigest()
@@ -1030,6 +1265,7 @@ def _unavailable_plan_page(
         plan_digest=plan_digest,
         items_total=0,
         items=(),
+        source_heads=source_heads,
     )
 
 
@@ -1047,6 +1283,7 @@ def _preview_fingerprint(
     empty_files: int,
     preview_limit: int,
     items: list[CurationItem],
+    source_heads: tuple[CurationSourceHead, ...] = (),
 ) -> str:
     payload = {
         "coverage": coverage,
@@ -1062,6 +1299,7 @@ def _preview_fingerprint(
         "root": root,
         "scan_id": scan_id,
         "schema_version": CURATION_PREVIEW_SCHEMA_VERSION,
+        "source_heads": [head.to_dict() for head in source_heads],
     }
     return "sha256:" + hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
@@ -1165,8 +1403,10 @@ def build_curation_preview(state_directory: Path, *, limit: int) -> CurationPrev
             empty_files=page.empty_files,
             preview_limit=limit,
             items=sampled_items,
+            source_heads=page.source_heads,
         ),
         items=tuple(sampled_items),
+        source_heads=page.source_heads,
     )
 
 
@@ -1176,6 +1416,7 @@ __all__ = [
     "CurationItem",
     "CurationPlanPage",
     "CurationPreview",
+    "CurationSourceHead",
     "CurationStateError",
     "build_curation_plan_page",
     "build_curation_preview",

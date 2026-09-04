@@ -117,7 +117,7 @@ def test_populated_v6_migration_preserves_rows_checkpoint_and_bytes(
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
-        ).fetchone() == ("10",)
+        ).fetchone() == ("11",)
         assert connection.execute(
             """SELECT scan_id,status,files_seen,bytes_seen,
             inventory_policy_signature FROM scans"""

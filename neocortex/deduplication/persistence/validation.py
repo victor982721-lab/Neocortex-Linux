@@ -24,7 +24,7 @@ def validate_metadata(connection: sqlite3.Connection) -> None:
 
 
 def validate_inventory_schema(connection: sqlite3.Connection) -> None:
-    """Validate every persistent v10 table and index without changing state."""
+    """Validate every persistent v11 table and index without changing state."""
 
     validate_sqlite_schema_contract(
         connection,

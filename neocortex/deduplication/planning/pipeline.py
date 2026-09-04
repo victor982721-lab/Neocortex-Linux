@@ -9,7 +9,13 @@ from itertools import islice
 from typing import Protocol
 
 from ..domain.errors import FileChangedError
-from ..domain.models import DedupPlan, DuplicateGroup, FileSnapshot, PlanStatistics
+from ..domain.models import (
+    DedupPlan,
+    DuplicateGroup,
+    FileSnapshot,
+    PlanStatistics,
+    VerificationMode,
+)
 from ..fingerprinting import FULL_ALGORITHM, PARTIAL_ALGORITHM
 from ..inventory.index import DedupIndex
 from neocortex.progress import ProgressCallback, ProgressEvent, emit_progress
@@ -270,10 +276,16 @@ class PlanningSession:
             group_count=self._groups.group_count,
             redundant_files=self._groups.redundant_files,
             reclaimable_bytes=self._groups.reclaimable_bytes,
+            verification_mode=self._verification_mode(),
         )
         groups = self._materialize_groups()
         self._work.finish()
         return self._build_result(groups)
+
+    def _verification_mode(self) -> VerificationMode:
+        if self._counters.failures:
+            return "partial"
+        return "full_hash" if self._exact_compare else "fast"
 
     def _plan_size(self, size: int) -> None:
         self._index.clear_planning_fingerprints()
@@ -376,6 +388,7 @@ class PlanningSession:
             total_groups=self._groups.group_count,
             total_redundant_files=self._groups.redundant_files,
             total_reclaimable_bytes=self._groups.reclaimable_bytes,
+            verification_mode=self._verification_mode(),
         )
 
 

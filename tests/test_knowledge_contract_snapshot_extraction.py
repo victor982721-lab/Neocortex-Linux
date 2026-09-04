@@ -158,7 +158,9 @@ def test_snapshot_modules_form_one_way_runtime_import_dag() -> None:
 def test_snapshot_modules_support_both_cold_import_orders(
     module_order: tuple[str, str],
 ) -> None:
-    repository = Path(contracts.__file__).resolve().parents[1]
+    # Isolated Python does not retain the cwd on ``sys.path``; pass the
+    # project root rather than the ``neocortex`` package directory.
+    repository = Path(contracts.__file__).resolve().parents[2]
     script = textwrap.dedent(
         f"""
         import importlib

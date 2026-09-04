@@ -122,7 +122,7 @@ def test_preview_composes_durable_sources_without_writing_state(tmp_path: Path) 
     ]
     assert all(item.status == "review" for item in preview.items)
     assert preview.items[0].reason == "duplicate_content_candidate"
-    assert preview.items[0].evidence["verification_mode"] == "legacy_unknown"
+    assert preview.items[0].evidence["verification_mode"] == "fast"
     assert preview.items[1].reason == "classification_above_threshold"
     assert preview.items[2].reason == "empty_file_requires_human_review"
     assert preview.preview_fingerprint.startswith("sha256:")
@@ -246,7 +246,7 @@ def test_fast_plan_is_neutral_and_never_claims_exact_verification(tmp_path: Path
     duplicate = next(item for item in page.items if item.kind == "duplicate_group")
 
     assert "exact" not in duplicate.reason
-    assert duplicate.evidence["verification_mode"] == "legacy_unknown"
+    assert duplicate.evidence["verification_mode"] == "fast"
     serialized = json.dumps(duplicate.to_dict(), sort_keys=True).casefold()
     assert "byte-for-byte" not in serialized
     assert "bytewise" not in serialized

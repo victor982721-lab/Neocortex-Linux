@@ -26,7 +26,14 @@ if TYPE_CHECKING:
         CURATION_AUTHORIZATION_API_SCHEMA as CURATION_AUTHORIZATION_API_SCHEMA,
         curation_authorize_payload as curation_authorize_payload,
     )
+    from neocortex.api.curation_verification_api import (
+        CURATION_SCAN_API_SCHEMA as CURATION_SCAN_API_SCHEMA,
+        CURATION_VERIFY_API_SCHEMA as CURATION_VERIFY_API_SCHEMA,
+        curation_scan_payload as curation_scan_payload,
+        curation_verify_payload as curation_verify_payload,
+    )
     from neocortex.curation.preview import CurationPlanPage as CurationPlanPage
+    from neocortex.curation.preview import CurationSourceHead as CurationSourceHead
     from neocortex.runtime.config.application_config import ApplicationConfig as ApplicationConfig
     from neocortex.capabilities.formats.audio.models import AudioRouteConfig as AudioRouteConfig
     from neocortex.capabilities.formats.audio.models import AudioRouteSummary as AudioRouteSummary
@@ -132,8 +139,11 @@ __all__ = [  # noqa: RUF022
     "CURATION_DECISION_API_SCHEMA",
     "CURATION_PLAN_API_SCHEMA",
     "CURATION_REVIEW_API_SCHEMA",
+    "CURATION_SCAN_API_SCHEMA",
+    "CURATION_VERIFY_API_SCHEMA",
     "CurationPlanOutput",
     "CurationPlanPage",
+    "CurationSourceHead",
     "CodeRelationEndpoint",
     "CodeRoute",
     "CodeRouteConfig",
@@ -186,6 +196,8 @@ __all__ = [  # noqa: RUF022
     "curation_review_payload",
     "curation_decide_payload",
     "curation_authorize_payload",
+    "curation_scan_payload",
+    "curation_verify_payload",
     "ContextBundle",
     "ContextContradictionRef",
     "ContextEntityRef",
@@ -232,6 +244,7 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     ),
     "CurationPlanOutput": ("neocortex.api.curation_api", "CurationPlanOutput"),
     "CurationPlanPage": ("neocortex.curation.preview", "CurationPlanPage"),
+    "CurationSourceHead": ("neocortex.curation.preview", "CurationSourceHead"),
     "ActionSummary": ("neocortex.runtime.models", "ActionSummary"),
     "ApplicationConfig": ("neocortex.runtime.config.application_config", "ApplicationConfig"),
     "AudioRoute": ("neocortex.capabilities.formats.audio.route", "AudioRoute"),
@@ -307,6 +320,22 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "curation_authorize_payload": (
         "neocortex.api.curation_authorization_api",
         "curation_authorize_payload",
+    ),
+    "CURATION_SCAN_API_SCHEMA": (
+        "neocortex.api.curation_verification_api",
+        "CURATION_SCAN_API_SCHEMA",
+    ),
+    "CURATION_VERIFY_API_SCHEMA": (
+        "neocortex.api.curation_verification_api",
+        "CURATION_VERIFY_API_SCHEMA",
+    ),
+    "curation_scan_payload": (
+        "neocortex.api.curation_verification_api",
+        "curation_scan_payload",
+    ),
+    "curation_verify_payload": (
+        "neocortex.api.curation_verification_api",
+        "curation_verify_payload",
     ),
     "ContextBundle": ("neocortex.knowledge.knowledge_contracts", "ContextBundle"),
     "ContextContradictionRef": (

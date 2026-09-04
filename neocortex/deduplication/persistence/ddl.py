@@ -7,7 +7,7 @@ import sqlite3
 from neocortex.platform.policy import sqlite_path_collation
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 SCHEMA_LABEL = "dedup inventory"
 PATH_COLLATION = sqlite_path_collation()
 METADATA_DDL = """
@@ -150,7 +150,32 @@ V10_INDEX_DDL = (
     ON planned_duplicate_members(volume_id, file_id, birthtime_ns)
     """,
 )
-CURRENT_DDL = (*V9_DDL, *V10_INDEX_DDL)
+V10_DDL = (*V9_DDL, *V10_INDEX_DDL)
+V11_DUPLICATE_PLAN_SUMMARY_DDL = """
+    CREATE TABLE duplicate_plan_summaries (
+        scan_id INTEGER PRIMARY KEY,
+        group_count INTEGER NOT NULL,
+        redundant_files INTEGER NOT NULL,
+        reclaimable_bytes INTEGER NOT NULL,
+        completed_ns INTEGER NOT NULL,
+        verification_mode TEXT NOT NULL DEFAULT 'legacy_unknown'
+            CHECK(verification_mode IN ('legacy_unknown','fast','partial','full_hash'))
+    )
+    """
+V11_DDL = (
+    *V9_DDL[:8],
+    V11_DUPLICATE_PLAN_SUMMARY_DDL,
+    *V9_DDL[9:],
+    *V10_INDEX_DDL,
+)
+V11_VERIFICATION_MODE_DDL = (
+    """
+    ALTER TABLE duplicate_plan_summaries
+    ADD COLUMN verification_mode TEXT NOT NULL DEFAULT 'legacy_unknown'
+        CHECK(verification_mode IN ('legacy_unknown','fast','partial','full_hash'))
+    """,
+)
+CURRENT_DDL = V11_DDL
 
 # The first seven v9 statements own generation publication; later statements
 # are unchanged cache/plan objects shared with v6 and v7. Explicit legacy
@@ -371,3 +396,7 @@ def build_v8_schema(connection: sqlite3.Connection) -> None:
 
 def build_v9_schema(connection: sqlite3.Connection) -> None:
     execute_ddl(connection, V9_DDL)
+
+
+def build_v10_schema(connection: sqlite3.Connection) -> None:
+    execute_ddl(connection, V10_DDL)

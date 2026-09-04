@@ -30,6 +30,12 @@ if TYPE_CHECKING:
         CURATION_AUTHORIZATION_API_SCHEMA as CURATION_AUTHORIZATION_API_SCHEMA,
         curation_authorize_payload as curation_authorize_payload,
     )
+    from neocortex.api.curation_verification_api import (
+        CURATION_SCAN_API_SCHEMA as CURATION_SCAN_API_SCHEMA,
+        CURATION_VERIFY_API_SCHEMA as CURATION_VERIFY_API_SCHEMA,
+        curation_scan_payload as curation_scan_payload,
+        curation_verify_payload as curation_verify_payload,
+    )
     from neocortex.api.public import (
         CapabilityFailure as CapabilityFailure,
         ContextBundle as ContextBundle,
@@ -69,12 +75,15 @@ if TYPE_CHECKING:
         plan_knowledge_query as plan_knowledge_query,
     )
     from neocortex.curation.preview import CurationPlanPage as CurationPlanPage
+    from neocortex.curation.preview import CurationSourceHead as CurationSourceHead
 
 __all__ = (
     "CURATION_AUTHORIZATION_API_SCHEMA",
     "CURATION_DECISION_API_SCHEMA",
     "CURATION_PLAN_API_SCHEMA",
     "CURATION_REVIEW_API_SCHEMA",
+    "CURATION_SCAN_API_SCHEMA",
+    "CURATION_VERIFY_API_SCHEMA",
     "DERIVATION_CONTRACT_SCHEMA_VERSION",
     "CapabilityFailure",
     "ContextBundle",
@@ -86,6 +95,7 @@ __all__ = (
     "ContextRelationRef",
     "CurationPlanOutput",
     "CurationPlanPage",
+    "CurationSourceHead",
     "DerivationRef",
     "EvidenceRef",
     "InputBinding",
@@ -116,6 +126,8 @@ __all__ = (
     "curation_decide_payload",
     "curation_plan_payload",
     "curation_review_payload",
+    "curation_scan_payload",
+    "curation_verify_payload",
     "plan_knowledge_query",
 )
 
@@ -137,6 +149,7 @@ _CURATION_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     ),
     "CurationPlanOutput": ("neocortex.api.curation_api", "CurationPlanOutput"),
     "CurationPlanPage": ("neocortex.curation.preview", "CurationPlanPage"),
+    "CurationSourceHead": ("neocortex.curation.preview", "CurationSourceHead"),
     "curation_plan_payload": ("neocortex.api.curation_api", "curation_plan_payload"),
     "curation_review_payload": (
         "neocortex.api.curation_lifecycle_api",
@@ -149,6 +162,22 @@ _CURATION_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "curation_authorize_payload": (
         "neocortex.api.curation_authorization_api",
         "curation_authorize_payload",
+    ),
+    "CURATION_SCAN_API_SCHEMA": (
+        "neocortex.api.curation_verification_api",
+        "CURATION_SCAN_API_SCHEMA",
+    ),
+    "CURATION_VERIFY_API_SCHEMA": (
+        "neocortex.api.curation_verification_api",
+        "CURATION_VERIFY_API_SCHEMA",
+    ),
+    "curation_scan_payload": (
+        "neocortex.api.curation_verification_api",
+        "curation_scan_payload",
+    ),
+    "curation_verify_payload": (
+        "neocortex.api.curation_verification_api",
+        "curation_verify_payload",
     ),
 }
 

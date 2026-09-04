@@ -23,6 +23,7 @@ from neocortex.deduplication import (
     snapshot_path,
 )
 from neocortex.deduplication.domain.errors import InventoryError
+from neocortex.deduplication.persistence.ddl import SCHEMA_VERSION as INVENTORY_SCHEMA_VERSION
 from neocortex.workflow.actions import action_policy
 from neocortex.workflow.actions.action_policy import same_snapshot
 from neocortex.workflow.actions.actions import FrameworkActions
@@ -1008,7 +1009,7 @@ class FingerprintCacheSafetyTests(unittest.TestCase):
                     legacy_birthtime = connection.execute(
                         "SELECT birthtime_ns FROM fingerprints"
                     ).fetchone()[0]
-                self.assertEqual(version, "10")
+                self.assertEqual(version, str(INVENTORY_SCHEMA_VERSION))
                 self.assertEqual(legacy_birthtime, -1)
 
                 index.store_fingerprint(snapshot, "test-v1", b"refreshed")
