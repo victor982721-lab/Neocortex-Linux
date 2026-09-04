@@ -139,6 +139,35 @@ def test_generation_fixture_replay_checkpoint_and_head_cas_leave_legacy_reader_u
     assert "files" in table_names and "file_versions" in table_names
 
 
+def test_generation_completion_rejects_missing_materialized_membership(tmp_path: Path) -> None:
+    database = tmp_path / "code-integrity.sqlite3"
+    initialize_code_state(database)
+    with CodeState(database) as state:
+        store = state.graph_generation_store
+        store.create_input_snapshot(
+            "snapshot:integrity",
+            1,
+            (CodeInput("file:a", "digest-a"),),
+            created_ns=1,
+        )
+        store.start_generation("snapshot:integrity", "generation:integrity", created_ns=2)
+        store.append_batch(
+            "generation:integrity",
+            0,
+            (GraphMembership("symbol:a", "symbol-digest-a"),),
+            cursor="file:a",
+            created_ns=3,
+        )
+        store.checkpoint("generation:integrity", 0, "file:a", created_ns=4)
+        state.connection.execute(
+            "DELETE FROM graph_memberships WHERE generation_id=?", ("generation:integrity",)
+        )
+        state.connection.commit()
+
+        with pytest.raises(GenerationSchemaError, match="membership count differs"):
+            store.complete_generation("generation:integrity", completed_ns=5)
+
+
 def test_additive_graph_schema_migration_preserves_code_rows(tmp_path: Path) -> None:
     """A pre-generation current Code owner is upgraded without data loss."""
 

@@ -1403,6 +1403,10 @@ def _launcher_payload(
     return (
         "#!/bin/sh\n"
         "set -eu\n"
+        # The stable launcher must not inherit import paths or pip index
+        # configuration from an interactive/development shell.
+        "unset PYTHONPATH PYTHONHOME PYTHONUSERBASE PIP_CONFIG_FILE "
+        "PIP_INDEX_URL PIP_EXTRA_INDEX_URL PIP_FIND_LINKS PIP_NO_INDEX\n"
         "export PYTHONDONTWRITEBYTECODE=1\n"
         f"export NEOCORTEX_CORPUS_ROOT={shlex.quote(str(corpus_root))}\n"
         f"{exports}"

@@ -679,6 +679,44 @@ class CodeGraphGenerationStore:
                     raise GenerationStateError(
                         "generation requires a checkpoint for its final batch"
                     )
+            # Validate the materialized members against every committed batch
+            # before publishing a generation digest.  A deleted or modified
+            # membership must never be silently accepted as a complete graph.
+            for batch_index, batch_digest, item_count in batches:
+                member_rows = connection.execute(
+                    "SELECT item_key,item_digest,source_version_id,metadata_json "
+                    "FROM graph_memberships WHERE generation_id=? AND batch_index=? "
+                    "ORDER BY item_key",
+                    (generation_id, int(batch_index)),
+                ).fetchall()
+                if len(member_rows) != int(item_count):
+                    raise GenerationSchemaError(
+                        f"generation batch membership count differs: {generation_id}/{batch_index}"
+                    )
+                members: list[GraphMembership] = []
+                for member_row in member_rows:
+                    try:
+                        metadata = json.loads(str(member_row[3]))
+                    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                        raise GenerationSchemaError(
+                            f"malformed membership metadata: {generation_id}/{batch_index}"
+                        ) from exc
+                    if not isinstance(metadata, dict):
+                        raise GenerationSchemaError(
+                            f"membership metadata is not an object: {generation_id}/{batch_index}"
+                        )
+                    members.append(
+                        GraphMembership(
+                            str(member_row[0]),
+                            str(member_row[1]),
+                            None if member_row[2] is None else int(member_row[2]),
+                            metadata,
+                        )
+                    )
+                if _hash(_member_payload(tuple(members)), "graph batch") != str(batch_digest):
+                    raise GenerationSchemaError(
+                        f"generation batch digest differs: {generation_id}/{batch_index}"
+                    )
             snapshot = connection.execute(
                 "SELECT input_digest FROM graph_input_snapshots WHERE snapshot_id=?", (str(row[0]),)
             ).fetchone()

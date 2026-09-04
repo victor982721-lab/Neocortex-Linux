@@ -829,6 +829,7 @@ def test_launcher_works_through_user_alias_when_alias_lives_elsewhere(tmp_path: 
     assert completed.returncode == 0
     launcher_text = layout.launcher.read_text(encoding="utf-8")
     assert f"exec {release / 'bin' / 'Neocortex'} \"$@\"" in launcher_text
+    assert "unset PYTHONPATH PYTHONHOME PYTHONUSERBASE PIP_CONFIG_FILE" in launcher_text
 
 
 def test_desktop_entry_quotes_launcher_paths_with_spaces(tmp_path: Path) -> None:
