@@ -128,10 +128,11 @@ Criterios de aceptación verificados en fixtures:
 - una segunda aplicación del mismo plan no repite efectos;
 - el piloto no toca contenido fuera de su raíz y límites.
 
-Pendiente de promoción: verificador/runner KIO real, restore no-replace para
-entradas de Papelera, sincronización de caches y una GUI que sólo presente el
-grant y el intento. Esos gates no se ejecutaron para evitar tocar el escritorio o
-el corpus real.
+Pendiente de promoción: verificador/runner KIO real, restore no-replace contra
+la Papelera del escritorio, sincronización de caches y una GUI que sólo presente
+el grant y el intento. El restore no-replace de fixtures ya está implementado en
+el corte 0.11.1, pero esos gates reales no se ejecutaron para evitar tocar el
+escritorio o el corpus real.
 
 ## 0.12.0 — Escala e inteligencia ampliada
 

@@ -117,10 +117,14 @@ La foundation KIO preparada ya clasifica `blocked`, `recovery_required` y
 del origen y evidencia de Papelera. No está conectada al lifecycle de acciones ni
 incluye por sí sola restauración, autorización o prueba same-filesystem.
 
-La integración de `0.11.0` localiza el efecto por receipt y metadata de KIO, no
+La integración de `0.11.x` localiza el efecto por receipt y metadata de KIO, no
 asume que el nombre original quedó intacto y exige un backend inyectado para
-fixtures. Restaurar usa no-replace y verifica el destino antes de marcar éxito;
-la ejecución real de KIO y el restore operativo siguen siendo gates posteriores.
+fixtures. El preview de restore es read-only; la aplicación exige confirmación
+exacta del action/receipt, crea su propio `file_actions` intent, restaura con
+no-replace, verifica bytes/hash y elimina `.trashinfo` sólo después de verificar
+el archivo restaurado. Un fallo posterior al movimiento conserva
+`recovery_required` y se concilia sin retry. La ejecución real de KIO y el
+restore de escritorio siguen siendo gates posteriores.
 
 Si falta metadata, aparece una colisión, el filesystem cambió o el efecto cruzó
 dispositivo, el estado permanece `recovery_required`; no se degrada a borrado

@@ -127,11 +127,13 @@ requiere volver a consultar, no reintentar a ciegas. `--json` no exporta ni crea
 ZIP, y MCP no ofrece authorize sin actor autenticado.
 
 **IMPLEMENTED sobre fixtures:** `curate apply` consume un grant confirmado y
-revalida su manifest antes de cada efecto, mientras `curate reconcile` registra
-observaciones sin reintentar. La CLI instalada no selecciona un backend ni un
-run firmado, por lo que apply devuelve `backend_unavailable` antes de crear
-acciones; las pruebas usan backends inyectados y raíces temporales. La
-foundation KIO real y el restore siguen fuera de este gate.
+revalida su manifest antes de cada efecto, `curate reconcile` registra
+observaciones sin reintentar y `curate restore preview/apply` ofrece una
+reversión no-replace con un intent separado y confirmación exacta. La CLI
+instalada no selecciona un backend ni un run firmado, por lo que apply/restore
+devuelven `backend_unavailable` antes de crear efectos; las pruebas usan
+backends inyectados y raíces temporales. La foundation KIO real y el restore de
+escritorio siguen fuera de este gate.
 
 ```bash
 Neocortex curate apply GRANT_ID --confirm-grant-id GRANT_ID --json

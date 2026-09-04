@@ -70,7 +70,7 @@ cliente, preflight de configuración, doble validación de snapshot, timeout,
 diagnósticos acotados y resultado/receipt tipados para `move <origen> trash:/`.
 Permanece desconectada de `--apply`, no promovida y sin prueba contra KIO real.
 
-La operación es path-bound, por lo que la integración `0.11.0` exige además
+La operación es path-bound, por lo que la integración `0.11.x` exige además
 autorización, guard same-filesystem, ledger y reconciliación explícita; no se usa
 `gio trash`.
 

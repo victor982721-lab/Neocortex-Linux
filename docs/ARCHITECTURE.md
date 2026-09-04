@@ -108,10 +108,14 @@ inyectados:** `neocortex.curation.application` consume el manifest físico del
 grant, revalida plan, heads, expiración, raíz, identidad, hash y presupuestos,
 registra un `file_action` por efecto, verifica el receipt y conserva
 `recovery_required` ante ambigüedad. `PosixRenameBackend` usa no-replace
-same-filesystem y `KioTrashBackend` exige evidencia estructurada de destino. La
-CLI no selecciona backend automáticamente; la promoción KIO real y restore
-siguen siendo gates posteriores. La conciliación append-only se expone mediante
-`reconcile_curation_actions` y no reintenta efectos. El contrato se describe en
+same-filesystem y `KioTrashBackend` exige evidencia estructurada de destino.
+`neocortex.curation.recovery` añade preview read-only y restore con un intento
+`restore_curation`, confirmación exacta, `renameat2(RENAME_NOREPLACE)`, hash,
+identidad de raíz/Trash y receipt durable; una caída posterior al movimiento se
+concilia sin reintento. La CLI no selecciona backend automáticamente; la
+promoción KIO real y restore de escritorio siguen siendo gates posteriores. La
+conciliación append-only se expone mediante `reconcile_curation_actions` y no
+reintenta efectos. El contrato se describe en
 [FILE_INTELLIGENCE_AND_CURATION.md](FILE_INTELLIGENCE_AND_CURATION.md).
 
 ### Code como contenido
@@ -195,8 +199,9 @@ de la frontera de efecto produce un estado conciliable, no un reintento ciego.
 - varias fuentes todavía tienen publicación no generacional;
 - progreso, límites y replay no son uniformes en todas las rutas;
 - MCP expone plan/scan/verify y review/decide, pero no autorización con actor autenticado;
-- falta el consumidor físico `apply → verify → reconcile` del grant durable;
-- Linux carece del backend reversible aplicado.
+- la ruta física y restore sólo están habilitados mediante backends inyectados y
+  fixtures;
+- faltan sincronización de caches y presentación GUI del grant/restore;
 
 La prioridad y los criterios de aceptación están en
 [ROADMAP_90_DAYS.md](ROADMAP_90_DAYS.md); seguridad y owners se detallan en

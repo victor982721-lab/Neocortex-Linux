@@ -113,6 +113,22 @@ interrupción o ambigüedad queda en `recovery_required`, sin fallback a `gio`,
 `unlink`, sobrescritura ni reintento automático. `reconcile` sólo añade evidencia
 append-only e idempotente; no convierte la observación en permiso.
 
+**IMPLEMENTED — estado y restore de fixtures:**
+
+```bash
+Neocortex curate recovery status --limit 100 --json
+Neocortex curate restore preview ACTION_ID --json
+Neocortex curate restore apply ACTION_ID \
+  --confirm-action-id ACTION_ID --confirmation TOKEN --actor ACTOR --json
+```
+
+`recovery status` y `restore preview` son read-only y muestran sólo evidencia
+bounded. `restore apply` exige el token exacto derivado del receipt original,
+crea un intento separado antes de mover, utiliza no-replace same-filesystem y
+verifica bytes e identidad, mientras la CLI ordinaria falla cerrada sin backend
+inyectado. El restore de owners SQLite mediante `databases restore` mantiene su
+flujo y autoridad independientes.
+
 ## Efectos
 
 | Clase | Ejemplos | Efecto |

@@ -5,7 +5,7 @@ organizar archivos personales en Linux. Su objetivo es sustituir inventarios,
 auditorías y scripts improvisados por un flujo reproducible que conserve
 identidad, evidencia, incertidumbre y trazabilidad.
 
-La fuente vigente declara `0.11.0`. El comportamiento efectivo siempre se
+La fuente vigente declara `0.11.1`. El comportamiento efectivo siempre se
 comprueba con el ejecutable instalado y con su estado publicado; una versión en
 el árbol fuente no demuestra qué release está activa.
 
@@ -28,7 +28,9 @@ NeoCortex puede:
 
 El recorrido físico sólo está habilitado para fixtures mediante un backend
 explícitamente inyectado: `curate apply` consume un grant confirmado y cruza el
-ledger por efecto, mientras `curate reconcile` registra recovery sin reintentar.
+ledger por efecto, `curate reconcile` registra recovery sin reintentar y
+`curate restore preview/apply` permite una reversión no-replace con confirmación
+separada sobre receipts de fixtures.
 `--apply` y `--organization-apply` siguen absteniéndose con
 `linux_mutation_backend_unavailable`, y la CLI no selecciona KIO ni otro backend
 automáticamente. La promoción contra KIO real, el restore y la sincronización de
@@ -97,6 +99,8 @@ El tramo físico controlado se consulta así:
 ```bash
 Neocortex curate apply GRANT_ID --confirm-grant-id GRANT_ID --json
 Neocortex curate reconcile --actor ACTOR --confirm-reconcile --json
+Neocortex curate recovery status --json
+Neocortex curate restore preview ACTION_ID --json
 ```
 
 La CLI ordinaria devuelve `backend_unavailable` sin un run firmado y un backend

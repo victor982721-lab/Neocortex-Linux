@@ -73,7 +73,7 @@ evidencia de procedencia, no nombres o extensiones aislados.
 
 ## Estado actual
 
-La fuente `0.11.0` aporta inventario, extracción multimodal, catálogos, búsqueda,
+La fuente `0.11.1` aporta inventario, extracción multimodal, catálogos, búsqueda,
 Knowledge, Semantic, Code como contenido, planes de duplicados/organización,
 Review, receipts y recuperación parcial.
 
@@ -104,7 +104,9 @@ Review, receipts y recuperación parcial.
 
 Las brechas principales son:
 
-- la promoción del backend físico real y el restore siguen fuera de la cohorte;
+- la promoción del backend físico real y el restore de escritorio siguen fuera
+  de la cohorte; el restore no-replace ya está disponible para receipts de
+  fixtures con confirmación separada;
 - varios formatos pierden localizadores estructurales al llegar a búsqueda;
 - igualdad, versión, procedencia, valor y disposición no tienen una proyección
   pública unificada;
@@ -196,13 +198,19 @@ sistemas externos.
 No hay tool MCP de autorización: aceptar un `actor` aportado por un agente no
 resuelve autenticación del principal humano.
 
-**IMPLEMENTED — aplicación acotada y conciliación:**
+**IMPLEMENTED — aplicación acotada, recovery y restore de fixtures:**
 
 ```text
 Neocortex curate apply GRANT_ID --confirm-grant-id GRANT_ID [--json]
 Neocortex curate reconcile --actor ACTOR --confirm-reconcile [--limit N]
+Neocortex curate recovery status [--action-id ID] [--limit N]
+Neocortex curate restore preview ACTION_ID [--json]
+Neocortex curate restore apply ACTION_ID --confirm-action-id ACTION_ID \
+  --confirmation TOKEN --actor ACTOR [--json]
 API/SDK: curation_apply_payload, curation_reconcile_payload
-MCP: no disponible para apply ni para conciliación escrita
+        curation_recovery_status_payload, curation_restore_preview_payload,
+        curation_restore_payload
+MCP: no disponible para estas superficies; no apply, restore, authorize ni conciliación escrita
 ```
 
 `curate apply` exige repetir exactamente el `GRANT_ID`. La CLI estándar no
@@ -215,6 +223,16 @@ presupuestos vigentes, cruza `started → applying` por efecto y sólo acepta
 interrupción, timeout, receipt incompleto o resultado ambiguo queda en
 `recovery_required` y no se reintenta automáticamente. `reconcile` sólo observa
 y registra la clasificación; no convierte una inferencia en autorización.
+
+`recovery status` y `restore preview` sólo leen la evidencia y no crean
+sidecars. `restore apply` exige el token exacto derivado del `action_id` y del
+receipt original, crea un intento `restore_curation` antes del movimiento y usa
+un backend inyectado con `renameat2(RENAME_NOREPLACE)` para fixtures. La fuente,
+la raíz y la entrada de Papelera se revalidan por identidad, hash y contención;
+si el movimiento o la limpieza de `.trashinfo` queda ambiguo, el intento
+permanece `recovery_required` y no se reintenta automáticamente. El restore de
+owners SQLite (`databases restore`) es un flujo distinto y no comparte esta
+autoridad.
 
 No existe una interfaz de exportación ni un paquete ZIP de curación. `--json`
 serializa la respuesta de una operación; no crea un artefacto durable.

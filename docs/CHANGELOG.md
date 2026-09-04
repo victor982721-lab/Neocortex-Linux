@@ -4,6 +4,20 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 0.11.1 — 2026-09-04
+
+### Recovery y restore de curation
+
+- Se añadieron `curate recovery status` y `curate restore preview` como
+  superficies fenced de lectura, sin migrar owners ni crear sidecars.
+- El restore grant-bound exige confirmación exacta del action/receipt, registra
+  un `restore_curation` intent antes del efecto y verifica root, Trash,
+  `.trashinfo`, bytes, hash, identidad y destino no existente con
+  `renameat2(RENAME_NOREPLACE)`.
+- Los fallos posteriores al movimiento quedan `recovery_required`, el replay
+  devuelve `already_restored` cuando la evidencia coincide y MCP no recibe
+  autoridad de restore.
+
 ## 0.11.0 — 2026-09-04
 
 ### Curation grant-bound
