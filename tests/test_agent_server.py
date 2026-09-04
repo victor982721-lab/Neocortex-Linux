@@ -400,6 +400,98 @@ def test_agent_curation_plan_returns_the_direct_typed_payload(
     assert structured["trust"]["actions_authorized"] is False
 
 
+def test_agent_curation_scan_and_verify_forward_canonical_envelopes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan_id = "sha256:" + "a" * 64
+    scan_payload = {
+        "schema": "neocortex.curation-scan/v1",
+        "schema_version": 1,
+        "kind": "neocortex_curation_scan",
+        "operation": "curation-scan",
+        "request_id": "scan-mcp",
+        "plan_id": plan_id,
+        "scope": "personal",
+        "status": "complete",
+        "coverage": "complete",
+        "read_only": True,
+        "effects": {"state": "none", "corpus": "none", "external": "none"},
+        "trust": {
+            "content_class": "untrusted_corpus_evidence",
+            "instruction_authority": False,
+            "tools_authorized": False,
+            "actions_authorized": False,
+        },
+        "snapshot": {
+            "plan_digest": plan_id,
+            "snapshot_id": "sha256:" + "b" * 64,
+            "root": "/fixture",
+            "scan_id": 1,
+            "source_heads": [],
+        },
+        "result": {"page": {"items": []}},
+        "error": None,
+        "exit_code": 0,
+    }
+    verify_payload = {
+        **scan_payload,
+        "schema": "neocortex.curation-verify/v1",
+        "kind": "neocortex_curation_verify",
+        "operation": "curation-verify",
+        "request_id": "verify-mcp",
+        "result": {
+            "bytes_checked": 0,
+            "coverage": "complete",
+            "files_checked": 0,
+            "items": [],
+            "items_failed": 0,
+            "items_skipped": 0,
+            "items_total": 0,
+            "items_verified": 0,
+            "plan_digest": plan_id,
+            "snapshot_id": "sha256:" + "b" * 64,
+            "source_heads": [],
+            "status": "complete",
+        },
+    }
+    scan_calls: list[tuple[int, str | None]] = []
+    verify_calls: list[tuple[str, object, int, str | None]] = []
+
+    def scan(*, limit: int, cursor: str | None) -> dict[str, object]:
+        scan_calls.append((limit, cursor))
+        return scan_payload
+
+    def verify(
+        requested_plan: str,
+        *,
+        item_ids: object,
+        limit: int,
+        cursor: str | None,
+    ) -> dict[str, object]:
+        verify_calls.append((requested_plan, item_ids, limit, cursor))
+        return verify_payload
+
+    monkeypatch.setattr(agent_server, "curation_scan_payload", scan)
+    monkeypatch.setattr(agent_server, "curation_verify_payload", verify)
+    server = agent_server.create_server()
+
+    _scan_content, scan_structured = asyncio.run(
+        server.call_tool("curation_scan", {"limit": 2, "cursor": "cursor-1"})
+    )
+    _verify_content, verify_structured = asyncio.run(
+        server.call_tool(
+            "curation_verify",
+            {"plan_id": plan_id, "item_ids": ["item-1"], "limit": 2, "cursor": "cursor-1"},
+        )
+    )
+
+    assert scan_calls == [(2, "cursor-1")]
+    assert verify_calls == [(plan_id, ["item-1"], 2, "cursor-1")]
+    assert scan_structured["operation"] == "curation-scan"
+    assert verify_structured["operation"] == "curation-verify"
+    assert verify_structured["trust"]["actions_authorized"] is False
+
+
 def test_stdio_is_the_only_transport_started_by_public_runner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
