@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import time
+import zipfile
 from dataclasses import replace
 from pathlib import Path
 
@@ -88,6 +89,48 @@ def _write_runtime_lock(source: Path) -> Path:
     return lock
 
 
+def _wheelhouse_fixture(tmp_path: Path, *specs: tuple[str, str]) -> Path:
+    """Create a tiny hash-manifested wheelhouse for release-tool tests."""
+
+    wheelhouse = tmp_path / "wheelhouse"
+    wheelhouse.mkdir()
+    entries: list[dict[str, str]] = []
+    for name, version in specs:
+        normalized = name.replace("-", "_")
+        filename = f"{normalized}-{version}-py3-none-any.whl"
+        wheel = wheelhouse / filename
+        dist_info = f"{normalized}-{version}.dist-info"
+        with zipfile.ZipFile(wheel, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                f"{dist_info}/METADATA",
+                f"Metadata-Version: 2.4\nName: {name}\nVersion: {version}\n",
+            )
+            archive.writestr(f"{dist_info}/WHEEL", "Wheel-Version: 1.0\n")
+        entries.append(
+            {
+                "filename": filename,
+                "name": name,
+                "version": version,
+                "sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
+            }
+        )
+    (wheelhouse / release_linux.WHEELHOUSE_MANIFEST_NAME).write_text(
+        json.dumps(
+            {
+                "schema_version": release_linux.WHEELHOUSE_SCHEMA_VERSION,
+                "kind": "neocortex_wheelhouse",
+                "python": "cp314",
+                "platform": "linux_x86_64",
+                "artifacts": entries,
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return wheelhouse
+
+
 def test_release_identifier_is_version_sha_python_and_platform_bound() -> None:
     assert release_linux.release_id("a" * 40) == (f"0.9.0-{'a' * 12}-cp314-linux-x86_64")
     with pytest.raises(ValueError):
@@ -107,6 +150,65 @@ def test_release_identifier_parser_is_cross_version_but_strict(name: str) -> Non
     assert release_linux.parse_release_id(name) is not None
     assert release_linux.parse_release_id("0.9.0-backup") is None
     assert release_linux.parse_release_id(name.replace("cp314", "cp313")) is None
+
+
+def test_offline_environment_drops_indexes_credentials_and_import_overrides() -> None:
+    environment = release_linux._offline_environment(
+        {
+            "PATH": "/usr/bin",
+            "PIP_INDEX_URL": "https://user:secret@example.invalid/simple",
+            "PIP_EXTRA_INDEX_URL": "https://example.invalid/extra",
+            "PIP_TRUSTED_HOST": "example.invalid",
+            "PIP_CONFIG_FILE": "/tmp/attacker.conf",
+            "PYTHONPATH": "/tmp/attacker",
+            "PYTHONHOME": "/tmp/attacker-python",
+            "PYTHONUSERBASE": "/tmp/attacker-user",
+        }
+    )
+
+    assert environment["PATH"] == "/usr/bin"
+    assert not any(name.upper().startswith("PIP_INDEX") for name in environment)
+    assert not any(name.upper().startswith("PIP_EXTRA") for name in environment)
+    assert "PIP_TRUSTED_HOST" not in environment
+    assert environment["PIP_CONFIG_FILE"] == os.devnull
+    assert environment["PIP_NO_INDEX"] == "1"
+    assert environment["PIP_DISABLE_PIP_VERSION_CHECK"] == "1"
+    assert environment["PYTHONNOUSERSITE"] == "1"
+    assert "PYTHONPATH" not in environment
+    assert "PYTHONHOME" not in environment
+    assert "PYTHONUSERBASE" not in environment
+
+
+def test_wheelhouse_manifest_requires_local_hash_and_metadata_integrity(tmp_path: Path) -> None:
+    wheelhouse = _wheelhouse_fixture(tmp_path, ("pip", release_linux.PIP_BOOTSTRAP_VERSION))
+    artifacts = release_linux._validate_wheelhouse(
+        wheelhouse,
+        required={"pip": release_linux.PIP_BOOTSTRAP_VERSION},
+    )
+    assert artifacts["pip"].path == wheelhouse / artifacts["pip"].filename
+
+    artifact = next(wheelhouse.glob("*.whl"))
+    artifact.write_bytes(artifact.read_bytes() + b"tampered")
+    with pytest.raises(release_linux.LinuxReleaseError, match="hash mismatch"):
+        release_linux._validate_wheelhouse(wheelhouse)
+
+
+def test_install_requires_an_explicit_local_wheelhouse_before_preparing_corpus(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    layout = LinuxReleaseLayout(source, _policy(tmp_path))
+    corpus = tmp_path / "corpus"
+
+    with pytest.raises(release_linux.LinuxReleaseError, match="offline wheelhouse is required"):
+        release_linux.install_release(
+            layout,
+            corpus_root=corpus,
+            prepare_models=False,
+            desktop=False,
+        )
+    assert not corpus.exists()
 
 
 def test_build_workspace_staging_shares_the_release_filesystem(tmp_path: Path) -> None:
@@ -309,6 +411,8 @@ def test_wheel_build_uses_a_git_owned_source_stage_without_build_residue(
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     observed_build_source: list[Path] = []
+    observed_commands: list[tuple[str, ...]] = []
+    observed_environments: list[dict[str, str] | None] = []
 
     monkeypatch.setattr(
         release_linux,
@@ -319,6 +423,8 @@ def test_wheel_build_uses_a_git_owned_source_stage_without_build_residue(
 
     def runner(arguments, **_kwargs):
         command = tuple(os.fspath(item) for item in arguments)
+        observed_commands.append(command)
+        observed_environments.append(_kwargs.get("environment"))
         if "ls-files" in command:
             tracked = "constraints.txt\0neocortex/__init__.py\0pyproject.toml\0"
             return subprocess.CompletedProcess(command, 0, tracked, "")
@@ -341,6 +447,14 @@ def test_wheel_build_uses_a_git_owned_source_stage_without_build_residue(
 
     assert observed_build_source == [workspace / "source"]
     assert wheel.read_bytes() == b"wheel"
+    pip_install = next(command for command in observed_commands if "pip" in command and "install" in command)
+    assert {"--no-index", "--require-hashes", "--only-binary=:all:"} <= set(pip_install)
+    build_environment = next(
+        environment for environment in observed_environments if environment is not None
+    )
+    assert build_environment["PIP_NO_INDEX"] == "1"
+    assert "PIP_INDEX_URL" not in build_environment
+    assert "PYTHONPATH" not in build_environment
 
 
 def test_pip_bootstrap_policy_is_hash_pinned_and_matches_constraints() -> None:
@@ -403,6 +517,7 @@ def test_release_install_uses_the_runtime_lock_as_a_second_constraint(
         str(constraints),
         str(runtime_lock),
     ]
+    assert {"--no-index", "--require-hashes", "--only-binary=:all:"} <= set(command)
 
 
 def test_runtime_dependency_verifier_rejects_inventory_drift(tmp_path: Path) -> None:
@@ -555,7 +670,7 @@ def test_new_virtual_environment_is_created_in_staging_then_published(
     monkeypatch.setattr(
         release_linux,
         "_prepare_pip_bootstrap",
-        lambda workspace: workspace / release_linux.PIP_BOOTSTRAP_FILENAME,
+        lambda workspace, **_kwargs: workspace / release_linux.PIP_BOOTSTRAP_FILENAME,
     )
 
     def build_wheel(_layout, workspace, **_kwargs):
@@ -596,11 +711,14 @@ def test_new_virtual_environment_is_created_in_staging_then_published(
     )
 
     corpus_root = tmp_path / "corpus"
+    wheelhouse = tmp_path / "wheelhouse"
+    wheelhouse.mkdir()
     report = release_linux.install_release(
         layout,
         corpus_root=corpus_root,
         prepare_models=False,
         desktop=False,
+        wheelhouse=wheelhouse,
     )
 
     assert len(installed_at) == 1
@@ -930,6 +1048,7 @@ def test_failed_install_receipt_restores_current_launcher_and_alias(
             corpus_root=tmp_path / "corpus",
             prepare_models=False,
             desktop=False,
+            wheelhouse=tmp_path,
         )
 
     assert release_linux._current_target(layout) == old.resolve()
@@ -978,6 +1097,7 @@ def test_failed_model_preparation_never_promotes_or_publishes_access(
             corpus_root=tmp_path / "corpus",
             prepare_models=True,
             desktop=True,
+            wheelhouse=tmp_path,
             runner=fail_prepare,
         )
 
@@ -1035,6 +1155,7 @@ def test_repromote_recovers_recorded_rollback_and_prunes_stale_releases(
         corpus_root=tmp_path / "corpus",
         prepare_models=False,
         desktop=False,
+        wheelhouse=tmp_path,
     )
 
     assert report["operation"] == "repromote"

@@ -22,10 +22,10 @@ import stat
 import subprocess
 import sys
 import tempfile
-import urllib.request
 import uuid
 import venv
-from collections.abc import Callable, Sequence
+import zipfile
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -40,7 +40,6 @@ from tools import pip_bootstrap
 from tools.pip_bootstrap import (
     PIP_BOOTSTRAP_FILENAME,
     PIP_BOOTSTRAP_SHA256,
-    PIP_BOOTSTRAP_URL,
     PIP_BOOTSTRAP_VERSION,
 )
 from neocortex.platform.policy import PlatformPolicy, current_platform_policy
@@ -60,6 +59,12 @@ RELEASE_PLATFORM_TAG = "linux-x86_64"
 RELEASE_MANIFEST_NAME = "neocortex-release.json"
 RUNTIME_DEPENDENCY_LOCK_NAME = "constraints-linux-cp314.lock"
 RUNTIME_PROFILE = "product-only-v1"
+WHEELHOUSE_MANIFEST_NAME = "wheelhouse-manifest.json"
+WHEELHOUSE_SCHEMA_VERSION = 1
+WHEELHOUSE_ENVIRONMENT = "NEOCORTEX_WHEELHOUSE"
+# Kept as a compatibility-visible constant for bootstrap diagnostics.  Release
+# installation itself never dereferences it and has no network fallback.
+PIP_BOOTSTRAP_URL = pip_bootstrap.PIP_BOOTSTRAP_URL
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _RELEASE_ID = re.compile(
     r"(?P<version>"
@@ -86,6 +91,17 @@ _IMPORT_MODULES = (
     "numpy",
     "pytesseract",
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _WheelhouseArtifact:
+    """One hash-authenticated wheel available to an offline release build."""
+
+    name: str
+    version: str
+    filename: str
+    sha256: str
+    path: Path
 
 
 class LinuxReleaseError(RuntimeError):
@@ -172,6 +188,265 @@ def _sha256_file(path: Path) -> str:
 
 def _normalized_distribution_name(value: str) -> str:
     return re.sub(r"[-_.]+", "-", value).casefold()
+
+
+def _offline_environment(base: dict[str, str] | None = None) -> dict[str, str]:
+    """Return a subprocess environment that cannot inherit package indexes.
+
+    Release builds and installations are deliberately offline.  Removing every
+    ambient ``PIP_*`` variable is important because a user's shell may inject an
+    index, trusted host, credentials, cache, or configuration file even when the
+    command line contains ``--no-index``.  The explicit values below make the
+    policy observable to pip while keeping the rest of the caller's environment
+    (notably ``PATH`` and XDG locations) intact.
+    """
+
+    environment = dict(os.environ if base is None else base)
+    for name in tuple(environment):
+        if name.upper().startswith("PIP_") or name in {
+            "PYTHONHOME",
+            "PYTHONPATH",
+            "PYTHONUSERBASE",
+        }:
+            environment.pop(name, None)
+    environment.update(
+        {
+            "PIP_CONFIG_FILE": os.devnull,
+            "PIP_NO_INDEX": "1",
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            "PYTHONNOUSERSITE": "1",
+        }
+    )
+    return environment
+
+
+def _absolute_real_directory(path: Path, *, label: str) -> Path:
+    """Resolve one caller-provided directory without following a symlink root."""
+
+    candidate = path.expanduser()
+    if not candidate.is_absolute():
+        raise LinuxReleaseError(f"{label} must be an absolute path")
+    cursor = candidate
+    while cursor != cursor.parent:
+        if os.path.lexists(cursor):
+            try:
+                metadata = cursor.lstat()
+            except OSError as exc:
+                raise LinuxReleaseError(f"{label} is unavailable") from exc
+            if stat.S_ISLNK(metadata.st_mode):
+                raise LinuxReleaseError(f"{label} cannot contain symlink components")
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise LinuxReleaseError(f"{label} must be a real directory")
+        cursor = cursor.parent
+    try:
+        metadata = candidate.lstat()
+    except OSError as exc:
+        raise LinuxReleaseError(f"{label} is unavailable") from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise LinuxReleaseError(f"{label} must be a real directory")
+    return candidate.resolve(strict=True)
+
+
+def _wheel_metadata(path: Path) -> tuple[str, str]:
+    """Read the distribution identity from a bounded wheel metadata member."""
+
+    try:
+        with zipfile.ZipFile(path) as archive:
+            metadata_members = [
+                member
+                for member in archive.infolist()
+                if member.filename.endswith(".dist-info/METADATA")
+            ]
+            if len(metadata_members) != 1:
+                raise LinuxReleaseError(f"wheel metadata is not unique: {path.name}")
+            member = metadata_members[0]
+            if member.file_size > 1024 * 1024:
+                raise LinuxReleaseError(f"wheel metadata exceeds its bound: {path.name}")
+            payload = archive.read(member)
+    except (OSError, UnicodeError, zipfile.BadZipFile, RuntimeError) as exc:
+        raise LinuxReleaseError(f"wheelhouse artifact is not a readable wheel: {path.name}") from exc
+    try:
+        metadata_text = payload.decode("utf-8", errors="strict")
+    except UnicodeError as exc:
+        raise LinuxReleaseError(f"wheel metadata is not UTF-8: {path.name}") from exc
+    headers: dict[str, str] = {}
+    for raw_line in metadata_text.splitlines():
+        if ":" not in raw_line:
+            continue
+        key, value = raw_line.split(":", 1)
+        if key in {"Name", "Version"} and key not in headers:
+            headers[key] = value.strip()
+    name = headers.get("Name")
+    version = headers.get("Version")
+    if not name or not version or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name):
+        raise LinuxReleaseError(f"wheel metadata identity is invalid: {path.name}")
+    if not version or any(character.isspace() for character in version):
+        raise LinuxReleaseError(f"wheel metadata version is invalid: {path.name}")
+    return _normalized_distribution_name(name), version
+
+
+def _validate_wheelhouse(
+    path: Path,
+    *,
+    required: Mapping[str, str | None] | None = None,
+) -> dict[str, _WheelhouseArtifact]:
+    """Validate a flat, hash-manifested wheelhouse for offline pip use.
+
+    The manifest is intentionally local and small.  Every wheel must be listed
+    exactly once with its SHA-256 and distribution identity, and every wheel in
+    the directory must be listed.  This prevents pip from selecting an ambient
+    cache or an unreviewed extra artifact while still allowing a wheelhouse to
+    carry the full transitive closure for more than one release operation.
+    """
+
+    root = _absolute_real_directory(path, label="offline wheelhouse")
+    manifest_path = root / WHEELHOUSE_MANIFEST_NAME
+    try:
+        manifest_metadata = manifest_path.lstat()
+        if stat.S_ISLNK(manifest_metadata.st_mode) or not stat.S_ISREG(manifest_metadata.st_mode):
+            raise LinuxReleaseError("wheelhouse manifest must be a regular file")
+        if manifest_metadata.st_size > 8 * 1024 * 1024:
+            raise LinuxReleaseError("wheelhouse manifest exceeds its byte bound")
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except LinuxReleaseError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise LinuxReleaseError("wheelhouse manifest is unavailable or malformed") from exc
+    if not isinstance(payload, dict):
+        raise LinuxReleaseError("wheelhouse manifest must be an object")
+    if (
+        payload.get("schema_version") != WHEELHOUSE_SCHEMA_VERSION
+        or payload.get("kind") != "neocortex_wheelhouse"
+        or payload.get("python") != "cp314"
+        or payload.get("platform") != "linux_x86_64"
+        or not isinstance(payload.get("artifacts"), list)
+    ):
+        raise LinuxReleaseError("wheelhouse manifest identity is unsupported")
+
+    artifacts: dict[str, _WheelhouseArtifact] = {}
+    listed_filenames: set[str] = set()
+    for entry in payload["artifacts"]:
+        if not isinstance(entry, dict):
+            raise LinuxReleaseError("wheelhouse manifest artifact is malformed")
+        filename = entry.get("filename")
+        declared_name = entry.get("name")
+        declared_version = entry.get("version")
+        digest = entry.get("sha256")
+        if (
+            not isinstance(filename, str)
+            or Path(filename).name != filename
+            or not filename.endswith(".whl")
+            or not isinstance(declared_name, str)
+            or not isinstance(declared_version, str)
+            or not isinstance(digest, str)
+            or _SHA256.fullmatch(digest) is None
+        ):
+            raise LinuxReleaseError("wheelhouse manifest artifact identity is invalid")
+        if filename in listed_filenames:
+            raise LinuxReleaseError(f"wheelhouse manifest duplicates {filename}")
+        listed_filenames.add(filename)
+        artifact_path = root / filename
+        try:
+            metadata = artifact_path.lstat()
+        except OSError as exc:
+            raise LinuxReleaseError(f"wheelhouse artifact is missing: {filename}") from exc
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise LinuxReleaseError(f"wheelhouse artifact is not a regular file: {filename}")
+        try:
+            observed_digest = _sha256_file(artifact_path)
+        except OSError as exc:
+            raise LinuxReleaseError(f"wheelhouse artifact cannot be hashed: {filename}") from exc
+        if observed_digest != digest:
+            raise LinuxReleaseError(f"wheelhouse artifact hash mismatch: {filename}")
+        observed_name, observed_version = _wheel_metadata(artifact_path)
+        normalized_name = _normalized_distribution_name(declared_name)
+        if (
+            observed_name != normalized_name
+            or observed_version != declared_version
+            or normalized_name in artifacts
+        ):
+            raise LinuxReleaseError(f"wheelhouse artifact metadata mismatch: {filename}")
+        artifacts[normalized_name] = _WheelhouseArtifact(
+            name=normalized_name,
+            version=declared_version,
+            filename=filename,
+            sha256=digest,
+            path=artifact_path,
+        )
+
+    if not artifacts:
+        raise LinuxReleaseError("wheelhouse manifest contains no artifacts")
+    children = tuple(root.iterdir())
+    unexpected_children = sorted(
+        child.name
+        for child in children
+        if child.name != WHEELHOUSE_MANIFEST_NAME and not child.name.endswith(".whl")
+    )
+    if unexpected_children:
+        raise LinuxReleaseError(
+            "wheelhouse contains unallowlisted entries: " + ",".join(unexpected_children[:5])
+        )
+    actual_wheels = {child.name for child in children if child.name.endswith(".whl")}
+    if actual_wheels != listed_filenames:
+        missing = sorted(listed_filenames - actual_wheels)
+        extra = sorted(actual_wheels - listed_filenames)
+        detail = ", ".join(
+            (
+                f"missing={','.join(missing[:3])}" if missing else "",
+                f"extra={','.join(extra[:3])}" if extra else "",
+            )
+        ).strip(", ")
+        raise LinuxReleaseError(f"wheelhouse artifact inventory differs ({detail})")
+    if required:
+        for raw_name, expected_version in required.items():
+            name = _normalized_distribution_name(raw_name)
+            artifact = artifacts.get(name)
+            if artifact is None:
+                raise LinuxReleaseError(f"wheelhouse is missing required artifact: {name}")
+            if expected_version is not None and artifact.version != expected_version:
+                raise LinuxReleaseError(
+                    f"wheelhouse artifact version differs for {name}: {artifact.version}"
+                )
+    return artifacts
+
+
+def _hashed_requirements(
+    path: Path,
+    artifacts: Sequence[_WheelhouseArtifact],
+    *,
+    project: tuple[str, str, str] | None = None,
+) -> Path:
+    """Write a deterministic requirements file consumed with ``--require-hashes``."""
+
+    rows = [
+        f"{artifact.name}=={artifact.version} --hash=sha256:{artifact.sha256}"
+        for artifact in sorted(artifacts, key=lambda item: item.name)
+    ]
+    if project is not None:
+        name, version, digest = project
+        if _SHA256.fullmatch(digest) is None:
+            raise LinuxReleaseError("project wheel hash is malformed")
+        rows.insert(0, f"{name}[full]=={version} --hash=sha256:{digest}")
+    if not rows:
+        raise LinuxReleaseError("hashed requirements are empty")
+    try:
+        path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    except OSError as exc:
+        raise LinuxReleaseError("cannot write hashed wheelhouse requirements") from exc
+    return path
+
+
+def _resolve_wheelhouse(path: Path | None) -> Path:
+    """Resolve an explicitly local wheelhouse, never falling back to a network index."""
+
+    if path is None:
+        configured = os.environ.get(WHEELHOUSE_ENVIRONMENT)
+        if not configured:
+            raise LinuxReleaseError(
+                f"offline wheelhouse is required; pass --wheelhouse or set {WHEELHOUSE_ENVIRONMENT}"
+            )
+        path = Path(configured)
+    return _absolute_real_directory(path, label="offline wheelhouse")
 
 
 def _runtime_dependency_lock(path: Path) -> dict[str, str]:
@@ -431,19 +706,28 @@ def _venv_command(root: Path) -> Path:
     return root / "bin" / "Neocortex"
 
 
-def _prepare_pip_bootstrap(workspace: Path) -> Path:
-    """Download the pinned pip wheel without invoking the bundled venv pip."""
+def _prepare_pip_bootstrap(workspace: Path, *, wheelhouse: Path) -> Path:
+    """Copy the authenticated pip wheel from the local wheelhouse only.
 
+    The release installer intentionally has no network fallback.  A missing or
+    unverified wheelhouse is a configuration error, not a reason to invoke the
+    ambient index or download the pinned bootstrap wheel.
+    """
+
+    artifacts = _validate_wheelhouse(
+        wheelhouse,
+        required={"pip": PIP_BOOTSTRAP_VERSION},
+    )
+    source = artifacts["pip"].path
+    destination = workspace / PIP_BOOTSTRAP_FILENAME
     try:
-        return pip_bootstrap.prepare_pip_bootstrap(
-            workspace,
-            downloader=_download,
-            filename=PIP_BOOTSTRAP_FILENAME,
-            url=PIP_BOOTSTRAP_URL,
-            sha256=PIP_BOOTSTRAP_SHA256,
-        )
-    except pip_bootstrap.PipBootstrapError as exc:
-        raise LinuxReleaseError(str(exc)) from exc
+        shutil.copyfile(source, destination)
+        with destination.open("rb") as stream:
+            os.fsync(stream.fileno())
+    except OSError as exc:
+        raise LinuxReleaseError("cannot stage the local pip bootstrap wheel") from exc
+    _require_pip_bootstrap(destination)
+    return destination
 
 
 def _require_pip_bootstrap(wheel: Path) -> None:
@@ -491,6 +775,7 @@ def _build_wheel(
     workspace: Path,
     *,
     pip_wheel: Path,
+    wheelhouse: Path | None = None,
     runner: CommandRunner = _run,
 ) -> Path:
     staged_source = workspace / "source"
@@ -504,11 +789,22 @@ def _build_wheel(
         )
     except SourceStagingError as error:
         raise LinuxReleaseError(str(error)) from error
+    dependency_wheelhouse = pip_wheel.parent if wheelhouse is None else wheelhouse
+    wheelhouse_artifacts: dict[str, _WheelhouseArtifact] | None = None
+    if wheelhouse is not None:
+        runtime_lock = _runtime_dependency_lock(layout.source_root / RUNTIME_DEPENDENCY_LOCK_NAME)
+        required = {
+            **runtime_lock,
+            "build": "1.5.0",
+            "setuptools": "83.0.0",
+            "wheel": None,
+        }
+        wheelhouse_artifacts = _validate_wheelhouse(wheelhouse, required=required)
     build_environment = workspace / "build-environment"
     _create_pip_environment(build_environment, pip_wheel, runner=runner)
     python = _venv_python(build_environment)
     constraints = staged_source / "constraints.txt"
-    build_process_environment = os.environ.copy()
+    build_process_environment = _offline_environment()
     build_process_environment.update(
         {
             "PYTHONDONTWRITEBYTECODE": "1",
@@ -516,23 +812,42 @@ def _build_wheel(
             "SOURCE_DATE_EPOCH": str(SOURCE_DATE_EPOCH),
         }
     )
-    runner(
-        (
-            python,
-            "-m",
-            "pip",
-            "install",
-            "--disable-pip-version-check",
-            "--only-binary=:all:",
-            "--constraint",
-            constraints,
-            "build==1.5.0",
-            "setuptools==83.0.0",
-            "wheel",
-        ),
-        timeout=900,
-        environment=build_process_environment,
+    requirements_path: Path | None = None
+    if wheelhouse_artifacts is not None:
+        requirements_path = workspace / "build-requirements.txt"
+        requirements_path = _hashed_requirements(
+            requirements_path,
+            tuple(
+                artifact
+                for name, artifact in wheelhouse_artifacts.items()
+                if name != "neocortex-framework"
+            ),
+        )
+    install_command: tuple[str | os.PathLike[str], ...] = (
+        python,
+        "-I",
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+        "--no-cache-dir",
+        "--no-index",
+        "--require-hashes",
+        "--only-binary=:all:",
+        "--find-links",
+        dependency_wheelhouse,
+        "--constraint",
+        constraints,
     )
+    if (staged_runtime_lock := staged_source / RUNTIME_DEPENDENCY_LOCK_NAME).is_file():
+        install_command += ("--constraint", staged_runtime_lock)
+    if requirements_path is not None:
+        install_command += ("--requirement", requirements_path)
+    else:
+        # Internal callers predating the wheelhouse contract retain the old
+        # argument shape, but still cannot reach an index or ambient cache.
+        install_command += ("build==1.5.0", "setuptools==83.0.0", "wheel")
+    runner(install_command, timeout=900, environment=build_process_environment)
     wheelhouse = workspace / "wheelhouse"
     wheelhouse.mkdir()
     runner(
@@ -562,46 +877,69 @@ def _install_wheel(
     runtime_lock: Path,
     *,
     pip_wheel: Path,
+    wheelhouse: Path | None = None,
     runner: CommandRunner = _run,
 ) -> None:
     if os.path.lexists(release_root):
         raise LinuxReleaseError(f"release install destination already exists: {release_root}")
     _ensure_directory(release_root.parent)
-    _runtime_dependency_lock(runtime_lock)
+    locked_dependencies = _runtime_dependency_lock(runtime_lock)
+    dependency_wheelhouse = wheel.parent if wheelhouse is None else wheelhouse
+    wheelhouse_artifacts: dict[str, _WheelhouseArtifact] | None = None
+    if wheelhouse is not None:
+        wheelhouse_artifacts = _validate_wheelhouse(
+            wheelhouse,
+            required=locked_dependencies,
+        )
     _create_pip_environment(release_root, pip_wheel, runner=runner)
-    runner(
-        (
-            _venv_python(release_root),
-            "-m",
-            "pip",
-            "install",
-            "--disable-pip-version-check",
-            "--only-binary=:all:",
-            "--find-links",
-            wheel.parent,
-            "--constraint",
-            constraints,
-            "--constraint",
-            runtime_lock,
-            f"{wheel}[full]",
-        ),
-        timeout=3600,
+    requirements_path: Path | None = None
+    if wheelhouse_artifacts is not None:
+        requirements_path = wheel.parent / "release-requirements.txt"
+        requirements_path = _hashed_requirements(
+            requirements_path,
+            tuple(wheelhouse_artifacts.values()),
+            project=("neocortex-framework", __version__, _sha256_file(wheel)),
+        )
+    install_command: tuple[str | os.PathLike[str], ...] = (
+        _venv_python(release_root),
+        "-I",
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+        "--no-cache-dir",
+        "--no-index",
+        "--require-hashes",
+        "--only-binary=:all:",
+        "--find-links",
+        wheel.parent,
+        "--find-links",
+        dependency_wheelhouse,
+        "--constraint",
+        constraints,
+        "--constraint",
+        runtime_lock,
     )
-
-
-def _download(url: str, destination: Path) -> None:
-    request = urllib.request.Request(url, headers={"User-Agent": "NeoCortex-release/1"})
-    with urllib.request.urlopen(request, timeout=120) as response, destination.open("xb") as output:
-        shutil.copyfileobj(response, output, length=1024 * 1024)
-        output.flush()
-        os.fsync(output.fileno())
+    if requirements_path is not None:
+        install_command += ("--requirement", requirements_path)
+    else:
+        install_command += (f"{wheel}[full]",)
+    try:
+        runner(
+            install_command,
+            timeout=3600,
+            environment=_offline_environment(),
+        )
+    finally:
+        if requirements_path is not None:
+            requirements_path.unlink(missing_ok=True)
 
 
 def _candidate_environment(
     layout: LinuxReleaseLayout,
     corpus_root: Path,
 ) -> dict[str, str]:
-    environment = os.environ.copy()
+    environment = _offline_environment()
     environment["NEOCORTEX_CORPUS_ROOT"] = str(corpus_root)
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     environment["XDG_CONFIG_HOME"] = str(layout.policy.config_directory.parent)
@@ -1808,9 +2146,11 @@ def install_release(
     corpus_root: Path,
     prepare_models: bool,
     desktop: bool,
+    wheelhouse: Path | None = None,
     runner: CommandRunner = _run,
 ) -> dict[str, object]:
     _require_reference_platform()
+    wheelhouse = _resolve_wheelhouse(wheelhouse)
     _validate_layout(layout)
     corpus_root = corpus_root.expanduser()
     if not corpus_root.is_absolute():
@@ -1867,11 +2207,12 @@ def install_release(
             with tempfile.TemporaryDirectory(prefix=f"{name}-", dir=layout.staging) as temporary:
                 workspace = Path(temporary)
                 _write_staging_marker(workspace, release_name=name)
-                pip_wheel = _prepare_pip_bootstrap(workspace)
+                pip_wheel = _prepare_pip_bootstrap(workspace, wheelhouse=wheelhouse)
                 wheel = _build_wheel(
                     layout,
                     workspace,
                     pip_wheel=pip_wheel,
+                    wheelhouse=wheelhouse,
                     runner=runner,
                 )
                 try:
@@ -1886,6 +2227,7 @@ def install_release(
                     layout.source_root / "constraints.txt",
                     source_runtime_lock,
                     pip_wheel=pip_wheel,
+                    wheelhouse=wheelhouse,
                     runner=runner,
                 )
                 runtime_lock = candidate_root / RUNTIME_DEPENDENCY_LOCK_NAME
@@ -2338,6 +2680,14 @@ def build_parser() -> argparse.ArgumentParser:
     subcommands = parser.add_subparsers(dest="command", required=True)
     install = subcommands.add_parser("install")
     install.add_argument("--corpus-root", type=Path, required=True)
+    install.add_argument(
+        "--wheelhouse",
+        type=Path,
+        help=(
+            "local hash-manifested wheelhouse; defaults to "
+            f"${WHEELHOUSE_ENVIRONMENT} (network indexes are never used)"
+        ),
+    )
     install.add_argument("--prepare-models", action="store_true")
     install.add_argument("--desktop", action="store_true")
     subcommands.add_parser("verify")
@@ -2356,6 +2706,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 corpus_root=args.corpus_root,
                 prepare_models=args.prepare_models,
                 desktop=args.desktop,
+                wheelhouse=args.wheelhouse,
             )
         elif args.command == "verify":
             report = verify_release(layout)
