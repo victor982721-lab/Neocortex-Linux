@@ -899,9 +899,18 @@ def _install_wheel(
     requirements_path: Path | None = None
     if wheelhouse_artifacts is not None:
         requirements_path = wheel.parent / "release-requirements.txt"
+        # Build-only tooling (``build``, ``wheel`` and their hooks) is needed
+        # while producing the project wheel, but must not enter the product
+        # environment: its inventory is required to match the runtime lock
+        # exactly during the post-install verification.
+        runtime_artifacts = tuple(
+            artifact
+            for name, artifact in wheelhouse_artifacts.items()
+            if name in locked_dependencies
+        )
         requirements_path = _hashed_requirements(
             requirements_path,
-            tuple(wheelhouse_artifacts.values()),
+            runtime_artifacts,
             project=("neocortex-framework", __version__, _sha256_file(wheel)),
         )
     install_command: tuple[str | os.PathLike[str], ...] = (

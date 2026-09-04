@@ -536,6 +536,62 @@ def test_release_install_uses_the_runtime_lock_as_a_second_constraint(
     assert {"--no-index", "--require-hashes", "--only-binary=:all:"} <= set(command)
 
 
+def test_release_install_excludes_build_only_wheels_from_runtime_requirements(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wheelhouse = _wheelhouse_fixture(
+        tmp_path,
+        ("pip", "26.2.1"),
+        ("build", "1.5.0"),
+        ("setuptools", "83.0.0"),
+        ("wheel", "0.48.0"),
+        ("pyproject-hooks", "1.2.0"),
+    )
+    project_directory = tmp_path / "project"
+    project_directory.mkdir()
+    project_wheel = project_directory / "neocortex_framework-0.9.0-py3-none-any.whl"
+    project_wheel.write_bytes(b"project-wheel")
+    constraints = tmp_path / "constraints.txt"
+    constraints.write_text("pip==26.2.1\n", encoding="utf-8")
+    runtime_lock = tmp_path / release_linux.RUNTIME_DEPENDENCY_LOCK_NAME
+    runtime_lock.write_text("pip==26.2.1\n", encoding="utf-8")
+    release_root = tmp_path / "release"
+    pip_wheel = tmp_path / release_linux.PIP_BOOTSTRAP_FILENAME
+    observed: list[tuple[str, ...]] = []
+    captured_requirements = ""
+
+    monkeypatch.setattr(
+        release_linux,
+        "_create_pip_environment",
+        lambda root, *_args, **_kwargs: (root / "bin").mkdir(parents=True),
+    )
+
+    def runner(arguments, **_kwargs):
+        nonlocal captured_requirements
+        observed.append(tuple(map(str, arguments)))
+        if "--requirement" in arguments:
+            requirement_path = Path(arguments[arguments.index("--requirement") + 1])
+            captured_requirements = requirement_path.read_text(encoding="utf-8")
+        return subprocess.CompletedProcess(arguments, 0, "", "")
+
+    release_linux._install_wheel(
+        release_root,
+        project_wheel,
+        constraints,
+        runtime_lock,
+        pip_wheel=pip_wheel,
+        wheelhouse=wheelhouse,
+        runner=runner,
+    )
+
+    assert "pip==26.2.1" in captured_requirements
+    assert "build==1.5.0" not in captured_requirements
+    assert "setuptools==83.0.0" not in captured_requirements
+    assert "wheel==0.48.0" not in captured_requirements
+    assert "pyproject-hooks==1.2.0" not in captured_requirements
+
+
 def test_runtime_dependency_verifier_rejects_inventory_drift(tmp_path: Path) -> None:
     lock = tmp_path / release_linux.RUNTIME_DEPENDENCY_LOCK_NAME
     lock.write_text("pip==26.2.1\n", encoding="utf-8")
