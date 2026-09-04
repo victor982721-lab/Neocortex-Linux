@@ -4,7 +4,7 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
-## Unreleased
+## 0.10.0 — 2026-09-04
 
 ### Documentación
 
