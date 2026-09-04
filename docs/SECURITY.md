@@ -35,7 +35,7 @@ PDF, OCR, Office, audio, código, metadatos o relaciones como autorización.
 
 | Nivel | Ejemplos | Efecto |
 |---|---|---|
-| Consulta | `--help`, `--version`, `--status`, `--action-recovery-status`, `--retention-status`, `--knowledge-status`, `--knowledge-search`, `--knowledge-context`, `inspect lineage`, búsquedas, previews y doctors | No debe recorrer ni modificar el corpus; puede fallar si falta estado. SQLite read-only puede participar en WAL/SHM. |
+| Consulta | `--help`, `--version`, `--status`, `--action-recovery-status`, `--retention-status`, `--knowledge-status`, `--knowledge-search`, `--knowledge-context`, `inspect lineage`, búsquedas, previews y doctors | No debe recorrer ni modificar el corpus; puede fallar si falta estado. Las lecturas públicas usan `SQLiteReadSession`/snapshots y se abstienen cuando WAL/SHM no puede probarse estable. |
 | Estado sin mutación del corpus | Corrida sin `--apply`, `--semantic-index`, `--semantic-classify`, `--catalog-documents`, `--organization-plan`, `--review-record`, `--action-recovery-record` | Lee contenido o cachés y escribe bases, evidencia o planes. |
 | Descarga/carga externa | `models prepare`; `--semantic-prepare-models`; primera transcripción Windows sin `--audio-local-models-only` | Puede adquirir modelos y ampliar cachés. `models status` es local y read-only. |
 | Mutación de archivos | Corrida integrada con `--apply`; `--organization-apply` | En Windows puede renombrar extensiones o mover documentos sólo bajo el contrato NTFS ligado a handles; en Linux se rechaza antes de crear estado. |

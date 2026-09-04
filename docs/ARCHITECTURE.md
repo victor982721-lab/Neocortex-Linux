@@ -1169,11 +1169,12 @@ Los siguientes límites deben permanecer visibles:
   por puntero/CAS para sus lectores oficiales (`NC-AUD-012` y `NC-AUD-013`);
   los receipts Semantic nuevos no atribuyen trabajo legacy y SQL externo sobre
   tablas mutables no hereda el contrato;
-- el grafo de código conserva esquema 5 no generacional y una transacción global
-  extensa (`NC-AUD-015`); es atómica para lectores, pero carece de reanudación y
-  de cancelación dentro de una sentencia SQL. Los empates permanecen ambiguos y
-  la firma global del registro puede invalidar lenguajes no afectados; no debe
-  fragmentarse sin el diseño generacional completo;
+- el owner Code vigente es schema 7 y conserva las tablas legacy para lectores
+  compatibles, mientras el ledger generacional aditivo (`graph_input_snapshots`,
+  generaciones, batches, memberships, checkpoints y `graph_heads`) valida
+  membresías y prepara una publicación progresiva; el productor principal aún
+  usa la ruta legacy, por lo que cancelación, recovery, poda e integración CAS
+  completa siguen pendientes (`NC-AUD-015`);
 - la Knowledge Plane no implementa un grafo transversal entre owners;
   relaciones verificadas e historial transversal se reportan como capacidades
   incompletas en vez de inferirse. MCP es sólo una fachada read-only y no añade

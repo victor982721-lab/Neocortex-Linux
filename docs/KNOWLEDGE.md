@@ -314,11 +314,13 @@ control.
 | `video` | `video.sqlite3` | 2 | Conteo, último `updated_ns` y run; no generacional. | OCR FTS de frames con localizador temporal; el audio enlazado conserva su owner propio. |
 | `image` | `image.sqlite3` | 6 | Conteo, último `updated_ns` y run; no generacional. | Imagen y OCR retenido mediante semantic cuando están publicados. |
 | `semantic` | `semantic.sqlite3` | 7 | Head `ready` por firma de modelo; receipts/outbox nuevos no atribuyen trabajo legacy. | Texto e imagen por espacio/modelo publicado, resueltos contra la revisión DB-local vigente, y linaje parcial de chunks/embeddings. |
-| `code` | `code.sqlite3` | 7 | Archivos actuales, última versión y último run; `best_effort_non_generational`. | FTS, exact typed, estructura, símbolos, relaciones owner-local, evidencia externa y enlaces exactos a chunks Semantic publicados. |
+| `code` | `code.sqlite3` | 7 | Archivos actuales, última versión y último run; ledger generacional aditivo disponible, con productor principal aún legacy. | FTS, exact typed, estructura, símbolos, relaciones owner-local, evidencia externa y enlaces exactos a chunks Semantic publicados. |
 
 Los watermarks no generacionales son detectores acotados de cambio, no una
 publicación equivalente a inventario, catálogo o semantic. En particular,
-`code` schema 7 todavía no tiene generación/head de grafo.
+`code` schema 7 conserva un ledger de generación/head para la integración
+progresiva, pero la ruta productora principal todavía no lo publica de forma
+automática.
 
 Cada head de inventario incluye, cuando existe un plan terminado, el token
 `duplicate-plan-v1:<completed_ns>:<groups>:<redundant>:<bytes>`. Así se detecta
