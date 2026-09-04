@@ -19,7 +19,10 @@ from neocortex.deduplication import FileSnapshot
 from neocortex.deduplication.fingerprinting import FULL_ALGORITHM, stat_matches_snapshot
 from neocortex.deduplication.io import native_io_path
 from neocortex.platform.policy import sqlite_path_collation
-from neocortex.platform.content_capability_manifest import CONTENT_CAPABILITIES
+from neocortex.platform.content_capability_manifest import (
+    CONTENT_CAPABILITIES,
+    content_capability_for_source,
+)
 
 from neocortex.foundation.file_identity import FileIdentityError, decode_file_identity
 from .derivation_contracts import MaterializationRef
@@ -83,6 +86,34 @@ def iter_video_source_records(
     from .video_source import iter_video_source_records as _iter_video
 
     yield from _iter_video(state_directory, connection=connection)
+
+
+def _video_source_head(state_directory: Path) -> "SemanticSourceHead":
+    """Adapt the Video-specific head to the common Semantic head contract.
+
+    Video keeps a dedicated adapter because its frame OCR projection has
+    locators and coverage states that do not belong to the ordinary text
+    caches.  The manifest nevertheless exposes Video as a Semantic source,
+    so callers asking for source heads must receive the same envelope instead
+    of falling through to the text-cache query dispatcher.
+    """
+
+    from .video_source import video_source_head
+
+    observed = video_source_head(state_directory)
+    capability = content_capability_for_source(VIDEO_SOURCE_KIND)
+    return SemanticSourceHead(
+        source_kind=observed.source_kind,
+        database_name=observed.database_name,
+        adapter_version=observed.adapter_version,
+        schema_version=capability.state_schema_version,
+        row_count=observed.row_count,
+        digest=observed.digest,
+        complete=observed.complete,
+        reason=observed.reason,
+    )
+
+
 SOURCE_ADAPTER_VERSION = "semantic-source-adapters-v3"
 IMAGE_SOURCE_ADAPTER_VERSION = "semantic-image-source-v4-no-nudenet"
 CODE_SOURCE_ADAPTER_VERSION = "semantic-code-source-v1"
@@ -1246,12 +1277,18 @@ def iter_text_source_records(
 ) -> Iterator[TextSourceRecord]:
     """Yield one selected source incrementally without scanning source files."""
 
-    if source_kind not in TEXT_SOURCE_KINDS:
+    # Video frame OCR is text evidence, but its owner schema and locator
+    # contract are deliberately maintained by ``video_source``.  Keep the
+    # ordinary text-cache set unchanged for planner defaults while allowing
+    # explicit consumers to use this common source-record entry point.
+    if source_kind not in TEXT_SOURCE_KINDS and source_kind != VIDEO_SOURCE_KIND:
         raise ValueError(f"unsupported semantic text source: {source_kind}")
     database = semantic_source_database(state_directory, source_kind)
     if not database.is_file():
         return
-    if source_kind == "pdf":
+    if source_kind == VIDEO_SOURCE_KIND:
+        yield from iter_video_source_records(state_directory, connection=connection)
+    elif source_kind == "pdf":
         yield from _iter_pdf(database, connection)
     elif source_kind == "docx":
         yield from _iter_docx(database, connection)
@@ -1518,6 +1555,8 @@ def semantic_source_heads(
     return tuple(
         _image_source_head(state_directory)
         if source_kind == IMAGE_SOURCE_KIND
+        else _video_source_head(state_directory)
+        if source_kind == VIDEO_SOURCE_KIND
         else _text_source_head(state_directory, source_kind)
         for source_kind in selected
     )

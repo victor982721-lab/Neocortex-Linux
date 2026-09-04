@@ -17,6 +17,10 @@ from neocortex.semantic.video_source import (
     iter_video_source_records,
     video_source_head,
 )
+from neocortex.semantic.semantic_sources import (
+    iter_text_source_records,
+    semantic_source_heads,
+)
 
 
 def _create_video_fixture(root: Path, *, status: str = "partial") -> Path:
@@ -98,6 +102,27 @@ def test_video_head_is_deterministic_and_reports_partial_coverage(tmp_path: Path
     assert first.row_count == 1
     assert first.digest.startswith("sha256:")
     assert first.as_payload()["schema"] == "neocortex.semantic-video-source-head/v1"
+
+
+def test_video_is_exposed_through_common_semantic_source_contract(
+    tmp_path: Path,
+) -> None:
+    _create_video_fixture(tmp_path, status="partial")
+
+    head = semantic_source_heads(tmp_path, ("video",))[0]
+    records = tuple(iter_text_source_records(tmp_path, "video"))
+
+    assert head.source_kind == "video"
+    assert head.database_name == "video.sqlite3"
+    assert head.schema_version == 2
+    assert head.complete is False
+    assert head.reason is None
+    assert records[0].item.source_kind == "video"
+    assert records[1].section.provenance["locator"] == {
+        "kind": "video_frame",
+        "frame_index": 0,
+        "timestamp_ms": 250,
+    }
 
 
 def test_video_projection_blocks_active_wal_without_creating_reader_sidecars(
