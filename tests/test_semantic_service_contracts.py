@@ -535,6 +535,7 @@ def test_operational_constants_are_exact() -> None:
             "archive",
             "text",
             "code",
+            "video",
         }
     )
 

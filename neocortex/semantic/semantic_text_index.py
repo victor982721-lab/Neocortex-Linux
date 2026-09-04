@@ -45,6 +45,7 @@ from .semantic_preparation import (
 )
 from .semantic_quality import SEMANTIC_TEXT_QUALITY_POLICY, iter_semantic_text_chunks
 from .semantic_service_contracts import (
+    SEMANTIC_PLAN_TEXT_SOURCE_KINDS,
     SEMANTIC_DATABASE_NAME,
     STAGING_BATCH_SIZE,
     GenerationWorkResult,
@@ -53,7 +54,6 @@ from .semantic_service_contracts import (
 from .semantic_sources import (
     SEMANTIC_TITLE_POLICY,
     SEMANTIC_TEXT_ENUMERATION_PROTOCOL,
-    TEXT_SOURCE_KINDS,
     TextSourceRecord,
     iter_text_sections_with_metadata,
     semantic_source_heads,
@@ -375,7 +375,9 @@ def index_text_embeddings(
     budget = work_budget or unlimited_semantic_work_budget()
     new_jobs_before = budget.new_jobs_admitted
     selected_sources = tuple(dict.fromkeys(source_kinds))
-    if not selected_sources or any(kind not in TEXT_SOURCE_KINDS for kind in selected_sources):
+    if not selected_sources or any(
+        kind not in SEMANTIC_PLAN_TEXT_SOURCE_KINDS for kind in selected_sources
+    ):
         raise ValueError("semantic text sources must name supported durable caches")
     selected_model = model or multilingual_text_model()
     if selected_model.modality is not EmbeddingModality.TEXT:

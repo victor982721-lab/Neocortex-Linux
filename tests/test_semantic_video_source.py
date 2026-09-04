@@ -21,6 +21,7 @@ from neocortex.semantic.semantic_sources import (
     iter_text_source_records,
     semantic_source_heads,
 )
+from neocortex.semantic.semantic_plan_results import _select_plan_sources
 
 
 def _create_video_fixture(root: Path, *, status: str = "partial") -> Path:
@@ -123,6 +124,10 @@ def test_video_is_exposed_through_common_semantic_source_contract(
         "frame_index": 0,
         "timestamp_ms": 250,
     }
+
+
+def test_video_can_be_selected_explicitly_by_the_semantic_text_planner() -> None:
+    assert _select_plan_sources("text", ("video",)) == ("video",)
 
 
 def test_video_projection_blocks_active_wal_without_creating_reader_sidecars(

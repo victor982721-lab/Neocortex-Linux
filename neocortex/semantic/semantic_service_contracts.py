@@ -43,7 +43,7 @@ EVIDENCE_PAGE_SIZE = 256
 MIN_ADVISORY_EVIDENCE_SCORE = 0.0
 IMAGE_OCR_TEXT_CHANNEL = "image_ocr"
 SEMANTIC_PLAN_TEXT_SOURCE_KINDS = frozenset(
-    {"pdf", "docx", "xlsx", "pptx", "odt", "audio", "archive", "text", "code"}
+    {"pdf", "docx", "xlsx", "pptx", "odt", "audio", "archive", "text", "code", "video"}
 )
 
 # endregion [01]

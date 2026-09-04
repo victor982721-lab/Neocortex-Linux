@@ -46,13 +46,13 @@ from .semantic_service_contracts import (
     SemanticPlan,
     SemanticSourcePlan,
     SemanticWorkloadPlan,
+    SEMANTIC_PLAN_TEXT_SOURCE_KINDS,
 )
 from .semantic_sources import (
     IMAGE_SOURCE_ADAPTER_VERSION,
     IMAGE_SOURCE_KIND,
     SEMANTIC_TEXT_ENUMERATION_PROTOCOL,
     SOURCE_ADAPTER_VERSION,
-    TEXT_SOURCE_KINDS,
     TextSourceRecord,
     iter_text_source_records,
     semantic_text_processing_signature,
@@ -408,7 +408,8 @@ def _select_plan_sources(
         raise ValueError("semantic plan scope must be text, image or all")
     selected_sources = tuple(dict.fromkeys(source_kinds)) if scope != "image" else ()
     if scope in {"text", "all"} and (
-        not selected_sources or any(source not in TEXT_SOURCE_KINDS for source in selected_sources)
+        not selected_sources
+        or any(source not in SEMANTIC_PLAN_TEXT_SOURCE_KINDS for source in selected_sources)
     ):
         raise ValueError("semantic plan text sources must name durable text caches")
     return selected_sources
