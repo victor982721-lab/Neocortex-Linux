@@ -36,7 +36,8 @@
 - No se ejecutó KIO real ni se modificó la Papelera del escritorio.
 - La GUI aún no presenta grant/intento; la sincronización posterior de catálogo,
   caches y Semantic queda para el siguiente corte.
-- La publicación y release 0.11.0 deben ejecutarse desde el SHA final, con el
+- La publicación y release 0.11.0 deben ejecutarse desde el SHA final
+  (`da48afe` como base actual), con el
   wheelhouse local autenticado, manifest, launcher, smoke/replay y rollback.
 - Mantener los pendientes `NEO-FIC-001`, `NEO-AUTH-001` y `NEO-CUR-001` abiertos
   hasta completar esos gates, y registrar el cierre evolutivo con un ID nuevo en
