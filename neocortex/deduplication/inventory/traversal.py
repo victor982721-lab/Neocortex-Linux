@@ -202,6 +202,7 @@ class InventoryTraversal:
         self._work_check = work_check
         self._file_work_check = file_work_check
         self._last_progress_at = time.monotonic()
+        self._directory_identities: dict[str, tuple[int, int, int]] = {}
         self._prefix_counters = ScanCounters()
         self._counters = (
             ScanCounters()
@@ -253,6 +254,15 @@ class InventoryTraversal:
             iterator = self._open_directory(directory, stack)
             if iterator is None:
                 return
+        if self._deterministic:
+            current = os.stat(directory, follow_symlinks=False)
+            observed_identity = (
+                current.st_dev,
+                current.st_ino,
+                stat_birthtime_ns(current),
+            )
+            if observed_identity != self._directory_identities.get(directory):
+                raise InventoryError("inventory directory ancestor changed while scanning")
         entry = self._next_entry(iterator, stack)
         if entry is not None:
             self._process_entry(entry, stack)
@@ -307,6 +317,11 @@ class InventoryTraversal:
                     raise InventoryError("inventory directory changed while opening")
             if self._directory_observer is not None:
                 self._directory_observer(directory, directory_stat, not self._resume_active)
+            self._directory_identities[directory] = (
+                directory_stat.st_dev,
+                directory_stat.st_ino,
+                stat_birthtime_ns(directory_stat),
+            )
         except InventoryError:
             raise
         except OSError:
@@ -328,6 +343,7 @@ class InventoryTraversal:
             return next(iterator)
         except StopIteration:
             iterator.close()
+            self._directory_identities.pop(stack[-1][0], None)
             stack.pop()
         except OSError:
             if self._resume_active:
@@ -335,6 +351,7 @@ class InventoryTraversal:
             else:
                 self._prefix_counters.errors += 1
             iterator.close()
+            self._directory_identities.pop(stack[-1][0], None)
             stack.pop()
         return None
 
