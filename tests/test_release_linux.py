@@ -640,6 +640,38 @@ def test_virtualenv_console_shebangs_are_rebound_to_final_release(tmp_path: Path
     assert untouched.read_text(encoding="utf-8") == "data\n"
 
 
+def test_virtualenv_metadata_drops_transient_direct_url_and_rebinds_cfg(tmp_path: Path) -> None:
+    staging = tmp_path / "staging" / "candidate"
+    final = tmp_path / "releases" / release_linux.release_id("b" * 40)
+    (staging / "bin").mkdir(parents=True)
+    (staging / "lib" / "python3.14" / "site-packages" / "demo-1.0.dist-info").mkdir(
+        parents=True
+    )
+    direct = staging / "lib" / "python3.14" / "site-packages" / "demo-1.0.dist-info" / "direct_url.json"
+    direct.write_text(
+        '{"url": "file:///tmp/staging/demo.whl"}\n',
+        encoding="utf-8",
+    )
+    record = direct.parent / "RECORD"
+    record.write_text(
+        "demo-1.0.dist-info/direct_url.json,sha256=abc,10\n"
+        "demo.py,sha256=def,3\n",
+        encoding="utf-8",
+    )
+    cfg = staging / "pyvenv.cfg"
+    cfg.write_text(f"command = {staging}/bin/python -m venv {staging}\n", encoding="utf-8")
+    activation = staging / "bin" / "activate"
+    activation.write_text(f"VIRTUAL_ENV={staging}\n", encoding="utf-8")
+
+    release_linux._rewrite_virtualenv_paths(staging, final)
+
+    assert not direct.exists()
+    assert record.read_text(encoding="utf-8") == "demo.py,sha256=def,3\n"
+    assert str(staging) not in cfg.read_text(encoding="utf-8")
+    assert str(final) in cfg.read_text(encoding="utf-8")
+    assert activation.read_text(encoding="utf-8") == f"VIRTUAL_ENV={final}\n"
+
+
 def test_release_script_is_directly_executable_from_the_documented_path() -> None:
     completed = subprocess.run(
         [sys.executable, str(PROJECT_ROOT / "tools" / "release_linux.py"), "--help"],

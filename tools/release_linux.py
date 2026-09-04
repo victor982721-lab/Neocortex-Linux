@@ -778,15 +778,42 @@ def _remove_bytecode(root: Path) -> None:
                 shutil.rmtree(path)
 
 
-def _rewrite_virtualenv_shebangs(staging_root: Path, final_root: Path) -> None:
-    """Rebind generated console scripts from staging to their final venv path."""
+def _rewrite_virtualenv_paths(staging_root: Path, final_root: Path) -> None:
+    """Rebind venv metadata/scripts and remove transient staging provenance."""
 
     old_prefix = os.fsencode(os.fspath(staging_root))
     new_prefix = os.fsencode(os.fspath(final_root))
     bin_directory = staging_root / "bin"
     if not bin_directory.is_dir():
         raise LinuxReleaseError("release virtualenv bin directory is missing")
-    for path in sorted(bin_directory.iterdir(), key=lambda item: item.name):
+
+    # pip writes PEP 610 direct_url.json files for the wheel and bootstrap
+    # wheel.  They point at the throw-away wheelhouse and would leave a stale
+    # staging path in an otherwise immutable release.  Remove only those
+    # generated files and their corresponding RECORD rows.
+    for path in sorted(staging_root.rglob("direct_url.json"), key=lambda item: str(item)):
+        try:
+            metadata = path.lstat()
+        except OSError as exc:
+            raise LinuxReleaseError(f"release metadata cannot be inspected: {path}") from exc
+        if not stat.S_ISREG(metadata.st_mode) or not path.parent.name.endswith(".dist-info"):
+            continue
+        record = path.parent / "RECORD"
+        try:
+            path.unlink()
+            if record.is_file():
+                rows = record.read_text(encoding="utf-8").splitlines(keepends=True)
+                relative = path.relative_to(path.parent.parent).as_posix()
+                filtered = [row for row in rows if row.split(",", 1)[0] != relative]
+                if filtered != rows:
+                    with record.open("w", encoding="utf-8", newline="") as stream:
+                        stream.writelines(filtered)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+        except (OSError, UnicodeError) as exc:
+            raise LinuxReleaseError(f"release metadata cannot be normalized: {path}") from exc
+
+    for path in sorted(staging_root.rglob("*"), key=lambda item: str(item)):
         try:
             metadata = path.lstat()
         except OSError as exc:
@@ -797,19 +824,26 @@ def _rewrite_virtualenv_shebangs(staging_root: Path, final_root: Path) -> None:
             payload = path.read_bytes()
         except OSError as exc:
             raise LinuxReleaseError(f"release script cannot be read: {path}") from exc
-        if not payload.startswith(b"#!"):
+        if old_prefix not in payload:
             continue
-        first_line, separator, remainder = payload.partition(b"\n")
-        if old_prefix not in first_line:
-            continue
-        rebound = first_line.replace(old_prefix, new_prefix, 1) + separator + remainder
+        try:
+            payload.decode("utf-8")
+        except UnicodeDecodeError:
+            raise LinuxReleaseError(f"release text contains an invalid encoding: {path}") from None
+        rebound = payload.replace(old_prefix, new_prefix)
         try:
             with path.open("wb") as stream:
                 stream.write(rebound)
                 stream.flush()
                 os.fsync(stream.fileno())
         except OSError as exc:
-            raise LinuxReleaseError(f"release script shebang cannot be rebound: {path}") from exc
+            raise LinuxReleaseError(f"release path cannot be rebound: {path}") from exc
+
+
+def _rewrite_virtualenv_shebangs(staging_root: Path, final_root: Path) -> None:
+    """Compatibility wrapper for callers that only need venv path rebinding."""
+
+    _rewrite_virtualenv_paths(staging_root, final_root)
 
 
 def _remove_incomplete_release(root: Path) -> None:
@@ -1861,7 +1895,7 @@ def install_release(
                     runner=runner,
                 )
                 _remove_bytecode(candidate_root)
-                _rewrite_virtualenv_shebangs(candidate_root, final_release)
+                _rewrite_virtualenv_paths(candidate_root, final_release)
                 tree_digest = _validate_release_tree(candidate_root, expected_tree_sha256=None)
                 release_artifacts = _release_manifest(
                     release_name=name,
