@@ -26,9 +26,10 @@
   de 100 elementos, selección vacía, symlink intermedio, presupuesto de bytes,
   plan heterogéneo, mutación con mtime restaurado, replay y cero mutación del
   corpus/owners.
-- Ruff y `compileall` pasan; la suite Linux relevante pasa con 4,568 casos,
-  70 omitidos, 135 subtests y un caso legado excluido por la carrera conocida
-  de heartbeat/SQLite durante la suite completa.
+- Ruff y `compileall` pasan; la suite Linux amplia pasa con 4,543 casos,
+  70 omitidos y 135 subtests al excluir Windows/NTFS y el módulo run-control
+  con su carrera conocida de heartbeat/SQLite, mientras las pruebas focales
+  post-fix del vertical pasan 19 casos.
 - El test Windows/NTFS permanece fuera del alcance Linux-only; no se ejecutó
   GitHub Actions ni se procesó el corpus real.
 
