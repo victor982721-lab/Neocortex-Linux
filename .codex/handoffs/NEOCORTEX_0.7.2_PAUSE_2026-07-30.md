@@ -1,6 +1,6 @@
 # NeoCortex — handoff operativo vigente
 
-> Actualizado: 2026-08-31 10:41 CST. El basename es histórico y permanece estable.
+> Actualizado: 2026-09-03 18:09 CST. El basename es histórico y permanece estable.
 > `~/.codex/PENDIENTES.md` conserva el compromiso operativo; este archivo
 > describe sólo la frontera técnica de reanudación.
 
@@ -10,49 +10,32 @@
 
 ## Objetivo activo
 
-La simplificación física de `neocortex/code` quedó reconciliada sin wrappers:
-conserva ingesta, detección, representación, persistencia, búsqueda y
-relaciones semánticas. También se redujo la supervisión de workers a sesiones y
-grupos POSIX con `RLIMIT_AS`, retirando la capa activa de Job Objects Windows.
-La mutación Linux sigue bloqueada por contrato: `--apply` y
-`--organization-apply` deben rechazarse antes de crear estado con
-`linux_mutation_backend_unavailable`; el prototipo POSIX/KIO auditado no se
-promueve ni se incluye en el runtime.
+La cohorte de evolución 2026-09-03 consolidó seis cortes del programa de 90
+días sin abrir el corpus real: un único `SQLiteReadSession` con snapshots
+temporales y fences para lecturas sidecar-safe, `state-health` v2 con schema,
+metadata, FTS, relaciones y estados `future/incompatible/corrupt/active/
+blocked/orphaned`, backup/restore/purge con manifest y publicación por época,
+contratos compartidos CLI/API/MCP/UI con envelope v1, retención Linux segura de
+releases, modelos y artefactos, y un manifiesto multimodal que propaga
+`coverage` y `source_status` hasta Semantic. Code Graph dispone además de un
+ledger generacional aditivo con snapshots, lotes, membresías, checkpoints y
+CAS del head, sin crear un almacén paralelo.
 
-La primera evolución de curación quedó integrada como `--curation-preview`: lee
-snapshots temporales de `dedup.sqlite3` y `document_catalog.sqlite3`, compone
-duplicados exactos, propuestas de organización y archivos vacíos en revisión,
-y devuelve identidad, evidencia, razones y `preview_fingerprint`. La operación
-no inicializa, migra ni escribe SQLite, no toca WAL/SHM de los owners y falla
-cerrado si un owner cambia o conserva un journal activo; `--curation-json` emite
-la misma vista como un objeto determinista acotado. Cuando falta un owner, la
-vista conserva los resultados disponibles y declara `coverage=partial` o
-`unavailable` sin inventar un plan completo.
+Las rutas públicas permanecen Linux-only y read-only para el corpus: `--apply`
+y `--organization-apply` se rechazan antes de crear estado con
+`linux_mutation_backend_unavailable`, `Neocortex` sin operación sólo muestra
+ayuda, y las consultas no abren SQLite viva con `mode=ro` ordinario. La
+instalación publica el árbol desde el SHA final, reescribe los shebangs del
+entorno virtual al destino inmutable, valida manifiesto/launcher/receipt y
+conserva únicamente `current` y el rollback inmediato, sin borrar una entrada
+en uso.
 
-La nueva superficie `--state-health` inspecciona todos los owners mediante
-snapshots `immutable=1`, clasifica `healthy`, `missing`, `orphaned_sidecars`,
-`blocked` o `unreadable` y devuelve código 2 ante cobertura parcial. El
-orquestador, watcher y reconciliación mantienen seams lazy para no cargar
-NTFS/USN en las rutas públicas Linux normales.
-
-`--status` también usa ahora lecturas `immutable=1` en la orquestación, la CLI y
-la proyección de estado de la interfaz; no crea `-wal`/`-shm` y se abstiene con
-código 2 cuando un WAL activo no puede probarse estable.
-
-La instalación Linux aplica la retención `current_and_immediate_rollback_v1`:
-verifica procesos host, conserva `current` y el rollback inmediato, retira
-releases más antiguas y registra la poda en el recibo.
-
-El checkout final y la release activa quedan alineados al `HEAD` verificable; el
-manifest/receipt deben conservar el mismo `source_sha` y `release_linux.py verify`
-debe pasar antes de cualquier cierre. La suite completa quedó en 4,329 pruebas,
-127 omitidas y 114 subtests, y la evidencia de esta evolución queda en
-`/home/winterboss/Documentos/NeoCortex/Auditorias/2026-08-31-neocortex-reaudit-status-safe/summary.json`.
-
-Las proyecciones Semantic mutables tienen un scrub explícito y probado para
-retirar claves adultas sin alterar el resto del JSON. No se detectó una base
-Semantic viva bajo el estado local durante esta sesión, por lo que no se ejecutó
-una migración destructiva sobre datos del usuario.
+La suite integral del árbol ejecutable actual pasó con 4,409 pruebas, 127
+omitidas y 114 subtests. El cierre operativo todavía exige completar la
+verificación viva de la release final, smoke público sin `PYTHONPATH`, replay
+de lecturas y comparación de bytes/inodos/mtimes de sidecars, además de
+registrar la cobertura parcial real de los owners ausentes o con WAL activo.
+No se ejecutó una migración destructiva ni se procesó el corpus del usuario.
 
 ## Corte físico anterior (referencia histórica)
 
