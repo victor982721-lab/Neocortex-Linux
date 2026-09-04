@@ -388,3 +388,37 @@ def test_apply_recovery_is_not_retried(tmp_path: Path) -> None:
         assert connection.execute(
             "SELECT COUNT(*) FROM file_action_reconciliation_events"
         ).fetchone() == (1,)
+
+
+def test_replay_rejects_a_tampered_applied_receipt(tmp_path: Path) -> None:
+    state, corpus, trash, framework, grant_id = _fixture(tmp_path)
+    with FrameworkState(framework) as framework_state:
+        run_id = begin_signed_normal_run(framework_state, corpus)
+        backend = FixtureTrashBackend(trash)
+        apply_authorization_grant(
+            state,
+            framework,
+            grant_id,
+            run_id=run_id,
+            backend=backend,
+            state=framework_state,
+            clock_ns=lambda: 4_000,
+        )
+    with closing(sqlite3.connect(framework)) as connection:
+        connection.execute(
+            "UPDATE file_actions SET effect_receipt_json=?",
+            ("{}",),
+        )
+        connection.commit()
+    with FrameworkState(framework) as framework_state:
+        with pytest.raises(RuntimeError, match="receipt"):
+            apply_authorization_grant(
+                state,
+                framework,
+                grant_id,
+                run_id=run_id,
+                backend=backend,
+                state=framework_state,
+                clock_ns=lambda: 5_000,
+            )
+    assert backend.calls == 1
