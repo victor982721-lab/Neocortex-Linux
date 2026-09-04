@@ -5,9 +5,8 @@
 
 ## Estado comprobado
 
-- El checkout y el remoto canónico están en `main` con el commit
-  `b2902480fb5593c64f36f9845530c63986374f96`; el repositorio anterior se
-  conserva como `legacy` sin cambios.
+- El checkout y el remoto canónico están en `main` con la línea vigente de
+  NeoCortex; el repositorio anterior se conserva como `legacy` sin cambios.
 - La versión declarada continúa en `0.9.0`; la release activa se mantiene
   ligada al SHA anterior hasta que un cambio ejecutable o una instalación desde
   un SHA final exija otra promoción.
