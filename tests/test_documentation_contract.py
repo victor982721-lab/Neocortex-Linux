@@ -31,6 +31,7 @@ _ACTIVE_DOCUMENTS = frozenset(
 )
 _SOURCE_ONLY_DOCUMENTS = frozenset(
     {
+        ".codex/handoffs/NEOCORTEX_0.11.0_APPLY_2026-09-04.md",
         ".codex/handoffs/NEOCORTEX_0.10.0_CURATION_2026-09-04.md",
         ".codex/handoffs/NEOCORTEX_0.9.0_CURATION_2026-09-04.md",
         ".codex/handoffs/NEOCORTEX_0.7.2_PAUSE_2026-07-30.md",

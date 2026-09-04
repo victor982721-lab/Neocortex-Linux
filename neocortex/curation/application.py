@@ -654,6 +654,8 @@ def _validate_applied_effect(
     info_path = Path(str(trash.get("info_path", "")))
     if not trash_path.is_absolute() or not info_path.is_absolute():
         raise CurationApplicationError("stored trash receipt paths are invalid")
+    if info_path.name != trash_path.name + ".trashinfo":
+        raise CurationApplicationError("stored trash receipt info does not identify the file")
     try:
         trash_stat = os.lstat(trash_path)
         info_stat = os.lstat(info_path)
@@ -873,9 +875,19 @@ class KioTrashBackend:
             return BackendOutcome("recovery_required", "kio_trash_evidence_paths_invalid")
         try:
             trash_snapshot = snapshot_path(trash_path)
+            trash_stat = os.lstat(trash_path)
             info_stat = os.lstat(info_path)
-            if stat.S_ISLNK(info_stat.st_mode) or not stat.S_ISREG(info_stat.st_mode):
+            if (
+                stat.S_ISLNK(trash_stat.st_mode)
+                or not stat.S_ISREG(trash_stat.st_mode)
+                or trash_stat.st_nlink != 1
+                or stat.S_ISLNK(info_stat.st_mode)
+                or not stat.S_ISREG(info_stat.st_mode)
+                or info_stat.st_nlink != 1
+            ):
                 raise CurationApplicationError("KIO .trashinfo is not a regular file")
+            if info_path.name != trash_path.name + ".trashinfo":
+                raise CurationApplicationError("KIO .trashinfo does not identify the trash file")
             if trash_snapshot.volume_id != effect.source.volume_id:
                 raise CurationApplicationError("KIO trash destination is on another filesystem")
             if trash_snapshot.size != effect.source.size:
@@ -888,6 +900,8 @@ class KioTrashBackend:
                 raise CurationApplicationError("KIO trash evidence content differs")
             if _digest_snapshot(trash_snapshot) != effect.source_digest:
                 raise CurationApplicationError("KIO trash destination digest differs")
+            if os.path.lexists(effect.source.path):
+                raise CurationApplicationError("KIO source reappeared after verification")
         except BaseException as exc:
             return BackendOutcome("recovery_required", "kio_trash_evidence_mismatch", str(exc))
         receipt = effect_receipt_json(
@@ -1192,6 +1206,7 @@ def apply_authorization_grant(
                                 grant,
                                 effect,
                             )
+                            _validate_applied_effect(receipt, grant, effect, root)
                         except CurationApplicationError as exc:
                             effective_state.require_file_action_recovery((action_id,), str(exc))
                             effects.append(

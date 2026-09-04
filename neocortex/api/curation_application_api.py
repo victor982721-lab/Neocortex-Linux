@@ -19,6 +19,8 @@ from neocortex.curation.application import (
     CURATION_APPLY_SCHEMA,
     CurationApplicationError,
     CurationApplicationResult,
+    CurationApplicationSnapshotChanged,
+    CurationApplicationUnavailable,
     MutationBackend,
     apply_authorization_grant,
     reconcile_curation_actions,
@@ -92,7 +94,11 @@ def _error_payload(
         "request_id": request_id,
         "grant_id": grant_id,
         "scope": "personal",
-        "status": "unavailable" if code in {"unavailable", "backend_unavailable"} else "blocked",
+        "status": (
+            "unavailable"
+            if code in {"unavailable", "backend_unavailable", "corrupt", "schema_incompatible"}
+            else "blocked"
+        ),
         "read_only": False,
         "effects": {"state": "none", "corpus": "none", "external": "none"},
         "trust": {
@@ -120,7 +126,7 @@ def _result_payload(
     result: CurationApplicationResult,
     *,
     request_id: str,
-) -> dict[str, object]:
+) -> CurationApplyOutput:
     payload = result.to_dict()
     return {
         "schema": CURATION_APPLY_SCHEMA,
@@ -232,15 +238,16 @@ def curation_apply_payload(
             )
     except CurationApplicationError as exc:
         message = _safe_text(exc).casefold()
-        code = (
-            "grant_expired"
-            if "expired" in message
-            else "snapshot_changed"
-            if "changed" in message
-            else "authorization_denied"
-            if "grant" in message or "reviewtask" in message
-            else "unavailable"
-        )
+        if "expired" in message:
+            code = "grant_expired"
+        elif isinstance(exc, CurationApplicationSnapshotChanged) or "changed" in message:
+            code = "snapshot_changed"
+        elif isinstance(exc, CurationApplicationUnavailable):
+            code = "backend_unavailable" if "backend" in message else "unavailable"
+        elif "reviewtask" in message or "authorization" in message:
+            code = "authorization_denied"
+        else:
+            code = "unavailable"
         return _error_payload(
             schema=CURATION_APPLY_SCHEMA,
             operation="curation-apply",
@@ -251,12 +258,14 @@ def curation_apply_payload(
             retryable=code == "snapshot_changed",
         )
     except (sqlite3.DatabaseError, OSError, RuntimeError) as exc:
+        message = _safe_text(exc).casefold()
+        code = "corrupt" if any(token in message for token in ("corrupt", "malformed", "not a database")) else "unavailable"
         return _error_payload(
             schema=CURATION_APPLY_SCHEMA,
             operation="curation-apply",
             request_id=request,
             grant_id=grant_id,
-            code="unavailable",
+            code=code,
             error=exc,
             retryable=False,
         )
@@ -312,7 +321,31 @@ def curation_reconcile_payload(
             after_action_id=after_action_id,
             run_id=run_id,
         )
-    except (ValueError, sqlite3.DatabaseError, OSError, RuntimeError) as exc:
+    except ValueError as exc:
+        return _error_payload(
+            schema=CURATION_RECONCILE_API_SCHEMA,
+            operation="curation-reconcile",
+            request_id=request,
+            grant_id=None,
+            code="invalid_request",
+            error=exc,
+            retryable=False,
+            kind="neocortex_curation_reconciliation",
+        )
+    except sqlite3.DatabaseError as exc:
+        message = _safe_text(exc).casefold()
+        code = "corrupt" if any(token in message for token in ("corrupt", "malformed", "not a database")) else "unavailable"
+        return _error_payload(
+            schema=CURATION_RECONCILE_API_SCHEMA,
+            operation="curation-reconcile",
+            request_id=request,
+            grant_id=None,
+            code=code,
+            error=exc,
+            retryable=False,
+            kind="neocortex_curation_reconciliation",
+        )
+    except (OSError, RuntimeError) as exc:
         return _error_payload(
             schema=CURATION_RECONCILE_API_SCHEMA,
             operation="curation-reconcile",

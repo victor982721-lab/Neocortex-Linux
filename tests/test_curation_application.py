@@ -84,15 +84,18 @@ class RecoveryBackend:
         return BackendOutcome("recovery_required", "fixture_effect_ambiguous")
 
 
-def _fixture(tmp_path: Path) -> tuple[Path, Path, Path, str, str]:
+def _fixture(tmp_path: Path, *, group_count: int = 1) -> tuple[Path, Path, Path, Path, str]:
     state = tmp_path / "state"
     corpus = tmp_path / "corpus"
     trash = tmp_path / "trash"
     state.mkdir()
     corpus.mkdir()
     trash.mkdir()
-    (corpus / "keep.txt").write_bytes(b"same")
-    (corpus / "duplicate.txt").write_bytes(b"same")
+    for number in range(group_count):
+        suffix = "" if number == 0 else f"-{number}"
+        payload = b"same" if number == 0 else f"same-{number}".encode()
+        (corpus / f"keep{suffix}.txt").write_bytes(payload)
+        (corpus / f"duplicate{suffix}.txt").write_bytes(payload)
     with DedupIndex(state / "dedup.sqlite3") as index:
         summary = index.scan(corpus)
         index.bind_inventory_checkpoint(
@@ -124,12 +127,12 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path, str, str]:
             actor="victor",
             clock_ns=lambda offset=offset: 2_000 + offset,
         )
-    duplicate = next(item for item in reviewed.items if item.item.kind == "duplicate_group")
+    duplicates = [item for item in reviewed.items if item.item.kind == "duplicate_group"]
     grant = authorize_curation_items(
         state,
         framework,
         plan_digest=page.plan_digest,
-        item_ids=(duplicate.item.item_id,),
+        item_ids=tuple(item.item.item_id for item in duplicates),
         action="trash",
         actor="victor",
         expires_ns=10_000,
@@ -207,6 +210,29 @@ def test_apply_replay_across_operational_runs_reuses_grant_intent(tmp_path: Path
     assert backend.calls == 1
     with closing(sqlite3.connect(framework)) as connection:
         assert connection.execute("SELECT COUNT(*) FROM file_actions").fetchone() == (1,)
+
+
+def test_apply_rechecks_expiry_between_effects(tmp_path: Path) -> None:
+    state, corpus, trash, framework, grant_id = _fixture(tmp_path, group_count=2)
+    clock_values = iter((3_500, 4_000, 10_000))
+    backend = FixtureTrashBackend(trash)
+    with FrameworkState(framework) as framework_state:
+        run_id = begin_signed_normal_run(framework_state, corpus)
+        result = apply_authorization_grant(
+            state,
+            framework,
+            grant_id,
+            run_id=run_id,
+            backend=backend,
+            state=framework_state,
+            clock_ns=lambda: next(clock_values),
+        )
+    assert backend.calls == 1
+    assert result.status == "blocked"
+    assert sum(effect.status == "applied" for effect in result.effects) == 1
+    with closing(sqlite3.connect(framework)) as connection:
+        statuses = [row[0] for row in connection.execute("SELECT status FROM file_actions ORDER BY action_id")]
+    assert statuses == ["applied", "failed"]
 
 
 def test_apply_rejects_expired_grant_before_creating_actions(tmp_path: Path) -> None:
