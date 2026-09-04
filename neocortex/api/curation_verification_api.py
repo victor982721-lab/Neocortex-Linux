@@ -168,6 +168,22 @@ def _error_payload(
     }
 
 
+def _scan_exit_code(coverage: object, error: object) -> int:
+    if coverage == "complete":
+        return 0
+    if isinstance(error, dict):
+        code = error.get("code")
+        return {
+            "snapshot_changed": 5,
+            "corrupt": 7,
+            "schema_incompatible": 7,
+            "invalid_cursor": 2,
+            "partial": 2,
+            "unavailable": 1,
+        }.get(code, 2)
+    return 2
+
+
 def _scan_from_plan(
     page_payload: dict[str, Any],
     *,
@@ -239,7 +255,7 @@ def _scan_from_plan(
         },
         "result": result,
         "error": page_payload.get("error"),
-        "exit_code": 0 if coverage == "complete" else 2,
+        "exit_code": _scan_exit_code(coverage, page_payload.get("error")),
     }
 
 

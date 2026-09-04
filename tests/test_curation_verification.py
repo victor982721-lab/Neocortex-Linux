@@ -329,3 +329,26 @@ def test_scan_preserves_the_cardinality_of_a_large_valid_page(
 
     assert result["status"] == "complete"
     assert len(result["result"]["page"]["items"]) == 100  # type: ignore[index]
+
+
+@pytest.mark.parametrize(
+    ("error_code", "expected_exit"),
+    (("snapshot_changed", 5), ("corrupt", 7), ("unavailable", 1)),
+)
+def test_scan_preserves_typed_plan_error_exit_codes(
+    monkeypatch: pytest.MonkeyPatch,
+    error_code: str,
+    expected_exit: int,
+) -> None:
+    expected = {
+        "coverage": "unavailable",
+        "snapshot": {"snapshot_id": None, "scan_id": None, "root": None, "source_heads": []},
+        "page": {"items": []},
+        "error": {"code": error_code, "message": "fixture", "retryable": False},
+    }
+    monkeypatch.setattr(curation_verification_api, "curation_plan_payload", lambda **_: expected)
+
+    result = curation_verification_api.curation_scan_payload()
+
+    assert result["error"]["code"] == error_code  # type: ignore[index]
+    assert result["exit_code"] == expected_exit
