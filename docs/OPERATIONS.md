@@ -126,9 +126,17 @@ receipt: no creó `file_actions` ni aplicó nada. Un digest/event head cambiado
 requiere volver a consultar, no reintentar a ciegas. `--json` no exporta ni crea
 ZIP, y MCP no ofrece authorize sin actor autenticado.
 
-**TARGET:** `apply → verify → reconcile` consumirá y revalidará el grant. La
-foundation KIO preparada no habilita Linux `--apply`; esta auditoría tampoco
-autoriza una prueba contra KIO real.
+**IMPLEMENTED sobre fixtures:** `curate apply` consume un grant confirmado y
+revalida su manifest antes de cada efecto, mientras `curate reconcile` registra
+observaciones sin reintentar. La CLI instalada no selecciona un backend ni un
+run firmado, por lo que apply devuelve `backend_unavailable` antes de crear
+acciones; las pruebas usan backends inyectados y raíces temporales. La
+foundation KIO real y el restore siguen fuera de este gate.
+
+```bash
+Neocortex curate apply GRANT_ID --confirm-grant-id GRANT_ID --json
+Neocortex curate reconcile --actor ACTOR --confirm-reconcile --json
+```
 
 ## Mantenimiento de estado
 

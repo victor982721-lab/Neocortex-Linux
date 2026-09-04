@@ -5,7 +5,7 @@ organizar archivos personales en Linux. Su objetivo es sustituir inventarios,
 auditorías y scripts improvisados por un flujo reproducible que conserve
 identidad, evidencia, incertidumbre y trazabilidad.
 
-La fuente auditada declara `0.9.0`. El comportamiento efectivo siempre se
+La fuente vigente declara `0.11.0`. El comportamiento efectivo siempre se
 comprueba con el ejecutable instalado y con su estado publicado; una versión en
 el árbol fuente no demuestra qué release está activa.
 
@@ -26,14 +26,14 @@ NeoCortex puede:
 - respaldar, restaurar, inspeccionar y purgar el estado mediante comandos
   explícitos.
 
-Todavía no ofrece un recorrido Linux completo que aplique movimientos o envíe
-archivos a la Papelera. `--apply` y `--organization-apply` se abstienen con
-`linux_mutation_backend_unavailable`. La fuente ya contiene la foundation KIO
-fail-closed en `neocortex/safety/kio_trash.py`, pero no está conectada a esas
-flags, promovida ni verificada contra KIO real. El grant de autorización ya
-existe, pero `apply → verify → reconcile` aún debe consumirlo junto con recovery
-y límites same-filesystem; no se usará `gio trash` ni habrá fallback a borrado
-permanente.
+El recorrido físico sólo está habilitado para fixtures mediante un backend
+explícitamente inyectado: `curate apply` consume un grant confirmado y cruza el
+ledger por efecto, mientras `curate reconcile` registra recovery sin reintentar.
+`--apply` y `--organization-apply` siguen absteniéndose con
+`linux_mutation_backend_unavailable`, y la CLI no selecciona KIO ni otro backend
+automáticamente. La promoción contra KIO real, el restore y la sincronización de
+caches permanecen como gates posteriores, sin `gio trash`, borrado directo ni
+fallback destructivo.
 
 ## Empieza por una consulta
 
@@ -91,6 +91,17 @@ authorize mientras el actor autenticado no esté resuelto. No existe exportació
 o ZIP de curación; `--json` sólo devuelve la respuesta.
 `--curation-preview 50 --curation-json` permanece como compatibilidad plana. El contrato completo está en
 [File Intelligence & Curation](docs/FILE_INTELLIGENCE_AND_CURATION.md).
+
+El tramo físico controlado se consulta así:
+
+```bash
+Neocortex curate apply GRANT_ID --confirm-grant-id GRANT_ID --json
+Neocortex curate reconcile --actor ACTOR --confirm-reconcile --json
+```
+
+La CLI ordinaria devuelve `backend_unavailable` sin un run firmado y un backend
+inyectado, por diseño fail-closed; los tests de 0.11 ejecutan el mismo contrato
+sólo sobre raíces temporales contenidas.
 
 ## Plataforma y rutas
 

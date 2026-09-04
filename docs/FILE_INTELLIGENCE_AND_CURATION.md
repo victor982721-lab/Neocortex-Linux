@@ -45,12 +45,14 @@ Cada etapa produce un artefacto durable o una abstención explicable:
 9. **Verificar:** demostrar origen/destino/Papelera, identidad, bytes y conteos.
 10. **Conciliar:** ante caída o ambigüedad, observar antes de reintentar.
 
-**IMPLEMENTED** alcanza `scan → plan → verify → review → decide → authorize`:
+**IMPLEMENTED** alcanza `scan → plan → verify → review → decide → authorize` y
+el consumidor grant-bound de 0.11 sobre backends explícitamente inyectados:
 scan y plan consultan publicaciones acotadas, verify comprueba evidencia física
 actual sin mutarla, review publica tareas advisory, decide registra una decisión
-humana y authorize emite un grant durable separado. **TARGET** comienza en
-`apply`; ni una decisión ReviewTask ni la existencia del grant demuestran un
-efecto físico.
+humana y authorize emite un grant durable separado. El núcleo
+`apply → verify → reconcile` ya puede ejecutar fixtures contenidos, sin que una
+decisión ReviewTask ni la existencia del grant demuestren por sí solas un efecto
+físico.
 
 ## Evidencia y autoridad
 
@@ -71,7 +73,7 @@ evidencia de procedencia, no nombres o extensiones aislados.
 
 ## Estado actual
 
-La fuente `0.9.0` aporta inventario, extracción multimodal, catálogos, búsqueda,
+La fuente `0.11.0` aporta inventario, extracción multimodal, catálogos, búsqueda,
 Knowledge, Semantic, Code como contenido, planes de duplicados/organización,
 Review, receipts y recuperación parcial.
 
@@ -90,11 +92,19 @@ Review, receipts y recuperación parcial.
   snapshot, tareas resueltas y heads con versión, evento, fingerprints y digest
   agregado, además de actor, acción, límites y expiración; declara
   `actions_authorized=true` y `physical_effect_applied=false`.
-- **TARGET:** `apply → verify → reconcile` consumirá y revalidará el grant.
+- **IMPLEMENTED (fixtures/inyección explícita):**
+  `neocortex.curation.application` consume sólo grants con manifests de heads,
+  raíz y efectos físicos, vuelve a validar plan, ReviewTasks, identidad, hash,
+  límites y contención, registra `file_actions` por efecto y conserva receipts
+  o `recovery_required`. `PosixRenameBackend` usa no-replace same-filesystem y
+  `KioTrashBackend` exige evidencia estructurada de Papelera; ningún backend se
+  selecciona automáticamente desde la CLI instalada.
+- **IMPLEMENTED (recovery):** `reconcile_curation_actions` clasifica y registra
+  observaciones bounded, append-only e idempotentes, sin reintentar efectos.
 
 Las brechas principales son:
 
-- no existe aún `apply → verify → reconcile`, la principal brecha del lifecycle;
+- la promoción del backend físico real y el restore siguen fuera de la cohorte;
 - varios formatos pierden localizadores estructurales al llegar a búsqueda;
 - igualdad, versión, procedencia, valor y disposición no tienen una proyección
   pública unificada;
@@ -186,10 +196,25 @@ sistemas externos.
 No hay tool MCP de autorización: aceptar un `actor` aportado por un agente no
 resuelve autenticación del principal humano.
 
-**TARGET — no implementado:** el tramo físico `apply → verify → reconcile`
-deberá consumir el grant, revalidar expiración, digest, ReviewTask heads e
-identidades físicas inmediatamente antes del efecto y conservar resultados
-conciliables.
+**IMPLEMENTED — aplicación acotada y conciliación:**
+
+```text
+Neocortex curate apply GRANT_ID --confirm-grant-id GRANT_ID [--json]
+Neocortex curate reconcile --actor ACTOR --confirm-reconcile [--limit N]
+API/SDK: curation_apply_payload, curation_reconcile_payload
+MCP: no disponible para apply ni para conciliación escrita
+```
+
+`curate apply` exige repetir exactamente el `GRANT_ID`. La CLI estándar no
+inyecta un backend ni un run firmado, por lo que devuelve `backend_unavailable`
+sin crear `file_actions`; los tests de producto suministran un backend POSIX o
+KIO falso sobre una raíz temporal. El coordinador consume el manifest inmutable
+del grant, vuelve a leer el plan y los ReviewTask heads, exige expiración y
+presupuestos vigentes, cruza `started → applying` por efecto y sólo acepta
+`applied` con un receipt ligado al grant, efecto, identidad y hash. Una
+interrupción, timeout, receipt incompleto o resultado ambiguo queda en
+`recovery_required` y no se reintenta automáticamente. `reconcile` sólo observa
+y registra la clasificación; no convierte una inferencia en autorización.
 
 No existe una interfaz de exportación ni un paquete ZIP de curación. `--json`
 serializa la respuesta de una operación; no crea un artefacto durable.

@@ -30,8 +30,8 @@ incierta, pero no cuenta como funcionalidad entregada para los casos soportados.
 | Catálogo y organización | Planes disponibles; recorrido end-to-end parcial |
 | Knowledge y contexto para agentes | Implementado read-only; cobertura/localizadores varían por owner |
 | Review | **IMPLEMENTED:** `curate review` publica ReviewTasks y `curate decide` añade decisiones humanas por CAS |
-| Curación integrada | **CURRENT:** scan/plan/verify; **IMPLEMENTED:** review/decide advisory y AuthorizationGrant durable; **TARGET:** apply/verify/reconcile físico |
-| Mutación Linux | Foundation KIO preparada; no integrada/promovida, y `--apply`/`--organization-apply` se abstienen |
+| Curación integrada | **CURRENT:** scan/plan/verify; **IMPLEMENTED:** review/decide, AuthorizationGrant durable y apply/reconcile grant-bound sobre fixtures |
+| Mutación Linux | `curate apply` usa backends POSIX/KIO inyectados y ledger/recovery; `--apply`/`--organization-apply` genéricos siguen absteniéndose |
 | Backup/restore/purge | Implementados mediante `Neocortex databases` |
 | MCP | **IMPLEMENTED:** plan/scan/verify/review/decide; authorize se omite hasta resolver un principal autenticado |
 
@@ -88,10 +88,11 @@ Criterios de aceptación:
 No se añadirá exportación ni ZIP de curación en este corte. JSON/JSONL son
 respuestas de interfaz, no artefactos de entrega.
 
-## 0.11.0 — TARGET: efectos Linux reversibles
+## 0.11.0 — IMPLEMENTED: efectos Linux reversibles sobre fixtures
 
-**Resultado:** un plan aprobado puede mover, renombrar o enviar a Papelera un
-lote pequeño y luego demostrar o recuperar el efecto.
+**Resultado verificado:** un grant aprobado puede mover, renombrar o enviar a
+Papelera un lote pequeño sobre una raíz de fixture mediante un backend inyectado,
+y después demostrar o conservar para recovery el efecto.
 
 Decisión de backend:
 
@@ -104,18 +105,21 @@ Decisión de backend:
 - ningún fallback a `gio trash`, `unlink`, borrado directo o copia+delete;
 - timeout o efecto ambiguo dejan recovery pendiente, sin reintento automático.
 
-Entregas:
+Entregas implementadas:
 
-1. `apply` consume el AuthorizationGrant vigente y crea el intento `file_actions`;
+1. `apply` consume el AuthorizationGrant vigente y crea un intento `file_actions`
+   por efecto, con replay idempotente;
 2. revalidación de grant, expiración, digest, ReviewTask heads, identidad,
    tamaño, mtime y hash junto a la frontera;
 3. aplicación KIO/rename dentro del scope, acción y presupuestos concedidos;
 4. verificación física con receipt y evidencia de Papelera/destino;
 5. `reconcile` resuelve cada punto de caída y conserva `recovery_required`;
 6. lotes pequeños con límite de acciones/bytes y cancelación entre efectos;
-7. GUI que presenta grant e intento, pero no aporta una autoridad distinta.
+7. API, SDK y CLI proyectan el resultado, mientras MCP no expone autoridad de
+   aplicación ni conciliación escrita;
+8. `reconcile` clasifica y registra eventos append-only de forma idempotente.
 
-Criterios de aceptación:
+Criterios de aceptación verificados en fixtures:
 
 - mismo filesystem aprobado; `EXDEV` se abstiene;
 - symlink, hard link no soportado, destino existente o fuente mutada se abstienen;
@@ -123,6 +127,11 @@ Criterios de aceptación:
 - restore usa no-replace y verifica bytes;
 - una segunda aplicación del mismo plan no repite efectos;
 - el piloto no toca contenido fuera de su raíz y límites.
+
+Pendiente de promoción: verificador/runner KIO real, restore no-replace para
+entradas de Papelera, sincronización de caches y una GUI que sólo presente el
+grant y el intento. Esos gates no se ejecutaron para evitar tocar el escritorio o
+el corpus real.
 
 ## 0.12.0 — Escala e inteligencia ampliada
 
@@ -154,13 +163,12 @@ Criterios de aceptación:
    `scan/verify` en las superficies públicas.
 2. Mantener `verification_mode` explícito y ningún candidato fast como duplicado
    bytewise, además de cerrar las regresiones SQLite que afecten estos lectores.
-3. Implementar `apply → verify → reconcile` como consumidor estricto del grant;
-   nunca derivar autoridad directamente de ReviewTask.
-4. Integrar la foundation KIO preparada y completar sus pruebas de producto con
-   runner/verificador inyectados y fixtures same-filesystem; reservar cualquier
-   prueba contra KIO real para un gate explícito posterior.
-5. Habilitar 0.11.0 sólo para lotes pequeños y revisión humana, y medir una
-   carga grande antes de promover watcher o escala automática.
+3. Promover el verificador KIO y restore sólo después de un gate explícito de
+   escritorio, manteniendo `curate apply` fail-closed sin backend inyectado.
+4. Completar sincronización de caches y presentación GUI sin aportar autoridad
+   distinta al grant.
+5. Preparar 0.12.0 con presupuesto global, streaming, checkpoints y escala,
+   conservando la matriz de fixtures del vertical 0.11.
 
 ## Límites
 

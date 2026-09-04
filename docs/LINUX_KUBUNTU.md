@@ -1,6 +1,6 @@
 # Kubuntu/Linux
 
-NeoCortex `0.9.0` tiene como única plataforma activa Kubuntu/Ubuntu 26.04
+NeoCortex `0.11.0` tiene como única plataforma activa Kubuntu/Ubuntu 26.04
 x86-64. CPython 3.14 es el runtime personal de referencia y 3.13 permanece como
 piso sintáctico.
 
@@ -81,9 +81,12 @@ Una release válida demuestra:
 
 ## Estado actual de mutación
 
-En el HEAD auditado, `--apply` y `--organization-apply` se rechazan antes de
-crear estado con código 2 y `linux_mutation_backend_unavailable`. Inventario,
-extracción, catálogo, búsqueda, Review y preview siguen disponibles.
+Las rutas genéricas `--apply` y `--organization-apply` se rechazan antes de
+crear estado con `linux_mutation_backend_unavailable`. `curate apply` existe como
+consumidor grant-bound, pero la CLI instalada no selecciona backend ni run
+firmado, por lo que también falla cerrada hasta recibir una integración explícita.
+Inventario, extracción, catálogo, búsqueda, Review, preview y conciliación
+advisory siguen disponibles.
 
 No uses `Path.rename`, shell, KIO o scripts externos para eludir ese contrato.
 
@@ -95,8 +98,10 @@ configuración y snapshot, usa `move <origen> trash:/` con timeout acotado y
 requiere un verificador del caller antes de emitir receipt. Todavía no está
 conectado a `--apply`, promovido ni verificado con KIO real.
 
-La decisión para `0.11.0` es integrar esa foundation con autorización, ledger,
-preflight same-filesystem y recovery, sin relajar su garantía path-bound.
+La implementación de `0.11.0` integra esa foundation con autorización, ledger,
+preflight same-filesystem y recovery sobre fixtures, sin relajar su garantía
+path-bound. KIO real, restore y sincronización posterior de owners siguen siendo
+gates separados.
 
 Preflight:
 

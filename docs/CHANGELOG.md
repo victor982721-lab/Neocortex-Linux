@@ -4,6 +4,24 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 0.11.0 — 2026-09-04
+
+### Curation grant-bound
+
+- Se añadió `neocortex.curation.application` para consumir exclusivamente grants
+  con manifests de ReviewTask heads, raíz y efectos físicos, revalidando plan,
+  identidad, hash, contención y presupuestos antes de cada frontera.
+- Los grants nuevos conservan un efecto físico expandido por item, con digest
+  completo de fuente y keeper, y calculan `max_actions`/`max_bytes` sobre esos
+  efectos; los grants legacy siguen siendo legibles pero no consumibles.
+- `PosixRenameBackend` implementa no-replace same-filesystem sobre fixtures y
+  `KioTrashBackend` exige evidencia estructurada de Papelera; no se selecciona
+  backend real automáticamente ni se usa `gio`, borrado directo o fallback de
+  copia.
+- `curate apply`, `curate reconcile` y sus adaptadores API/SDK proyectan estados
+  bounded, receipts y `recovery_required`; MCP no recibe autoridad de aplicación
+  ni de conciliación escrita.
+
 ## 0.10.0 — 2026-09-04
 
 ### Documentación

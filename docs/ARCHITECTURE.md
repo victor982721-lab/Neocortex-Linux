@@ -103,8 +103,15 @@ UPDATE/DELETE. El grant liga actor, acción, backend Linux, items/tareas,
 `max_actions`, `max_bytes`, emisión y expiración.
 
 Emitirlo escribe sólo estado: no crea `file_actions`, no invoca KIO y mantiene
-`physical_effect_applied=false`. **TARGET:** `apply → verify → reconcile` deberá
-consumir y revalidar el grant; se describe en
+`physical_effect_applied=false`. **IMPLEMENTED sobre fixtures y backends
+inyectados:** `neocortex.curation.application` consume el manifest físico del
+grant, revalida plan, heads, expiración, raíz, identidad, hash y presupuestos,
+registra un `file_action` por efecto, verifica el receipt y conserva
+`recovery_required` ante ambigüedad. `PosixRenameBackend` usa no-replace
+same-filesystem y `KioTrashBackend` exige evidencia estructurada de destino. La
+CLI no selecciona backend automáticamente; la promoción KIO real y restore
+siguen siendo gates posteriores. La conciliación append-only se expone mediante
+`reconcile_curation_actions` y no reintenta efectos. El contrato se describe en
 [FILE_INTELLIGENCE_AND_CURATION.md](FILE_INTELLIGENCE_AND_CURATION.md).
 
 ### Code como contenido
@@ -155,9 +162,10 @@ Archive/ZIP sigue siendo únicamente una ruta de contenido.
 
 ## Efectos sobre archivos
 
-En el HEAD auditado, Linux rechaza `--apply` y `--organization-apply` antes de
-crear estado con `linux_mutation_backend_unavailable`. Existen guards, planes,
-ledger y reconciliación reutilizables, pero no constituyen un backend aplicado.
+Las rutas genéricas `--apply` y `--organization-apply` continúan rechazándose
+con `linux_mutation_backend_unavailable`. La ruta nueva `curate apply` sólo
+consume un grant confirmado y un backend inyectado en una raíz contenida, por lo
+que no habilita mutación implícita del corpus instalado.
 
 La fuente ya contiene `neocortex.safety.kio_trash`: una foundation preparada que
 descubre `kioclient6`, `kioclient5` o `kioclient`, valida configuración y snapshot,
@@ -166,10 +174,11 @@ ejecuta `move <origen> trash:/` mediante un runner inyectable y clasifica
 caller. Es reversible pero path-bound y está intencionalmente desconectada de
 Linux `--apply`; no fue promovida ni probada contra KIO real en esta cohorte.
 
-La integración de producto deberá hacer que `apply` lea y revalide el grant,
-además de identidades, guard same-filesystem, ledger y expiración; después
-`verify → reconcile` cerrará o recuperará el intento. Un timeout o resultado
-ambiguo permanece `recovery_required` y no se reintenta a ciegas.
+La integración actual hace que `apply` lea y revalide el grant, además de
+identidades, guard same-filesystem, ledger y expiración, y que `reconcile`
+registre la observación sin reintentar. Un timeout o resultado ambiguo permanece
+`recovery_required`; KIO real y la sincronización posterior de caches no se
+consideran promovidos.
 
 ## Concurrencia y recuperación
 
@@ -180,7 +189,7 @@ de la frontera de efecto produce un estado conciliable, no un reintento ciego.
 
 ## Brechas vigentes
 
-- curación no tiene aún una ruta pública completa ni una vista durable única;
+- la ruta física sólo está habilitada mediante backends inyectados y fixtures;
 - la deduplicación rápida puede ser evidencia insuficiente para disposición;
 - la cobertura y precisión de localizadores varían por formato;
 - varias fuentes todavía tienen publicación no generacional;

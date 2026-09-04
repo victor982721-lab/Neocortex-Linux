@@ -93,8 +93,25 @@ move/rename exige destino absoluto. La respuesta declara `actions_authorized=tru
 `physical_effect_applied=false`: no crea `file_actions`, no invoca KIO y no toca
 corpus ni sistemas externos.
 
-**TARGET:** `apply → verify → reconcile` todavía no existe y deberá revalidar el
-grant inmediatamente antes del efecto.
+**IMPLEMENTED sobre fixtures y backends inyectados:** `curate apply` consume sólo
+un grant confirmado y `curate reconcile` registra observaciones bounded, sin
+reintentar efectos. La CLI instalada no selecciona backend ni run firmado por sí
+sola, así que `curate apply` devuelve `backend_unavailable` antes de crear
+`file_actions`; la ejecución física de 0.11 se prueba desde API/SDK con un
+backend POSIX o KIO falso y una raíz temporal.
+
+```bash
+Neocortex curate apply GRANT_ID --confirm-grant-id GRANT_ID --json
+Neocortex curate reconcile --actor ACTOR --confirm-reconcile --limit 100 --json
+```
+
+El consumidor rechaza grants legacy sin manifest de efectos, vuelve a comprobar
+plan, source heads, ReviewTask heads, expiración, identidad, tamaño, mtime, hash,
+contención y presupuesto, y procesa un efecto por vez con
+`started → applying → applied|recovery_required`. Un timeout, receipt inválido,
+interrupción o ambigüedad queda en `recovery_required`, sin fallback a `gio`,
+`unlink`, sobrescritura ni reintento automático. `reconcile` sólo añade evidencia
+append-only e idempotente; no convierte la observación en permiso.
 
 ## Efectos
 
@@ -106,7 +123,9 @@ grant inmediatamente antes del efecto.
 | Grant de autorización | `curate authorize` | Escribe un grant acotado; no aplica ni verifica un efecto físico |
 | Descarga | `models prepare` | Adquiere modelos de forma explícita |
 | Estado destructivo | `databases restore`, `databases purge` con `--apply` | Requiere confirmación, manifest/plan y locks |
-| Corpus | `--apply`, `--organization-apply` | Rechazado en Linux en la versión actual |
+| Aplicación grant-bound | `curate apply` | Requiere confirmación exacta y backend/run inyectados; la CLI ordinaria falla cerrada sin ellos |
+| Conciliación | `curate reconcile` | Registra evidencia bounded; no reintenta ni modifica corpus |
+| Corpus genérico | `--apply`, `--organization-apply` | Rechazado en Linux en la versión actual |
 
 ## Consultas cotidianas
 
@@ -181,8 +200,9 @@ Neocortex --curation-preview 50 --curation-json
 
 La vista es bounded y read-only. Reúne planes ya publicados de duplicados,
 organización y archivos vacíos, junto con identidad, reasons y cobertura.
-`curate scan/plan/verify/review/decide/authorize` es la interfaz humana
-estructurada; no existe `Neocortex curate apply`. Consulta
+`curate scan/plan/verify/review/decide/authorize/apply/reconcile` es la interfaz
+humana estructurada; apply sólo puede ejecutar efectos mediante un backend
+inyectado y contenido de fixture. Consulta
 [FILE_INTELLIGENCE_AND_CURATION.md](FILE_INTELLIGENCE_AND_CURATION.md).
 
 ## Bases de datos
