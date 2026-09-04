@@ -21,11 +21,20 @@ from typing import Literal, Protocol
 
 from neocortex.curation.application import _open_parent_dirfd
 from neocortex.deduplication import FileChangedError, FileSnapshot, full_fingerprint, snapshot_path
+from neocortex.persistence.framework_authorization_schema import (
+    AUTHORIZATION_GRANTS_TABLE,
+    authorization_extension_present,
+    validate_authorization_extension,
+)
 from neocortex.persistence.framework_state_writer import FrameworkState
 from neocortex.runtime.control.locking import FrameworkRunLock
 from neocortex.workflow.actions.action_policy import validate_mutation_path
 from neocortex.workflow.authorization.contracts import AuthorizationEffect, AuthorizationGrant
-from neocortex.workflow.authorization.repository import read_authorization_grant
+from neocortex.workflow.authorization.repository import (
+    _COLUMNS as AUTHORIZATION_GRANT_COLUMNS,
+    _grant_from_row,
+    _require_framework,
+)
 from neocortex.workflow.actions.file_action_recovery import expected_identity_json
 from neocortex.persistence.sqlite_immutable import SQLiteReadSession, preferred_sqlite_read_mode
 
@@ -224,6 +233,40 @@ def _restore_receipt_valid(
         and receipt.get("info_path") == str(candidate.info_path)
         and receipt.get("digest") == candidate.effect.source_digest
     )
+
+
+def _read_authorization_grant_from_connection(
+    connection: sqlite3.Connection,
+    *,
+    grant_id: str,
+) -> AuthorizationGrant | None:
+    """Read the grant through the caller's already-fenced connection.
+
+    The restore preview must not open a second connection to the Framework
+    owner: doing so could observe a different WAL snapshot from the action row
+    that selected the grant.  The repository parser remains the single source
+    of grant decoding and validation, while all SQL reads share one
+    ``SQLiteReadSession`` (or the writer connection owned by ``apply``).
+    """
+
+    _require_framework(connection)
+    if not authorization_extension_present(connection):
+        return None
+    validate_authorization_extension(connection)
+    cursor = connection.execute(
+        f"SELECT {AUTHORIZATION_GRANT_COLUMNS} FROM {AUTHORIZATION_GRANTS_TABLE} "
+        "WHERE grant_id=?",
+        (grant_id,),
+    )
+    rows = cursor.fetchall()
+    if len(rows) > 1:
+        raise RuntimeError("AuthorizationGrant lookup is ambiguous")
+    if not rows:
+        return None
+    row = rows[0]
+    if not isinstance(row, sqlite3.Row):
+        row = sqlite3.Row(cursor, row)
+    return _grant_from_row(row)
 
 
 def _original_receipt_parts(
@@ -452,7 +495,10 @@ class PosixRestoreBackend:
             )
 
 
-def _candidate_from_action(state: FrameworkState, action_id: int) -> tuple[RestoreCandidate, int, str]:
+def _candidate_from_action(
+    state: FrameworkState | _ReadonlyState,
+    action_id: int,
+) -> tuple[RestoreCandidate, int, str]:
     row = state._connection.execute(  # type: ignore[attr-defined]
         """SELECT run_id,status,action_type,source_path,target_path,evidence,
         effect_receipt_json FROM file_actions WHERE action_id=?""",
@@ -470,7 +516,10 @@ def _candidate_from_action(state: FrameworkState, action_id: int) -> tuple[Resto
         intent = json.loads(str(row[5]))
         effect_id = str(intent["effect"]["effect_id"])
         grant_id = str(intent["grant_id"])
-        grant = read_authorization_grant(state.path, grant_id=grant_id)
+        grant = _read_authorization_grant_from_connection(
+            state._connection,
+            grant_id=grant_id,
+        )
         if grant is None or grant.authorized_effects is None or grant.root_snapshot is None:
             raise ValueError("authorization grant is unavailable for restore")
         effect = next(effect for effect in grant.authorized_effects if effect.effect_id == effect_id)

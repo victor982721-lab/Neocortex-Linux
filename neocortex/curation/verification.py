@@ -10,8 +10,11 @@ creates ReviewTasks, AuthorizationGrants or ``file_actions``.
 from __future__ import annotations
 
 import errno
+import math
 import os
 import stat
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -35,6 +38,7 @@ MAX_VERIFICATION_FILES = 512
 MAX_VERIFICATION_BYTES = 128 * 1024 * 1024
 
 VerificationStatus = Literal["verified", "source_changed", "not_verified", "not_applicable"]
+WorkStopReason = Literal["budget_exhausted", "cancelled", "deadline_exceeded"]
 
 
 class CurationVerificationError(RuntimeError):
@@ -51,6 +55,130 @@ class CurationVerificationUnavailable(CurationVerificationError):
     def __init__(self, message: str, *, reason_code: str = "verification_unavailable") -> None:
         super().__init__(message)
         self.reason_code = reason_code
+
+
+@dataclass(frozen=True, slots=True)
+class CurationWorkBudget:
+    """Optional work limits for one read-only verification invocation.
+
+    The monotonic deadline is an absolute value in the clock's domain. The
+    injectable clock exists only to make the contract deterministic in tests;
+    ordinary callers use :func:`time.monotonic`.
+    """
+
+    max_items: int = MAX_VERIFICATION_ITEMS
+    max_files: int = MAX_VERIFICATION_FILES
+    max_bytes: int = MAX_VERIFICATION_BYTES
+    deadline_monotonic: float | None = None
+    # ``None`` is the conventional return value of ``CancellationToken``
+    # checkpoints; a truthy boolean requests a stop, while any other value is
+    # rejected fail-closed.
+    cancellation_check: Callable[[], bool | None] | None = None
+    monotonic_clock: Callable[[], float] = time.monotonic
+
+    def __post_init__(self) -> None:
+        for label, value, maximum in (
+            ("max_items", self.max_items, MAX_VERIFICATION_ITEMS),
+            ("max_files", self.max_files, MAX_VERIFICATION_FILES),
+            ("max_bytes", self.max_bytes, MAX_VERIFICATION_BYTES),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= maximum:
+                raise ValueError(f"{label} is outside the verification bound")
+        deadline = self.deadline_monotonic
+        if deadline is not None and (
+            isinstance(deadline, bool)
+            or not isinstance(deadline, (int, float))
+            or not math.isfinite(float(deadline))
+            or deadline < 0
+        ):
+            raise ValueError("deadline_monotonic must be a finite non-negative number")
+        if self.cancellation_check is not None and not callable(self.cancellation_check):
+            raise TypeError("cancellation_check must be callable")
+        if not callable(self.monotonic_clock):
+            raise TypeError("monotonic_clock must be callable")
+
+
+class _WorkBudgetStop(CurationVerificationUnavailable):
+    """Internal bounded stop signal that preserves completed observations."""
+
+    def __init__(self, reason: WorkStopReason) -> None:
+        super().__init__(reason.replace("_", " "), reason_code=reason)
+
+
+class _WorkBudgetState:
+    """Mutable accounting for one immutable :class:`CurationWorkBudget`."""
+
+    def __init__(
+        self,
+        budget: CurationWorkBudget,
+        *,
+        max_items: int,
+        max_files: int,
+        max_bytes: int,
+    ) -> None:
+        self.budget = budget
+        self.max_items = min(max_items, budget.max_items)
+        self.max_files = min(max_files, budget.max_files)
+        self.max_bytes = min(max_bytes, budget.max_bytes)
+        self.items_started = 0
+        self.files_checked = 0
+        self.bytes_checked = 0
+
+    def _control_reason(self) -> WorkStopReason | None:
+        callback = self.budget.cancellation_check
+        if callback is not None:
+            try:
+                decision = callback()
+                if decision is True:
+                    return "cancelled"
+                if decision is not False and decision is not None:
+                    return "cancelled"
+            except Exception:
+                return "cancelled"
+        deadline = self.budget.deadline_monotonic
+        if deadline is not None:
+            try:
+                observed = self.budget.monotonic_clock()
+                if (
+                    isinstance(observed, bool)
+                    or not isinstance(observed, (int, float))
+                    or not math.isfinite(float(observed))
+                    or observed >= deadline
+                ):
+                    return "deadline_exceeded"
+            except Exception:
+                return "deadline_exceeded"
+        return None
+
+    def start_item(self) -> None:
+        reason = self._control_reason()
+        if reason is not None:
+            raise _WorkBudgetStop(reason)
+        if self.items_started >= self.max_items:
+            raise _WorkBudgetStop("budget_exhausted")
+        self.items_started += 1
+
+    def reserve_file(self, size: int) -> None:
+        reason = self._control_reason()
+        if reason is not None:
+            raise _WorkBudgetStop(reason)
+        if (
+            self.files_checked >= self.max_files
+            or size < 0
+            or size > self.max_bytes - self.bytes_checked
+        ):
+            raise _WorkBudgetStop("budget_exhausted")
+        self.files_checked += 1
+
+    def before_read(self) -> None:
+        reason = self._control_reason()
+        if reason is not None:
+            raise _WorkBudgetStop(reason)
+
+    def record_bytes(self, count: int) -> None:
+        if count < 0 or count > self.max_bytes - self.bytes_checked:
+            raise _WorkBudgetStop("budget_exhausted")
+        self.bytes_checked += count
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,6 +436,7 @@ def _read_stable_payload(
     snapshot: Any,
     *,
     root: Path,
+    work: _WorkBudgetState,
 ) -> tuple[bytes, str]:
     """Read and fingerprint one file exactly once through a safe descriptor."""
 
@@ -329,6 +458,7 @@ def _read_stable_payload(
         chunks: list[bytes] = []
         remaining = snapshot.size
         while remaining:
+            work.before_read()
             try:
                 chunk = os.read(descriptor, min(1024 * 1024, remaining))
             except OSError as exc:
@@ -342,12 +472,14 @@ def _read_stable_payload(
                 )
             chunks.append(chunk)
             hasher.update(chunk)
+            work.record_bytes(len(chunk))
             remaining -= len(chunk)
         after = os.fstat(descriptor)
         if not stat_matches_snapshot(snapshot, after):
             raise CurationVerificationSnapshotChanged(
                 f"curation source changed while reading: {path}"
             )
+        work.before_read()
         return b"".join(chunks), hasher.digest().hex()
     finally:
         os.close(descriptor)
@@ -357,9 +489,8 @@ def _duplicate_verification(
     item: CurationItem,
     *,
     root: Path,
-    files_left: int,
-    bytes_left: int,
-) -> tuple[CurationVerificationItem, int, int]:
+    work: _WorkBudgetState,
+) -> CurationVerificationItem:
     evidence = item.evidence
     raw_mode = evidence.get("verification_mode")
     mode: VerificationMode | None = (
@@ -369,72 +500,55 @@ def _duplicate_verification(
     )
     members = evidence.get("members")
     if not isinstance(members, list) or bool(evidence.get("members_truncated")):
-        return (
-            CurationVerificationItem(
-                item.item_id,
-                item.kind,
-                item.source_path,
-                mode,
-                None,
-                "not_verified",
-                "evidence_truncated",
-                0,
-                0,
-            ),
-            files_left,
-            bytes_left,
+        return CurationVerificationItem(
+            item.item_id,
+            item.kind,
+            item.source_path,
+            mode,
+            None,
+            "not_verified",
+            "evidence_truncated",
+            0,
+            0,
         )
     if not members or len(members) > MAX_VERIFICATION_FILES:
-        return (
-            CurationVerificationItem(
-                item.item_id,
-                item.kind,
-                item.source_path,
-                mode,
-                None,
-                "not_verified",
-                "member_count_out_of_bounds",
-                0,
-                0,
-            ),
-            files_left,
-            bytes_left,
+        return CurationVerificationItem(
+            item.item_id,
+            item.kind,
+            item.source_path,
+            mode,
+            None,
+            "not_verified",
+            "member_count_out_of_bounds",
+            0,
+            0,
         )
     try:
         typed_members = [cast(dict[str, object], member) for member in members]
         keep = next(member for member in typed_members if member.get("role") == "keep")
     except (StopIteration, TypeError):
-        return (
-            CurationVerificationItem(
-                item.item_id,
-                item.kind,
-                item.source_path,
-                mode,
-                None,
-                "not_verified",
-                "keep_member_missing",
-                0,
-                0,
-            ),
-            files_left,
-            bytes_left,
+        return CurationVerificationItem(
+            item.item_id,
+            item.kind,
+            item.source_path,
+            mode,
+            None,
+            "not_verified",
+            "keep_member_missing",
+            0,
+            0,
         )
     checked = 0
     verified = 0
     try:
         keep_path, keep_snapshot = _snapshot_for_member(keep, root=root)
-        if keep_snapshot.size > bytes_left or files_left <= 0:
-            raise CurationVerificationUnavailable(
-                "verification budget exceeded",
-                reason_code="verification_budget_exceeded",
-            )
+        work.reserve_file(keep_snapshot.size)
         checked += 1
-        files_left -= 1
-        bytes_left -= keep_snapshot.size
         keep_payload, keep_digest = _read_stable_payload(
             keep_path,
             keep_snapshot,
             root=root,
+            work=work,
         )
         if keep_digest != str(evidence.get("full_fingerprint")):
             raise CurationVerificationSnapshotChanged(
@@ -445,15 +559,9 @@ def _duplicate_verification(
             if member is keep:
                 continue
             path, snapshot = _snapshot_for_member(member, root=root)
-            if snapshot.size > bytes_left or files_left <= 0:
-                raise CurationVerificationUnavailable(
-                    "verification budget exceeded",
-                    reason_code="verification_budget_exceeded",
-                )
+            work.reserve_file(snapshot.size)
             checked += 1
-            files_left -= 1
-            bytes_left -= snapshot.size
-            payload, digest = _read_stable_payload(path, snapshot, root=root)
+            payload, digest = _read_stable_payload(path, snapshot, root=root, work=work)
             if digest != keep_digest or payload != keep_payload:
                 raise CurationVerificationSnapshotChanged(
                     f"curation duplicate content changed: {path}"
@@ -463,55 +571,63 @@ def _duplicate_verification(
         status: VerificationStatus = (
             "source_changed" if isinstance(exc, CurationVerificationSnapshotChanged) else "not_verified"
         )
-        return (
-            CurationVerificationItem(
-                item.item_id,
-                item.kind,
-                item.source_path,
-                mode,
-                None,
-                status,
-                (
-                    "source_changed"
-                    if status == "source_changed"
-                    else getattr(exc, "reason_code", "verification_unavailable")
-                ),
-                checked,
-                verified,
-            ),
-            files_left,
-            bytes_left,
-        )
-    except (FileChangedError, OSError, ValueError):
-        return (
-            CurationVerificationItem(
-                item.item_id,
-                item.kind,
-                item.source_path,
-                mode,
-                None,
-                "source_changed",
-                "source_changed",
-                checked,
-                verified,
-            ),
-            files_left,
-            bytes_left,
-        )
-    return (
-        CurationVerificationItem(
+        return CurationVerificationItem(
             item.item_id,
             item.kind,
             item.source_path,
             mode,
-            "full_hash",
-            "verified",
-            "exact_content_verified",
+            None,
+            status,
+            (
+                "source_changed"
+                if status == "source_changed"
+                else getattr(exc, "reason_code", "verification_unavailable")
+            ),
             checked,
             verified,
-        ),
-        files_left,
-        bytes_left,
+        )
+    except (FileChangedError, OSError, ValueError):
+        return CurationVerificationItem(
+            item.item_id,
+            item.kind,
+            item.source_path,
+            mode,
+            None,
+            "source_changed",
+            "source_changed",
+            checked,
+            verified,
+        )
+    return CurationVerificationItem(
+        item.item_id,
+        item.kind,
+        item.source_path,
+        mode,
+        "full_hash",
+        "verified",
+        "exact_content_verified",
+        checked,
+        verified,
+    )
+
+
+def _unprocessed_item(item: CurationItem, reason: WorkStopReason) -> CurationVerificationItem:
+    raw_mode = item.evidence.get("verification_mode")
+    mode: VerificationMode | None = (
+        cast(VerificationMode, raw_mode)
+        if isinstance(raw_mode, str) and raw_mode in VALID_VERIFICATION_MODES
+        else None
+    )
+    return CurationVerificationItem(
+        item.item_id,
+        item.kind,
+        item.source_path,
+        mode,
+        None,
+        "not_verified",
+        reason,
+        0,
+        0,
     )
 
 
@@ -522,6 +638,7 @@ def verify_curation_page(
     max_items: int = MAX_VERIFICATION_ITEMS,
     max_files: int = MAX_VERIFICATION_FILES,
     max_bytes: int = MAX_VERIFICATION_BYTES,
+    budget: CurationWorkBudget | None = None,
 ) -> CurationVerificationResult:
     """Verify duplicate candidates from one already-published plan page."""
 
@@ -533,6 +650,8 @@ def verify_curation_page(
         raise ValueError("max_files is outside the verification bound")
     if not 1 <= max_bytes <= MAX_VERIFICATION_BYTES:
         raise ValueError("max_bytes is outside the verification bound")
+    if budget is not None and not isinstance(budget, CurationWorkBudget):
+        raise TypeError("budget must be a CurationWorkBudget")
     root = _bounded_root(page.root)
     selected = page.items
     if item_ids is not None:
@@ -547,10 +666,20 @@ def verify_curation_page(
         selected = tuple(by_id[item_id] for item_id in item_ids)
     elif len(selected) > max_items:
         raise CurationVerificationUnavailable("curation verification page exceeds its item bound")
-    remaining_files = max_files
-    remaining_bytes = max_bytes
+    work = _WorkBudgetState(
+        CurationWorkBudget() if budget is None else budget,
+        max_items=max_items,
+        max_files=max_files,
+        max_bytes=max_bytes,
+    )
     results: list[CurationVerificationItem] = []
-    for item in selected:
+    for index, item in enumerate(selected):
+        try:
+            work.start_item()
+        except _WorkBudgetStop as exc:
+            stop_reason = cast(WorkStopReason, exc.reason_code)
+            results.extend(_unprocessed_item(pending, stop_reason) for pending in selected[index:])
+            break
         if item.kind != "duplicate_group":
             results.append(
                 CurationVerificationItem(
@@ -566,21 +695,26 @@ def verify_curation_page(
                 )
             )
             continue
-        result, remaining_files, remaining_bytes = _duplicate_verification(
+        result = _duplicate_verification(
             item,
             root=root,
-            files_left=remaining_files,
-            bytes_left=remaining_bytes,
+            work=work,
         )
         results.append(result)
+        if result.reason in {"budget_exhausted", "cancelled", "deadline_exceeded"}:
+            stop_reason = cast(WorkStopReason, result.reason)
+            results.extend(
+                _unprocessed_item(pending, stop_reason) for pending in selected[index + 1 :]
+            )
+            break
     verified_count = sum(item.status == "verified" for item in results)
     failed_count = sum(item.status == "source_changed" for item in results)
     # Non-duplicate entries (empty files and organization proposals) are
     # intentionally outside bytewise duplicate verification; they must not
     # downgrade a page whose applicable duplicate groups were all verified.
     skipped_count = sum(item.status == "not_verified" for item in results)
-    files_checked = sum(item.checked_files for item in results)
-    bytes_checked = max_bytes - remaining_bytes
+    files_checked = work.files_checked
+    bytes_checked = work.bytes_checked
     status: Literal["complete", "partial", "snapshot_changed"] = (
         "snapshot_changed"
         if failed_count
@@ -615,5 +749,6 @@ __all__ = (
     "CurationVerificationResult",
     "CurationVerificationSnapshotChanged",
     "CurationVerificationUnavailable",
+    "CurationWorkBudget",
     "verify_curation_page",
 )

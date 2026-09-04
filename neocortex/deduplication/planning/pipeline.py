@@ -184,12 +184,19 @@ class _CollisionGroupBuilder:
             self._representatives = []
             self._redundant_chunks = []
 
-        if not self._place_with_representative(snapshot):
+        placement = self._place_with_representative(snapshot)
+        if placement is None:
+            # A mutation makes the candidate ineligible for both roles.  Do
+            # not turn a failed exact comparison into a new representative:
+            # a later candidate must not be able to form a group around an
+            # unverified snapshot.
+            return
+        if not placement:
             self._add_representative(snapshot)
             return
         self._flush_complete_chunks()
 
-    def _place_with_representative(self, snapshot: FileSnapshot) -> bool:
+    def _place_with_representative(self, snapshot: FileSnapshot) -> bool | None:
         if not self._exact_compare and self._representatives:
             self._redundant_chunks[0].append(snapshot)
             return True
@@ -203,7 +210,7 @@ class _CollisionGroupBuilder:
                     return True
             except FileChangedError:
                 self._counters.failures += 1
-                return True
+                return None
             finally:
                 self._work.complete("Comparando contenido exacto")
         return False

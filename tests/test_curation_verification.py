@@ -430,7 +430,12 @@ def test_bounded_matrix_fixture_replays_across_cli_api_and_mcp(
 
 @pytest.mark.parametrize(
     ("error_code", "expected_exit"),
-    (("snapshot_changed", 5), ("corrupt", 7), ("unavailable", 1)),
+    (
+        ("snapshot_changed", 5),
+        ("schema_incompatible", 6),
+        ("corrupt", 7),
+        ("unavailable", 1),
+    ),
 )
 def test_scan_preserves_typed_plan_error_exit_codes(
     monkeypatch: pytest.MonkeyPatch,
@@ -449,3 +454,42 @@ def test_scan_preserves_typed_plan_error_exit_codes(
 
     assert result["error"]["code"] == error_code  # type: ignore[index]
     assert result["exit_code"] == expected_exit
+
+
+def test_scan_fails_closed_when_an_error_claims_complete_coverage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = {
+        "coverage": "complete",
+        "snapshot": {
+            "snapshot_id": None,
+            "scan_id": None,
+            "root": None,
+            "source_heads": [],
+        },
+        "page": {"items": []},
+        "error": {"code": "corrupt", "message": "fixture", "retryable": False},
+    }
+    monkeypatch.setattr(curation_verification_api, "curation_plan_payload", lambda **_: expected)
+
+    result = curation_verification_api.curation_scan_payload()
+
+    assert result["status"] == "unavailable"
+    assert result["coverage"] == "unavailable"
+    assert result["exit_code"] == 7
+
+
+def test_human_verify_displays_persisted_and_observed_modes_separately(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state, _corpus = _build_state(tmp_path, exact_compare=False, pair_count=1)
+    _patch_default_state(monkeypatch, state)
+    page = build_curation_plan_page(state, 100)
+
+    exit_code = human.run_human_command(("curate", "verify", page.plan_digest))
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "persisted_mode=fast observed_mode=full_hash" in captured.out

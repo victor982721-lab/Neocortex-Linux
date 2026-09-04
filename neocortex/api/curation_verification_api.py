@@ -291,19 +291,18 @@ def _error_payload(
 
 
 def _scan_exit_code(coverage: object, error: object) -> int:
-    if coverage == "complete":
-        return 0
     if isinstance(error, dict):
         code = error.get("code")
         return {
+            "invalid_request": 2,
+            "invalid_cursor": 2,
             "snapshot_changed": 5,
             "corrupt": 7,
-            "schema_incompatible": 7,
-            "invalid_cursor": 2,
+            "schema_incompatible": 6,
             "partial": 2,
             "unavailable": 1,
         }.get(code, 2)
-    return 2
+    return 0 if coverage == "complete" else 2
 
 
 def _scan_from_plan(
@@ -313,6 +312,14 @@ def _scan_from_plan(
 ) -> CurationScanOutput:
     coverage = page_payload.get("coverage")
     if coverage not in {"complete", "partial", "unavailable"}:
+        coverage = "unavailable"
+    published_error = page_payload.get("error")
+    if published_error is not None and not isinstance(published_error, dict):
+        raise ValueError("published curation scan error is invalid")
+    # An upstream error can never coexist with a successful scan, even if a
+    # malformed producer labels the page complete.  Preserve its typed exit
+    # code while failing the public coverage closed.
+    if published_error is not None and coverage == "complete":
         coverage = "unavailable"
     page = page_payload.get("page")
     if not isinstance(page, dict):
@@ -376,8 +383,8 @@ def _scan_from_plan(
             "source_heads": result["source_heads"],
         },
         "result": result,
-        "error": page_payload.get("error"),
-        "exit_code": _scan_exit_code(coverage, page_payload.get("error")),
+        "error": published_error,
+        "exit_code": _scan_exit_code(coverage, published_error),
     }
 
 
