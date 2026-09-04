@@ -26,21 +26,27 @@
   de 100 elementos, selección vacía, symlink intermedio, presupuesto de bytes,
   plan heterogéneo, mutación con mtime restaurado, replay y cero mutación del
   corpus/owners.
-- Ruff y `compileall` pasan; la suite Linux amplia pasa con 4,543 casos,
-  70 omitidos y 135 subtests al excluir Windows/NTFS y el módulo run-control
-  con su carrera conocida de heartbeat/SQLite, mientras las pruebas focales
-  post-fix del vertical pasan 19 casos.
+- Ruff y `compileall` pasan; la suite Linux amplia del SHA de código registró
+  4,547 pasadas, 70 omitidas y 137 subtests al excluir Windows/NTFS y el módulo
+  run-control con su carrera conocida de heartbeat/SQLite, con un único fallo
+  de identidad contra la distribución 0.9.0 todavía instalada en ese momento;
+  el foco final de curation/MCP/fachadas/documentación pasa 93 casos.
+- `0.10.0-e93fa5b4ac98-cp314-linux-x86_64` quedó instalada desde el SHA
+  `e93fa5b4ac98da2d54fa7ea6e3551b87bc9bc3df`, `release_linux.py verify`
+  devuelve `verified=true`, `pip check` no reporta requisitos rotos, el alias
+  estable reporta 0.10.0 y se conservan sólo `current` y el rollback 0.9.0.
+- El smoke público sobre fixture aislado confirmó replay equivalente de scan y
+  verify, `source_heads=2`, `items_verified=1`, cero `file_actions` y corpus
+  byte-identical; el alias estable se usó sólo para version/doctor porque fija
+  deliberadamente las rutas canónicas.
 - El test Windows/NTFS permanece fuera del alcance Linux-only; no se ejecutó
   GitHub Actions ni se procesó el corpus real.
 
-## Gates restantes
+## Gates posteriores (0.11.x)
 
-1. Bump explícito a `0.10.0` y commit de release desde el árbol ejecutable
-   validado.
-2. Build offline e instalación desde el SHA final con `release_linux.py`,
-   `release_linux.py verify`, manifest, launcher, `current` y rollback.
-3. Smoke público y segunda ejecución de replay sin `PYTHONPATH`, con fixture
-   aislado y cero `file_actions`.
-4. Mantener fuera de esta versión `apply → verify → reconcile`, KIO real,
+1. Mantener fuera de 0.10.x `apply → verify → reconcile`, KIO real,
    autenticación de principal MCP, recovery de restore y endurecimiento general
-   de fences SQLite, que corresponden a 0.11.x o a un gate independiente.
+   de fences SQLite.
+2. Para 0.11.x, consumir el grant de heads, revalidar identidad física junto a
+   la frontera de efecto y cerrar/reconciliar cada intento sin fallback
+   destructivo.
