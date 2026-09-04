@@ -1,6 +1,6 @@
 # NeoCortex — handoff operativo vigente
 
-> Actualizado: 2026-09-03 18:09 CST. El basename es histórico y permanece estable.
+> Actualizado: 2026-09-03 18:47 CST. El basename es histórico y permanece estable.
 > `~/.codex/PENDIENTES.md` conserva el compromiso operativo; este archivo
 > describe sólo la frontera técnica de reanudación.
 
@@ -30,12 +30,13 @@ entorno virtual al destino inmutable, valida manifiesto/launcher/receipt y
 conserva únicamente `current` y el rollback inmediato, sin borrar una entrada
 en uso.
 
-La suite integral del árbol ejecutable actual pasó con 4,409 pruebas, 127
-omitidas y 114 subtests. El cierre operativo todavía exige completar la
-verificación viva de la release final, smoke público sin `PYTHONPATH`, replay
-de lecturas y comparación de bytes/inodos/mtimes de sidecars, además de
-registrar la cobertura parcial real de los owners ausentes o con WAL activo.
-No se ejecutó una migración destructiva ni se procesó el corpus del usuario.
+La suite integral del árbol ejecutable actual pasó con 4,417 pruebas, 127
+omitidas y 114 subtests, y las comprobaciones focales de contratos, persistencia,
+multimodalidad, Code Graph y release quedaron verdes. La release Linux final,
+el smoke público sin `PYTHONPATH`, el replay de lecturas y la comparación de
+bytes/inodos/mtimes de sidecars quedaron verificados en la evidencia durable de
+la cohorte; el estado observado permanece parcial por owners ausentes y no se
+ejecutó una migración destructiva ni se procesó el corpus del usuario.
 
 ## Corte físico anterior (referencia histórica)
 

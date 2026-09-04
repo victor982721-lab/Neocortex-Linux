@@ -17,12 +17,12 @@ reconstruibles y la fuente original conserva prioridad.
 | Corte | Resultado verificable | Estado |
 |---|---|---|
 | F0 — línea base | inventario de owners, topología, release y fixtures de carreras | implementado en pruebas y auditoría local |
-| F1 — lectura segura | `SQLiteReadSession` con `immutable_strict`, `snapshot_temp` y rechazo de `writer_coordinated`; `state-health` contractual v2 | implementado; ampliación de lectores en curso |
-| F2 — estado publicado | backup/restore staged, integridad rápida/completa, purge con recaptura de sidecars, epoch y journal idempotente | implementado en API local; superficie pública en integración |
+| F1 — lectura segura | `SQLiteReadSession` con `immutable_strict`, `snapshot_temp` y rechazo de `writer_coordinated`; `state-health` contractual v2 | implementado en las superficies públicas y con prueba arquitectónica |
+| F2 — estado publicado | backup/restore staged, integridad rápida/completa, purge con recaptura de sidecars, epoch y journal idempotente | implementado en API y fachada `databases`; publicación filesystem cross-owner completa queda pendiente |
 | F3 — contratos | envelope v1, códigos y cobertura comunes, validación MCP/cliente compartido, protocolo UI con secuencias y terminales | implementado en superficies principales |
-| F4 — release | parser de IDs, staging con marcador, digest de árbol, lock previo, rollback y retención `current + rollback` | implementado; falta instalar desde el SHA final |
-| F5 — multimodal | manifiesto canónico de capacidades, dependencia opcional vídeo→audio, fuente Semantic de vídeo con locators | primera vertical implementada; catálogo/OCR completo queda pendiente |
-| M6–M12 — arquitectura | Code Graph generacional, módulos Semantic/Review y aislamiento Linux-first de tooling histórico | siguiente programa, no se presenta como terminado |
+| F4 — release | parser de IDs, staging con marcador, digest de árbol, lock previo, rollback y retención `current + rollback` | instalado y verificado desde el SHA final; supply-chain offline reproducible/modelos criptográficos quedan pendientes |
+| F5 — multimodal | manifiesto canónico de capacidades, dependencia opcional vídeo→audio, fuente Semantic de vídeo con locators | adapter de vídeo implementado; planner Semantic, catálogo/OCR completo y propagación final quedan pendientes |
+| M6–M12 — arquitectura | Code Graph generacional, módulos Semantic/Review y aislamiento Linux-first de tooling histórico | ledger Code aditivo implementado, integración del productor y modularización siguen pendientes |
 
 ## Gates por corte
 
@@ -35,23 +35,25 @@ reconstruibles y la fuente original conserva prioridad.
 3. **Contratos:** CLI plana, fachada humana, MCP y UI expresan la misma
    operación, scope, cobertura, error y `observed_epoch`; datos del corpus se
    sanitizan antes de terminal o interfaz.
-4. **Release:** build offline reproducible, launcher, manifest y receipt apuntan
-   al mismo SHA; staging queda vacío y sólo sobreviven `current` y el rollback
-   inmediato, sin borrar una release en uso.
+4. **Release:** launcher, manifest y receipt apuntan al mismo SHA; staging queda
+   vacío y sólo sobreviven `current` y el rollback inmediato, sin borrar una
+   release en uso. La construcción offline reproducible con hashes por
+   dependencia es una barrera posterior, no un hecho ya demostrado.
 5. **Multimodal:** cada modalidad declara productor, owner, consumidor,
    cobertura, dependencia y locator; una fuente parcial no puede terminar como
    generación completa.
 
 ## Orden inmediato
 
-1. Terminar la migración de lectores `mode=ro` al kernel único y ejecutar el
-   test arquitectónico de conexiones directas.
-2. Integrar backup/restore como comandos de consulta por defecto, manteniendo
-   `apply` bloqueado sin token y sin mutar el corpus.
-3. Ejecutar la suite completa y los checks focales, limpiar temporales y crear
-   un commit único de esta evolución.
-4. Construir e instalar la release desde el SHA final, verificar launcher,
-   manifest, receipt, smoke público y replay; comprobar retención exacta.
+1. Completar fixtures herméticos de owners completos, ausentes, WAL activo,
+   sidecars huérfanos y carreras, sin abrir el estado productivo durante el
+   piloto.
+2. Cerrar la publicación filesystem cross-owner y la recuperación de journals,
+   manteniendo `apply` bloqueado sin token y sin mutar el corpus.
+3. Integrar el ledger generacional Code con el productor principal y conservar
+   el lector legacy hasta probar equivalencia, backup y restore.
+4. Ejecutar por separado el hardening de supply-chain offline, modelos y
+   atestación nativa antes de promover otro release.
 5. Registrar hashes, conteos, tiempos y límites en la evidencia canónica y
    actualizar `PENDIENTES.md`/`HISTORIAL.md` sin copiar evidencia bruta.
 
@@ -62,4 +64,3 @@ reconstruibles y la fuente original conserva prioridad.
 - No se usa GitHub Actions ni auditoría remota implícita.
 - Windows/NTFS se conserva sólo como compatibilidad histórica hasta demostrar
   consumidores y una migración preservativa.
-

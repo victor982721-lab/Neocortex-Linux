@@ -327,10 +327,11 @@ contrato atribuible; nunca migra la base durante `inspect lineage`.
 Neocortex agent serve
 ```
 
-Ese comando inicia un servidor MCP local sólo por stdio. Expone exclusivamente
-`status`, `search`, `context`, `evidence` e `inspect_code`; no abre un listener,
-no acepta paths arbitrarios y marca todas las tools read-only, no destructivas e
-idempotentes. El texto del corpus se trata siempre como datos no confiables.
+Ese comando inicia un servidor MCP local sólo por stdio. Expone las lecturas
+`status`, `search`, `context`, `evidence`, `inspect_code`, `lineage` y
+`asset_health`; no abre un listener, no acepta paths arbitrarios y marca todas
+las tools read-only, no destructivas e idempotentes. El texto del corpus se
+trata siempre como datos no confiables.
 
 ## Consultas y diagnósticos sin recorrido
 
@@ -643,9 +644,10 @@ builders/leases vivos, cadenas base y evidencia humana o incierta; en particular
 las referencias `semantic_evidence` y el último run `completed` de framework
 actúan como holds. Los bytes son una cota inferior del payload `TEXT`/`BLOB`,
 no espacio físico garantizado. Cada base tiene un snapshot estable, pero la
-consulta no es atómica entre bases y una apertura SQLite read-only puede
-participar en WAL/SHM. Devuelve `2` si algún store queda bloqueado por deriva o
-dependencia incompatible; ausencia segura o un plan listo devuelve `0`.
+consulta no es atómica entre bases; las lecturas públicas usan el kernel
+sidecar-safe y se abstienen cuando el WAL/SHM no puede probarse estable.
+Devuelve `2` si algún store queda bloqueado por deriva o dependencia
+incompatible; ausencia segura o un plan listo devuelve `0`.
 
 No existen opciones `--retention-prepare`, `--retention-apply` o
 `--retention-verify`. La salida de status no autoriza un `DELETE` manual ni

@@ -459,10 +459,14 @@ evidencia malformada fuerzan `finalize_graph` y reconstruyen membresías y FTS.
 
 La primera corrida completa posterior a esta actualización puede por ello
 realizar una finalización larga; las siguientes sólo prueban estado estable si
-usan el mismo corpus, configuración y firma. El esquema vigente es 4. Durante
-`finalize_graph`, un progress handler SQLite acotado consulta cancelación dentro
-de la transacción, revierte antes de propagar la excepción original y se retira
-al salir; esto no convierte el grafo en una publicación generacional.
+usan el mismo corpus, configuración y firma. El owner Code vigente es schema 7
+y conserva las tablas legacy como lectura compatible, mientras el ledger
+generacional aditivo (`graph_input_snapshots`, `graph_generations`, batches,
+memberships, checkpoints y `graph_heads`) ofrece la frontera de publicación para
+la integración progresiva del productor principal. Durante `finalize_graph`, un
+progress handler SQLite acotado consulta cancelación dentro de la transacción,
+revierte antes de propagar la excepción original y se retira al salir; esta ruta
+legacy aún no publica automáticamente un `graph_head` generacional.
 
 ## Modelos y herramientas externas
 

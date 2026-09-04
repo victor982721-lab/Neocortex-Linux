@@ -89,10 +89,11 @@ Neocortex --state-health --state-health-json
 federada sin mezclar scores de snapshots distintos. La
 página **Consulta** de `Neocortex --ui` ofrece las mismas acciones, evidencia,
 citas, cobertura e incertidumbre sin controles de mutación. Para clientes
-locales, `Neocortex agent serve` expone por MCP/stdio sólo `status`, `search`,
-`context`, `evidence` e `inspect_code`, todos marcados read-only. Las interfaces
-retiradas sólo se conservan en documentación histórica y no forman parte del
-contrato de automatización vigente.
+locales, `Neocortex agent serve` expone por MCP/stdio las lecturas `status`,
+`search`, `context`, `evidence`, `inspect_code`, `lineage` y `asset_health`,
+todas marcadas read-only. Las interfaces retiradas sólo se conservan en
+documentación histórica y no forman parte del contrato de automatización
+vigente.
 `inspect lineage` explica receipts, revisiones, materializaciones y dependencias
 Text/Semantic ya publicadas; tampoco ejecuta extractores ni migra owners.
 
@@ -200,15 +201,17 @@ Después de una instalación verificada, el instalador conserva únicamente
 poda en el recibo; `.staging` debe quedar vacío.
 
 `constraints.txt` conserva los pins directos compartidos, mientras
-`constraints-linux-cp314.lock` fija el inventario transitivo completo de la
+`constraints-linux-cp314.lock` fija el inventario transitivo esperado de la
 release Linux. El instalador aplica ambos constraints, incorpora el lock y su
 SHA-256 al manifest y rechaza la promoción si una distribución instalada difiere;
-un cambio del lock exige volver a comprobar el artefacto, sin convertirlo en un
-gate de calidad del producto.
+la construcción offline con hashes por dependencia y SBOM local sigue siendo un
+gate de supply-chain pendiente, por lo que no se presenta como una garantía ya
+cerrada.
 
 Los modelos se comparten entre releases. `Neocortex models status --json` es
-local y de sólo lectura; `Neocortex models prepare --json` es la única fachada
-que descarga el conjunto de producción deliberadamente. La entrada KDE muestra
+local y de sólo lectura; `Neocortex models prepare --json` y
+`--semantic-prepare-models` son fachadas explícitas de adquisición deliberada,
+ninguna ruta de contenido descarga modelos implícitamente. La entrada KDE muestra
 “modo portátil Linux”, no solicita elevación y mantiene desactivadas las
 mutaciones. Consulte [Kubuntu/Linux](docs/LINUX_KUBUNTU.md) para requisitos,
 rutas XDG, recibos y rollback.
@@ -396,7 +399,8 @@ identidad, evidencia, razón y fingerprint reproducible; no inicializa ni migra
 SQLite, no modifica sus bytes y nunca mueve, renombra o elimina contenido.
 
 `--state-health` inspecciona los owners SQLite conocidos mediante lecturas
-inmutables y reporta `healthy`, `missing`, `orphaned_sidecars` o `blocked` sin
+inmutables y reporta `healthy`, `missing`, `orphaned_sidecars`, `blocked`,
+`active`, `future`, `incompatible`, `corrupt`, `unknown` o `unreadable` sin
 crear, migrar ni tocar WAL/SHM. Un estado parcial devuelve código `2` con la
 causa estructurada.
 
