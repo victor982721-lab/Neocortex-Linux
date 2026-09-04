@@ -16,6 +16,11 @@ from neocortex.persistence.sqlite_schema_contract import (
     schema_contract_from_builder,
     validate_sqlite_schema_contract,
 )
+from neocortex.persistence.framework_authorization_schema import (
+    AUTHORIZATION_EXTENSION_OBJECTS,
+    authorization_extension_present,
+    validate_authorization_extension,
+)
 
 
 SCHEMA_VERSION = 22
@@ -2518,7 +2523,18 @@ def validate_framework_schema_v22(connection: sqlite3.Connection) -> None:
             _exact_schema_contract(),
             label="framework v22",
             exact=True,
+            allowed_extra_tables=(
+                ("curation_authorization_grants",)
+                if authorization_extension_present(connection)
+                else ()
+            ),
+            allowed_extra_objects=(
+                AUTHORIZATION_EXTENSION_OBJECTS
+                if authorization_extension_present(connection)
+                else ()
+            ),
         )
+        validate_authorization_extension(connection)
     except SQLiteSchemaContractError as exc:
         raise RuntimeError(f"framework v22 schema contract validation failed: {exc}") from exc
 
@@ -2649,7 +2665,18 @@ def _validate_schema(connection: sqlite3.Connection) -> None:
             _exact_schema_contract(),
             label="framework",
             exact=True,
+            allowed_extra_tables=(
+                ("curation_authorization_grants",)
+                if authorization_extension_present(connection)
+                else ()
+            ),
+            allowed_extra_objects=(
+                AUTHORIZATION_EXTENSION_OBJECTS
+                if authorization_extension_present(connection)
+                else ()
+            ),
         )
+        validate_authorization_extension(connection)
     except SQLiteSchemaContractError as exc:
         raise RuntimeError(f"framework schema contract validation failed: {exc}") from exc
 

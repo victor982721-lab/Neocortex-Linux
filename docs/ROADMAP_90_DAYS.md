@@ -30,10 +30,10 @@ incierta, pero no cuenta como funcionalidad entregada para los casos soportados.
 | Catálogo y organización | Planes disponibles; recorrido end-to-end parcial |
 | Knowledge y contexto para agentes | Implementado read-only; cobertura/localizadores varían por owner |
 | Review | **IMPLEMENTED:** `curate review` publica ReviewTasks y `curate decide` añade decisiones humanas por CAS |
-| Curación integrada | **CURRENT:** plan read-only; **IMPLEMENTED:** review/decide state-only; **TARGET:** autorización y efectos |
+| Curación integrada | **CURRENT:** plan read-only; **IMPLEMENTED:** review/decide advisory y AuthorizationGrant durable; **TARGET:** apply/verify/reconcile |
 | Mutación Linux | Foundation KIO preparada; no integrada/promovida, y `--apply`/`--organization-apply` se abstienen |
 | Backup/restore/purge | Implementados mediante `Neocortex databases` |
-| MCP | **IMPLEMENTED:** `curation_plan`, `curation_review` y `curation_decide`; los dos últimos escriben ReviewTask advisory, no corpus |
+| MCP | **IMPLEMENTED:** plan/review/decide; authorize se omite hasta resolver un principal autenticado |
 
 ## 0.10.0 — Evidencia y plan de curación
 
@@ -46,6 +46,12 @@ registra `resolved`/`dismissed` mediante digest y event-head CAS. API, SDK y MCP
 proyectan los mismos envelopes. Review/decide escriben sólo Framework,
 mantienen `actions_authorized=false` y crean cero `file_actions`.
 
+`curate authorize` y `curation_authorize_payload` validan plan completo,
+ReviewTasks resueltas, acción, actor, expiración y presupuestos, y persisten un
+grant append-only en la extensión Framework. Está expuesto por CLI/API/SDK, no
+por MCP; declara autoridad acotada, pero `physical_effect_applied=false` y crea
+cero `file_actions`.
+
 Entregas restantes:
 
 1. completar `curate scan` y `curate verify` alrededor del plan/review ya
@@ -55,8 +61,8 @@ Entregas restantes:
 3. `verification_mode` explícito; ningún candidato fast se publica como
    duplicado bytewise;
 4. ampliar el plan inmutable ya paginado con source heads y reason codes;
-5. añadir consultas MCP de status/verificación sin convertir review/decide en
-   autorización;
+5. añadir consultas MCP de status/verificación y resolver autenticación antes de
+   considerar un tool de autorización;
 6. límites uniformes de elementos, tiempo, RAM y disco, con progreso y
    cancelación;
 7. localizadores públicos comprobables por cada capacidad declarada.
@@ -70,7 +76,8 @@ Criterios de aceptación:
 - igualdad exacta exige comparación byte a byte;
 - CLI, SDK, GUI y MCP proyectan el mismo schema;
 - cero cambios en bytes/rutas del corpus, cero `file_actions` y cero autoridad
-  derivada de una decisión.
+  derivada de una decisión; el grant sólo aparece tras `curate authorize` y no
+  demuestra aplicación física.
 
 No se añadirá exportación ni ZIP de curación en este corte. JSON/JSONL son
 respuestas de interfaz, no artefactos de entrega.
@@ -93,15 +100,14 @@ Decisión de backend:
 
 Entregas:
 
-1. ledger `plan → decision → authorization → attempt → effect → verification`;
-2. autorización ligada a actor, scope, expiración, límites, source heads y
-   digest;
-3. revalidación de identidad, tamaño, mtime y hash junto a la frontera;
-4. creación segura y fsync de `.trashinfo`;
-5. receipt que permita localizar y restaurar aunque cambie el nombre interno;
-6. conciliación de cada punto de caída y estados `recovery_required`;
-7. lotes pequeños con límite de acciones/bytes y cancelación entre efectos;
-8. GUI que presenta el plan, pero no aporta una autoridad distinta.
+1. `apply` consume el AuthorizationGrant vigente y crea el intento `file_actions`;
+2. revalidación de grant, expiración, digest, ReviewTask heads, identidad,
+   tamaño, mtime y hash junto a la frontera;
+3. aplicación KIO/rename dentro del scope, acción y presupuestos concedidos;
+4. verificación física con receipt y evidencia de Papelera/destino;
+5. `reconcile` resuelve cada punto de caída y conserva `recovery_required`;
+6. lotes pequeños con límite de acciones/bytes y cancelación entre efectos;
+7. GUI que presenta grant e intento, pero no aporta una autoridad distinta.
 
 Criterios de aceptación:
 
@@ -141,8 +147,8 @@ Criterios de aceptación:
 1. Validar y promover plan/review/decide desde el SHA final sin ampliar su
    autoridad.
 2. Completar scan/verify, deduplicación exacta y cobertura del plan 0.10.0.
-3. Diseñar el contrato de autorización separado; ninguna ReviewTask será su
-   sustituto.
+3. Implementar `apply → verify → reconcile` como consumidor estricto del grant;
+   nunca derivar autoridad directamente de ReviewTask.
 4. Integrar la foundation KIO preparada y completar sus pruebas de producto con
    runner/verificador inyectados y fixtures same-filesystem; reservar cualquier
    prueba contra KIO real para un gate explícito posterior.

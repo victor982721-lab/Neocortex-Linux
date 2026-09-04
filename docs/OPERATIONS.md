@@ -113,15 +113,20 @@ cada página y decide usando el event head devuelto:
 Neocortex curate review PLAN_ID --limit 50 --json
 Neocortex curate decide PLAN_ID ITEM_ID --expected-event-id EVENT_ID \
   --decision resolved --decision-scope until-source-change --actor ACTOR --json
+Neocortex curate authorize PLAN_ID --item-id ITEM_ID --action move \
+  --actor ACTOR --expires-ns NS --max-bytes BYTES --json
 ```
 
 Revisa coverage, digest, snapshot, `current_event_id` y efecto declarado. Review
 y decide escriben únicamente ReviewTask en Framework; no crean `file_actions`,
-no autorizan ni modifican corpus o sistemas externos. Un digest/event head
-cambiado requiere volver a consultar, no reintentar a ciegas. `--json` no exporta
-ni crea ZIP.
+no autorizan ni modifican corpus o sistemas externos. Authorize exige items
+resueltos, action, actor, expiración futura y presupuesto; persiste un grant
+inmutable en Framework. Conserva el `grant_id`, pero no lo interpretes como
+receipt: no creó `file_actions` ni aplicó nada. Un digest/event head cambiado
+requiere volver a consultar, no reintentar a ciegas. `--json` no exporta ni crea
+ZIP, y MCP no ofrece authorize sin actor autenticado.
 
-**TARGET:** autorización, apply y recovery físico permanecen separados. La
+**TARGET:** `apply → verify → reconcile` consumirá y revalidará el grant. La
 foundation KIO preparada no habilita Linux `--apply`; esta auditoría tampoco
 autoriza una prueba contra KIO real.
 

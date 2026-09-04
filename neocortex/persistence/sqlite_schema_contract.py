@@ -7,7 +7,7 @@ their own durable state without importing the operational orchestration layer.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 
 
@@ -962,8 +962,13 @@ def validate_sqlite_schema_contract(
     *,
     label: str,
     exact: bool = False,
+    allowed_extra_tables: Collection[str] = (),
+    allowed_extra_objects: Collection[str] = (),
 ) -> None:
     """Reject incompatible required objects without changing persisted state."""
+
+    allowed_tables = frozenset(allowed_extra_tables)
+    allowed_objects = frozenset(allowed_extra_objects)
 
     # Detect missing tables before introspecting virtual tables.  A damaged FTS
     # shadow set can make ``PRAGMA table_xinfo`` fail while constructing the
@@ -1012,7 +1017,7 @@ def validate_sqlite_schema_contract(
     if exact:
         errors.extend(
             f"unexpected table {name!r}"
-            for name in sorted(set(actual_tables) - set(expected_tables))
+            for name in sorted(set(actual_tables) - set(expected_tables) - allowed_tables)
         )
     missing_objects = set(expected.sql_objects) - set(actual.sql_objects)
     if missing_objects:
@@ -1023,7 +1028,9 @@ def validate_sqlite_schema_contract(
     if exact:
         extra_objects = set(actual.sql_objects) - set(expected.sql_objects)
         errors.extend(
-            f"unexpected {item.object_type} {item.name!r}" for item in sorted(extra_objects)
+            f"unexpected {item.object_type} {item.name!r}"
+            for item in sorted(extra_objects, key=lambda value: (value.object_type, value.name))
+            if item.name not in allowed_objects
         )
     if errors:
         raise SQLiteSchemaContractError(f"{label} schema contract is invalid: " + "; ".join(errors))

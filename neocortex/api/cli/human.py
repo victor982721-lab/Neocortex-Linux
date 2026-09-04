@@ -215,6 +215,30 @@ def build_human_parser() -> argparse.ArgumentParser:
     curate_decide.add_argument("--actor", required=True, metavar="ACTOR")
     curate_decide.add_argument("--note", metavar="NOTA")
     curate_decide.add_argument("--json", action="store_true", help="emite el contrato JSON completo")
+    curate_authorize = curate_commands.add_parser(
+        "authorize",
+        help="emite un grant humano ligado al plan, sin aplicar efectos",
+        allow_abbrev=False,
+    )
+    curate_authorize.add_argument("plan_id", metavar="PLAN_ID")
+    curate_authorize.add_argument(
+        "--item-id",
+        action="append",
+        dest="item_ids",
+        required=True,
+        metavar="ITEM_ID",
+        help="item revisado; puede repetirse hasta 100 veces",
+    )
+    curate_authorize.add_argument(
+        "--action",
+        required=True,
+        choices=("trash", "move", "rename"),
+    )
+    curate_authorize.add_argument("--actor", required=True, metavar="ACTOR")
+    curate_authorize.add_argument("--expires-ns", required=True, type=int, metavar="NS")
+    curate_authorize.add_argument("--max-bytes", required=True, type=int, metavar="BYTES")
+    curate_authorize.add_argument("--authorization-key", metavar="KEY")
+    curate_authorize.add_argument("--json", action="store_true", help="emite el contrato JSON completo")
 
     inspect = commands.add_parser(
         "inspect",
@@ -976,6 +1000,37 @@ def _run_curation_decide(args: argparse.Namespace) -> int:
     return _exit_code(payload)
 
 
+def _run_curation_authorize(args: argparse.Namespace) -> int:
+    try:
+        from neocortex.api.curation_authorization_api import curation_authorize_payload
+
+        payload = curation_authorize_payload(
+            args.plan_id,
+            args.item_ids,
+            action=args.action,
+            actor=args.actor,
+            expires_ns=args.expires_ns,
+            max_bytes=args.max_bytes,
+            authorization_key=args.authorization_key,
+        )
+    except Exception as exc:  # pragma: no cover - API catches normal contract errors
+        _print(f"curate authorize: {_single_line(exc, limit=800)}", file=sys.stderr)
+        return 2
+    if args.json:
+        _print(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        return _exit_code(payload)
+    grant = _mapping(payload.get("grant")) or {}
+    _print(
+        f"CURATION_AUTHORIZE status={payload.get('status', 'unavailable')} "
+        f"grant={grant.get('grant_id', '-')} idempotent={int(bool(payload.get('idempotent')))}"
+    )
+    error = _mapping(payload.get("error"))
+    if error is not None and error.get("message"):
+        _print(f"Estado: {error['message']}", file=sys.stderr)
+    _print("Se emitió sólo un grant durable; no se aplicó ningún efecto físico.")
+    return _exit_code(payload)
+
+
 def _run_review_task(args: argparse.Namespace) -> int:
     if args.scope == ReadScope.ALL.value:
         _print(
@@ -1098,6 +1153,8 @@ def run_human_command(arguments: Sequence[str]) -> int:
         return _run_curation_review(args)
     if args.command == "curate" and args.curate_command == "decide":
         return _run_curation_decide(args)
+    if args.command == "curate" and args.curate_command == "authorize":
+        return _run_curation_authorize(args)
     if args.command == "inspect" and args.inspect_command == "code":
         return _run_inspect_code(args)
     if args.command == "inspect" and args.inspect_command == "lineage":

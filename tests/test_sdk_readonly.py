@@ -1,4 +1,4 @@
-"""Canonical lazy SDK facade over read-only Knowledge and curation contracts."""
+"""Canonical lazy SDK facade over Knowledge and curation lifecycle contracts."""
 
 
 # region [01] Isolated-process harness and stable surface
@@ -57,19 +57,31 @@ LEGACY_EXPORTS = (
 )
 
 CURATION_EXPORTS = (
+    "CURATION_AUTHORIZATION_API_SCHEMA",
+    "CURATION_DECISION_API_SCHEMA",
     "CURATION_PLAN_API_SCHEMA",
+    "CURATION_REVIEW_API_SCHEMA",
     "CurationPlanOutput",
     "CurationPlanPage",
     "curation_plan_payload",
+    "curation_review_payload",
+    "curation_decide_payload",
+    "curation_authorize_payload",
 )
 
 EXPECTED_EXPORTS = (
+    "CURATION_AUTHORIZATION_API_SCHEMA",
+    "CURATION_DECISION_API_SCHEMA",
     "CURATION_PLAN_API_SCHEMA",
+    "CURATION_REVIEW_API_SCHEMA",
     *LEGACY_EXPORTS[:9],
     "CurationPlanOutput",
     "CurationPlanPage",
     *LEGACY_EXPORTS[9:-1],
+    "curation_authorize_payload",
+    "curation_decide_payload",
     "curation_plan_payload",
+    "curation_review_payload",
     LEGACY_EXPORTS[-1],
 )
 

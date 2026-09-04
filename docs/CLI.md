@@ -47,8 +47,30 @@ ReviewTask en Framework. No crean `file_actions`, no autorizan, no llaman KIO y
 no cambian corpus ni sistemas externos. `--json` devuelve el envelope; no es una
 interfaz de exportación ni crea un ZIP.
 
-**TARGET:** autorización, apply, verificación física y recovery no forman parte
-de este lifecycle implementado.
+**IMPLEMENTED — AuthorizationGrant durable:** después de resolver los items,
+`curate authorize` emite un grant explícito sin aplicar efectos:
+
+```bash
+Neocortex curate authorize PLAN_ID \
+  --item-id ITEM_ID \
+  --action move \
+  --actor ACTOR \
+  --expires-ns NS \
+  --max-bytes BYTES \
+  --json
+```
+
+`--item-id` puede repetirse hasta 100 veces; `--action` acepta `trash`, `move` o
+`rename`, y `--authorization-key` permite una key de idempotencia explícita. El
+grant liga plan/snapshot, root, ReviewTask heads, actor, acción, backend,
+presupuestos y expiración en `curation_authorization_grants` dentro de Framework.
+Trash de duplicados exige `verification_mode=full_hash`; move/rename exige
+destino absoluto. La respuesta declara `actions_authorized=true` y
+`physical_effect_applied=false`: no crea `file_actions`, no invoca KIO y no toca
+corpus ni sistemas externos.
+
+**TARGET:** `apply → verify → reconcile` todavía no existe y deberá revalidar el
+grant inmediatamente antes del efecto.
 
 ## Efectos
 
@@ -56,6 +78,7 @@ de este lifecycle implementado.
 |---|---|---|
 | Consulta | `help`, `status`, `search`, `ask`, `inspect`, `models status`, `databases status` | Lee publicaciones existentes; no recorre corpus ni crea estado |
 | Producción de estado | rutas, Semantic, catálogo, Review refresh, `curate review/decide` | Escribe owners; no modifica originales ni autoriza efectos |
+| Grant de autorización | `curate authorize` | Escribe un grant acotado; no aplica ni verifica un efecto físico |
 | Descarga | `models prepare` | Adquiere modelos de forma explícita |
 | Estado destructivo | `databases restore`, `databases purge` con `--apply` | Requiere confirmación, manifest/plan y locks |
 | Corpus | `--apply`, `--organization-apply` | Rechazado en Linux en la versión actual |
@@ -133,7 +156,7 @@ Neocortex --curation-preview 50 --curation-json
 
 La vista es bounded y read-only. Reúne planes ya publicados de duplicados,
 organización y archivos vacíos, junto con identidad, reasons y cobertura.
-`curate plan/review/decide` es la interfaz humana estructurada; no existe
+`curate plan/review/decide/authorize` es la interfaz humana estructurada; no existe
 `Neocortex curate apply`. Consulta
 [FILE_INTELLIGENCE_AND_CURATION.md](FILE_INTELLIGENCE_AND_CURATION.md).
 
@@ -173,7 +196,9 @@ evidence, `curation_plan`, Code, lineage y salud de assets. También expone
 `curation_review` y `curation_decide`: escriben sólo ReviewTask advisory, están
 marcadas no destructivas y mantienen `actions_authorized=false`. `evidence`
 puede recibir `evidence_id` y `expected_snapshot_id`; ningún tool aplica acciones
-de corpus.
+de corpus. MCP no expone `curation_authorize`: el actor autenticado que podría
+emitir un grant no está resuelto y no se acepta un nombre aportado por el agente
+como sustituto.
 
 ## Salida estructurada y códigos
 
@@ -181,7 +206,8 @@ Los modos JSON/JSONL conservan un `schema`, la operación, cobertura, errores y
 warnings cuando el contrato los produce, mientras los campos de scope, epoch y
 contadores dependen de la superficie consultada. Curation coloca cursor e items
 en `page`; review añade `publication`, y decide devuelve el evento e
-`idempotent`. No se presentan campos que el contrato no entregue. Los códigos
+`idempotent`; authorize devuelve `grant`, sus efectos state-only y
+`physical_effect_applied=false`. No se presentan campos que el contrato no entregue. Los códigos
 exactos pertenecen al comando y su ayuda; como regla:
 
 - `0`: operación solicitada completada dentro de la cobertura declarada;

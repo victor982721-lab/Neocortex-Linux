@@ -41,6 +41,13 @@ fuera de `docs/`.
   `resolved` o `dismissed`, con scope, actor y event head esperado. Sólo escriben
   eventos ReviewTask: no crean `file_actions`, no autorizan, no invocan KIO y no
   cambian corpus ni sistemas externos.
+- `curate authorize` y la API/SDK `curation_authorize_payload` emiten un
+  AuthorizationGrant append-only dentro de la extensión Framework
+  `curation_authorization_grants`. Exigen plan vigente, ReviewTasks resueltas,
+  actor, acción, expiración y presupuestos; el replay equivalente es idempotente.
+- Emitir el grant no crea `file_actions`, no llama KIO y conserva
+  `physical_effect_applied=false`. MCP no expone authorize hasta resolver un
+  principal autenticado; la brecha siguiente es `apply → verify → reconcile`.
 - El lifecycle de curación no incorpora exportación ni ZIP; `--json` devuelve el
   envelope de la operación.
 - La publicación cross-owner, el ledger generacional Code, Review y el manifest

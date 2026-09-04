@@ -66,6 +66,10 @@ Alias:     ~/.local/bin/Neocortex
     preflight, revalidación y resultados conciliables para `move <origen>
     trash:/`, pero no está integrada ni promovida. Nunca uses `gio trash` ni
     invoques KIO real sin un gate explícito y fixtures contenidos.
+11. **AuthorizationGrant separado.** `curate authorize` sólo puede emitir un
+    grant append-only ligado a un plan completo y ReviewTasks humanas resueltas,
+    no convierte una decisión ReviewTask en permiso implícito y todavía no
+    crea `file_actions` ni aplica efectos.
 
 El fallo cerrado se aplica a la frontera que carece de evidencia o autoridad,
 no a la observación, la clasificación, la explicación de incertidumbre ni la
@@ -82,9 +86,11 @@ stream, proceso, cgroup y transcript; usa `SQLiteReadSession` o un snapshot
 compatible después de comprobar el contrato.
 
 Procesar archivos reales requiere autorización dentro de la tarea, preflight y
-límites. Modificar corpus requiere además plan revisado, autorización inequívoca,
-backup cuando aplique y verificación. En el estado actual `--apply` y
-`--organization-apply` deben seguir rechazándose antes de crear estado.
+límites. `curate authorize` escribe únicamente el grant durable en la extensión
+Framework y no toca el corpus; modificar corpus requiere además `apply`,
+revalidación física, backup cuando aplique y verificación. En el estado actual
+`--apply` y `--organization-apply` deben seguir rechazándose antes de crear
+efectos.
 
 No ejecutes pilotos sobre el corpus completo. Usa fixtures o una muestra de
 20–50 elementos y un límite de 10–15 minutos. Si no existe un límite duro,

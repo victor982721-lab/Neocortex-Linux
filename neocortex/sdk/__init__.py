@@ -3,8 +3,9 @@
 Symbols are resolved lazily and cached here without wrapping or subclassing
 them, so callers receive the canonical contract objects directly.
 Knowledge retains its existing ``status()``, ``search()`` and ``context()``
-service.  Curation exposes a fixed-root, paginated plan read plus a human-gated
-review decision journey; neither surface authorizes or applies filesystem effects.
+service.  Curation exposes a fixed-root, paginated plan read, a human-gated
+review journey and a digest-bound authorization grant; grants are durable but
+do not apply filesystem effects.
 """
 
 
@@ -24,6 +25,10 @@ if TYPE_CHECKING:
         CURATION_REVIEW_API_SCHEMA as CURATION_REVIEW_API_SCHEMA,
         curation_decide_payload as curation_decide_payload,
         curation_review_payload as curation_review_payload,
+    )
+    from neocortex.api.curation_authorization_api import (
+        CURATION_AUTHORIZATION_API_SCHEMA as CURATION_AUTHORIZATION_API_SCHEMA,
+        curation_authorize_payload as curation_authorize_payload,
     )
     from neocortex.api.public import (
         CapabilityFailure as CapabilityFailure,
@@ -66,6 +71,7 @@ if TYPE_CHECKING:
     from neocortex.curation.preview import CurationPlanPage as CurationPlanPage
 
 __all__ = (
+    "CURATION_AUTHORIZATION_API_SCHEMA",
     "CURATION_DECISION_API_SCHEMA",
     "CURATION_PLAN_API_SCHEMA",
     "CURATION_REVIEW_API_SCHEMA",
@@ -106,6 +112,7 @@ __all__ = (
     "WorkExecutionMode",
     "WorkOutcome",
     "WorkReceipt",
+    "curation_authorize_payload",
     "curation_decide_payload",
     "curation_plan_payload",
     "curation_review_payload",
@@ -115,6 +122,10 @@ __all__ = (
 _PUBLIC_NAMES: Final = frozenset(__all__)
 _PUBLIC_FACADE: Final = "neocortex.api.public"
 _CURATION_EXPORTS: Final[dict[str, tuple[str, str]]] = {
+    "CURATION_AUTHORIZATION_API_SCHEMA": (
+        "neocortex.api.curation_authorization_api",
+        "CURATION_AUTHORIZATION_API_SCHEMA",
+    ),
     "CURATION_DECISION_API_SCHEMA": (
         "neocortex.api.curation_lifecycle_api",
         "CURATION_DECISION_API_SCHEMA",
@@ -134,6 +145,10 @@ _CURATION_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "curation_decide_payload": (
         "neocortex.api.curation_lifecycle_api",
         "curation_decide_payload",
+    ),
+    "curation_authorize_payload": (
+        "neocortex.api.curation_authorization_api",
+        "curation_authorize_payload",
     ),
 }
 

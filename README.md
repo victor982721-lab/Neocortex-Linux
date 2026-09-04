@@ -19,8 +19,8 @@ NeoCortex puede:
 - conservar resultados en owners SQLite separados y publicar proyecciones
   incrementales;
 - planear duplicados, clasificación y organización sin modificar originales;
-- buscar evidencia mediante CLI, API Python, GUI y un servidor MCP local de
-  sólo lectura;
+- buscar evidencia mediante CLI, API Python, GUI y MCP local; las únicas
+  escrituras MCP actuales publican o deciden ReviewTasks advisory;
 - exponer cobertura, errores, procedencia y localizadores cuando el productor
   puede demostrarlos;
 - respaldar, restaurar, inspeccionar y purgar el estado mediante comandos
@@ -30,9 +30,10 @@ Todavía no ofrece un recorrido Linux completo que aplique movimientos o envíe
 archivos a la Papelera. `--apply` y `--organization-apply` se abstienen con
 `linux_mutation_backend_unavailable`. La fuente ya contiene la foundation KIO
 fail-closed en `neocortex/safety/kio_trash.py`, pero no está conectada a esas
-flags, promovida ni verificada contra KIO real. Integrarla con plan, autorización,
-recovery y límites same-filesystem sigue siendo trabajo planificado; no se usará
-`gio trash` ni habrá fallback a borrado permanente.
+flags, promovida ni verificada contra KIO real. El grant de autorización ya
+existe, pero `apply → verify → reconcile` aún debe consumirlo junto con recovery
+y límites same-filesystem; no se usará `gio trash` ni habrá fallback a borrado
+permanente.
 
 ## Empieza por una consulta
 
@@ -69,9 +70,9 @@ autoanálisis del propio repositorio.
 
 **CURRENT:** `curate plan` consulta la página estable y paginada del plan local
 sin abrir una ruta nueva ni escribir estado. **IMPLEMENTED en el checkout:**
-`curate review` publica ReviewTasks advisory y `curate decide` registra por CAS
-una decisión humana; la release instalada puede requerir promoción desde el SHA
-final para exponerlos.
+`curate review` publica ReviewTasks advisory, `curate decide` registra por CAS
+una decisión humana y `curate authorize` emite un grant durable separado; la
+release instalada puede requerir promoción desde el SHA final para exponerlos.
 
 ```bash
 Neocortex curate plan --limit 20
@@ -79,13 +80,16 @@ Neocortex curate plan --limit 20 --cursor TOKEN
 Neocortex curate review PLAN_ID --limit 20 --json
 Neocortex curate decide PLAN_ID ITEM_ID --expected-event-id EVENT_ID \
   --decision resolved --decision-scope until-source-change --actor ACTOR --json
+Neocortex curate authorize PLAN_ID --item-id ITEM_ID --action move \
+  --actor ACTOR --expires-ns NS --max-bytes BYTES --json
 ```
 
 `PLAN_ID` es el `plan_digest` devuelto por plan. Review/decide escriben únicamente
-estado ReviewTask, nunca `file_actions`, corpus o sistemas externos, y una
-decisión no autoriza efectos. No existe exportación o ZIP de curación; `--json`
-sólo devuelve la respuesta. `--curation-preview 50 --curation-json` permanece
-como compatibilidad plana. El contrato completo está en
+estado ReviewTask y no autorizan. Authorize persiste el grant append-only, pero
+no crea `file_actions`, invoca KIO ni aplica un efecto físico. MCP no expone
+authorize mientras el actor autenticado no esté resuelto. No existe exportación
+o ZIP de curación; `--json` sólo devuelve la respuesta.
+`--curation-preview 50 --curation-json` permanece como compatibilidad plana. El contrato completo está en
 [File Intelligence & Curation](docs/FILE_INTELLIGENCE_AND_CURATION.md).
 
 ## Plataforma y rutas

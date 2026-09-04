@@ -45,9 +45,10 @@ Cada etapa produce un artefacto durable o una abstención explicable:
 9. **Verificar:** demostrar origen/destino/Papelera, identidad, bytes y conteos.
 10. **Conciliar:** ante caída o ambigüedad, observar antes de reintentar.
 
-**IMPLEMENTED** alcanza `plan → review → decide`: plan consulta, review publica
-tareas advisory y decide registra una decisión humana. **TARGET** comienza en
-autorización y efectos físicos; ninguna decisión ReviewTask cruza esa frontera.
+**IMPLEMENTED** alcanza `plan → review → decide → authorize`: plan consulta,
+review publica tareas advisory, decide registra una decisión humana y authorize
+emite un grant durable separado. **TARGET** comienza en `apply`; ni una decisión
+ReviewTask ni la existencia del grant demuestran un efecto físico.
 
 ## Evidencia y autoridad
 
@@ -78,16 +79,20 @@ Review, receipts y recuperación parcial.
   `ReviewTask` advisory; `curate decide` añade por CAS una decisión humana
   `resolved` o `dismissed`. Sólo escriben Framework, nunca `file_actions`, corpus
   o sistemas externos, y `actions_authorized` permanece `false`.
-- **TARGET:** autorización, aplicación, verificación física y recuperación.
+- **IMPLEMENTED:** `curate authorize` emite un `AuthorizationGrant` inmutable en
+  la extensión `curation_authorization_grants` de Framework. El grant liga plan,
+  snapshot, tareas resueltas, actor, acción, límites y expiración; declara
+  `actions_authorized=true` y `physical_effect_applied=false`.
+- **TARGET:** `apply → verify → reconcile` consumirá y revalidará el grant.
 
 Las brechas principales son:
 
-- no existe aún un lifecycle que reúna autorización, efectos y recuperación;
+- no existe aún `apply → verify → reconcile`, la principal brecha del lifecycle;
 - varios formatos pierden localizadores estructurales al llegar a búsqueda;
 - igualdad, versión, procedencia, valor y disposición no tienen una proyección
   pública unificada;
 - MCP ya expone plan y las escrituras advisory `curation_review` y
-  `curation_decide`, pero no autorización ni efectos;
+  `curation_decide`, pero no `authorize`: falta un principal autenticado;
 - Linux no aplica movimientos ni Papelera;
 - progreso, cancelación y replay no son uniformes en todos los productores.
 
@@ -141,9 +146,29 @@ del mismo evento. Ambas superficies declaran `read_only=false` porque escriben
 estado ReviewTask, pero `effects.corpus=none`, `effects.external=none` y
 `actions_authorized=false`.
 
-**TARGET — no implementado:** autorización, apply, verificación física y
-recovery compartirán plan y ledger en `0.11.0`. Review y decide no son atajos
-hacia esa autoridad.
+**IMPLEMENTED — grant durable, sin efecto físico:**
+
+```text
+Neocortex curate authorize PLAN_ID --item-id ITEM_ID [--item-id ITEM_ID ...]
+  --action trash|move|rename --actor ACTOR --expires-ns NS
+  --max-bytes BYTES [--authorization-key KEY] [--json]
+API/SDK: curation_authorize_payload
+MCP: no disponible
+```
+
+Authorize exige plan completo y vigente, entre 1 y 100 items con ReviewTask
+`resolved`, snapshots concordantes, expiración futura y un presupuesto que cubra
+los bytes conocidos. Trash de duplicados exige `verification_mode=full_hash`;
+move/rename exige destino absoluto distinto del origen. El grant es append-only
+e idempotente por su key, no crea `file_actions`, no llama KIO y no toca corpus o
+sistemas externos.
+
+No hay tool MCP de autorización: aceptar un `actor` aportado por un agente no
+resuelve autenticación del principal humano.
+
+**TARGET — no implementado:** `apply → verify → reconcile` deberá revalidar
+grant, expiración, digest, ReviewTask heads e identidades físicas inmediatamente
+antes del efecto y conservar resultados conciliables.
 
 No existe una interfaz de exportación ni un paquete ZIP de curación. `--json`
 serializa la respuesta de una operación; no crea un artefacto durable.

@@ -8,7 +8,13 @@ from pathlib import Path
 import pytest
 
 from neocortex.api import curation_lifecycle_api
+from neocortex.api import curation_authorization_api
 import neocortex.curation.lifecycle as lifecycle
+from neocortex.curation.authorization import (
+    CurationAuthorizationError,
+    authorize_curation_items,
+)
+from neocortex.workflow.authorization.repository import read_authorization_grant
 from neocortex.curation.preview import build_curation_plan_page
 from neocortex.deduplication import DedupIndex, DedupPlanner, InventoryCheckpoint
 from neocortex.documents.document_catalog import initialize_document_catalog
@@ -267,3 +273,136 @@ def test_public_lifecycle_api_exposes_state_only_effects(tmp_path: Path, monkeyp
     assert decided["effects"]["corpus"] == "none"
     assert decided["trust"]["actions_authorized"] is False
     assert framework.is_file()
+
+
+def test_authorization_grant_requires_review_and_is_append_only(tmp_path: Path) -> None:
+    state, framework, plan_digest = _state(tmp_path)
+    reviewed = lifecycle.review_curation_page(
+        state,
+        framework,
+        plan_digest=plan_digest,
+        limit=100,
+        clock_ns=lambda: 1_000,
+    )
+    for offset, item in enumerate(reviewed.items, start=1):
+        assert item.current_event_id is not None
+        lifecycle.decide_curation_item(
+            state,
+            framework,
+            plan_digest=plan_digest,
+            item_id=item.item.item_id,
+            expected_event_id=item.current_event_id,
+            decision="resolved",
+            decision_scope="permanent",
+            actor="victor",
+            note="reviewed fixture evidence",
+            clock_ns=lambda offset=offset: 2_000 + offset,
+        )
+    organization = next(item for item in reviewed.items if item.item.kind == "organization_plan")
+    outcome = authorize_curation_items(
+        state,
+        framework,
+        plan_digest=plan_digest,
+        item_ids=(organization.item.item_id,),
+        action="move",
+        actor="victor",
+        expires_ns=10_000,
+        max_bytes=4,
+        clock_ns=lambda: 4_000,
+    )
+    assert outcome.idempotent is False
+    assert outcome.grant.action == "move"
+    assert outcome.grant.item_ids == (organization.item.item_id,)
+    retry = authorize_curation_items(
+        state,
+        framework,
+        plan_digest=plan_digest,
+        item_ids=(organization.item.item_id,),
+        action="move",
+        actor="victor",
+        expires_ns=10_000,
+        max_bytes=4,
+        clock_ns=lambda: 9_000,
+    )
+    assert retry.idempotent is True
+    loaded = read_authorization_grant(framework, grant_id=outcome.grant.grant_id)
+    assert loaded == outcome.grant
+    with closing(sqlite3.connect(framework)) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM curation_authorization_grants"
+        ).fetchone() == (1,)
+        assert connection.execute("SELECT COUNT(*) FROM file_actions").fetchone() == (0,)
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute(
+                "UPDATE curation_authorization_grants SET actor='other' WHERE grant_id=?",
+                (outcome.grant.grant_id,),
+            )
+        connection.rollback()
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute(
+                "DELETE FROM curation_authorization_grants WHERE grant_id=?",
+                (outcome.grant.grant_id,),
+            )
+        connection.rollback()
+
+
+def test_authorization_rejects_unverified_trash_and_public_api_projects_grant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state, framework, plan_digest = _state(tmp_path)
+    reviewed = lifecycle.review_curation_page(
+        state,
+        framework,
+        plan_digest=plan_digest,
+        limit=100,
+        clock_ns=lambda: 1_000,
+    )
+    duplicate = next(item for item in reviewed.items if item.item.kind == "duplicate_group")
+    organization = next(item for item in reviewed.items if item.item.kind == "organization_plan")
+    for offset, item in enumerate(reviewed.items, start=1):
+        assert item.current_event_id is not None
+        lifecycle.decide_curation_item(
+            state,
+            framework,
+            plan_digest=plan_digest,
+            item_id=item.item.item_id,
+            expected_event_id=item.current_event_id,
+            decision="resolved",
+            decision_scope="permanent",
+            actor="victor",
+            clock_ns=lambda offset=offset: 2_000 + offset,
+        )
+    with pytest.raises(CurationAuthorizationError, match="full-hash"):
+        authorize_curation_items(
+            state,
+            framework,
+            plan_digest=plan_digest,
+            item_ids=(duplicate.item.item_id,),
+            action="trash",
+            actor="victor",
+            expires_ns=10_000,
+            max_bytes=4,
+            clock_ns=lambda: 4_000,
+        )
+    monkeypatch.setattr(curation_authorization_api, "default_state_directory", lambda: state)
+    payload = curation_authorization_api.curation_authorize_payload(
+        plan_digest,
+        [organization.item.item_id],
+        action="move",
+        actor="victor",
+        expires_ns=12_000,
+        max_bytes=4,
+        request_id="fixture-authorize",
+        clock_ns=lambda: 5_000,
+    )
+    assert payload["schema"] == "neocortex.authorization-grant/v1"
+    assert payload["status"] == "complete"
+    assert payload["grant"]["action"] == "move"
+    assert payload["effects"] == {
+        "state": "authorization_grant",
+        "corpus": "none",
+        "external": "none",
+    }
+    assert payload["trust"]["actions_authorized"] is True
+    assert payload["trust"]["physical_effect_applied"] is False

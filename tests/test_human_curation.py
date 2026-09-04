@@ -1,4 +1,4 @@
-"""Human CLI adapter for fixed-root, read-only curation-plan pages."""
+"""Human CLI adapter for curation plan, review and authorization pages."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import json
 import pytest
 
 from neocortex.api import curation_api
+from neocortex.api import curation_authorization_api
 from neocortex.api import curation_lifecycle_api
 from neocortex.api.cli import human
 from neocortex.interface.entrypoint import entrypoint
@@ -115,6 +116,26 @@ def test_curate_review_and_decide_parser_contract() -> None:
     assert decide.curate_command == "decide"
     assert decide.decision == "resolved"
     assert decide.actor == "victor"
+    authorize = parser.parse_args(
+        (
+            "curate",
+            "authorize",
+            "sha256:" + "c" * 64,
+            "--item-id",
+            "item-1",
+            "--action",
+            "move",
+            "--actor",
+            "victor",
+            "--expires-ns",
+            "20",
+            "--max-bytes",
+            "10",
+        )
+    )
+    assert authorize.curate_command == "authorize"
+    assert authorize.item_ids == ["item-1"]
+    assert authorize.expires_ns == 20
 
 
 def test_curate_review_and_decide_json_dispatch_without_corpus_mutation(
@@ -168,6 +189,44 @@ def test_curate_review_and_decide_json_dispatch_without_corpus_mutation(
         )
     ) == 0
     assert json.loads(capsys.readouterr().out) == decision_payload
+
+
+def test_curate_authorize_json_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plan_id = "sha256:" + "d" * 64
+    payload = {
+        "status": "complete",
+        "plan_id": plan_id,
+        "idempotent": False,
+        "grant": {"grant_id": "grant-1"},
+        "exit_code": 0,
+    }
+    monkeypatch.setattr(
+        curation_authorization_api,
+        "curation_authorize_payload",
+        lambda *args, **kwargs: payload,
+    )
+    assert human.run_human_command(
+        (
+            "curate",
+            "authorize",
+            plan_id,
+            "--item-id",
+            "item-1",
+            "--action",
+            "move",
+            "--actor",
+            "victor",
+            "--expires-ns",
+            "100",
+            "--max-bytes",
+            "10",
+            "--json",
+        )
+    ) == 0
+    assert json.loads(capsys.readouterr().out) == payload
 
 
 @pytest.mark.parametrize("value", ("0", "101", "not-a-number"))

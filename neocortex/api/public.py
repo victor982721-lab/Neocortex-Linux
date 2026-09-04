@@ -22,6 +22,10 @@ if TYPE_CHECKING:
         curation_decide_payload as curation_decide_payload,
         curation_review_payload as curation_review_payload,
     )
+    from neocortex.api.curation_authorization_api import (
+        CURATION_AUTHORIZATION_API_SCHEMA as CURATION_AUTHORIZATION_API_SCHEMA,
+        curation_authorize_payload as curation_authorize_payload,
+    )
     from neocortex.curation.preview import CurationPlanPage as CurationPlanPage
     from neocortex.runtime.config.application_config import ApplicationConfig as ApplicationConfig
     from neocortex.capabilities.formats.audio.models import AudioRouteConfig as AudioRouteConfig
@@ -124,6 +128,7 @@ __all__ = [  # noqa: RUF022
     "AudioRouteConfig",
     "AudioRouteSummary",
     "CapabilityFailure",
+    "CURATION_AUTHORIZATION_API_SCHEMA",
     "CURATION_DECISION_API_SCHEMA",
     "CURATION_PLAN_API_SCHEMA",
     "CURATION_REVIEW_API_SCHEMA",
@@ -180,6 +185,7 @@ __all__ = [  # noqa: RUF022
     "curation_plan_payload",
     "curation_review_payload",
     "curation_decide_payload",
+    "curation_authorize_payload",
     "ContextBundle",
     "ContextContradictionRef",
     "ContextEntityRef",
@@ -211,6 +217,10 @@ __all__ = [  # noqa: RUF022
 ]
 
 _EXPORTS: Final[dict[str, tuple[str, str]]] = {
+    "CURATION_AUTHORIZATION_API_SCHEMA": (
+        "neocortex.api.curation_authorization_api",
+        "CURATION_AUTHORIZATION_API_SCHEMA",
+    ),
     "CURATION_DECISION_API_SCHEMA": (
         "neocortex.api.curation_lifecycle_api",
         "CURATION_DECISION_API_SCHEMA",
@@ -293,6 +303,10 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "curation_decide_payload": (
         "neocortex.api.curation_lifecycle_api",
         "curation_decide_payload",
+    ),
+    "curation_authorize_payload": (
+        "neocortex.api.curation_authorization_api",
+        "curation_authorize_payload",
     ),
     "ContextBundle": ("neocortex.knowledge.knowledge_contracts", "ContextBundle"),
     "ContextContradictionRef": (

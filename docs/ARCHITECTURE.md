@@ -95,8 +95,18 @@ digest y snapshot y añade por CAS un evento humano `resolved` o `dismissed` con
 scope y actor. Ninguna de las dos operaciones crea `file_actions`, invoca KIO,
 autoriza efectos o toca corpus/sistemas externos.
 
-**TARGET:** autorización, apply y recovery end-to-end permanecen separados y se
-describen en [FILE_INTELLIGENCE_AND_CURATION.md](FILE_INTELLIGENCE_AND_CURATION.md).
+`neocortex.curation.authorization` implementa `curate authorize`. Exige
+un plan completo, ReviewTasks `resolved`, digest/snapshot/fence vigentes y un
+efecto permitido; persiste un `AuthorizationGrant` inmutable y acotado en la
+extensión opcional `curation_authorization_grants` del owner Framework. La
+extensión se crea sólo por la operación explícita, no añade otro owner y bloquea
+UPDATE/DELETE. El grant liga actor, acción, backend Linux, items/tareas,
+`max_actions`, `max_bytes`, emisión y expiración.
+
+Emitirlo escribe sólo estado: no crea `file_actions`, no invoca KIO y mantiene
+`physical_effect_applied=false`. **TARGET:** `apply → verify → reconcile` deberá
+consumir y revalidar el grant; se describe en
+[FILE_INTELLIGENCE_AND_CURATION.md](FILE_INTELLIGENCE_AND_CURATION.md).
 
 ### Code como contenido
 
@@ -134,7 +144,8 @@ Persistencia define el contrato; el procedimiento está en
 - **GUI:** presentación PySide6 que delega trabajo a workers; no redefine reglas.
 - **MCP:** servidor stdio local con consultas read-only y las escrituras de
   estado advisory `curation_review`/`curation_decide`; estas últimas declaran
-  `readOnlyHint=false`, `destructiveHint=false` y no conceden autoridad.
+  `readOnlyHint=false`, `destructiveHint=false` y no conceden autoridad. No
+  expone `authorize` mientras no exista un principal autenticado.
 
 Las cuatro superficies deben conservar operación, scope, cobertura, epoch,
 errores y evidencia equivalentes. La salida estructurada es contrato; el texto
@@ -156,9 +167,10 @@ ejecuta `move <origen> trash:/` mediante un runner inyectable y clasifica
 caller. Es reversible pero path-bound y está intencionalmente desconectada de
 Linux `--apply`; no fue promovida ni probada contra KIO real en esta cohorte.
 
-La integración de producto deberá añadir plan, autorización, guard
-same-filesystem, ledger, restauración y conciliación por token. Un timeout o
-resultado ambiguo permanece `recovery_required` y no se reintenta a ciegas.
+La integración de producto deberá hacer que `apply` lea y revalide el grant,
+además de identidades, guard same-filesystem, ledger y expiración; después
+`verify → reconcile` cerrará o recuperará el intento. Un timeout o resultado
+ambiguo permanece `recovery_required` y no se reintenta a ciegas.
 
 ## Concurrencia y recuperación
 
@@ -174,8 +186,8 @@ de la frontera de efecto produce un estado conciliable, no un reintento ciego.
 - la cobertura y precisión de localizadores varían por formato;
 - varias fuentes todavía tienen publicación no generacional;
 - progreso, límites y replay no son uniformes en todas las rutas;
-- MCP expone páginas read-only de curación, pero no el lifecycle de decisiones y
-  acciones;
+- MCP expone plan/review/decide, pero no autorización con actor autenticado;
+- falta el consumidor físico `apply → verify → reconcile` del grant durable;
 - Linux carece del backend reversible aplicado.
 
 La prioridad y los criterios de aceptación están en

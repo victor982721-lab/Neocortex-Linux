@@ -25,6 +25,17 @@ _EXPORTS = {
     "CurationReviewResult": (".lifecycle", "CurationReviewResult"),
     "decide_curation_item": (".lifecycle", "decide_curation_item"),
     "review_curation_page": (".lifecycle", "review_curation_page"),
+    "CurationAuthorizationError": (".authorization", "CurationAuthorizationError"),
+    "CurationAuthorizationOutcome": (".authorization", "CurationAuthorizationOutcome"),
+    "CurationAuthorizationSnapshotChanged": (
+        ".authorization",
+        "CurationAuthorizationSnapshotChanged",
+    ),
+    "CurationAuthorizationUnavailable": (
+        ".authorization",
+        "CurationAuthorizationUnavailable",
+    ),
+    "authorize_curation_items": (".authorization", "authorize_curation_items"),
 }
 
 
@@ -45,6 +56,10 @@ def __dir__() -> list[str]:
 __all__ = [
     "CURATION_PREVIEW_SCHEMA_VERSION",
     "CURATION_REVIEW_SCHEMA_VERSION",
+    "CurationAuthorizationError",
+    "CurationAuthorizationOutcome",
+    "CurationAuthorizationSnapshotChanged",
+    "CurationAuthorizationUnavailable",
     "CurationDecisionResult",
     "CurationItem",
     "CurationLifecycleError",
@@ -55,6 +70,7 @@ __all__ = [
     "CurationReviewItem",
     "CurationReviewResult",
     "CurationStateError",
+    "authorize_curation_items",
     "build_curation_plan_page",
     "build_curation_preview",
     "decide_curation_item",
