@@ -18,7 +18,7 @@ reconstruibles y la fuente original conserva prioridad.
 |---|---|---|
 | F0 — línea base | inventario de owners, topología, release y fixtures de carreras | implementado en pruebas y auditoría local |
 | F1 — lectura segura | `SQLiteReadSession` con `immutable_strict`, `snapshot_temp` y rechazo de `writer_coordinated`; `state-health` contractual v2 | implementado en las superficies públicas y con prueba arquitectónica |
-| F2 — estado publicado | backup/restore staged, integridad rápida/completa, purge con recaptura de sidecars, epoch y journal idempotente | implementado en API y fachada `databases`; publicación filesystem cross-owner completa queda pendiente |
+| F2 — estado publicado | backup/restore staged, integridad rápida/completa, purge con recaptura de sidecars, epoch y journal idempotente | implementado en API y fachada `databases`, con manifest de heads y gate fail-closed para publicaciones cross-owner; la atomicidad física de varios archivos sigue fuera de la garantía |
 | F3 — contratos | envelope v1, códigos y cobertura comunes, validación MCP/cliente compartido, protocolo UI con secuencias y terminales | implementado en superficies principales |
 | F4 — release | parser de IDs, staging con marcador, digest de árbol, lock previo, rollback y retención `current + rollback` | instalado y verificado desde el SHA final; supply-chain offline reproducible/modelos criptográficos quedan pendientes |
 | F5 — multimodal | manifiesto canónico de capacidades, dependencia opcional vídeo→audio, fuente Semantic de vídeo con locators | adapter y selección explícita del planner para vídeo implementados; dependencia vídeo→audio, catálogo/OCR completo y propagación final quedan pendientes |
@@ -48,8 +48,9 @@ reconstruibles y la fuente original conserva prioridad.
 1. Completar fixtures herméticos de owners completos, ausentes, WAL activo,
    sidecars huérfanos y carreras, sin abrir el estado productivo durante el
    piloto.
-2. Cerrar la publicación filesystem cross-owner y la recuperación de journals,
-   manteniendo `apply` bloqueado sin token y sin mutar el corpus.
+2. Integrar el gate de publicación cross-owner en cada consumidor multi-owner y
+   ejercitar recuperación de journals, manteniendo `apply` bloqueado sin token
+   y sin mutar el corpus.
 3. Integrar el ledger generacional Code con el productor principal y conservar
    el lector legacy hasta probar equivalencia, backup y restore.
 4. Ejecutar por separado el hardening de supply-chain offline, modelos y

@@ -218,6 +218,25 @@ dos observaciones, pero no fijan cada fila consumida ni convierten la lectura
 cross-owner en atómica. Un resultado que requiere una fuente ausente,
 incompatible o que cambió debe declararse parcial o abstenerse.
 
+### Publicación cross-owner y recuperación
+
+`neocortex.persistence.state_publication` proporciona el límite lógico común
+para productores que deben cambiar más de un owner. `begin_state_publication`
+registra primero un prepare `partial` con los heads locales observados,
+`StatePublicationTransaction.commit` publica los heads finales y genera un
+manifest inmutable `content-publication-manifest.*.json`, mientras
+`require_complete_state_epoch` permite a un lector comparar sus heads contra
+la época publicada sin abrir SQLite. Un prepare sin cierre deja el estado
+`blocked`; `abort_state_publication` sólo lo resuelve cuando los heads
+observados prueban que todos los owners volvieron exactamente a su baseline.
+
+El journal, los manifests y el puntero de época se escriben con archivos
+temporales, `fsync` y CAS bajo un lock Linux, por lo que una interrupción no se
+presenta como una publicación completa. Esto no convierte renombrados de
+varios archivos SQLite en una transacción física: si un proceso muere durante
+el intercambio de owners, la recuperación debe restaurar los owners y después
+probar el baseline antes de liberar el bloqueo lógico.
+
 #### Watermark del plan de duplicados
 
 Cada head de inventario corresponde exclusivamente a un checkpoint válido cuyo
