@@ -611,7 +611,15 @@ def _validate_receipt(
         trash = payload.get("trash")
         if not isinstance(trash, dict):
             raise CurationApplicationError("trash receipt lacks typed destination evidence")
-        required = {"trash_path", "info_path", "volume_id", "file_id", "size", "digest"}
+        required = {
+            "trash_root",
+            "trash_path",
+            "info_path",
+            "volume_id",
+            "file_id",
+            "size",
+            "digest",
+        }
         if not required.issubset(trash):
             raise CurationApplicationError("trash receipt lacks restoration evidence")
     return _canonical_json(payload)
@@ -866,14 +874,32 @@ class KioTrashBackend:
             return BackendOutcome("recovery_required", "kio_trash_evidence_unstructured")
         if not isinstance(evidence, dict):
             return BackendOutcome("recovery_required", "kio_trash_evidence_unstructured")
-        required = {"trash_path", "info_path", "volume_id", "file_id", "size", "digest"}
+        required = {
+            "trash_root",
+            "trash_path",
+            "info_path",
+            "volume_id",
+            "file_id",
+            "size",
+            "digest",
+        }
         if not required.issubset(evidence):
             return BackendOutcome("recovery_required", "kio_trash_evidence_incomplete")
         trash_path = Path(str(evidence["trash_path"]))
         info_path = Path(str(evidence["info_path"]))
-        if not trash_path.is_absolute() or not info_path.is_absolute():
+        trash_root = Path(str(evidence["trash_root"]))
+        if (
+            not trash_root.is_absolute()
+            or not trash_path.is_absolute()
+            or not info_path.is_absolute()
+            or trash_path.parent != trash_root / "files"
+            or info_path.parent != trash_root / "info"
+        ):
             return BackendOutcome("recovery_required", "kio_trash_evidence_paths_invalid")
         try:
+            root_stat = os.lstat(trash_root)
+            if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
+                raise CurationApplicationError("KIO Trash root is not a real directory")
             trash_snapshot = snapshot_path(trash_path)
             trash_stat = os.lstat(trash_path)
             info_stat = os.lstat(info_path)
@@ -888,6 +914,11 @@ class KioTrashBackend:
                 raise CurationApplicationError("KIO .trashinfo is not a regular file")
             if info_path.name != trash_path.name + ".trashinfo":
                 raise CurationApplicationError("KIO .trashinfo does not identify the trash file")
+            info_text = info_path.read_text(encoding="utf-8")
+            if "[Trash Info]" not in info_text.splitlines() or [
+                line[5:] for line in info_text.splitlines() if line.startswith("Path=")
+            ] != [effect.source.path]:
+                raise CurationApplicationError("KIO .trashinfo source differs")
             if trash_snapshot.volume_id != effect.source.volume_id:
                 raise CurationApplicationError("KIO trash destination is on another filesystem")
             if trash_snapshot.size != effect.source.size:

@@ -263,6 +263,8 @@ def _classify_row(row: sqlite3.Row) -> FileActionReconciliation:
             recommendation="preserve_evidence_and_review_manually",
             detail=f"source observation failed: {source_state[1]}",
         )
+    if action.action_type == "restore_curation":
+        return _classify_restore(action, source_state)
     if action.action_type.startswith("trash_"):
         return _classify_trash(
             action,
@@ -445,6 +447,41 @@ def _classify_move(
         classification="ambiguous",
         recommendation="preserve_evidence_and_review_manually",
         detail=details,
+    )
+
+
+def _classify_restore(
+    action: _RecordedAction,
+    source_state: tuple[str, str | None],
+) -> FileActionReconciliation:
+    """Classify a restore intent without treating it as a new authorization."""
+
+    if source_state[0] == "expected":
+        return _result(
+            action,
+            classification="confirmed",
+            recommendation="confirm_action_record",
+            detail="restore destination has the expected identity and digest",
+        )
+    if source_state[0] == "missing":
+        return _result(
+            action,
+            classification="not_performed",
+            recommendation="review_before_new_authorized_attempt",
+            detail="restore destination is absent and the effect remains unresolved",
+        )
+    if source_state[0] == "different":
+        return _result(
+            action,
+            classification="ambiguous",
+            recommendation="preserve_evidence_and_review_manually",
+            detail=f"restore destination names another object; {source_state[1]}",
+        )
+    return _result(
+        action,
+        classification="impossible_to_check",
+        recommendation="preserve_evidence_and_review_manually",
+        detail=source_state[1] or "restore destination cannot be checked",
     )
 
 

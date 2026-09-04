@@ -292,6 +292,45 @@ def build_human_parser() -> argparse.ArgumentParser:
         help="confirma la escritura del evento de conciliación",
     )
     curate_reconcile.add_argument("--json", action="store_true", help="emite el contrato JSON completo")
+    curate_recovery = curate_commands.add_parser(
+        "recovery",
+        help="consulta el estado de acciones inciertas sin mutar archivos",
+        allow_abbrev=False,
+    )
+    recovery_commands = curate_recovery.add_subparsers(dest="recovery_command", metavar="ACCIÓN")
+    recovery_status = recovery_commands.add_parser(
+        "status",
+        help="clasifica acciones applying/recovery_required de forma bounded",
+        allow_abbrev=False,
+    )
+    recovery_status.add_argument("--action-id", type=int, metavar="ID")
+    recovery_status.add_argument("--limit", type=_curation_limit, default=100, metavar="N")
+    recovery_status.add_argument("--after-action-id", type=int, default=0, metavar="ID")
+    recovery_status.add_argument("--run-id", type=int, metavar="RUN_ID")
+    recovery_status.add_argument("--json", action="store_true", help="emite el contrato JSON completo")
+    curate_restore = curate_commands.add_parser(
+        "restore",
+        help="inspecciona o revierte una acción de Papelera con confirmación exacta",
+        allow_abbrev=False,
+    )
+    restore_commands = curate_restore.add_subparsers(dest="restore_command", metavar="ACCIÓN")
+    restore_preview = restore_commands.add_parser(
+        "preview",
+        help="muestra receipt y token de restore sin modificar estado",
+        allow_abbrev=False,
+    )
+    restore_preview.add_argument("action_id", type=int, metavar="ACTION_ID")
+    restore_preview.add_argument("--json", action="store_true", help="emite el contrato JSON completo")
+    restore_apply = restore_commands.add_parser(
+        "apply",
+        help="consume un token exacto con backend de restore inyectado",
+        allow_abbrev=False,
+    )
+    restore_apply.add_argument("action_id", type=int, metavar="ACTION_ID")
+    restore_apply.add_argument("--confirm-action-id", required=True, type=int, metavar="ACTION_ID")
+    restore_apply.add_argument("--confirmation", required=True, metavar="TOKEN")
+    restore_apply.add_argument("--actor", required=True, metavar="ACTOR")
+    restore_apply.add_argument("--json", action="store_true", help="emite el contrato JSON completo")
 
     inspect = commands.add_parser(
         "inspect",
@@ -1209,6 +1248,93 @@ def _run_curation_reconcile(args: argparse.Namespace) -> int:
     return _exit_code(payload)
 
 
+def _run_curation_recovery_status(args: argparse.Namespace) -> int:
+    try:
+        from neocortex.api.curation_recovery_api import curation_recovery_status_payload
+
+        payload = curation_recovery_status_payload(
+            action_id=args.action_id,
+            limit=args.limit,
+            after_action_id=args.after_action_id,
+            run_id=args.run_id,
+        )
+    except Exception as exc:  # pragma: no cover - adapter catches ordinary failures
+        _print(f"curate recovery status: {_single_line(exc, limit=800)}", file=sys.stderr)
+        return 2
+    if args.json:
+        _print(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        return _exit_code(payload)
+    result = _mapping(payload.get("result")) or {}
+    _print(
+        f"CURATION_RECOVERY_STATUS status={payload.get('status', 'unavailable')} "
+        f"events={result.get('count', 0)}"
+    )
+    for item in _mapping_rows(result.get("items")):
+        _print(
+            f"ACTION id={item.get('action_id', '-')} classification={item.get('classification', '-')} "
+            f"recommendation={item.get('recommendation', '-')}"
+        )
+    error = _mapping(payload.get("error"))
+    if error is not None and error.get("message"):
+        _print(f"Estado: {error['message']}", file=sys.stderr)
+    _print("La consulta de recovery sólo observó estado; no modificó archivos.")
+    return _exit_code(payload)
+
+
+def _run_curation_restore_preview(args: argparse.Namespace) -> int:
+    try:
+        from neocortex.api.curation_recovery_api import curation_restore_preview_payload
+
+        payload = curation_restore_preview_payload(args.action_id)
+    except Exception as exc:  # pragma: no cover - adapter catches ordinary failures
+        _print(f"curate restore preview: {_single_line(exc, limit=800)}", file=sys.stderr)
+        return 2
+    if args.json:
+        _print(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        return _exit_code(payload)
+    result = _mapping(payload.get("result")) or {}
+    _print(
+        f"CURATION_RESTORE_PREVIEW status={payload.get('status', 'unavailable')} "
+        f"action={result.get('action_id', args.action_id)} "
+        f"restorable={int(bool(result.get('restorable')))}"
+    )
+    if result.get("confirmation"):
+        _print(f"confirmation={result['confirmation']}")
+    error = _mapping(payload.get("error"))
+    if error is not None and error.get("message"):
+        _print(f"Estado: {error['message']}", file=sys.stderr)
+    _print("El preview sólo leyó receipt y estado; no modificó archivos.")
+    return _exit_code(payload)
+
+
+def _run_curation_restore(args: argparse.Namespace) -> int:
+    try:
+        from neocortex.api.curation_recovery_api import curation_restore_payload
+
+        payload = curation_restore_payload(
+            args.action_id,
+            confirm_action_id=args.confirm_action_id,
+            confirmation=args.confirmation,
+            actor=args.actor,
+        )
+    except Exception as exc:  # pragma: no cover - adapter catches ordinary failures
+        _print(f"curate restore apply: {_single_line(exc, limit=800)}", file=sys.stderr)
+        return 2
+    if args.json:
+        _print(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        return _exit_code(payload)
+    result = _mapping(payload.get("result")) or {}
+    _print(
+        f"CURATION_RESTORE status={payload.get('status', 'unavailable')} "
+        f"action={result.get('action_id', args.action_id)}"
+    )
+    error = _mapping(payload.get("error"))
+    if error is not None and error.get("message"):
+        _print(f"Estado: {error['message']}", file=sys.stderr)
+    _print("La CLI no selecciona un backend de restore automáticamente.")
+    return _exit_code(payload)
+
+
 def _run_review_task(args: argparse.Namespace) -> int:
     if args.scope == ReadScope.ALL.value:
         _print(
@@ -1341,6 +1467,24 @@ def run_human_command(arguments: Sequence[str]) -> int:
         return _run_curation_apply(args)
     if args.command == "curate" and args.curate_command == "reconcile":
         return _run_curation_reconcile(args)
+    if (
+        args.command == "curate"
+        and args.curate_command == "recovery"
+        and args.recovery_command == "status"
+    ):
+        return _run_curation_recovery_status(args)
+    if (
+        args.command == "curate"
+        and args.curate_command == "restore"
+        and args.restore_command == "preview"
+    ):
+        return _run_curation_restore_preview(args)
+    if (
+        args.command == "curate"
+        and args.curate_command == "restore"
+        and args.restore_command == "apply"
+    ):
+        return _run_curation_restore(args)
     if args.command == "inspect" and args.inspect_command == "code":
         return _run_inspect_code(args)
     if args.command == "inspect" and args.inspect_command == "lineage":

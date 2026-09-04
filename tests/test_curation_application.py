@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import subprocess
 from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
@@ -14,9 +15,15 @@ import pytest
 from neocortex.curation.application import (
     ApplyCandidate,
     BackendOutcome,
+    KioTrashBackend,
     PosixRenameBackend,
     apply_authorization_grant,
     reconcile_curation_actions,
+)
+from neocortex.curation.recovery import (
+    PosixRestoreBackend,
+    restore_curation_action,
+    restore_curation_preview,
 )
 from neocortex.curation.authorization import authorize_curation_items
 from neocortex.curation.lifecycle import decide_curation_item, review_curation_page
@@ -32,6 +39,7 @@ from neocortex.documents.document_catalog import initialize_document_catalog
 from neocortex.persistence.framework_schema import initialize_framework_schema
 from neocortex.persistence.framework_state_writer import FrameworkState
 from neocortex.workflow.actions.file_action_recovery import effect_receipt_json
+from neocortex.safety.kio_trash import KioTrashVerification
 from neocortex.workflow.authorization.contracts import AuthorizationEffect
 from neocortex.workflow.authorization.repository import read_authorization_grant
 from tests.internal_paths_test_support import begin_signed_normal_run
@@ -40,17 +48,22 @@ from tests.internal_paths_test_support import begin_signed_normal_run
 class FixtureTrashBackend:
     name = "fixture-trash-v1"
 
-    def __init__(self, trash_root: Path) -> None:
+    def __init__(self, trash_root: Path, *, structured: bool = False) -> None:
         self.trash_root = trash_root
+        self.structured = structured
         self.calls = 0
 
     def apply(self, candidate: ApplyCandidate) -> BackendOutcome:
         self.calls += 1
         effect = candidate.effect
-        target = self.trash_root / Path(effect.source.path).name
+        files_root = self.trash_root / "files" if self.structured else self.trash_root
+        info_root = self.trash_root / "info" if self.structured else self.trash_root
+        files_root.mkdir(exist_ok=True)
+        info_root.mkdir(exist_ok=True)
+        target = files_root / Path(effect.source.path).name
         os.rename(effect.source.path, target)
-        info = target.with_suffix(target.suffix + ".trashinfo")
-        info.write_text("[Trash Info]\n", encoding="utf-8")
+        info = info_root / (target.name + ".trashinfo")
+        info.write_text(f"[Trash Info]\nPath={effect.source.path}\n", encoding="utf-8")
         payload = json.loads(
             effect_receipt_json(
                 operation="trash",
@@ -59,6 +72,7 @@ class FixtureTrashBackend:
             )
         )
         payload["trash"] = {
+            "trash_root": str(self.trash_root),
             "trash_path": str(target),
             "info_path": str(info),
             "volume_id": f"{target.stat().st_dev:x}",
@@ -82,6 +96,15 @@ class RecoveryBackend:
     def apply(self, _candidate: ApplyCandidate) -> BackendOutcome:
         self.calls += 1
         return BackendOutcome("recovery_required", "fixture_effect_ambiguous")
+
+
+class CrashRestoreBackend:
+    name = "fixture-restore-crash-v1"
+
+    def restore(self, candidate) -> object:
+        os.rename(candidate.trash_path, candidate.effect.source.path)
+        candidate.info_path.unlink()
+        raise RuntimeError("receipt persistence crash")
 
 
 def _fixture(tmp_path: Path, *, group_count: int = 1) -> tuple[Path, Path, Path, Path, str]:
@@ -388,6 +411,147 @@ def test_apply_recovery_is_not_retried(tmp_path: Path) -> None:
         assert connection.execute(
             "SELECT COUNT(*) FROM file_action_reconciliation_events"
         ).fetchone() == (1,)
+
+
+def test_restore_uses_no_replace_and_verifies_fixture_bytes(tmp_path: Path) -> None:
+    state, corpus, trash, framework, grant_id = _fixture(tmp_path)
+    # Re-run the small fixture with a KDE-shaped files/info layout so restore
+    # can prove the receipt is bound to its configured Trash root.
+    with FrameworkState(framework) as framework_state:
+        run_id = begin_signed_normal_run(framework_state, corpus)
+        backend = FixtureTrashBackend(trash, structured=True)
+        applied = apply_authorization_grant(
+            state,
+            framework,
+            grant_id,
+            run_id=run_id,
+            backend=backend,
+            state=framework_state,
+            clock_ns=lambda: 4_000,
+        )
+        assert applied.status == "complete"
+        action_id = applied.effects[0].action_id
+        assert action_id is not None
+        preview = restore_curation_preview(framework, action_id)
+        restored = restore_curation_action(
+            framework,
+            action_id,
+            backend=PosixRestoreBackend(trash),
+            confirmation=str(preview["confirmation"]),
+            actor="victor",
+            state=framework_state,
+        )
+    assert restored.status == "restored"
+    assert restored.receipt_json is not None
+    assert len(list(corpus.iterdir())) == 2
+    assert not list((trash / "files").glob("*.txt"))
+    # A second restore cannot replace the now-present source.
+    with FrameworkState(framework) as framework_state:
+        replay = restore_curation_action(
+            framework,
+            action_id,
+            backend=PosixRestoreBackend(trash),
+            confirmation=str(preview["confirmation"]),
+            actor="victor",
+            state=framework_state,
+        )
+    assert replay.status == "already_restored"
+    assert replay.idempotent is True
+    with closing(sqlite3.connect(framework)) as connection:
+        action_rows = connection.execute(
+            "SELECT action_type,status FROM file_actions ORDER BY action_id"
+        ).fetchall()
+    assert action_rows == [("trash_curation", "applied"), ("restore_curation", "applied")]
+
+
+def test_restore_crash_after_effect_is_recovery_and_reconcilable(tmp_path: Path) -> None:
+    state, corpus, trash, framework, grant_id = _fixture(tmp_path)
+    with FrameworkState(framework) as framework_state:
+        run_id = begin_signed_normal_run(framework_state, corpus)
+        applied = apply_authorization_grant(
+            state,
+            framework,
+            grant_id,
+            run_id=run_id,
+            backend=FixtureTrashBackend(trash, structured=True),
+            state=framework_state,
+            clock_ns=lambda: 4_000,
+        )
+        action_id = applied.effects[0].action_id
+        assert action_id is not None
+        preview = restore_curation_preview(framework, action_id)
+        crashed = restore_curation_action(
+            framework,
+            action_id,
+            backend=CrashRestoreBackend(),
+            confirmation=str(preview["confirmation"]),
+            actor="victor",
+            state=framework_state,
+        )
+    assert crashed.status == "recovery_required"
+    assert crashed.reason == "restore_backend_exception"
+    events = reconcile_curation_actions(framework, actor="victor")
+    assert events[0].classification == "confirmed"
+    with closing(sqlite3.connect(framework)) as connection:
+        assert connection.execute(
+            "SELECT action_type,status FROM file_actions ORDER BY action_id"
+        ).fetchall() == [("trash_curation", "applied"), ("restore_curation", "recovery_required")]
+
+
+def test_kio_backend_requires_structured_fixture_trash_evidence(tmp_path: Path) -> None:
+    _state, _corpus, trash, framework, grant_id = _fixture(tmp_path)
+    grant = read_authorization_grant(framework, grant_id=grant_id)
+    assert grant is not None and grant.authorized_effects is not None
+    effect = grant.authorized_effects[0]
+    root = Path(grant.root)
+    client = tmp_path / "kioclient5"
+    client.write_text("fixture", encoding="utf-8")
+    client.chmod(0o700)
+    config = tmp_path / "config"
+    config.mkdir()
+    files = trash / "files"
+    info = trash / "info"
+    files.mkdir()
+    info.mkdir()
+
+    def runner(command, **kwargs):
+        assert command == [str(client), "move", effect.source.path, "trash:/"]
+        assert kwargs["shell"] is False
+        target = files / Path(effect.source.path).name
+        os.rename(effect.source.path, target)
+        (info / (target.name + ".trashinfo")).write_text(
+            f"[Trash Info]\nPath={effect.source.path}\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    def verifier(_source, _expected, _client):
+        target = files / Path(effect.source.path).name
+        return KioTrashVerification(
+            True,
+            json.dumps(
+                {
+                    "trash_root": str(trash),
+                    "trash_path": str(target),
+                    "info_path": str(info / (target.name + ".trashinfo")),
+                    "volume_id": f"{target.stat().st_dev:x}",
+                    "file_id": f"{target.stat().st_ino:x}",
+                    "size": effect.source.size,
+                    "digest": effect.source_digest,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
+
+    result = KioTrashBackend(
+        verifier=verifier,
+        runner=runner,
+        which=lambda name: str(client) if name == "kioclient5" else None,
+        environment={"XDG_CONFIG_HOME": str(config)},
+    ).apply(ApplyCandidate(grant_id, "sha256:" + "0" * 64, root, effect))
+    assert result.status == "applied"
+    assert result.receipt_json is not None
 
 
 def test_replay_rejects_a_tampered_applied_receipt(tmp_path: Path) -> None:
