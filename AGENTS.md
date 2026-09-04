@@ -102,6 +102,17 @@ impleméntalo antes de escalar.
 8. Si el alcance incluye release, instala desde el SHA final y comprueba
    manifest, launcher, smoke y rollback.
 
+### Goals y trazabilidad
+
+Para cada solicitud accionable de Víctor que implique varios pasos, abre un
+goal antes de ejecutar, con un objetivo concreto y barreras verificables, y
+manténlo activo hasta comprobar el cierre real. Si ya existe un goal para la
+misma solicitud, continúa ese goal en lugar de duplicarlo. Relaciónalo con el
+ID correspondiente de `PENDIENTES.md`, actualiza ese SSOT después de cada
+transición verificable y usa `blocked` sólo ante un bloqueo real que requiera
+decisión, secreto, acción física o cambio externo, nunca por un timeout aislado.
+Preguntas informativas o triviales no necesitan goal salvo petición expresa.
+
 ## Validación
 
 Usa directamente la herramienta necesaria: pytest para comportamiento, Ruff

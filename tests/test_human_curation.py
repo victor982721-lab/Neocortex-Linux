@@ -7,6 +7,7 @@ import json
 import pytest
 
 from neocortex.api import curation_api
+from neocortex.api import curation_lifecycle_api
 from neocortex.api.cli import human
 from neocortex.interface.entrypoint import entrypoint
 
@@ -87,6 +88,86 @@ def test_curate_plan_parser_and_human_dispatch_contract() -> None:
     assert args.limit == 7
     assert args.cursor == "cursor-7"
     assert args.json is True
+
+
+def test_curate_review_and_decide_parser_contract() -> None:
+    parser = human.build_human_parser()
+    review = parser.parse_args(("curate", "review", "sha256:" + "a" * 64, "--limit", "3"))
+    assert review.curate_command == "review"
+    assert review.plan_id == "sha256:" + "a" * 64
+    assert review.limit == 3
+    decide = parser.parse_args(
+        (
+            "curate",
+            "decide",
+            "sha256:" + "b" * 64,
+            "item-1",
+            "--expected-event-id",
+            "event-1",
+            "--decision",
+            "resolved",
+            "--decision-scope",
+            "until-source-change",
+            "--actor",
+            "victor",
+        )
+    )
+    assert decide.curate_command == "decide"
+    assert decide.decision == "resolved"
+    assert decide.actor == "victor"
+
+
+def test_curate_review_and_decide_json_dispatch_without_corpus_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plan_id = "sha256:" + "a" * 64
+    review_payload = {
+        "status": "complete",
+        "plan_id": plan_id,
+        "page": {
+            "next_cursor": None,
+            "items": [
+                {
+                    "item_id": "item-1",
+                    "item": {"source_path": "/tmp/fixture.txt"},
+                    "task_id": "task-1",
+                    "state": "open",
+                }
+            ],
+        },
+        "exit_code": 0,
+    }
+    monkeypatch.setattr(curation_lifecycle_api, "curation_review_payload", lambda *args, **kwargs: review_payload)
+    assert human.run_human_command(("curate", "review", plan_id, "--json")) == 0
+    assert json.loads(capsys.readouterr().out) == review_payload
+
+    decision_payload = {
+        "status": "complete",
+        "plan_id": plan_id,
+        "item_id": "item-1",
+        "idempotent": False,
+        "exit_code": 0,
+    }
+    monkeypatch.setattr(curation_lifecycle_api, "curation_decide_payload", lambda *args, **kwargs: decision_payload)
+    assert human.run_human_command(
+        (
+            "curate",
+            "decide",
+            plan_id,
+            "item-1",
+            "--expected-event-id",
+            "event-1",
+            "--decision",
+            "resolved",
+            "--decision-scope",
+            "permanent",
+            "--actor",
+            "victor",
+            "--json",
+        )
+    ) == 0
+    assert json.loads(capsys.readouterr().out) == decision_payload
 
 
 @pytest.mark.parametrize("value", ("0", "101", "not-a-number"))

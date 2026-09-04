@@ -99,17 +99,31 @@ una ausencia se reporta como cobertura o bloqueo, no como éxito vacío.
 
 ## Curación
 
-La operación disponible es:
+**CURRENT — consulta:**
 
 ```bash
 Neocortex --curation-preview 50 --curation-json
+Neocortex curate plan --limit 50 --json
 ```
 
-Revisa coverage, owners faltantes, verification mode, reason codes y plan
-fingerprint. No apliques un resultado mediante scripts laterales. La foundation
-KIO preparada no habilita Linux `--apply`: falta conectarla al plan, autorización,
-ledger, preflight same-filesystem y recovery descritos en el roadmap. Esta
-auditoría no autoriza ni ejecuta una prueba contra KIO real.
+**IMPLEMENTED — revisión advisory:** toma `plan_digest` como `PLAN_ID`, publica
+cada página y decide usando el event head devuelto:
+
+```bash
+Neocortex curate review PLAN_ID --limit 50 --json
+Neocortex curate decide PLAN_ID ITEM_ID --expected-event-id EVENT_ID \
+  --decision resolved --decision-scope until-source-change --actor ACTOR --json
+```
+
+Revisa coverage, digest, snapshot, `current_event_id` y efecto declarado. Review
+y decide escriben únicamente ReviewTask en Framework; no crean `file_actions`,
+no autorizan ni modifican corpus o sistemas externos. Un digest/event head
+cambiado requiere volver a consultar, no reintentar a ciegas. `--json` no exporta
+ni crea ZIP.
+
+**TARGET:** autorización, apply y recovery físico permanecen separados. La
+foundation KIO preparada no habilita Linux `--apply`; esta auditoría tampoco
+autoriza una prueba contra KIO real.
 
 ## Mantenimiento de estado
 

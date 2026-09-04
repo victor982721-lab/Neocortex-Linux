@@ -5,15 +5,12 @@ exacta vive en `neocortex/api/cli/cli_parser.py` y en los subparsers de
 `neocortex.api.cli.human`; este documento organiza su uso, no sustituye
 `Neocortex --help`.
 
-## Efectos
+## Estado del lifecycle de curación
 
-### Plan local de curación
-
-`curate plan` en el árbol actual consulta la raíz de estado canónica, no acepta
-rutas de estado o corpus y devuelve una página acotada con `plan_digest`,
-`snapshot`, `cursor` y `next_cursor`. La operación es advisory, no escribe
-estado ni autoriza acciones; la release instalada previa puede requerir una
-instalación desde el SHA actual para exponerla:
+**CURRENT — consulta:** `curate plan` consulta la raíz de estado canónica, no
+acepta rutas de estado o corpus y devuelve una página acotada con
+`plan_digest`, `snapshot`, `cursor` y `next_cursor`. No escribe estado ni
+autoriza acciones.
 
 ```bash
 Neocortex curate plan --limit 50
@@ -25,10 +22,40 @@ El digest representa el stream completo de propuestas y no cambia al variar
 `--limit`; si la publicación cambia, el cursor anterior se rechaza y debe
 iniciarse una consulta nueva.
 
+**IMPLEMENTED — ReviewTask advisory:** `curate review` publica una página del
+plan completo como tareas de revisión, y `curate decide` registra por CAS una
+decisión humana. La release instalada previa puede requerir una instalación
+desde el SHA final para exponerlas.
+
+```bash
+Neocortex curate review PLAN_ID --limit 50 --json
+Neocortex curate review PLAN_ID --limit 50 --cursor TOKEN --json
+Neocortex curate decide PLAN_ID ITEM_ID \
+  --expected-event-id EVENT_ID \
+  --decision resolved \
+  --decision-scope until-source-change \
+  --actor ACTOR --note "evidencia revisada" --json
+```
+
+`PLAN_ID` es el `plan_digest` de `curate plan`. Review devuelve para cada item su
+`task_id`, estado y `current_event_id`. Decide acepta `resolved` o `dismissed` y
+los scopes `until-source-change`, `until-policy-change` o `permanent`. El mismo
+evento se reproduce de forma idempotente; un digest o head distinto se rechaza.
+
+Estas operaciones tienen `read_only=false` porque escriben únicamente
+ReviewTask en Framework. No crean `file_actions`, no autorizan, no llaman KIO y
+no cambian corpus ni sistemas externos. `--json` devuelve el envelope; no es una
+interfaz de exportación ni crea un ZIP.
+
+**TARGET:** autorización, apply, verificación física y recovery no forman parte
+de este lifecycle implementado.
+
+## Efectos
+
 | Clase | Ejemplos | Efecto |
 |---|---|---|
 | Consulta | `help`, `status`, `search`, `ask`, `inspect`, `models status`, `databases status` | Lee publicaciones existentes; no recorre corpus ni crea estado |
-| Producción de estado | rutas, Semantic, catálogo, refresh de Review | Lee contenido y escribe estado, pero no modifica originales |
+| Producción de estado | rutas, Semantic, catálogo, Review refresh, `curate review/decide` | Escribe owners; no modifica originales ni autoriza efectos |
 | Descarga | `models prepare` | Adquiere modelos de forma explícita |
 | Estado destructivo | `databases restore`, `databases purge` con `--apply` | Requiere confirmación, manifest/plan y locks |
 | Corpus | `--apply`, `--organization-apply` | Rechazado en Linux en la versión actual |
@@ -98,15 +125,16 @@ Neocortex --code-reconstruct PROJECT_OR_ID --code-json
 Los localizadores dependen del productor. Si una ruta no conserva página, celda,
 segmento o región, la salida no inventa esa precisión.
 
-## Curación disponible
+## Compatibilidad plana de curación
 
 ```bash
 Neocortex --curation-preview 50 --curation-json
 ```
 
 La vista es bounded y read-only. Reúne planes ya publicados de duplicados,
-organización y archivos vacíos, junto con identidad, reasons y cobertura. No
-existe todavía `Neocortex curate apply`; la jerarquía objetivo se describe en
+organización y archivos vacíos, junto con identidad, reasons y cobertura.
+`curate plan/review/decide` es la interfaz humana estructurada; no existe
+`Neocortex curate apply`. Consulta
 [FILE_INTELLIGENCE_AND_CURATION.md](FILE_INTELLIGENCE_AND_CURATION.md).
 
 ## Bases de datos
@@ -140,23 +168,27 @@ contratos y mantiene deshabilitados los efectos de corpus en Linux.
 Neocortex agent serve
 ```
 
-El servidor stdio expone actualmente consultas read-only como status, search,
-context, evidence, `curation_plan`, Code, lineage y salud de assets. `evidence`
-puede recibir `evidence_id` y `expected_snapshot_id`; no acepta texto del corpus
-como instrucción ni expone aplicación de acciones.
+El servidor stdio expone consultas read-only como status, search, context,
+evidence, `curation_plan`, Code, lineage y salud de assets. También expone
+`curation_review` y `curation_decide`: escriben sólo ReviewTask advisory, están
+marcadas no destructivas y mantienen `actions_authorized=false`. `evidence`
+puede recibir `evidence_id` y `expected_snapshot_id`; ningún tool aplica acciones
+de corpus.
 
 ## Salida estructurada y códigos
 
 Los modos JSON/JSONL conservan un `schema`, la operación, cobertura, errores y
 warnings cuando el contrato los produce, mientras los campos de scope, epoch y
-contadores dependen de la superficie consultada. `curation_plan` coloca cursor,
-digest y conteos dentro de `snapshot` y `page`; no se presentan campos que el
-contrato no entregue. Los códigos exactos pertenecen al comando y su ayuda; como
-regla:
+contadores dependen de la superficie consultada. Curation coloca cursor e items
+en `page`; review añade `publication`, y decide devuelve el evento e
+`idempotent`. No se presentan campos que el contrato no entregue. Los códigos
+exactos pertenecen al comando y su ayuda; como regla:
 
 - `0`: operación solicitada completada dentro de la cobertura declarada;
 - `2`: uso inválido, abstención operativa o cobertura incompleta bajo modo
   estricto;
+- `5`: cambió el snapshot, digest o event head esperado;
+- `7`: estado corrupto;
 - otros códigos no se normalizan a éxito y deben conservar su diagnóstico.
 
 No uses la ausencia de traceback como prueba de completitud. Para procedimientos,

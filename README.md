@@ -67,24 +67,26 @@ autoanálisis del propio repositorio.
 
 ## Ruta de curación actual
 
-En el checkout actual, la vista integrada disponible es de sólo lectura y puede
-consultarse directamente desde la fachada humana. La release instalada previa
-puede no incluir todavía este subcomando hasta una instalación desde el SHA que
-lo contiene:
+**CURRENT:** `curate plan` consulta la página estable y paginada del plan local
+sin abrir una ruta nueva ni escribir estado. **IMPLEMENTED en el checkout:**
+`curate review` publica ReviewTasks advisory y `curate decide` registra por CAS
+una decisión humana; la release instalada puede requerir promoción desde el SHA
+final para exponerlos.
 
 ```bash
 Neocortex curate plan --limit 20
 Neocortex curate plan --limit 20 --cursor TOKEN
+Neocortex curate review PLAN_ID --limit 20 --json
+Neocortex curate decide PLAN_ID ITEM_ID --expected-event-id EVENT_ID \
+  --decision resolved --decision-scope until-source-change --actor ACTOR --json
 ```
 
-Combina propuestas publicadas de duplicados, organización y archivos vacíos,
-entrega un digest integral independiente del tamaño de página y conserva el
-cursor ligado al snapshot. Una propuesta no es una autorización y un grupo por
-huella no equivale a igualdad byte a byte. Antes de cualquier futura aplicación
-se exigirán plan inmutable, revisión humana, autorización ligada al plan,
-revalidación inmediata, efecto reversible, verificación y conciliación tras
-interrupciones. `--curation-preview 50 --curation-json` permanece como compatibilidad
-plana.
+`PLAN_ID` es el `plan_digest` devuelto por plan. Review/decide escriben únicamente
+estado ReviewTask, nunca `file_actions`, corpus o sistemas externos, y una
+decisión no autoriza efectos. No existe exportación o ZIP de curación; `--json`
+sólo devuelve la respuesta. `--curation-preview 50 --curation-json` permanece
+como compatibilidad plana. El contrato completo está en
+[File Intelligence & Curation](docs/FILE_INTELLIGENCE_AND_CURATION.md).
 
 ## Plataforma y rutas
 

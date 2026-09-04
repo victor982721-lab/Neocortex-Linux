@@ -16,6 +16,12 @@ if TYPE_CHECKING:
         CurationPlanOutput as CurationPlanOutput,
         curation_plan_payload as curation_plan_payload,
     )
+    from neocortex.api.curation_lifecycle_api import (
+        CURATION_DECISION_API_SCHEMA as CURATION_DECISION_API_SCHEMA,
+        CURATION_REVIEW_API_SCHEMA as CURATION_REVIEW_API_SCHEMA,
+        curation_decide_payload as curation_decide_payload,
+        curation_review_payload as curation_review_payload,
+    )
     from neocortex.curation.preview import CurationPlanPage as CurationPlanPage
     from neocortex.runtime.config.application_config import ApplicationConfig as ApplicationConfig
     from neocortex.capabilities.formats.audio.models import AudioRouteConfig as AudioRouteConfig
@@ -118,7 +124,9 @@ __all__ = [  # noqa: RUF022
     "AudioRouteConfig",
     "AudioRouteSummary",
     "CapabilityFailure",
+    "CURATION_DECISION_API_SCHEMA",
     "CURATION_PLAN_API_SCHEMA",
+    "CURATION_REVIEW_API_SCHEMA",
     "CurationPlanOutput",
     "CurationPlanPage",
     "CodeRelationEndpoint",
@@ -170,6 +178,8 @@ __all__ = [  # noqa: RUF022
     "reconstruct_project",
     "search_code",
     "curation_plan_payload",
+    "curation_review_payload",
+    "curation_decide_payload",
     "ContextBundle",
     "ContextContradictionRef",
     "ContextEntityRef",
@@ -201,7 +211,15 @@ __all__ = [  # noqa: RUF022
 ]
 
 _EXPORTS: Final[dict[str, tuple[str, str]]] = {
+    "CURATION_DECISION_API_SCHEMA": (
+        "neocortex.api.curation_lifecycle_api",
+        "CURATION_DECISION_API_SCHEMA",
+    ),
     "CURATION_PLAN_API_SCHEMA": ("neocortex.api.curation_api", "CURATION_PLAN_API_SCHEMA"),
+    "CURATION_REVIEW_API_SCHEMA": (
+        "neocortex.api.curation_lifecycle_api",
+        "CURATION_REVIEW_API_SCHEMA",
+    ),
     "CurationPlanOutput": ("neocortex.api.curation_api", "CurationPlanOutput"),
     "CurationPlanPage": ("neocortex.curation.preview", "CurationPlanPage"),
     "ActionSummary": ("neocortex.runtime.models", "ActionSummary"),
@@ -268,6 +286,14 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "reconstruct_project": ("neocortex.code.ingestion.code_projects", "reconstruct_project"),
     "search_code": ("neocortex.code.search.code_search", "search_code"),
     "curation_plan_payload": ("neocortex.api.curation_api", "curation_plan_payload"),
+    "curation_review_payload": (
+        "neocortex.api.curation_lifecycle_api",
+        "curation_review_payload",
+    ),
+    "curation_decide_payload": (
+        "neocortex.api.curation_lifecycle_api",
+        "curation_decide_payload",
+    ),
     "ContextBundle": ("neocortex.knowledge.knowledge_contracts", "ContextBundle"),
     "ContextContradictionRef": (
         "neocortex.knowledge.knowledge_contracts",

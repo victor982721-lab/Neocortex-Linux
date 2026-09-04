@@ -1,10 +1,10 @@
-"""Stable, read-only Python facade for Knowledge and curation-plan reads.
+"""Stable Python facade for Knowledge and curation lifecycle reads/decisions.
 
 Symbols are resolved lazily and cached here without wrapping or subclassing
 them, so callers receive the canonical contract objects directly.
 Knowledge retains its existing ``status()``, ``search()`` and ``context()``
-service.  Curation adds only a fixed-root, paginated plan read; it accepts no
-state path and carries no mutation or authorization capability.
+service.  Curation exposes a fixed-root, paginated plan read plus a human-gated
+review decision journey; neither surface authorizes or applies filesystem effects.
 """
 
 
@@ -19,6 +19,12 @@ if TYPE_CHECKING:
     from neocortex.api.curation_api import CURATION_PLAN_API_SCHEMA as CURATION_PLAN_API_SCHEMA
     from neocortex.api.curation_api import CurationPlanOutput as CurationPlanOutput
     from neocortex.api.curation_api import curation_plan_payload as curation_plan_payload
+    from neocortex.api.curation_lifecycle_api import (
+        CURATION_DECISION_API_SCHEMA as CURATION_DECISION_API_SCHEMA,
+        CURATION_REVIEW_API_SCHEMA as CURATION_REVIEW_API_SCHEMA,
+        curation_decide_payload as curation_decide_payload,
+        curation_review_payload as curation_review_payload,
+    )
     from neocortex.api.public import (
         CapabilityFailure as CapabilityFailure,
         ContextBundle as ContextBundle,
@@ -60,7 +66,9 @@ if TYPE_CHECKING:
     from neocortex.curation.preview import CurationPlanPage as CurationPlanPage
 
 __all__ = (
+    "CURATION_DECISION_API_SCHEMA",
     "CURATION_PLAN_API_SCHEMA",
+    "CURATION_REVIEW_API_SCHEMA",
     "DERIVATION_CONTRACT_SCHEMA_VERSION",
     "CapabilityFailure",
     "ContextBundle",
@@ -98,17 +106,35 @@ __all__ = (
     "WorkExecutionMode",
     "WorkOutcome",
     "WorkReceipt",
+    "curation_decide_payload",
     "curation_plan_payload",
+    "curation_review_payload",
     "plan_knowledge_query",
 )
 
 _PUBLIC_NAMES: Final = frozenset(__all__)
 _PUBLIC_FACADE: Final = "neocortex.api.public"
 _CURATION_EXPORTS: Final[dict[str, tuple[str, str]]] = {
+    "CURATION_DECISION_API_SCHEMA": (
+        "neocortex.api.curation_lifecycle_api",
+        "CURATION_DECISION_API_SCHEMA",
+    ),
     "CURATION_PLAN_API_SCHEMA": ("neocortex.api.curation_api", "CURATION_PLAN_API_SCHEMA"),
+    "CURATION_REVIEW_API_SCHEMA": (
+        "neocortex.api.curation_lifecycle_api",
+        "CURATION_REVIEW_API_SCHEMA",
+    ),
     "CurationPlanOutput": ("neocortex.api.curation_api", "CurationPlanOutput"),
     "CurationPlanPage": ("neocortex.curation.preview", "CurationPlanPage"),
     "curation_plan_payload": ("neocortex.api.curation_api", "curation_plan_payload"),
+    "curation_review_payload": (
+        "neocortex.api.curation_lifecycle_api",
+        "curation_review_payload",
+    ),
+    "curation_decide_payload": (
+        "neocortex.api.curation_lifecycle_api",
+        "curation_decide_payload",
+    ),
 }
 
 # endregion [01]

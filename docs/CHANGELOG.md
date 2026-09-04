@@ -34,6 +34,15 @@ fuera de `docs/`.
 - `curate plan` y la herramienta MCP `curation_plan` consultan páginas de
   propuestas con cursor y digest ligado al snapshot; la API de evidencia acepta
   `evidence_id` y snapshot esperado para evitar reasignar alias.
+- `curate review`/`curation_review` publican páginas con cobertura completa como
+  ReviewTasks advisory, ligadas a `plan_digest` y snapshot; el replay de la misma
+  página es idempotente.
+- `curate decide`/`curation_decide` registran por CAS una decisión humana
+  `resolved` o `dismissed`, con scope, actor y event head esperado. Sólo escriben
+  eventos ReviewTask: no crean `file_actions`, no autorizan, no invocan KIO y no
+  cambian corpus ni sistemas externos.
+- El lifecycle de curación no incorpora exportación ni ZIP; `--json` devuelve el
+  envelope de la operación.
 - La publicación cross-owner, el ledger generacional Code, Review y el manifest
   multimodal avanzaron en el árbol fuente, pero requieren validación conjunta y
   una release instalada desde el SHA final.

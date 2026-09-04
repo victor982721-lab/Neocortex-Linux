@@ -83,12 +83,20 @@ y contexto citado, pero no genera autoridad de mutación.
 
 ### Review y curación
 
-Framework conserva batches, tareas, decisiones y eventos. `review value` puede
-consultar o avanzar una página durable; `curate plan` y `--curation-preview`
-componen propuestas existentes sin crear estado ni tocar archivos. El plan
-end-to-end de efectos descrito en
-[FILE_INTELLIGENCE_AND_CURATION.md](FILE_INTELLIGENCE_AND_CURATION.md) todavía
-no está implementado.
+Framework conserva batches, tareas, decisiones y eventos. **CURRENT:**
+`curate plan` y `--curation-preview` componen propuestas existentes sin crear
+estado ni tocar archivos.
+
+**IMPLEMENTED:** `neocortex.curation.lifecycle` enlaza un `plan_digest` completo
+con el owner ReviewTask existente. `curate review` publica una página como tareas
+advisory, conserva el item y snapshot, pagina con cursor, usa una source fence y
+reproduce el mismo batch de forma idempotente. `curate decide` vuelve a comprobar
+digest y snapshot y añade por CAS un evento humano `resolved` o `dismissed` con
+scope y actor. Ninguna de las dos operaciones crea `file_actions`, invoca KIO,
+autoriza efectos o toca corpus/sistemas externos.
+
+**TARGET:** autorización, apply y recovery end-to-end permanecen separados y se
+describen en [FILE_INTELLIGENCE_AND_CURATION.md](FILE_INTELLIGENCE_AND_CURATION.md).
 
 ### Code como contenido
 
@@ -124,11 +132,16 @@ Persistencia define el contrato; el procedimiento está en
 - **CLI instalada:** `Neocortex`; el parser es la fuente exacta de argumentos.
 - **API Python:** contratos tipados en `neocortex.api` y `neocortex.sdk`.
 - **GUI:** presentación PySide6 que delega trabajo a workers; no redefine reglas.
-- **MCP:** servidor stdio local con herramientas read-only sobre publicaciones.
+- **MCP:** servidor stdio local con consultas read-only y las escrituras de
+  estado advisory `curation_review`/`curation_decide`; estas últimas declaran
+  `readOnlyHint=false`, `destructiveHint=false` y no conceden autoridad.
 
 Las cuatro superficies deben conservar operación, scope, cobertura, epoch,
 errores y evidencia equivalentes. La salida estructurada es contrato; el texto
 humano no debe convertirse de nuevo en datos mediante parsing.
+
+No existe una superficie de exportación o ZIP para el lifecycle de curación;
+Archive/ZIP sigue siendo únicamente una ruta de contenido.
 
 ## Efectos sobre archivos
 

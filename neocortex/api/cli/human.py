@@ -177,7 +177,7 @@ def build_human_parser() -> argparse.ArgumentParser:
 
     curate = commands.add_parser(
         "curate",
-        help="consulta planes publicados de curación sin modificar estado",
+        help="consulta planes y registra revisión advisory sin tocar archivos",
         allow_abbrev=False,
     )
     curate_commands = curate.add_subparsers(dest="curate_command", metavar="ACCIÓN")
@@ -189,6 +189,32 @@ def build_human_parser() -> argparse.ArgumentParser:
     curate_plan.add_argument("--limit", type=_curation_limit, default=50, metavar="N")
     curate_plan.add_argument("--cursor", metavar="TOKEN")
     curate_plan.add_argument("--json", action="store_true", help="emite el contrato JSON completo")
+    curate_review = curate_commands.add_parser(
+        "review",
+        help="publica una página del plan como tareas de revisión, sin tocar archivos",
+        allow_abbrev=False,
+    )
+    curate_review.add_argument("plan_id", metavar="PLAN_ID")
+    curate_review.add_argument("--limit", type=_curation_limit, default=50, metavar="N")
+    curate_review.add_argument("--cursor", metavar="TOKEN")
+    curate_review.add_argument("--json", action="store_true", help="emite el contrato JSON completo")
+    curate_decide = curate_commands.add_parser(
+        "decide",
+        help="registra una decisión humana sobre una tarea de curación",
+        allow_abbrev=False,
+    )
+    curate_decide.add_argument("plan_id", metavar="PLAN_ID")
+    curate_decide.add_argument("item_id", metavar="ITEM_ID")
+    curate_decide.add_argument("--expected-event-id", required=True, metavar="EVENT_ID")
+    curate_decide.add_argument("--decision", required=True, choices=("resolved", "dismissed"))
+    curate_decide.add_argument(
+        "--decision-scope",
+        required=True,
+        choices=("until-source-change", "until-policy-change", "permanent"),
+    )
+    curate_decide.add_argument("--actor", required=True, metavar="ACTOR")
+    curate_decide.add_argument("--note", metavar="NOTA")
+    curate_decide.add_argument("--json", action="store_true", help="emite el contrato JSON completo")
 
     inspect = commands.add_parser(
         "inspect",
@@ -883,6 +909,73 @@ def _run_curation_plan(args: argparse.Namespace) -> int:
     return 0 if coverage == "complete" else 2
 
 
+def _run_curation_review(args: argparse.Namespace) -> int:
+    try:
+        from neocortex.api.curation_lifecycle_api import curation_review_payload
+
+        payload = curation_review_payload(
+            args.plan_id,
+            limit=args.limit,
+            cursor=args.cursor,
+        )
+    except Exception as exc:  # pragma: no cover - import failures are covered by the API contract
+        _print(f"curate review: {_single_line(exc, limit=800)}", file=sys.stderr)
+        return 2
+    if args.json:
+        _print(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        return _exit_code(payload)
+    page = _mapping(payload.get("page")) or {}
+    page_items = _mapping_rows(page.get("items"))
+    _print(
+        f"CURATION_REVIEW status={payload.get('status', 'unavailable')} "
+        f"plan={payload.get('plan_id', '-')} "
+        f"items={len(page_items)} "
+        f"next_cursor={page.get('next_cursor') or '-'}"
+    )
+    for item in page_items:
+        linked = _mapping(item.get("item")) or {}
+        _print(
+            f"ITEM id={item.get('item_id', '-')} task={item.get('task_id') or '-'} "
+            f"state={item.get('state') or '-'} source={linked.get('source_path', '-')}"
+        )
+    error = _mapping(payload.get("error"))
+    if error is not None and error.get("message"):
+        _print(f"Estado: {error['message']}", file=sys.stderr)
+    _print("La revisión sólo escribió hechos ReviewTask; no autorizó ni modificó archivos.")
+    return _exit_code(payload)
+
+
+def _run_curation_decide(args: argparse.Namespace) -> int:
+    try:
+        from neocortex.api.curation_lifecycle_api import curation_decide_payload
+
+        payload = curation_decide_payload(
+            args.plan_id,
+            args.item_id,
+            expected_event_id=args.expected_event_id,
+            decision=args.decision,
+            decision_scope=args.decision_scope,
+            actor=args.actor,
+            note=args.note,
+        )
+    except Exception as exc:  # pragma: no cover - API catches normal contract errors
+        _print(f"curate decide: {_single_line(exc, limit=800)}", file=sys.stderr)
+        return 2
+    if args.json:
+        _print(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        return _exit_code(payload)
+    _print(
+        f"CURATION_DECIDE status={payload.get('status', 'unavailable')} "
+        f"plan={payload.get('plan_id', '-')} item={payload.get('item_id', '-')} "
+        f"idempotent={int(bool(payload.get('idempotent')))}"
+    )
+    error = _mapping(payload.get("error"))
+    if error is not None and error.get("message"):
+        _print(f"Estado: {error['message']}", file=sys.stderr)
+    _print("La decisión sólo actualizó ReviewTask; no autoriza ni modifica archivos.")
+    return _exit_code(payload)
+
+
 def _run_review_task(args: argparse.Namespace) -> int:
     if args.scope == ReadScope.ALL.value:
         _print(
@@ -1001,6 +1094,10 @@ def run_human_command(arguments: Sequence[str]) -> int:
         return _run_ask(args)
     if args.command == "curate" and args.curate_command == "plan":
         return _run_curation_plan(args)
+    if args.command == "curate" and args.curate_command == "review":
+        return _run_curation_review(args)
+    if args.command == "curate" and args.curate_command == "decide":
+        return _run_curation_decide(args)
     if args.command == "inspect" and args.inspect_command == "code":
         return _run_inspect_code(args)
     if args.command == "inspect" and args.inspect_command == "lineage":

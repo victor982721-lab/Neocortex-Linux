@@ -16,6 +16,14 @@ clasificación, una similitud o una recomendación nunca autorizan efectos.
 La falta de autoridad para mutar no debe impedir que NeoCortex observe, relacione,
 explique la incertidumbre y prepare una propuesta útil para revisión.
 
+## Etiquetas de estado
+
+- **CURRENT:** frontera vigente del producto, aunque una capacidad nueva aún no
+  esté instalada desde el SHA final.
+- **IMPLEMENTED:** código y pruebas presentes en el checkout; requiere promoción
+  para considerarse disponible en el launcher instalado.
+- **TARGET:** contrato futuro que todavía no existe como capacidad pública.
+
 ## Recorrido del producto
 
 ```text
@@ -36,6 +44,10 @@ Cada etapa produce un artefacto durable o una abstención explicable:
 8. **Aplicar:** ejecutar sólo operaciones soportadas y revalidar junto al efecto.
 9. **Verificar:** demostrar origen/destino/Papelera, identidad, bytes y conteos.
 10. **Conciliar:** ante caída o ambigüedad, observar antes de reintentar.
+
+**IMPLEMENTED** alcanza `plan → review → decide`: plan consulta, review publica
+tareas advisory y decide registra una decisión humana. **TARGET** comienza en
+autorización y efectos físicos; ninguna decisión ReviewTask cruza esa frontera.
 
 ## Evidencia y autoridad
 
@@ -58,19 +70,24 @@ evidencia de procedencia, no nombres o extensiones aislados.
 
 La fuente `0.9.0` aporta inventario, extracción multimodal, catálogos, búsqueda,
 Knowledge, Semantic, Code como contenido, planes de duplicados/organización,
-Review, receipts y recuperación parcial. `curate plan` y `curation_plan` ya
-consultan directamente el plan local paginado, mientras
-`--curation-preview` conserva la compatibilidad plana; ninguna de estas vistas
-escribe estado o corpus.
+Review, receipts y recuperación parcial.
+
+- **CURRENT:** `curate plan`, `curation_plan` y `--curation-preview` consultan el
+  plan local paginado sin escribir estado o corpus.
+- **IMPLEMENTED:** `curate review` publica páginas con cobertura completa como
+  `ReviewTask` advisory; `curate decide` añade por CAS una decisión humana
+  `resolved` o `dismissed`. Sólo escriben Framework, nunca `file_actions`, corpus
+  o sistemas externos, y `actions_authorized` permanece `false`.
+- **TARGET:** autorización, aplicación, verificación física y recuperación.
 
 Las brechas principales son:
 
-- no existe una única vista durable de curación que reúna propuestas, decisiones y efectos;
+- no existe aún un lifecycle que reúna autorización, efectos y recuperación;
 - varios formatos pierden localizadores estructurales al llegar a búsqueda;
 - igualdad, versión, procedencia, valor y disposición no tienen una proyección
   pública unificada;
-- el servidor MCP actual ya puede consultar páginas de curación, pero aún no
-  representa el lifecycle completo;
+- MCP ya expone plan y las escrituras advisory `curation_review` y
+  `curation_decide`, pero no autorización ni efectos;
 - Linux no aplica movimientos ni Papelera;
 - progreso, cancelación y replay no son uniformes en todos los productores.
 
@@ -94,36 +111,42 @@ cuarentena como fallback. La prueba real de KIO queda fuera de esta cohorte para
 no tocar la configuración de escritorio; las pruebas de la foundation usan
 runner, resolver y verificador inyectados sobre fixtures contenidos.
 
-## Interfaces objetivo
+## Interfaces CURRENT, IMPLEMENTED y TARGET
 
-La compatibilidad actual se mantiene mientras evoluciona una jerarquía común:
+**CURRENT — consulta:**
 
 ```text
-Neocortex curate scan ROOT
-Neocortex curate plan RUN_ID
-Neocortex curate review PLAN_ID
-Neocortex curate authorize PLAN_ID
-Neocortex curate apply PLAN_ID
-Neocortex curate verify RUN_ID
-Neocortex curate recover RUN_ID
+Neocortex curate plan [--limit N] [--cursor TOKEN] [--json]
+MCP: curation_plan
 ```
 
-En el checkout auditado ya está disponible `Neocortex curate plan`, que consulta
-una página de propuestas directamente desde el estado local publicado. `scan`,
-`plan` y `review` son read-only respecto del corpus. `authorize` registra
-una decisión, pero no aplica. `apply` exige autorización vigente y límites
-explícitos. El contrato objetivo compartirá un núcleo común de operación,
-cobertura, errores, warnings y referencias de evidencia, pero cada superficie
-publica sólo los campos que ya puede demostrar. En el checkout actual,
-`curation_plan` entrega `schema`, `operation`, `coverage`, `snapshot` y `page`
-con cursor, digest y conteos anidados, además de su envelope de efectos y
-confianza; no afirma todavía un `scope` o `observed_epoch` que el productor no
-conserve.
+El `PLAN_ID` consumido por las operaciones siguientes es el `plan_digest`
+`sha256:<64 hex>` devuelto por plan.
 
-El MCP actual expone `curation_plan` como lectura paginada del mismo contrato que
-la CLI y el SDK. Las operaciones de autorización y efecto se reservan para
-`0.11.0`, con una concesión humana fuera del contenido del corpus y el mismo
-ledger que CLI/GUI.
+**IMPLEMENTED — ReviewTask advisory:**
+
+```text
+Neocortex curate review PLAN_ID [--limit N] [--cursor TOKEN] [--json]
+Neocortex curate decide PLAN_ID ITEM_ID --expected-event-id EVENT_ID
+  --decision resolved|dismissed
+  --decision-scope until-source-change|until-policy-change|permanent
+  --actor ACTOR [--note NOTA] [--json]
+MCP: curation_review, curation_decide
+```
+
+Review exige un plan completo y digest vigente, publica páginas reanudables e
+idempotentes y devuelve `task_id`, estado y `current_event_id`. Decide vuelve a
+probar el digest, usa `expected_event_id` como CAS y conserva replay idempotente
+del mismo evento. Ambas superficies declaran `read_only=false` porque escriben
+estado ReviewTask, pero `effects.corpus=none`, `effects.external=none` y
+`actions_authorized=false`.
+
+**TARGET — no implementado:** autorización, apply, verificación física y
+recovery compartirán plan y ledger en `0.11.0`. Review y decide no son atajos
+hacia esa autoridad.
+
+No existe una interfaz de exportación ni un paquete ZIP de curación. `--json`
+serializa la respuesta de una operación; no crea un artefacto durable.
 
 ## Separación de Code y desarrollo
 

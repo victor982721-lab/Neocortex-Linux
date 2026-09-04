@@ -1,8 +1,14 @@
 # Roadmap de NeoCortex
 
-> Plan de producto basado en `HEAD 3ce58a3c978ab890039cc4da204dc62762735592`,
-> actualizado el 3 de septiembre de 2026. Un estado aquí no sustituye código,
+> Actualizado el 4 de septiembre de 2026. Un estado aquí no sustituye código,
 > pruebas ni una release instalada desde el SHA final.
+
+## Convención de estado
+
+- **CURRENT:** frontera que rige el producto ahora.
+- **IMPLEMENTED:** presente en el checkout y cubierto por pruebas focales, pero
+  pendiente de promoción desde el SHA final cuando corresponda.
+- **TARGET:** todavía no implementado.
 
 ## Resultado buscado
 
@@ -23,46 +29,53 @@ incierta, pero no cuenta como funcionalidad entregada para los casos soportados.
 | Deduplicación | Planificación implementada; la prueba exacta y disposición pública necesitan un contrato uniforme |
 | Catálogo y organización | Planes disponibles; recorrido end-to-end parcial |
 | Knowledge y contexto para agentes | Implementado read-only; cobertura/localizadores varían por owner |
-| Review | Cola durable y consulta disponibles; autorización y efectos no forman un lifecycle completo |
-| Curación integrada | `curate plan` y `--curation-preview` read-only; no existe lifecycle de efectos |
+| Review | **IMPLEMENTED:** `curate review` publica ReviewTasks y `curate decide` añade decisiones humanas por CAS |
+| Curación integrada | **CURRENT:** plan read-only; **IMPLEMENTED:** review/decide state-only; **TARGET:** autorización y efectos |
 | Mutación Linux | Foundation KIO preparada; no integrada/promovida, y `--apply`/`--organization-apply` se abstienen |
 | Backup/restore/purge | Implementados mediante `Neocortex databases` |
-| MCP | Consultas read-only; `curation_plan` paginado disponible, lifecycle de acciones pendiente |
+| MCP | **IMPLEMENTED:** `curation_plan`, `curation_review` y `curation_decide`; los dos últimos escriben ReviewTask advisory, no corpus |
 
 ## 0.10.0 — Evidencia y plan de curación
 
 **Resultado:** una persona o agente puede inspeccionar, paginar y revisar un plan
 completo sin mutar el corpus.
 
-Ya entregado en el checkout: la página `curate plan`, su digest integral,
-cursor keyset, envelope API, SDK lazy y herramienta MCP read-only. Resta integrar
-la corrida durable completa y las decisiones humanas.
+**IMPLEMENTED en el checkout:** `curate plan` consulta el digest paginado;
+`curate review` publica páginas idempotentes como ReviewTask y `curate decide`
+registra `resolved`/`dismissed` mediante digest y event-head CAS. API, SDK y MCP
+proyectan los mismos envelopes. Review/decide escriben sólo Framework,
+mantienen `actions_authorized=false` y crean cero `file_actions`.
 
 Entregas restantes:
 
-1. jerarquía completa `curate scan/plan/review/verify` compatible con las flags actuales;
+1. completar `curate scan` y `curate verify` alrededor del plan/review ya
+   implementado;
 2. proyección común de tipo real, procedencia, valor, duplicado, versión,
    similitud, disposición y evidencia;
 3. `verification_mode` explícito; ningún candidato fast se publica como
    duplicado bytewise;
-4. ampliar el plan inmutable ya paginado con source heads, reason codes y
-   decisiones durables;
-5. ampliar las herramientas MCP read-only para status, páginas de evidencia,
-   plan y verificación;
+4. ampliar el plan inmutable ya paginado con source heads y reason codes;
+5. añadir consultas MCP de status/verificación sin convertir review/decide en
+   autorización;
 6. límites uniformes de elementos, tiempo, RAM y disco, con progreso y
    cancelación;
 7. localizadores públicos comprobables por cada capacidad declarada.
 
 Criterios de aceptación:
 
-- fixture heterogéneo de 20–50 elementos recorre scan, plan, review y verify;
+- fixture heterogéneo de 20–50 elementos recorre plan, review y decide con
+  paginación/replay, y después incorpora scan/verify;
 - segunda corrida no rehace trabajo compatible;
 - cada propuesta enlaza evidencia y explica incertidumbre;
 - igualdad exacta exige comparación byte a byte;
 - CLI, SDK, GUI y MCP proyectan el mismo schema;
-- cero cambios en bytes/rutas del corpus.
+- cero cambios en bytes/rutas del corpus, cero `file_actions` y cero autoridad
+  derivada de una decisión.
 
-## 0.11.0 — Efectos Linux reversibles
+No se añadirá exportación ni ZIP de curación en este corte. JSON/JSONL son
+respuestas de interfaz, no artefactos de entrega.
+
+## 0.11.0 — TARGET: efectos Linux reversibles
 
 **Resultado:** un plan aprobado puede mover, renombrar o enviar a Papelera un
 lote pequeño y luego demostrar o recuperar el efecto.
@@ -125,13 +138,16 @@ Criterios de aceptación:
 
 ## Orden inmediato
 
-1. Consolidar el contrato de página/digest y corregir deduplicación exacta, publicación y autorización.
-2. Entregar 0.10.0 read-only antes de habilitar efectos.
-3. Integrar la foundation KIO preparada y completar sus pruebas de producto con
+1. Validar y promover plan/review/decide desde el SHA final sin ampliar su
+   autoridad.
+2. Completar scan/verify, deduplicación exacta y cobertura del plan 0.10.0.
+3. Diseñar el contrato de autorización separado; ninguna ReviewTask será su
+   sustituto.
+4. Integrar la foundation KIO preparada y completar sus pruebas de producto con
    runner/verificador inyectados y fixtures same-filesystem; reservar cualquier
    prueba contra KIO real para un gate explícito posterior.
-4. Habilitar 0.11.0 sólo para lotes pequeños y revisión humana.
-5. Medir una carga grande antes de promover watcher o escala automática.
+5. Habilitar 0.11.0 sólo para lotes pequeños y revisión humana.
+6. Medir una carga grande antes de promover watcher o escala automática.
 
 ## Límites
 

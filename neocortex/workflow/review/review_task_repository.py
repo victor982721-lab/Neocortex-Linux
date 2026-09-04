@@ -2263,6 +2263,41 @@ def publish_review_task_page(
     )
 
 
+def read_review_task_publication(
+    database: str | Path,
+    batch_id: str,
+    *,
+    cancellation_check: CancellationCheck | None = None,
+) -> ReviewTaskPublication | None:
+    """Read one immutable ReviewTask batch receipt without creating state."""
+
+    _contracts._required_text("batch_id", batch_id)
+    bridge = SQLiteCancellationBridge(cancellation_check)
+    connection = connect_existing_framework(Path(database), readonly=True)
+    try:
+        with sqlite_cancellation_scope(connection, bridge):
+            _checkpoint(bridge)
+            connection.execute("BEGIN")
+            try:
+                _require_review_task_schema(connection)
+                rows = connection.execute(
+                    f"SELECT {_BATCH_COLUMNS} FROM review_task_batches WHERE batch_id=?",
+                    (batch_id,),
+                ).fetchall()
+                if len(rows) > 1:
+                    raise ReviewTaskRepositoryError("ReviewTask batch identifier is ambiguous")
+                result = None if not rows else _publication_from_batch_row(rows[0])
+                _checkpoint(bridge)
+                connection.commit()
+            except BaseException:
+                if connection.in_transaction:
+                    connection.rollback()
+                raise
+    finally:
+        connection.close()
+    return result
+
+
 def read_review_task_progress(
     database: str | Path,
     fence: ReviewTaskSourceFence,
@@ -3033,5 +3068,6 @@ __all__ = (
     "read_review_task_event_by_key",
     "read_review_task_history",
     "read_review_task_progress",
+    "read_review_task_publication",
     "validate_latest_review_task_source_publications_from_connection",
 )

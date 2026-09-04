@@ -13,6 +13,18 @@ _EXPORTS = {
     "CurationStateError": (".preview", "CurationStateError"),
     "build_curation_plan_page": (".preview", "build_curation_plan_page"),
     "build_curation_preview": (".preview", "build_curation_preview"),
+    "CURATION_REVIEW_SCHEMA_VERSION": (".lifecycle", "CURATION_REVIEW_SCHEMA_VERSION"),
+    "CurationDecisionResult": (".lifecycle", "CurationDecisionResult"),
+    "CurationLifecycleError": (".lifecycle", "CurationLifecycleError"),
+    "CurationLifecycleSnapshotChanged": (
+        ".lifecycle",
+        "CurationLifecycleSnapshotChanged",
+    ),
+    "CurationLifecycleUnavailable": (".lifecycle", "CurationLifecycleUnavailable"),
+    "CurationReviewItem": (".lifecycle", "CurationReviewItem"),
+    "CurationReviewResult": (".lifecycle", "CurationReviewResult"),
+    "decide_curation_item": (".lifecycle", "decide_curation_item"),
+    "review_curation_page": (".lifecycle", "review_curation_page"),
 }
 
 
@@ -32,10 +44,19 @@ def __dir__() -> list[str]:
 
 __all__ = [
     "CURATION_PREVIEW_SCHEMA_VERSION",
+    "CURATION_REVIEW_SCHEMA_VERSION",
+    "CurationDecisionResult",
     "CurationItem",
+    "CurationLifecycleError",
+    "CurationLifecycleSnapshotChanged",
+    "CurationLifecycleUnavailable",
     "CurationPlanPage",
     "CurationPreview",
+    "CurationReviewItem",
+    "CurationReviewResult",
     "CurationStateError",
     "build_curation_plan_page",
     "build_curation_preview",
+    "decide_curation_item",
+    "review_curation_page",
 ]
