@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 
 import pytest
@@ -53,6 +54,48 @@ def _build_state(
 def _patch_default_state(monkeypatch: pytest.MonkeyPatch, state: Path) -> None:
     monkeypatch.setattr(curation_api, "default_state_directory", lambda: state)
     monkeypatch.setattr(curation_verification_api, "default_state_directory", lambda: state)
+
+
+def _build_matrix_state(tmp_path: Path) -> tuple[Path, Path, dict[str, bytes]]:
+    """Build the bounded 36-entry fixture used by the 0.10 acceptance test."""
+
+    state = tmp_path / "state"
+    corpus = tmp_path / "corpus"
+    external = tmp_path / "external"
+    state.mkdir(parents=True)
+    corpus.mkdir()
+    external.mkdir()
+    for pair in range(10):
+        payload = f"matrix-pair-{pair}".encode("utf-8")
+        (corpus / f"pair-{pair}-a.bin").write_bytes(payload)
+        (corpus / f"pair-{pair}-b.bin").write_bytes(payload)
+    for index in range(4):
+        (corpus / f"same-size-{index}.bin").write_bytes(bytes([65 + index]) * 16)
+    for index in range(4):
+        (corpus / f"unique-{index}.bin").write_bytes(f"unique-{index}".encode())
+    for index in range(4):
+        (corpus / f"empty-{index}.bin").write_bytes(b"")
+    for index in range(2):
+        (corpus / f"hardlink-{index}.bin").hardlink_to(corpus / f"unique-{index}.bin")
+    (external / "outside.bin").write_bytes(b"outside")
+    (external / "outside-dir").mkdir()
+    (corpus / "external-link.bin").symlink_to(external / "outside.bin")
+    (corpus / "external-dir").symlink_to(external / "outside-dir", target_is_directory=True)
+    with DedupIndex(state / "dedup.sqlite3") as index:
+        summary = index.scan(corpus)
+        index.bind_inventory_checkpoint(
+            InventoryCheckpoint(str(corpus), summary.scan_id, None, None, None, True)
+        )
+        DedupPlanner(index, partial_threshold=0).plan(summary.scan_id, exact_compare=True)
+        assert summary.files_seen == 34
+        assert summary.skipped_links == 2
+    initialize_document_catalog(state / "document_catalog.sqlite3")
+    manifest = {
+        str(path.relative_to(corpus)): path.read_bytes()
+        for path in corpus.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    }
+    return state, corpus, manifest
 
 
 def test_persisted_fast_and_exact_modes_reach_the_plan_page(tmp_path: Path) -> None:
@@ -329,6 +372,60 @@ def test_scan_preserves_the_cardinality_of_a_large_valid_page(
 
     assert result["status"] == "complete"
     assert len(result["result"]["page"]["items"]) == 100  # type: ignore[index]
+
+
+def test_bounded_matrix_fixture_replays_across_cli_api_and_mcp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state, corpus, before = _build_matrix_state(tmp_path)
+    _patch_default_state(monkeypatch, state)
+    page = build_curation_plan_page(state, 100)
+    assert page.inventory_files == 34
+    assert page.duplicate_groups == 10
+    assert page.empty_files == 4
+    assert page.items_total == 14
+    assert page.source_heads
+
+    scan = curation_verification_api.curation_scan_payload(request_id="matrix-scan")
+    verification = curation_verification_api.curation_verify_payload(
+        page.plan_digest,
+        request_id="matrix-verify",
+    )
+    replay = curation_verification_api.curation_verify_payload(
+        page.plan_digest,
+        request_id="matrix-replay",
+    )
+    cli_exit = human.run_human_command(("curate", "scan", "--limit", "100", "--json"))
+    cli_payload = json.loads(capsys.readouterr().out)
+
+    from neocortex.api import agent_server
+
+    _content, mcp_payload = __import__("asyncio").run(
+        agent_server.create_server().call_tool(
+            "curation_scan",
+            {"limit": 100},
+        )
+    )
+
+    assert scan["status"] == verification["status"] == replay["status"] == "complete"
+    assert verification["result"]["items_verified"] == 10  # type: ignore[index]
+    assert verification["result"]["items_skipped"] == 0  # type: ignore[index]
+    assert verification["snapshot"]["source_heads"] == scan["snapshot"]["source_heads"]  # type: ignore[index]
+    assert replay["result"] == verification["result"]  # type: ignore[comparison-overlap]
+    assert cli_exit == 0
+    assert cli_payload["operation"] == scan["operation"]
+    assert cli_payload["result"]["source_heads"] == scan["result"]["source_heads"]
+    assert mcp_payload["operation"] == scan["operation"]
+    assert mcp_payload["snapshot"]["source_heads"] == scan["snapshot"]["source_heads"]
+    after = {
+        str(path.relative_to(corpus)): path.read_bytes()
+        for path in corpus.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    }
+    assert before == after
+    assert not (state / "framework.sqlite3").exists()
 
 
 @pytest.mark.parametrize(
