@@ -12,7 +12,12 @@ from neocortex.progress import ProgressCallback
 
 from ..domain.errors import InventoryError
 from ..domain.models import InventoryCheckpoint, ScanSummary
-from .scan import DEFAULT_BATCH_SIZE, InventoryExclusionPolicy, InventoryScanner
+from .scan import (
+    DEFAULT_BATCH_SIZE,
+    InventoryExclusionPolicy,
+    InventoryScanner,
+    InventoryWorkBudget,
+)
 
 
 PRUNE_BATCH_SIZE = 1000
@@ -26,6 +31,10 @@ def scan_inventory(
     excluded_paths: Iterable[str | Path] | None = None,
     exclusion_policy: InventoryExclusionPolicy | None = None,
     progress: ProgressCallback | None = None,
+    checkpoint_path: str | Path | None = None,
+    resume: bool = False,
+    deterministic: bool = False,
+    work_budget: InventoryWorkBudget | None = None,
     scanner_type: type[InventoryScanner] = InventoryScanner,
 ) -> ScanSummary:
     """Run the canonical scanner against an already configured repository."""
@@ -36,6 +45,10 @@ def scan_inventory(
         excluded_paths=excluded_paths,
         exclusion_policy=exclusion_policy,
         progress=progress,
+        checkpoint_path=checkpoint_path,
+        resume=resume,
+        deterministic=deterministic,
+        work_budget=work_budget,
     )
 
 

@@ -7,10 +7,18 @@ from typing import TYPE_CHECKING, Any, Final
 
 if TYPE_CHECKING:
     from .index import DedupIndex as DedupIndex
+    from .resume import (
+        InventoryResumeCheckpoint as InventoryResumeCheckpoint,
+        InventoryResumeCheckpointStore as InventoryResumeCheckpointStore,
+        InventoryResumeConflictError as InventoryResumeConflictError,
+        InventoryResumeCorruptError as InventoryResumeCorruptError,
+        InventoryResumeError as InventoryResumeError,
+    )
     from .scan import (
         DEFAULT_INVENTORY_EXCLUSION_POLICY as DEFAULT_INVENTORY_EXCLUSION_POLICY,
         InventoryExclusionPolicy as InventoryExclusionPolicy,
         InventoryScanner as InventoryScanner,
+        InventoryWorkBudget as InventoryWorkBudget,
         exclusion_path_keys as exclusion_path_keys,
         is_excluded_directory as is_excluded_directory,
         resolve_inventory_exclusion_policy as resolve_inventory_exclusion_policy,
@@ -25,6 +33,12 @@ _EXPORTS: Final = {
     "DedupIndex": (".index", "DedupIndex"),
     "InventoryExclusionPolicy": (".scan", "InventoryExclusionPolicy"),
     "InventoryScanner": (".scan", "InventoryScanner"),
+    "InventoryWorkBudget": (".scan", "InventoryWorkBudget"),
+    "InventoryResumeCheckpoint": (".resume", "InventoryResumeCheckpoint"),
+    "InventoryResumeCheckpointStore": (".resume", "InventoryResumeCheckpointStore"),
+    "InventoryResumeConflictError": (".resume", "InventoryResumeConflictError"),
+    "InventoryResumeCorruptError": (".resume", "InventoryResumeCorruptError"),
+    "InventoryResumeError": (".resume", "InventoryResumeError"),
     "exclusion_path_keys": (".scan", "exclusion_path_keys"),
     "is_excluded_directory": (".scan", "is_excluded_directory"),
     "resolve_inventory_exclusion_policy": (".scan", "resolve_inventory_exclusion_policy"),
@@ -50,7 +64,13 @@ __all__ = [
     "DEFAULT_INVENTORY_EXCLUSION_POLICY",
     "DedupIndex",
     "InventoryExclusionPolicy",
+    "InventoryResumeCheckpoint",
+    "InventoryResumeCheckpointStore",
+    "InventoryResumeConflictError",
+    "InventoryResumeCorruptError",
+    "InventoryResumeError",
     "InventoryScanner",
+    "InventoryWorkBudget",
     "exclusion_path_keys",
     "is_excluded_directory",
     "resolve_inventory_exclusion_policy",

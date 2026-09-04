@@ -28,6 +28,19 @@ if TYPE_CHECKING:
         DEFAULT_INVENTORY_EXCLUSION_POLICY as DEFAULT_INVENTORY_EXCLUSION_POLICY,
     )
     from .inventory.scan import InventoryExclusionPolicy as InventoryExclusionPolicy
+    from .inventory.scan import (
+        InventoryScanBudgetExceeded as InventoryScanBudgetExceeded,
+        InventoryScanCancelled as InventoryScanCancelled,
+        InventoryScanDeadlineExceeded as InventoryScanDeadlineExceeded,
+        InventoryWorkBudget as InventoryWorkBudget,
+    )
+    from .inventory.resume import (
+        InventoryResumeCheckpoint as InventoryResumeCheckpoint,
+        InventoryResumeCheckpointStore as InventoryResumeCheckpointStore,
+        InventoryResumeConflictError as InventoryResumeConflictError,
+        InventoryResumeCorruptError as InventoryResumeCorruptError,
+        InventoryResumeError as InventoryResumeError,
+    )
     from .planning.planner import DedupPlanner as DedupPlanner
 
 _EXPORTS: Final = {
@@ -46,6 +59,33 @@ _EXPORTS: Final = {
     "InventoryCheckpoint": (".domain.models", "InventoryCheckpoint"),
     "InventoryError": (".domain.errors", "InventoryError"),
     "InventoryExclusionPolicy": (".inventory.scan", "InventoryExclusionPolicy"),
+    "InventoryScanBudgetExceeded": (
+        ".inventory.scan",
+        "InventoryScanBudgetExceeded",
+    ),
+    "InventoryScanCancelled": (".inventory.scan", "InventoryScanCancelled"),
+    "InventoryScanDeadlineExceeded": (
+        ".inventory.scan",
+        "InventoryScanDeadlineExceeded",
+    ),
+    "InventoryWorkBudget": (".inventory.scan", "InventoryWorkBudget"),
+    "InventoryResumeCheckpoint": (
+        ".inventory.resume",
+        "InventoryResumeCheckpoint",
+    ),
+    "InventoryResumeCheckpointStore": (
+        ".inventory.resume",
+        "InventoryResumeCheckpointStore",
+    ),
+    "InventoryResumeConflictError": (
+        ".inventory.resume",
+        "InventoryResumeConflictError",
+    ),
+    "InventoryResumeCorruptError": (
+        ".inventory.resume",
+        "InventoryResumeCorruptError",
+    ),
+    "InventoryResumeError": (".inventory.resume", "InventoryResumeError"),
     "MissingDependencyError": (".domain.errors", "MissingDependencyError"),
     "PARTIAL_ALGORITHM": (".fingerprinting", "PARTIAL_ALGORITHM"),
     "PlanStatistics": (".domain.models", "PlanStatistics"),
@@ -84,6 +124,15 @@ __all__ = [
     "InventoryCheckpoint",
     "InventoryError",
     "InventoryExclusionPolicy",
+    "InventoryResumeCheckpoint",
+    "InventoryResumeCheckpointStore",
+    "InventoryResumeConflictError",
+    "InventoryResumeCorruptError",
+    "InventoryResumeError",
+    "InventoryScanBudgetExceeded",
+    "InventoryScanCancelled",
+    "InventoryScanDeadlineExceeded",
+    "InventoryWorkBudget",
     "MissingDependencyError",
     "PlanStatistics",
     "ScanSummary",

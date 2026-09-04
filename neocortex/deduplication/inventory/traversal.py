@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import stat as stat_module
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -15,6 +16,7 @@ from neocortex.progress import ProgressCallback, ProgressEvent, emit_progress
 from ..domain.errors import InventoryError
 from ..domain.models import ScanSummary
 from .policy import FILE_ATTRIBUTE_REPARSE_POINT, InventoryExclusionPolicy
+from .resume import MAX_SORTED_DIRECTORY_ENTRIES, relative_cursor
 
 
 class DirectoryIterator(Protocol):
@@ -23,6 +25,19 @@ class DirectoryIterator(Protocol):
     def __next__(self) -> os.DirEntry[str]: ...
 
     def close(self) -> None: ...
+
+
+class _SortedDirectoryIterator:
+    """Bounded deterministic iterator used by resumable scans."""
+
+    def __init__(self, entries: list[os.DirEntry[str]]) -> None:
+        self._entries = iter(entries)
+
+    def __next__(self) -> os.DirEntry[str]:
+        return next(self._entries)
+
+    def close(self) -> None:
+        return None
 
 
 class InventoryRowSink(Protocol):
@@ -162,13 +177,44 @@ class InventoryTraversal:
         row_sink: InventoryRowSink,
         exclusion_policy: InventoryExclusionPolicy,
         progress: ProgressCallback | None,
+        deterministic: bool = False,
+        resume_cursor: str | None = None,
+        resume_observation: Callable[[FileObservation], None] | None = None,
+        observation_observer: Callable[[FileObservation], None] | None = None,
+        directory_observer: Callable[[str, os.stat_result, bool], None] | None = None,
+        work_check: Callable[[int], None] | None = None,
+        file_work_check: Callable[[int], None] | None = None,
+        initial_counters: ScanCounters | None = None,
     ) -> None:
+        if resume_cursor is not None and resume_observation is None:
+            raise ValueError("resume_observation is required with resume_cursor")
         self._root = root
         self._row_sink = row_sink
         self._exclusion_policy = exclusion_policy
         self._progress = progress
+        self._deterministic = deterministic
+        self._resume_cursor = resume_cursor
+        self._resume_active = resume_cursor is None
+        self._resume_found = resume_cursor is None
+        self._resume_observation = resume_observation
+        self._observation_observer = observation_observer
+        self._directory_observer = directory_observer
+        self._work_check = work_check
+        self._file_work_check = file_work_check
         self._last_progress_at = time.monotonic()
-        self._counters = ScanCounters()
+        self._prefix_counters = ScanCounters()
+        self._counters = (
+            ScanCounters()
+            if initial_counters is None
+            else ScanCounters(
+                initial_counters.files_seen,
+                initial_counters.directories_seen,
+                initial_counters.bytes_seen,
+                initial_counters.skipped_links,
+                initial_counters.excluded_directories,
+                initial_counters.errors,
+            )
+        )
 
     def run(self) -> ScanCounters:
         stack: TraversalStack = [(self._root.path, None)]
@@ -186,12 +232,20 @@ class InventoryTraversal:
             raise
         finally:
             self._close_stack(stack)
+        if not self._resume_found:
+            raise InventoryError(f"inventory resume cursor was not found: {self._resume_cursor}")
         self._row_sink.flush()
         return self._counters
 
     @property
     def counters(self) -> ScanCounters:
         return self._counters
+
+    @property
+    def prefix_counters(self) -> ScanCounters:
+        """Counts observed before a resume cursor, excluding the active tail."""
+
+        return self._prefix_counters
 
     def _advance(self, stack: TraversalStack) -> None:
         directory, iterator = stack[-1]
@@ -208,11 +262,58 @@ class InventoryTraversal:
         directory: str,
         stack: TraversalStack,
     ) -> DirectoryIterator | None:
-        self._counters.directories_seen += 1
+        if self._resume_active:
+            self._counters.directories_seen += 1
+        else:
+            self._prefix_counters.directories_seen += 1
         try:
-            iterator = os.scandir(directory)
+            directory_stat = os.stat(directory, follow_symlinks=False)
+            if not stat_module.S_ISDIR(directory_stat.st_mode):
+                raise InventoryError("inventory directory is no longer a directory")
+            if self._deterministic:
+                canonical_directory = Path(os.path.realpath(directory))
+                if canonical_directory != Path(os.path.abspath(directory)):
+                    raise InventoryError(
+                        "inventory directory escapes its root through a symlink"
+                    )
+                try:
+                    canonical_directory.relative_to(Path(self._root.path))
+                except ValueError as exc:
+                    raise InventoryError("inventory directory escapes its root") from exc
+                with os.scandir(directory) as source:
+                    entries: list[os.DirEntry[str]] = []
+                    for entry in source:
+                        if len(entries) >= MAX_SORTED_DIRECTORY_ENTRIES:
+                            raise InventoryError(
+                                "inventory directory exceeds deterministic sort bound"
+                            )
+                        entries.append(entry)
+                entries.sort(key=lambda entry: os.fsencode(entry.name))
+                iterator: DirectoryIterator = _SortedDirectoryIterator(entries)
+            else:
+                iterator = os.scandir(directory)
+            if self._deterministic or self._directory_observer is not None:
+                after_stat = os.stat(directory, follow_symlinks=False)
+                if (
+                    after_stat.st_dev,
+                    after_stat.st_ino,
+                    stat_birthtime_ns(after_stat),
+                ) != (
+                    directory_stat.st_dev,
+                    directory_stat.st_ino,
+                    stat_birthtime_ns(directory_stat),
+                ):
+                    iterator.close()
+                    raise InventoryError("inventory directory changed while opening")
+            if self._directory_observer is not None:
+                self._directory_observer(directory, directory_stat, not self._resume_active)
+        except InventoryError:
+            raise
         except OSError:
-            self._counters.errors += 1
+            if self._resume_active:
+                self._counters.errors += 1
+            else:
+                self._prefix_counters.errors += 1
             stack.pop()
             return None
         stack[-1] = (directory, iterator)
@@ -229,7 +330,10 @@ class InventoryTraversal:
             iterator.close()
             stack.pop()
         except OSError:
-            self._counters.errors += 1
+            if self._resume_active:
+                self._counters.errors += 1
+            else:
+                self._prefix_counters.errors += 1
             iterator.close()
             stack.pop()
         return None
@@ -240,17 +344,43 @@ class InventoryTraversal:
         stack: TraversalStack,
     ) -> None:
         try:
+            if self._work_check is not None:
+                self._work_check(0)
             is_junction = getattr(entry, "is_junction", lambda: False)()
-            if entry.is_symlink() or is_junction:
-                self._counters.skipped_links += 1
+            is_link = entry.is_symlink() or is_junction
+            if not self._resume_active:
+                relative = relative_cursor(self._root.path, entry.path)
+                relative_bytes = os.fsencode(relative)
+                cursor_bytes = os.fsencode(self._resume_cursor)  # type: ignore[arg-type]
+                if relative_bytes > cursor_bytes:
+                    self._resume_active = True
+                    self._resume_found = True
+                elif relative_bytes != cursor_bytes and not is_link:
+                    if entry.is_file(follow_symlinks=False):
+                        self._process_file(entry)
+                        return
+            if is_link:
+                if self._resume_active:
+                    self._counters.skipped_links += 1
+                else:
+                    self._prefix_counters.skipped_links += 1
                 return
+            if self._deterministic and Path(os.path.realpath(entry.path)) != Path(
+                os.path.abspath(entry.path)
+            ):
+                raise InventoryError("inventory entry escapes its root through a symlink")
             if entry.is_dir(follow_symlinks=False):
                 self._process_directory(entry, stack)
                 return
             if entry.is_file(follow_symlinks=False):
                 self._process_file(entry)
+        except InventoryError:
+            raise
         except OSError:
-            self._counters.errors += 1
+            if self._resume_active:
+                self._counters.errors += 1
+            else:
+                self._prefix_counters.errors += 1
 
     def _process_directory(
         self,
@@ -262,7 +392,10 @@ class InventoryTraversal:
             entry.path,
             file_attributes=attributes,
         ):
-            self._counters.excluded_directories += 1
+            if self._resume_active:
+                self._counters.excluded_directories += 1
+            else:
+                self._prefix_counters.excluded_directories += 1
             return
         stack.append((entry.path, None))
 
@@ -271,6 +404,19 @@ class InventoryTraversal:
             return
         item_stat = entry.stat(follow_symlinks=False)
         observation = FileObservation.capture(entry, item_stat)
+        if self._observation_observer is not None:
+            self._observation_observer(observation)
+        if not self._resume_active:
+            self._prefix_counters.files_seen += 1
+            self._prefix_counters.bytes_seen += observation.size
+            if self._resume_observation is not None:
+                self._resume_observation(observation)
+            if relative_cursor(self._root.path, observation.path) == self._resume_cursor:
+                self._resume_active = True
+                self._resume_found = True
+            return
+        if self._file_work_check is not None:
+            self._file_work_check(observation.size)
         self._row_sink.append(observation)
         self._counters.files_seen += 1
         self._counters.bytes_seen += observation.size
