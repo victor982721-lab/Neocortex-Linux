@@ -4,7 +4,7 @@
 
 - La release instalada y vigente sigue siendo `0.11.1-976bae8c9ba1-cp314-linux-x86_64`.
 - La primera tranche ejecutable de 0.12 está publicada en `main` y
-  `origin/main` (`8a1b70ac176579f24d291e932810a35c0b3be103`), con
+  `origin/main` (`c9c043d8179920ed84703061be6b2cd0b6cbca35`), con
   `CurationWorkBudget` opcional para la verificación exacta,
   contabilidad incremental de items/archivos/bytes, deadline monotónico,
   cancelación cooperativa y razones bounded para resultados parciales.
@@ -16,8 +16,9 @@
   batch digest, presupuesto acumulado, escritura no-replace y sucesores
   deterministas; no es un checkpoint DFS de inventario.
 - El benchmark opt-in completó 100,001 archivos sintéticos, 800,008 bytes,
-  98 batches/commits y 17,290 archivos/s, con digest de fixture
+  98 batches/commits y 18,558 archivos/s, con digest de fixture
   `1e82ea93bc55f9a5e3fa9f35561ee103d2d41bd3aa9554e0c2bb0db65d4e06ab`.
+  El recibo final es `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-04-neocortex-012/benchmark-100001-c9c043d.json`.
 - La planificación de duplicados descarta un candidato que cambia durante la
   comparación exacta, evitando grupos falsos; los previews de restore leen
   grants y acciones por una única sesión SQLite fenced, también con WAL activo.
