@@ -33,6 +33,8 @@ if TYPE_CHECKING:
     from neocortex.api.curation_verification_api import (
         CURATION_SCAN_API_SCHEMA as CURATION_SCAN_API_SCHEMA,
         CURATION_VERIFY_API_SCHEMA as CURATION_VERIFY_API_SCHEMA,
+        CurationScanOutput as CurationScanOutput,
+        CurationVerifyOutput as CurationVerifyOutput,
         curation_scan_payload as curation_scan_payload,
         curation_verify_payload as curation_verify_payload,
     )
@@ -95,7 +97,9 @@ __all__ = (
     "ContextRelationRef",
     "CurationPlanOutput",
     "CurationPlanPage",
+    "CurationScanOutput",
     "CurationSourceHead",
+    "CurationVerifyOutput",
     "DerivationRef",
     "EvidenceRef",
     "InputBinding",
@@ -149,7 +153,15 @@ _CURATION_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     ),
     "CurationPlanOutput": ("neocortex.api.curation_api", "CurationPlanOutput"),
     "CurationPlanPage": ("neocortex.curation.preview", "CurationPlanPage"),
+    "CurationScanOutput": (
+        "neocortex.api.curation_verification_api",
+        "CurationScanOutput",
+    ),
     "CurationSourceHead": ("neocortex.curation.preview", "CurationSourceHead"),
+    "CurationVerifyOutput": (
+        "neocortex.api.curation_verification_api",
+        "CurationVerifyOutput",
+    ),
     "curation_plan_payload": ("neocortex.api.curation_api", "curation_plan_payload"),
     "curation_review_payload": (
         "neocortex.api.curation_lifecycle_api",

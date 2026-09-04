@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, Literal, NotRequired, Required, TypedDict
 from uuid import uuid4
 
 from neocortex.api.curation_api import curation_plan_payload
@@ -38,6 +38,128 @@ _TRUST = {
     "tools_authorized": False,
     "actions_authorized": False,
 }
+
+
+class CurationVerificationItemPayload(TypedDict):
+    """One bounded physical verification result."""
+
+    checked_files: Required[int]
+    item_id: Required[str]
+    kind: Required[str]
+    observed_mode: Required[Literal["full_hash"] | None]
+    persisted_mode: Required[Literal["legacy_unknown", "fast", "partial", "full_hash"] | None]
+    reason: Required[str]
+    source_path: Required[str]
+    status: Required[Literal["verified", "source_changed", "not_verified", "not_applicable"]]
+    verified_files: Required[int]
+
+
+class CurationVerificationResultPayload(TypedDict):
+    """Typed result shared by direct API, SDK and MCP adapters."""
+
+    bytes_checked: Required[int]
+    coverage: Required[Literal["complete", "partial"]]
+    files_checked: Required[int]
+    items: Required[list[CurationVerificationItemPayload]]
+    items_failed: Required[int]
+    items_skipped: Required[int]
+    items_total: Required[int]
+    items_verified: Required[int]
+    plan_digest: Required[str]
+    snapshot_id: Required[str]
+    source_heads: Required[list[dict[str, Any]]]
+    status: Required[Literal["complete", "partial", "snapshot_changed"]]
+
+
+class CurationVerificationErrorPayload(TypedDict):
+    """Stable error shape for scan and verify."""
+
+    code: Required[
+        Literal[
+            "invalid_request",
+            "invalid_cursor",
+            "snapshot_changed",
+            "schema_incompatible",
+            "corrupt",
+            "unavailable",
+            "partial",
+            "not_verified",
+        ]
+    ]
+    message: Required[str]
+    retryable: Required[bool]
+
+
+class CurationScanPagePayload(TypedDict, total=False):
+    """The bounded plan page carried by scan."""
+
+    limit: NotRequired[int]
+    cursor: NotRequired[str | None]
+    next_cursor: NotRequired[str | None]
+    complete: NotRequired[bool]
+    plan_digest: NotRequired[str | None]
+    items_total: NotRequired[int]
+    items: NotRequired[list[dict[str, Any]]]
+    inventory_files: NotRequired[int]
+    duplicate_groups: NotRequired[int]
+    duplicate_members: NotRequired[int]
+    reclaimable_bytes: NotRequired[int]
+    organization_plans: NotRequired[int]
+    empty_files: NotRequired[int]
+
+
+class CurationScanResultPayload(TypedDict):
+    """Typed scan projection over the current published plan."""
+
+    plan_digest: Required[str | None]
+    snapshot_id: Required[str | None]
+    scan_id: Required[int | None]
+    root: Required[str | None]
+    source_heads: Required[list[dict[str, Any]]]
+    page: Required[CurationScanPagePayload]
+    source: Required[Literal["published_curation_plan"]]
+
+
+class CurationScanOutput(TypedDict):
+    """Canonical scan envelope."""
+
+    schema: Required[Literal["neocortex.curation-scan/v1"]]
+    schema_version: Required[Literal[1]]
+    kind: Required[Literal["neocortex_curation_scan"]]
+    operation: Required[Literal["curation-scan"]]
+    request_id: Required[str]
+    plan_id: Required[str | None]
+    scope: Required[Literal["personal"]]
+    status: Required[Literal["complete", "partial", "unavailable"]]
+    coverage: Required[Literal["complete", "partial", "unavailable"]]
+    read_only: Required[Literal[True]]
+    effects: Required[dict[str, Literal["none"]]]
+    trust: Required[dict[str, object]]
+    snapshot: Required[dict[str, object] | None]
+    result: Required[CurationScanResultPayload | None]
+    error: Required[CurationVerificationErrorPayload | None]
+    exit_code: Required[int]
+
+
+class CurationVerifyOutput(TypedDict):
+    """Canonical exact-verification envelope."""
+
+    schema: Required[Literal["neocortex.curation-verify/v1"]]
+    schema_version: Required[Literal[1]]
+    kind: Required[Literal["neocortex_curation_verify"]]
+    operation: Required[Literal["curation-verify"]]
+    request_id: Required[str]
+    plan_id: Required[str | None]
+    scope: Required[Literal["personal"]]
+    status: Required[Literal["complete", "partial", "snapshot_changed", "unavailable"]]
+    coverage: Required[Literal["complete", "partial", "unavailable"]]
+    read_only: Required[Literal[True]]
+    effects: Required[dict[str, Literal["none"]]]
+    trust: Required[dict[str, object]]
+    snapshot: Required[dict[str, object] | None]
+    result: Required[CurationVerificationResultPayload | None]
+    error: Required[CurationVerificationErrorPayload | None]
+    exit_code: Required[int]
 
 
 def _request_id(value: str | None, *, prefix: str) -> str:
@@ -188,7 +310,7 @@ def _scan_from_plan(
     page_payload: dict[str, Any],
     *,
     request_id: str,
-) -> dict[str, object]:
+) -> CurationScanOutput:
     coverage = page_payload.get("coverage")
     if coverage not in {"complete", "partial", "unavailable"}:
         coverage = "unavailable"
@@ -264,7 +386,7 @@ def curation_scan_payload(
     limit: int = 50,
     cursor: str | None = None,
     request_id: str | None = None,
-) -> dict[str, object]:
+) -> CurationScanOutput:
     """Return one bounded scan view over the currently published plan."""
 
     try:
@@ -304,7 +426,7 @@ def _verification_success(
     request_id: str,
     plan_id: str,
     cursor: str | None,
-) -> dict[str, object]:
+) -> CurationVerifyOutput:
     status = result.get("status")
     coverage = result.get("coverage")
     if status not in {"complete", "partial", "snapshot_changed"}:
@@ -428,7 +550,7 @@ def curation_verify_payload(
     limit: int = 100,
     cursor: str | None = None,
     request_id: str | None = None,
-) -> dict[str, object]:
+) -> CurationVerifyOutput:
     """Verify duplicate items from one current, digest-bound plan page."""
 
     try:
@@ -487,6 +609,13 @@ __all__ = (
     "CURATION_VERIFY_API_SCHEMA",
     "MAX_CURATION_SCAN_PAGE",
     "MAX_CURATION_VERIFY_PAGE",
+    "CurationScanOutput",
+    "CurationScanPagePayload",
+    "CurationScanResultPayload",
+    "CurationVerificationErrorPayload",
+    "CurationVerificationItemPayload",
+    "CurationVerificationResultPayload",
+    "CurationVerifyOutput",
     "curation_scan_payload",
     "curation_verify_payload",
 )

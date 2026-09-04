@@ -29,6 +29,8 @@ if TYPE_CHECKING:
     from neocortex.api.curation_verification_api import (
         CURATION_SCAN_API_SCHEMA as CURATION_SCAN_API_SCHEMA,
         CURATION_VERIFY_API_SCHEMA as CURATION_VERIFY_API_SCHEMA,
+        CurationScanOutput as CurationScanOutput,
+        CurationVerifyOutput as CurationVerifyOutput,
         curation_scan_payload as curation_scan_payload,
         curation_verify_payload as curation_verify_payload,
     )
@@ -143,7 +145,9 @@ __all__ = [  # noqa: RUF022
     "CURATION_VERIFY_API_SCHEMA",
     "CurationPlanOutput",
     "CurationPlanPage",
+    "CurationScanOutput",
     "CurationSourceHead",
+    "CurationVerifyOutput",
     "CodeRelationEndpoint",
     "CodeRoute",
     "CodeRouteConfig",
@@ -244,7 +248,15 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     ),
     "CurationPlanOutput": ("neocortex.api.curation_api", "CurationPlanOutput"),
     "CurationPlanPage": ("neocortex.curation.preview", "CurationPlanPage"),
+    "CurationScanOutput": (
+        "neocortex.api.curation_verification_api",
+        "CurationScanOutput",
+    ),
     "CurationSourceHead": ("neocortex.curation.preview", "CurationSourceHead"),
+    "CurationVerifyOutput": (
+        "neocortex.api.curation_verification_api",
+        "CurationVerifyOutput",
+    ),
     "ActionSummary": ("neocortex.runtime.models", "ActionSummary"),
     "ApplicationConfig": ("neocortex.runtime.config.application_config", "ApplicationConfig"),
     "AudioRoute": ("neocortex.capabilities.formats.audio.route", "AudioRoute"),
