@@ -469,13 +469,13 @@ def test_escaped_sql_backslash_literal_is_not_treated_as_private_unc(
     "name",
     [
         "AGENTS.md",
-        "NeoCortex_AGENTS.md",
+        "AGENTS.override.md",
         "tests/test_internal.py",
         "tests/fixtures/knowledge/query.json",
-        "docs/KNOWLEDGE_EVOLUTION_2026-07-26_010033.md",
-        "docs/TECHNICAL_AUDIT_2026-07-25_172113.md",
-        "docs/TECHNICAL_EVOLUTION_2026-07-26_173000.md",
-        "docs/TECHNICAL_EVOLUTION_REPORT_2026-07-30.md",
+        "docs/KNOWLEDGE_EVOLUTION_SAMPLE.md",
+        "docs/TECHNICAL_AUDIT_SAMPLE.md",
+        "docs/TECHNICAL_EVOLUTION_SAMPLE.md",
+        "docs/TECHNICAL_EVOLUTION_REPORT_SAMPLE.md",
     ],
 )
 def test_release_internal_members_are_rejected(

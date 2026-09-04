@@ -1,67 +1,145 @@
-# Hoja de ruta de evolución de NeoCortex
+# Roadmap de NeoCortex
 
-Este documento es la frontera operativa del programa de confiabilidad y no un
-gate agregador del producto. Cada corte se valida con pruebas individuales,
-fixtures aislados y el ejecutable instalado; el corpus real y las mutaciones
-Linux permanecen fuera del alcance hasta una autorización posterior.
+> Plan de producto basado en `HEAD 3ce58a3c978ab890039cc4da204dc62762735592`,
+> actualizado el 3 de septiembre de 2026. Un estado aquí no sustituye código,
+> pruebas ni una release instalada desde el SHA final.
 
-## Objetivo de producto
+## Resultado buscado
 
-Víctor debe poder consultar e incrementar su corpus local sin que una lectura
-cree sidecars SQLite, una publicación parcial aparezca como completa o una
-release deje más de un rollback físico. Las proyecciones siguen siendo
-reconstruibles y la fuente original conserva prioridad.
+Víctor debe poder convertir una raíz caótica en inventario, comprensión,
+relaciones, plan revisable, efectos autorizados y verificación sin encargar un
+script diferente por etapa.
 
-## Estado de los cortes
+La seguridad se mide por separación de efectos, identidad, revalidación,
+Papelera reversible y recovery. Abstenerse es correcto ante una precondición
+incierta, pero no cuenta como funcionalidad entregada para los casos soportados.
 
-| Corte | Resultado verificable | Estado |
-|---|---|---|
-| F0 — línea base | inventario de owners, topología, release y fixtures de carreras | implementado en pruebas y auditoría local |
-| F1 — lectura segura | `SQLiteReadSession` con `immutable_strict`, `snapshot_temp` y rechazo de `writer_coordinated`; `state-health` contractual v2 | implementado en las superficies públicas y con prueba arquitectónica |
-| F2 — estado publicado | backup/restore staged, integridad rápida/completa, purge con recaptura de sidecars, epoch y journal idempotente | implementado en API y fachada `databases`, con manifest de heads y gate fail-closed para publicaciones cross-owner; la atomicidad física de varios archivos sigue fuera de la garantía |
-| F3 — contratos | envelope v1, códigos y cobertura comunes, validación MCP/cliente compartido, protocolo UI con secuencias y terminales | implementado en superficies principales |
-| F4 — release | parser de IDs, staging con marcador, digest de árbol, lock previo, rollback y retención `current + rollback` | último release `5e09208` verificado; el checkout posterior exige wheelhouse local autenticado y nueva validación |
-| F5 — multimodal | manifiesto canónico de capacidades, dependencia opcional vídeo→audio, fuente Semantic de vídeo con locators | adapter, guard de cobertura y selección explícita del planner implementados; catálogo/OCR completo y propagación final quedan pendientes |
-| M6–M12 — arquitectura | Code Graph generacional, módulos Semantic/Review y aislamiento Linux-first de tooling histórico | publicación Code integrada con reader/recovery/prune y fachada Review; modularización restante sigue pendiente |
+## Línea base 0.9.0
 
-## Gates por corte
+| Capacidad | Estado |
+|---|---|
+| Inventario e identidad Linux | Implementado; generaciones, snapshots y conciliación de scans abandonados |
+| Extracción multimodal | Implementada con cobertura desigual por formato |
+| Deduplicación | Planificación implementada; la prueba exacta y disposición pública necesitan un contrato uniforme |
+| Catálogo y organización | Planes disponibles; recorrido end-to-end parcial |
+| Knowledge y contexto para agentes | Implementado read-only; cobertura/localizadores varían por owner |
+| Review | Cola durable y consulta disponibles; autorización y efectos no forman un lifecycle completo |
+| Curación integrada | `curate plan` y `--curation-preview` read-only; no existe lifecycle de efectos |
+| Mutación Linux | Foundation KIO preparada; no integrada/promovida, y `--apply`/`--organization-apply` se abstienen |
+| Backup/restore/purge | Implementados mediante `Neocortex databases` |
+| MCP | Consultas read-only; `curation_plan` paginado disponible, lifecycle de acciones pendiente |
 
-1. **Lectura y health:** las operaciones públicas de consulta dejan bytes,
-   inodos, mtimes y topología de sidecars sin cambios; un WAL no demostrable
-   produce `blocked` o `partial`, nunca lectura silenciosa.
-2. **Backup y publicación:** el manifest contiene owner, schema, hashes,
-   permisos, sidecars, época e integridad; restore valida todo en staging y
-   sólo publica con confirmación y digest.
-3. **Contratos:** CLI plana, fachada humana, MCP y UI expresan la misma
-   operación, scope, cobertura, error y `observed_epoch`; datos del corpus se
-   sanitizan antes de terminal o interfaz.
-4. **Release:** launcher, manifest y receipt apuntan al mismo SHA; staging queda
-   vacío y sólo sobreviven `current` y el rollback inmediato, sin borrar una
-   release en uso. La construcción offline reproducible con hashes por
-   dependencia es una barrera posterior, no un hecho ya demostrado.
-5. **Multimodal:** cada modalidad declara productor, owner, consumidor,
-   cobertura, dependencia y locator; una fuente parcial no puede terminar como
-   generación completa.
+## 0.10.0 — Evidencia y plan de curación
+
+**Resultado:** una persona o agente puede inspeccionar, paginar y revisar un plan
+completo sin mutar el corpus.
+
+Ya entregado en el checkout: la página `curate plan`, su digest integral,
+cursor keyset, envelope API, SDK lazy y herramienta MCP read-only. Resta integrar
+la corrida durable completa y las decisiones humanas.
+
+Entregas restantes:
+
+1. jerarquía completa `curate scan/plan/review/verify` compatible con las flags actuales;
+2. proyección común de tipo real, procedencia, valor, duplicado, versión,
+   similitud, disposición y evidencia;
+3. `verification_mode` explícito; ningún candidato fast se publica como
+   duplicado bytewise;
+4. ampliar el plan inmutable ya paginado con source heads, reason codes y
+   decisiones durables;
+5. ampliar las herramientas MCP read-only para status, páginas de evidencia,
+   plan y verificación;
+6. límites uniformes de elementos, tiempo, RAM y disco, con progreso y
+   cancelación;
+7. localizadores públicos comprobables por cada capacidad declarada.
+
+Criterios de aceptación:
+
+- fixture heterogéneo de 20–50 elementos recorre scan, plan, review y verify;
+- segunda corrida no rehace trabajo compatible;
+- cada propuesta enlaza evidencia y explica incertidumbre;
+- igualdad exacta exige comparación byte a byte;
+- CLI, SDK, GUI y MCP proyectan el mismo schema;
+- cero cambios en bytes/rutas del corpus.
+
+## 0.11.0 — Efectos Linux reversibles
+
+**Resultado:** un plan aprobado puede mover, renombrar o enviar a Papelera un
+lote pequeño y luego demostrar o recuperar el efecto.
+
+Decisión de backend:
+
+- reutilizar `neocortex.safety.kio_trash`, ya preparado pero no promovido ni
+  validado contra KIO real;
+- Papelera KDE mediante el primer cliente disponible entre `kioclient6`,
+  `kioclient5` y `kioclient`, con `move <origen> trash:/`;
+- preflight de identidad y revalidación para compensar la resolución path-bound;
+- rename POSIX no-replace separado del backend de Papelera;
+- ningún fallback a `gio trash`, `unlink`, borrado directo o copia+delete;
+- timeout o efecto ambiguo dejan recovery pendiente, sin reintento automático.
+
+Entregas:
+
+1. ledger `plan → decision → authorization → attempt → effect → verification`;
+2. autorización ligada a actor, scope, expiración, límites, source heads y
+   digest;
+3. revalidación de identidad, tamaño, mtime y hash junto a la frontera;
+4. creación segura y fsync de `.trashinfo`;
+5. receipt que permita localizar y restaurar aunque cambie el nombre interno;
+6. conciliación de cada punto de caída y estados `recovery_required`;
+7. lotes pequeños con límite de acciones/bytes y cancelación entre efectos;
+8. GUI que presenta el plan, pero no aporta una autoridad distinta.
+
+Criterios de aceptación:
+
+- mismo filesystem aprobado; `EXDEV` se abstiene;
+- symlink, hard link no soportado, destino existente o fuente mutada se abstienen;
+- crash antes/después de metadata y rename produce estado conciliable;
+- restore usa no-replace y verifica bytes;
+- una segunda aplicación del mismo plan no repite efectos;
+- el piloto no toca contenido fuera de su raíz y límites.
+
+## 0.12.0 — Escala e inteligencia ampliada
+
+**Resultado:** la ruta aprobada mantiene utilidad sobre árboles de más de
+100,000 archivos.
+
+Entregas:
+
+- streaming y batches medidos en el camino crítico;
+- checkpoints y reanudación sin reconstrucciones O(n) innecesarias;
+- procedencia y localizadores estructurales para más formatos;
+- búsqueda visual y temporal calibrada;
+- cobertura generacional ampliada a owners que hoy son best-effort;
+- políticas de canonicalización y versiones con evaluación representativa;
+- acciones MCP opcionales sólo con concesión humana externa y el mismo ledger.
+
+Criterios de aceptación:
+
+- benchmark reproducible informa archivos/s, bytes/s, memoria, commits y ETA;
+- cancelación deja checkpoint válido;
+- el estado final concilia conteos de entrada, decisiones, efectos y salida en los
+  owners locales;
+- precisión/recall y falsos positivos se miden en fixtures etiquetados;
+- no se reduce seguridad para ganar throughput.
 
 ## Orden inmediato
 
-1. Completar fixtures herméticos de owners completos, ausentes, WAL activo,
-   sidecars huérfanos y carreras, sin abrir el estado productivo durante el
-   piloto.
-2. Integrar el gate de publicación cross-owner en cada consumidor multi-owner y
-   ejercitar recuperación de journals, manteniendo `apply` bloqueado sin token
-   y sin mutar el corpus.
-3. Integrar el ledger generacional Code con el productor principal y conservar
-   el lector legacy hasta probar equivalencia, backup y restore.
-4. Reanudar desde el SHA del handoff, validar el wheelhouse local offline y
-   ejecutar suite/checks antes de promover el release correspondiente.
-5. Registrar hashes, conteos, tiempos y límites en la evidencia canónica y
-   actualizar `PENDIENTES.md`/`HISTORIAL.md` sin copiar evidencia bruta.
+1. Consolidar el contrato de página/digest y corregir deduplicación exacta, publicación y autorización.
+2. Entregar 0.10.0 read-only antes de habilitar efectos.
+3. Integrar la foundation KIO preparada y completar sus pruebas de producto con
+   runner/verificador inyectados y fixtures same-filesystem; reservar cualquier
+   prueba contra KIO real para un gate explícito posterior.
+4. Habilitar 0.11.0 sólo para lotes pequeños y revisión humana.
+5. Medir una carga grande antes de promover watcher o escala automática.
 
-## Fuera de alcance vigente
+## Límites
 
-- No se abre el corpus real para pilotos de este programa.
-- `--apply` y `--organization-apply` continúan bloqueados en Linux.
-- No se usa GitHub Actions ni auditoría remota implícita.
-- Windows/NTFS se conserva sólo como compatibilidad histórica hasta demostrar
-  consumidores y una migración preservativa.
+- No usar GitHub Actions ni proveedores remotos implícitos.
+- No abrir el corpus real durante desarrollo o validación sin autorización.
+- No reintroducir el antiguo subsistema de autoanálisis.
+- Windows/NTFS no forma parte de estas entregas.
+- Los informes de auditoría y evidencia bruta viven fuera de `docs/`.
+
+La visión estable está en
+[FILE_INTELLIGENCE_AND_CURATION.md](FILE_INTELLIGENCE_AND_CURATION.md).

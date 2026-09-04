@@ -572,52 +572,80 @@ def context_payload(
     )
 
 
-def evidence_payload(
-    query: str,
-    citation_id: str,
-    scope: str | ReadScope = ReadScope.ALL,
-    *,
-    limit: int = 8,
-    max_characters: int = 12_000,
-    request_id: str | None = None,
-) -> dict[str, object]:
-    """Resolve one citation from a fresh stable context without arbitrary file reads."""
-
-    if not isinstance(citation_id, str) or not citation_id.strip():
-        raise ValueError("citation_id cannot be blank")
-    normalized_citation_id = citation_id.strip()
-    if len(normalized_citation_id) > MAX_HUMAN_QUERY_CHARS or any(
-        ord(char) < 32 or ord(char) == 127 for char in normalized_citation_id
+def _evidence_identifier(name: str, value: str | None, *, required: bool = False) -> str | None:
+    if value is None:
+        if required:
+            raise ValueError(f"{name} cannot be blank")
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} cannot be blank")
+    normalized = value.strip()
+    if len(normalized) > MAX_HUMAN_QUERY_CHARS or any(
+        ord(char) < 32 or ord(char) == 127 for char in normalized
     ):
-        raise ValueError("citation_id is invalid")
-    context = context_payload(
-        query,
-        scope,
-        limit=limit,
-        max_characters=max_characters,
-        request_id=request_id,
-    )
-    matches: list[dict[str, object]] = []
-    scope_entries = context.get("scopes")
-    if not isinstance(scope_entries, list):
-        scope_entries = []
-    # Evidence historically consumed a loose context double.  Normalize its
-    # per-scope status here so the public evidence envelope remains valid even
-    # while older producers are being migrated.
-    context_code = context.get("exit_code", int(KnowledgeExitCode.FATAL))
-    if isinstance(context_code, bool) or not isinstance(context_code, int):
-        context_code = int(KnowledgeExitCode.FATAL)
-    evidence_scopes: list[dict[str, object]] = []
-    for entry in scope_entries:
-        if not isinstance(entry, dict):
+        raise ValueError(f"{name} is invalid")
+    return normalized
+
+
+def _context_bundle_snapshot_id(bundle: dict[str, object]) -> str | None:
+    snapshot = bundle.get("snapshot")
+    if not isinstance(snapshot, dict):
+        return None
+    value = snapshot.get("snapshot_id")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value
+
+
+def _candidate_evidence_id(citation: dict[str, object], hit: dict[str, object]) -> str | None:
+    citation_value = citation.get("evidence_id")
+    citation_id = citation_value if isinstance(citation_value, str) else None
+    evidence = hit.get("evidence")
+    hit_value = evidence.get("evidence_id") if isinstance(evidence, dict) else None
+    hit_id = hit_value if isinstance(hit_value, str) else None
+    if citation_id is not None and hit_id is not None and citation_id != hit_id:
+        return None
+    return citation_id or hit_id
+
+
+@dataclass(frozen=True, slots=True)
+class _EvidenceCandidate:
+    scope: object
+    snapshot: object
+    snapshot_id: str | None
+    citation: dict[str, object]
+    hit: dict[str, object]
+    evidence_id: str | None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "scope": self.scope,
+            "snapshot": self.snapshot,
+            "citation": self.citation,
+            "hit": self.hit,
+        }
+
+
+def _evidence_context_records(
+    scope_entries: list[object],
+    *,
+    context_code: int,
+) -> tuple[list[dict[str, object]], list[str | None], list[_EvidenceCandidate]]:
+    scopes: list[dict[str, object]] = []
+    snapshot_ids: list[str | None] = []
+    candidates: list[_EvidenceCandidate] = []
+    for value in scope_entries:
+        if not isinstance(value, dict):
             continue
-        normalized_entry = dict(entry)
-        normalized_entry.setdefault("status", _status_for_exit_code(context_code))
-        normalized_entry.setdefault("exit_code", context_code)
-        evidence_scopes.append(normalized_entry)
-        bundle = entry.get("context")
+        entry = dict(value)
+        entry.setdefault("status", _status_for_exit_code(context_code))
+        entry.setdefault("exit_code", context_code)
+        scopes.append(entry)
+        bundle = value.get("context")
         if not isinstance(bundle, dict):
             continue
+        snapshot_id = _context_bundle_snapshot_id(bundle)
+        snapshot_ids.append(snapshot_id)
         citations = bundle.get("citation_ids", [])
         selected_hits = bundle.get("selected_hits", [])
         if not isinstance(citations, list) or not isinstance(selected_hits, list):
@@ -625,60 +653,199 @@ def evidence_payload(
         for citation, hit in zip(citations, selected_hits, strict=False):
             if not isinstance(citation, dict) or not isinstance(hit, dict):
                 continue
-            if citation.get("citation_id") != normalized_citation_id:
-                continue
-            matches.append(
-                {
-                    "scope": entry.get("scope"),
-                    "snapshot": bundle.get("snapshot"),
-                    "citation": citation,
-                    "hit": hit,
-                }
+            candidates.append(
+                _EvidenceCandidate(
+                    scope=value.get("scope"),
+                    snapshot=bundle.get("snapshot"),
+                    snapshot_id=snapshot_id,
+                    citation=citation,
+                    hit=hit,
+                    evidence_id=_candidate_evidence_id(citation, hit),
+                )
             )
-    selected = _scope(scope)
-    bindings = scope_bindings(selected)
+    return scopes, snapshot_ids, candidates
+
+
+def _mark_snapshot_mismatches(
+    scopes: list[dict[str, object]],
+    expected_snapshot_id: str,
+) -> None:
+    for entry in scopes:
+        bundle = entry.get("context")
+        if not isinstance(bundle, dict):
+            continue
+        if _context_bundle_snapshot_id(bundle) == expected_snapshot_id:
+            continue
+        entry["status"] = "snapshot_changed"
+        entry["exit_code"] = int(KnowledgeExitCode.SNAPSHOT_CHANGED)
+        entry["reason"] = "evidence_expected_snapshot_changed"
+
+
+def _incomplete_evidence_error(code: int) -> dict[str, object] | None:
+    if code in {int(KnowledgeExitCode.SUCCESS), int(KnowledgeExitCode.NO_RESULTS)}:
+        return None
+    status = _status_for_exit_code(code)
+    return {
+        "code": status,
+        "message": status,
+        "retryable": code
+        in {int(KnowledgeExitCode.PARTIAL), int(KnowledgeExitCode.SNAPSHOT_CHANGED)},
+    }
+
+
+def evidence_payload(
+    query: str,
+    citation_id: str,
+    scope: str | ReadScope = ReadScope.ALL,
+    *,
+    evidence_id: str | None = None,
+    expected_snapshot_id: str | None = None,
+    limit: int = 8,
+    max_characters: int = 12_000,
+    request_id: str | None = None,
+) -> dict[str, object]:
+    """Resolve stable evidence from one fresh context without arbitrary file reads."""
+
+    normalized_query = _validate_query(query)
+    normalized_citation_id = _evidence_identifier("citation_id", citation_id, required=True)
+    assert normalized_citation_id is not None
+    normalized_evidence_id = _evidence_identifier("evidence_id", evidence_id)
+    normalized_snapshot_id = _evidence_identifier(
+        "expected_snapshot_id", expected_snapshot_id
+    )
     bounded_limit = _validate_limit(limit)
-    evidence_code = (
-        context_code
-        if matches and context_code not in {0, int(KnowledgeExitCode.NO_RESULTS)}
-        else (
-            int(KnowledgeExitCode.SUCCESS)
+    normalized_request_id = _request_id(request_id)
+    context = context_payload(
+        normalized_query,
+        scope,
+        limit=bounded_limit,
+        max_characters=max_characters,
+        request_id=normalized_request_id,
+    )
+    scope_entries = context.get("scopes")
+    if not isinstance(scope_entries, list):
+        scope_entries = []
+    context_code = context.get("exit_code", int(KnowledgeExitCode.FATAL))
+    if isinstance(context_code, bool) or not isinstance(context_code, int):
+        context_code = int(KnowledgeExitCode.FATAL)
+    evidence_scopes, snapshot_ids, candidates = _evidence_context_records(
+        scope_entries,
+        context_code=context_code,
+    )
+    if normalized_snapshot_id is not None:
+        _mark_snapshot_mismatches(evidence_scopes, normalized_snapshot_id)
+
+    snapshot_changed = (
+        normalized_snapshot_id is not None
+        and normalized_snapshot_id not in snapshot_ids
+    )
+    eligible = (
+        []
+        if snapshot_changed
+        else [
+            candidate
+            for candidate in candidates
+            if normalized_snapshot_id is None
+            or candidate.snapshot_id == normalized_snapshot_id
+        ]
+    )
+    ambiguous_alias = False
+    if normalized_evidence_id is not None:
+        selected_candidates = [
+            candidate for candidate in eligible if candidate.evidence_id == normalized_evidence_id
+        ]
+    else:
+        alias_candidates = [
+            candidate
+            for candidate in eligible
+            if candidate.citation.get("citation_id") == normalized_citation_id
+        ]
+        alias_targets = {
+            candidate.evidence_id or f"unknown:{index}"
+            for index, candidate in enumerate(alias_candidates)
+        }
+        ambiguous_alias = len(alias_targets) > 1
+        selected_candidates = [] if ambiguous_alias else alias_candidates
+
+    matches = [candidate.to_dict() for candidate in selected_candidates]
+    resolved_evidence_id = normalized_evidence_id
+    if resolved_evidence_id is None and matches:
+        resolved_evidence_id = selected_candidates[0].evidence_id
+
+    if snapshot_changed:
+        evidence_code = int(KnowledgeExitCode.SNAPSHOT_CHANGED)
+        error: dict[str, object] | None = {
+            "code": "snapshot_changed",
+            "message": "expected evidence snapshot is not the current context snapshot",
+            "retryable": True,
+        }
+    elif ambiguous_alias:
+        evidence_code = int(KnowledgeExitCode.PARTIAL)
+        error = {
+            "code": "ambiguous_citation",
+            "message": "citation alias identifies multiple evidence records; provide evidence_id",
+            "retryable": False,
+        }
+    else:
+        scope_code = federated_exit_code(evidence_scopes) if evidence_scopes else context_code
+        evidence_code = (
+            scope_code
             if matches
+            and scope_code not in {
+                int(KnowledgeExitCode.SUCCESS),
+                int(KnowledgeExitCode.NO_RESULTS),
+            }
             else (
-                context_code
-                if context_code
-                in {
-                    int(KnowledgeExitCode.FATAL),
-                    int(KnowledgeExitCode.PARTIAL),
-                    int(KnowledgeExitCode.SNAPSHOT_CHANGED),
-                    int(KnowledgeExitCode.SCHEMA_INCOMPATIBLE),
-                    int(KnowledgeExitCode.CORRUPT),
-                }
-                else int(KnowledgeExitCode.NO_RESULTS)
+                int(KnowledgeExitCode.SUCCESS)
+                if matches
+                else (
+                    scope_code
+                    if scope_code
+                    in {
+                        int(KnowledgeExitCode.FATAL),
+                        int(KnowledgeExitCode.PARTIAL),
+                        int(KnowledgeExitCode.SNAPSHOT_CHANGED),
+                        int(KnowledgeExitCode.SCHEMA_INCOMPATIBLE),
+                        int(KnowledgeExitCode.CORRUPT),
+                    }
+                    else int(KnowledgeExitCode.NO_RESULTS)
+                )
             )
         )
-    )
+        error = _incomplete_evidence_error(evidence_code)
+
+    selected = _scope(scope)
+    bindings = scope_bindings(selected)
+    result = {
+        "matches": matches,
+        "scopes": evidence_scopes,
+        "evidence_id": resolved_evidence_id,
+        "expected_snapshot_id": normalized_snapshot_id,
+    }
     return _finalize_read_payload(
         {
             "schema": READ_API_SCHEMA,
             "kind": "neocortex_evidence",
             "read_only": True,
             "scope_requested": selected.value,
-            "query": _validate_query(query),
+            "query": normalized_query,
             "citation_id": normalized_citation_id,
+            "evidence_id": resolved_evidence_id,
+            "expected_snapshot_id": normalized_snapshot_id,
             "found": bool(matches),
             "matches": matches,
             "context_exit_code": context_code,
             "limit_per_scope": bounded_limit,
             "exit_code": evidence_code,
+            "error": error,
             "scopes": evidence_scopes,
-            "result": {"matches": matches, "scopes": evidence_scopes},
+            "result": result,
         },
         ReadOperation.EVIDENCE,
         selected,
         bindings,
-        request_id=request_id,
-        query=_validate_query(query),
+        request_id=normalized_request_id,
+        query=normalized_query,
         limit=bounded_limit,
     )
 

@@ -12,11 +12,14 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import patch
 
 from neocortex.deduplication import (
     DedupIndex,
     DedupPlanner,
+    FileChangedError,
     InventoryCheckpoint,
     files_equal_exact,
     full_fingerprint,
@@ -47,6 +50,122 @@ class HashingTests(unittest.TestCase):
             )
             self.assertTrue(files_equal_exact(left_snapshot, right_snapshot))
             self.assertFalse(files_equal_exact(left_snapshot, other_snapshot))
+
+    def test_exact_comparison_validates_chunk_size_before_any_shortcut(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            left = root / "left.bin"
+            right = root / "right.bin"
+            left.write_bytes(b"left")
+            right.write_bytes(b"different-size")
+            left_snapshot = snapshot_path(left)
+            right_snapshot = snapshot_path(right)
+
+            for invalid_size in (0, -1, 64 * 1024 - 1):
+                with self.subTest(chunk_size=invalid_size):
+                    with self.assertRaisesRegex(ValueError, "at least 64 KiB"):
+                        files_equal_exact(
+                            left_snapshot,
+                            right_snapshot,
+                            chunk_size=invalid_size,
+                        )
+            for invalid_type in (True, 64 * 1024.0, "65536"):
+                with self.subTest(chunk_size=invalid_type):
+                    with self.assertRaisesRegex(TypeError, "must be an integer"):
+                        files_equal_exact(
+                            left_snapshot,
+                            right_snapshot,
+                            chunk_size=cast(Any, invalid_type),
+                        )
+
+    def test_empty_and_small_files_use_adaptive_reusable_buffers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            empty_left = root / "empty-left.bin"
+            empty_right = root / "empty-right.bin"
+            small_left = root / "small-left.bin"
+            small_right = root / "small-right.bin"
+            empty_left.touch()
+            empty_right.touch()
+            payload = b"small-payload"
+            small_left.write_bytes(payload)
+            small_right.write_bytes(payload)
+            empty_snapshots = snapshot_path(empty_left), snapshot_path(empty_right)
+            small_snapshots = snapshot_path(small_left), snapshot_path(small_right)
+            real_bytearray = bytearray
+            allocations: list[int] = []
+
+            def allocate(capacity: int) -> bytearray:
+                allocations.append(capacity)
+                return real_bytearray(capacity)
+
+            with patch(
+                "neocortex.deduplication.fingerprinting.bytearray",
+                side_effect=allocate,
+                create=True,
+            ):
+                self.assertEqual(
+                    full_fingerprint(empty_snapshots[0]),
+                    full_fingerprint(empty_snapshots[1]),
+                )
+                self.assertTrue(files_equal_exact(*empty_snapshots))
+                self.assertEqual(
+                    full_fingerprint(small_snapshots[0]),
+                    full_fingerprint(small_snapshots[1]),
+                )
+                self.assertTrue(files_equal_exact(*small_snapshots))
+
+            self.assertEqual(allocations[:4], [1, 1, 1, 1])
+            self.assertEqual(allocations[4:], [len(payload)] * 4)
+
+    def test_same_observed_identity_is_revalidated_before_equality(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            left = root / "left.bin"
+            right = root / "right.bin"
+            replacement = root / "replacement.bin"
+            left.write_bytes(b"original")
+            os.link(left, right)
+            left_snapshot = snapshot_path(left)
+            right_snapshot = snapshot_path(right)
+            self.assertEqual(left_snapshot.identity, right_snapshot.identity)
+
+            replacement.write_bytes(b"changed!")
+            os.replace(replacement, right)
+
+            self.assertFalse(files_equal_exact(left_snapshot, snapshot_path(right)))
+            with self.assertRaises(FileChangedError):
+                files_equal_exact(left_snapshot, right_snapshot)
+
+    def test_exact_comparison_revalidates_snapshots_after_reading(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            left = root / "left.bin"
+            right = root / "right.bin"
+            payload = b"same-content"
+            left.write_bytes(payload)
+            right.write_bytes(payload)
+            left_snapshot = snapshot_path(left)
+            right_snapshot = snapshot_path(right)
+            left_stat = left.stat()
+            right_stat = right.stat()
+            changed_left_stat = cast(
+                os.stat_result,
+                SimpleNamespace(
+                    st_dev=left_stat.st_dev,
+                    st_ino=left_stat.st_ino,
+                    st_size=left_stat.st_size,
+                    st_mtime_ns=left_stat.st_mtime_ns + 1,
+                    st_ctime_ns=left_stat.st_ctime_ns,
+                ),
+            )
+
+            with patch(
+                "neocortex.deduplication.fingerprinting.os.fstat",
+                side_effect=(left_stat, right_stat, changed_left_stat),
+            ):
+                with self.assertRaises(FileChangedError):
+                    files_equal_exact(left_snapshot, right_snapshot)
 
 
 class PlannerTests(unittest.TestCase):

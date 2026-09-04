@@ -1,34 +1,44 @@
-"""Bounded, read-only curation previews over published local state.
+"""Bounded, read-only curation pages over published local state.
 
 The preview composes the existing inventory duplicate plans and technical
 organization plans. It never initializes, migrates, or writes a database and
-it never authorizes a filesystem action. A bounded sample fingerprint makes
-the exact preview repeatable while persisted counters communicate coverage
-outside the sample.
+it never authorizes a filesystem action. The page contract binds a keyset cursor
+to a semantic snapshot and hashes the complete ordered source stream without
+materializing that stream in memory.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import math
-import shutil
+import os
+import stat
 import sqlite3
-import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Iterator
 from typing import Any
 
-from neocortex.deduplication.persistence.connections import connect as connect_inventory
 from neocortex.deduplication.persistence.validation import validate_inventory_schema
-from neocortex.documents.document_catalog import document_catalog_database
 from neocortex.documents.document_catalog_schema import document_catalog_schema_contract
+from neocortex.persistence.sqlite_immutable import (
+    ImmutableSQLiteUnavailable,
+    SQLiteReadSession,
+    preferred_sqlite_read_mode,
+)
 from neocortex.persistence.sqlite_schema_contract import validate_sqlite_schema_contract
 
 CURATION_PREVIEW_SCHEMA_VERSION = 1
+CURATION_PLAN_PAGE_SCHEMA_VERSION = 1
 _MAX_GROUP_MEMBERS_IN_EVIDENCE = 64
+_MAX_CURSOR_BYTES = 2_048
+_PLAN_CONTRACT = "neocortex.curation-plan/v1"
+_SNAPSHOT_CONTRACT = "neocortex.curation-snapshot/v1"
+_CURSOR_CONTRACT = "neocortex.curation-cursor/v1"
 _REQUIRED_CATALOG_PLAN_COLUMNS = {
     "plan_id",
     "catalog_run_id",
@@ -54,6 +64,20 @@ _REQUIRED_CATALOG_PLAN_COLUMNS = {
 
 class CurationStateError(RuntimeError):
     """Published state is missing or cannot satisfy the preview contract."""
+
+
+def _owner_is_regular_file(path: Path, *, label: str) -> bool:
+    """Inspect only the owner entry, rejecting endpoint links before any open."""
+
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        raise CurationStateError(f"{label} owner cannot be inspected") from error
+    if stat.S_ISLNK(mode):
+        raise CurationStateError(f"{label} owner is a symlink")
+    return stat.S_ISREG(mode)
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +148,92 @@ class CurationPreview:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class CurationPlanPage:
+    """One immutable keyset page over a complete, digest-bound curation plan."""
+
+    schema_version: int
+    coverage: str
+    missing_owners: tuple[str, ...]
+    root: str | None
+    scan_id: int | None
+    inventory_files: int
+    duplicate_groups: int
+    duplicate_members: int
+    reclaimable_bytes: int
+    organization_plans: int
+    empty_files: int
+    limit: int
+    cursor: str | None
+    next_cursor: str | None
+    snapshot_id: str
+    plan_digest: str
+    items_total: int
+    items: tuple[CurationItem, ...]
+
+    @property
+    def items_truncated(self) -> bool:
+        return self.next_cursor is not None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "coverage": self.coverage,
+            "cursor": self.cursor,
+            "duplicate_groups": self.duplicate_groups,
+            "duplicate_members": self.duplicate_members,
+            "empty_files": self.empty_files,
+            "inventory_files": self.inventory_files,
+            "items": [item.to_dict() for item in self.items],
+            "items_total": self.items_total,
+            "items_truncated": self.items_truncated,
+            "limit": self.limit,
+            "missing_owners": list(self.missing_owners),
+            "next_cursor": self.next_cursor,
+            "organization_plans": self.organization_plans,
+            "plan_digest": self.plan_digest,
+            "reclaimable_bytes": self.reclaimable_bytes,
+            "root": self.root,
+            "scan_id": self.scan_id,
+            "schema_version": self.schema_version,
+            "snapshot_id": self.snapshot_id,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class _InventoryHead:
+    scan_id: int
+    root: str
+    inventory_files: int
+    checkpoint_updated_ns: int
+
+
+@dataclass(frozen=True, slots=True)
+class _DuplicatePlanState:
+    complete: bool
+    groups: int
+    redundant_members: int
+    reclaimable_bytes: int
+    completed_ns: int | None
+    dangling_groups: int
+
+
+@dataclass(frozen=True, slots=True)
+class _OrganizationPlanScope:
+    """One completed organization run/root compatible with the inventory head."""
+
+    catalog_run_id: int
+    organization_root: str
+
+
+type _SortKey = tuple[int, int, str, int]
+
+
+@dataclass(frozen=True, slots=True)
+class _CursorState:
+    snapshot_id: str
+    key: _SortKey
+
+
 def _canonical_json(value: object) -> str:
     return json.dumps(
         value,
@@ -134,57 +244,22 @@ def _canonical_json(value: object) -> str:
     )
 
 
-def _snapshot_signature(path: Path) -> tuple[tuple[str, int, int, int, int], ...]:
-    """Return metadata for one database and any adjacent WAL/SHM owners."""
-
-    paths = [path]
-    paths.extend(
-        candidate
-        for suffix in ("-journal", "-wal", "-shm")
-        if (candidate := path.with_name(path.name + suffix)).exists()
-    )
-    signature: list[tuple[str, int, int, int, int]] = []
-    for source in paths:
-        try:
-            stat = source.stat()
-        except FileNotFoundError:
-            return ()
-        signature.append(
-            (source.name, stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
-        )
-    return tuple(signature)
-
-
 @contextmanager
-def _readonly_sqlite_snapshot(path: Path, *, label: str) -> Iterator[Path]:
-    """Copy one stable SQLite owner before opening it, without touching the owner."""
+def _readonly_sqlite_connection(
+    path: Path,
+    *,
+    label: str,
+) -> Iterator[sqlite3.Connection]:
+    """Read one owner through the shared lstat/O_NOFOLLOW/fence kernel."""
 
-    temporary = tempfile.TemporaryDirectory(
-        prefix="neocortex-curation-",
-        dir="/tmp",
-    )
     try:
-        target_directory = Path(temporary.name)
-        snapshot: Path | None = None
-        for _attempt in range(2):
-            before = _snapshot_signature(path)
-            if not before:
-                raise CurationStateError(f"{label} state changed or disappeared during snapshot")
-            if any(name.endswith("-journal") for name, *_rest in before):
-                raise CurationStateError(f"{label} SQLite journal is active")
-            for name, _device, _inode, _size, _mtime in before:
-                shutil.copyfile(path.with_name(name), target_directory / name)
-            after = _snapshot_signature(path)
-            if before == after:
-                snapshot = target_directory / path.name
-                break
-            for child in target_directory.iterdir():
-                child.unlink()
-        if snapshot is None:
-            raise CurationStateError(f"{label} state changed during read-only snapshot")
-        yield snapshot
-    finally:
-        temporary.cleanup()
+        mode = preferred_sqlite_read_mode(path)
+        with SQLiteReadSession(path, mode=mode, timeout_seconds=60.0) as connection:
+            yield connection
+    except FileNotFoundError as error:
+        raise CurationStateError(f"{label} state changed or disappeared during read") from error
+    except ImmutableSQLiteUnavailable as error:
+        raise CurationStateError(f"{label} read refused: {error}") from error
 
 
 def _table_columns(connection: sqlite3.Connection, table: str) -> set[str]:
@@ -195,16 +270,32 @@ def _table_columns(connection: sqlite3.Connection, table: str) -> set[str]:
     return columns
 
 
-def _latest_scan(connection: sqlite3.Connection) -> tuple[int, str, int]:
+def _published_inventory_head(connection: sqlite3.Connection) -> _InventoryHead:
+    """Select one complete inventory only through its valid publication head."""
+
     _table_columns(connection, "scans")
+    _table_columns(connection, "inventory_checkpoints")
     row = connection.execute(
-        """SELECT scan_id,root,files_seen FROM scans
-        WHERE status='complete' AND errors=0 AND completed_ns IS NOT NULL
-        ORDER BY scan_id DESC LIMIT 1"""
+        """SELECT c.scan_id,s.root,s.files_seen,c.updated_ns,
+        (SELECT COUNT(*) FROM files f WHERE f.scan_id=s.scan_id) AS stored_files
+        FROM inventory_checkpoints c
+        JOIN scans s ON s.scan_id=c.scan_id AND s.root=c.root COLLATE BINARY
+        WHERE c.valid=1 AND s.status='complete' AND s.errors=0
+          AND s.completed_ns IS NOT NULL
+        ORDER BY c.updated_ns DESC,c.root COLLATE BINARY,c.scan_id DESC
+        LIMIT 1"""
     ).fetchone()
-    if row is None or row[1] is None or row[2] is None:
-        raise CurationStateError("curation state has no complete inventory scan")
-    return int(row[0]), str(row[1]), int(row[2])
+    if row is None or any(value is None for value in row):
+        raise CurationStateError("curation state has no published complete inventory scan")
+    inventory_files = int(row[2])
+    if inventory_files != int(row[4]):
+        raise CurationStateError("published inventory file count is inconsistent")
+    return _InventoryHead(
+        scan_id=int(row[0]),
+        root=str(row[1]),
+        inventory_files=inventory_files,
+        checkpoint_updated_ns=int(row[3]),
+    )
 
 
 def _identity_payload(
@@ -236,75 +327,154 @@ def _identity_payload(
     }
 
 
-def _duplicate_summary(
+def _duplicate_plan_state(
     connection: sqlite3.Connection,
     scan_id: int,
-) -> tuple[int, int, int]:
-    row = connection.execute(
+) -> _DuplicatePlanState:
+    """Require the terminal summary before exposing any persisted group."""
+
+    actual = connection.execute(
         """SELECT COUNT(*),COALESCE(SUM(redundant_count),0),
         COALESCE(SUM(reclaimable_bytes),0)
         FROM planned_duplicate_groups WHERE scan_id=?""",
         (scan_id,),
     ).fetchone()
-    if row is None:
-        return 0, 0, 0
-    return int(row[0]), int(row[1]), int(row[2])
+    if actual is None:
+        actual = (0, 0, 0)
+    actual_groups, actual_redundant, actual_reclaimable = (
+        int(actual[0]),
+        int(actual[1]),
+        int(actual[2]),
+    )
+    summary = connection.execute(
+        """SELECT group_count,redundant_files,reclaimable_bytes,completed_ns
+        FROM duplicate_plan_summaries WHERE scan_id=?""",
+        (scan_id,),
+    ).fetchone()
+    if summary is None:
+        return _DuplicatePlanState(False, 0, 0, 0, None, actual_groups)
+
+    expected_groups = int(summary[0])
+    expected_redundant = int(summary[1])
+    expected_reclaimable = int(summary[2])
+    completed_ns = int(summary[3])
+    stored_members = int(
+        connection.execute(
+            """SELECT COUNT(*) FROM planned_duplicate_members m
+            JOIN planned_duplicate_groups g ON g.group_id=m.group_id
+            WHERE g.scan_id=?""",
+            (scan_id,),
+        ).fetchone()[0]
+    )
+    complete = (
+        (actual_groups, actual_redundant, actual_reclaimable)
+        == (expected_groups, expected_redundant, expected_reclaimable)
+        and stored_members == expected_groups + expected_redundant
+    )
+    if not complete:
+        return _DuplicatePlanState(False, 0, 0, 0, completed_ns, actual_groups)
+    return _DuplicatePlanState(
+        True,
+        expected_groups,
+        expected_redundant,
+        expected_reclaimable,
+        completed_ns,
+        0,
+    )
 
 
-def _duplicate_items(
+def _duplicate_item(
     connection: sqlite3.Connection,
     scan_id: int,
-    limit: int,
-) -> list[CurationItem]:
+    row: Any,
+    digest: Any,
+) -> CurationItem:
+    group_id = int(row[0])
+    redundant_count = int(row[3])
+    verification_mode = "legacy_unknown"
+    _digest_record(
+        digest,
+        "duplicate_group",
+        {
+            "full_fingerprint": str(row[5]),
+            "group_id": group_id,
+            "keep_path": str(row[2]),
+            "reclaimable_bytes": int(row[4]),
+            "redundant_count": redundant_count,
+            "scan_id": scan_id,
+            "size": int(row[1]),
+            "verification_mode": verification_mode,
+        },
+    )
+    member_payload: list[dict[str, object]] = []
+    member_count = 0
+    members = connection.execute(
+        """SELECT member_order,role,path,volume_id,file_id,size,mtime_ns,birthtime_ns
+        FROM planned_duplicate_members WHERE group_id=?
+        ORDER BY member_order""",
+        (group_id,),
+    )
+    for member in members:
+        identity = _identity_payload(member[3], member[4], member[7])
+        member_record = {
+            "identity": identity,
+            "member_order": int(member[0]),
+            "mtime_ns": int(member[6]),
+            "path": str(member[2]),
+            "role": str(member[1]),
+            "size": int(member[5]),
+        }
+        _digest_record(
+            digest,
+            "duplicate_member",
+            {"group_id": group_id, **member_record},
+        )
+        if member_count < _MAX_GROUP_MEMBERS_IN_EVIDENCE:
+            member_payload.append(
+                member_record
+            )
+        member_count += 1
+    if member_count != redundant_count + 1:
+        raise CurationStateError(f"duplicate group {group_id} member count is inconsistent")
+    return CurationItem(
+        item_id=f"duplicate:{scan_id}:{group_id}",
+        kind="duplicate_group",
+        status="review",
+        action="review_duplicate_group",
+        source_path=str(row[2]),
+        destination_path=None,
+        reason="duplicate_content_candidate",
+        evidence={
+            "full_fingerprint": str(row[5]),
+            "group_id": group_id,
+            "keep_path": str(row[2]),
+            "member_count": member_count,
+            "members": member_payload,
+            "members_truncated": member_count > _MAX_GROUP_MEMBERS_IN_EVIDENCE,
+            "reclaimable_bytes": int(row[4]),
+            "size": int(row[1]),
+            "verification_mode": verification_mode,
+        },
+    )
+
+
+def _iter_duplicate_items(
+    connection: sqlite3.Connection,
+    scan_id: int,
+    digest: Any,
+) -> Iterator[tuple[_SortKey, CurationItem]]:
     rows = connection.execute(
         """SELECT group_id,size,keep_path,redundant_count,reclaimable_bytes,
         full_fingerprint FROM planned_duplicate_groups WHERE scan_id=?
-        ORDER BY reclaimable_bytes DESC,keep_path,group_id LIMIT ?""",
-        (scan_id, limit),
-    ).fetchall()
-    items: list[CurationItem] = []
+        ORDER BY reclaimable_bytes DESC,keep_path COLLATE BINARY,group_id""",
+        (scan_id,),
+    )
     for row in rows:
-        members = connection.execute(
-            """SELECT member_order,role,path,volume_id,file_id,size,mtime_ns,birthtime_ns
-            FROM planned_duplicate_members WHERE group_id=?
-            ORDER BY member_order LIMIT ?""",
-            (int(row[0]), _MAX_GROUP_MEMBERS_IN_EVIDENCE + 1),
-        ).fetchall()
-        member_payload = []
-        for member in members[:_MAX_GROUP_MEMBERS_IN_EVIDENCE]:
-            identity = _identity_payload(member[3], member[4], member[7])
-            member_payload.append(
-                {
-                    "identity": identity,
-                    "member_order": int(member[0]),
-                    "mtime_ns": int(member[6]),
-                    "path": str(member[2]),
-                    "role": str(member[1]),
-                    "size": int(member[5]),
-                }
-            )
-        items.append(
-            CurationItem(
-                item_id=f"duplicate:{scan_id}:{int(row[0])}",
-                kind="duplicate_group",
-                status="review",
-                action="review_duplicate_group",
-                source_path=str(row[2]),
-                destination_path=None,
-                reason="exact_duplicate_content",
-                evidence={
-                    "full_fingerprint": str(row[5]),
-                    "group_id": int(row[0]),
-                    "keep_path": str(row[2]),
-                    "member_count": int(row[3]) + 1,
-                    "members": member_payload,
-                    "members_truncated": len(members) > _MAX_GROUP_MEMBERS_IN_EVIDENCE,
-                    "reclaimable_bytes": int(row[4]),
-                    "size": int(row[1]),
-                },
-            )
+        item = _duplicate_item(connection, scan_id, row, digest)
+        yield (
+            (0, -int(row[4]), str(row[2]), int(row[0])),
+            item,
         )
-    return items
 
 
 def _empty_file_summary(connection: sqlite3.Connection, scan_id: int) -> int:
@@ -315,18 +485,23 @@ def _empty_file_summary(connection: sqlite3.Connection, scan_id: int) -> int:
     )
 
 
-def _empty_file_items(
+def _iter_empty_file_items(
     connection: sqlite3.Connection,
     scan_id: int,
-    limit: int,
-) -> list[CurationItem]:
+    digest: Any,
+) -> Iterator[tuple[_SortKey, CurationItem]]:
     rows = connection.execute(
         """SELECT path,volume_id,file_id,size,mtime_ns,birthtime_ns
-        FROM files WHERE scan_id=? AND size=0 ORDER BY path LIMIT ?""",
-        (scan_id, limit),
-    ).fetchall()
-    return [
-        CurationItem(
+        FROM files WHERE scan_id=? AND size=0 ORDER BY path COLLATE BINARY""",
+        (scan_id,),
+    )
+    for row in rows:
+        evidence = {
+            "identity": _identity_payload(row[1], row[2], row[5]),
+            "mtime_ns": int(row[4]),
+            "size": int(row[3]),
+        }
+        item = CurationItem(
             item_id=f"empty:{scan_id}:{row[0]!s}",
             kind="empty_file",
             status="review",
@@ -334,17 +509,44 @@ def _empty_file_items(
             source_path=str(row[0]),
             destination_path=None,
             reason="empty_file_requires_human_review",
-            evidence={
-                "identity": _identity_payload(row[1], row[2], row[5]),
-                "mtime_ns": int(row[4]),
-                "size": int(row[3]),
-            },
+            evidence=evidence,
         )
-        for row in rows
-    ]
+        _digest_record(digest, "empty_file", item.to_dict())
+        yield (2, 0, str(row[0]), 0), item
 
 
-def _organization_summary(connection: sqlite3.Connection) -> int:
+def _path_is_within_root(source_path: object, root: str) -> bool:
+    """Check a persisted source path lexically, without resolving filesystem links."""
+
+    try:
+        if isinstance(source_path, Path):
+            source_text = str(source_path)
+        elif isinstance(source_path, str):
+            source_text = source_path
+        else:
+            return False
+        source = Path(os.path.abspath(source_text))
+        root_path = Path(os.path.abspath(root))
+    except (OSError, TypeError, ValueError):
+        return False
+    return source == root_path or root_path in source.parents
+
+
+def _organization_plan_scope(
+    connection: sqlite3.Connection,
+    *,
+    inventory_root: str,
+) -> _OrganizationPlanScope | None:
+    """Select one completed plan run and reject ambiguous or foreign sources.
+
+    Organization planning is a separate catalog run and may leave older roots
+    active in the append-only table.  The curation page deliberately selects
+    the newest completed ``plan`` run whose active rows use exactly one
+    destination root and contain at least one source under the published
+    inventory root.  Row iteration still applies the same source-root fence,
+    so a mixed catalog can never leak a source from another inventory root.
+    """
+
     columns = _table_columns(connection, "organization_plans")
     missing = _REQUIRED_CATALOG_PLAN_COLUMNS - columns
     if missing:
@@ -352,27 +554,93 @@ def _organization_summary(connection: sqlite3.Connection) -> int:
         raise CurationStateError(
             f"organization_plans schema lacks required columns: {missing_text}"
         )
-    return int(
-        connection.execute(
-            "SELECT COUNT(*) FROM organization_plans WHERE status<>'superseded'"
-        ).fetchone()[0]
+    _table_columns(connection, "catalog_runs")
+    candidates = connection.execute(
+        """SELECT r.catalog_run_id,
+        MIN(p.organization_root COLLATE BINARY),
+        MAX(p.organization_root COLLATE BINARY),
+        COUNT(DISTINCT p.organization_root COLLATE BINARY),
+        r.completed_ns
+        FROM catalog_runs AS r
+        JOIN organization_plans AS p ON p.catalog_run_id=r.catalog_run_id
+        WHERE p.status<>'superseded'
+          AND r.mode='plan' AND r.status='completed'
+          AND r.completed_ns IS NOT NULL
+        GROUP BY r.catalog_run_id,r.completed_ns
+        ORDER BY r.completed_ns DESC,r.catalog_run_id DESC"""
     )
+    for row in candidates:
+        if int(row[3]) != 1 or row[1] is None or row[2] is None:
+            continue
+        organization_root = str(row[1])
+        if str(row[1]) != str(row[2]):
+            continue
+        run_id = int(row[0])
+        source_rows = connection.execute(
+            """SELECT source_path FROM organization_plans
+            WHERE catalog_run_id=?
+              AND organization_root COLLATE BINARY=? COLLATE BINARY
+              AND status<>'superseded'
+            ORDER BY plan_id""",
+            (run_id, organization_root),
+        )
+        if any(_path_is_within_root(source[0], inventory_root) for source in source_rows):
+            return _OrganizationPlanScope(run_id, organization_root)
+    return None
 
 
-def _organization_items(
+def _iter_organization_rows(
     connection: sqlite3.Connection,
-    limit: int,
-) -> list[CurationItem]:
+    *,
+    inventory_root: str,
+    scope: _OrganizationPlanScope | None,
+) -> Iterator[Any]:
+    if scope is None:
+        return
     rows = connection.execute(
         """SELECT plan_id,catalog_run_id,source_kind,file_key,source_path,
         destination_path,organization_root,volume_id,file_id,size,mtime_ns,
         birthtime_ns,classifier_signature,primary_kind,confidence,status,reason,
-        evidence_json FROM organization_plans WHERE status<>'superseded'
-        ORDER BY plan_id DESC LIMIT ?""",
-        (limit,),
-    ).fetchall()
-    items: list[CurationItem] = []
+        evidence_json FROM organization_plans
+        WHERE catalog_run_id=?
+          AND organization_root COLLATE BINARY=? COLLATE BINARY
+          AND status<>'superseded'
+        ORDER BY plan_id DESC""",
+        (scope.catalog_run_id, scope.organization_root),
+    )
     for row in rows:
+        if _path_is_within_root(row[4], inventory_root):
+            yield row
+
+
+def _organization_summary(
+    connection: sqlite3.Connection,
+    *,
+    inventory_root: str,
+    scope: _OrganizationPlanScope | None,
+) -> int:
+    return sum(
+        1
+        for _row in _iter_organization_rows(
+            connection,
+            inventory_root=inventory_root,
+            scope=scope,
+        )
+    )
+
+
+def _iter_organization_items(
+    connection: sqlite3.Connection,
+    digest: Any,
+    *,
+    inventory_root: str,
+    scope: _OrganizationPlanScope | None,
+) -> Iterator[tuple[_SortKey, CurationItem]]:
+    for row in _iter_organization_rows(
+        connection,
+        inventory_root=inventory_root,
+        scope=scope,
+    ):
         try:
             evidence = json.loads(str(row[17]))
         except (TypeError, ValueError) as error:
@@ -398,8 +666,7 @@ def _organization_items(
             if status == "blocked"
             else "observe_organization_plan"
         )
-        items.append(
-            CurationItem(
+        item = CurationItem(
                 item_id=f"organization:{int(row[0])}",
                 kind="organization_plan",
                 status="review",
@@ -422,9 +689,348 @@ def _organization_items(
                     "source_kind": str(row[2]),
                     "taxonomy": evidence,
                 },
-            )
         )
-    return items
+        _digest_record(digest, "organization_plan", item.to_dict())
+        yield (1, -int(row[0]), "", 0), item
+
+
+def _digest_record(digest: Any, kind: str, value: object) -> None:
+    payload = _canonical_json({"kind": kind, "value": value}).encode("utf-8")
+    digest.update(len(payload).to_bytes(8, "big"))
+    digest.update(payload)
+
+
+def _valid_snapshot_id(value: object) -> bool:
+    return bool(
+        isinstance(value, str)
+        and value.startswith("sha256:")
+        and len(value) == 71
+        and all(character in "0123456789abcdef" for character in value[7:])
+    )
+
+
+def _validated_sort_key(value: object) -> _SortKey:
+    if not isinstance(value, list) or len(value) != 4:
+        raise CurationStateError("curation cursor has an invalid key")
+    category, numeric, text, identity = value
+    if (
+        isinstance(category, bool)
+        or not isinstance(category, int)
+        or isinstance(numeric, bool)
+        or not isinstance(numeric, int)
+        or not isinstance(text, str)
+        or isinstance(identity, bool)
+        or not isinstance(identity, int)
+    ):
+        raise CurationStateError("curation cursor has an invalid key")
+    key = (category, numeric, text, identity)
+    valid = (
+        (category == 0 and numeric <= 0 and bool(text) and identity > 0)
+        or (category == 1 and numeric < 0 and text == "" and identity == 0)
+        or (category == 2 and numeric == 0 and bool(text) and identity == 0)
+    )
+    if not valid:
+        raise CurationStateError("curation cursor has an invalid key")
+    return key
+
+
+def _encode_cursor(snapshot_id: str, key: _SortKey) -> str:
+    payload = {
+        "contract": _CURSOR_CONTRACT,
+        "key": list(key),
+        "snapshot_id": snapshot_id,
+    }
+    encoded = base64.urlsafe_b64encode(_canonical_json(payload).encode("utf-8"))
+    return encoded.rstrip(b"=").decode("ascii")
+
+
+def _decode_cursor(cursor: str | None) -> _CursorState | None:
+    if cursor is None:
+        return None
+    if not isinstance(cursor, str) or not cursor or len(cursor.encode("utf-8")) > _MAX_CURSOR_BYTES:
+        raise CurationStateError("curation cursor is invalid")
+    try:
+        encoded = cursor.encode("ascii")
+        padding = b"=" * (-len(encoded) % 4)
+        raw = base64.b64decode(encoded + padding, altchars=b"-_", validate=True)
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, ValueError, binascii.Error, json.JSONDecodeError) as error:
+        raise CurationStateError("curation cursor is invalid") from error
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"contract", "key", "snapshot_id"}
+        or payload.get("contract") != _CURSOR_CONTRACT
+        or not _valid_snapshot_id(payload.get("snapshot_id"))
+    ):
+        raise CurationStateError("curation cursor is invalid")
+    state = _CursorState(
+        snapshot_id=str(payload["snapshot_id"]),
+        key=_validated_sort_key(payload["key"]),
+    )
+    if _encode_cursor(state.snapshot_id, state.key) != cursor:
+        raise CurationStateError("curation cursor is not canonical")
+    return state
+
+
+def _semantic_snapshot_id(plan_digest: str) -> str:
+    payload = _canonical_json(
+        {"contract": _SNAPSHOT_CONTRACT, "plan_digest": plan_digest}
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def _plan_envelope(
+    *,
+    coverage: str,
+    missing_owners: tuple[str, ...],
+    head: _InventoryHead | None,
+    duplicate_plan: _DuplicatePlanState | None,
+    organization_plans: int,
+    organization_scope: _OrganizationPlanScope | None,
+    empty_files: int,
+) -> dict[str, object]:
+    return {
+        "contract": _PLAN_CONTRACT,
+        "coverage": coverage,
+        "duplicate_plan": (
+            None
+            if duplicate_plan is None
+            else {
+                "complete": duplicate_plan.complete,
+                "completed_ns": duplicate_plan.completed_ns,
+                "dangling_groups": duplicate_plan.dangling_groups,
+                "groups": duplicate_plan.groups,
+                "reclaimable_bytes": duplicate_plan.reclaimable_bytes,
+                "redundant_members": duplicate_plan.redundant_members,
+                "verification_mode": "legacy_unknown",
+            }
+        ),
+        "empty_files": empty_files,
+        "inventory_head": (
+            None
+            if head is None
+            else {
+                "checkpoint_updated_ns": head.checkpoint_updated_ns,
+                "inventory_files": head.inventory_files,
+                "root": head.root,
+                "scan_id": head.scan_id,
+            }
+        ),
+        "missing_owners": list(missing_owners),
+        "organization_plans": organization_plans,
+        "organization_scope": (
+            None
+            if organization_scope is None
+            else {
+                "catalog_run_id": organization_scope.catalog_run_id,
+                "organization_root": organization_scope.organization_root,
+            }
+        ),
+        "schema_version": CURATION_PLAN_PAGE_SCHEMA_VERSION,
+    }
+
+
+def _consume_page_item(
+    key: _SortKey,
+    item: CurationItem,
+    *,
+    cursor_state: _CursorState | None,
+    page_items: list[CurationItem],
+    page_keys: list[_SortKey],
+    limit: int,
+    cursor_found: list[bool],
+    has_more: list[bool],
+) -> None:
+    if cursor_state is not None and not cursor_found[0]:
+        if key == cursor_state.key:
+            cursor_found[0] = True
+        return
+    if len(page_items) < limit:
+        page_items.append(item)
+        page_keys.append(key)
+    else:
+        has_more[0] = True
+
+
+def _build_plan_page_from_connections(
+    *,
+    inventory: sqlite3.Connection,
+    catalog: sqlite3.Connection | None,
+    missing_owners: tuple[str, ...],
+    head: _InventoryHead,
+    duplicate_plan: _DuplicatePlanState,
+    limit: int,
+    cursor: str | None,
+    cursor_state: _CursorState | None,
+) -> CurationPlanPage:
+    organization_scope = (
+        None
+        if catalog is None
+        else _organization_plan_scope(catalog, inventory_root=head.root)
+    )
+    organization_plans = (
+        0
+        if catalog is None
+        else _organization_summary(
+            catalog,
+            inventory_root=head.root,
+            scope=organization_scope,
+        )
+    )
+    empty_files = _empty_file_summary(inventory, head.scan_id)
+    coverage = (
+        "complete"
+        if not missing_owners and duplicate_plan.complete
+        else "partial"
+    )
+    digest = hashlib.sha256()
+    _digest_record(
+        digest,
+        "plan",
+        _plan_envelope(
+            coverage=coverage,
+            missing_owners=missing_owners,
+            head=head,
+            duplicate_plan=duplicate_plan,
+            organization_plans=organization_plans,
+            organization_scope=organization_scope,
+            empty_files=empty_files,
+        ),
+    )
+
+    page_items: list[CurationItem] = []
+    page_keys: list[_SortKey] = []
+    cursor_found = [cursor_state is None]
+    has_more = [False]
+    items_total = 0
+
+    if duplicate_plan.complete:
+        for key, item in _iter_duplicate_items(inventory, head.scan_id, digest):
+            items_total += 1
+            _consume_page_item(
+                key,
+                item,
+                cursor_state=cursor_state,
+                page_items=page_items,
+                page_keys=page_keys,
+                limit=limit,
+                cursor_found=cursor_found,
+                has_more=has_more,
+            )
+    if catalog is not None:
+        for key, item in _iter_organization_items(
+            catalog,
+            digest,
+            inventory_root=head.root,
+            scope=organization_scope,
+        ):
+            items_total += 1
+            _consume_page_item(
+                key,
+                item,
+                cursor_state=cursor_state,
+                page_items=page_items,
+                page_keys=page_keys,
+                limit=limit,
+                cursor_found=cursor_found,
+                has_more=has_more,
+            )
+    for key, item in _iter_empty_file_items(inventory, head.scan_id, digest):
+        items_total += 1
+        _consume_page_item(
+            key,
+            item,
+            cursor_state=cursor_state,
+            page_items=page_items,
+            page_keys=page_keys,
+            limit=limit,
+            cursor_found=cursor_found,
+            has_more=has_more,
+        )
+
+    expected_total = duplicate_plan.groups + organization_plans + empty_files
+    if items_total != expected_total:
+        raise CurationStateError("curation plan item count changed while reading its snapshot")
+    plan_digest = "sha256:" + digest.hexdigest()
+    snapshot_id = _semantic_snapshot_id(plan_digest)
+    if cursor_state is not None and cursor_state.snapshot_id != snapshot_id:
+        raise CurationStateError("curation cursor snapshot changed")
+    if cursor_state is not None and not cursor_found[0]:
+        raise CurationStateError("curation cursor key is not present in its snapshot")
+    next_cursor = (
+        _encode_cursor(snapshot_id, page_keys[-1])
+        if has_more[0] and page_keys
+        else None
+    )
+    return CurationPlanPage(
+        schema_version=CURATION_PLAN_PAGE_SCHEMA_VERSION,
+        coverage=coverage,
+        missing_owners=missing_owners,
+        root=head.root,
+        scan_id=head.scan_id,
+        inventory_files=head.inventory_files,
+        duplicate_groups=duplicate_plan.groups,
+        duplicate_members=duplicate_plan.redundant_members,
+        reclaimable_bytes=duplicate_plan.reclaimable_bytes,
+        organization_plans=organization_plans,
+        empty_files=empty_files,
+        limit=limit,
+        cursor=cursor,
+        next_cursor=next_cursor,
+        snapshot_id=snapshot_id,
+        plan_digest=plan_digest,
+        items_total=items_total,
+        items=tuple(page_items),
+    )
+
+
+def _unavailable_plan_page(
+    *,
+    missing_owners: tuple[str, ...],
+    limit: int,
+    cursor: str | None,
+    cursor_state: _CursorState | None,
+) -> CurationPlanPage:
+    digest = hashlib.sha256()
+    _digest_record(
+        digest,
+        "plan",
+        _plan_envelope(
+            coverage="unavailable",
+            missing_owners=missing_owners,
+            head=None,
+            duplicate_plan=None,
+            organization_plans=0,
+            organization_scope=None,
+            empty_files=0,
+        ),
+    )
+    plan_digest = "sha256:" + digest.hexdigest()
+    snapshot_id = _semantic_snapshot_id(plan_digest)
+    if cursor_state is not None:
+        if cursor_state.snapshot_id != snapshot_id:
+            raise CurationStateError("curation cursor snapshot changed")
+        raise CurationStateError("curation cursor key is not present in its snapshot")
+    return CurationPlanPage(
+        schema_version=CURATION_PLAN_PAGE_SCHEMA_VERSION,
+        coverage="unavailable",
+        missing_owners=missing_owners,
+        root=None,
+        scan_id=None,
+        inventory_files=0,
+        duplicate_groups=0,
+        duplicate_members=0,
+        reclaimable_bytes=0,
+        organization_plans=0,
+        empty_files=0,
+        limit=limit,
+        cursor=cursor,
+        next_cursor=None,
+        snapshot_id=snapshot_id,
+        plan_digest=plan_digest,
+        items_total=0,
+        items=(),
+    )
 
 
 def _preview_fingerprint(
@@ -460,114 +1066,103 @@ def _preview_fingerprint(
     return "sha256:" + hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
 
-def build_curation_preview(state_directory: Path, *, limit: int) -> CurationPreview:
-    """Read published inventory and catalog plans without changing their bytes."""
+def build_curation_plan_page(
+    state_directory: Path,
+    limit: int,
+    cursor: str | None = None,
+) -> CurationPlanPage:
+    """Read one stable keyset page without mutating owners or corpus content."""
 
     if type(limit) is not int or not 1 <= limit <= 10_000:
-        raise ValueError("curation preview limit must be between 1 and 10000")
-    inventory_path = state_directory / "dedup.sqlite3"
-    catalog_path = state_directory / "document_catalog.sqlite3"
+        raise ValueError("curation page limit must be between 1 and 10000")
+    cursor_state = _decode_cursor(cursor)
+    state_path = Path(state_directory)
+    inventory_path = state_path / "dedup.sqlite3"
+    catalog_path = state_path / "document_catalog.sqlite3"
     missing_owners = tuple(
         filename
         for path, filename in (
             (inventory_path, "dedup.sqlite3"),
             (catalog_path, "document_catalog.sqlite3"),
         )
-        if not path.is_file()
+        if not _owner_is_regular_file(path, label=filename)
     )
     if "dedup.sqlite3" in missing_owners:
-        return CurationPreview(
-            schema_version=CURATION_PREVIEW_SCHEMA_VERSION,
-            coverage="unavailable",
+        return _unavailable_plan_page(
             missing_owners=missing_owners,
-            root=None,
-            scan_id=None,
-            inventory_files=0,
-            duplicate_groups=0,
-            duplicate_members=0,
-            reclaimable_bytes=0,
-            organization_plans=0,
-            empty_files=0,
-            preview_limit=limit,
-            items_total=0,
-            items_truncated=False,
-            preview_fingerprint=_preview_fingerprint(
-                coverage="unavailable",
-                missing_owners=missing_owners,
-                scan_id=None,
-                root=None,
-                inventory_files=0,
-                duplicate_groups=0,
-                duplicate_members=0,
-                reclaimable_bytes=0,
-                organization_plans=0,
-                empty_files=0,
-                preview_limit=limit,
-                items=[],
-            ),
-            items=(),
+            limit=limit,
+            cursor=cursor,
+            cursor_state=cursor_state,
         )
 
-    with _readonly_sqlite_snapshot(inventory_path, label="dedup") as inventory_snapshot:
-        with connect_inventory(inventory_snapshot, readonly=True) as inventory:
-            validate_inventory_schema(inventory)
-            scan_id, root, inventory_files = _latest_scan(inventory)
-            duplicate_groups, duplicate_members, reclaimable_bytes = _duplicate_summary(
-                inventory, scan_id
+    with _readonly_sqlite_connection(inventory_path, label="dedup") as inventory:
+        validate_inventory_schema(inventory)
+        head = _published_inventory_head(inventory)
+        duplicate_plan = _duplicate_plan_state(inventory, head.scan_id)
+        if "document_catalog.sqlite3" in missing_owners:
+            return _build_plan_page_from_connections(
+                inventory=inventory,
+                catalog=None,
+                missing_owners=missing_owners,
+                head=head,
+                duplicate_plan=duplicate_plan,
+                limit=limit,
+                cursor=cursor,
+                cursor_state=cursor_state,
             )
-            empty_files = _empty_file_summary(inventory, scan_id)
-            sampled_items = _duplicate_items(inventory, scan_id, limit)
-            if "document_catalog.sqlite3" in missing_owners:
-                organization_plans = 0
-            else:
-                with _readonly_sqlite_snapshot(
-                    catalog_path,
-                    label="document catalog",
-                ) as catalog_snapshot:
-                    with document_catalog_database(catalog_snapshot, readonly=True) as catalog:
-                        validate_sqlite_schema_contract(
-                            catalog,
-                            document_catalog_schema_contract(),
-                            label="document catalog",
-                            exact=True,
-                        )
-                        organization_plans = _organization_summary(catalog)
-                        if len(sampled_items) < limit:
-                            sampled_items.extend(
-                                _organization_items(catalog, limit - len(sampled_items))
-                            )
-            if len(sampled_items) < limit:
-                sampled_items.extend(
-                    _empty_file_items(inventory, scan_id, limit - len(sampled_items))
-                )
+        with _readonly_sqlite_connection(
+            catalog_path,
+            label="document catalog",
+        ) as catalog:
+            validate_sqlite_schema_contract(
+                catalog,
+                document_catalog_schema_contract(),
+                label="document catalog",
+                exact=True,
+            )
+            return _build_plan_page_from_connections(
+                inventory=inventory,
+                catalog=catalog,
+                missing_owners=missing_owners,
+                head=head,
+                duplicate_plan=duplicate_plan,
+                limit=limit,
+                cursor=cursor,
+                cursor_state=cursor_state,
+            )
 
-    total_items = duplicate_groups + organization_plans + empty_files
+
+def build_curation_preview(state_directory: Path, *, limit: int) -> CurationPreview:
+    """Compatibility facade over the first immutable curation-plan page."""
+
+    page = build_curation_plan_page(state_directory, limit, None)
+    sampled_items = list(page.items)
     return CurationPreview(
         schema_version=CURATION_PREVIEW_SCHEMA_VERSION,
-        coverage="complete" if not missing_owners else "partial",
-        missing_owners=missing_owners,
-        root=root,
-        scan_id=scan_id,
-        inventory_files=inventory_files,
-        duplicate_groups=duplicate_groups,
-        duplicate_members=duplicate_members,
-        reclaimable_bytes=reclaimable_bytes,
-        organization_plans=organization_plans,
-        empty_files=empty_files,
+        coverage=page.coverage,
+        missing_owners=page.missing_owners,
+        root=page.root,
+        scan_id=page.scan_id,
+        inventory_files=page.inventory_files,
+        duplicate_groups=page.duplicate_groups,
+        duplicate_members=page.duplicate_members,
+        reclaimable_bytes=page.reclaimable_bytes,
+        organization_plans=page.organization_plans,
+        empty_files=page.empty_files,
         preview_limit=limit,
-        items_total=total_items,
-        items_truncated=total_items > len(sampled_items),
+        items_total=page.items_total,
+        items_truncated=page.items_total > len(sampled_items),
         preview_fingerprint=_preview_fingerprint(
-            coverage="complete" if not missing_owners else "partial",
-            missing_owners=missing_owners,
-            scan_id=scan_id,
-            root=root,
-            inventory_files=inventory_files,
-            duplicate_groups=duplicate_groups,
-            duplicate_members=duplicate_members,
-            reclaimable_bytes=reclaimable_bytes,
-            organization_plans=organization_plans,
-            empty_files=empty_files,
+            coverage=page.coverage,
+            missing_owners=page.missing_owners,
+            scan_id=page.scan_id,
+            root=page.root,
+            inventory_files=page.inventory_files,
+            duplicate_groups=page.duplicate_groups,
+            duplicate_members=page.duplicate_members,
+            reclaimable_bytes=page.reclaimable_bytes,
+            organization_plans=page.organization_plans,
+            empty_files=page.empty_files,
             preview_limit=limit,
             items=sampled_items,
         ),
@@ -576,9 +1171,12 @@ def build_curation_preview(state_directory: Path, *, limit: int) -> CurationPrev
 
 
 __all__ = [
+    "CURATION_PLAN_PAGE_SCHEMA_VERSION",
     "CURATION_PREVIEW_SCHEMA_VERSION",
     "CurationItem",
+    "CurationPlanPage",
     "CurationPreview",
     "CurationStateError",
+    "build_curation_plan_page",
     "build_curation_preview",
 ]

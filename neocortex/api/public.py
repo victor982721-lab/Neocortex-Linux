@@ -11,6 +11,12 @@ from importlib import import_module
 from typing import TYPE_CHECKING, Any, Final
 
 if TYPE_CHECKING:
+    from neocortex.api.curation_api import (
+        CURATION_PLAN_API_SCHEMA as CURATION_PLAN_API_SCHEMA,
+        CurationPlanOutput as CurationPlanOutput,
+        curation_plan_payload as curation_plan_payload,
+    )
+    from neocortex.curation.preview import CurationPlanPage as CurationPlanPage
     from neocortex.runtime.config.application_config import ApplicationConfig as ApplicationConfig
     from neocortex.capabilities.formats.audio.models import AudioRouteConfig as AudioRouteConfig
     from neocortex.capabilities.formats.audio.models import AudioRouteSummary as AudioRouteSummary
@@ -112,6 +118,9 @@ __all__ = [  # noqa: RUF022
     "AudioRouteConfig",
     "AudioRouteSummary",
     "CapabilityFailure",
+    "CURATION_PLAN_API_SCHEMA",
+    "CurationPlanOutput",
+    "CurationPlanPage",
     "CodeRelationEndpoint",
     "CodeRoute",
     "CodeRouteConfig",
@@ -160,6 +169,7 @@ __all__ = [  # noqa: RUF022
     "list_projects",
     "reconstruct_project",
     "search_code",
+    "curation_plan_payload",
     "ContextBundle",
     "ContextContradictionRef",
     "ContextEntityRef",
@@ -191,6 +201,9 @@ __all__ = [  # noqa: RUF022
 ]
 
 _EXPORTS: Final[dict[str, tuple[str, str]]] = {
+    "CURATION_PLAN_API_SCHEMA": ("neocortex.api.curation_api", "CURATION_PLAN_API_SCHEMA"),
+    "CurationPlanOutput": ("neocortex.api.curation_api", "CurationPlanOutput"),
+    "CurationPlanPage": ("neocortex.curation.preview", "CurationPlanPage"),
     "ActionSummary": ("neocortex.runtime.models", "ActionSummary"),
     "ApplicationConfig": ("neocortex.runtime.config.application_config", "ApplicationConfig"),
     "AudioRoute": ("neocortex.capabilities.formats.audio.route", "AudioRoute"),
@@ -254,6 +267,7 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "list_projects": ("neocortex.code.ingestion.code_projects", "list_projects"),
     "reconstruct_project": ("neocortex.code.ingestion.code_projects", "reconstruct_project"),
     "search_code": ("neocortex.code.search.code_search", "search_code"),
+    "curation_plan_payload": ("neocortex.api.curation_api", "curation_plan_payload"),
     "ContextBundle": ("neocortex.knowledge.knowledge_contracts", "ContextBundle"),
     "ContextContradictionRef": (
         "neocortex.knowledge.knowledge_contracts",

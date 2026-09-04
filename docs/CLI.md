@@ -1,901 +1,163 @@
-# Guía de la interfaz de línea de comandos
+# Interfaz de línea de comandos
 
-La interfaz pública canónica de NeoCortex es el ejecutable instalado
-`Neocortex`. La definición exacta de argumentos vive en
-`neocortex/api/cli/cli_parser.py`; esta guía resume los contratos operativos
-que conviene conocer antes de usar `--help`.
+La interfaz canónica es el ejecutable instalado `Neocortex`. La definición
+exacta vive en `neocortex/api/cli/cli_parser.py` y en los subparsers de
+`neocortex.api.cli.human`; este documento organiza su uso, no sustituye
+`Neocortex --help`.
 
-## Comandos cotidianos
+## Efectos
 
-| Necesidad | Comando |
-|---|---|
-| Guía humana breve | `Neocortex help` |
-| Estado publicado | `Neocortex status --scope all` |
-| Buscar evidencia | `Neocortex search "consulta" --scope personal --limit 20` |
-| Preparar contexto citado | `Neocortex ask "consulta" --scope personal --limit 12` |
-| Inspeccionar Code | `Neocortex inspect code "consulta" --scope personal` |
-| Estado del índice Code | `Neocortex --code-status --code-json` |
-| Buscar en Code | `Neocortex --code-search "consulta" --code-search-mode hybrid` |
-| Listar proyectos Code | `Neocortex --code-projects --code-json` |
-| Reconstruir un proyecto Code | `Neocortex --code-reconstruct PROJECT_OR_ID --code-json` |
-| Explicar una derivación | `Neocortex inspect lineage IDENTIFICADOR --scope personal` |
-| Explicar salud causal Text/PDF | `Neocortex knowledge health RESOURCE_ID --scope all --json` |
-| Revisar valor sin cambios | `Neocortex review value --scope personal` |
-| Avanzar una página durable de revisión | `Neocortex review value --refresh --scope personal` |
-| Diagnóstico de una corrida | `Neocortex --status --status-json` |
-| Salud de owners SQLite | `Neocortex --state-health --state-health-json` |
+### Plan local de curación
 
-Empiece por consultas sobre estado publicado. Si debe producir cobertura nueva,
-siga el piloto de 20–50 elementos y 10–15 minutos de
-[OPERATIONS.md](OPERATIONS.md).
-
-## Comprobación previa de la instalación
-
-Ejecute primero comandos que no recorren el corpus ni escriben estado:
+`curate plan` en el árbol actual consulta la raíz de estado canónica, no acepta
+rutas de estado o corpus y devuelve una página acotada con `plan_digest`,
+`snapshot`, `cursor` y `next_cursor`. La operación es advisory, no escribe
+estado ni autoriza acciones; la release instalada previa puede requerir una
+instalación desde el SHA actual para exponerla:
 
 ```bash
-Neocortex --version
-Neocortex --help
-Neocortex --ui --help
+Neocortex curate plan --limit 50
+Neocortex curate plan --limit 50 --cursor TOKEN
+Neocortex curate plan --limit 50 --json
 ```
 
-La versión mostrada debe coincidir con la versión que se pretende operar. Si
-`--version` no existe, la versión no coincide o la ayuda no contiene las rutas
-esperadas, deténgase: el launcher instalado y el árbol fuente no representan la
-misma entrega. No use una ruta nueva hasta actualizar y volver a comprobar el
-entrypoint.
+El digest representa el stream completo de propuestas y no cambia al variar
+`--limit`; si la publicación cambia, el cursor anterior se rechaza y debe
+iniciarse una consulta nueva.
 
-Esta fuente declara `0.9.0` para Linux/Kubuntu. La fuente está en
-`~/Neocortex/Repository`, las releases en
-`${XDG_DATA_HOME:-~/.local/share}/Neocortex/releases`, `current` selecciona la
-activa y `~/.local/bin/Neocortex` es el alias público. Valide primero el
-ejecutable exacto del runtime y promueva el launcher sólo después de esa
-barrera.
+| Clase | Ejemplos | Efecto |
+|---|---|---|
+| Consulta | `help`, `status`, `search`, `ask`, `inspect`, `models status`, `databases status` | Lee publicaciones existentes; no recorre corpus ni crea estado |
+| Producción de estado | rutas, Semantic, catálogo, refresh de Review | Lee contenido y escribe estado, pero no modifica originales |
+| Descarga | `models prepare` | Adquiere modelos de forma explícita |
+| Estado destructivo | `databases restore`, `databases purge` con `--apply` | Requiere confirmación, manifest/plan y locks |
+| Corpus | `--apply`, `--organization-apply` | Rechazado en Linux en la versión actual |
 
-Desde la raíz del repositorio, el siguiente comando sirve únicamente para
-diagnosticar el árbol fuente; no sustituye la validación del ejecutable
-instalado:
+## Consultas cotidianas
 
 ```bash
-python3.14 -m neocortex --version
+Neocortex help
+Neocortex status --scope all
+Neocortex search "consulta" --scope personal --limit 20
+Neocortex ask "consulta" --scope personal --limit 12
+Neocortex inspect code "consulta" --scope personal
+Neocortex inspect lineage IDENTIFICADOR --scope personal
+Neocortex review value --scope personal --limit 50
+Neocortex models status --json
+Neocortex databases status --json
 ```
 
-En Linux, el diagnóstico equivalente del árbol fuente es
-`python3.14 -m neocortex --version`; la instalación canónica se gestiona con
-`python3.14 tools/release_linux.py`.
+`personal` consulta las publicaciones del usuario. `all` mantiene owners y
+scores separados y reporta cobertura. Ninguna consulta corrige, migra o crea una
+base ausente.
 
-## Sintaxis y rutas
+`review value --refresh` es diferente: avanza una página durable de Review en
+Framework. No modifica corpus ni concede autorización.
 
-```text
-Neocortex [opciones]
-```
+## Procesamiento de contenido
 
-`--root` selecciona la raíz que se observará. Si se omite, se usa el perfil del
-usuario actual. Confirme siempre la ruta antes de iniciar una corrida:
+Las rutas registradas son `pdf`, `docx`, `office`, `archive`, `text`, `audio`,
+`video`, `image` y `code`.
 
 ```bash
-Root="$HOME/Documentos/NeoCortex/Pilot"
-test -d "$Root" || { printf 'La raíz no existe: %s\n' "$Root" >&2; exit 2; }
+Neocortex --root "$Root" --route pdf --max-count 25 --strict-exit-codes
+Neocortex --root "$Root" --route pdf,docx --max-count 25 \
+  --docx-max-count 25 --strict-exit-codes
 ```
 
-Las rutas de contenido vigentes en la CLI son:
+Estas corridas actualizan inventario y owners de contenido. `--route-only` usa
+inputs durables y omite inventario, deduplicación, detección y acciones;
+`--candidate-run RUN_ID` elige el inventario y `--resume-run RUN_ID` reanuda
+fases incompletas.
 
-| Nombre | Contenido principal |
-|---|---|
-| `pdf` | Extracción, OCR, FTS, perfiles y relaciones PDF. |
-| `docx` | Documentos y plantillas OOXML de texto. |
-| `office` | XLSX, PPTX y ODT. |
-| `archive` | Miembros de ZIP y ZIP anidados, incluido OCR acotado de imágenes y PDF escaneados. |
-| `text` | Texto imprimible, EML y Office heredado DOC/XLS/PPT. |
-| `audio` | Audio y pistas de vídeo admitidas mediante Whisper. |
-| `video` | Streams, escenas, keyframes, frames, OCR y timestamps mediante FFmpeg. |
-| `image` | Clasificación, OCR, huella completa y evidencia de imágenes. |
-| `code` | Texto, estructura, símbolos y relaciones de código fuente. |
+`--all` selecciona todas las rutas registradas, incluida Code. No ejecuta código
+del corpus ni produce evidencia de validación del repositorio.
 
-El primer piloto usa una sola ruta y un límite explícito:
+## Estado y salud
 
 ```bash
-Neocortex --root "$Root" --route pdf --MaxCount 25 --strict-exit-codes
-```
-
-Estos comandos **no son consultas de sólo lectura**: recorren contenido y
-actualizan las bases de estado aunque no se especifique `--apply`. Sin
-`--apply` no deben mutar los archivos del corpus, pero sí producen inventario,
-cachés, ejecuciones, diagnósticos y planes persistentes.
-
-Después de aprobar cada ruta y su proyección se acepta una lista separada por
-comas o `--all`. `--all` no se combina con `--route` ni con operaciones
-directas de consulta o diagnóstico.
-
-La corrida `--all` ejecuta el flujo documental y no consulta ni produce
-autoanálisis del repositorio. Después avanza Semantic sobre las cachés
-publicadas disponibles, respetando sus límites y su estado real. Si la raíz del
-corpus no existe, informa `ERROR corpus_unavailable: ...` y sale con código `2`
-sin traceback ni creación parcial del estado documental.
-
-## Modos de ejecución
-
-### Corrida integrada
-
-Una corrida normal actualiza el inventario común y después ejecuta las rutas
-seleccionadas. La omisión de `--apply` es el modo predeterminado no mutador del
-corpus. Amplíe a varias rutas sólo después del piloto:
-
-```bash
-Neocortex --root "$Root" --route pdf,docx --MaxCount 25 --docx-max-count 25 --strict-exit-codes
-```
-
-`InternalPathsPolicy` reserva por ruta e identidad el repositorio, runtime,
-datos de aplicación y launcher. Una raíz normal
-dentro de esos árboles se rechaza; sus descendientes internos se excluyen del
-inventario. El estado no puede ser igual ni ancestro del corpus. La firma
-efectiva durable combina la firma cruda de exclusión con la firma de rutas
-internas.
-
-### Código como contenido
-
-La ruta Code descubre proyectos, reconoce lenguajes, guarda símbolos,
-dependencias y versiones, y permite buscar y relacionar el código indexado. Las
-operaciones públicas son:
-
-```bash
+Neocortex --status --status-json
+Neocortex --state-health --state-health-json
+Neocortex --knowledge-status --knowledge-json
+Neocortex --semantic-status --semantic-json
 Neocortex --code-status --code-json
-Neocortex --code-search "dónde se valida SQLite" --code-search-mode hybrid
+```
+
+Los comandos distinguen `complete`, `partial`, `unavailable`, `blocked`, schemas
+futuros y corrupción. Ausencia de resultados no se presenta como éxito.
+
+## Búsquedas especializadas
+
+```bash
+Neocortex --knowledge-search "consulta" --knowledge-json
+Neocortex --code-search "consulta" --code-search-mode hybrid --code-json
 Neocortex --code-projects --code-json
 Neocortex --code-reconstruct PROJECT_OR_ID --code-json
 ```
 
-Code no audita el repositorio de NeoCortex, no ejecuta review interno,
-experimentos ni proveedores externos, y no produce receipts de calidad. Las
-herramientas de desarrollo (`pytest`, Ruff, Pyright/Mypy, Semgrep u otras) se
-ejecutan directamente cuando el cambio las necesita, fuera del runtime y sin
-un comando agregador.
+Los localizadores dependen del productor. Si una ruta no conserva página, celda,
+segmento o región, la salida no inventa esa precisión.
 
-### Ruta sobre un snapshot retenido
-
-`--route-only` omite inventario, planeación de duplicados, detección común y
-acciones de archivos. Requiere al menos una ruta, usa por defecto el snapshot
-retenido más reciente y rechaza `--apply`:
+## Curación disponible
 
 ```bash
-Neocortex --route pdf --route-only
-Neocortex --route pdf --route-only --candidate-run 40
+Neocortex --curation-preview 50 --curation-json
 ```
 
-`--resume-run RUN_ID` implica `--route-only` y continúa fases incompletas del
-snapshot indicado:
+La vista es bounded y read-only. Reúne planes ya publicados de duplicados,
+organización y archivos vacíos, junto con identidad, reasons y cobertura. No
+existe todavía `Neocortex curate apply`; la jerarquía objetivo se describe en
+[FILE_INTELLIGENCE_AND_CURATION.md](FILE_INTELLIGENCE_AND_CURATION.md).
+
+## Bases de datos
 
 ```bash
-Neocortex --resume-run 40
+Neocortex databases status --json
+Neocortex databases backup --backup-directory "$Backup" --json
+Neocortex databases restore --backup-directory "$Backup" --json
+Neocortex databases purge --json
 ```
 
-La ruta code consume el inventario y admite un snapshot con cero candidatos:
+`backup`, `restore` y `purge` muestran preview por defecto. Escribir exige
+`--apply`, la confirmación literal que muestra `--help`, epoch/manifest o digest
+del plan según la operación. Restore publica desde staging; purge crea primero
+su backup verificable. Consulta [RECOVERY.md](RECOVERY.md).
+
+## Modelos y GUI
 
 ```bash
-State="${XDG_STATE_HOME:-$HOME/.local/state}/Neocortex/state"
-Neocortex --root "$Root" --state-directory "$State" --route code --route-only
-Neocortex --root "$Root" --state-directory "$State" --route code --route-only --candidate-run 40
-Neocortex --root "$Root" --state-directory "$State" --resume-run 40
-```
-
-Sin `--candidate-run`, code examina el owner durable más reciente de la raíz
-exacta y exige que sea `normal`; si no coincide, falla sin retroceder a un run
-histórico aunque éste tenga filas MIME. Cero candidatos se acepta únicamente si
-todas las rutas seleccionadas declaran `input_source=inventory_snapshot`;
-cualquier ruta MIME o combinación mixta falla antes de crear o ejecutar el run.
-
-La corrida fuente debe conservar un snapshot de enrutamiento publicado: scan
-completo, candidatos durables cuando la ruta los consume y raíz con la misma
-ruta e identidad física. Los runs actuales publican ese vínculo sólo después de
-terminar la generación de candidatos. Un run legacy interrumpido sin `scan_id`
-sólo puede recuperarse si su evento de inventario es único y válido, los conteos coinciden y ya existe
-evidencia durable de ejecución de rutas; cualquier ambigüedad rechaza la
-reanudación sin reconstruir estado por inferencia.
-
-No presuponga que cualquier corrida antigua continúa retenida. Compruebe
-primero `--status`; la consulta es bounded e immutable, por lo que un owner con
-WAL activo se reporta con código `2` en lugar de abrirlo de forma ordinaria.
-
-### Interfaz gráfica
-
-```bash
+Neocortex models status --json
+Neocortex models prepare
 Neocortex --ui
-Neocortex --ui --root "$Root"
 ```
 
-La GUI supervisa el mismo orquestador y expone PDF, DOCX, Office, ZIP,
-texto/correo, audio, video, imagen y Code. Su quinta página **Consulta** consume
-los mismos contratos `status`, `search`, `ask` y `review value` de sólo lectura,
-con scopes fijos, citas, cobertura e incertidumbre; no acepta rutas de estado ni
-presenta controles de mutación. En Linux muestra “modo portátil Linux”, no
-solicita elevación y desactiva los controles de mutación; inventario,
-procesamiento y búsqueda se conservan. El worker `--gui-worker` es un contrato
-interno y no debe invocarse manualmente. La GUI puede mostrar la consulta
-read-only que ahora consume una cola vigente, pero una vista gráfica para
-refrescar o decidir `ReviewTask` permanece **PLANNED**; la CLI ya expone el
-lifecycle mediante la API compartida.
+`models status` es local; `prepare` puede descargar. La GUI consume los mismos
+contratos y mantiene deshabilitados los efectos de corpus en Linux.
 
-### Consulta humana y agentes locales
-
-Los subcomandos humanos son una fachada sobre las APIs publicadas; no sustituyen
-las rutas productoras. Las superficies retiradas de autoanálisis y QA sólo
-permanecen en documentos históricos:
-
-```bash
-Neocortex status --scope personal
-Neocortex search "protección diferencial" --scope all --limit 10
-Neocortex ask "¿qué evidencia existe de la prueba FAT?" --scope personal
-Neocortex inspect code "validación de schema" --scope framework --mode hybrid
-Neocortex inspect lineage IDENTIFICADOR --scope personal
-Neocortex knowledge health resource:file:1:2:-1 --scope all --json
-Neocortex review value --scope personal --limit 50
-Neocortex review value --refresh --scope personal --limit 50
-Neocortex review task show TASK_ID --scope personal
-Neocortex review task history TASK_ID --scope personal
-Neocortex review task claim TASK_ID --expected-event-id EVENT_ID --actor ACTOR
-Neocortex review task decide TASK_ID --expected-event-id EVENT_ID \
-  --decision resolved --decision-scope until-source-change --actor ACTOR
-```
-
-Los scopes válidos son `personal`, `framework` y `all`. `all` ejecuta cada
-snapshot independientemente y no fusiona scores. `status`, `search`, `ask` e
-`inspect code`/`inspect lineage` aceptan `--json`; `search`/`ask` acotan la
-consulta a 4096 caracteres y como máximo 100 resultados por scope.
-`review value` es advisory, declara `mutation_authorized=false` y no mueve,
-archiva ni elimina. Sin `--refresh` es estrictamente read-only: consulta la cola
-Framework v22 sólo si coincide con el snapshot fuente y, si todavía no existe,
-usa el preview legacy sin crear o migrar estado.
-
-`--refresh` es la única variante escritora de esta familia. Sólo admite un scope
-fijo `personal` o `framework` (`all` se rechaza), puede crear/migrar
-`framework.sqlite3` y avanza exactamente una página keyset de 100 observaciones.
-Escribe únicamente batches, memberships, tareas, eventos, progreso y el head
-fuente generacional owner-local; no modifica Inventory, Catalog ni archivos.
-Ejecútelo otra vez para avanzar la página siguiente, incluso sobre más de
-25,000 observaciones. La época de evaluación queda fijada desde la primera
-página: un scan incompleto reanuda su cursor aunque cruce medianoche. El último
-head completo permanece visible como `stale` mientras una época nueva está en
-curso o cambió el owner fuente; el reader conserva decisiones humanas actuales
-y no presenta páginas parciales como verdad publicada.
-
-`review task show/history` son read-only. `claim` y `decide` escriben un único
-evento Framework append-only mediante CAS y requieren `--expected-event-id` y
-actor explícitos. `decide` exige `resolved|dismissed` y un scope durable:
-`until-source-change`, `until-policy-change` o `permanent`. El retry semántico
-idéntico es idempotente; una tarea/evento distinto falla como snapshot cambiado.
-No se modifica el corpus y `all` se rechaza. La GUI consumidora sigue
-**PLANNED**.
-
-`knowledge health` admite sólo el ID físico canónico
-`resource:file:<volume_id>:<file_id>:<birthtime_ns>`, donde volumen y archivo
-son enteros unsigned de 128 bits y `birthtime_ns` es `-1` o un entero no
-negativo de 64 bits. Consulta `personal`, `framework` o ambos de forma
-independiente; no acepta una ruta de estado arbitraria. Despacha Text o PDF por
-identidad física y evidencia publicada, nunca por path o extensión. Text exige
-Inventory→Text→Catalog→Knowledge. PDF exige schema 13 y conserva
-Inventory→PDF→Catalog→Knowledge con estados
-`done|partial|protected|error|processing`, páginas, staging, errores, FTS y
-recovery estructural reconocido; `protected`/`error` no inventan
-Catalog/Search, `processing` queda degradado/parcial y un PDF vacío coherente es
-válido. `healthy` significa exclusivamente que los facts exigidos quedaron
-completos y estables en dos observaciones; no certifica contenido/OCR, verdad
-semántica, calidad visual, otros owners ni recuperación ante power loss. La
-respuesta `neocortex.knowledge-asset-health/v1` permanece content-blind,
-read-only, advisory y `mutation_authorized=false`.
-
-En JSON, `queue.scan_complete` indica fin del cursor y
-`queue.evidence_complete` indica que todas las páginas tuvieron evidencia
-íntegra. Pueden ser `true` y `false`, respectivamente; en ese caso la salida y
-el código siguen siendo `partial`, `queue.evidence_reason` conserva la causa y
-el refresh no retira tareas previas sólo porque ya no aparecieron.
-
-#### `inspect lineage`
-
-La inspección de linaje consulta cómo se produjo estado ya persistido; no
-ejecuta extractores ni reconstruye las bases propietarias:
-
-```bash
-Neocortex inspect lineage revision:text:... --scope personal
-Neocortex inspect lineage materialization:text:... --scope personal --json
-Neocortex inspect lineage semantic:chunk:... --scope framework
-```
-
-`IDENTIFICADOR` admite un file key/path Text, revisión,
-materialización o `WorkReceipt`, y un `chunk_id` Semantic. Use el identificador
-exacto emitido por los contratos JSON; los prefijos del ejemplo son
-ilustrativos y no deben fabricarse. El scope predeterminado es `personal`;
-`all` consulta Personal y Framework por separado sin unir sus grafos.
-
-La salida Text muestra revisión, atribución, receipts, materializaciones,
-heads y dependencias; para una revisión Text también enumera hasta 100 chunks
-Semantic dependientes. La salida de un chunk Semantic distingue origen,
-staged/publicado, receipts y embeddings. Los readers acotan cada ventana Text a
-1,000 filas, los eventos de proyección a 100,000 y marcan truncamiento; no
-cargan el historial completo de forma silenciosa.
-
-El comando abre exclusivamente `text.sqlite3`/`semantic.sqlite3` ya existentes
-bajo las raíces fijas, valida schema y permanece read-only. No crea directorios,
-migra bases, hace checkpoint, carga modelos, recorre el corpus ni autoriza una
-mutación. El estado humano `ready` devuelve `0`; `not_found`, `partial`, schema
-incompatible que impide toda resolución y corrupción conservan respectivamente
-los códigos `3`, `4`, `6` y `7` (federados por scope). Si otro owner aporta
-evidencia válida pese al schema incompatible, el resultado es `4 partial` con
-warning. El lector admite Semantic v6 como legado no atribuible y v7 como
-contrato atribuible; nunca migra la base durante `inspect lineage`.
+## MCP local
 
 ```bash
 Neocortex agent serve
 ```
 
-Ese comando inicia un servidor MCP local sólo por stdio. Expone las lecturas
-`status`, `search`, `context`, `evidence`, `inspect_code`, `lineage` y
-`asset_health`; no abre un listener, no acepta paths arbitrarios y marca todas
-las tools read-only, no destructivas e idempotentes. El texto del corpus se
-trata siempre como datos no confiables.
-
-## Consultas y diagnósticos sin recorrido
-
-Los siguientes ejemplos no inician un inventario ni autorizan mutaciones del
-corpus:
-
-```bash
-Neocortex --status
-Neocortex --status --status-run 40 --status-json
-Neocortex doctor capabilities
-Neocortex doctor capabilities --select text.extract --mime-type text/plain --input-bytes 4096
-Neocortex doctor platform
-Neocortex doctor platform --json
-Neocortex models status
-Neocortex models status --json
-Neocortex --pdf-doctor
-Neocortex --pdf-verify
-Neocortex --audio-doctor
-Neocortex --video-doctor
-Neocortex --video-status
-Neocortex --code-status
-Neocortex --code-search "consulta" --code-search-mode hybrid --code-json
-Neocortex --code-projects --code-json
-Neocortex knowledge health resource:file:1:2:-1 --scope all --json
-Neocortex --semantic-status
-Neocortex --action-recovery-status --action-recovery-limit 100
-Neocortex --retention-status
-Neocortex databases purge --json
-```
-
-`--status` no inicializa ni migra el estado y no crea `-wal`/`-shm`. Si el
-framework conserva un WAL no vacío o sidecars cuya inactividad no puede probarse,
-la operación se abstiene con código `2`; use `--state-health` para clasificar
-todos los owners sin abrir conexiones SQLite ordinarias.
-
-Una base ausente, dañada o con esquema incompatible puede producir salida `2`;
-eso no convierte el diagnóstico en una operación de reparación.
-`doctor capabilities` comprueba la presencia de dependencias sin cargar
-modelos; los diagnósticos profundos siguen siendo específicos de PDF/OCR,
-audio, código y estado semántico.
-
-## Verificación del desarrollo (fuera del producto)
-
-NeoCortex no ofrece un comando agregador para validar su propio código. Durante
-el desarrollo se usan directamente las herramientas que correspondan:
-
-- `pytest` para regresiones y pruebas de integración;
-- Ruff y Pyright/Mypy para errores estáticos y de tipos;
-- Semgrep sólo para invariantes que no estén expresadas por una prueba directa;
-- comprobaciones acotadas de imports o ciclos cuando cambie la arquitectura;
-- una verificación de release y launcher sólo cuando el alcance incluya
-  empaquetado o instalación.
-
-Los resultados son diagnósticos del trabajo de desarrollo. No crean estado Code,
-no se guardan como evidencia productiva y no sustituyen la revisión humana de
-un cambio.
-
-### Indexación Semantic acotada
-
-`--semantic-index text|image|all` escribe staging bajo un presupuesto único:
-
-| Opción | Predeterminado | Contrato |
-|---|---:|---|
-| `--semantic-max-items N` | `50` | Items completos nuevos o cambiados; replay exacto no consume el límite. |
-| `--semantic-max-new-jobs N` | `1500` | Jobs durables nuevos o reactivados por cambio de fingerprint; replay exacto no consume el límite. |
-| `--semantic-time-budget-seconds N` | `900` | Deadline monotónico compartido por texto, imagen y OCR. |
-
-Estas opciones se admiten con `--semantic-index` y también permiten acotar la
-etapa integrada de `--all`. En una acción directa, agotar un límite produce
-`truncated=1`, conserva la generación sin publicar y devuelve `2`; no constituye
-una corrida completa ni autoriza escalar. En `--all`, la misma truncación limpia
-es progreso durable reanudable y no convierte en fallida una corrida cuyas rutas
-sí terminaron; errores o estado stale siguen devolviendo `2`. Un replay exacto
-sigue enumerando y reconciliando O(n) miembros para detectar cambios, aunque no
-cree jobs, clone el head ni haga inferencia. Si existen altas, bajas o cambios,
-el sucesor todavía materializa la base en O(n).
-
-Cuando `--semantic-source code` termina una publicación textual completa, el
-servicio sincroniza el puente Code↔Semantic antes de devolver éxito. Una
-incompatibilidad, un chunk sin correspondencia exacta o un head distinto falla
-cerrado y no deja una cobertura parcial activa. Un replay exacto revalida el
-puente sin clonar el head ni crear jobs.
-
-### Índice ZIP de sólo lectura
-
-Después de ejecutar la ruta `archive`, estas operaciones consultan únicamente
-`archive.sqlite3`; no recorren el corpus ni crean estado ausente:
-
-```bash
-Neocortex --archive-status
-Neocortex --archive-search 'protección de transformador' --archive-search-limit 50
-Neocortex --archive-list 50 --archive-container 'contenedor.zip'
-Neocortex --archive-list 50 --archive-json
-```
-
-Search y list devuelven `3` cuando el estado es válido pero no hay resultados;
-estado ausente, schema incompatible o corrupción devuelven `2`. Los límites de
-search/list son `1..1000`. `--archive-container` es un filtro literal de
-fragmento escapado y sólo se admite con search/list. Las tres acciones son
-mutuamente excluyentes, rechazan `--apply` y `--route`, y `--archive-json`
-requiere una de ellas.
-
-Cada resultado declara `location=archive_member inside_zip=1`. `container` es
-el ZIP físico, `member` el nombre dentro de su contenedor inmediato y `chain`
-la cadena completa; por ejemplo
-`contenedor.zip!/subcarpeta/otro.zip!/documento.txt`. La ruta productora no
-materializa esos miembros en disco y aplica límites explícitos de profundidad,
-miembros, directorio central, tamaño individual, expansión total, ratio de
-compresión, texto y PDF. En OCR `auto`, cada página PDF con menos de 40
-caracteres de texto nativo y cada imagen BMP/GIF/JPEG/PNG/TIFF/WebP admitida se
-procesan dentro del worker aislado. Se respetan `--ocr`, `--ocr-lang`,
-`--pdf-dpi`, `--max-ocr-pages`, `--pdf-max-render-pixels`, `--ocr-timeout` y
-los límites Archive; una dependencia o idioma ausente queda como incidencia,
-no como texto vacío presentado como éxito. Los controles se consultan en
-`Neocortex --help`; para un piloto use `--archive-max-count 20..50`.
-
-### Texto, correo y Office heredado
-
-La ruta `text` detecta por contenido texto imprimible, HTML/XML/JSON, CSV/TSV,
-Markdown, EML con estructura RFC 5322 y contenedores CFB con extensión conocida
-DOC/XLS/PPT. Es una ruta productora, por lo que recorre el corpus y escribe
-`text.sqlite3`:
-
-```bash
-Neocortex --root "$Root" --route text --text-max-count 25 --strict-exit-codes
-Neocortex --knowledge-search 'mantenimiento de transformador' --knowledge-limit 20
-Neocortex --semantic-index text --semantic-source text --semantic-max-items 25
-Neocortex --catalog-preview 25
-```
-
-`--text-max-mb` limita cada archivo; `--text-max-count`, cantidad;
-`--text-max-chars`, texto persistido; y `--text-worker-timeout`/
-`--text-worker-memory-mb`, el conversor aislado. `--libreoffice-path` permite un
-ejecutable explícito y `--retry-text-errors` vuelve a intentar errores sin
-cambios. EML conserva asunto y autor. DOC prioriza LibreOffice y conserva
-`catdoc` como fallback; XLS y PPT priorizan `xls2csv` y `catppt`,
-respectivamente, y usan LibreOffice si falta el extractor específico. No existe
-una operación directa `--text-search`: FTS se consume por Knowledge, el
-catálogo y Semantic para no crear otra superficie paralela.
-
-### Video y OCR multilingüe
-
-`video` es una ruta productora separada de Audio. FFprobe valida streams y
-FFmpeg selecciona escenas, keyframes y muestras periódicas dentro de límites
-duros; cada evidencia conserva timestamp, ordinal, razón de selección y OCR:
-
-```bash
-Neocortex --root "$Root" --route video --video-max-count 25 --strict-exit-codes
-Neocortex --video-status
-Neocortex --video-search "placa de datos" --video-search-limit 20
-Neocortex --video-doctor --video-ocr-profile auto-multilingual
-```
-
-Un video sin audio termina `visual_only` y Audio registra `no_audio` benigno sin
-cargar el transcriber. MIME de audio sin stream conserva el error. Los límites
-de producto son 48 frames, 40 MP totales de OCR, 16 KiB de OCR por frame,
-512 MiB de scratch y 2 GiB de memoria virtual del worker; los overrides siguen
-validados por la CLI.
-
-`--ocr-profile`, `--image-ocr-profile` y `--video-ocr-profile` aceptan
-`configured`, `latin`, `han-simplified`, `han-traditional` o
-`auto-multilingual`. El default conserva el `--*-ocr-lang` configurado. Los
-otros perfiles exigen OSD y seleccionan `spa+eng+deu`, `chi_sim+eng` o
-`chi_tra+eng`; auto usa el script detectado y como máximo un fallback de
-variante. Perfil, idiomas efectivos, OSD, confianza, fallback y huellas de
-traineddata quedan ligados a la procedencia y a la caché.
-
-### Knowledge Plane de sólo lectura (`0.9.0`)
-
-Knowledge ofrece cuatro acciones planas y mutuamente excluyentes. Todas leen el
-estado ya publicado; no recorren el corpus, crean directorios o bases, migran
-esquemas, reparan estado ni descargan modelos:
-
-```bash
-Neocortex --knowledge-status
-Neocortex --knowledge-status --knowledge-json
-Neocortex --knowledge-health 'resource:file:1:2:-1' --knowledge-json
-Neocortex --knowledge-search 'protección de transformador' --knowledge-limit 50
-Neocortex --knowledge-context 'protección de transformador' --knowledge-limit 20 --knowledge-context-characters 24000
-```
-
-`--knowledge-status` captura los diez propietarios históricos y añade los
-owners `archive` y `text` sólo cuando sus bases existen.
-Si el directorio indicado por `--state-directory` no existe, informa cada
-propietario como `absent`, devuelve `0` y deja la ruta sin crear. Search y
-context compilan una consulta sobre los propietarios disponibles; con todo el
-estado ausente devuelven `4` (parcial), no un falso “sin resultados”.
-Si la ruta existe pero no es un directorio, o no puede abrirse y enumerarse en
-lectura, Knowledge falla de forma cerrada: no la transforma en owners
-`absent`, no emite un JSON engañoso y la CLI devuelve el código fatal `1` con
-`KnowledgeStateRootError`. Esto incluye enlaces o reparse points cuyo destino
-ya no existe y cambios de presencia de la raíz durante una captura. Un archivo
-de owner sólo se declara `absent` cuando su path realmente no existe; si el
-path existe pero es directorio, enlace roto o inaccesible, se aplica el mismo
-fallo fatal. La inspección del sistema de archivos es síncrona y se limita al
-perfil Linux vigente; no se habilitan rutas UNC, unidades de red ni el backend
-Windows en la operación cotidiana.
-
-Las opciones de consulta son:
-
-| Opción | Contrato |
-|---|---|
-| `--knowledge-limit N` | Predeterminado `20`. Search acepta `1..1000`; context, `1..100`. |
-| `--knowledge-health RESOURCE_ID` | Traza causal Text/PDF para una identidad física canónica; no acepta paths ni búsquedas. |
-| `--knowledge-context-characters N` | Presupuesto máximo de ContextBundle. Predeterminado `12000`; context acepta `1..1000000`. |
-| `--knowledge-mode evidence` | Predeterminado. En el canal semántico conserva la mejor coincidencia por `(item, entidad)` para no perder chunks o evidencias distintas. |
-| `--knowledge-mode discovery` | En el canal semántico conserva la mejor coincidencia por item para una vista más colapsada. |
-| `--knowledge-history` | Incluye revisiones `historical`/`superseded`, excluidas de forma predeterminada, y activa la ruta temporal del plan. |
-| `--knowledge-json` | Emite el contrato JSON de la acción seleccionada en lugar de la presentación humana. |
-
-El top-k solicitado es una ventana normal, no truncamiento. Cuando existen más
-candidatos, `result_window_full=true` y `window_omitted_candidates` lo declaran,
-pero `complete` puede seguir siendo verdadero y la CLI no convierte ese caso en
-código 4. Sólo un corte duro —por ejemplo `max_vectors`— marca `truncated=true`,
-propaga `next_cursor`/`cutoff_score` y vuelve parcial la respuesta. Si existen
-hits, el compilador reserva primero una cita utilizable antes de diagnósticos.
-
-Los aliases humanos `Neocortex status/search/ask` consumen estos contratos con
-scopes fijos. No aceptan `--state-directory`; esa restricción evita que una GUI
-o un agente elijan una base arbitraria.
-
-Search y context exigen una consulta no vacía de hasta 4096 caracteres. Las
-opciones limit/history/mode sólo se admiten con esas dos acciones;
-`--knowledge-context-characters` exige context y se valida antes de ejecutar el
-handler. `--knowledge-json` también se admite con status. Knowledge rechaza
-`--apply`, `--route` y cualquier segunda acción directa. Ejemplos estructurados:
-
-```bash
-Neocortex --knowledge-search 'IEC-61850' --knowledge-mode discovery --knowledge-json
-Neocortex --knowledge-search 'protección de relevador' --knowledge-history --knowledge-limit 100
-Neocortex --knowledge-context 'mantenimiento de interruptor' --knowledge-mode evidence --knowledge-json
-```
-
-La salida humana marca cada hit normal como
-`location=physical inside_zip=0`. Los hits del owner Archive usan
-`location=archive_member inside_zip=1` y muestran `container`, `member` y
-`chain`; el JSON conserva los mismos datos en los identificadores de evidencia.
-
-El snapshot es lógico, no una transacción distribuida. Si cambia durante las
-dos observaciones se reintenta una vez el conjunto completo; un segundo cambio
-se informa mediante código `5` en vez de presentar la vista como estable. Los
-detalles de publicaciones y watermarks están en
-[PERSISTENCE.md](PERSISTENCE.md).
-
-### Conciliación de acciones inciertas
-
-El conciliador de `file_actions` es acotado, paginado por keyset, idempotente y
-de sólo lectura. No crea ni migra `framework.sqlite3` y nunca repite una
-mutación:
-
-```bash
-Neocortex --action-recovery-status --action-recovery-limit 100
-Neocortex --action-recovery-status --action-recovery-after 250 --action-recovery-run 40
-Neocortex --action-recovery-status --action-recovery-json
-```
-
-Sólo inspecciona estados `applying` y `recovery_required`. Clasifica cada efecto
-como `confirmed`, `not_performed`, `ambiguous` o `impossible_to_check` y emite
-una recomendación, sin modificar el estado. Los filtros y
-`--action-recovery-json` exigen `--action-recovery-status`. El límite admitido
-es 1..1000, `--action-recovery-after` no puede ser negativo y el run debe ser
-positivo. El código es `2` únicamente si aparece una clasificación
-`ambiguous`/`impossible_to_check` o si la consulta no puede abrir/validar el
-estado; una página vacía o sólo confirmada/no realizada devuelve `0`.
-`confirmed` sólo documenta que el efecto original parece ocurrido;
-`not_performed` tampoco convierte la intención original en reutilizable.
-Ninguna clasificación autoriza una nueva syscall. Una versión framework futura
-o metadata de versión no canónica se rechaza con `2`.
-
-`status` permanece estrictamente de sólo lectura. Para conservar una observación
-en framework v19 use una operación `record` explícita y separada:
-
-```bash
-Neocortex --action-recovery-record 42 --action-recovery-actor "Victor" --confirm-reconciliation-record
-Neocortex --action-recovery-record 42 --action-recovery-actor "Victor" --confirm-reconciliation-record --action-recovery-json
-Neocortex --action-recovery-record 42 --action-recovery-actor "operador-2" --action-recovery-expected-event 7 --confirm-reconciliation-record
-```
-
-`record` vuelve a clasificar la acción, abre sólo una base existente y agrega un
-evento append-only con CAS, clave idempotente, actor, procedencia, firma y
-evidencia. La confirmación autoriza la escritura SQLite y una migración aditiva
-soportada de la base existente; nunca crea la base ni autoriza una mutación de
-archivos. Repetir exactamente el mismo registro devuelve el mismo evento. Un
-predecesor obsoleto o una observación incompatible se rechaza.
-
-Un registro correcto de `ambiguous` o `impossible_to_check` devuelve `2` para
-que la incertidumbre no quede oculta, aunque el evento sí haya sido confirmado
-en SQLite. No existen todavía comandos `decide`, `authorize`, `recover` ni
-`verify`, ni una decisión o autorización humana durable para una nueva
-mutación. No intente emular esas fases cambiando filas o reutilizando una
-autorización original.
-
-### Plan de retención no destructivo
-
-`--retention-status` inspecciona páginas acotadas de `semantic`, `catalog`,
-`inventory` y `framework` sin crear, migrar, eliminar, hacer checkpoint o
-ejecutar `VACUUM`:
-
-```bash
-Neocortex --retention-status
-Neocortex --retention-status --retention-store semantic --retention-min-age-days 30 --retention-batch-size 100
-Neocortex --retention-status --retention-store semantic --retention-semantic-after 250 --retention-json
-```
-
-`--retention-store` puede repetirse. El lote permitido es 1..1000 y los cursores
-`--retention-<store>-after` son keyset. Sin edad explícita, el plan informa
-`policy_not_configured` y no declara filas elegibles por antigüedad. Conserva
-siempre las publicaciones vigente y anterior, el último estado válido,
-builders/leases vivos, cadenas base y evidencia humana o incierta; en particular
-las referencias `semantic_evidence` y el último run `completed` de framework
-actúan como holds. Los bytes son una cota inferior del payload `TEXT`/`BLOB`,
-no espacio físico garantizado. Cada base tiene un snapshot estable, pero la
-consulta no es atómica entre bases; las lecturas públicas usan el kernel
-sidecar-safe y se abstienen cuando el WAL/SHM no puede probarse estable.
-Devuelve `2` si algún store queda bloqueado por deriva o dependencia
-incompatible; ausencia segura o un plan listo devuelve `0`.
-
-No existen opciones `--retention-prepare`, `--retention-apply` o
-`--retention-verify`. La salida de status no autoriza un `DELETE` manual ni
-demuestra que todas las referencias cross-store hayan permanecido estables.
-Para una comprobación de owners que no abra SQLite ordinario ni cree sidecars,
-use `--state-health`; su resultado conserva la causa exacta cuando un owner
-está ausente, bloqueado o tiene un journal activo.
-
-### Borrado explícito de bases
-
-`Neocortex databases purge` inspecciona las bases SQLite canónicas y sus
-sidecars sin modificar nada. Para ejecutar el borrado se requieren `--apply` y
-`--confirm-database-purge DELETE_DATABASES`; antes se adquieren los locks de
-framework/release y los locks de route/watcher existentes, se crea un backup
-SQLite verificado en un directorio nuevo fuera de `state` y se comprueba que
-cada archivo conserve su identidad. El comando sólo toca owners seleccionados
-con `--store`; sin esa opción considera todos los owners registrados. Releases,
-modelos, recibos, locks y archivos SQLite desconocidos no forman parte del
-alcance.
-
-```bash
-Neocortex databases purge --json
-Neocortex databases purge --store semantic --store image --json
-Neocortex databases purge --apply \
-  --confirm-database-purge DELETE_DATABASES
-```
-
-La salida JSON incluye `plan_digest`, archivos, bytes, locks bloqueantes,
-directorio de backup y manifest. Un backup incompleto, un writer activo, un
-symlink o un cambio entre la vista previa y la eliminación provoca abstención y
-salida `2`.
-
-## Caché, selección y reintentos
-
-La validación rápida de caché usa metadatos por defecto. Para volver a comprobar
-bytes antes de reutilizar resultados se dispone de:
-
-```bash
-Neocortex --root "$Root" --route pdf --pdf-cache-validation full
-Neocortex --root "$Root" --route code --code-cache-validation full
-```
-
-`full` aumenta la E/S; no cambia la semántica del contenido ya validado. Para
-retirar las bases completas existe `Neocortex databases purge`; no borre bases,
-WAL o SHM manualmente.
-
-Code selecciona proyectos por defecto. Detecta sus raíces mediante manifiestos
-fuertes y excluye archivos fuera de ellas, dependencias instaladas, caches y
-salidas generadas antes de leer contenido:
-
-```bash
-Neocortex --root "$Root" --route code
-Neocortex --root "$Root" --route code --code-scope broad
-```
-
-El segundo comando es el override deliberado que restaura la selección textual
-amplia anterior. `--code-generated` y `--code-vendored` permiten esas capas
-dentro de proyectos; no son el valor predeterminado. Los campos
-`code_project_scope`, `code_project_roots`, `code_outside_project_skips`,
-`code_dependency_skips`, `code_generated_scope_skips` y `code_cache_skips`
-explican la frontera aplicada.
-
-Los errores permanentes o ya cacheados no se reintentan sólo por usar `--all`.
-Los overrides explícitos son:
-
-```text
---retry-pdf-errors
---retry-docx-errors
---retry-office-errors
---retry-archive-errors
---retry-text-errors
---retry-audio-errors
---retry-image-errors
---retry-code-errors
-```
-
-Use los filtros `--select-status`, `--select-error-type`,
-`--select-recommendation`, `--select-path` y `--failed-pages-only` únicamente
-con una ruta y un snapshot compatibles. Consulte la ayuda viva para rangos y
-combinaciones exactos:
-
-```bash
-Neocortex --help
-```
-
-## Salida JSON
-
-No existe un `--json` global. Los contratos estructurados actuales se activan
-por familia:
-
-| Opción | Alcance |
-|---|---|
-| `--status-json` | `--status`; exige `--status`. |
-| `--review-json` | Candidatos, decisiones y evidencia de revisión; emite JSON Lines determinista. |
-| `--code-json` | Estado, manifest/frescura, review, pregunta focal, storage, búsquedas, proyectos o reconstrucción conceptual de código. |
-| `--action-recovery-json` | JSON determinista por acción o evento; exige `--action-recovery-status` o `--action-recovery-record`. |
-| `--retention-json` | Un documento JSON del plan dry-run; exige `--retention-status`. |
-| `--archive-json` | Estado o resultados ZIP; exige exactamente una acción `--archive-*`. |
-| `--knowledge-json` | Snapshot, salud causal, búsqueda o contexto Knowledge; exige exactamente una acción `--knowledge-*`. |
-| `knowledge health --json` | Salud causal Text/PDF por identidad y scope fijo; no crea estado ni autoriza mutación. |
-| `inspect lineage --json` | Linaje owner-local y proyección causal acotada para el identificador; no migra estado. |
-| `review value --json` | Consulta advisory schema `neocortex.value-review/v1`; con `--refresh`, avance de una página Framework schema `neocortex.value-review-refresh/v1`, sin mutación del corpus. |
-| `doctor capabilities --json` | Reporte agregado schema 1; con `--select text.extract --mime-type MIME --input-bytes BYTES`, selección explicable schema `neocortex.capability-selection/v1`. |
-| `doctor platform --json` | Un documento JSON versionado de política y capacidades de plataforma. |
-| `models prepare/status --json` | Un documento JSON versionado del conjunto de modelos gestionados. |
-
-No combine una opción JSON con una operación de otra familia. La salida humana
-puede evolucionar; para automatización use sólo el contrato JSON correspondiente
-y compruebe siempre el código de salida.
-
-## Códigos de salida
-
-| Código | Contrato observado |
-|---:|---|
-| `0` | Ayuda/versión o ejecución/consulta completada según su contrato. |
-| `1` | Excepción fatal no normalizada o fallo interno del worker de GUI. No es el código de una validación ordinaria de argumentos. |
-| `2` | Error de argumentos detectado por `argparse` o por la validación posterior, como una combinación incompatible o una solicitud Linux de `--apply`/`--organization-apply`; abstención explicable de `doctor capabilities --select`; estado requerido ausente o incompatible; diagnóstico fallido —incluida abstención de una búsqueda Code semántica sin publicación elegible—; generación Semantic incompleta, truncada o no publicada; error de acciones u organización; conciliación con efecto ambiguo/imposible —incluso si su evento fue registrado—; plan de retención bloqueado; o, con `--strict-exit-codes`, errores/parciales retenidos por una ruta. El watcher también devuelve `2` si conserva corridas fallidas o errores de fuente. |
-| `3` | Knowledge terminó con snapshot estable y cobertura completa, pero search/context no obtuvo evidencia; Archive search/list también lo usa cuando no hay miembros coincidentes; `inspect lineage` no encontró el identificador. |
-| `4` | Knowledge produjo una respuesta parcial o no soportada; incluye propietarios necesarios ausentes. `inspect lineage` encontró evidencia incompleta, legacy o truncada. `review value` también lo usa para una cola parcial o `stale`. |
-| `5` | El snapshot Knowledge volvió a cambiar durante el único reintento global acotado, o el refresh ReviewTask observó un cambio antes de publicar. |
-| `6` | Knowledge status encontró un schema futuro/incompatible; en search/context, uno de esos owners figura en `blocking_owners` y obliga a abstenerse. `inspect lineage` lo usa cuando el schema incompatible impide toda resolución; si otro owner aporta evidencia válida, devuelve `4 partial` con warning. |
-| `7` | Knowledge status detectó una base corrupta; en search/context, la base figura en `blocking_owners` y obliga a abstenerse. `inspect lineage` también lo usa ante corrupción SQLite. |
-| `130` | Cancelación por teclado o cancelación del watcher. |
-| otro no cero | Fallo no normalizado. Trátelo como fatal y preserve la evidencia. |
-
-Para las acciones Knowledge la precedencia es `7`, `6`, `5`, `4`, `3`, `0`.
-`status` aplica integridad y compatibilidad al snapshot completo; search/context
-las elevan sólo cuando el owner severo aparece en `blocking_owners`, por lo que
-una base ajena no oculta evidencia válida. El status con propietarios
-simplemente ausentes conserva `0`; la ausencia pasa a `4` cuando impide
-completar search/context.
-
-Sin `--strict-exit-codes`, errores de documentos individuales pueden quedar
-registrados aunque la corrida general termine con `0`. Automatice primero una
-ruta acotada; `--all` se reserva para cuando cada ruta y su costo ya fueron
-aceptados:
-
-```bash
-Neocortex --root "$Root" --route pdf --MaxCount 25 --strict-exit-codes
-```
-
-## Compatibilidad histórica de mutación (fuera del alcance Linux)
-
-Esta sección conserva únicamente el contrato histórico del backend seguro de
-Windows. No es una instrucción operativa: en Linux,
-`--apply` y `--organization-apply` se rechazan antes de validar la raíz o crear
-estado con código `2` y razón estable
-`linux_mutation_backend_unavailable`. Inventario, procesamiento, catálogo y
-búsqueda permanecen disponibles; no se usa `Path.rename` como sustituto.
-
-El backend histórico sólo permitía que una corrida integrada ejecutara
-mutaciones que satisficieran el contrato físico de `0.9.0`. Los rename de
-extensión y movimientos de organización requerían NTFS local, mismo volumen,
-archivo regular con un único hard link, ausencia de reparse y handles retenidos
-con *no-replace*. Esas condiciones no habilitan mutación en Linux.
-
-Los candidatos de Papelera (duplicados, vacíos y PDF irrecuperables) se siguen
-planeando en dry-run, pero su aplicación está deshabilitada porque la API
-disponible opera por ruta. Con `--apply` terminan `skipped` con evidencia de
-abstención; no se invoca `Send2Trash`. No hay flag para degradar a la operación
-path-bound.
-
-La organización persistida dispone además de una autorización directa distinta:
-
-```text
-Neocortex --organization-apply --organization-max-actions 100
-```
-
-Un plan que cruzó la frontera nativa sin confirmación queda
-`recovery_required`, reserva su destino y no vuelve a seleccionarse para
-aplicación. Se consulta sin mutar con:
-
-```text
-Neocortex --organization-preview 100 --organization-preview-status recovery_required
-```
-
-### Curación read-only
-
-La vista de curación compone los planes durables de duplicados y organización,
-además de archivos vacíos que requieren revisión humana. Está limitada por
-cantidad, conserva identidad y evidencia, y no ejecuta ninguna mutación:
-
-```bash
-Neocortex --state-directory "$State" --curation-preview 25
-Neocortex --state-directory "$State" --curation-preview 25 --curation-json
-```
-
-El JSON incluye `preview_fingerprint`, los conteos completos y una muestra
-acotada. La lectura se hace sobre snapshots temporales de los owners SQLite,
-por lo que un cambio concurrente se informa y no se presenta como una vista
-estable. `--curation-preview` rechaza `--apply` y cualquier `--route`.
-
-### Salud del estado
-
-`--state-health` comprueba los owners SQLite conocidos mediante lecturas
-inmutables: captura su estado dos veces, usa `immutable=1` sólo cuando los
-sidecars están probadamente inactivos y clasifica ausencias o journals como
-`missing`, `orphaned_sidecars`, `blocked`, `future`, `incompatible`, `corrupt`,
-`unknown` o `unreadable`. Un resultado parcial devuelve código `2` y no crea ni
-migra estado:
-
-```bash
-Neocortex --state-health
-Neocortex --state-health --state-health-json
-```
-
-No copie estos comandos como prueba de instalación. Antes de cualquiera de las
-dos autorizaciones, revise [SECURITY.md](SECURITY.md) y
-[RECOVERY.md](RECOVERY.md), cree un backup SQLite consistente y confirme la raíz
-y los planes. El watcher y `--route-only` rechazan `--apply`.
-
-### Mantenimiento de owners SQLite
-
-La fachada `databases` conserva la separación entre observación y escritura:
-
-```bash
-Neocortex databases status --json
-Neocortex databases backup --backup-directory "$HOME/Neocortex-backups/next" --json
-Neocortex databases restore --backup-directory "$HOME/Neocortex-backups/next" --json
-Neocortex databases purge --json
-```
-
-`status` sólo lee health, epoch y journal. `backup` en preview tampoco crea el
-destino; para escribir exige `--apply --confirm-database-backup
-BACKUP_DATABASES`, y permite `--integrity quick|full` y `--expected-epoch`.
-`restore` valida el conjunto en staging y, para publicar, exige
-`--apply --manifest-sha256 SHA256 --confirm-database-restore
-RESTORE_DATABASES`. El backup general escribe `state-backup-manifest.json`,
-mientras `purge` conserva su propio `database-purge-manifest.json`; no son
-intercambiables. La purga aplicada exige además `--plan-digest` obtenido de su
-preview.
-
-## Operaciones con otros efectos laterales
-
-- `models prepare` descarga explícita y secuencialmente los modelos gestionados;
-  `models status` no descarga ni crea rutas.
-- `--semantic-prepare-models` adquiere o carga explícitamente modelos.
-- En Linux, audio es local-only por defecto y usa Whisper CPU/int8 del cache
-  compartido; no descarga implícitamente durante una ruta.
-- No hay una ruta Windows activa ni descarga de modelos asociada a ella.
-- `--semantic-index`, `--semantic-classify`, `--catalog-documents`,
-  `--organization-plan`, `--review-record` y `--review-evidence-sync` escriben
-  estado, aunque no muten archivos originales.
-- Semántica y catálogo construyen staging invisible y sólo cambian su
-  generación publicada mediante una transacción CAS completa.
-- `--watch` permanece en primer plano hasta cancelarse y genera nuevas corridas
-  integradas. Usa USN como señal cuando existe; de otro modo ejecuta inventario
-  normal portable cada `--watch-portable-interval-seconds` (300 por defecto).
-
-Consulte [OPERATIONS.md](OPERATIONS.md) antes de usar watcher, reanudación,
-límites de recursos o mantenimiento.
+El servidor stdio expone actualmente consultas read-only como status, search,
+context, evidence, `curation_plan`, Code, lineage y salud de assets. `evidence`
+puede recibir `evidence_id` y `expected_snapshot_id`; no acepta texto del corpus
+como instrucción ni expone aplicación de acciones.
+
+## Salida estructurada y códigos
+
+Los modos JSON/JSONL conservan un `schema`, la operación, cobertura, errores y
+warnings cuando el contrato los produce, mientras los campos de scope, epoch y
+contadores dependen de la superficie consultada. `curation_plan` coloca cursor,
+digest y conteos dentro de `snapshot` y `page`; no se presentan campos que el
+contrato no entregue. Los códigos exactos pertenecen al comando y su ayuda; como
+regla:
+
+- `0`: operación solicitada completada dentro de la cobertura declarada;
+- `2`: uso inválido, abstención operativa o cobertura incompleta bajo modo
+  estricto;
+- otros códigos no se normalizan a éxito y deben conservar su diagnóstico.
+
+No uses la ausencia de traceback como prueba de completitud. Para procedimientos,
+límites y replay consulta [OPERATIONS.md](OPERATIONS.md).

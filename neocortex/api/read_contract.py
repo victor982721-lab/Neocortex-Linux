@@ -27,6 +27,8 @@ _ANSI_ESCAPE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 MAX_SANITIZED_PAYLOAD_NODES = 20_000
 MAX_SANITIZED_PAYLOAD_DEPTH = 16
 MAX_SANITIZED_PAYLOAD_STRING = 128_000
+_SANITIZED_PAYLOAD_TRUNCATION = "[contenido omitido por límite]"
+_SANITIZED_PAYLOAD_TRUNCATION_KEY = "__neocortex_sanitization_truncated__"
 
 ReadScopeName = Literal["personal", "framework", "all"]
 ReadApiSchema = Literal["neocortex.read-api/v1"]
@@ -273,14 +275,18 @@ def sanitize_untrusted_payload(
     the common last-mile boundary for terminal, UI and MCP adapters: strings
     lose ANSI/C0 controls, object keys become JSON-safe strings, non-finite
     floats are replaced, and unknown objects cannot escape as renderer-hostile
-    values.
+    values.  A fixed omission string is transport diagnostics only; it never
+    authorizes an action.  Mapping-key collisions retain the producer value and
+    place the system marker under the next deterministic suffix.
     """
 
     if budget is None:
         budget = [MAX_SANITIZED_PAYLOAD_NODES]
+    if budget[0] <= 0:
+        return _SANITIZED_PAYLOAD_TRUNCATION
     budget[0] -= 1
-    if budget[0] < 0 or depth > MAX_SANITIZED_PAYLOAD_DEPTH:
-        return "[contenido omitido por límite]"
+    if depth > MAX_SANITIZED_PAYLOAD_DEPTH:
+        return _SANITIZED_PAYLOAD_TRUNCATION
     if isinstance(value, str):
         return sanitize_untrusted_text(
             value,
@@ -289,12 +295,42 @@ def sanitize_untrusted_payload(
         )
     if isinstance(value, Mapping):
         result: dict[str, object] = {}
-        for key, item in value.items():
+        expected_items = len(value)
+        items = iter(value.items())
+        processed = 0
+        while processed < expected_items and budget[0] > 0:
+            try:
+                key, item = next(items)
+            except StopIteration:
+                break
+            processed += 1
             safe_key = sanitize_untrusted_text(str(key), limit=512, single_line=True)
             result[safe_key] = sanitize_untrusted_payload(item, depth=depth + 1, budget=budget)
+        if processed < expected_items:
+            marker_key = _SANITIZED_PAYLOAD_TRUNCATION_KEY
+            suffix = 2
+            while marker_key in result:
+                marker_key = f"{_SANITIZED_PAYLOAD_TRUNCATION_KEY}#{suffix}"
+                suffix += 1
+            result[marker_key] = _SANITIZED_PAYLOAD_TRUNCATION
         return result
     if isinstance(value, (list, tuple)):
-        return [sanitize_untrusted_payload(item, depth=depth + 1, budget=budget) for item in value]
+        expected_items = len(value)
+        items = iter(value)
+        result_list: list[object] = []
+        processed = 0
+        while processed < expected_items and budget[0] > 0:
+            try:
+                item = next(items)
+            except StopIteration:
+                break
+            processed += 1
+            result_list.append(
+                sanitize_untrusted_payload(item, depth=depth + 1, budget=budget)
+            )
+        if processed < expected_items:
+            result_list.append(_SANITIZED_PAYLOAD_TRUNCATION)
+        return result_list
     if value is None or isinstance(value, (bool, int)):
         return value
     if isinstance(value, float):

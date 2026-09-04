@@ -193,6 +193,22 @@ def test_wheelhouse_manifest_requires_local_hash_and_metadata_integrity(tmp_path
         release_linux._validate_wheelhouse(wheelhouse)
 
 
+def test_wheel_metadata_ignores_nested_vendor_dist_info(tmp_path: Path) -> None:
+    wheel = tmp_path / "setuptools-83.0.0-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "setuptools-83.0.0.dist-info/METADATA",
+            "Metadata-Version: 2.4\nName: setuptools\nVersion: 83.0.0\n",
+        )
+        archive.writestr("setuptools-83.0.0.dist-info/WHEEL", "Wheel-Version: 1.0\n")
+        archive.writestr(
+            "setuptools/_vendor/example-1.0.dist-info/METADATA",
+            "Metadata-Version: 2.4\nName: example\nVersion: 1.0\n",
+        )
+
+    assert release_linux._wheel_metadata(wheel) == ("setuptools", "83.0.0")
+
+
 def test_install_requires_an_explicit_local_wheelhouse_before_preparing_corpus(
     tmp_path: Path,
 ) -> None:

@@ -30,6 +30,7 @@ HUMAN_COMMANDS = frozenset(
         "status",
         "search",
         "ask",
+        "curate",
         "inspect",
         "review",
         "knowledge",
@@ -119,6 +120,18 @@ def _add_query_options(
     parser.add_argument("--json", action="store_true", help="emite el contrato JSON completo")
 
 
+def _curation_limit(value: str) -> int:
+    """Parse the bounded public page size for ``curate plan``."""
+
+    try:
+        limit = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("limit must be an integer between 1 and 100") from exc
+    if not 1 <= limit <= 100:
+        raise argparse.ArgumentTypeError("limit must be between 1 and 100")
+    return limit
+
+
 def build_human_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="Neocortex",
@@ -161,6 +174,21 @@ def build_human_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="presupuesto máximo de contexto por scope",
     )
+
+    curate = commands.add_parser(
+        "curate",
+        help="consulta planes publicados de curación sin modificar estado",
+        allow_abbrev=False,
+    )
+    curate_commands = curate.add_subparsers(dest="curate_command", metavar="ACCIÓN")
+    curate_plan = curate_commands.add_parser(
+        "plan",
+        help="muestra una página estable del plan publicado",
+        allow_abbrev=False,
+    )
+    curate_plan.add_argument("--limit", type=_curation_limit, default=50, metavar="N")
+    curate_plan.add_argument("--cursor", metavar="TOKEN")
+    curate_plan.add_argument("--json", action="store_true", help="emite el contrato JSON completo")
 
     inspect = commands.add_parser(
         "inspect",
@@ -813,6 +841,48 @@ def _run_review_value(args: argparse.Namespace) -> int:
     )
 
 
+def _run_curation_plan(args: argparse.Namespace) -> int:
+    """Render one fixed-root, read-only page from the published curation plan."""
+
+    try:
+        from neocortex.api.curation_api import curation_plan_payload
+
+        payload = curation_plan_payload(limit=args.limit, cursor=args.cursor)
+    except (TypeError, ValueError) as exc:
+        _print(f"curate plan: {exc}", file=sys.stderr)
+        return 2
+
+    coverage = str(payload.get("coverage", "unavailable"))
+    if args.json:
+        _json(payload)
+        return 0 if coverage == "complete" else 2
+
+    page = _mapping(payload.get("page")) or {}
+    items = _mapping_rows(page.get("items"))
+    digest = page.get("plan_digest") or "-"
+    total = page.get("items_total", 0)
+    next_cursor = page.get("next_cursor") or "-"
+    _print(
+        f"CURATION_PLAN coverage={coverage} total={total} digest={digest} "
+        f"page_items={len(items)} next_cursor={next_cursor}"
+    )
+    for item in items:
+        _print(
+            f"ITEM id={item.get('item_id', '-')} kind={item.get('kind', '-')} "
+            f"status={item.get('status', '-')} action={item.get('action', '-')}"
+        )
+        _print(f"  Origen: {item.get('source_path', '-')}")
+        destination = item.get("destination_path")
+        if destination:
+            _print(f"  Destino: {destination}")
+        _print(f"  Razón: {item.get('reason', '-')}")
+    error = _mapping(payload.get("error"))
+    if error is not None and error.get("message"):
+        _print(f"Estado: {error['message']}")
+    _print("Esta consulta no creó, migró ni modificó estado o archivos.")
+    return 0 if coverage == "complete" else 2
+
+
 def _run_review_task(args: argparse.Namespace) -> int:
     if args.scope == ReadScope.ALL.value:
         _print(
@@ -929,6 +999,8 @@ def run_human_command(arguments: Sequence[str]) -> int:
         return _run_search(args)
     if args.command == "ask":
         return _run_ask(args)
+    if args.command == "curate" and args.curate_command == "plan":
+        return _run_curation_plan(args)
     if args.command == "inspect" and args.inspect_command == "code":
         return _run_inspect_code(args)
     if args.command == "inspect" and args.inspect_command == "lineage":

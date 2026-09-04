@@ -19,6 +19,22 @@ from neocortex.interface.entrypoint import entrypoint
 # region [02] Implementación
 
 
+_SDIST_MARKDOWN_ALLOWLIST = {
+    "README.md",
+    "docs/ARCHITECTURE.md",
+    "docs/CHANGELOG.md",
+    "docs/CLI.md",
+    "docs/FILE_INTELLIGENCE_AND_CURATION.md",
+    "docs/KNOWLEDGE.md",
+    "docs/LINUX_KUBUNTU.md",
+    "docs/OPERATIONS.md",
+    "docs/PERSISTENCE.md",
+    "docs/RECOVERY.md",
+    "docs/ROADMAP_90_DAYS.md",
+    "docs/SECURITY.md",
+}
+
+
 def test_project_metadata_uses_package_version_and_installed_command() -> None:
     project_root = Path(__file__).resolve().parents[1]
     with (project_root / "pyproject.toml").open("rb") as stream:
@@ -38,24 +54,19 @@ def test_project_metadata_uses_package_version_and_installed_command() -> None:
 
 def test_source_manifest_excludes_release_internal_material() -> None:
     project_root = Path(__file__).resolve().parents[1]
-    manifest_lines = {
+    manifest_lines = tuple(
         line.strip()
         for line in (project_root / "MANIFEST.in").read_text(encoding="utf-8").splitlines()
-    }
+        if line.strip()
+    )
 
     assert "include AGENTS.md" not in manifest_lines
-    assert "include NeoCortex_AGENTS.md" not in manifest_lines
     assert "exclude AGENTS.md" in manifest_lines
-    assert "exclude NeoCortex_AGENTS.md" in manifest_lines
     assert "prune tests" in manifest_lines
     assert "recursive-include tests *.py" not in manifest_lines
     assert "recursive-include tests/fixtures/knowledge *.json" not in manifest_lines
-    assert "include docs/KNOWLEDGE_EVOLUTION_*.md" not in manifest_lines
-    assert "include docs/TECHNICAL_AUDIT_*.md" not in manifest_lines
-    assert "include docs/TECHNICAL_EVOLUTION_*.md" not in manifest_lines
-    assert "recursive-exclude docs KNOWLEDGE_EVOLUTION_*.md" in manifest_lines
-    assert "recursive-exclude docs TECHNICAL_AUDIT_*.md" in manifest_lines
-    assert "recursive-exclude docs TECHNICAL_EVOLUTION_*.md" in manifest_lines
+    assert "recursive-include docs *.md" not in manifest_lines
+    assert "recursive-include neocortex README.md" not in manifest_lines
 
 
 def test_sdist_manifest_includes_active_docs_and_release_tools() -> None:
@@ -65,8 +76,12 @@ def test_sdist_manifest_includes_active_docs_and_release_tools() -> None:
         for line in (project_root / "MANIFEST.in").read_text(encoding="utf-8").splitlines()
     }
 
-    assert "include docs/SELF_ANALYSIS.md" in manifest_lines
-    assert "include docs/CODE_SUBSYSTEM_CLASSIFICATION.md" in manifest_lines
+    markdown_includes = {
+        line.removeprefix("include ")
+        for line in manifest_lines
+        if line.startswith("include ") and line.endswith(".md")
+    }
+    assert markdown_includes == _SDIST_MARKDOWN_ALLOWLIST
     assert "include constraints-linux-cp314.lock" in manifest_lines
     assert "include tools/__init__.py" in manifest_lines
     assert "include tools/release_archive_safety.py" in manifest_lines

@@ -1,4 +1,4 @@
-"""Canonical lazy SDK facade over the existing read-only Knowledge Plane."""
+"""Canonical lazy SDK facade over read-only Knowledge and curation contracts."""
 
 
 # region [01] Isolated-process harness and stable surface
@@ -17,7 +17,7 @@ import neocortex.sdk as sdk
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-EXPECTED_EXPORTS = (
+LEGACY_EXPORTS = (
     "DERIVATION_CONTRACT_SCHEMA_VERSION",
     "CapabilityFailure",
     "ContextBundle",
@@ -56,6 +56,23 @@ EXPECTED_EXPORTS = (
     "plan_knowledge_query",
 )
 
+CURATION_EXPORTS = (
+    "CURATION_PLAN_API_SCHEMA",
+    "CurationPlanOutput",
+    "CurationPlanPage",
+    "curation_plan_payload",
+)
+
+EXPECTED_EXPORTS = (
+    "CURATION_PLAN_API_SCHEMA",
+    *LEGACY_EXPORTS[:9],
+    "CurationPlanOutput",
+    "CurationPlanPage",
+    *LEGACY_EXPORTS[9:-1],
+    "curation_plan_payload",
+    LEGACY_EXPORTS[-1],
+)
+
 FUTURE_ENDPOINTS = (
     "compare_revisions",
     "explain_hit",
@@ -90,9 +107,10 @@ def _run_isolated(
 # region [02] Public identity and scope
 
 
-def test_sdk_manifest_is_the_existing_public_knowledge_surface() -> None:
+def test_sdk_manifest_is_the_public_read_surface() -> None:
     assert sdk.__all__ == EXPECTED_EXPORTS
     assert set(EXPECTED_EXPORTS).issubset(dir(sdk))
+    assert set(CURATION_EXPORTS).issubset(sdk.__all__)
 
     for endpoint in FUTURE_ENDPOINTS:
         assert endpoint not in sdk.__all__
@@ -103,13 +121,30 @@ def test_sdk_manifest_is_the_existing_public_knowledge_surface() -> None:
 def test_sdk_exports_preserve_legacy_object_identity() -> None:
     from neocortex.api import public as legacy
 
-    for name in EXPECTED_EXPORTS:
+    for name in LEGACY_EXPORTS:
         assert getattr(sdk, name) is getattr(legacy, name), name
 
     service_type = sdk.KnowledgeSearchService
     assert callable(service_type.status)
     assert callable(service_type.search)
     assert callable(service_type.context)
+
+
+def test_sdk_lazily_exports_the_fixed_root_curation_contract() -> None:
+    import inspect
+
+    from neocortex.api import curation_api
+    from neocortex.curation.preview import CurationPlanPage
+
+    assert sdk.CURATION_PLAN_API_SCHEMA == "neocortex.curation-plan/v1"
+    assert sdk.CurationPlanOutput is curation_api.CurationPlanOutput
+    assert sdk.CurationPlanPage is CurationPlanPage
+    assert sdk.curation_plan_payload is curation_api.curation_plan_payload
+    assert set(inspect.signature(sdk.curation_plan_payload).parameters) == {
+        "limit",
+        "cursor",
+        "request_id",
+    }
 
 
 def test_sdk_service_annotations_are_runtime_resolvable_without_search_import() -> None:

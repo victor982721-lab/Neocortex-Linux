@@ -1,27 +1,19 @@
+include README.md
 include constraints.txt
 include constraints-linux-cp314.lock
 exclude AGENTS.md
-exclude NeoCortex_AGENTS.md
 prune tests
-recursive-exclude docs KNOWLEDGE_EVOLUTION_*.md
-recursive-exclude docs TECHNICAL_AUDIT_*.md
-recursive-exclude docs TECHNICAL_EVOLUTION_*.md
-include neocortex/deduplication/README.md
-include neocortex/enumeration/README.md
 include docs/ARCHITECTURE.md
-include docs/CODE_SUBSYSTEM_CLASSIFICATION.md
-include docs/AUDIT_REPORTING_STANDARD.md
 include docs/CHANGELOG.md
 include docs/CLI.md
+include docs/FILE_INTELLIGENCE_AND_CURATION.md
 include docs/KNOWLEDGE.md
 include docs/LINUX_KUBUNTU.md
 include docs/OPERATIONS.md
-include docs/OFFLINE_INSTALLATION.md
 include docs/PERSISTENCE.md
 include docs/RECOVERY.md
-include docs/SELF_ANALYSIS.md
+include docs/ROADMAP_90_DAYS.md
 include docs/SECURITY.md
-include docs/THIRD_PARTY_LICENSE_INVENTORY.md
 include tools/__init__.py
 include tools/release_archive_safety.py
 include tools/release_artifacts.py

@@ -117,7 +117,9 @@ def test_status_search_and_context_keep_scopes_independent(
 
 def test_evidence_resolves_only_selected_context_citations(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
+    monkeypatch.setattr(read_api, "scope_bindings", lambda _scope: _bindings(tmp_path))
     monkeypatch.setattr(
         read_api,
         "context_payload",
@@ -145,9 +147,175 @@ def test_evidence_resolves_only_selected_context_citations(
     missing = read_api.evidence_payload("breaker", "K9", "personal")
 
     assert found["found"] is True
+    assert found["evidence_id"] == "evidence:1"
+    assert found["expected_snapshot_id"] is None
     assert found["matches"][0]["hit"]["evidence"]["evidence_id"] == "evidence:1"
     assert missing["found"] is False
     assert missing["exit_code"] == int(KnowledgeExitCode.NO_RESULTS)
+
+
+def test_evidence_id_is_stable_and_citation_is_only_a_presentation_alias(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(read_api, "scope_bindings", lambda _scope: _bindings(tmp_path))
+    monkeypatch.setattr(
+        read_api,
+        "context_payload",
+        lambda *_args, **_kwargs: {
+            "exit_code": 0,
+            "scopes": [
+                {
+                    "scope": "personal",
+                    "context": {
+                        "snapshot": {"snapshot_id": "stable"},
+                        "citation_ids": [
+                            {"citation_id": "K1", "evidence_id": "evidence:1"},
+                            {"citation_id": "K2", "evidence_id": "evidence:2"},
+                        ],
+                        "selected_hits": [
+                            {"evidence": {"evidence_id": "evidence:1"}},
+                            {"evidence": {"evidence_id": "evidence:2"}},
+                        ],
+                    },
+                }
+            ],
+        },
+    )
+
+    payload = read_api.evidence_payload(
+        "breaker",
+        "K1",
+        "personal",
+        evidence_id="evidence:2",
+        expected_snapshot_id="stable",
+    )
+
+    assert payload["found"] is True
+    assert payload["citation_id"] == "K1"
+    assert payload["evidence_id"] == "evidence:2"
+    assert payload["expected_snapshot_id"] == "stable"
+    assert payload["matches"][0]["citation"]["citation_id"] == "K2"
+    assert payload["matches"][0]["hit"]["evidence"]["evidence_id"] == "evidence:2"
+
+
+def test_evidence_expected_snapshot_drift_fails_without_reassigning_alias(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls = 0
+    monkeypatch.setattr(read_api, "scope_bindings", lambda _scope: _bindings(tmp_path))
+
+    def context(*_args, **_kwargs) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return {
+            "exit_code": 0,
+            "scopes": [
+                {
+                    "scope": "personal",
+                    "context": {
+                        "snapshot": {"snapshot_id": "new-snapshot"},
+                        "citation_ids": [
+                            {"citation_id": "K1", "evidence_id": "evidence:new"}
+                        ],
+                        "selected_hits": [
+                            {"evidence": {"evidence_id": "evidence:new"}}
+                        ],
+                    },
+                }
+            ],
+        }
+
+    monkeypatch.setattr(read_api, "context_payload", context)
+
+    payload = read_api.evidence_payload(
+        "breaker",
+        "K1",
+        "personal",
+        evidence_id="evidence:old",
+        expected_snapshot_id="old-snapshot",
+    )
+
+    assert calls == 1
+    assert payload["found"] is False
+    assert payload["matches"] == []
+    assert payload["evidence_id"] == "evidence:old"
+    assert payload["expected_snapshot_id"] == "old-snapshot"
+    assert payload["exit_code"] == int(KnowledgeExitCode.SNAPSHOT_CHANGED)
+    assert payload["status"] == "snapshot_changed"
+    assert payload["coverage"] == "blocked"
+    assert payload["error"]["code"] == "snapshot_changed"
+
+
+def test_evidence_expected_snapshot_abstains_when_context_has_no_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(read_api, "scope_bindings", lambda _scope: _bindings(tmp_path))
+    monkeypatch.setattr(
+        read_api,
+        "context_payload",
+        lambda *_args, **_kwargs: {
+            "exit_code": int(KnowledgeExitCode.NO_RESULTS),
+            "scopes": [{"scope": "personal", "status": "no_results", "context": {}}],
+        },
+    )
+
+    payload = read_api.evidence_payload(
+        "breaker",
+        "K1",
+        "personal",
+        expected_snapshot_id="expected-snapshot",
+    )
+
+    assert payload["found"] is False
+    assert payload["exit_code"] == int(KnowledgeExitCode.SNAPSHOT_CHANGED)
+    assert payload["status"] == "snapshot_changed"
+    assert payload["error"]["code"] == "snapshot_changed"
+
+
+def test_ambiguous_citation_alias_never_selects_an_arbitrary_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(read_api, "scope_bindings", lambda _scope: _bindings(tmp_path))
+    monkeypatch.setattr(
+        read_api,
+        "context_payload",
+        lambda *_args, **_kwargs: {
+            "exit_code": 0,
+            "scopes": [
+                {
+                    "scope": "personal",
+                    "context": {
+                        "snapshot": {"snapshot_id": "stable"},
+                        "citation_ids": [
+                            {"citation_id": "K1", "evidence_id": "evidence:1"},
+                            {"citation_id": "K1", "evidence_id": "evidence:2"},
+                        ],
+                        "selected_hits": [
+                            {"evidence": {"evidence_id": "evidence:1"}},
+                            {"evidence": {"evidence_id": "evidence:2"}},
+                        ],
+                    },
+                }
+            ],
+        },
+    )
+
+    payload = read_api.evidence_payload("breaker", "K1", "personal")
+
+    assert payload["found"] is False
+    assert payload["matches"] == []
+    assert payload["evidence_id"] is None
+    assert payload["exit_code"] == int(KnowledgeExitCode.PARTIAL)
+    assert payload["status"] == "partial"
+    assert payload["error"] == {
+        "code": "ambiguous_citation",
+        "message": "citation alias identifies multiple evidence records; provide evidence_id",
+        "retryable": False,
+    }
 
 
 def test_code_search_is_bounded_labelled_and_read_only(

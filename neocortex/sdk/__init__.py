@@ -1,10 +1,10 @@
-"""Stable, read-only Python facade for the canonical Knowledge Plane.
+"""Stable, read-only Python facade for Knowledge and curation-plan reads.
 
 Symbols are resolved lazily and cached here without wrapping or subclassing
 them, so callers receive the canonical contract objects directly.
-The supported operations are the existing ``KnowledgeSearchService`` methods
-``status()``, ``search()`` and ``context()``; this module deliberately adds no
-future Knowledge endpoints.
+Knowledge retains its existing ``status()``, ``search()`` and ``context()``
+service.  Curation adds only a fixed-root, paginated plan read; it accepts no
+state path and carries no mutation or authorization capability.
 """
 
 
@@ -16,6 +16,9 @@ from importlib import import_module
 from typing import TYPE_CHECKING, Any, Final
 
 if TYPE_CHECKING:
+    from neocortex.api.curation_api import CURATION_PLAN_API_SCHEMA as CURATION_PLAN_API_SCHEMA
+    from neocortex.api.curation_api import CurationPlanOutput as CurationPlanOutput
+    from neocortex.api.curation_api import curation_plan_payload as curation_plan_payload
     from neocortex.api.public import (
         CapabilityFailure as CapabilityFailure,
         ContextBundle as ContextBundle,
@@ -54,8 +57,10 @@ if TYPE_CHECKING:
         WorkReceipt as WorkReceipt,
         plan_knowledge_query as plan_knowledge_query,
     )
+    from neocortex.curation.preview import CurationPlanPage as CurationPlanPage
 
 __all__ = (
+    "CURATION_PLAN_API_SCHEMA",
     "DERIVATION_CONTRACT_SCHEMA_VERSION",
     "CapabilityFailure",
     "ContextBundle",
@@ -65,6 +70,8 @@ __all__ = (
     "ContextPlanRef",
     "ContextPlanStepRef",
     "ContextRelationRef",
+    "CurationPlanOutput",
+    "CurationPlanPage",
     "DerivationRef",
     "EvidenceRef",
     "InputBinding",
@@ -91,11 +98,18 @@ __all__ = (
     "WorkExecutionMode",
     "WorkOutcome",
     "WorkReceipt",
+    "curation_plan_payload",
     "plan_knowledge_query",
 )
 
 _PUBLIC_NAMES: Final = frozenset(__all__)
 _PUBLIC_FACADE: Final = "neocortex.api.public"
+_CURATION_EXPORTS: Final[dict[str, tuple[str, str]]] = {
+    "CURATION_PLAN_API_SCHEMA": ("neocortex.api.curation_api", "CURATION_PLAN_API_SCHEMA"),
+    "CurationPlanOutput": ("neocortex.api.curation_api", "CurationPlanOutput"),
+    "CurationPlanPage": ("neocortex.curation.preview", "CurationPlanPage"),
+    "curation_plan_payload": ("neocortex.api.curation_api", "curation_plan_payload"),
+}
 
 # endregion [01]
 
@@ -108,8 +122,11 @@ def __getattr__(name: str) -> Any:
 
     if name not in _PUBLIC_NAMES:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    public = import_module(_PUBLIC_FACADE)
-    value = getattr(public, name)
+    target = _CURATION_EXPORTS.get(name)
+    if target is None:
+        target = (_PUBLIC_FACADE, name)
+    module_name, attribute_name = target
+    value = getattr(import_module(module_name), attribute_name)
     globals()[name] = value
     return value
 

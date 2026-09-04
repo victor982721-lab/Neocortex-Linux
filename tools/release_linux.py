@@ -255,7 +255,11 @@ def _wheel_metadata(path: Path) -> tuple[str, str]:
             metadata_members = [
                 member
                 for member in archive.infolist()
+                # A wheel may vendor libraries containing nested dist-info
+                # metadata (setuptools is one example).  Only the distribution
+                # metadata at the archive root identifies the wheel itself.
                 if member.filename.endswith(".dist-info/METADATA")
+                and member.filename.count("/") == 1
             ]
             if len(metadata_members) != 1:
                 raise LinuxReleaseError(f"wheel metadata is not unique: {path.name}")

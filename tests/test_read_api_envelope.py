@@ -174,6 +174,33 @@ def test_read_api_request_id_is_bounded_and_observed_without_creating_state(
         read_api.status_payload("personal", request_id="bad\x1b[31m")
 
 
+def test_stable_evidence_fields_preserve_the_valid_read_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    bindings = _binding(tmp_path)
+    monkeypatch.setattr(read_api, "scope_bindings", lambda _scope: bindings)
+    monkeypatch.setattr(read_api, "_service", lambda _binding: _Service())
+    monkeypatch.setattr(read_api, "knowledge_context_exit_code", lambda _result: 0)
+
+    payload = read_api.evidence_payload(
+        "relay",
+        "K1",
+        "personal",
+        evidence_id="evidence:fixture",
+        expected_snapshot_id="fixture-snapshot",
+        limit=3,
+        request_id="evidence-request-1",
+    )
+
+    _assert_envelope(payload, ReadOperation.EVIDENCE, query="relay", limit=3)
+    assert payload["request_id"] == "evidence-request-1"
+    assert payload["citation_id"] == "K1"
+    assert payload["evidence_id"] == "evidence:fixture"
+    assert payload["expected_snapshot_id"] == "fixture-snapshot"
+    assert payload["found"] is False
+
+
 def test_shared_read_client_sanitizes_untrusted_nested_results(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

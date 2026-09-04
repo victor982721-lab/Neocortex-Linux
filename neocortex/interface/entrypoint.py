@@ -27,6 +27,7 @@ _HUMAN_COMMANDS = frozenset(
         "status",
         "search",
         "ask",
+        "curate",
         "inspect",
         "review",
         "knowledge",

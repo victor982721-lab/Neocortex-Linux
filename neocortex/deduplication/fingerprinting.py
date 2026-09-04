@@ -24,6 +24,7 @@ FULL_ALGORITHM = "xxh3_128_full_v1"
 PARTIAL_ALGORITHM = "xxh3_128_first_middle_last_v1_sample_262144"
 DEFAULT_IO_CHUNK_SIZE = 16 * 1024 * 1024
 DEFAULT_SAMPLE_SIZE = 256 * 1024
+_MIN_IO_CHUNK_SIZE = 64 * 1024
 
 
 def stat_matches_snapshot(snapshot: FileSnapshot, stat: os.stat_result) -> bool:
@@ -55,17 +56,30 @@ def _assert_unchanged(snapshot: FileSnapshot, stat: os.stat_result) -> None:
         raise FileChangedError(f"file changed while processing: {snapshot.path}")
 
 
+def _validated_io_chunk_size(chunk_size: int) -> int:
+    if isinstance(chunk_size, bool) or not isinstance(chunk_size, int):
+        raise TypeError("chunk_size must be an integer")
+    if chunk_size < _MIN_IO_CHUNK_SIZE:
+        raise ValueError("chunk_size must be at least 64 KiB")
+    return chunk_size
+
+
+def _adaptive_buffer_capacity(file_size: int, chunk_size: int) -> int:
+    """Bound one reusable buffer to the observed file instead of the global limit."""
+
+    return min(chunk_size, max(1, file_size))
+
+
 def full_fingerprint(snapshot: FileSnapshot, *, chunk_size: int = DEFAULT_IO_CHUNK_SIZE) -> bytes:
     """Return an XXH3-128 digest after streaming the entire file once."""
 
-    if chunk_size < 64 * 1024:
-        raise ValueError("chunk_size must be at least 64 KiB")
+    chunk_size = _validated_io_chunk_size(chunk_size)
     hasher = xxhash.xxh3_128()
-    buffer = bytearray(chunk_size)
-    view = memoryview(buffer)
     try:
         with open(native_io_path(snapshot.path), "rb", buffering=0) as stream:
             _assert_unchanged(snapshot, os.fstat(stream.fileno()))
+            buffer = bytearray(_adaptive_buffer_capacity(snapshot.size, chunk_size))
+            view = memoryview(buffer)
             while count := stream.readinto(buffer):
                 hasher.update(view[:count])
             _assert_unchanged(snapshot, os.fstat(stream.fileno()))
@@ -110,12 +124,9 @@ def files_equal_exact(
 ) -> bool:
     """Perform the final byte comparison required before a destructive policy."""
 
+    chunk_size = _validated_io_chunk_size(chunk_size)
     if left.size != right.size:
         return False
-    if left.identity == right.identity:
-        return True
-    left_buffer = bytearray(chunk_size)
-    right_buffer = bytearray(chunk_size)
     try:
         with (
             open(native_io_path(left.path), "rb", buffering=0) as left_stream,
@@ -123,18 +134,26 @@ def files_equal_exact(
         ):
             _assert_unchanged(left, os.fstat(left_stream.fileno()))
             _assert_unchanged(right, os.fstat(right_stream.fileno()))
+            capacity = _adaptive_buffer_capacity(left.size, chunk_size)
+            left_buffer = bytearray(capacity)
+            right_buffer = bytearray(capacity)
+            left_view = memoryview(left_buffer)
+            right_view = memoryview(right_buffer)
+            equal = True
             while True:
                 left_count = left_stream.readinto(left_buffer)
                 right_count = right_stream.readinto(right_buffer)
                 if left_count != right_count:
-                    return False
+                    equal = False
+                    break
                 if left_count == 0:
                     break
-                if memoryview(left_buffer)[:left_count] != memoryview(right_buffer)[:right_count]:
-                    return False
+                if left_view[:left_count] != right_view[:right_count]:
+                    equal = False
+                    break
             _assert_unchanged(left, os.fstat(left_stream.fileno()))
             _assert_unchanged(right, os.fstat(right_stream.fileno()))
-            return True
+            return equal
     except FileChangedError:
         raise
     except OSError as exc:
