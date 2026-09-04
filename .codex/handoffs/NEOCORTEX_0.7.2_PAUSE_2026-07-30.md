@@ -1,6 +1,6 @@
 # NeoCortex — handoff operativo vigente
 
-> Actualizado: 2026-09-03 18:47 CST. El basename es histórico y permanece estable.
+> Actualizado: 2026-09-03 19:14 CST. El basename es histórico y permanece estable.
 > `~/.codex/PENDIENTES.md` conserva el compromiso operativo; este archivo
 > describe sólo la frontera técnica de reanudación.
 
@@ -17,7 +17,8 @@ metadata, FTS, relaciones y estados `future/incompatible/corrupt/active/
 blocked/orphaned`, backup/restore/purge con manifest y publicación por época,
 contratos compartidos CLI/API/MCP/UI con envelope v1, retención Linux segura de
 releases, modelos y artefactos, y un manifiesto multimodal que propaga
-`coverage` y `source_status` hasta Semantic. Code Graph dispone además de un
+`coverage` y `source_status` hasta Semantic. Video ya puede seleccionarse de
+forma explícita desde el planner de texto. Code Graph dispone además de un
 ledger generacional aditivo con snapshots, lotes, membresías, checkpoints y
 CAS del head, sin crear un almacén paralelo.
 
@@ -30,7 +31,7 @@ entorno virtual al destino inmutable, valida manifiesto/launcher/receipt y
 conserva únicamente `current` y el rollback inmediato, sin borrar una entrada
 en uso.
 
-La suite integral del árbol ejecutable actual pasó con 4,417 pruebas, 127
+La suite integral del árbol ejecutable actual pasó con 4,418 pruebas, 127
 omitidas y 114 subtests, y las comprobaciones focales de contratos, persistencia,
 multimodalidad, Code Graph y release quedaron verdes. La release Linux final,
 el smoke público sin `PYTHONPATH`, el replay de lecturas y la comparación de

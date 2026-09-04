@@ -21,7 +21,7 @@ reconstruibles y la fuente original conserva prioridad.
 | F2 — estado publicado | backup/restore staged, integridad rápida/completa, purge con recaptura de sidecars, epoch y journal idempotente | implementado en API y fachada `databases`; publicación filesystem cross-owner completa queda pendiente |
 | F3 — contratos | envelope v1, códigos y cobertura comunes, validación MCP/cliente compartido, protocolo UI con secuencias y terminales | implementado en superficies principales |
 | F4 — release | parser de IDs, staging con marcador, digest de árbol, lock previo, rollback y retención `current + rollback` | instalado y verificado desde el SHA final; supply-chain offline reproducible/modelos criptográficos quedan pendientes |
-| F5 — multimodal | manifiesto canónico de capacidades, dependencia opcional vídeo→audio, fuente Semantic de vídeo con locators | adapter de vídeo implementado; planner Semantic, catálogo/OCR completo y propagación final quedan pendientes |
+| F5 — multimodal | manifiesto canónico de capacidades, dependencia opcional vídeo→audio, fuente Semantic de vídeo con locators | adapter y selección explícita del planner para vídeo implementados; dependencia vídeo→audio, catálogo/OCR completo y propagación final quedan pendientes |
 | M6–M12 — arquitectura | Code Graph generacional, módulos Semantic/Review y aislamiento Linux-first de tooling histórico | ledger Code aditivo implementado, integración del productor y modularización siguen pendientes |
 
 ## Gates por corte
