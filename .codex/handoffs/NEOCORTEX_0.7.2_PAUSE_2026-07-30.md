@@ -1,6 +1,6 @@
 # NeoCortex — handoff operativo vigente
 
-> Actualizado: 2026-09-03 19:14 CST. El basename es histórico y permanece estable.
+> Actualizado: 2026-09-03 20:33 CST. El basename es histórico y permanece estable.
 > `~/.codex/PENDIENTES.md` conserva el compromiso operativo; este archivo
 > describe sólo la frontera técnica de reanudación.
 
@@ -31,13 +31,44 @@ entorno virtual al destino inmutable, valida manifiesto/launcher/receipt y
 conserva únicamente `current` y el rollback inmediato, sin borrar una entrada
 en uso.
 
-La suite integral del árbol ejecutable actual pasó con 4,418 pruebas, 127
-omitidas y 114 subtests, y las comprobaciones focales de contratos, persistencia,
-multimodalidad, Code Graph y release quedaron verdes. La release Linux final,
-el smoke público sin `PYTHONPATH`, el replay de lecturas y la comparación de
-bytes/inodos/mtimes de sidecars quedaron verificados en la evidencia durable de
-la cohorte; el estado observado permanece parcial por owners ausentes y no se
+La última suite integral del árbol ejecutable anterior pasó con 4,418 pruebas,
+127 omitidas y 114 subtests, y las comprobaciones focales de los nuevos cortes
+quedaron reportadas por sus agentes. Desde ese corte se añadieron publicación
+cross-owner fail-closed, integración Code Graph, fachada Review, supply-chain
+offline y guardas de cobertura multimodal, por lo que la suite combinada y la
+release de ese SHA aún deben ejecutarse. El estado vivo verificado conserva
+`current=0.9.0-5e09208ff1e3-cp314-linux-x86_64` y rollback inmediato
+`0.9.0-ab540713de43-cp314-linux-x86_64`, con staging vacío y sin workers; no se
 ejecutó una migración destructiva ni se procesó el corpus del usuario.
+
+## Punto de pausa reanudable — 2026-09-03
+
+- Checkout limpio al congelar este handoff; la sesión fast debe confirmar el
+  `HEAD` exacto y la rama local `codex/neocortex-local-20260829` está adelantada
+  respecto de su remoto, sin push ni merge a `main`.
+- El último release instalado y verificado es `0.9.0-5e09208ff1e3-cp314-linux-x86_64`.
+  Los commits posteriores `437295f`, `3015c92`, `ab8b4ff`, `cc436fc` y
+  `d469fd3` están en el checkout pero todavía no están instalados ni validados
+  como conjunto. El nuevo instalador exige un wheelhouse local con
+  `wheelhouse-manifest.json` y no usa red.
+- `NEO-CUR-001` permanece `EN_CURSO`; no se abrió SQLite de producción durante
+  la auditoría pausada, no se procesó el corpus y `--apply`/`--organization-apply`
+  siguen bloqueados.
+
+**Reanudación exacta en una sesión fast**
+
+1. Verificar `git status`, `git rev-parse HEAD`, procesos/unidades host,
+   `current`, rollback y `.staging`, sin abrir owners cercados.
+2. Ejecutar focales de los commits posteriores y después la suite integral
+   sobre el árbol combinado, limpiando únicamente `:memory:.ses` si aparece.
+3. Resolver o construir, dentro del destino canónico y sin red, el wheelhouse
+   CPython 3.14 completo con manifest y hashes; si falta una rueda, detenerse
+   fail-closed y registrarlo, nunca consultar un índice.
+4. Instalar desde el SHA final usando `--wheelhouse`, verificar manifest,
+   launcher, modelos, staging, current+rollback y ejecutar smoke/replay público
+   sin `PYTHONPATH` ni corpus real.
+5. Actualizar este handoff, `PENDIENTES.md` e `HISTORIAL.md` con el resultado
+   vivo, sin marcar el objetivo completo mientras queden gates residuales.
 
 ## Corte físico anterior (referencia histórica)
 

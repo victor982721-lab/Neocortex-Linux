@@ -20,9 +20,9 @@ reconstruibles y la fuente original conserva prioridad.
 | F1 — lectura segura | `SQLiteReadSession` con `immutable_strict`, `snapshot_temp` y rechazo de `writer_coordinated`; `state-health` contractual v2 | implementado en las superficies públicas y con prueba arquitectónica |
 | F2 — estado publicado | backup/restore staged, integridad rápida/completa, purge con recaptura de sidecars, epoch y journal idempotente | implementado en API y fachada `databases`, con manifest de heads y gate fail-closed para publicaciones cross-owner; la atomicidad física de varios archivos sigue fuera de la garantía |
 | F3 — contratos | envelope v1, códigos y cobertura comunes, validación MCP/cliente compartido, protocolo UI con secuencias y terminales | implementado en superficies principales |
-| F4 — release | parser de IDs, staging con marcador, digest de árbol, lock previo, rollback y retención `current + rollback` | instalado y verificado desde el SHA final; supply-chain offline reproducible/modelos criptográficos quedan pendientes |
-| F5 — multimodal | manifiesto canónico de capacidades, dependencia opcional vídeo→audio, fuente Semantic de vídeo con locators | adapter y selección explícita del planner para vídeo implementados; dependencia vídeo→audio, catálogo/OCR completo y propagación final quedan pendientes |
-| M6–M12 — arquitectura | Code Graph generacional, módulos Semantic/Review y aislamiento Linux-first de tooling histórico | ledger Code aditivo implementado, integración del productor y modularización siguen pendientes |
+| F4 — release | parser de IDs, staging con marcador, digest de árbol, lock previo, rollback y retención `current + rollback` | último release `5e09208` verificado; el checkout posterior exige wheelhouse local autenticado y nueva validación |
+| F5 — multimodal | manifiesto canónico de capacidades, dependencia opcional vídeo→audio, fuente Semantic de vídeo con locators | adapter, guard de cobertura y selección explícita del planner implementados; catálogo/OCR completo y propagación final quedan pendientes |
+| M6–M12 — arquitectura | Code Graph generacional, módulos Semantic/Review y aislamiento Linux-first de tooling histórico | publicación Code integrada con reader/recovery/prune y fachada Review; modularización restante sigue pendiente |
 
 ## Gates por corte
 
@@ -53,8 +53,8 @@ reconstruibles y la fuente original conserva prioridad.
    y sin mutar el corpus.
 3. Integrar el ledger generacional Code con el productor principal y conservar
    el lector legacy hasta probar equivalencia, backup y restore.
-4. Ejecutar por separado el hardening de supply-chain offline, modelos y
-   atestación nativa antes de promover otro release.
+4. Reanudar desde el SHA del handoff, validar el wheelhouse local offline y
+   ejecutar suite/checks antes de promover el release correspondiente.
 5. Registrar hashes, conteos, tiempos y límites en la evidencia canónica y
    actualizar `PENDIENTES.md`/`HISTORIAL.md` sin copiar evidencia bruta.
 

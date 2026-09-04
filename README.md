@@ -181,13 +181,17 @@ canónico ya disponible y conserva la validación exacta.
 
 La referencia local es Kubuntu/Ubuntu 26.04, Linux x86-64 y CPython 3.14.4. El
 instalador mantenido construye el wheel, crea una release inmutable, instala el
-extra `full` sólo desde wheels binarios, prepara modelos de forma explícita y
-publica KDE al final:
+extra `full` sólo desde un wheelhouse local autenticado, prepara modelos de
+forma explícita y publica KDE al final. Debe recibir `--wheelhouse` o la
+variable `NEOCORTEX_WHEELHOUSE`, cuyo directorio contiene
+`wheelhouse-manifest.json`; no existe fallback a red:
 
 ```bash
 cd "$HOME/Neocortex/Repository"
+export NEOCORTEX_WHEELHOUSE="/ruta/local/wheelhouse-cp314-linux-x86_64"
 python3.14 tools/release_linux.py install \
   --corpus-root "$HOME/Documentos/NeoCortex/Corpus" \
+  --wheelhouse "$NEOCORTEX_WHEELHOUSE" \
   --prepare-models \
   --desktop
 python3.14 tools/release_linux.py verify

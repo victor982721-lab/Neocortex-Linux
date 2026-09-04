@@ -661,8 +661,10 @@ inmutable, activa `current` bajo `flock`, conserva sólo `current` y el rollback
 inmediato, poda releases anteriores y escribe un recibo en el estado:
 
 ```bash
+export NEOCORTEX_WHEELHOUSE="/ruta/local/wheelhouse-cp314-linux-x86_64"
 python3.14 tools/release_linux.py install \
   --corpus-root "$HOME/Documentos/NeoCortex/Corpus" \
+  --wheelhouse "$NEOCORTEX_WHEELHOUSE" \
   --prepare-models --desktop
 python3.14 tools/release_linux.py verify
 python3.14 tools/release_linux.py rollback
@@ -677,6 +679,9 @@ La release CPython 3.14 consume conjuntamente `constraints.txt` y
 `constraints-linux-cp314.lock`. El segundo archivo fija el inventario transitivo
 Linux completo, se conserva dentro de la release y debe coincidir por nombre,
 versión, cantidad y SHA-256 antes de promover o verificar el artefacto.
+El wheelhouse local debe contener ese cierre y su `wheelhouse-manifest.json` con
+los hashes de cada wheel; si falta o no coincide, la instalación se abstiene sin
+consultar índices remotos.
 
 1. Termine sólo los procesos propios de NeoCortex y confirme que no quede un
    watcher activo.
