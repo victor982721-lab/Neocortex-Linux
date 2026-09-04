@@ -12,7 +12,7 @@ import hashlib
 import json
 import sqlite3
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Iterator
@@ -128,6 +128,35 @@ class GenerationHead:
     generation_digest: str
     revision: int
     updated_ns: int
+
+
+@dataclass(frozen=True, slots=True)
+class GraphPublicationResult:
+    """Receipt for one graph generation publication.
+
+    The receipt deliberately identifies both the source analysis run and the
+    published head.  A generation is useful only when a reader can prove
+    which completed producer run supplied it; a digest alone is not enough to
+    establish that lineage.
+    """
+
+    source_run_id: int
+    snapshot_id: str
+    generation_id: str
+    generation_digest: str
+    head_name: str
+    head_revision: int
+    item_count: int
+    reused: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class PublishedGraph:
+    """Validated view of a published generation and its immutable members."""
+
+    head: GenerationHead
+    generation: GraphGeneration
+    memberships: tuple[GraphMembership, ...]
 
 
 def _text(value: str, name: str) -> str:
@@ -285,6 +314,291 @@ class CodeGraphGenerationStore:
         )
         if versions != (GENERATION_SCHEMA_VERSION,):
             raise GenerationSchemaError("Code graph generation migration history is incomplete")
+
+    def validate_source_run_id(
+        self,
+        source_run_id: int,
+        *,
+        expected_framework_run_id: int | None = None,
+        expected_processing_signature: str | None = None,
+    ) -> Mapping[str, object]:
+        """Validate the completed Code producer run used by a generation.
+
+        ``source_run_id`` is an analysis-run identity, not an arbitrary cursor
+        supplied by a caller.  Keeping this check in the generation boundary
+        prevents a graph head from being advanced from a missing, partial or
+        unrelated producer run.  The method is intentionally read-only and
+        can be called while the producer transaction is open.
+        """
+
+        if (
+            isinstance(source_run_id, bool)
+            or not isinstance(source_run_id, int)
+            or source_run_id <= 0
+        ):
+            raise GenerationStateError("source_run_id must identify a positive analysis run")
+        if expected_framework_run_id is not None:
+            expected_framework_run_id = _index(
+                expected_framework_run_id, "expected_framework_run_id"
+            )
+        if expected_processing_signature is not None:
+            expected_processing_signature = _text(
+                expected_processing_signature, "expected_processing_signature"
+            )
+        row = self._connection.execute(
+            """SELECT framework_run_id,processing_signature,status,started_ns,
+            completed_ns,summary_json FROM analysis_runs WHERE analysis_run_id=?""",
+            (source_run_id,),
+        ).fetchone()
+        if row is None:
+            raise GenerationStateError(f"source analysis run does not exist: {source_run_id}")
+        try:
+            framework_run_id = _row_int(row[0], "framework_run_id")
+            started_ns = _row_int(row[3], "started_ns")
+            completed_ns = None if row[4] is None else _row_int(row[4], "completed_ns")
+        except GenerationSchemaError:
+            raise
+        status = str(row[2])
+        if status != "completed":
+            raise GenerationStateError(
+                f"source analysis run is not completed: {source_run_id} ({status})"
+            )
+        if started_ns <= 0 or completed_ns is None or completed_ns <= 0:
+            raise GenerationSchemaError(f"source analysis run timestamps are invalid: {source_run_id}")
+        processing_signature = str(row[1])
+        if expected_framework_run_id is not None and framework_run_id != expected_framework_run_id:
+            raise GenerationConflict(f"source framework run differs: {source_run_id}")
+        if (
+            expected_processing_signature is not None
+            and processing_signature != expected_processing_signature
+        ):
+            raise GenerationConflict(f"source processing signature differs: {source_run_id}")
+        if row[5] is None:
+            raise GenerationSchemaError(f"source analysis summary is missing: {source_run_id}")
+        try:
+            summary = json.loads(str(row[5]))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise GenerationSchemaError(f"source analysis summary is malformed: {source_run_id}") from exc
+        if not isinstance(summary, dict):
+            raise GenerationSchemaError(f"source analysis summary is not an object: {source_run_id}")
+        return {
+            "source_run_id": source_run_id,
+            "framework_run_id": framework_run_id,
+            "processing_signature": processing_signature,
+            "status": status,
+            "started_ns": started_ns,
+            "completed_ns": completed_ns,
+            "summary": summary,
+        }
+
+    def _legacy_input_snapshot_items(self) -> tuple[CodeInput, ...]:
+        """Capture current file identities without opening source files."""
+
+        items: list[CodeInput] = []
+        for row in self._connection.execute(
+            """SELECT file_id,version_id,path_observed,size,mtime_ns,
+            raw_xxh3_128,text_xxh3_128,structure_xxh3_128,analysis_status,
+            processing_signature,language,artifact_kind
+            FROM file_versions WHERE invalidated_ns IS NULL ORDER BY version_id"""
+        ):
+            file_id = _row_int(row[0], "file_id")
+            version_id = _row_int(row[1], "version_id")
+            path = str(row[2])
+            payload = {
+                "file_id": file_id,
+                "version_id": version_id,
+                "path": path,
+                "size": _row_int(row[3], "size"),
+                "mtime_ns": _row_int(row[4], "mtime_ns"),
+                "raw_xxh3_128": row[5],
+                "text_xxh3_128": row[6],
+                "structure_xxh3_128": row[7],
+                "analysis_status": str(row[8]),
+                "processing_signature": str(row[9]),
+                "language": None if row[10] is None else str(row[10]),
+                "artifact_kind": str(row[11]),
+            }
+            digest = next(
+                (
+                    str(value)
+                    for value in (row[5], row[6], row[7])
+                    if (
+                        isinstance(value, str)
+                        and value
+                        and not any(character.isspace() for character in value)
+                    )
+                ),
+                _hash(payload, "file input"),
+            )
+            items.append(
+                CodeInput(
+                    f"file:{file_id}",
+                    digest,
+                    version_id,
+                    path,
+                    {
+                        "analysis_status": str(row[8]),
+                        "artifact_kind": str(row[11]),
+                        "language": None if row[10] is None else str(row[10]),
+                    },
+                )
+            )
+        return tuple(items)
+
+    def _legacy_graph_memberships(self) -> tuple[GraphMembership, ...]:
+        """Materialize a deterministic, current graph projection.
+
+        This is a bridge for the existing Code producer: the legacy tables
+        remain authoritative and readable, while the additive ledger records a
+        content-addressed snapshot of the graph that was actually published.
+        No source file or second SQLite owner is opened here.
+        """
+
+        members: list[GraphMembership] = []
+
+        def add(
+            table: str,
+            key: str,
+            payload: Mapping[str, object],
+            source_version_id: int | None = None,
+        ) -> None:
+            members.append(
+                GraphMembership(
+                    key,
+                    _hash({"table": table, "row": dict(payload)}, "graph row"),
+                    source_version_id,
+                    {"table": table},
+                )
+            )
+
+        for row in self._connection.execute(
+            """SELECT version_id,file_id,path_observed,size,mtime_ns,birthtime_ns,
+            raw_xxh3_128,text_xxh3_128,normalized_xxh3_128,token_xxh3_128,
+            structure_xxh3_128,language,artifact_kind,analysis_status,
+            processing_signature,analyzer_id,analyzer_version,parser_kind,
+            text_chars,text_truncated,provenance_json
+            FROM file_versions WHERE invalidated_ns IS NULL ORDER BY version_id"""
+        ):
+            version_id = _row_int(row[0], "version_id")
+            add(
+                "file_versions",
+                f"version:{version_id}",
+                {str(index): value for index, value in enumerate(row)},
+                version_id,
+            )
+
+        for row in self._connection.execute(
+            """SELECT s.symbol_id,s.version_id,s.parent_symbol_id,s.kind,s.name,
+            s.qualified_name,s.signature,s.visibility,s.docstring,s.confirmed,
+            s.complexity,s.start_line,s.start_column,s.end_line,s.end_column,
+            s.start_byte,s.end_byte,s.metadata_json
+            FROM symbols s JOIN file_versions v ON v.version_id=s.version_id
+            WHERE v.invalidated_ns IS NULL ORDER BY s.symbol_id"""
+        ):
+            symbol_id = _row_int(row[0], "symbol_id")
+            add("symbols", f"symbol:{symbol_id}", {str(index): value for index, value in enumerate(row)}, int(row[1]))
+
+        for row in self._connection.execute(
+            """SELECT r.reference_id,r.version_id,r.source_symbol_id,
+            r.target_symbol_id,r.target_version_id,r.kind,r.name,r.target_hint,
+            r.confirmed,r.confidence,r.evidence,r.start_line,r.start_column,
+            r.end_line,r.end_column,r.start_byte,r.end_byte
+            FROM code_references r JOIN file_versions v ON v.version_id=r.version_id
+            WHERE v.invalidated_ns IS NULL ORDER BY r.reference_id"""
+        ):
+            reference_id = _row_int(row[0], "reference_id")
+            add("code_references", f"reference:{reference_id}", {str(index): value for index, value in enumerate(row)}, int(row[1]))
+
+        for row in self._connection.execute(
+            """SELECT d.dependency_id,d.version_id,d.resolved_version_id,d.name,
+            d.kind,d.scope,d.version_spec,d.confirmed,d.confidence,d.evidence,
+            d.start_line,d.start_column,d.end_line,d.end_column,d.start_byte,d.end_byte
+            FROM dependencies d JOIN file_versions v ON v.version_id=d.version_id
+            WHERE v.invalidated_ns IS NULL ORDER BY d.dependency_id"""
+        ):
+            dependency_id = _row_int(row[0], "dependency_id")
+            add("dependencies", f"dependency:{dependency_id}", {str(index): value for index, value in enumerate(row)}, int(row[1]))
+
+        for row in self._connection.execute(
+            """SELECT d.diagnostic_id,d.version_id,d.source,d.code,d.severity,
+            d.message,d.tool_name,d.tool_version,d.confirmed,d.confidence,
+            d.start_line,d.start_column,d.end_line,d.end_column,d.start_byte,
+            d.end_byte,d.metadata_json
+            FROM diagnostics d JOIN file_versions v ON v.version_id=d.version_id
+            WHERE v.invalidated_ns IS NULL ORDER BY d.diagnostic_id"""
+        ):
+            diagnostic_id = _row_int(row[0], "diagnostic_id")
+            add("diagnostics", f"diagnostic:{diagnostic_id}", {str(index): value for index, value in enumerate(row)}, int(row[1]))
+
+        for row in self._connection.execute(
+            """SELECT m.metric_id,m.version_id,m.symbol_id,m.name,m.value,
+            m.confirmed,m.provenance
+            FROM metrics m JOIN file_versions v ON v.version_id=m.version_id
+            WHERE v.invalidated_ns IS NULL ORDER BY m.metric_id"""
+        ):
+            metric_id = _row_int(row[0], "metric_id")
+            add("metrics", f"metric:{metric_id}", {str(index): value for index, value in enumerate(row)}, int(row[1]))
+
+        for row in self._connection.execute(
+            """SELECT c.chunk_id,c.version_id,c.symbol_id,c.chunk_index,c.kind,
+            c.start_line,c.end_line,c.start_byte,c.end_byte,c.text,c.text_xxh3_128
+            FROM code_chunks c JOIN file_versions v ON v.version_id=c.version_id
+            WHERE v.invalidated_ns IS NULL ORDER BY c.chunk_id"""
+        ):
+            chunk_id = _row_int(row[0], "chunk_id")
+            add("code_chunks", f"chunk:{chunk_id}", {str(index): value for index, value in enumerate(row)}, int(row[1]))
+
+        for row in self._connection.execute(
+            """SELECT project_id,project_key,name,ecosystem,probable_root,
+            manifest_kind,confidence,evidence_json,first_seen_run_id,
+            last_seen_run_id,status FROM projects
+            WHERE status IN ('current','ambiguous') ORDER BY project_id"""
+        ):
+            project_id = _row_int(row[0], "project_id")
+            add("projects", f"project:{project_id}", {str(index): value for index, value in enumerate(row)})
+
+        for row in self._connection.execute(
+            """SELECT m.project_id,m.version_id,m.proposed_path,m.relation,
+            m.confidence,m.selected,m.conflict_group,m.evidence_json
+            FROM project_memberships m
+            JOIN projects p ON p.project_id=m.project_id
+            JOIN file_versions v ON v.version_id=m.version_id
+            WHERE p.status IN ('current','ambiguous') AND v.invalidated_ns IS NULL
+            ORDER BY m.project_id,m.version_id"""
+        ):
+            project_id = _row_int(row[0], "project_id")
+            version_id = _row_int(row[1], "version_id")
+            add(
+                "project_memberships",
+                f"project-membership:{project_id}:{version_id}",
+                {str(index): value for index, value in enumerate(row)},
+                version_id,
+            )
+
+        for row in self._connection.execute(
+            """SELECT e.source_project_id,e.target_project_id,e.dependency_name,
+            e.edge_kind,e.confidence,e.evidence_json
+            FROM project_edges e JOIN projects p ON p.project_id=e.source_project_id
+            WHERE p.status IN ('current','ambiguous')
+            ORDER BY e.source_project_id,e.dependency_name,e.edge_kind"""
+        ):
+            payload = {str(index): value for index, value in enumerate(row)}
+            key_digest = _hash(payload, "project edge key")
+            add("project_edges", f"project-edge:{key_digest}", payload)
+
+        for row in self._connection.execute(
+            """SELECT r.relation_id,r.left_version_id,r.right_version_id,
+            r.relation_kind,r.confidence,r.evidence_json,r.created_ns
+            FROM version_relations r
+            JOIN file_versions left_version ON left_version.version_id=r.left_version_id
+            JOIN file_versions right_version ON right_version.version_id=r.right_version_id
+            WHERE left_version.invalidated_ns IS NULL OR right_version.invalidated_ns IS NULL
+            ORDER BY r.relation_id"""
+        ):
+            relation_id = _row_int(row[0], "relation_id")
+            add("version_relations", f"relation:{relation_id}", {str(index): value for index, value in enumerate(row)})
+
+        return tuple(sorted(members, key=lambda item: item.item_key))
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
@@ -825,6 +1139,221 @@ class CodeGraphGenerationStore:
             )
             return GenerationHead(head_name, generation_id, str(target[0]), revision, updated)
 
+    def publish_legacy_graph(
+        self,
+        source_run_id: int,
+        *,
+        head_name: str = DEFAULT_HEAD_NAME,
+        batch_size: int = 256,
+        cancellation_check: Callable[[], None] | None = None,
+    ) -> GraphPublicationResult:
+        """Publish the current legacy Code graph through the generation ledger.
+
+        ``CodeRoute`` still writes the established product tables because
+        legacy readers are part of the compatibility surface.  This bridge
+        captures those rows only after graph reconciliation, then commits an
+        immutable generation and advances the named head with CAS.  The whole
+        operation is one writer transaction (nested savepoints are used when
+        called from ``CodeState.complete_run``), so a cancelled or failed
+        publication cannot leave a head pointing at a partial generation.
+        """
+
+        head_name = _text(head_name, "head_name")
+        if isinstance(batch_size, bool) or not isinstance(batch_size, int) or not 1 <= batch_size <= 4096:
+            raise ValueError("batch_size must be between 1 and 4096")
+        if cancellation_check is not None and not callable(cancellation_check):
+            raise TypeError("cancellation_check must be callable")
+
+        def check_cancelled() -> None:
+            if cancellation_check is not None:
+                cancellation_check()
+
+        with self._transaction():
+            source = self.validate_source_run_id(source_run_id)
+            source_id = _row_int(source["source_run_id"], "source_run_id")
+            framework_id = _row_int(source["framework_run_id"], "framework_run_id")
+            processing_signature = _text(
+                str(source["processing_signature"]), "processing_signature"
+            )
+            snapshot_id = f"analysis:{source_id}:inputs"
+            generation_id = f"analysis:{source_id}:graph"
+            snapshot_metadata = {
+                "contract": "code-graph-legacy-bridge-v1",
+                "source_run_id": source_id,
+                "framework_run_id": framework_id,
+                "processing_signature": processing_signature,
+            }
+            inputs = self._legacy_input_snapshot_items()
+            check_cancelled()
+            snapshot = self.create_input_snapshot(
+                snapshot_id,
+                source_id,
+                inputs,
+                metadata=snapshot_metadata,
+            )
+            generation = self.start_generation(
+                snapshot.snapshot_id,
+                generation_id,
+                metadata={**snapshot_metadata, "input_digest": snapshot.input_digest},
+            )
+            if generation.status == "building":
+                members = self._legacy_graph_memberships()
+                for batch_index, start in enumerate(range(0, len(members), batch_size)):
+                    check_cancelled()
+                    batch = members[start : start + batch_size]
+                    cursor = batch[-1].item_key if batch else None
+                    self.append_batch(
+                        generation_id,
+                        batch_index,
+                        batch,
+                        cursor=cursor,
+                    )
+                    self.checkpoint(generation_id, batch_index, cursor or "empty")
+                check_cancelled()
+                generation = self.complete_generation(generation_id)
+            elif generation.status in {"completed", "published"}:
+                # ``start_generation`` is idempotent; an already-complete
+                # generation can be resumed directly at the CAS boundary.
+                pass
+            else:
+                raise GenerationStateError(
+                    f"generation cannot be published from state {generation.status}: {generation_id}"
+                )
+            if generation.generation_digest is None:
+                raise GenerationSchemaError(f"generation digest is missing: {generation_id}")
+            current = self.get_head(head_name)
+            if current is not None and current.generation_id == generation_id:
+                if current.generation_digest != generation.generation_digest:
+                    raise GenerationSchemaError(f"published generation digest differs: {generation_id}")
+                head = current
+                reused = True
+            else:
+                try:
+                    head = self.compare_and_swap_head(
+                        head_name,
+                        expected_revision=0 if current is None else current.revision,
+                        expected_generation_id=None if current is None else current.generation_id,
+                        generation_id=generation_id,
+                    )
+                except GenerationHeadConflict:
+                    # A concurrent replay may have published this exact
+                    # generation between the read and the CAS.  Accept only
+                    # that idempotent outcome; a different head remains a
+                    # genuine conflict and must fail closed.
+                    raced = self.get_head(head_name)
+                    if raced is None or raced.generation_id != generation_id:
+                        raise
+                    if raced.generation_digest != generation.generation_digest:
+                        raise GenerationSchemaError(
+                            f"concurrent generation digest differs: {generation_id}"
+                        ) from None
+                    head = raced
+                    reused = True
+                else:
+                    reused = False
+            # Graph projections are reconstructible; keep current plus one
+            # rollback generation and tombstone older rows without touching a
+            # head or an in-progress generation.
+            self.prune_generations(keep=2)
+            item_count = len(self.list_memberships(generation_id))
+            return GraphPublicationResult(
+                source_id,
+                snapshot.snapshot_id,
+                generation_id,
+                generation.generation_digest,
+                head.head_name,
+                head.revision,
+                item_count,
+                reused,
+            )
+
+    def cancel_generation(self, generation_id: str) -> GraphGeneration:
+        """Cancel one building generation without touching the published head."""
+
+        return self.abort_generation(generation_id)
+
+    def recover_stale_generations(
+        self,
+        *,
+        stale_after_ns: int,
+        now_ns: int | None = None,
+    ) -> tuple[str, ...]:
+        """Abort abandoned ``building`` generations after a bounded lease."""
+
+        stale_after_ns = _index(stale_after_ns, "stale_after_ns")
+        if stale_after_ns <= 0:
+            raise ValueError("stale_after_ns must be positive")
+        now = _now(now_ns, "now_ns")
+        cutoff = now - stale_after_ns
+        with self._transaction() as connection:
+            rows = connection.execute(
+                """SELECT generation_id FROM graph_generations
+                WHERE status='building' AND created_ns<=?
+                AND generation_id NOT IN (SELECT generation_id FROM graph_heads)
+                ORDER BY created_ns,generation_id""",
+                (cutoff,),
+            ).fetchall()
+            ids = tuple(str(row[0]) for row in rows)
+            if ids:
+                connection.executemany(
+                    "UPDATE graph_generations SET status='aborted' WHERE generation_id=? AND status='building'",
+                    ((generation_id,) for generation_id in ids),
+                )
+            return ids
+
+    def prune_generations(
+        self,
+        *,
+        keep: int = 2,
+    ) -> tuple[str, ...]:
+        """Tombstone old reconstructible generations while protecting heads.
+
+        Pruning never deletes a generation row or a snapshot identity, which
+        preserves lineage and makes an interrupted cleanup recoverable.  Child
+        batches/memberships/checkpoints are removed only after the generation
+        is marked ``pruned``; all heads and the newest ``keep`` generations are
+        retained.
+        """
+
+        keep = _index(keep, "keep")
+        if keep < 1:
+            raise ValueError("keep must be at least one")
+        with self._transaction() as connection:
+            protected = {
+                str(row[0])
+                for row in connection.execute("SELECT generation_id FROM graph_heads")
+            }
+            rows = connection.execute(
+                """SELECT generation_id,snapshot_id,status FROM graph_generations
+                WHERE status IN ('completed','published','aborted')
+                ORDER BY created_ns DESC,generation_id DESC"""
+            ).fetchall()
+            retained = {str(row[0]) for row in rows[:keep]}
+            pruned: list[str] = []
+            for row in rows:
+                generation_id = str(row[0])
+                if generation_id in protected or generation_id in retained:
+                    continue
+                snapshot_id = str(row[1])
+                changed = connection.execute(
+                    "UPDATE graph_generations SET status='pruned' WHERE generation_id=? AND status IN ('completed','published','aborted')",
+                    (generation_id,),
+                ).rowcount
+                if changed != 1:
+                    continue
+                connection.execute("DELETE FROM graph_checkpoints WHERE generation_id=?", (generation_id,))
+                connection.execute("DELETE FROM graph_memberships WHERE generation_id=?", (generation_id,))
+                connection.execute("DELETE FROM graph_batches WHERE generation_id=?", (generation_id,))
+                connection.execute(
+                    "DELETE FROM graph_snapshot_inputs WHERE snapshot_id=?", (snapshot_id,)
+                )
+                connection.execute(
+                    "UPDATE graph_input_snapshots SET status='pruned' WHERE snapshot_id=? AND status='sealed'",
+                    (snapshot_id,),
+                )
+                pruned.append(generation_id)
+            return tuple(pruned)
+
     def get_head(self, head_name: str = DEFAULT_HEAD_NAME) -> GenerationHead | None:
         head_name = _text(head_name, "head_name")
         row = self._connection.execute(
@@ -834,6 +1363,38 @@ class CodeGraphGenerationStore:
         if row is None:
             return None
         return GenerationHead(head_name, str(row[0]), str(row[1]), int(row[2]), int(row[3]))
+
+    def read_published_generation(
+        self,
+        head_name: str = DEFAULT_HEAD_NAME,
+    ) -> PublishedGraph | None:
+        """Read one head without exposing building, aborted or pruned data."""
+
+        head = self.get_head(head_name)
+        if head is None:
+            return None
+        generation = self.get_generation(head.generation_id)
+        if generation is None:
+            raise GenerationSchemaError(f"head references a missing generation: {head.generation_id}")
+        if generation.status != "published":
+            raise GenerationStateError(
+                f"head references a non-published generation: {head.generation_id}"
+            )
+        if generation.generation_digest is None or generation.generation_digest != head.generation_digest:
+            raise GenerationSchemaError(f"published head digest differs: {head.generation_id}")
+        metadata_source = generation.metadata.get("source_run_id")
+        if metadata_source is not None and (
+            isinstance(metadata_source, bool)
+            or not isinstance(metadata_source, int)
+            or metadata_source <= 0
+        ):
+            raise GenerationSchemaError(f"published generation source_run_id is invalid: {head.generation_id}")
+        if metadata_source is not None:
+            self.validate_source_run_id(metadata_source)
+        return PublishedGraph(head, generation, self.list_memberships(generation.generation_id))
+
+    # A short alias keeps callers independent of the storage-oriented name.
+    read_published = read_published_generation
 
     def list_memberships(self, generation_id: str) -> tuple[GraphMembership, ...]:
         generation_id = _text(generation_id, "generation_id")
@@ -867,5 +1428,7 @@ __all__ = [
     "GenerationStateError",
     "GraphGeneration",
     "GraphMembership",
+    "GraphPublicationResult",
     "InputSnapshot",
+    "PublishedGraph",
 ]

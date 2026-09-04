@@ -308,6 +308,13 @@ class CodeState:
             if updated.rowcount != 1:
                 raise RuntimeError("code analysis run completion requires one running owner row")
             if graph_current and not partial:
+                # Publish the additive graph generation before releasing the
+                # producer transaction.  The generation bridge validates that
+                # this exact analysis run is complete, captures the reconciled
+                # legacy graph, and advances its head with CAS.  Nested
+                # savepoints keep the run status, graph fence and generation
+                # head atomic on failure or cancellation.
+                self.graph_generation_store.publish_legacy_graph(analysis_run_id)
                 self.connection.execute(
                     """INSERT INTO metadata(key,value) VALUES(?,?)
                     ON CONFLICT(key) DO UPDATE SET value=excluded.value""",

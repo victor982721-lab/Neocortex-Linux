@@ -14,6 +14,7 @@ from neocortex.code.code_graph_generations import (
     GenerationConflict,
     GenerationHeadConflict,
     GenerationSchemaError,
+    GenerationStateError,
     GraphMembership,
 )
 from neocortex.code.code_schema import initialize_code_state
@@ -214,3 +215,107 @@ def test_generation_store_rejects_future_generation_metadata(tmp_path: Path) -> 
         state.connection.commit()
         with pytest.raises(GenerationSchemaError, match="unsupported"):
             CodeGraphGenerationStore(state.connection)
+
+
+def test_code_run_completion_publishes_legacy_graph_generation_atomically(
+    tmp_path: Path,
+) -> None:
+    """The existing producer run now has a durable generation head."""
+
+    database = tmp_path / "route-integrated.sqlite3"
+    with CodeState(database) as state:
+        analysis_run_id = state.begin_run(17, 23, "code-fixture-v1")
+        state.complete_run(
+            analysis_run_id,
+            {
+                "candidates": 0,
+                "processed": 0,
+                "cache_hits": 0,
+                "errors": 0,
+                "graph_milliseconds": 0,
+            },
+            partial=False,
+            graph_current=True,
+        )
+
+        published = state.graph_generation_store.read_published()
+        assert published is not None
+        assert published.head.generation_id == f"analysis:{analysis_run_id}:graph"
+        assert published.generation.metadata["source_run_id"] == analysis_run_id
+        assert published.generation.metadata["framework_run_id"] == 17
+        assert published.memberships == ()
+
+
+def test_source_run_id_is_validated_before_generation_publication(tmp_path: Path) -> None:
+    database = tmp_path / "source-run-validation.sqlite3"
+    with CodeState(database) as state:
+        running = state.begin_run(1, 1, "fixture")
+        store = state.graph_generation_store
+        with pytest.raises(GenerationStateError, match="not completed"):
+            store.validate_source_run_id(running)
+        with pytest.raises(GenerationStateError, match="does not exist"):
+            store.validate_source_run_id(99)
+        with pytest.raises(GenerationStateError, match="positive"):
+            store.validate_source_run_id(0)
+        with pytest.raises(GenerationStateError, match="positive"):
+            store.validate_source_run_id(True)  # type: ignore[arg-type]
+
+        state.fail_run(running, RuntimeError("fixture"))
+        with pytest.raises(GenerationStateError, match="not completed"):
+            store.validate_source_run_id(running)
+
+        completed = state.begin_run(2, 2, "fixture")
+        state.complete_run(
+            completed,
+            {
+                "candidates": 0,
+                "processed": 0,
+                "cache_hits": 0,
+                "errors": 0,
+                "graph_milliseconds": 0,
+            },
+            partial=False,
+        )
+        validated = store.validate_source_run_id(
+            completed,
+            expected_framework_run_id=2,
+            expected_processing_signature="fixture",
+        )
+        assert validated["source_run_id"] == completed
+
+
+def test_generation_cancel_recover_and_prune_preserve_head(tmp_path: Path) -> None:
+    database = tmp_path / "generation-maintenance.sqlite3"
+    with CodeState(database) as state:
+        store = state.graph_generation_store
+        store.create_input_snapshot("snapshot:old", 1, (), created_ns=1)
+        store.start_generation("snapshot:old", "generation:old", created_ns=2)
+        assert store.cancel_generation("generation:old").status == "aborted"
+
+        store.create_input_snapshot("snapshot:stale", 2, (), created_ns=3)
+        store.start_generation("snapshot:stale", "generation:stale", created_ns=4)
+        assert store.recover_stale_generations(stale_after_ns=5, now_ns=20) == (
+            "generation:stale",
+        )
+
+        for ordinal in range(3):
+            snapshot_id = f"snapshot:{ordinal}"
+            generation_id = f"generation:{ordinal}"
+            store.create_input_snapshot(snapshot_id, ordinal + 10, (), created_ns=10 + ordinal * 2)
+            store.start_generation(snapshot_id, generation_id, created_ns=11 + ordinal * 2)
+            store.complete_generation(generation_id, completed_ns=12 + ordinal * 2)
+            current = store.get_head()
+            store.compare_and_swap_head(
+                "default",
+                expected_revision=0 if current is None else current.revision,
+                expected_generation_id=None if current is None else current.generation_id,
+                generation_id=generation_id,
+            )
+
+        pruned = store.prune_generations(keep=1)
+        assert "generation:2" not in pruned
+        assert {"generation:0", "generation:1"}.issubset(pruned)
+        published = store.read_published_generation()
+        assert published is not None
+        assert published.head.generation_id == "generation:2"
+        assert published.generation.status == "published"
