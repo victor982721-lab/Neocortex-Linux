@@ -234,6 +234,13 @@ permanece `recovery_required` y no se reintenta automáticamente. El restore de
 owners SQLite (`databases restore`) es un flujo distinto y no comparte esta
 autoridad.
 
+La primera tranche 0.12 añade límites opcionales de trabajo a la verificación
+exacta mediante `CurationWorkBudget`, con contabilidad de items, archivos y
+bytes, deadline monotónico y cancelación cooperativa. Las observaciones previas
+se conservan cuando el presupuesto se agota y el resto queda `not_verified`, sin
+crear efectos ni modificar el corpus; los checkpoints durables y la reanudación
+pública siguen pendientes del cierre de 0.12.0.
+
 No existe una interfaz de exportación ni un paquete ZIP de curación. `--json`
 serializa la respuesta de una operación; no crea un artefacto durable.
 

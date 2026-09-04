@@ -129,6 +129,13 @@ verifica bytes e identidad, mientras la CLI ordinaria falla cerrada sin backend
 inyectado. El restore de owners SQLite mediante `databases restore` mantiene su
 flujo y autoridad independientes.
 
+La primera tranche 0.12 mantiene `curate scan` y `curate verify` sin efectos y
+con límites bounded. La verificación exacta contabiliza items, archivos y bytes
+reales, admite deadline/cancelación en la API Python mediante
+`CurationWorkBudget` y devuelve las razones `budget_exhausted`, `cancelled` o
+`deadline_exceeded`; la CLI conserva sus límites seguros por defecto y aún no
+expone un checkpoint durable ni una reanudación pública.
+
 ## Efectos
 
 | Clase | Ejemplos | Efecto |

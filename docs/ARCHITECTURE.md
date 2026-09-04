@@ -161,6 +161,13 @@ Las cuatro superficies deben conservar operación, scope, cobertura, epoch,
 errores y evidencia equivalentes. La salida estructurada es contrato; el texto
 humano no debe convertirse de nuevo en datos mediante parsing.
 
+La primera tranche 0.12 incorpora `CurationWorkBudget` como límite opcional de la
+verificación exacta, con contabilidad de items, archivos y bytes, deadline
+monotónico y cancelación cooperativa. Un corte por presupuesto conserva los
+resultados ya observados y materializa el resto como `not_verified`; todavía no
+existe un checkpoint durable público ni se presenta esta tranche como escala
+verificada de 100,000 elementos.
+
 No existe una superficie de exportación o ZIP para el lifecycle de curación;
 Archive/ZIP sigue siendo únicamente una ruta de contenido.
 
@@ -193,7 +200,6 @@ de la frontera de efecto produce un estado conciliable, no un reintento ciego.
 
 ## Brechas vigentes
 
-- la ruta física sólo está habilitada mediante backends inyectados y fixtures;
 - la deduplicación rápida puede ser evidencia insuficiente para disposición;
 - la cobertura y precisión de localizadores varían por formato;
 - varias fuentes todavía tienen publicación no generacional;

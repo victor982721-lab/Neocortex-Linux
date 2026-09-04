@@ -134,12 +134,25 @@ el grant y el intento. El restore no-replace de fixtures ya está implementado e
 el corte 0.11.1, pero esos gates reales no se ejecutaron para evitar tocar el
 escritorio o el corpus real.
 
-## 0.12.0 — Escala e inteligencia ampliada
+## 0.12.0 — Escala e inteligencia ampliada (tranche 1 en curso)
 
 **Resultado:** la ruta aprobada mantiene utilidad sobre árboles de más de
 100,000 archivos.
 
-Entregas:
+**Implementado en el árbol, todavía sin release 0.12.0:**
+
+- `CurationWorkBudget` opcional para verificación exacta, con límites de items,
+  archivos, bytes, deadline monotónico y cancelación cooperativa;
+- razones de truncamiento bounded y resultados parciales que conservan lo ya
+  observado, sin efectos, `file_actions` ni cambios del corpus;
+- `scan` que conserva cardinalidad y códigos de error tipados, además de mostrar
+  por separado el modo persistido y el modo observado;
+- planificación de duplicados que descarta un candidato mutado durante la
+  comparación exacta;
+- fixtures de replay, paginación, límites, cancelación y previews SQLite
+  fenced, todos contenidos en temporales.
+
+**Entregas aún requeridas para cerrar 0.12.0:**
 
 - streaming y batches medidos en el camino crítico;
 - checkpoints y reanudación sin reconstrucciones O(n) innecesarias;
@@ -160,16 +173,16 @@ Criterios de aceptación:
 
 ## Orden inmediato
 
-1. Consolidar la verificación de snapshots, source heads, límites y envelopes de
-   `scan/verify` en las superficies públicas.
-2. Mantener `verification_mode` explícito y ningún candidato fast como duplicado
-   bytewise, además de cerrar las regresiones SQLite que afecten estos lectores.
-3. Promover el verificador KIO y restore sólo después de un gate explícito de
-   escritorio, manteniendo `curate apply` fail-closed sin backend inyectado.
-4. Completar sincronización de caches y presentación GUI sin aportar autoridad
-   distinta al grant.
-5. Preparar 0.12.0 con presupuesto global, streaming, checkpoints y escala,
-   conservando la matriz de fixtures del vertical 0.11.
+1. Completar streaming y checkpoints durables con root identity, source heads,
+   plan digest, cursor, presupuesto, batch digest y publicación sólo terminal.
+2. Comparar cancelación/reanudación contra una corrida limpia, con replay sin
+   duplicar filas, efectos ni bytes verificados.
+3. Ejecutar el benchmark sintético de más de 100,000 elementos y registrar
+   throughput, memoria, commits, ETA y límites observados, sin corpus personal.
+4. Mantener `verification_mode` explícito, cerrar las regresiones SQLite de estos
+   lectores y conservar MCP sin autoridad de mutación.
+5. Promover KIO/restore de escritorio y sincronización de caches sólo mediante
+   gates humanos independientes, sin alterar el alcance de esta tranche.
 
 ## Límites
 

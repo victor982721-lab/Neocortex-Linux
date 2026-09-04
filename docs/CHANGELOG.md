@@ -4,6 +4,22 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## Unreleased — primera tranche 0.12
+
+### Verificación acotada
+
+- Se añadió `CurationWorkBudget` para limitar de forma explícita items, archivos,
+  bytes, deadline monotónico y cancelación cooperativa durante la verificación
+  exacta, conservando resultados parciales y razones tipadas sin efectos.
+- `curate scan` conserva errores tipados y falla cerrado ante una combinación
+  inconsistente de error y cobertura completa, mientras la salida humana mantiene
+  separados `persisted_mode` y `observed_mode`.
+- La planificación de duplicados descarta un candidato mutado durante la
+  comparación exacta, evitando que se convierta en representante o redundante.
+- Las pruebas de fixtures cubren replay, paginación, límites, cancelación y la
+  lectura fenced de previews de restore; checkpoints durables y benchmark de
+  escala todavía no forman parte de esta tranche.
+
 ## 0.11.1 — 2026-09-04
 
 ### Recovery y restore de curation
