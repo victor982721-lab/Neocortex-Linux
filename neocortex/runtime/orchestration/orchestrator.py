@@ -439,6 +439,7 @@ class FrameworkOrchestrator:
         run_id: int,
         route_name: str,
         input_source: str,
+        inventory_workload: tuple[int, int] | None = None,
     ) -> dict[str, object]:
         """Consume one global route reservation before a worker starts.
 
@@ -458,6 +459,10 @@ class FrameworkOrchestrator:
         items = bytes_count = 0
         if input_source == "route_candidates":
             items, bytes_count = state.route_candidate_workload(run_id)
+        elif input_source == "inventory_snapshot":
+            if inventory_workload is None:
+                raise RuntimeError("inventory-backed route has no durable workload")
+            items, bytes_count = inventory_workload
         # The manifest is published before routes begin, so this call is also
         # the first live assertion that the durable baseline is available.
         state.check_run_budget(run_id)
@@ -497,6 +502,18 @@ class FrameworkOrchestrator:
                 )
             state.begin_route_runs(run_id, self.selected_routes)
 
+            inventory_workload: tuple[int, int] | None = None
+            if any(
+                self.route_registry[name].input_source == "inventory_snapshot"
+                for name in self.selected_routes
+            ):
+                with DedupIndex(self.config.dedup_database) as inventory_index:
+                    inventory_summary = inventory_index.scan_summary(scan_id)
+                inventory_workload = (
+                    int(inventory_summary.files_seen),
+                    int(inventory_summary.bytes_seen),
+                )
+
             def execute_route(route_name: str):
                 adapter = self.route_registry[route_name]
                 context = RouteExecutionContext(
@@ -533,6 +550,7 @@ class FrameworkOrchestrator:
                     run_id=run_id,
                     route_name=route_name,
                     input_source=adapter.input_source,
+                    inventory_workload=inventory_workload,
                 )
                 futures[executor.submit(execute_route, route_name)] = route_name
             pending = set(futures)

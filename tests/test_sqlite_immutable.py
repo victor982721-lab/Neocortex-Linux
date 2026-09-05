@@ -13,6 +13,7 @@ from neocortex.persistence.sqlite_immutable import (
     SQLiteReadSession,
     SQLiteSnapshotBudget,
     SQLiteSnapshotBudgetExceeded,
+    SQLiteSnapshotReuseCache,
     immutable_sqlite_database,
 )
 
@@ -134,6 +135,20 @@ def test_snapshot_preparation_cancellation_is_typed_and_bounded(tmp_path: Path) 
             budget=SQLiteSnapshotBudget(cancellation_check=lambda: True),
         ):
             pytest.fail("a cancelled snapshot must not publish")
+
+
+def test_snapshot_reuse_cache_reuses_one_generation_and_closes_once(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    with SQLiteSnapshotReuseCache() as cache:
+        with cache.acquire(database, generation="fixture", temp_root=tmp_path) as first:
+            first_path = Path(first.execute("PRAGMA database_list").fetchone()[2])
+            assert first.execute("SELECT value FROM probe").fetchone()[0] == 7
+        with cache.acquire(database, generation="fixture", temp_root=tmp_path) as second:
+            second_path = Path(second.execute("PRAGMA database_list").fetchone()[2])
+            assert second_path == first_path
+        entry = next(iter(cache._entries.values()))
+        assert entry.session.metrics.reused_views == 1
+    assert not first_path.exists()
 
 
 @pytest.mark.parametrize("journal_mode", ["WAL", "DELETE"])

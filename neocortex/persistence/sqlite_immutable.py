@@ -121,6 +121,89 @@ class SQLiteSnapshotMetrics:
         return max(0, round(self.prepare_time_seconds * 1_000_000_000))
 
 
+@dataclass(slots=True)
+class _ReusableSnapshot:
+    session: "SQLiteReadSession"
+    references: int = 0
+
+
+class SQLiteSnapshotReuseCache:
+    """Reuse one fenced snapshot within a caller-owned logical operation.
+
+    The cache is deliberately ephemeral: entries are keyed by the source fence
+    and caller generation, and ``close`` releases every session.  It never
+    survives a process or becomes a second durable state store.
+    """
+
+    def __init__(self) -> None:
+        self._entries: dict[tuple[str, object, SQLiteImmutableFence], _ReusableSnapshot] = {}
+
+    @contextmanager
+    def acquire(
+        self,
+        path: str | Path,
+        *,
+        generation: object,
+        mode: SQLiteReadMode | str = "snapshot_temp",
+        timeout_seconds: float = 60.0,
+        temp_root: str | Path | None = None,
+        budget: SQLiteSnapshotBudget | None = None,
+    ) -> Iterator[sqlite3.Connection]:
+        selected = Path(path).absolute()
+        fence = capture_sqlite_read_fence(selected)
+        key = (str(selected), generation, fence)
+        entry = self._entries.get(key)
+        if entry is None:
+            session = SQLiteReadSession(
+                selected,
+                mode=mode,
+                timeout_seconds=timeout_seconds,
+                temp_root=temp_root,
+                budget=budget,
+                generation=generation,
+            )
+            session.open()
+            entry = _ReusableSnapshot(session)
+            self._entries[key] = entry
+        else:
+            entry.session.metrics.reused_views += 1
+        entry.references += 1
+        try:
+            yield entry.session.connection
+        finally:
+            entry.references -= 1
+
+    def close(self) -> None:
+        primary: BaseException | None = None
+        for entry in tuple(self._entries.values()):
+            try:
+                entry.session.close()
+            except BaseException as exc:
+                if primary is None:
+                    primary = exc
+                else:
+                    primary.add_note(f"reused SQLite snapshot cleanup failed: {exc}")
+        self._entries.clear()
+        if primary is not None:
+            raise primary
+
+    def __enter__(self) -> "SQLiteSnapshotReuseCache":
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> Literal[False]:
+        try:
+            self.close()
+        except BaseException as cleanup_error:
+            if exc_value is not None:
+                exc_value.add_note(
+                    "reused SQLite snapshot cache cleanup failed: "
+                    f"{type(cleanup_error).__name__}: {cleanup_error}"
+                )
+            else:
+                raise
+        return False
+
+
 class _SnapshotBudgetState:
     """Mutable accounting shared by one bounded snapshot preparation."""
 
@@ -1005,6 +1088,7 @@ __all__ = [
     "SQLiteSnapshotBudget",
     "SQLiteSnapshotBudgetExceeded",
     "SQLiteSnapshotMetrics",
+    "SQLiteSnapshotReuseCache",
     "capture_sqlite_immutable_fence",
     "capture_sqlite_read_fence",
     "immutable_sqlite_database",

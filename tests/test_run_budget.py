@@ -146,3 +146,40 @@ def test_orchestrator_budget_stops_worker_before_route_effects(tmp_path: Path) -
     status = list_run_status(state_directory / "framework.sqlite3", limit=1)[0]
     assert status.status == "cancelled"
     assert status.budget is not None and status.budget["cancel_requested"] is True
+
+
+def test_inventory_backed_worker_consumes_global_budget(tmp_path: Path) -> None:
+    from tests.test_run_control import _inventory_snapshot_source_run
+
+    root = tmp_path / "fixture"
+    root.mkdir()
+    state_directory = tmp_path / "state"
+    state_directory.mkdir()
+    source_run, scan_id = _inventory_snapshot_source_run(
+        state_directory / "framework.sqlite3",
+        root,
+        resumable_route="probe",
+    )
+    assert scan_id > 0
+    executed: list[int] = []
+
+    def route(context):
+        executed.append(context.run_id)
+        return {"processed": 1}
+
+    with pytest.raises(RunBudgetExceeded, match="items"):
+        FrameworkOrchestrator(
+            FrameworkConfig(
+                root=root,
+                state_directory=state_directory,
+                route="probe",
+                route_only=True,
+                resume_run_id=source_run,
+                heartbeat_interval_seconds=0.01,
+            ),
+            route_registry={
+                "probe": RouteAdapter("probe", route, input_source="inventory_snapshot")
+            },
+            run_budget={"max_items": 0},
+        ).run()
+    assert executed == []
