@@ -1224,8 +1224,25 @@ class FrameworkState:
             for key, expected in normalized.payload().items():
                 if existing.get(key) != expected:
                     raise RuntimeError(f"run {run_id} has a conflicting lifecycle budget")
-            if manifest_digest is not None and existing.get("manifest_digest") != manifest_digest:
-                raise RuntimeError(f"run {run_id} lifecycle budget is bound to another manifest")
+            if manifest_digest is not None:
+                existing_digest = existing.get("manifest_digest")
+                if existing_digest not in {None, manifest_digest}:
+                    raise RuntimeError(
+                        f"run {run_id} lifecycle budget is bound to another manifest"
+                    )
+                if existing_digest is None:
+                    self._append_lifecycle_event_once(
+                        run_id,
+                        level="info",
+                        phase="lifecycle-budget",
+                        message="Run budget bound",
+                        idempotency_key="manifest-binding",
+                        details={
+                            "schema": RUN_BUDGET_SCHEMA,
+                            "kind": "bound",
+                            "manifest_digest": manifest_digest,
+                        },
+                    )
             return False
 
         now = time.time_ns()
@@ -1314,6 +1331,8 @@ class FrameworkState:
             elif kind == "cancelled":
                 state["cancel_requested"] = True
                 state["cancel_reason"] = event.get("reason")
+            elif kind == "bound":
+                state["manifest_digest"] = event.get("manifest_digest")
         now = time.time_ns()
         deadline_ns = state["deadline_ns"]
         state["elapsed_ns"] = max(0, now - int(state["started_ns"]))

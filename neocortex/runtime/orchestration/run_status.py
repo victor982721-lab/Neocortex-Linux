@@ -278,6 +278,8 @@ def _run_budget(
             elif event.get("kind") == "cancelled":
                 cancelled = True
                 cancel_reason = event.get("reason")
+            elif event.get("kind") == "bound":
+                baseline["manifest_digest"] = event.get("manifest_digest")
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
         raise sqlite3.DatabaseError(f"run {run_id} lifecycle budget is invalid") from exc
     now = time.time_ns()
