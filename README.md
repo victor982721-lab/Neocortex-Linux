@@ -5,7 +5,7 @@ organizar archivos personales en Linux. Su objetivo es sustituir inventarios,
 auditorías y scripts improvisados por un flujo reproducible que conserve
 identidad, evidencia, incertidumbre y trazabilidad.
 
-La fuente vigente declara `0.11.1`. El comportamiento efectivo siempre se
+La fuente vigente declara `0.12.0`. El comportamiento efectivo siempre se
 comprueba con el ejecutable instalado y con su estado publicado; una versión en
 el árbol fuente no demuestra qué release está activa.
 

@@ -73,7 +73,7 @@ evidencia de procedencia, no nombres o extensiones aislados.
 
 ## Estado actual
 
-La fuente `0.11.1` aporta inventario, extracción multimodal, catálogos, búsqueda,
+La fuente `0.12.0` aporta inventario, extracción multimodal, catálogos, búsqueda,
 Knowledge, Semantic, Code como contenido, planes de duplicados/organización,
 Review, receipts y recuperación parcial.
 

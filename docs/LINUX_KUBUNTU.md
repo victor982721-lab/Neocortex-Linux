@@ -1,6 +1,6 @@
 # Kubuntu/Linux
 
-NeoCortex `0.11.1` tiene como única plataforma activa Kubuntu/Ubuntu 26.04
+NeoCortex `0.12.0` tiene como única plataforma activa Kubuntu/Ubuntu 26.04
 x86-64. CPython 3.14 es el runtime personal de referencia y 3.13 permanece como
 piso sintáctico.
 
