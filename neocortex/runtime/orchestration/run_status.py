@@ -341,10 +341,15 @@ def _non_replayable_routes(
     recovery: dict[str, object] | None,
 ) -> tuple[str, ...]:
     if recovery is not None and int(recovery.get("candidate_rows", 0)) == 0:
+        input_sources = recovery.get("route_input_sources", {})
+        if not isinstance(input_sources, dict):
+            input_sources = {}
         return tuple(
             route.route_name
             for route in routes
             if route.status in {"failed", "cancelled", "interrupted"}
+            and input_sources.get(route.route_name, "route_candidates")
+            != "inventory_snapshot"
         )
     return ()
 

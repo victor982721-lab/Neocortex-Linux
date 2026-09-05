@@ -613,6 +613,26 @@ class FrameworkState:
             (run_id,),
         ).fetchall()
         candidate_rows, candidate_bytes = self.route_candidate_workload(run_id)
+        route_input_sources: dict[str, str] = {}
+        start_event = self._connection.execute(
+            """SELECT details_json FROM run_events
+            WHERE run_id=? AND phase='run'
+            AND message='Ejecución aislada de rutas iniciada'
+            ORDER BY event_id DESC LIMIT 1""",
+            (run_id,),
+        ).fetchone()
+        if start_event is not None and start_event[0] is not None:
+            try:
+                details = json.loads(str(start_event[0]))
+            except (TypeError, json.JSONDecodeError):
+                details = None
+            if isinstance(details, Mapping) and isinstance(
+                details.get("route_input_sources"), Mapping
+            ):
+                route_input_sources = {
+                    str(name): str(source)
+                    for name, source in details["route_input_sources"].items()
+                }
         skipped = tuple(str(name) for name, status in routes if str(status) == "completed")
         pending = tuple(
             str(name)
@@ -624,17 +644,22 @@ class FrameworkState:
             for name, status in routes
             if str(status) in {"failed", "cancelled", "interrupted"}
             and candidate_rows == 0
+            and route_input_sources.get(str(name), "route_candidates")
+            != "inventory_snapshot"
         )
         return {
             "run_id": run_id,
             "status": str(row[0]),
             "run_kind": str(row[1]),
             "source_run_id": None if row[2] is None else int(row[2]),
-            "resumed": str(row[1]) == "resume" or str(row[0]) == "interrupted",
+            "resumed": str(row[1]) == "resume",
+            "recoverable": str(row[0]) == "interrupted"
+            or bool(pending),
             "replayed": bool(skipped),
             "skipped": list(skipped),
             "pending": list(pending),
             "non_replayable": list(non_replayable),
+            "route_input_sources": route_input_sources,
             "candidate_rows": candidate_rows,
             "candidate_bytes": candidate_bytes,
             "candidates_retained": candidate_rows > 0,
@@ -1918,6 +1943,26 @@ class FrameworkState:
                     )
                 )
                 candidate_rows, candidate_bytes = self.route_candidate_workload(active_id)
+                route_input_sources: dict[str, str] = {}
+                start_event = self._connection.execute(
+                    """SELECT details_json FROM run_events
+                    WHERE run_id=? AND phase='run'
+                    AND message='Ejecución aislada de rutas iniciada'
+                    ORDER BY event_id DESC LIMIT 1""",
+                    (active_id,),
+                ).fetchone()
+                if start_event is not None and start_event[0] is not None:
+                    try:
+                        details = json.loads(str(start_event[0]))
+                    except (TypeError, json.JSONDecodeError):
+                        details = None
+                    if isinstance(details, Mapping) and isinstance(
+                        details.get("route_input_sources"), Mapping
+                    ):
+                        route_input_sources = {
+                            str(name): str(source)
+                            for name, source in details["route_input_sources"].items()
+                        }
                 budget = self._read_run_budget_locked(active_id)
                 if budget is not None and not budget["cancel_requested"]:
                     self._connection.execute(
@@ -1952,6 +1997,7 @@ class FrameworkState:
                         "routes": list(route_names),
                         "candidate_rows": candidate_rows,
                         "candidate_bytes": candidate_bytes,
+                        "route_input_sources": route_input_sources,
                     },
                 )
         return int(result.rowcount)
