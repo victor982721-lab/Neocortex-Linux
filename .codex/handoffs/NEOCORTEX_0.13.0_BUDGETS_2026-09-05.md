@@ -3,9 +3,9 @@
 ## Estado verificado
 
 - Corrección funcional publicada por fast-forward en `main`: `deb461d596a62797b5af24ee640de2e9c4245586`.
-- `HEAD == main == origin/main` y árbol limpio después de la publicación funcional.
-- La release instalada desde ese SHA es `0.12.0-deb461d596a6-cp314-linux-x86_64`; el rollback inmediato retenido por la herramienta es `0.12.0-aeb293e8581f-cp314-linux-x86_64`.
-- Receipt: `/home/winterboss/.local/state/Neocortex/state/installation-receipts/20260905T215428.815187Z-install-0.12.0-deb461d596a6-cp314-linux-x86_64.json`.
+- El handoff documental quedó publicado por fast-forward en `main` como `0ba6214cdcdf9f09bb8ca377a616b7e46bf53ca5`, con `HEAD == main == origin/main` y árbol limpio; la diferencia entre ambos SHA es exclusivamente este archivo documental.
+- La release funcional se instaló desde `deb461d596a6`; después se promovió la edición documental `0ba6214cdcdf` como `0.12.0-0ba6214cdcdf-cp314-linux-x86_64`, con rollback inmediato `0.12.0-deb461d596a6-cp314-linux-x86_64`.
+- Receipt vigente: `/home/winterboss/.local/state/Neocortex/state/installation-receipts/20260905T215955.493326Z-install-0.12.0-0ba6214cdcdf-cp314-linux-x86_64.json`.
 - `release_linux.py verify --corpus-root /home/winterboss/Documentos/NeoCortex/Corpus` devolvió `verified=true`, con manifest, launcher, `source_sha`, current y retención de dos releases alineados; el contrato vigente no crea un symlink `rollback`, la release previa se conserva como directorio inmediato identificado en el receipt.
 
 ## Cambios funcionales
@@ -21,7 +21,7 @@
 - Focales Linux de la tranche: **160 pasadas**, sin fallos, con la segunda recuperación sobre 24 fixtures heterogéneos y MCP/API/SDK/status cubiertos.
 - Focales SQLite: **31 pasadas**; `compileall`, `py_compile` y `git diff --check` correctos.
 - Ruff no está disponible como binario en el entorno de esta sesión y queda `no verificado` para este SHA; CPython 3.13 también permanece `no verificado` por ausencia de intérprete local válido.
-- Smoke instalado desde `/tmp` y fuera del checkout: dos corridas públicas `--all` sobre 24 fixtures, segunda corrida con `type_cache_hits=24`, ambos runs `completed` y etapa Semantic `running → completed`, sin tocar el corpus personal.
+- Smoke instalado desde `/tmp` y fuera del checkout: dos corridas públicas `--all` sobre 24 fixtures desde `0ba6214cdcdf`, segunda corrida con `type_cache_hits=24`, ambos runs `completed` y etapa Semantic `running → completed`, sin tocar el corpus personal.
 
 ## Límites y siguiente gate
 
