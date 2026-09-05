@@ -66,7 +66,7 @@ FULL_DEPENDENCIES = (
 OPTIONAL_DEPENDENCIES = {
     "agent": AGENT_DEPENDENCIES,
     "build": DEV_DEPENDENCIES,
-    "test-base": ("pytest>=9.1,<10",),
+    "test-base": ("pytest>=9.1,<10", "setuptools==83.0.0"),
     "analysis": ANALYSIS_DEPENDENCIES,
     "documents": (
         "Pillow>=12.3,<13",

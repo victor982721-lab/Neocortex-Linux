@@ -13,13 +13,14 @@ page per active worker and interrupted documents can resume.
 # region [01] Dependencias del módulo
 from __future__ import annotations
 import json
+import queue
 import sqlite3
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import Any, Iterator, Literal, Protocol, cast
+from typing import Any, Callable, Iterator, Literal, Protocol, cast
 
 from neocortex.deduplication import DedupIndex, FileSnapshot
 from neocortex.progress import (
@@ -286,6 +287,132 @@ class _LocalExtractionState:
     pages_since_commit: int = 0
 
 
+@dataclass(slots=True)
+class _PdfOwnerRequest:
+    """One operation queued for the thread that owns ``pdf.sqlite3``."""
+
+    operation: Callable[[sqlite3.Connection], object]
+    done: threading.Event = field(default_factory=threading.Event)
+    ok: bool = False
+    value: object | None = None
+
+
+_PDF_OWNER_STOP = object()
+
+
+class _PdfOwnerCoordinator:
+    """Serialize PDF-owner operations on one dedicated SQLite owner thread.
+
+    Extraction workers process source documents and enqueue bounded persistence
+    operations here; they never open a PDF SQLite connection themselves.  The
+    owner commits or rolls back each request so a request cannot leave a write
+    transaction open while another worker waits for the coordinator.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._requests: queue.Queue[object] = queue.Queue()
+        self._thread: threading.Thread | None = None
+        self._thread_ident: int | None = None
+        self._connection: sqlite3.Connection | None = None
+        self._ready = threading.Event()
+        self._error: BaseException | None = None
+        self._closed = False
+
+    def start(self) -> None:
+        if self._thread is not None:
+            raise RuntimeError("PDF owner coordinator cannot be started twice")
+        self._thread = threading.Thread(
+            target=self._run,
+            name="neocortex-pdf-owner",
+            daemon=True,
+        )
+        self._thread.start()
+        self._ready.wait()
+        if self._error is not None:
+            raise self._error
+
+    def _run(self) -> None:
+        try:
+            with _database(self.path) as connection:
+                self._connection = connection
+                self._thread_ident = threading.get_ident()
+                self._ready.set()
+                while True:
+                    request = self._requests.get()
+                    if request is _PDF_OWNER_STOP:
+                        return
+                    assert isinstance(request, _PdfOwnerRequest)
+                    try:
+                        with serialized_pdf_write():
+                            request.value = request.operation(connection)
+                            connection.commit()
+                    except BaseException as exc:
+                        try:
+                            connection.rollback()
+                        except BaseException as rollback_error:
+                            exc.add_note(
+                                "PDF owner rollback failed: "
+                                f"{type(rollback_error).__name__}: {rollback_error}"
+                            )
+                        request.value = exc
+                        request.ok = False
+                    else:
+                        request.ok = True
+                    finally:
+                        request.done.set()
+        except BaseException as exc:
+            self._error = exc
+            self._ready.set()
+        finally:
+            self._connection = None
+            self._thread_ident = None
+
+    def call(self, operation: Callable[[sqlite3.Connection], object]) -> object:
+        if self._closed:
+            raise RuntimeError("PDF owner coordinator is closed")
+        thread = self._thread
+        if thread is None:
+            raise RuntimeError("PDF owner coordinator is not started")
+        if threading.get_ident() == self._thread_ident:
+            connection = self._connection
+            if connection is None:
+                raise RuntimeError("PDF owner coordinator connection is unavailable")
+            return operation(connection)
+        request = _PdfOwnerRequest(operation)
+        self._requests.put(request)
+        while not request.done.wait(0.1):
+            if not thread.is_alive():
+                error = self._error or RuntimeError("PDF owner coordinator stopped")
+                raise error
+        if request.ok:
+            return request.value
+        assert isinstance(request.value, BaseException)
+        raise request.value
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        thread = self._thread
+        if thread is None:
+            return
+        self._requests.put(_PDF_OWNER_STOP)
+        thread.join()
+        if self._error is not None:
+            raise self._error
+
+
+@dataclass(frozen=True, slots=True)
+class _PdfWorkerContext:
+    """Immutable owner-derived inputs handed to one extraction worker."""
+
+    timeout_seconds: float | None
+    resumable_pages: tuple[int, frozenset[int], int]
+    initial_staged_pages: int
+    extraction: IsolatedExtractionConfig
+
+
 class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
     """Extract, profile, cache and text-deduplicate surviving PDFs."""
 
@@ -381,7 +508,17 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
             route_name="pdf",
             cancellation=self.cancellation,
         )
+        self._pdf_owner: _PdfOwnerCoordinator | None = None
         _initialize(config.state_path)
+
+    def _owner_call(self, operation: Callable[[sqlite3.Connection], Any]) -> Any:
+        """Run one PDF-owner operation through the active owner coordinator."""
+
+        owner = getattr(self, "_pdf_owner", None)
+        if owner is not None:
+            return owner.call(operation)
+        with serialized_pdf_write(), _database(self.config.state_path) as connection:
+            return operation(connection)
 
     def _record_event(
         self,
@@ -685,33 +822,44 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
     def _run_extraction_phase(self, plan: _PdfRunPlan) -> _ExtractionStats:
         extraction_started = time.perf_counter_ns()
         runtime = _ExtractionRuntime(plan.candidates, plan.expected_total)
+        owner = _PdfOwnerCoordinator(self.config.state_path)
+        owner.start()
+        self._pdf_owner = owner
         try:
-            self._report_extraction(runtime)
-            with _database(self.config.state_path) as cache_connection:
-                self._execute_extraction(runtime, cache_connection)
-            self._flush_review_reconciliations()
-            self.cancellation.checkpoint()
-            self._report_extraction(
-                runtime,
-                finished=True,
-                description="Extracción PDF completada",
-            )
-            self._finish_extraction_phase(plan, runtime.stats, extraction_started)
-            return runtime.stats
+            try:
+                self._report_extraction(runtime)
+                with _database(self.config.state_path) as cache_connection:
+                    self._execute_extraction(runtime, cache_connection)
+                self._flush_review_reconciliations()
+                self.cancellation.checkpoint()
+                self._report_extraction(
+                    runtime,
+                    finished=True,
+                    description="Extracción PDF completada",
+                )
+                self._finish_extraction_phase(plan, runtime.stats, extraction_started)
+                return runtime.stats
+            finally:
+                # Candidate generators retain a readonly, thread-affine SQLite
+                # connection.  Finalize them in the route thread on every exit
+                # so traceback/GC cleanup cannot migrate the close to another
+                # thread.
+                close_candidates = getattr(runtime.iterator, "close", None)
+                if close_candidates is not None:
+                    close_candidates()
         finally:
-            # Candidate generators retain a readonly, thread-affine SQLite
-            # connection.  Finalize them in the route thread on every exit so
-            # traceback/GC cleanup cannot migrate the close to another thread.
-            close_candidates = getattr(runtime.iterator, "close", None)
-            if close_candidates is not None:
-                close_candidates()
+            self._pdf_owner = None
+            owner.close()
 
     def _execute_extraction(
         self,
         runtime: _ExtractionRuntime,
         cache_connection: sqlite3.Connection,
     ) -> None:
-        executor = ThreadPoolExecutor(max_workers=self.config.workers)
+        executor = ThreadPoolExecutor(
+            max_workers=self.config.workers,
+            thread_name_prefix="neocortex-pdf-worker",
+        )
         interrupted = False
         try:
             max_pending = max(self.config.workers, self.config.workers * 2)
@@ -771,6 +919,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
                     executor,
                     snapshot,
                     cache_decision,
+                    cache_connection,
                 )
             self._report_extraction(runtime)
 
@@ -796,20 +945,84 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
             self._touch_cache_hits(cache_connection, runtime.cache_touches)
             runtime.cache_touches.clear()
 
+    def _prepare_worker_context(
+        self,
+        snapshot: FileSnapshot,
+        connection: sqlite3.Connection,
+    ) -> _PdfWorkerContext:
+        """Read all owner-derived worker inputs before submitting the task."""
+
+        resumable_pages = self._resumable_pages(snapshot, connection=connection)
+        structural_recovery_reason = self._structural_recovery_reason(
+            snapshot,
+            connection=connection,
+        )
+        return self._worker_context_from_connection(
+            snapshot,
+            connection,
+            resumable_pages=resumable_pages,
+            structural_recovery_reason=structural_recovery_reason,
+        )
+
+    def _worker_context_from_connection(
+        self,
+        snapshot: FileSnapshot,
+        connection: sqlite3.Connection,
+        *,
+        resumable_pages: tuple[int, frozenset[int], int] | None = None,
+        structural_recovery_reason: str | None = None,
+    ) -> _PdfWorkerContext:
+        if resumable_pages is None:
+            resumable_pages = self._resumable_pages(snapshot, connection=connection)
+        if structural_recovery_reason is None:
+            structural_recovery_reason = self._structural_recovery_reason(
+                snapshot,
+                connection=connection,
+            )
+        return _PdfWorkerContext(
+            timeout_seconds=self._effective_document_timeout(
+                snapshot,
+                connection=connection,
+            ),
+            resumable_pages=resumable_pages,
+            initial_staged_pages=self._successful_staged_page_count(
+                snapshot,
+                connection=connection,
+            ),
+            extraction=self._isolated_extraction_config(
+                snapshot,
+                1.0,
+                resumable_pages=resumable_pages,
+                structural_recovery_reason=structural_recovery_reason,
+            ),
+        )
+
+    def _refresh_worker_context(
+        self,
+        snapshot: FileSnapshot,
+    ) -> _PdfWorkerContext:
+        """Refresh retry inputs through the explicit owner boundary."""
+
+        return self._owner_call(
+            lambda connection: self._worker_context_from_connection(snapshot, connection)
+        )
+
     def _submit_extraction(
         self,
         runtime: _ExtractionRuntime,
         executor: ThreadPoolExecutor,
         snapshot: FileSnapshot,
         decision: CacheDecision,
+        cache_connection: sqlite3.Connection,
     ) -> None:
         runtime.stats.register_cache_miss(decision)
+        worker_context = self._prepare_worker_context(snapshot, cache_connection)
         binary_digest = binary_fingerprint(
             self.index,
             snapshot,
             required=self.config.cache_validation == "full",
         )
-        future = executor.submit(self._process_document, snapshot, binary_digest)
+        future = executor.submit(self._process_document, snapshot, binary_digest, worker_context)
         runtime.pending.add(future)
         runtime.pending_snapshots[future] = snapshot
 
@@ -1392,27 +1605,51 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
             return tuple(str(row[0]) for row in rows)
 
     def _process_document(
-        self, snapshot: FileSnapshot, binary_digest: str | None
+        self,
+        snapshot: FileSnapshot,
+        binary_digest: str | None,
+        worker_context: _PdfWorkerContext | None = None,
     ) -> _DocumentResult:
         self.cancellation.checkpoint()
-        timeout_seconds = self._effective_document_timeout(snapshot)
+        if worker_context is None:
+            # Direct callers of this private compatibility seam still build a
+            # context lazily.  Production extraction always supplies the
+            # coordinator-owned context from ``_submit_extraction``.
+            resumable_pages = self._resumable_pages(snapshot)
+            worker_context = _PdfWorkerContext(
+                timeout_seconds=self._effective_document_timeout(snapshot),
+                resumable_pages=resumable_pages,
+                initial_staged_pages=self._successful_staged_page_count(snapshot),
+                extraction=self._isolated_extraction_config(
+                    snapshot,
+                    1.0,
+                    resumable_pages=resumable_pages,
+                ),
+            )
         with self._resource_gate.admit(
             snapshot.size,
             reservation_bytes=self._worker_memory_reservation,
         ):
             for attempt in range(TRANSIENT_RETRIES_PER_RUN + 1):
                 self.cancellation.checkpoint()
+                timeout_seconds = worker_context.timeout_seconds
                 if timeout_seconds is not None:
                     result = self._process_document_isolated(
                         snapshot,
                         binary_digest,
                         timeout_seconds=timeout_seconds,
                         ocr_scale_factor=0.75**attempt,
+                        worker_context=worker_context,
                     )
                 else:
-                    result = self._process_document_local(snapshot, binary_digest)
+                    result = self._process_document_local(
+                        snapshot,
+                        binary_digest,
+                        worker_context=worker_context,
+                    )
                 if not result.transient or attempt >= TRANSIENT_RETRIES_PER_RUN:
                     return result
+                worker_context = self._refresh_worker_context(snapshot)
                 if self.cancellation.wait(0.25):
                     self.cancellation.checkpoint()
         raise RuntimeError("unreachable PDF retry state")
@@ -1424,15 +1661,27 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         *,
         timeout_seconds: float | None = None,
         ocr_scale_factor: float = 1.0,
+        worker_context: _PdfWorkerContext | None = None,
     ) -> _DocumentResult:
-        if timeout_seconds is None:
-            timeout_seconds = self._effective_document_timeout(snapshot)
+        if worker_context is not None:
+            if timeout_seconds is None:
+                timeout_seconds = worker_context.timeout_seconds
+            extraction = replace(
+                worker_context.extraction,
+                ocr_scale_factor=min(
+                    worker_context.extraction.ocr_scale_factor,
+                    ocr_scale_factor,
+                ),
+            )
+            initial_staged_pages = worker_context.initial_staged_pages
+        else:
+            if timeout_seconds is None:
+                timeout_seconds = self._effective_document_timeout(snapshot)
+            extraction = self._isolated_extraction_config(snapshot, ocr_scale_factor)
+            initial_staged_pages = self._successful_staged_page_count(snapshot)
         if timeout_seconds is None:
             raise ValueError("isolated PDF processing requires a timeout")
-        extraction = self._isolated_extraction_config(snapshot, ocr_scale_factor)
-        state = _IsolatedExtractionState(
-            initial_staged_pages=self._successful_staged_page_count(snapshot)
-        )
+        state = _IsolatedExtractionState(initial_staged_pages=initial_staged_pages)
         try:
             early_result = self._stream_isolated_document(
                 snapshot,
@@ -1459,9 +1708,19 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         self,
         snapshot: FileSnapshot,
         ocr_scale_factor: float,
+        *,
+        resumable_pages: tuple[int, frozenset[int], int] | None = None,
+        structural_recovery_reason: str | None = None,
+        connection: sqlite3.Connection | None = None,
     ) -> IsolatedExtractionConfig:
-        skip_before, only_pages, prior_ocr_pages = self._resumable_pages(snapshot)
-        structural_recovery_reason = self._structural_recovery_reason(snapshot)
+        if resumable_pages is None:
+            resumable_pages = self._resumable_pages(snapshot, connection=connection)
+        skip_before, only_pages, prior_ocr_pages = resumable_pages
+        if structural_recovery_reason is None:
+            structural_recovery_reason = self._structural_recovery_reason(
+                snapshot,
+                connection=connection,
+            )
         if structural_recovery_reason is not None:
             skip_before = 0
             only_pages = frozenset()
@@ -1561,8 +1820,10 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         state: _IsolatedExtractionState,
     ) -> None:
         state.reset_for_structural_recovery()
-        with serialized_pdf_write(), _database(self.config.state_path) as connection:
+        def restart(connection: sqlite3.Connection) -> None:
             self._restart_structural_recovery_attempt(connection, snapshot)
+
+        self._owner_call(restart)
 
     def _handle_isolated_protected(
         self,
@@ -1603,13 +1864,15 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         message: tuple[Any, ...],
     ) -> None:
         _, state.page_count, state.start, state.end, state.metadata = message
-        with serialized_pdf_write(), _database(self.config.state_path) as connection:
+        def prepare(connection: sqlite3.Connection) -> None:
             self._prepare_document(
                 connection,
                 snapshot,
                 state.page_count,
                 state.metadata,
             )
+
+        self._owner_call(prepare)
         state.prepared = True
 
     def _consume_isolated_page_message(
@@ -1735,7 +1998,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         is_partial: bool,
     ) -> None:
         error_limit = state.page_error_limit
-        with serialized_pdf_write(), _database(self.config.state_path) as connection:
+        def promote(connection: sqlite3.Connection) -> None:
             self._promote_document(
                 connection,
                 snapshot,
@@ -1766,6 +2029,8 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
                 state.warning_samples,
                 connection=connection,
             )
+
+        self._owner_call(promote)
 
     def _reconcile_isolated_findings(
         self,
@@ -1996,17 +2261,32 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
             return False
         return self._recycle_unrecoverable_pdf(snapshot, evidence)
 
-    def _structural_recovery_reason(self, snapshot: FileSnapshot) -> str | None:
+    def _structural_recovery_reason(
+        self,
+        snapshot: FileSnapshot,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> str | None:
         """Return the one-shot repair reason for current or legacy partial rows."""
 
-        with _database(self.config.state_path, readonly=True) as connection:
-            row = connection.execute(
+        def read(target: sqlite3.Connection) -> sqlite3.Row | None:
+            return target.execute(
                 """SELECT status,error_type,error_message,
                 (SELECT COUNT(*) FROM page_errors e WHERE e.file_key=d.file_key
                     AND e.processing_signature=d.processing_signature) AS errors
                 FROM documents d WHERE file_key=?""",
                 (_file_key(snapshot),),
             ).fetchone()
+
+        if connection is None:
+            owner_call = getattr(self, "_owner_call", None)
+            if callable(owner_call):
+                row = owner_call(read)
+            else:
+                with _database(self.config.state_path, readonly=True) as owned_connection:
+                    row = read(owned_connection)
+        else:
+            row = read(connection)
         if row is None or row["status"] != "partial":
             return None
         error_type = str(row["error_type"] or "")
@@ -2054,15 +2334,13 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
                         level="warning",
                     )
                     return False
-                with (
-                    serialized_pdf_write(),
-                    _database(self.config.state_path) as connection,
-                ):
+                def delete_cache(connection: sqlite3.Connection) -> None:
                     key = _file_key(snapshot)
                     self._delete_document_cache(connection, key)
                     connection.execute("DELETE FROM documents WHERE file_key=?", (key,))
                     connection.execute("DELETE FROM pdf_inventory WHERE file_key=?", (key,))
-                    connection.commit()
+
+                self._owner_call(delete_cache)
                 resolved_review = self._resolve_review_generation(
                     snapshot,
                     "pdf_unrecoverable_structural_damage",
@@ -2099,19 +2377,34 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
                 )
                 return False
 
-    def _effective_document_timeout(self, snapshot: FileSnapshot) -> float | None:
-        page_count = pending_pages = 0
-        with _database(self.config.state_path, readonly=True) as connection:
-            row = connection.execute(
+    def _effective_document_timeout(
+        self,
+        snapshot: FileSnapshot,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> float | None:
+        def read(target: sqlite3.Connection) -> tuple[int, int]:
+            row = target.execute(
                 """SELECT page_count,completed_pages,page_errors_count
                 FROM documents WHERE file_key=?""",
                 (_file_key(snapshot),),
             ).fetchone()
-        if row is not None:
+            if row is None:
+                return 0, 0
             page_count = int(row["page_count"] or 0)
             completed = int(row["completed_pages"] or 0)
             failed = int(row["page_errors_count"] or 0)
-            pending_pages = max(failed, page_count - completed)
+            return page_count, max(failed, page_count - completed)
+
+        if connection is None:
+            owner_call = getattr(self, "_owner_call", None)
+            if callable(owner_call):
+                page_count, pending_pages = owner_call(read)
+            else:
+                with _database(self.config.state_path, readonly=True) as owned_connection:
+                    page_count, pending_pages = read(owned_connection)
+        else:
+            page_count, pending_pages = read(connection)
         return effective_document_timeout_seconds(
             self.config,
             file_size=snapshot.size,
@@ -2119,21 +2412,34 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
             pending_pages=pending_pages,
         )
 
-    def _successful_staged_page_count(self, snapshot: FileSnapshot) -> int:
-        with _database(self.config.state_path, readonly=True) as connection:
+    def _successful_staged_page_count(
+        self,
+        snapshot: FileSnapshot,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> int:
+        def read(target: sqlite3.Connection) -> int:
             return int(
-                connection.execute(
+                target.execute(
                     """SELECT COUNT(*) FROM page_staging
                     WHERE file_key=? AND processing_signature=? AND source<>'error'""",
                     (_file_key(snapshot), self.config.processing_signature),
                 ).fetchone()[0]
             )
 
+        if connection is None:
+            owner_call = getattr(self, "_owner_call", None)
+            if callable(owner_call):
+                return owner_call(read)
+            with _database(self.config.state_path, readonly=True) as owned_connection:
+                return read(owned_connection)
+        return read(connection)
+
     def _flush_extraction_batch(self, snapshot: FileSnapshot, messages: list[tuple]) -> None:
         """Promote a bounded child-message batch through the sole SQLite writer."""
 
         self._check_disk()
-        with serialized_pdf_write(), _database(self.config.state_path) as connection:
+        def flush(connection: sqlite3.Connection) -> None:
             for message in messages:
                 if message[0] == "page":
                     _, page_number, source, text, *tail = message
@@ -2157,13 +2463,22 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
                         error_message,
                     )
 
+        self._owner_call(flush)
+
     def _process_document_local(
-        self, snapshot: FileSnapshot, binary_digest: str | None
+        self,
+        snapshot: FileSnapshot,
+        binary_digest: str | None,
+        *,
+        worker_context: _PdfWorkerContext | None = None,
     ) -> _DocumentResult:
         self.cancellation.checkpoint()
         key = _file_key(snapshot)
         signature = self.config.processing_signature
-        skip_before, only_pages, prior_ocr_pages = self._resumable_pages(snapshot)
+        if worker_context is None:
+            skip_before, only_pages, prior_ocr_pages = self._resumable_pages(snapshot)
+        else:
+            skip_before, only_pages, prior_ocr_pages = worker_context.resumable_pages
         local_state = _LocalExtractionState(
             file_key=key,
             processing_signature=signature,
@@ -2187,39 +2502,35 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
             page_count = int(document.page_count)
             start, end = self._page_bounds(page_count)
             metadata = dict(document.metadata or {})
-            with (
-                serialized_pdf_write(),
-                _database(self.config.state_path) as connection,
-            ):
+            def prepare(connection: sqlite3.Connection) -> None:
                 self._prepare_document(connection, snapshot, page_count, metadata)
-                connection.commit()
-                prepared = True
-                self._extract_local_pages(
-                    connection,
-                    snapshot,
-                    document,
-                    fitz,
-                    start,
-                    end,
-                    skip_before,
-                    only_pages,
-                    local_state,
-                )
-                connection.commit()
-                status: Literal["done", "partial"] = (
-                    "partial" if local_state.page_errors else "done"
-                )
-                self._promote_local_document(
-                    connection,
-                    snapshot,
-                    page_count,
-                    start,
-                    end,
-                    metadata,
-                    binary_digest,
-                    status,
-                    local_state,
-                )
+            self._owner_call(prepare)
+            prepared = True
+            self._extract_local_pages(
+                None,
+                snapshot,
+                document,
+                fitz,
+                start,
+                end,
+                skip_before,
+                only_pages,
+                local_state,
+            )
+            status: Literal["done", "partial"] = (
+                "partial" if local_state.page_errors else "done"
+            )
+            self._promote_local_document(
+                None,
+                snapshot,
+                page_count,
+                start,
+                end,
+                metadata,
+                binary_digest,
+                status,
+                local_state,
+            )
             return self._complete_local_document(snapshot, status, local_state)
         except CancellationRequested:
             raise
@@ -2236,7 +2547,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
 
     def _promote_local_document(
         self,
-        connection: sqlite3.Connection,
+        connection: sqlite3.Connection | None,
         snapshot: FileSnapshot,
         page_count: int,
         start: int,
@@ -2246,19 +2557,25 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         status: Literal["done", "partial"],
         state: _LocalExtractionState,
     ) -> None:
-        self._promote_document(
-            connection,
-            snapshot,
-            page_count,
-            end - start,
-            metadata,
-            binary_digest,
-            status=status,
-            page_start=start + 1,
-            page_end=end,
-            is_partial=start > 0 or end < page_count,
-            page_errors=state.page_errors,
-        )
+        def promote(target: sqlite3.Connection) -> None:
+            self._promote_document(
+                target,
+                snapshot,
+                page_count,
+                end - start,
+                metadata,
+                binary_digest,
+                status=status,
+                page_start=start + 1,
+                page_end=end,
+                is_partial=start > 0 or end < page_count,
+                page_errors=state.page_errors,
+            )
+
+        if connection is None:
+            self._owner_call(promote)
+        else:
+            promote(connection)
 
     def _complete_local_document(
         self,
@@ -2314,7 +2631,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
 
     def _extract_local_pages(
         self,
-        connection: sqlite3.Connection,
+        connection: sqlite3.Connection | None,
         snapshot: FileSnapshot,
         document: Any,
         fitz: Any,
@@ -2340,7 +2657,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
 
     def _extract_local_page(
         self,
-        connection: sqlite3.Connection,
+        connection: sqlite3.Connection | None,
         snapshot: FileSnapshot,
         document: Any,
         fitz: Any,
@@ -2400,26 +2717,41 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
                 raise RuntimeError(
                     f"page text has {len(text)} characters; limit={self.config.max_page_text_chars}"
                 )
-            self._store_staging_page(
-                connection,
-                state.file_key,
-                state.processing_signature,
-                page_number,
-                source,
-                text,
-                provenance,
-            )
+            def store(target: sqlite3.Connection) -> None:
+                self._store_staging_page(
+                    target,
+                    state.file_key,
+                    state.processing_signature,
+                    page_number,
+                    source,
+                    text,
+                    provenance,
+                )
+
+            if connection is None:
+                self._owner_call(store)
+            else:
+                store(connection)
             return source
         except CancellationRequested:
             raise
         except Exception as page_exc:
-            self._store_page_failure(
-                connection,
-                snapshot,
-                page_number,
-                type(page_exc).__name__,
-                str(page_exc)[:2000],
-            )
+            page_error_type = type(page_exc).__name__
+            page_error_message = str(page_exc)[:2000]
+
+            def store_failure(target: sqlite3.Connection) -> None:
+                self._store_page_failure(
+                    target,
+                    snapshot,
+                    page_number,
+                    page_error_type,
+                    page_error_message,
+                )
+
+            if connection is None:
+                self._owner_call(store_failure)
+            else:
+                store_failure(connection)
             state.page_errors += 1
             if self.config.fail_fast_pages:
                 raise
@@ -2440,14 +2772,15 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
 
     def _record_local_page_progress(
         self,
-        connection: sqlite3.Connection,
+        connection: sqlite3.Connection | None,
         state: _LocalExtractionState,
         source: Literal["native", "ocr", "error"],
     ) -> None:
         state.pages_since_commit += 1
         if state.pages_since_commit >= TEXT_BATCH_PAGES:
-            self._check_disk()
-            connection.commit()
+            if connection is not None:
+                self._check_disk()
+                connection.commit()
             state.pages_since_commit = 0
         if source == "ocr":
             state.ocr_pages += 1
@@ -2471,54 +2804,80 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         if self.config.max_pages is not None:
             end = min(end if end is not None else 2**63 - 1, start + self.config.max_pages)
         metadata = {"engine": "pdfminer", "fallback": True}
-        with serialized_pdf_write(), _database(self.config.state_path) as connection:
+        def prepare(connection: sqlite3.Connection) -> None:
             self._prepare_document(connection, snapshot, 0, metadata)
             connection.execute("DELETE FROM page_staging WHERE file_key=?", (key,))
-            connection.commit()
-            for page_number, layout in enumerate(extract_pages(snapshot.path)):
-                self.cancellation.checkpoint()
-                page_count = page_number + 1
-                if end is not None and page_number >= end:
-                    break
-                if page_number < start:
-                    continue
-                try:
-                    chunks = (
-                        element.get_text()
-                        for element in layout
-                        if isinstance(element, LTTextContainer)
+        self._owner_call(prepare)
+        for page_number, layout in enumerate(extract_pages(snapshot.path)):
+            self.cancellation.checkpoint()
+            page_count = page_number + 1
+            if end is not None and page_number >= end:
+                break
+            if page_number < start:
+                continue
+            try:
+                chunks = (
+                    element.get_text()
+                    for element in layout
+                    if isinstance(element, LTTextContainer)
+                )
+                text = "".join(chunks)
+                if len(text) > self.config.max_page_text_chars:
+                    raise RuntimeError(
+                        f"page text has {len(text)} characters; "
+                        f"limit={self.config.max_page_text_chars}"
                     )
-                    text = "".join(chunks)
-                    if len(text) > self.config.max_page_text_chars:
-                        raise RuntimeError(
-                            f"page text has {len(text)} characters; "
-                            f"limit={self.config.max_page_text_chars}"
-                        )
+
+                def store(
+                    connection: sqlite3.Connection,
+                    *,
+                    stored_page_number: int = page_number,
+                    stored_text: str = text,
+                ) -> None:
                     self._store_staging_page(
-                        connection, key, signature, page_number, "pdfminer", text
+                        connection,
+                        key,
+                        signature,
+                        stored_page_number,
+                        "pdfminer",
+                        stored_text,
                     )
-                except CancellationRequested:
-                    raise
-                except Exception as page_exc:
+
+                self._owner_call(store)
+            except CancellationRequested:
+                raise
+            except Exception as page_exc:
+                page_error_type = type(page_exc).__name__
+                page_error_message = str(page_exc)[:2000]
+
+                def store_failure(
+                    connection: sqlite3.Connection,
+                    *,
+                    stored_page_number: int = page_number,
+                    stored_error_type: str = page_error_type,
+                    stored_error_message: str = page_error_message,
+                ) -> None:
                     self._store_page_failure(
                         connection,
                         snapshot,
-                        page_number,
-                        type(page_exc).__name__,
-                        str(page_exc)[:2000],
+                        stored_page_number,
+                        stored_error_type,
+                        stored_error_message,
                     )
-                    page_errors += 1
-                    if self.config.fail_fast_pages:
-                        raise
-                processed += 1
-                if processed % TEXT_BATCH_PAGES == 0:
-                    self._check_disk()
-                    connection.commit()
-            connection.commit()
-            if processed == 0:
-                raise RuntimeError("pdfminer produced no pages in the requested range")
-            final_end = start + processed
-            status: Literal["done", "partial"] = "partial" if page_errors else "done"
+
+                self._owner_call(store_failure)
+                page_errors += 1
+                if self.config.fail_fast_pages:
+                    raise
+            processed += 1
+            if processed % TEXT_BATCH_PAGES == 0:
+                self._check_disk()
+        if processed == 0:
+            raise RuntimeError("pdfminer produced no pages in the requested range")
+        final_end = start + processed
+        status: Literal["done", "partial"] = "partial" if page_errors else "done"
+
+        def promote(connection: sqlite3.Connection) -> None:
             self._promote_document(
                 connection,
                 snapshot,
@@ -2532,6 +2891,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
                 is_partial=start > 0 or end is not None,
                 page_errors=page_errors,
             )
+        self._owner_call(promote)
         if status == "done":
             self._reconcile_review(
                 snapshot,

@@ -65,7 +65,7 @@ cierre, mientras el lock productivo CPython 3.14 permanece independiente.
 |---|---|---|
 | Runtime base, inventario, texto y Code | `packaging`, `rich`, `xxhash` y transitivos | Sí, lock `runtime-base-cp313-linux-x86_64.lock` |
 | Construcción ordinaria | `build`, backend `setuptools` y transitivos | Sí, lock `build-cp313-linux-x86_64.lock` |
-| Pruebas base | `test-base`: pytest y transitivos, sin plugins obligatorios | Sí, lock `test-base-cp313-linux-x86_64.lock` |
+| Pruebas base | `test-base`: pytest, backend `setuptools==83.0.0` para auditorías de empaquetado y transitivos, sin plugins obligatorios | Sí, lock `test-base-cp313-linux-x86_64.lock` |
 | Documentos e imagen | `documents`, `image`: Pillow, PyMuPDF, pdfminer.six, pytesseract y transitivos | Sí, lock `documents-image-cp313-linux-x86_64.lock` |
 | Inferencia | `semantic`, `audio` y pesos originales locales | No |
 | UI / MCP | `ui` / `agent` | No |

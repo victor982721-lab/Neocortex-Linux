@@ -277,7 +277,7 @@ def _execute_page(
             max_items=min(previous.items_remaining, MAX_VERIFICATION_ITEMS),
             max_files=min(previous.files_remaining, MAX_VERIFICATION_FILES),
             max_bytes=min(previous.bytes_remaining, MAX_VERIFICATION_BYTES),
-        ))
+        ), state_directory=state_directory)
         if verification.status == "snapshot_changed":
             raise CurationCheckpointApiError("snapshot_changed", "curation source changed during verification")
         files, bytes_checked = verification.files_checked, verification.bytes_checked

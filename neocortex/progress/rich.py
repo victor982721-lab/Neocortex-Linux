@@ -163,13 +163,51 @@ class RichProgress:
                     refresh=False,
                 )
             if event.finished:
-                terminal_total = event.total if event.total is not None else event.completed
-                self._progress.update(
-                    task_id,
-                    completed=terminal_total,
-                    total=terminal_total,
-                    refresh=True,
+                terminal_status = next(
+                    (
+                        metric.value
+                        for metric in event.metrics
+                        if metric.name == "status"
+                    ),
+                    None,
                 )
+                unknown_terminal = event.total is None and terminal_status in {
+                    "failed",
+                    "cancelled",
+                    "partial",
+                    "incomplete",
+                }
+                if unknown_terminal:
+                    # A failed or cancelled route deliberately emits a
+                    # terminal event without a total.  Do not manufacture a
+                    # completed total here: doing so makes Rich render a
+                    # failed partial operation as ``N/N`` (and therefore as
+                    # complete), which contradicts the event's outcome.
+                    self._progress.update(
+                        task_id,
+                        completed=event.completed,
+                        refresh=False,
+                    )
+                    # ``Progress.update(total=None)`` means "leave the
+                    # existing total unchanged" in Rich, not "clear it".
+                    # Clear the public Task field explicitly before the
+                    # terminal refresh so a prior known total cannot imply
+                    # complete work after a failure/cancellation.
+                    task = next(task for task in self._progress.tasks if task.id == task_id)
+                    task.total = None
+                    self._progress.refresh()
+                else:
+                    # Successful events with no declared total retain the
+                    # historical terminal convention: the observed completed
+                    # count becomes the explicit total, whereas failed or
+                    # cancelled events above remain visibly indeterminate.
+                    terminal_total = event.completed if event.total is None else event.total
+                    self._progress.update(
+                        task_id,
+                        completed=terminal_total,
+                        total=terminal_total,
+                        refresh=True,
+                    )
                 self._progress.stop_task(task_id)
 
     def __enter__(self) -> "RichProgress":

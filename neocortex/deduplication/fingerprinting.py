@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import os
+import stat
 import struct
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any, BinaryIO, cast
 
 from neocortex.platform.policy import stat_birthtime_ns
 
@@ -25,6 +29,102 @@ PARTIAL_ALGORITHM = "xxh3_128_first_middle_last_v1_sample_262144"
 DEFAULT_IO_CHUNK_SIZE = 16 * 1024 * 1024
 DEFAULT_SAMPLE_SIZE = 256 * 1024
 _MIN_IO_CHUNK_SIZE = 64 * 1024
+
+
+def _close_quietly(file_descriptor: int | None) -> None:
+    if file_descriptor is None:
+        return
+    try:
+        os.close(file_descriptor)
+    except OSError:
+        pass
+
+
+def _open_regular_descriptor(snapshot: FileSnapshot) -> int:
+    """Open the snapshot through descriptor-relative, no-following POSIX I/O.
+
+    ``open(path, "rb")`` follows a final symlink and can block indefinitely
+    when that path is replaced with a FIFO.  Keep the descriptor tied to the
+    observed directory entries instead: every ancestor is opened with
+    ``O_NOFOLLOW|O_DIRECTORY`` and the final component is opened with
+    ``O_NOFOLLOW|O_NONBLOCK`` before its type and snapshot are checked.
+    """
+
+    path = Path(native_io_path(snapshot.path))
+    if os.name != "posix":  # pragma: no cover - NeoCortex is Linux-only
+        descriptor = os.open(
+            os.fspath(path),
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
+        )
+        try:
+            observed = os.fstat(descriptor)
+            if not stat.S_ISREG(observed.st_mode):
+                raise FileChangedError(f"file is not a regular file: {snapshot.path}")
+            _assert_unchanged(snapshot, observed)
+            return descriptor
+        except BaseException:
+            _close_quietly(descriptor)
+            raise
+
+    components = path.parts
+    if not components or components[0] != os.sep or len(components) == 1:
+        raise FileChangedError(f"file path is not a regular file: {snapshot.path}")
+
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    common_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | nofollow
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    directory_flags = common_flags | getattr(os, "O_DIRECTORY", 0)
+    directory_descriptor: int | None = None
+    file_descriptor: int | None = None
+    try:
+        directory_descriptor = os.open(os.sep, directory_flags)
+        for component in components[1:-1]:
+            next_descriptor = os.open(
+                component,
+                directory_flags,
+                dir_fd=directory_descriptor,
+            )
+            _close_quietly(directory_descriptor)
+            directory_descriptor = next_descriptor
+        file_descriptor = os.open(
+            components[-1],
+            common_flags,
+            dir_fd=directory_descriptor,
+        )
+        observed = os.fstat(file_descriptor)
+        if not stat.S_ISREG(observed.st_mode):
+            raise FileChangedError(f"file is not a regular file: {snapshot.path}")
+        _assert_unchanged(snapshot, observed)
+        _close_quietly(directory_descriptor)
+        directory_descriptor = None
+        return file_descriptor
+    except BaseException:
+        _close_quietly(file_descriptor)
+        _close_quietly(directory_descriptor)
+        raise
+
+
+@contextmanager
+def _open_regular_stream(snapshot: FileSnapshot) -> Iterator[BinaryIO]:
+    """Yield an unbuffered stream bound to one validated regular-file inode."""
+
+    descriptor = _open_regular_descriptor(snapshot)
+    try:
+        stream = os.fdopen(descriptor, "rb", buffering=0)
+    except BaseException:
+        _close_quietly(descriptor)
+        raise
+    try:
+        yield stream
+    finally:
+        stream.close()
 
 
 def stat_matches_snapshot(snapshot: FileSnapshot, stat: os.stat_result) -> bool:
@@ -76,12 +176,17 @@ def full_fingerprint(snapshot: FileSnapshot, *, chunk_size: int = DEFAULT_IO_CHU
     chunk_size = _validated_io_chunk_size(chunk_size)
     hasher = xxhash.xxh3_128()
     try:
-        with open(native_io_path(snapshot.path), "rb", buffering=0) as stream:
-            _assert_unchanged(snapshot, os.fstat(stream.fileno()))
+        with _open_regular_stream(snapshot) as stream:
             buffer = bytearray(_adaptive_buffer_capacity(snapshot.size, chunk_size))
             view = memoryview(buffer)
-            while count := stream.readinto(buffer):
+            bytes_read = 0
+            while count := cast(Any, stream).readinto(buffer):
+                bytes_read += count
+                if bytes_read > snapshot.size:
+                    raise FileChangedError(f"file grew while processing: {snapshot.path}")
                 hasher.update(view[:count])
+            if bytes_read != snapshot.size:
+                raise FileChangedError(f"file was truncated while processing: {snapshot.path}")
             _assert_unchanged(snapshot, os.fstat(stream.fileno()))
     except FileChangedError:
         raise
@@ -101,11 +206,13 @@ def partial_fingerprint(snapshot: FileSnapshot, *, sample_size: int = DEFAULT_SA
     hasher.update(b"T_DEDUP_PARTIAL_V1\0")
     hasher.update(struct.pack("<QQ", size, sample_size))
     try:
-        with open(native_io_path(snapshot.path), "rb", buffering=0) as stream:
-            _assert_unchanged(snapshot, os.fstat(stream.fileno()))
+        with _open_regular_stream(snapshot) as stream:
             for offset in offsets:
                 stream.seek(offset)
-                data = stream.read(min(sample_size, size - offset))
+                expected = min(sample_size, size - offset)
+                data = stream.read(expected)
+                if len(data) != expected:
+                    raise FileChangedError(f"file was truncated while sampling: {snapshot.path}")
                 hasher.update(struct.pack("<QQ", offset, len(data)))
                 hasher.update(data)
             _assert_unchanged(snapshot, os.fstat(stream.fileno()))
@@ -128,29 +235,28 @@ def files_equal_exact(
     if left.size != right.size:
         return False
     try:
-        with (
-            open(native_io_path(left.path), "rb", buffering=0) as left_stream,
-            open(native_io_path(right.path), "rb", buffering=0) as right_stream,
-        ):
-            _assert_unchanged(left, os.fstat(left_stream.fileno()))
-            _assert_unchanged(right, os.fstat(right_stream.fileno()))
+        with _open_regular_stream(left) as left_stream, _open_regular_stream(right) as right_stream:
             capacity = _adaptive_buffer_capacity(left.size, chunk_size)
             left_buffer = bytearray(capacity)
             right_buffer = bytearray(capacity)
             left_view = memoryview(left_buffer)
             right_view = memoryview(right_buffer)
             equal = True
+            bytes_compared = 0
             while True:
-                left_count = left_stream.readinto(left_buffer)
-                right_count = right_stream.readinto(right_buffer)
+                left_count = cast(Any, left_stream).readinto(left_buffer)
+                right_count = cast(Any, right_stream).readinto(right_buffer)
                 if left_count != right_count:
                     equal = False
                     break
                 if left_count == 0:
                     break
+                bytes_compared += left_count
                 if left_view[:left_count] != right_view[:right_count]:
                     equal = False
                     break
+            if equal and bytes_compared != left.size:
+                raise FileChangedError("file was truncated or grew during exact comparison")
             _assert_unchanged(left, os.fstat(left_stream.fileno()))
             _assert_unchanged(right, os.fstat(right_stream.fileno()))
             return equal

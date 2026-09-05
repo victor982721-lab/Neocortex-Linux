@@ -6,6 +6,20 @@ fuera de `docs/`.
 
 ## Cambios posteriores a 0.12.0
 
+- Fingerprinting POSIX rechaza FIFO, symlinks y cambios de identidad sin bloquear;
+  la captura de subprocesses usa descriptores no bloqueantes con un presupuesto
+  total de cleanup, y el preflight ZIP cuenta y valida el directorio central real
+  antes de materializar miembros, incluidos documentos Office anidados.
+- La paginación de curación publica el digest completo una sola vez por generación
+  y lee páginas mediante keyset, mientras la verificación y autorización recuperan
+  la membresía completa de grupos grandes desde el owner SQLite, sin usar la muestra
+  visual truncada como permiso físico.
+- La ruta PDF coordina lecturas y escrituras del owner en un hilo dedicado durante
+  la extracción, `test-base` declara explícitamente `setuptools` y la reanudación
+  de inventario cuenta con una regresión de interrupción, reapertura y replay.
+- El progreso Rich conserva terminales fallidos o cancelados como indeterminados y
+  la API de verificación propaga sus métricas acotadas.
+
 - Restore separa commit durable de fallos del puntero, retiene material de
   recuperación incompleta, valida schemas y usa el CAS del destino para backups
   históricos; cache-sync prepara la publicación antes de escribir owners.

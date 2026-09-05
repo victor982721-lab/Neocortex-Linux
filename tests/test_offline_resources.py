@@ -183,5 +183,8 @@ def test_offline_supply_stays_outside_importable_and_built_product() -> None:
     assert "prune dev-resources" in (ROOT / "MANIFEST.in").read_text(encoding="utf-8").splitlines()
     assert "!dev-resources/offline/artifacts/*.whl" in (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
     assert not (SUPPLY / "__init__.py").exists()
-    assert metadata["project"]["optional-dependencies"]["test-base"] == ["pytest>=9.1,<10"]
+    assert metadata["project"]["optional-dependencies"]["test-base"] == [
+        "pytest>=9.1,<10",
+        "setuptools==83.0.0",
+    ]
     assert "setuptools==83.0.0" in metadata["build-system"]["requires"]

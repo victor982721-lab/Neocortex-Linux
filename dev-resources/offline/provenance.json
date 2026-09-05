@@ -1285,7 +1285,8 @@
       "name": "setuptools",
       "origin_verification": "PyPI HTTPS release metadata SHA-256 and byte size",
       "profiles": [
-        "build"
+        "build",
+        "test-base"
       ],
       "requires_dist": [
         "pytest!=8.1.*,>=6; extra == \"test\"",
@@ -1426,7 +1427,8 @@
       "packaging==26.2",
       "pluggy==1.6.0",
       "pygments==2.21.0",
-      "pytest==9.1.1"
+      "pytest==9.1.1",
+      "setuptools==83.0.0"
     ]
   },
   "profile_roots": {
@@ -1447,7 +1449,8 @@
       "pytesseract==0.3.13"
     ],
     "test-base": [
-      "pytest==9.1.1"
+      "pytest==9.1.1",
+      "setuptools==83.0.0"
     ]
   },
   "schema_version": 1,

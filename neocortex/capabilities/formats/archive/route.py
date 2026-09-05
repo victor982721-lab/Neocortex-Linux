@@ -414,9 +414,17 @@ def _html_text(payload: bytes) -> str | None:
     return "\n".join(part.strip() for part in parser.parts if part.strip())
 
 
-def _zip_document_kind(payload: bytes) -> str:
+def _zip_document_kind(
+    payload: bytes,
+    *,
+    max_central_directory_bytes: int = DEFAULT_MAX_CENTRAL_DIRECTORY_BYTES,
+) -> str:
     try:
-        inspect_zip_bytes(payload, max_members=MAX_EMBEDDED_DOCUMENT_MEMBERS)
+        inspect_zip_bytes(
+            payload,
+            max_members=MAX_EMBEDDED_DOCUMENT_MEMBERS,
+            max_central_directory_bytes=max_central_directory_bytes,
+        )
         with zipfile.ZipFile(io.BytesIO(payload)) as archive:
             names = {info.filename.replace("\\", "/").casefold() for info in archive.infolist()}
             if "[content_types].xml" in names:
@@ -546,8 +554,13 @@ def _extract_embedded_zip_document(
     char_limit: int,
     budget: _WalkBudget,
     compression_ratio_limit: float,
+    max_central_directory_bytes: int = DEFAULT_MAX_CENTRAL_DIRECTORY_BYTES,
 ) -> tuple[str, bool]:
-    inspect_zip_bytes(payload, max_members=MAX_EMBEDDED_DOCUMENT_MEMBERS)
+    inspect_zip_bytes(
+        payload,
+        max_members=MAX_EMBEDDED_DOCUMENT_MEMBERS,
+        max_central_directory_bytes=max_central_directory_bytes,
+    )
     parts: list[str] = []
     total_chars = 0
     truncated = False
@@ -723,6 +736,7 @@ def _extract_member_content(
                 char_limit=char_limit,
                 budget=budget,
                 compression_ratio_limit=config.max_compression_ratio,
+                max_central_directory_bytes=config.max_central_directory_bytes,
             )
         except (ArchiveExtractionError, ZipStructureError, zipfile.BadZipFile, zlib.error) as exc:
             return _ExtractedContent(
@@ -1152,7 +1166,10 @@ def _walk_zip(
             else:
                 suffix = PurePosixPath(name).suffix.casefold()
                 zip_kind = (
-                    _zip_document_kind(payload)
+                    _zip_document_kind(
+                        payload,
+                        max_central_directory_bytes=config.max_central_directory_bytes,
+                    )
                     if payload.startswith(_ZIP_MAGIC_PREFIXES)
                     or suffix in _NESTED_ARCHIVE_EXTENSIONS
                     else None

@@ -69,6 +69,9 @@ class CurationVerificationResultPayload(TypedDict):
     snapshot_id: Required[str]
     source_heads: Required[list[dict[str, Any]]]
     status: Required[Literal["complete", "partial", "snapshot_changed"]]
+    # Optional for compatibility with older adapters; the canonical verifier
+    # emits the bounded counters whenever it has them.
+    metrics: NotRequired[dict[str, int]]
 
 
 class CurationVerificationErrorPayload(TypedDict):
@@ -499,6 +502,20 @@ def _verification_success(
                 ),
             }
         )
+    raw_metrics = result.get("metrics")
+    normalized_metrics: dict[str, int] = {}
+    if raw_metrics is not None:
+        if not isinstance(raw_metrics, dict):
+            raise ValueError("curation verification metrics are invalid")
+        if len(raw_metrics) > 64:
+            raise ValueError("curation verification metrics exceed the bounded key limit")
+        for raw_name, raw_value in raw_metrics.items():
+            if not isinstance(raw_name, str) or not raw_name or len(raw_name) > 128:
+                raise ValueError("curation verification metric name is invalid")
+            normalized_metrics[sanitize_untrusted_text(raw_name, limit=128)] = _nonnegative_int(
+                raw_value,
+                label=f"metric {raw_name}",
+            )
     normalized_result = {
         "bytes_checked": _nonnegative_int(result.get("bytes_checked"), label="bytes_checked"),
         "coverage": coverage,
@@ -512,6 +529,7 @@ def _verification_success(
         "snapshot_id": sanitize_untrusted_text(result.get("snapshot_id"), limit=4_096),
         "source_heads": _safe_source_heads(result.get("source_heads", ())),
         "status": status,
+        "metrics": normalized_metrics,
     }
     return {
         "schema": CURATION_VERIFY_API_SCHEMA,
@@ -592,6 +610,7 @@ def curation_verify_payload(
             page,
             item_ids=normalized_ids,
             max_items=MAX_VERIFICATION_ITEMS,
+            state_directory=default_state_directory(),
         )
         return _verification_success(
             verification.to_dict(),

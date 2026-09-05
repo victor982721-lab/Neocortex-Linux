@@ -3,8 +3,7 @@
 The fixtures are temporary and deliberately stay below the real user corpus.
 These tests exercise only public or already-existing production boundaries:
 inventory batching, published-plan pagination, exact verification budgets and
-the durable partial scan left by cancellation.  A true resume-from-checkpoint
-API is not invented here; the explicit skipped expectation records that gap.
+durable interruption/resume from a persisted inventory checkpoint.
 """
 
 from __future__ import annotations
@@ -29,9 +28,11 @@ from neocortex.deduplication import (
     DedupIndex,
     DedupPlanner,
     InventoryCheckpoint,
+    InventoryResumeCheckpointStore,
     ScanSummary,
 )
 from neocortex.deduplication.inventory.scanner import InventoryBatch
+from neocortex.deduplication.inventory.traversal import FileObservation
 from neocortex.documents.document_catalog import initialize_document_catalog
 
 
@@ -372,11 +373,93 @@ def test_scale_inventory_cancellation_leaves_a_durable_partial_prefix(
     assert row[2:] == (512, 512)
 
 
-def test_scale_resume_checkpoint_contract_is_not_public_yet() -> None:
-    pytest.skip(
-        "0.12 pendiente: no existe API pública para reanudar un scan parcial "
-        "desde su cursor/batch sin reconstruirlo"
+def test_scale_resume_checkpoint_survives_interruption_reopen_and_continues(
+    tmp_path: Path,
+) -> None:
+    """A committed prefix survives process reopening and is not silently rebuilt."""
+
+    class Interrupted(BaseException):
+        pass
+
+    corpus = tmp_path / "resume-corpus"
+    database = tmp_path / "resume-state.sqlite3"
+    checkpoint = tmp_path / "resume-state" / "inventory.json"
+    _build_linear_corpus(corpus, count=520)
+
+    def interrupt_after_committed_prefix(event: object) -> None:
+        if getattr(event, "completed", None) == 512:
+            raise Interrupted
+
+    with pytest.raises(Interrupted):
+        with DedupIndex(database) as index:
+            index.scan(
+                corpus,
+                excluded_paths=(),
+                batch_size=32,
+                checkpoint_path=checkpoint,
+                progress=interrupt_after_committed_prefix,
+            )
+
+    partial = InventoryResumeCheckpointStore(checkpoint, root=corpus).read()
+    assert partial.status == "partial"
+    assert partial.files_seen == 512
+    assert partial.last_relative_cursor == "item-0511.bin"
+    assert partial.batch_index == 16
+
+    with sqlite3.connect(database) as connection:
+        committed_prefix = tuple(
+            row[0]
+            for row in connection.execute(
+                "SELECT path FROM files WHERE scan_id=? ORDER BY path",
+                (partial.scan_id,),
+            )
+        )
+    assert len(committed_prefix) == partial.files_seen
+    assert committed_prefix == tuple(
+        os.fspath(corpus / f"item-{index:04d}.bin") for index in range(512)
     )
+
+    resumed_paths: list[str] = []
+    original_append = InventoryBatch.append
+
+    def record_resumed_append(batch: InventoryBatch, observation: FileObservation) -> None:
+        resumed_paths.append(Path(observation.path).relative_to(corpus).as_posix())
+        original_append(batch, observation)
+
+    # A separate index context models reopening after the interrupted process.
+    with patch.object(InventoryBatch, "append", record_resumed_append):
+        with DedupIndex(database) as reopened:
+            resumed = reopened.scan(
+                corpus,
+                excluded_paths=(),
+                batch_size=32,
+                checkpoint_path=checkpoint,
+                resume=True,
+            )
+            resumed_rows = tuple(reopened.snapshots(resumed.scan_id))
+
+    assert resumed.scan_id == partial.scan_id
+    assert resumed.files_seen == 520
+    assert resumed_rows and len(resumed_rows) == 520
+    assert tuple(row.path for row in resumed_rows[:512]) == committed_prefix
+    assert resumed_paths == [f"item-{index:04d}.bin" for index in range(512, 520)]
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM scans").fetchone() == (1,)
+
+    final = InventoryResumeCheckpointStore(checkpoint, root=corpus).read()
+    assert final.status == "complete"
+    assert final.files_seen == 520
+    assert final.last_relative_cursor == "item-0519.bin"
+
+    with DedupIndex(database) as replayed_index:
+        replayed = replayed_index.scan(
+            corpus,
+            excluded_paths=(),
+            batch_size=32,
+            checkpoint_path=checkpoint,
+            resume=True,
+        )
+    assert replayed == resumed
 
 
 def test_scale_public_page_limits_reject_out_of_range_without_state_reads(

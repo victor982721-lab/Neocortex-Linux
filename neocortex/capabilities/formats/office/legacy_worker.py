@@ -14,8 +14,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from neocortex.runtime.control.bounded_subprocess import SubprocessOutputLimitError, run_bounded_capture
+from neocortex.platform.zip_safety import (
+    DEFAULT_MAX_CENTRAL_DIRECTORY_BYTES,
+    inspect_zip_structure,
+)
 
 _MAX_BACKEND_BYTES = 16 * 1024 * 1024
+_MAX_OOXML_MEMBERS = 20_000
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -59,8 +64,13 @@ def _selected_ooxml_part(name: str, kind: str) -> bool:
 
 def _ooxml_text(path: Path, kind: str, max_chars: int) -> tuple[str, bool]:
     accumulator = _LegacyTextAccumulator(max_chars)
+    inspect_zip_structure(
+        path,
+        max_members=_MAX_OOXML_MEMBERS,
+        max_central_directory_bytes=DEFAULT_MAX_CENTRAL_DIRECTORY_BYTES,
+    )
     with zipfile.ZipFile(path) as archive:
-        if len(archive.infolist()) > 20_000:
+        if len(archive.infolist()) > _MAX_OOXML_MEMBERS:
             raise ValueError("converted Office document exceeds member limit")
         for info in archive.infolist():
             if info.is_dir() or not _selected_ooxml_part(info.filename, kind):

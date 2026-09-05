@@ -811,12 +811,15 @@ class PdfRouteCacheMixin:
     def _resumable_pages(
         self,
         snapshot: FileSnapshot,
+        *,
+        connection: sqlite3.Connection | None = None,
     ) -> tuple[int, frozenset[int], int]:
         key = file_key(snapshot)
         signature = self.config.processing_signature
         range_start = 0 if self.config.page_start is None else self.config.page_start - 1
-        with pdf_database(self.config.state_path) as connection:
-            row = connection.execute(
+
+        def read(target: sqlite3.Connection) -> tuple[int, frozenset[int], int]:
+            row = target.execute(
                 "SELECT size,mtime_ns,birthtime_ns,processing_signature,status,"
                 "transient_retry_count,next_retry_ns FROM documents "
                 "WHERE file_key=?",
@@ -830,14 +833,14 @@ class PdfRouteCacheMixin:
             ):
                 return range_start, frozenset(), 0
             prior_ocr_pages = int(
-                connection.execute(
+                target.execute(
                     "SELECT COUNT(*) FROM page_staging WHERE file_key=? "
                     "AND processing_signature=? AND source='ocr'",
                     (key, signature),
                 ).fetchone()[0]
             )
             automatic_page_retry = bool(
-                connection.execute(
+                target.execute(
                     "SELECT EXISTS(SELECT 1 FROM page_errors WHERE file_key=? "
                     "AND processing_signature=? AND " + RETRYABLE_PAGE_ERROR_SQL + ")",
                     (key, signature),
@@ -850,7 +853,7 @@ class PdfRouteCacheMixin:
                 "partial",
                 "error",
             }:
-                failed_rows = connection.execute(
+                failed_rows = target.execute(
                     "SELECT page_number FROM page_errors WHERE file_key=? "
                     "AND processing_signature=? ORDER BY page_number LIMIT ?",
                     (key, signature, MAX_RETRY_PAGE_SET + 1),
@@ -861,13 +864,21 @@ class PdfRouteCacheMixin:
                         frozenset(int(item[0]) for item in failed_rows),
                         prior_ocr_pages,
                     )
-            completed = connection.execute(
+            completed = target.execute(
                 "SELECT MAX(page_number) FROM page_staging WHERE file_key=? "
                 "AND processing_signature=? AND source<>'error'",
                 (key, signature),
             ).fetchone()[0]
-        skip_before = range_start if completed is None else int(completed) + 1
-        return skip_before, frozenset(), prior_ocr_pages
+            skip_before = range_start if completed is None else int(completed) + 1
+            return skip_before, frozenset(), prior_ocr_pages
+
+        if connection is not None:
+            return read(connection)
+        owner_call = getattr(self, "_owner_call", None)
+        if callable(owner_call):
+            return owner_call(read)
+        with pdf_database(self.config.state_path) as owned_connection:
+            return read(owned_connection)
 
     @staticmethod
     def _is_transient_error(error_type: str, error_message: str) -> bool:

@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import ctypes
 from ctypes import wintypes
+import math
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import threading
@@ -127,6 +129,81 @@ def test_bounded_capture_kills_and_reaps_timeout() -> None:
         )
 
     assert captured.value.timeout == 0.05
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX selector capture behavior")
+@pytest.mark.parametrize("retained_stream", ("stdout", "stderr", "both"))
+def test_bounded_capture_does_not_wait_for_descendant_retained_pipes(
+    tmp_path: Path,
+    retained_stream: str,
+) -> None:
+    """A setsid descendant cannot turn pipe cleanup into an unbounded join."""
+
+    pid_path = tmp_path / f"retained-{retained_stream}.pid"
+    descendant_code = (
+        "import os,pathlib,sys,time; "
+        "os.setsid(); "
+        "stream=sys.argv[2]; "
+        "(os.close(1) if stream == 'stderr' else "
+        "os.close(2) if stream == 'stdout' else None); "
+        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()),encoding='ascii'); "
+        "time.sleep(30)"
+    )
+    parent_code = (
+        "import os,pathlib,sys,time; "
+        "pid=os.fork(); "
+        "(os.execl(sys.executable,sys.executable,'-c',sys.argv[2],sys.argv[1],sys.argv[3])"
+        " if pid == 0 else None); "
+        "time.sleep(.1)"
+    )
+    started = time.monotonic()
+    try:
+        with pytest.raises(RuntimeError, match="cleanup incomplete"):
+            run_bounded_capture(
+                (*_python(parent_code), str(pid_path), descendant_code, retained_stream),
+                timeout_seconds=0.25,
+                stdout_limit_bytes=1024,
+                stderr_limit_bytes=1024,
+            )
+    finally:
+        try:
+            os.kill(int(pid_path.read_text(encoding="ascii")), signal.SIGKILL)
+        except (FileNotFoundError, ProcessLookupError, ValueError):
+            pass
+
+    assert time.monotonic() - started < 0.5
+    assert not any(
+        thread.is_alive() and thread.name.startswith("neocortex-subprocess-")
+        for thread in threading.enumerate()
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group cleanup behavior")
+def test_bounded_capture_reaps_group_after_direct_child_exits_without_eof() -> None:
+    descendant_code = "import time; time.sleep(30)"
+    parent_code = (
+        "import subprocess,sys; "
+        "subprocess.Popen([sys.executable,'-c',sys.argv[1]],stdin=subprocess.DEVNULL);"
+    )
+    completed = run_bounded_capture(
+        (*_python(parent_code), descendant_code),
+        timeout_seconds=2,
+        stdout_limit_bytes=1024,
+        stderr_limit_bytes=1024,
+    )
+
+    assert completed.returncode == 0
+
+
+def test_bounded_capture_rejects_non_finite_timeout() -> None:
+    for timeout_seconds in (math.inf, math.nan):
+        with pytest.raises(ValueError, match="finite"):
+            run_bounded_capture(
+                _python("pass"),
+                timeout_seconds=timeout_seconds,
+                stdout_limit_bytes=1,
+                stderr_limit_bytes=1,
+            )
 
 
 @pytest.mark.parametrize(

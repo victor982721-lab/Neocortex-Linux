@@ -36,12 +36,14 @@ agent = [
     "mcp==1.29.0",
 ]
 # Build frontend and base tests are independent of optional runtimes/analyzers.
-# The backend version remains governed by [build-system].
+# Packaging audit tests import the same isolated backend declared by
+# [build-system]; keeping it here does not add it to the product runtime.
 build = [
     "build>=1.5,<2",
 ]
 test-base = [
     "pytest>=9.1,<10",
+    "setuptools==83.0.0",
 ]
 # Development-only tools for individual checks; never required by the runtime.
 analysis = [
@@ -93,7 +95,8 @@ full = [
 ]
 dev = [
     # Compatibility alias for existing development environments; use build for
-    # a build-only environment and test-base for dependency-light base tests.
+    # a build-only environment and test-base for base tests plus packaging
+    # backend audits.
     "build>=1.5,<2",
 ]
 

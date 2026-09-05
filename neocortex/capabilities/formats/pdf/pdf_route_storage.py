@@ -499,6 +499,10 @@ class PdfRouteStorageMixin:
         if connection is not None:
             write(connection)
             return
+        owner_call = getattr(self, "_owner_call", None)
+        if callable(owner_call):
+            owner_call(write)
+            return
         with serialized_pdf_write(), pdf_database(self.config.state_path) as target:
             write(target)
 
@@ -512,7 +516,7 @@ class PdfRouteStorageMixin:
         transient: bool = False,
         reset_retry_count: bool = False,
     ) -> None:
-        with serialized_pdf_write(), pdf_database(self.config.state_path) as connection:
+        def write(connection: sqlite3.Connection) -> None:
             key = file_key(snapshot)
             signature = self.config.processing_signature
             old = connection.execute(
@@ -574,6 +578,13 @@ class PdfRouteStorageMixin:
                     time.time_ns(),
                 ),
             )
+
+        owner_call = getattr(self, "_owner_call", None)
+        if callable(owner_call):
+            owner_call(write)
+            return
+        with serialized_pdf_write(), pdf_database(self.config.state_path) as connection:
+            write(connection)
 
 
 # endregion [04]
