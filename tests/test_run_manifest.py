@@ -24,6 +24,7 @@ def _manifest() -> RunManifest:
         root="/tmp/fixture",
         root_identity=(1, 2, -1),
         selected_routes=("text", "pdf", "text"),
+        route_capabilities={"text": "safe_replay", "pdf": "phase_resume"},
         configuration={"policy": "bounded", "routes": ["text", "pdf"]},
         budget={"items": 50, "bytes": 1_000_000},
         input_snapshot={"scan_id": 11, "candidate_rows": 2},
@@ -36,6 +37,7 @@ def test_manifest_digest_is_canonical_and_verifiable() -> None:
 
     assert payload["schema"] == "neocortex.run-manifest/v1"
     assert payload["selected_routes"] == ["pdf", "text"]
+    assert payload["route_capabilities"] == {"pdf": "phase_resume", "text": "safe_replay"}
     assert verify_event_payload(payload) == payload
     assert manifest.digest().startswith("sha256:")
 

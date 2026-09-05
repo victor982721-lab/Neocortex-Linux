@@ -757,6 +757,10 @@ class FrameworkOrchestrator:
         return {
             "route": self.config.route,
             "selected_routes": list(self.selected_routes),
+            "route_capabilities": {
+                name: self.route_registry[name].lifecycle_capability
+                for name in self.selected_routes
+            },
             "global_memory_budget_bytes": self.config.global_memory_budget_bytes,
             "global_min_free_memory_bytes": self.config.global_min_free_memory_bytes,
             "global_min_free_commit_bytes": self.config.global_min_free_commit_bytes,
@@ -887,6 +891,10 @@ class FrameworkOrchestrator:
                 int(boundary.access_policy.root_birthtime_ns),
             ),
             selected_routes=tuple(self.selected_routes),
+            route_capabilities={
+                name: self.route_registry[name].lifecycle_capability
+                for name in self.selected_routes
+            },
             configuration=configuration,
             budget=budget,
             input_snapshot={
@@ -1533,6 +1541,19 @@ class FrameworkOrchestrator:
             self.selected_routes = resumable
         if not self.selected_routes:
             raise ValueError(f"run {source_run_id} has no resumable content routes")
+        read_capabilities = getattr(state, "read_run_route_capabilities", None)
+        if callable(read_capabilities) and self.config.resume_run_id is not None:
+            capabilities = read_capabilities(source_run_id)
+            unsupported = tuple(
+                name
+                for name in self.selected_routes
+                if capabilities.get(name, "safe_replay") == "not_resumable"
+            )
+            if unsupported:
+                raise ValueError(
+                    "resume source declares non-replayable routes: "
+                    + ", ".join(sorted(unsupported))
+                )
 
     def _prepare_route_only_source(
         self,
@@ -1651,6 +1672,10 @@ class FrameworkOrchestrator:
                         int(boundary.access_policy.root_birthtime_ns),
                     ),
                     selected_routes=tuple(self.selected_routes),
+                    route_capabilities={
+                        name: self.route_registry[name].lifecycle_capability
+                        for name in self.selected_routes
+                    },
                     configuration=route_payload,
                     budget={
                         "durable": durable_budget.as_mapping(),

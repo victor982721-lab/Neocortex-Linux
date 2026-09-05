@@ -42,6 +42,7 @@ class RouteStatus:
     heartbeat_ns: int | None
     error_type: str | None
     phases: tuple[PhaseStatus, ...]
+    resume_capability: str = "not_resumable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,11 +139,12 @@ def _run_status(
         else now - heartbeat > threshold_ns
     )
     owner_pid = None if row["owner_pid"] is None else int(row["owner_pid"])
-    routes = _route_statuses(connection, run_id)
     manifest = _run_manifest(connection, run_id)
     budget = _run_budget(connection, run_id)
     recovery = _run_recovery(connection, run_id)
     stages = _run_stages(connection, run_id)
+    route_capabilities = _route_capabilities(manifest)
+    routes = _route_statuses(connection, run_id, route_capabilities)
     skipped_routes = tuple(
         route.route_name for route in routes if route.status == "completed"
     )
@@ -393,20 +395,52 @@ def _non_replayable_routes(
         input_sources = recovery.get("route_input_sources", {})
         if not isinstance(input_sources, dict):
             input_sources = {}
+        capabilities = recovery.get("route_capabilities", {})
+        if not isinstance(capabilities, dict):
+            capabilities = {}
         return tuple(
             route.route_name
             for route in routes
             if route.status in {"failed", "cancelled", "interrupted"}
-            and input_sources.get(route.route_name, "route_candidates")
-            != "inventory_snapshot"
+            and (
+                input_sources.get(route.route_name, "route_candidates")
+                != "inventory_snapshot"
+                or capabilities.get(route.route_name, "safe_replay") == "not_resumable"
+            )
         )
+    if recovery is not None:
+        capabilities = recovery.get("route_capabilities", {})
+        if isinstance(capabilities, dict):
+            return tuple(
+                route.route_name
+                for route in routes
+                if route.status in {"failed", "cancelled", "interrupted"}
+                and capabilities.get(route.route_name, "safe_replay") == "not_resumable"
+            )
     return ()
+
+
+def _route_capabilities(manifest: dict[str, object] | None) -> dict[str, str]:
+    if manifest is None:
+        return {}
+    value = manifest.get("route_capabilities", {})
+    if not isinstance(value, dict):
+        raise sqlite3.DatabaseError("run manifest route capabilities are invalid")
+    capabilities = {str(name): str(capability) for name, capability in value.items()}
+    if any(
+        capability not in {"phase_resume", "safe_replay", "not_resumable"}
+        for capability in capabilities.values()
+    ):
+        raise sqlite3.DatabaseError("run manifest route capability is unsupported")
+    return capabilities
 
 
 def _route_statuses(
     connection: sqlite3.Connection,
     run_id: int,
+    route_capabilities: dict[str, str] | None = None,
 ) -> tuple[RouteStatus, ...]:
+    route_capabilities = {} if route_capabilities is None else route_capabilities
     columns = {
         str(row["name"]) for row in connection.execute("PRAGMA table_info(route_runs)")
     }
@@ -508,6 +542,7 @@ def _route_statuses(
                     None if route["error_type"] is None else str(route["error_type"])
                 ),
                 phases=route_phases,
+                resume_capability=route_capabilities.get(route_name, "not_resumable"),
             )
         )
     return tuple(results)
@@ -515,6 +550,12 @@ def _route_statuses(
 
 def serialized_run_status(status: RunStatus) -> str:
     """Return stable JSON for callers that prefer machine-readable status."""
+
+    manifest_capabilities = None
+    if isinstance(status.manifest, dict):
+        value = status.manifest.get("route_capabilities")
+        if isinstance(value, dict):
+            manifest_capabilities = {str(name): str(capability) for name, capability in value.items()}
 
     return json.dumps(
         {
@@ -539,6 +580,7 @@ def serialized_run_status(status: RunStatus) -> str:
             "skipped_routes": list(status.skipped_routes),
             "non_replayable_routes": list(status.non_replayable_routes),
             "stages": list(status.stages),
+            "route_capabilities": manifest_capabilities,
             "lifecycle": lifecycle_envelope(
                 manifest=status.manifest,
                 status=status.status,
@@ -547,6 +589,7 @@ def serialized_run_status(status: RunStatus) -> str:
                         "route_name": route.route_name,
                         "status": route.status,
                         "current_phase": route.current_phase,
+                        "resume_capability": route.resume_capability,
                     }
                     for route in status.routes
                 ),
@@ -566,6 +609,7 @@ def serialized_run_status(status: RunStatus) -> str:
                 budget=status.budget,
                 recovery=status.recovery,
                 stages=tuple(status.stages),
+                route_capabilities=manifest_capabilities,
             ),
             "routes": [
                 {
@@ -576,6 +620,7 @@ def serialized_run_status(status: RunStatus) -> str:
                     "completed_ns": route.completed_ns,
                     "heartbeat_ns": route.heartbeat_ns,
                     "error_type": route.error_type,
+                    "resume_capability": route.resume_capability,
                     "phases": [
                         {
                             "phase_name": phase.phase_name,

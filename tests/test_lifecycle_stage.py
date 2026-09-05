@@ -16,6 +16,7 @@ from neocortex.persistence.framework_state_writer import FrameworkState
 from neocortex.runtime.models import FrameworkConfig
 from neocortex.runtime.orchestration.orchestrator import FrameworkOrchestrator
 from neocortex.runtime.orchestration.route_registry import RouteAdapter
+from neocortex.runtime.orchestration.route_registry import builtin_route_registry
 from neocortex.runtime.orchestration.orchestrator import build_normal_inventory_boundary
 from neocortex.runtime.orchestration.run_manifest import RunManifest
 from neocortex.runtime.orchestration.run_status import list_run_status
@@ -174,6 +175,15 @@ def test_begin_operational_run_rejects_live_source(tmp_path: Path) -> None:
                 run_kind="resume",
                 source_run_id=source_run,
             )
+
+
+def test_builtin_routes_declare_replay_capabilities() -> None:
+    registry = builtin_route_registry()
+    assert registry["pdf"].lifecycle_capability == "phase_resume"
+    assert all(
+        registry[name].lifecycle_capability in {"phase_resume", "safe_replay", "not_resumable"}
+        for name in registry
+    )
 
 
 def test_two_recovery_attempts_keep_24_route_inputs_idempotent(tmp_path: Path) -> None:

@@ -645,6 +645,7 @@ class FrameworkState:
             (run_id,),
         ).fetchall()
         candidate_rows, candidate_bytes = self.route_candidate_workload(run_id)
+        route_capabilities = self.read_run_route_capabilities(run_id)
         route_input_sources = self.read_route_input_sources(run_id)
         start_event = self._connection.execute(
             """SELECT details_json FROM run_events
@@ -675,9 +676,14 @@ class FrameworkState:
             str(name)
             for name, status in routes
             if str(status) in {"failed", "cancelled", "interrupted"}
-            and candidate_rows == 0
-            and route_input_sources.get(str(name), "route_candidates")
-            != "inventory_snapshot"
+            and (
+                (
+                    candidate_rows == 0
+                    and route_input_sources.get(str(name), "route_candidates")
+                    != "inventory_snapshot"
+                )
+                or route_capabilities.get(str(name), "safe_replay") == "not_resumable"
+            )
         )
         return {
             "run_id": run_id,
@@ -692,6 +698,7 @@ class FrameworkState:
             "pending": list(pending),
             "non_replayable": list(non_replayable),
             "route_input_sources": route_input_sources,
+            "route_capabilities": route_capabilities,
             "candidate_rows": candidate_rows,
             "candidate_bytes": candidate_bytes,
             "candidates_retained": candidate_rows > 0,
@@ -1760,6 +1767,23 @@ class FrameworkState:
         if not isinstance(payload, dict):
             raise RuntimeError(f"run {run_id} lifecycle manifest is not an object")
         return verify_event_payload(payload)
+
+    def read_run_route_capabilities(self, run_id: int) -> dict[str, str]:
+        """Return the immutable replay capability declared by each route."""
+
+        manifest = self.read_run_manifest(run_id)
+        if manifest is None:
+            return {}
+        value = manifest.get("route_capabilities", {})
+        if not isinstance(value, Mapping):
+            raise RuntimeError(f"run {run_id} route capabilities are invalid")
+        capabilities = {str(name): str(capability) for name, capability in value.items()}
+        if any(
+            capability not in {"phase_resume", "safe_replay", "not_resumable"}
+            for capability in capabilities.values()
+        ):
+            raise RuntimeError(f"run {run_id} route capability is unsupported")
+        return capabilities
 
     def publish_run_stage(
         self,

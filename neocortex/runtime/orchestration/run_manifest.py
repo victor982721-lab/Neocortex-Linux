@@ -113,6 +113,7 @@ class RunManifest:
     configuration: Mapping[str, Any] = field(default_factory=dict)
     budget: Mapping[str, Any] = field(default_factory=dict)
     input_snapshot: Mapping[str, Any] = field(default_factory=dict)
+    route_capabilities: Mapping[str, str] = field(default_factory=dict)
 
     def payload(self) -> dict[str, Any]:
         if self.run_id < 1:
@@ -126,6 +127,15 @@ class RunManifest:
         routes = tuple(sorted({str(route) for route in self.selected_routes}))
         if any(not route or len(route) > 128 for route in routes):
             raise ValueError("manifest route name is empty or too large")
+        capabilities = {
+            route: str(self.route_capabilities.get(route, "not_resumable"))
+            for route in routes
+        }
+        if any(
+            value not in {"phase_resume", "safe_replay", "not_resumable"}
+            for value in capabilities.values()
+        ):
+            raise ValueError("manifest route lifecycle capability is unsupported")
         return {
             "schema": RUN_MANIFEST_SCHEMA,
             "run_id": self.run_id,
@@ -134,6 +144,7 @@ class RunManifest:
             "root": self.root,
             "root_identity": list(self.root_identity),
             "selected_routes": list(routes),
+            "route_capabilities": capabilities,
             "configuration": _bounded_mapping(self.configuration, label="configuration"),
             "budget": _bounded_mapping(self.budget, label="budget"),
             "input_snapshot": _bounded_mapping(self.input_snapshot, label="input_snapshot"),
@@ -181,6 +192,7 @@ def lifecycle_envelope(
     budget: Mapping[str, Any] | None = None,
     recovery: Mapping[str, Any] | None = None,
     stages: tuple[Mapping[str, Any], ...] = (),
+    route_capabilities: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build a bounded read-only envelope shared by status callers."""
 
@@ -198,6 +210,9 @@ def lifecycle_envelope(
         "budget": None if budget is None else dict(budget),
         "recovery": None if recovery is None else dict(recovery),
         "stages": [dict(stage) for stage in stages],
+        "route_capabilities": (
+            None if route_capabilities is None else dict(route_capabilities)
+        ),
         "routes": [dict(route) for route in routes],
         "errors": [dict(error) for error in errors],
     }

@@ -42,6 +42,8 @@ if TYPE_CHECKING:
 
 # region [01] Generic route contracts and selection exports
 
+RouteLifecycleCapability = Literal["phase_resume", "safe_replay", "not_resumable"]
+
 
 @dataclass(frozen=True, slots=True)
 class RouteExecutionContext:
@@ -60,6 +62,15 @@ class RouteAdapter:
     name: str
     execute: Callable[[RouteExecutionContext], object]
     input_source: Literal["route_candidates", "inventory_snapshot"] = "route_candidates"
+    lifecycle_capability: RouteLifecycleCapability = "safe_replay"
+
+    def __post_init__(self) -> None:
+        if self.lifecycle_capability not in {
+            "phase_resume",
+            "safe_replay",
+            "not_resumable",
+        }:
+            raise ValueError(f"unsupported lifecycle capability: {self.lifecycle_capability}")
 
     def summary_mapping(self, summary: object) -> Mapping[str, Any]:
         if is_dataclass(summary) and not isinstance(summary, type):
@@ -473,7 +484,7 @@ def _summary_with_catalog(
 
 def builtin_route_registry() -> dict[str, RouteAdapter]:
     adapters = (
-        RouteAdapter("pdf", _run_pdf),
+        RouteAdapter("pdf", _run_pdf, lifecycle_capability="phase_resume"),
         RouteAdapter("docx", _run_docx),
         RouteAdapter("office", _run_office),
         RouteAdapter("archive", _run_archive),
