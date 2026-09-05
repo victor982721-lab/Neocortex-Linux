@@ -22,6 +22,7 @@ import stat
 import os
 import shutil
 import tempfile
+import threading
 import time
 import math
 from contextlib import contextmanager
@@ -135,8 +136,25 @@ class SQLiteSnapshotReuseCache:
     survives a process or becomes a second durable state store.
     """
 
-    def __init__(self) -> None:
-        self._entries: dict[tuple[str, object, SQLiteImmutableFence], _ReusableSnapshot] = {}
+    def __init__(self, *, max_entries: int = 32) -> None:
+        if type(max_entries) is not int or not 1 <= max_entries <= 256:
+            raise ValueError("max_entries must be between 1 and 256")
+        self._entries: dict[tuple[object, ...], _ReusableSnapshot] = {}
+        self._lock = threading.RLock()
+        self._owner_thread: int | None = None
+        self._max_entries = max_entries
+
+    @staticmethod
+    def _budget_key(budget: SQLiteSnapshotBudget | None) -> object:
+        if budget is None:
+            return None
+        return (
+            budget.max_temporary_bytes,
+            budget.prepare_timeout_seconds,
+            budget.block_bytes,
+            id(budget.cancellation_check),
+            id(budget.monotonic_clock),
+        )
 
     @contextmanager
     def acquire(
@@ -149,33 +167,74 @@ class SQLiteSnapshotReuseCache:
         temp_root: str | Path | None = None,
         budget: SQLiteSnapshotBudget | None = None,
     ) -> Iterator[sqlite3.Connection]:
-        selected = Path(path).absolute()
-        fence = capture_sqlite_read_fence(selected)
-        key = (str(selected), generation, fence)
-        entry = self._entries.get(key)
-        if entry is None:
-            session = SQLiteReadSession(
-                selected,
-                mode=mode,
-                timeout_seconds=timeout_seconds,
-                temp_root=temp_root,
-                budget=budget,
-                generation=generation,
-            )
-            session.open()
-            entry = _ReusableSnapshot(session)
-            self._entries[key] = entry
-        else:
-            entry.session.metrics.reused_views += 1
-        entry.references += 1
         try:
-            yield entry.session.connection
+            hash(generation)
+        except TypeError as exc:
+            raise ValueError("snapshot generation must be hashable") from exc
+        selected = Path(path).absolute()
+        selected_mode = SQLiteReadMode(mode).value
+        selected_temp_root = None if temp_root is None else str(Path(temp_root).absolute())
+        key: tuple[object, ...]
+        with self._lock:
+            current_thread = threading.get_ident()
+            if self._owner_thread is None:
+                self._owner_thread = current_thread
+            elif self._owner_thread != current_thread:
+                raise RuntimeError("SQLite snapshot reuse cache is thread-affine")
+            fence = capture_sqlite_read_fence(selected)
+            key = (
+                str(selected),
+                generation,
+                fence,
+                selected_mode,
+                float(timeout_seconds),
+                selected_temp_root,
+                self._budget_key(budget),
+            )
+            entry = self._entries.get(key)
+            if entry is None:
+                idle = next(
+                    (candidate_key for candidate_key, candidate in self._entries.items() if candidate.references == 0),
+                    None,
+                )
+                if idle is not None and len(self._entries) >= self._max_entries:
+                    old = self._entries.pop(idle)
+                    old.session.close()
+                elif len(self._entries) >= self._max_entries:
+                    raise ImmutableSQLiteUnavailable(
+                        "SQLite snapshot reuse cache capacity is exhausted"
+                    )
+                session = SQLiteReadSession(
+                    selected,
+                    mode=mode,
+                    timeout_seconds=timeout_seconds,
+                    temp_root=temp_root,
+                    budget=budget,
+                    generation=generation,
+                )
+                session.open()
+                entry = _ReusableSnapshot(session)
+                self._entries[key] = entry
+            else:
+                entry.session.metrics.reused_views += 1
+            entry.references += 1
+            connection = entry.session.connection
+        try:
+            yield connection
         finally:
-            entry.references -= 1
+            with self._lock:
+                entry.references -= 1
 
     def close(self) -> None:
         primary: BaseException | None = None
-        for entry in tuple(self._entries.values()):
+        with self._lock:
+            current_thread = threading.get_ident()
+            if self._owner_thread is not None and self._owner_thread != current_thread:
+                raise RuntimeError("SQLite snapshot reuse cache is thread-affine")
+            entries = tuple(self._entries.values())
+            self._entries.clear()
+            self._owner_thread = None
+        for entry in entries:
             try:
                 entry.session.close()
             except BaseException as exc:
@@ -183,7 +242,6 @@ class SQLiteSnapshotReuseCache:
                     primary = exc
                 else:
                     primary.add_note(f"reused SQLite snapshot cleanup failed: {exc}")
-        self._entries.clear()
         if primary is not None:
             raise primary
 
@@ -215,9 +273,14 @@ class _SnapshotBudgetState:
         *,
         metrics: SQLiteSnapshotMetrics,
         temporary_root: Path,
+        deadline: float | None = None,
     ) -> None:
         self.budget = budget
-        self.deadline = budget.monotonic_clock() + budget.prepare_timeout_seconds
+        self.deadline = (
+            budget.monotonic_clock() + budget.prepare_timeout_seconds
+            if deadline is None
+            else deadline
+        )
         self.metrics = metrics
         self.temporary_root = temporary_root
         self._last_tree_bytes = 0
@@ -252,6 +315,8 @@ class _SnapshotBudgetState:
         if self.budget.monotonic_clock() >= self.deadline:
             raise SQLiteSnapshotBudgetExceeded("prepare_time")
         observed = self._tree_bytes()
+        if self.budget.monotonic_clock() >= self.deadline:
+            raise SQLiteSnapshotBudgetExceeded("prepare_time")
         if observed > self.budget.max_temporary_bytes:
             raise SQLiteSnapshotBudgetExceeded("temporary_bytes")
         self._last_tree_bytes = observed
@@ -726,6 +791,7 @@ class SQLiteReadSession:
         self._temporary_directory: tempfile.TemporaryDirectory[str] | None = None
         self._temporary_database: Path | None = None
         self._opened = False
+        self._prepare_deadline: float | None = None
 
     @property
     def connection(self) -> sqlite3.Connection:
@@ -797,6 +863,8 @@ class SQLiteReadSession:
                 raise ImmutableSQLiteUnavailable("SQLite snapshot temp root is not a real directory")
 
         last_error: BaseException | None = None
+        operation_started = self.budget.monotonic_clock()
+        self._prepare_deadline = operation_started + self.budget.prepare_timeout_seconds
         for _attempt in range(self.max_attempts):
             self._metrics.attempts += 1
             attempt_started = self.budget.monotonic_clock()
@@ -813,6 +881,8 @@ class SQLiteReadSession:
                         if callback_result is not None and callback_result is not False:
                             self._metrics.cancelled = True
                             raise SQLiteSnapshotBudgetExceeded("cancelled")
+                    if self.budget.monotonic_clock() >= self._prepare_deadline:
+                        raise SQLiteSnapshotBudgetExceeded("prepare_time")
                     require_inactive_sqlite_sidecars(source_fence)
                     self._connection = open_immutable_sqlite_connection(
                         self.path,
@@ -821,6 +891,12 @@ class SQLiteReadSession:
                             self.budget.prepare_timeout_seconds,
                         ),
                     )
+                    if self.budget.monotonic_clock() >= self._prepare_deadline:
+                        connection = self._connection
+                        self._connection = None
+                        if connection is not None:
+                            connection.close()
+                        raise SQLiteSnapshotBudgetExceeded("prepare_time")
                     return self._connection
 
                 temporary_directory = tempfile.TemporaryDirectory(
@@ -831,6 +907,7 @@ class SQLiteReadSession:
                     self.budget,
                     metrics=self._metrics,
                     temporary_root=Path(temporary_directory.name),
+                    deadline=self._prepare_deadline,
                 )
                 budget_state.checkpoint()
                 temporary_database = Path(temporary_directory.name) / self.path.name
@@ -861,6 +938,7 @@ class SQLiteReadSession:
                         self.budget.prepare_timeout_seconds,
                     ),
                 )
+                budget_state.checkpoint()
                 self._temporary_directory = temporary_directory
                 self._temporary_database = temporary_database
                 return self._connection
@@ -987,7 +1065,19 @@ def open_sidecar_safe_sqlite_connection(
     selected = Path(path)
     mode = preferred_sqlite_read_mode(selected)
     if mode is SQLiteReadMode.IMMUTABLE_STRICT:
-        return open_immutable_sqlite_connection(selected, timeout_seconds=timeout_seconds)
+        # Reuse the same session kernel for strict owners so cancellation and
+        # the preparation deadline cannot be bypassed by the legacy bare-
+        # connection facade.  The fenced connection owns its source fence.
+        session = SQLiteReadSession(
+            selected,
+            mode=SQLiteReadMode.IMMUTABLE_STRICT,
+            timeout_seconds=timeout_seconds,
+            max_attempts=max_attempts,
+            budget=budget,
+            max_temporary_bytes=max_temporary_bytes,
+            cancellation_check=cancellation_check,
+        )
+        return session.open()
     session = SQLiteReadSession(
         selected,
         mode=SQLiteReadMode.SNAPSHOT_TEMP,

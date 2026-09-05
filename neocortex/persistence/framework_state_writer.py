@@ -11,7 +11,7 @@ import os
 import sqlite3
 import stat
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,7 +32,12 @@ from neocortex.workflow.actions.file_action_reconciliation_store import (
 )
 from neocortex.workflow.actions.file_action_recovery import FileActionReconciliation
 from neocortex.persistence.framework_schema import initialize_framework_schema
-from neocortex.persistence.sqlite_immutable import ImmutableSQLiteUnavailable
+from neocortex.persistence.sqlite_immutable import (
+    DEFAULT_SQLITE_SNAPSHOT_MAX_TEMPORARY_BYTES,
+    DEFAULT_SQLITE_SNAPSHOT_PREPARE_TIMEOUT_SECONDS,
+    ImmutableSQLiteUnavailable,
+    SQLiteSnapshotBudget,
+)
 from neocortex.persistence.sqlite_writer_snapshot import writer_coordinated_sqlite_snapshot
 from neocortex.persistence.framework_state_common import (
     CACHE_PRUNE_BATCH_SIZE,
@@ -47,6 +52,7 @@ from neocortex.persistence.sqlite_paths import existing_sqlite_uri
 from neocortex.persistence.framework_connection import connect_existing_framework
 from neocortex.runtime.orchestration.run_manifest import (
     RUN_BUDGET_SCHEMA,
+    RUN_STAGE_SCHEMA,
     RunBudget,
     verify_event_payload,
 )
@@ -290,15 +296,41 @@ class FrameworkState:
     def _initialize(self) -> None:
         initialize_framework_schema(self._connection, self._backfill_route_phases)
 
-    def route_candidate_snapshot(self) -> AbstractContextManager[Path]:
-        """Lend the owned connection to publish one input view before workers."""
+    def route_candidate_snapshot(
+        self,
+        *,
+        run_id: int | None = None,
+        generation: object | None = None,
+        cancellation_check: Callable[[], bool | None] | None = None,
+    ) -> AbstractContextManager[Path]:
+        """Lend the owned connection to publish one input view before workers.
+
+        When a run is supplied, the snapshot deadline is the remaining durable
+        run deadline rather than a fresh independent timeout.  The caller's
+        cancellation token is sampled by the existing snapshot kernel; no
+        second lifecycle store is created.
+        """
 
         if self._connection_owner_identity is None:
             raise ImmutableSQLiteUnavailable("route snapshot requires a durable SQLite owner")
+        budget: SQLiteSnapshotBudget | None = None
+        if run_id is not None:
+            durable = self.read_run_budget(run_id)
+            timeout = DEFAULT_SQLITE_SNAPSHOT_PREPARE_TIMEOUT_SECONDS
+            if durable is not None and durable.get("deadline_ns") is not None:
+                remaining = (int(durable["deadline_ns"]) - time.time_ns()) / 1_000_000_000
+                timeout = max(0.001, min(timeout, remaining))
+            budget = SQLiteSnapshotBudget(
+                max_temporary_bytes=DEFAULT_SQLITE_SNAPSHOT_MAX_TEMPORARY_BYTES,
+                prepare_timeout_seconds=timeout,
+                cancellation_check=cancellation_check,
+            )
         return writer_coordinated_sqlite_snapshot(
             self._connection,
             self.path,
             owner_identity=self._connection_owner_identity,
+            budget=budget,
+            generation=run_id if generation is None else generation,
         )
 
     def _backfill_route_phases(self) -> None:
@@ -613,7 +645,7 @@ class FrameworkState:
             (run_id,),
         ).fetchall()
         candidate_rows, candidate_bytes = self.route_candidate_workload(run_id)
-        route_input_sources: dict[str, str] = {}
+        route_input_sources = self.read_route_input_sources(run_id)
         start_event = self._connection.execute(
             """SELECT details_json FROM run_events
             WHERE run_id=? AND phase='run'
@@ -621,7 +653,7 @@ class FrameworkState:
             ORDER BY event_id DESC LIMIT 1""",
             (run_id,),
         ).fetchone()
-        if start_event is not None and start_event[0] is not None:
+        if not route_input_sources and start_event is not None and start_event[0] is not None:
             try:
                 details = json.loads(str(start_event[0]))
             except (TypeError, json.JSONDecodeError):
@@ -822,6 +854,14 @@ class FrameworkState:
 
         if run_kind not in {"route_only", "resume"}:
             raise ValueError(f"invalid operational run kind: {run_kind}")
+        source_status = self._connection.execute(
+            "SELECT status FROM initial_runs WHERE run_id=?",
+            (source_run_id,),
+        ).fetchone()
+        if source_status is None:
+            raise ValueError(f"source run {source_run_id} does not exist")
+        if str(source_status[0]) == "running":
+            raise ValueError(f"source run {source_run_id} is still running")
         now = time.time_ns()
         with self._connection:
             result = self._connection.execute(
@@ -1721,6 +1761,103 @@ class FrameworkState:
             raise RuntimeError(f"run {run_id} lifecycle manifest is not an object")
         return verify_event_payload(payload)
 
+    def publish_run_stage(
+        self,
+        run_id: int,
+        stage: str,
+        status: str,
+        *,
+        details: Mapping[str, Any] | None = None,
+        idempotency_key: str | None = None,
+    ) -> bool:
+        """Append one bounded lifecycle stage transition idempotently.
+
+        Stages are kept in the Framework owner as metadata only.  A stage may
+        describe work performed by another owner (for example Semantic), but
+        this method never opens or mutates that owner.  The run manifest digest
+        is copied into every event so a reader can reject a stage detached
+        from its immutable input boundary.
+        """
+
+        if not isinstance(stage, str) or not stage or len(stage) > 128:
+            raise ValueError("lifecycle stage must be non-empty and bounded")
+        if not isinstance(status, str) or status not in {
+            "pending",
+            "running",
+            "completed",
+            "partial",
+            "failed",
+            "interrupted",
+            "skipped",
+        }:
+            raise ValueError("unsupported lifecycle stage status")
+        selected_details: dict[str, Any] = {} if details is None else dict(details)
+        encoded = json.dumps(
+            selected_details,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        if len(encoded) > 256 * 1024:
+            raise ValueError("lifecycle stage details exceed the durable limit")
+        key = idempotency_key or f"{stage}:{status}"
+        if not isinstance(key, str) or not key or len(key) > 256:
+            raise ValueError("lifecycle stage idempotency key is invalid")
+        with self._connection:
+            manifest = self.read_run_manifest(run_id)
+            if manifest is None:
+                raise ValueError(f"run {run_id} has no lifecycle manifest")
+            payload = {
+                "schema": RUN_STAGE_SCHEMA,
+                "run_id": run_id,
+                "manifest_digest": manifest["digest"],
+                "stage": stage,
+                "status": status,
+                "details": selected_details,
+            }
+            return self._append_lifecycle_event_once(
+                run_id,
+                level="error" if status == "failed" else "warning" if status in {"partial", "interrupted"} else "info",
+                phase="lifecycle-stage",
+                message="Lifecycle stage transitioned",
+                idempotency_key=key,
+                details=payload,
+            )
+
+    def read_run_stages(self, run_id: int) -> tuple[dict[str, Any], ...]:
+        """Read and validate bounded lifecycle stage events for one run."""
+
+        rows = self._connection.execute(
+            """SELECT event_id,details_json FROM run_events
+            WHERE run_id=? AND phase='lifecycle-stage'
+            AND message='Lifecycle stage transitioned'
+            ORDER BY event_id LIMIT 65""",
+            (run_id,),
+        ).fetchall()
+        if len(rows) > 64:
+            raise RuntimeError(f"run {run_id} has too many lifecycle stages")
+        manifest = self.read_run_manifest(run_id)
+        if manifest is None and rows:
+            raise RuntimeError(f"run {run_id} lifecycle stages have no manifest")
+        result: list[dict[str, Any]] = []
+        for event_id, details_json in rows:
+            try:
+                payload = json.loads(str(details_json))
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise RuntimeError(f"run {run_id} lifecycle stage is malformed") from exc
+            if not isinstance(payload, dict) or payload.get("schema") != RUN_STAGE_SCHEMA:
+                raise RuntimeError(f"run {run_id} lifecycle stage schema is unsupported")
+            if payload.get("run_id") != run_id:
+                raise RuntimeError(f"run {run_id} lifecycle stage has an invalid owner")
+            if manifest is not None and payload.get("manifest_digest") != manifest.get("digest"):
+                raise RuntimeError(f"run {run_id} lifecycle stage is detached from its manifest")
+            if not isinstance(payload.get("details"), dict):
+                raise RuntimeError(f"run {run_id} lifecycle stage details are invalid")
+            payload["event_id"] = int(event_id)
+            result.append(payload)
+        return tuple(result)
+
     def resumable_route_candidate_run_ids(self) -> tuple[int, ...]:
         """Return runs whose route inputs remain needed for recovery/replay."""
 
@@ -1731,9 +1868,21 @@ class FrameworkState:
         ).fetchall()
         return tuple(int(row[0]) for row in rows)
 
-    def begin_route_runs(self, run_id: int, route_names: Iterable[str]) -> None:
+    def begin_route_runs(
+        self,
+        run_id: int,
+        route_names: Iterable[str],
+        *,
+        route_input_sources: Mapping[str, str] | None = None,
+    ) -> None:
         now = time.time_ns()
         routes = tuple(route_names)
+        input_sources = {
+            str(name): str(source)
+            for name, source in (route_input_sources or {}).items()
+        }
+        if input_sources and set(input_sources) != set(routes):
+            raise ValueError("route input sources must cover exactly the selected routes")
         with self._connection:
             source_row = self._connection.execute(
                 """SELECT source_run_id FROM initial_runs
@@ -1751,6 +1900,39 @@ class FrameworkState:
                 ON CONFLICT(run_id,route_name) DO NOTHING""",
                 ((run_id, route_name, now, now, source_run_id) for route_name in routes),
             )
+            if input_sources:
+                self._append_lifecycle_event_once(
+                    run_id,
+                    level="info",
+                    phase="route-inputs",
+                    message="Route input sources bound",
+                    idempotency_key="route-input-sources",
+                    details={
+                        "schema": "neocortex.route-input-sources/v1",
+                        "route_input_sources": input_sources,
+                    },
+                )
+
+    def read_route_input_sources(self, run_id: int) -> dict[str, str]:
+        """Read the immutable route-input map bound before route workers."""
+
+        row = self._connection.execute(
+            """SELECT details_json FROM run_events
+            WHERE run_id=? AND phase='route-inputs'
+            AND message='Route input sources bound'
+            ORDER BY event_id DESC LIMIT 1""",
+            (run_id,),
+        ).fetchone()
+        if row is None or row[0] is None:
+            return {}
+        try:
+            payload = json.loads(str(row[0]))
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"run {run_id} route input sources are malformed") from exc
+        sources = payload.get("route_input_sources") if isinstance(payload, Mapping) else None
+        if not isinstance(sources, Mapping):
+            raise RuntimeError(f"run {run_id} route input sources are invalid")
+        return {str(name): str(source) for name, source in sources.items()}
 
     def begin_route_phase(
         self,
@@ -1910,12 +2092,38 @@ class FrameworkState:
                 WHERE status='running' ORDER BY run_id"""
             ).fetchall()
             active_ids = tuple(int(row[0]) for row in active)
+            status_rows = self._connection.execute(
+                "SELECT run_id,status FROM initial_runs"
+            ).fetchall()
+            run_statuses = {int(row[0]): str(row[1]) for row in status_rows}
+            latest_stage_events: dict[tuple[int, str], Mapping[str, Any]] = {}
+            for stage_row in self._connection.execute(
+                """SELECT run_id,details_json FROM run_events
+                WHERE phase='lifecycle-stage'
+                AND message='Lifecycle stage transitioned'
+                ORDER BY event_id"""
+            ):
+                try:
+                    stage_payload = json.loads(str(stage_row[1]))
+                except (TypeError, json.JSONDecodeError) as exc:
+                    raise RuntimeError("lifecycle stage recovery event is malformed") from exc
+                if isinstance(stage_payload, Mapping):
+                    stage_name = stage_payload.get("stage")
+                    if isinstance(stage_name, str):
+                        latest_stage_events[(int(stage_row[0]), stage_name)] = stage_payload
+            stage_only_ids = {
+                run_id
+                for (run_id, _stage_name), stage_payload in latest_stage_events.items()
+                if stage_payload.get("status") == "running"
+                and run_statuses.get(run_id) not in {None, "running"}
+            }
+            recovery_ids = tuple(sorted(set(active_ids) | stage_only_ids))
             self._connection.execute(
                 """UPDATE route_phase_runs SET status='interrupted',completed_ns=?,
                 heartbeat_ns=?,error_type='InterruptedRun',
                 error_message='framework phase was interrupted'
                 WHERE status='running' AND run_id IN(
-                    SELECT run_id FROM initial_runs WHERE status='running')""",
+                SELECT run_id FROM initial_runs WHERE status='running')""",
                 (time.time_ns(), time.time_ns()),
             )
             self._connection.execute(
@@ -1932,7 +2140,7 @@ class FrameworkState:
                 WHERE status='running'""",
                 (time.time_ns(), time.time_ns()),
             )
-            for active_id in active_ids:
+            for active_id in recovery_ids:
                 route_names = tuple(
                     str(row[0])
                     for row in self._connection.execute(
@@ -1943,7 +2151,7 @@ class FrameworkState:
                     )
                 )
                 candidate_rows, candidate_bytes = self.route_candidate_workload(active_id)
-                route_input_sources: dict[str, str] = {}
+                route_input_sources = self.read_route_input_sources(active_id)
                 start_event = self._connection.execute(
                     """SELECT details_json FROM run_events
                     WHERE run_id=? AND phase='run'
@@ -1951,7 +2159,7 @@ class FrameworkState:
                     ORDER BY event_id DESC LIMIT 1""",
                     (active_id,),
                 ).fetchone()
-                if start_event is not None and start_event[0] is not None:
+                if not route_input_sources and start_event is not None and start_event[0] is not None:
                     try:
                         details = json.loads(str(start_event[0]))
                     except (TypeError, json.JSONDecodeError):
@@ -1964,7 +2172,11 @@ class FrameworkState:
                             for name, source in details["route_input_sources"].items()
                         }
                 budget = self._read_run_budget_locked(active_id)
-                if budget is not None and not budget["cancel_requested"]:
+                if (
+                    active_id in active_ids
+                    and budget is not None
+                    and not budget["cancel_requested"]
+                ):
                     self._connection.execute(
                         """INSERT INTO run_events(
                         run_id,occurred_ns,level,phase,message,details_json)
@@ -2000,7 +2212,38 @@ class FrameworkState:
                         "route_input_sources": route_input_sources,
                     },
                 )
-        return int(result.rowcount)
+                manifest = self.read_run_manifest(active_id)
+                if manifest is not None:
+                    latest_stages: dict[str, dict[str, Any]] = {}
+                    for stage_event in self.read_run_stages(active_id):
+                        latest_stages[str(stage_event["stage"])] = stage_event
+                    for stage_name, stage_event in latest_stages.items():
+                        if stage_event.get("status") != "running":
+                            continue
+                        prior_details = stage_event.get("details")
+                        details = dict(prior_details) if isinstance(prior_details, Mapping) else {}
+                        details.update(
+                            {
+                                "reason": "abrupt_termination",
+                                "previous_status": "running",
+                            }
+                        )
+                        self._append_lifecycle_event_once(
+                            active_id,
+                            level="warning",
+                            phase="lifecycle-stage",
+                            message="Lifecycle stage transitioned",
+                            idempotency_key=f"{stage_name}:abrupt-termination",
+                            details={
+                                "schema": RUN_STAGE_SCHEMA,
+                                "run_id": active_id,
+                                "manifest_digest": manifest["digest"],
+                                "stage": stage_name,
+                                "status": "interrupted",
+                                "details": details,
+                            },
+                        )
+        return int(result.rowcount) + len(stage_only_ids)
 
     def mark_abandoned_actions(self) -> int:
         """Distinguish abandoned intent from a crossed mutation frontier."""

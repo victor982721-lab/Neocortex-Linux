@@ -423,7 +423,10 @@ class FrameworkOrchestrator:
         # start, rather than copying the changing framework for every batch.
         # The context outlives executor.shutdown(wait=True), including failure
         # and cancellation, so no worker can observe an expired snapshot.
-        with state.route_candidate_snapshot() as candidate_database:
+        with state.route_candidate_snapshot(
+            run_id=run_id,
+            cancellation_check=lambda: self._cancellation.is_cancelled,
+        ) as candidate_database:
             return self._run_content_routes_with_snapshot(
                 root=root,
                 state=state,
@@ -500,7 +503,21 @@ class FrameworkOrchestrator:
                     "Coordinador global iniciado",
                     asdict(coordinator.summary()),
                 )
-            state.begin_route_runs(run_id, self.selected_routes)
+            route_input_sources = {
+                name: self.route_registry[name].input_source for name in self.selected_routes
+            }
+            try:
+                state.begin_route_runs(
+                    run_id,
+                    self.selected_routes,
+                    route_input_sources=route_input_sources,
+                )
+            except TypeError as exc:
+                # Small test doubles and legacy state adapters predate the
+                # optional immutable source map; do not hide unrelated errors.
+                if "route_input_sources" not in str(exc):
+                    raise
+                state.begin_route_runs(run_id, self.selected_routes)
 
             inventory_workload: tuple[int, int] | None = None
             if any(
@@ -1687,7 +1704,8 @@ class FrameworkOrchestrator:
         source: _RouteOnlySource,
         run_id: int,
     ) -> None:
-        self._prune_route_only_candidates(state, source, run_id)
+        # Keep the immutable route inputs available for a later recovery.  A
+        # cancelled run has not reached a terminal publication frontier.
         request_cancel = getattr(state, "request_run_cancellation", None)
         if callable(request_cancel):
             request_cancel(run_id, "user")
@@ -1700,7 +1718,8 @@ class FrameworkOrchestrator:
         run_id: int,
         exc: BaseException,
     ) -> None:
-        self._prune_route_only_candidates(state, source, run_id)
+        # Failed route work remains replayable until recovery has either
+        # consumed it successfully or classified it as non-replayable.
         if isinstance(exc, RunBudgetExceeded):
             request_cancel = getattr(state, "request_run_cancellation", None)
             if callable(request_cancel):
@@ -1735,7 +1754,6 @@ class FrameworkOrchestrator:
             self._cancel_route_only_run(state, source, run_id)
             raise
         except RunBudgetExceeded:
-            self._prune_route_only_candidates(state, source, run_id)
             request_cancel = getattr(state, "request_run_cancellation", None)
             if callable(request_cancel):
                 request_cancel(run_id, "budget")

@@ -549,12 +549,87 @@ def _print_semantic_code_link_statuses(
         )
 
 
+def _publication_observation(state_directory: Path) -> dict[str, object]:
+    """Observe the cross-owner gate without opening any owner database."""
+
+    from neocortex.persistence.state_publication import read_state_publication_state
+
+    try:
+        view = read_state_publication_state(state_directory)
+    except BaseException as exc:
+        return {
+            "status": "unavailable",
+            "reason": f"{type(exc).__name__}: {str(exc)[:512]}",
+        }
+    epoch = view.epoch
+    return {
+        "status": view.status,
+        "reason": view.reason,
+        "epoch": epoch.epoch,
+        "event_id": epoch.event_id,
+        "operation": epoch.operation,
+        "owners": list(epoch.owners),
+        "manifest_sha256": epoch.manifest_sha256,
+    }
+
+
+def _integrated_stage_details(
+    args: argparse.Namespace,
+    *,
+    selected_sources: tuple[str, ...],
+    image_available: bool,
+    semantic_exit_code: int | None = None,
+    error: BaseException | None = None,
+) -> dict[str, object]:
+    """Build a bounded link from the Framework run to Semantic owners."""
+
+    from neocortex.semantic.semantic_service import SEMANTIC_DATABASE_NAME
+
+    details: dict[str, object] = {
+        "selected_sources": list(selected_sources[:32]),
+        "image_available": image_available,
+        "semantic_database": str(args.state_directory / SEMANTIC_DATABASE_NAME),
+        "publication": _publication_observation(args.state_directory),
+    }
+    if semantic_exit_code is not None:
+        details["semantic_exit_code"] = semantic_exit_code
+    if error is not None:
+        details["error_type"] = type(error).__name__
+        details["error"] = str(error)[:512]
+    return details
+
+
+def _record_integrated_semantic_stage(
+    args: argparse.Namespace,
+    run_id: int | None,
+    status: str,
+    *,
+    details: dict[str, object],
+    idempotency_key: str,
+) -> None:
+    """Persist Semantic lifecycle metadata in the Framework owner."""
+
+    if run_id is None:
+        return
+    from neocortex.persistence.framework_state_writer import FrameworkState
+
+    with FrameworkState(args.state_directory / "framework.sqlite3", existing_only=True) as state:
+        state.publish_run_stage(
+            run_id,
+            "semantic",
+            status,
+            details=details,
+            idempotency_key=idempotency_key,
+        )
+
+
 def run_integrated_all_semantic_index(
     args: argparse.Namespace,
     *,
     progress: ProgressCallback | None = None,
     result_sink: Callable[[str, object], None] | None = None,
     print_output: bool = True,
+    run_id: int | None = None,
 ) -> int:
     """Advance bounded document and image embeddings after ``--all`` routes.
 
@@ -586,6 +661,17 @@ def run_integrated_all_semantic_index(
         "all" if selected_sources and image_available else "text" if selected_sources else "image"
     )
     if not selected_sources and not image_available:
+        _record_integrated_semantic_stage(
+            args,
+            run_id,
+            "skipped",
+            details=_integrated_stage_details(
+                args,
+                selected_sources=selected_sources,
+                image_available=image_available,
+            ),
+            idempotency_key="semantic:skipped",
+        )
         if print_output:
             print("SEMANTIC_ALL status=skipped reason=no_durable_text_or_image_cache")
         emit_progress(
@@ -601,6 +687,17 @@ def run_integrated_all_semantic_index(
             ),
         )
         return 0
+    _record_integrated_semantic_stage(
+        args,
+        run_id,
+        "running",
+        details=_integrated_stage_details(
+            args,
+            selected_sources=selected_sources,
+            image_available=image_available,
+        ),
+        idempotency_key="semantic:started",
+    )
     if print_output:
         print(
             "SEMANTIC_ALL status=starting "
@@ -632,7 +729,47 @@ def run_integrated_all_semantic_index(
             result_sink=result_sink,
             print_output=print_output,
         )
+        _record_integrated_semantic_stage(
+            args,
+            run_id,
+            "completed" if semantic_exit_code == 0 else "partial",
+            details=_integrated_stage_details(
+                args,
+                selected_sources=selected_sources,
+                image_available=image_available,
+                semantic_exit_code=semantic_exit_code,
+            ),
+            idempotency_key=f"semantic:terminal:{semantic_exit_code}",
+        )
         return semantic_exit_code
+    except KeyboardInterrupt as exc:
+        _record_integrated_semantic_stage(
+            args,
+            run_id,
+            "interrupted",
+            details=_integrated_stage_details(
+                args,
+                selected_sources=selected_sources,
+                image_available=image_available,
+                error=exc,
+            ),
+            idempotency_key="semantic:terminal:interrupted",
+        )
+        raise
+    except BaseException as exc:
+        _record_integrated_semantic_stage(
+            args,
+            run_id,
+            "failed",
+            details=_integrated_stage_details(
+                args,
+                selected_sources=selected_sources,
+                image_available=image_available,
+                error=exc,
+            ),
+            idempotency_key="semantic:terminal:failed",
+        )
+        raise
     finally:
         emit_progress(
             progress,

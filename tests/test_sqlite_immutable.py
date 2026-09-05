@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from contextlib import closing
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from neocortex.persistence.sqlite_immutable import (
     SQLiteSnapshotBudgetExceeded,
     SQLiteSnapshotReuseCache,
     immutable_sqlite_database,
+    open_sidecar_safe_sqlite_connection,
 )
 
 
@@ -137,6 +139,12 @@ def test_snapshot_preparation_cancellation_is_typed_and_bounded(tmp_path: Path) 
             pytest.fail("a cancelled snapshot must not publish")
 
 
+def test_legacy_strict_connection_honors_cancellation(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    with pytest.raises(SQLiteSnapshotBudgetExceeded, match="cancelled"):
+        open_sidecar_safe_sqlite_connection(database, cancellation_check=lambda: True)
+
+
 def test_snapshot_reuse_cache_reuses_one_generation_and_closes_once(tmp_path: Path) -> None:
     database = _database(tmp_path)
     with SQLiteSnapshotReuseCache() as cache:
@@ -149,6 +157,28 @@ def test_snapshot_reuse_cache_reuses_one_generation_and_closes_once(tmp_path: Pa
         entry = next(iter(cache._entries.values()))
         assert entry.session.metrics.reused_views == 1
     assert not first_path.exists()
+
+
+def test_snapshot_reuse_cache_rejects_cross_thread_use(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    cache = SQLiteSnapshotReuseCache()
+    with cache.acquire(database, generation="fixture", temp_root=tmp_path):
+        failures: list[BaseException] = []
+
+        def acquire_from_other_thread() -> None:
+            try:
+                with cache.acquire(database, generation="fixture", temp_root=tmp_path):
+                    pass
+            except BaseException as exc:
+                failures.append(exc)
+
+        thread = threading.Thread(target=acquire_from_other_thread)
+        thread.start()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert len(failures) == 1
+        assert isinstance(failures[0], RuntimeError)
+    cache.close()
 
 
 @pytest.mark.parametrize("journal_mode", ["WAL", "DELETE"])

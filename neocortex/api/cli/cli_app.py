@@ -352,6 +352,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
                         progress=progress,
                         result_sink=lambda scope, value: semantic_results.append((scope, value)),
                         print_output=not professional_output,
+                        run_id=getattr(result, "run_id", None),
                     )
             except KeyboardInterrupt as exc:
                 _emit_unsuccessful_execution(

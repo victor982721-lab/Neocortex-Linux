@@ -405,8 +405,8 @@ def test_locked_route_only_propagates_cancellation_after_cleanup(
         framework._run_route_only_locked(boundary)
     assert raised.value is cancellation
     assert events[-5:] == [
+        "state.event:info:start",
         "routes.execute",
-        "state.prune:84",
         "state.cancel:84",
         "heartbeat.stop",
         "state.exit:KeyboardInterrupt",
@@ -432,9 +432,8 @@ def test_locked_route_only_records_failure_before_marking_run_failed(
     with pytest.raises(RuntimeError) as raised:
         framework._run_route_only_locked(boundary)
     assert raised.value is failure
-    assert events[-6:] == [
+    assert events[-5:] == [
         "routes.execute",
-        "state.prune:84",
         "state.event:error:failure",
         "state.fail:84",
         "heartbeat.stop",

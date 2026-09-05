@@ -55,12 +55,18 @@ def lifecycle_status_payload(
                 "non_replayable": [],
                 "budget": None,
                 "recovery": None,
+                "stages": [],
                 "routes": [],
                 "errors": [],
             },
         }
     statuses = read_run_status(database, limit=limit, run_id=run_id)
     runs = [json.loads(serialized_run_status(status)) for status in statuses]
+    stages = tuple(
+        stage
+        for run in runs
+        for stage in run.get("stages", [])
+    )[-64:]
     return {
         "schema": "neocortex.lifecycle-envelope/v1",
         "kind": "neocortex_lifecycle_status",
@@ -89,6 +95,7 @@ def lifecycle_status_payload(
             "non_replayable": [],
             "budget": None,
             "recovery": None,
+            "stages": list(stages),
             "routes": [],
             "errors": [],
         },

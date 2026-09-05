@@ -12,6 +12,8 @@ import pytest
 from neocortex.persistence import sqlite_writer_snapshot
 from neocortex.persistence.sqlite_immutable import (
     ImmutableSQLiteUnavailable,
+    SQLiteSnapshotBudget,
+    SQLiteSnapshotBudgetExceeded,
     capture_sqlite_read_fence,
     immutable_sqlite_database,
 )
@@ -72,6 +74,21 @@ def test_snapshot_reads_wal_commits_and_opens_no_source_reader(
                 assert _source_bytes(path) == before
                 assert not owner.in_transaction
         assert not snapshot.exists()
+
+
+def test_writer_snapshot_rejects_tiny_budget_before_backup(tmp_path: Path) -> None:
+    path = tmp_path / "framework.sqlite3"
+    with closing(_create_owner(path)) as owner:
+        with pytest.raises(SQLiteSnapshotBudgetExceeded, match="temporary bytes"):
+            with writer_coordinated_sqlite_snapshot(
+                owner,
+                path,
+                owner_identity=_owner_identity(path),
+                temp_root=tmp_path,
+                budget=SQLiteSnapshotBudget(max_temporary_bytes=1),
+            ):
+                pytest.fail("a tiny budget must not publish a snapshot")
+    assert not any(candidate.name.startswith("neocortex-route-snapshot-") for candidate in tmp_path.iterdir())
 
 
 def test_pinned_backup_excludes_concurrent_wal_commits(tmp_path: Path) -> None:

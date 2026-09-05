@@ -108,6 +108,7 @@ def writer_coordinated_sqlite_snapshot(
         budget,
         metrics=metrics,
         temporary_root=directory,
+        deadline=started + budget.prepare_timeout_seconds,
     )
 
     def check_budget(_status: int = 0, _remaining: int = 0, _total: int = 0) -> None:
@@ -144,6 +145,14 @@ def writer_coordinated_sqlite_snapshot(
             check_budget()
             with closing(sqlite3.connect(destination)) as target:
                 target.execute("PRAGMA trusted_schema=OFF")
+                page_size = int(connection.execute("PRAGMA page_size").fetchone()[0])
+                page_count = int(connection.execute("PRAGMA page_count").fetchone()[0])
+                # A DELETE-journal materialization needs room for the target
+                # database and a rollback journal while SQLite is recovering.
+                # Reject before backup so a tiny budget cannot transiently
+                # exceed its bound and only fail after writing the snapshot.
+                required_bytes = (page_size * page_count * 2) + (page_size * 2)
+                budget_state.before_write(required_bytes)
                 connection.backup(
                     target,
                     pages=max(1, budget.block_bytes // 4096),

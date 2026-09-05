@@ -15,6 +15,7 @@ from neocortex.runtime.orchestration.run_lifecycle import (
 )
 from neocortex.runtime.orchestration.run_manifest import (
     RUN_BUDGET_SCHEMA,
+    RUN_STAGE_SCHEMA,
     lifecycle_envelope,
     verify_event_payload,
 )
@@ -66,6 +67,7 @@ class RunStatus:
     replayed: bool = False
     skipped_routes: tuple[str, ...] = ()
     non_replayable_routes: tuple[str, ...] = ()
+    stages: tuple[dict[str, object], ...] = ()
 # endregion [01]
 
 
@@ -140,6 +142,7 @@ def _run_status(
     manifest = _run_manifest(connection, run_id)
     budget = _run_budget(connection, run_id)
     recovery = _run_recovery(connection, run_id)
+    stages = _run_stages(connection, run_id)
     skipped_routes = tuple(
         route.route_name for route in routes if route.status == "completed"
     )
@@ -187,6 +190,7 @@ def _run_status(
         replayed=replayed,
         skipped_routes=skipped_routes,
         non_replayable_routes=non_replayable_routes,
+        stages=stages,
     )
 
 
@@ -334,6 +338,51 @@ def _run_recovery(
     if not isinstance(value, dict):
         raise sqlite3.DatabaseError(f"run {run_id} lifecycle recovery is not an object")
     return value
+
+
+def _run_stages(
+    connection: sqlite3.Connection,
+    run_id: int,
+) -> tuple[dict[str, object], ...]:
+    """Read bounded cross-owner lifecycle stage transitions."""
+
+    table = connection.execute(
+        """SELECT 1 FROM sqlite_master
+        WHERE type='table' AND name='run_events'"""
+    ).fetchone()
+    if table is None:
+        return ()
+    rows = connection.execute(
+        """SELECT event_id,details_json FROM run_events
+        WHERE run_id=? AND phase='lifecycle-stage'
+        AND message='Lifecycle stage transitioned'
+        ORDER BY event_id LIMIT 65""",
+        (run_id,),
+    ).fetchall()
+    if len(rows) > 64:
+        raise sqlite3.DatabaseError(f"run {run_id} has too many lifecycle stages")
+    manifest = _run_manifest(connection, run_id)
+    if manifest is None and rows:
+        raise sqlite3.DatabaseError(f"run {run_id} lifecycle stages have no manifest")
+    stages: list[dict[str, object]] = []
+    for row in rows:
+        try:
+            value = json.loads(str(row["details_json"]))
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise sqlite3.DatabaseError(f"run {run_id} lifecycle stage is invalid") from exc
+        if not isinstance(value, dict) or value.get("schema") != RUN_STAGE_SCHEMA:
+            raise sqlite3.DatabaseError(f"run {run_id} lifecycle stage schema is unsupported")
+        if value.get("run_id") != run_id:
+            raise sqlite3.DatabaseError(f"run {run_id} lifecycle stage owner is invalid")
+        if manifest is not None and value.get("manifest_digest") != manifest.get("digest"):
+            raise sqlite3.DatabaseError(f"run {run_id} lifecycle stage is detached from its manifest")
+        if not isinstance(value.get("stage"), str) or not isinstance(value.get("status"), str):
+            raise sqlite3.DatabaseError(f"run {run_id} lifecycle stage identity is invalid")
+        if not isinstance(value.get("details"), dict):
+            raise sqlite3.DatabaseError(f"run {run_id} lifecycle stage details are invalid")
+        value["event_id"] = int(row["event_id"])
+        stages.append(value)
+    return tuple(stages)
 
 
 def _non_replayable_routes(
@@ -489,6 +538,7 @@ def serialized_run_status(status: RunStatus) -> str:
             "replayed": status.replayed,
             "skipped_routes": list(status.skipped_routes),
             "non_replayable_routes": list(status.non_replayable_routes),
+            "stages": list(status.stages),
             "lifecycle": lifecycle_envelope(
                 manifest=status.manifest,
                 status=status.status,
@@ -515,6 +565,7 @@ def serialized_run_status(status: RunStatus) -> str:
                 non_replayable=status.non_replayable_routes,
                 budget=status.budget,
                 recovery=status.recovery,
+                stages=tuple(status.stages),
             ),
             "routes": [
                 {

@@ -17,6 +17,7 @@ from typing import Any, Mapping
 
 RUN_MANIFEST_SCHEMA = "neocortex.run-manifest/v1"
 RUN_BUDGET_SCHEMA = "neocortex.run-budget/v1"
+RUN_STAGE_SCHEMA = "neocortex.lifecycle-stage/v1"
 
 
 def _canonical_json(value: object) -> str:
@@ -179,6 +180,7 @@ def lifecycle_envelope(
     non_replayable: tuple[str, ...] = (),
     budget: Mapping[str, Any] | None = None,
     recovery: Mapping[str, Any] | None = None,
+    stages: tuple[Mapping[str, Any], ...] = (),
 ) -> dict[str, Any]:
     """Build a bounded read-only envelope shared by status callers."""
 
@@ -195,6 +197,7 @@ def lifecycle_envelope(
         "non_replayable": list(non_replayable),
         "budget": None if budget is None else dict(budget),
         "recovery": None if recovery is None else dict(recovery),
+        "stages": [dict(stage) for stage in stages],
         "routes": [dict(route) for route in routes],
         "errors": [dict(error) for error in errors],
     }
@@ -203,6 +206,7 @@ def lifecycle_envelope(
 __all__ = [
     "RUN_BUDGET_SCHEMA",
     "RUN_MANIFEST_SCHEMA",
+    "RUN_STAGE_SCHEMA",
     "RunBudget",
     "RunManifest",
     "lifecycle_envelope",
