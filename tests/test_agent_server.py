@@ -216,6 +216,7 @@ def test_agent_server_exposes_read_and_human_gated_curation_tools() -> None:
 
     assert names == {
         "status",
+        "lifecycle_status",
         "search",
         "context",
         "evidence",
@@ -676,6 +677,7 @@ def test_public_stdio_server_completes_a_real_read_only_protocol_exchange(
         tools = listed["result"]["tools"]
         assert {tool["name"] for tool in tools} == {
             "status",
+            "lifecycle_status",
             "search",
             "context",
             "evidence",
