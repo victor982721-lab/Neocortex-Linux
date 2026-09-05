@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -45,6 +46,13 @@ def test_route_failure_is_fatal_without_reinterpreting_all(
     assert "route_execution_failed status=failed completion=incomplete" in output.err
     assert "route=audio error_type=RuntimeError: audio requires the faster-whisper" in output.err
     assert "route=video error_type=ValueError: bounded FFmpeg processing failed" in output.err
+    terminal_line = next(
+        line for line in output.err.splitlines() if line.startswith("NEOCORTEX_PROGRESS ")
+    )
+    terminal = json.loads(terminal_line.removeprefix("NEOCORTEX_PROGRESS "))
+    assert terminal["metrics"]["status"] == "failed"
+    assert terminal["metrics"]["errors"] == 2
+    assert "--status --status-json" in output.err
     assert "Traceback" not in output.err
     assert output.out == ""
     assert not state.exists()
@@ -65,10 +73,20 @@ def test_route_failure_messages_are_bounded_single_line_terminal_text(
 
     assert cli_app.main(["--route", "audio", "--state-directory", str(tmp_path / "state")]) == 2
     output = capsys.readouterr()
-    assert len(output.err.splitlines()) == 2
+    diagnostic_lines = [
+        line for line in output.err.splitlines() if not line.startswith("NEOCORTEX_PROGRESS ")
+    ]
+    assert len(diagnostic_lines) == 3
     assert "\x1b" not in output.err
     assert "missing backend " in output.err
-    assert len(output.err) < 1900
+    assert len("\n".join(diagnostic_lines)) < 1200
+    terminal_line = next(
+        line for line in output.err.splitlines() if line.startswith("NEOCORTEX_PROGRESS ")
+    )
+    terminal = json.loads(terminal_line.removeprefix("NEOCORTEX_PROGRESS "))
+    assert len(terminal["metrics"]["cause"]) <= 512
+    assert "\x1b" not in terminal["metrics"]["cause"]
+    assert "\n" not in terminal["metrics"]["cause"]
     assert output.out == ""
 
 

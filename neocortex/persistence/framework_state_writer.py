@@ -9,8 +9,10 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import stat
 import time
 from collections.abc import Iterable, Mapping
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -30,6 +32,8 @@ from neocortex.workflow.actions.file_action_reconciliation_store import (
 )
 from neocortex.workflow.actions.file_action_recovery import FileActionReconciliation
 from neocortex.persistence.framework_schema import initialize_framework_schema
+from neocortex.persistence.sqlite_immutable import ImmutableSQLiteUnavailable
+from neocortex.persistence.sqlite_writer_snapshot import writer_coordinated_sqlite_snapshot
 from neocortex.persistence.framework_state_common import (
     CACHE_PRUNE_BATCH_SIZE,
     FileActionSpec,
@@ -196,6 +200,48 @@ def read_latest_durable_inventory_owner(
     )
 
 
+def _acquire_framework_writer(
+    path: Path, *, existing_only: bool
+) -> tuple[sqlite3.Connection, tuple[int, int] | None]:
+    """Bind SQLite acquisition to an existing or exclusively created inode."""
+
+    if str(path) == ":memory:" and not existing_only:
+        return sqlite3.connect(path, timeout=60), None
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    try:
+        try:
+            descriptor = os.open(path, flags)
+        except FileNotFoundError:
+            if existing_only:
+                raise
+            descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o666)
+    except OSError as exc:
+        raise sqlite3.OperationalError(f"unable to open database file: {path}") from exc
+    connection: sqlite3.Connection | None = None
+    try:
+        owner = os.fstat(descriptor)
+        if not stat.S_ISREG(owner.st_mode):
+            raise ImmutableSQLiteUnavailable("framework SQLite owner is not a regular file")
+        target = existing_sqlite_uri(path) if existing_only else path
+        connection = sqlite3.connect(target, uri=existing_only, timeout=60)
+        current = path.lstat()
+        # No initialization writes have occurred yet. Compare the full file
+        # metadata (except atime) against the descriptor held across connect.
+        keys = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if any(getattr(current, key) != getattr(owner, key) for key in keys):
+            raise ImmutableSQLiteUnavailable("framework SQLite owner changed during connection acquisition")
+        return connection, (owner.st_dev, owner.st_ino)
+    except BaseException as exc:
+        if connection is not None:
+            try:
+                connection.close()
+            except sqlite3.Error as cleanup:
+                exc.add_note(f"framework SQLite acquisition cleanup failed: {cleanup}")
+        raise
+    finally:
+        os.close(descriptor)
+
+
 class FrameworkState:
     """Own the long-lived writer connection for one orchestration run."""
 
@@ -206,11 +252,8 @@ class FrameworkState:
         existing_only: bool = False,
     ):
         self.path = Path(database)
-        target = existing_sqlite_uri(self.path) if existing_only else self.path
-        self._connection = sqlite3.connect(
-            target,
-            uri=existing_only,
-            timeout=60,
+        self._connection, self._connection_owner_identity = _acquire_framework_writer(
+            self.path, existing_only=existing_only
         )
         try:
             self._connection.execute("PRAGMA busy_timeout=60000")
@@ -218,12 +261,30 @@ class FrameworkState:
             if int(self._connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
                 raise RuntimeError("framework state could not enable foreign keys")
             self._initialize()
+            if self._connection_owner_identity is not None:
+                owner = self.path.lstat()
+                if (
+                    not stat.S_ISREG(owner.st_mode)
+                    or (owner.st_dev, owner.st_ino) != self._connection_owner_identity
+                ):
+                    raise ImmutableSQLiteUnavailable("framework SQLite owner changed during initialization")
         except BaseException:
             self._connection.close()
             raise
 
     def _initialize(self) -> None:
         initialize_framework_schema(self._connection, self._backfill_route_phases)
+
+    def route_candidate_snapshot(self) -> AbstractContextManager[Path]:
+        """Lend the owned connection to publish one input view before workers."""
+
+        if self._connection_owner_identity is None:
+            raise ImmutableSQLiteUnavailable("route snapshot requires a durable SQLite owner")
+        return writer_coordinated_sqlite_snapshot(
+            self._connection,
+            self.path,
+            owner_identity=self._connection_owner_identity,
+        )
 
     def _backfill_route_phases(self) -> None:
         """Preserve resumability for phase events written before schema 13."""

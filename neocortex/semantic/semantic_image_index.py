@@ -19,6 +19,7 @@ from .semantic_config import (
 from .semantic_generation_worker import GenerationRunner
 from .semantic_generation_repository import (
     find_exact_published_generation,
+    invalidate_embedding_generations_for_source_change,
     merge_source_head_ledger,
     published_source_head_ledger,
 )
@@ -51,6 +52,7 @@ from .semantic_sources import (
     SEMANTIC_SOURCE_HEAD_PROTOCOL,
     ImageSourceRecord,
     semantic_source_heads,
+    require_readable_source_heads,
 )
 from .semantic_state import (
     deactivate_text_chunks_for_item,
@@ -658,6 +660,7 @@ def index_image_embeddings(
         "channel": "image-vector",
         "source_kinds": ["image"],
         "pipeline": SEMANTIC_PIPELINE_VERSION,
+        "embed_ocr_text": embed_ocr_text,
         "source_heads": source_head_payload,
     }
     ocr_scope = "text:image-ocr"
@@ -723,6 +726,7 @@ def index_image_embeddings(
             source_head_payload = [head.as_payload() for head in source_heads]
             image_entry["source_heads"] = source_head_payload
             ocr_entry["source_heads"] = source_head_payload
+    require_readable_source_heads(source_heads)
     image_ledger = merge_source_head_ledger(
         published_source_head_ledger(
             database,
@@ -774,7 +778,15 @@ def index_image_embeddings(
         progress=progress,
     )
     confirmed_heads = semantic_source_heads(state_directory, (IMAGE_SOURCE_KIND,))
-    if all(head.complete for head in source_heads) and confirmed_heads != source_heads:
+    if confirmed_heads != source_heads:
+        invalidate_embedding_generations_for_source_change(
+            setup.database,
+            (setup.image_generation_id,)
+            if setup.ocr_generation_id is None
+            else (setup.image_generation_id, setup.ocr_generation_id),
+            expected_source_heads=source_head_payload,
+            observed_source_heads=[head.as_payload() for head in confirmed_heads],
+        )
         raise RuntimeError("semantic source heads changed during image enumeration")
     generation_results = _run_image_generations(
         setup,

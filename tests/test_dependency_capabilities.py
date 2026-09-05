@@ -121,9 +121,9 @@ def test_project_metadata_separates_canonical_runtime_and_extras() -> None:
     assert project["license"] == "LicenseRef-Proprietary"
     assert "Private :: Do Not Upload" in project["classifiers"]
     assert project["urls"] == {
-        "Homepage": "https://github.com/victor982721-lab/Neocortex",
-        "Repository": "https://github.com/victor982721-lab/Neocortex.git",
-        "Issues": "https://github.com/victor982721-lab/Neocortex/issues",
+        "Homepage": "https://github.com/victor982721-lab/Neocortex-Linux",
+        "Repository": "https://github.com/victor982721-lab/Neocortex-Linux.git",
+        "Issues": "https://github.com/victor982721-lab/Neocortex-Linux/issues",
     }
     extras = project["optional-dependencies"]
     assert tuple(extras) == (*OPTIONAL_DEPENDENCIES, "dev")

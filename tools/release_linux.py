@@ -567,10 +567,18 @@ def _ensure_directory(path: Path, *, mode: int = 0o700) -> None:
         if parent == cursor:
             break
         cursor = parent
-    if os.path.lexists(cursor):
-        metadata = os.lstat(cursor)
-        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-            raise LinuxReleaseError(f"release path component is not a real directory: {cursor}")
+    # Inspect every existing prefix before the first mkdir/chmod.  Checking
+    # only the nearest existing directory would accept alias/existing/new
+    # when alias is a symlink, and create new before a later corpus check fails.
+    while True:
+        if os.path.lexists(cursor):
+            metadata = os.lstat(cursor)
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                raise LinuxReleaseError(f"release path component is not a real directory: {cursor}")
+        parent = cursor.parent
+        if parent == cursor:
+            break
+        cursor = parent
     for directory in reversed(missing):
         try:
             directory.mkdir(mode=mode)
@@ -1819,7 +1827,13 @@ def _launcher_payload(
         "unset PYTHONPATH PYTHONHOME PYTHONUSERBASE PIP_CONFIG_FILE "
         "PIP_INDEX_URL PIP_EXTRA_INDEX_URL PIP_FIND_LINKS PIP_NO_INDEX\n"
         "export PYTHONDONTWRITEBYTECODE=1\n"
-        f"export NEOCORTEX_CORPUS_ROOT={shlex.quote(str(corpus_root))}\n"
+        # Persist the operational default, not a verification fixture.  A
+        # process-local override is intentional and must survive this wrapper
+        # so that public-command checks never need to reconfigure the install.
+        'if [ -z "${NEOCORTEX_CORPUS_ROOT:-}" ]; then\n'
+        f"    NEOCORTEX_CORPUS_ROOT={shlex.quote(str(corpus_root))}\n"
+        "fi\n"
+        "export NEOCORTEX_CORPUS_ROOT\n"
         f"{exports}"
         f'exec {shlex.quote(str(current_release / "bin" / "Neocortex"))} "$@"\n'
     ).encode("utf-8")
@@ -2155,6 +2169,8 @@ def _manifest_runtime_dependency_lock(
 def _require_corpus_root(corpus_root: Path) -> None:
     """Require one existing non-symlink corpus directory without modifying it."""
 
+    if not corpus_root.is_absolute() or ".." in corpus_root.parts:
+        raise LinuxReleaseError("corpus root must be an unambiguous absolute path")
     try:
         metadata = corpus_root.lstat()
     except OSError as exc:
@@ -2173,6 +2189,8 @@ def _require_corpus_root(corpus_root: Path) -> None:
 def _prepare_corpus_root(corpus_root: Path) -> bool:
     """Create the selected corpus root and reject non-directory endpoints."""
 
+    if not corpus_root.is_absolute() or ".." in corpus_root.parts:
+        raise LinuxReleaseError("corpus root must be an unambiguous absolute path")
     existed = os.path.lexists(corpus_root)
     if existed:
         _require_corpus_root(corpus_root)
@@ -2216,7 +2234,7 @@ def _validate_layout(layout: LinuxReleaseLayout) -> None:
 def install_release(
     layout: LinuxReleaseLayout,
     *,
-    corpus_root: Path,
+    corpus_root: Path | None = None,
     prepare_models: bool,
     desktop: bool,
     wheelhouse: Path | None = None,
@@ -2225,10 +2243,15 @@ def install_release(
     _require_reference_platform()
     wheelhouse = _resolve_wheelhouse(wheelhouse)
     _validate_layout(layout)
-    corpus_root = corpus_root.expanduser()
-    if not corpus_root.is_absolute():
-        raise LinuxReleaseError("corpus root must be absolute")
-    with _release_lock(layout):
+    corpus_root_source = "platform_default" if corpus_root is None else "explicit_install"
+    corpus_root = (layout.policy.corpus_root if corpus_root is None else corpus_root).expanduser()
+    if not corpus_root.is_absolute() or ".." in corpus_root.parts:
+        raise LinuxReleaseError("corpus root must be an unambiguous absolute path")
+    with (
+        _release_lock(layout),
+        tempfile.TemporaryDirectory(prefix="neocortex-release-smoke-") as smoke_directory,
+    ):
+        smoke_corpus_root = Path(smoke_directory)
         _reap_staging(layout)
         corpus_root_created = _prepare_corpus_root(corpus_root)
         source_sha = _source_sha(layout.source_root, runner)
@@ -2247,6 +2270,8 @@ def install_release(
             if not manifest_path.is_file():
                 # A process killed before publication may leave an old partial
                 # slot.  It is safe to recover only this exact generated name.
+                if previous is not None and final_release.resolve(strict=False) == previous:
+                    raise LinuxReleaseError("active release manifest is unavailable; refusing rebuild")
                 _remove_incomplete_release(final_release)
                 release_exists = False
         if release_exists:
@@ -2260,7 +2285,7 @@ def install_release(
                 candidate_versions = _verify_python_release(
                     final_release,
                     layout,
-                    corpus_root,
+                    smoke_corpus_root,
                     runtime_lock=runtime_lock,
                     runner=runner,
                 )
@@ -2276,7 +2301,7 @@ def install_release(
                     raise
                 _remove_incomplete_release(final_release)
                 release_exists = False
-        else:
+        if not release_exists:
             with tempfile.TemporaryDirectory(prefix=f"{name}-", dir=layout.staging) as temporary:
                 workspace = Path(temporary)
                 _write_staging_marker(workspace, release_name=name)
@@ -2312,7 +2337,7 @@ def install_release(
                 candidate_versions = _verify_python_release(
                     candidate_root,
                     layout,
-                    corpus_root,
+                    smoke_corpus_root,
                     runtime_lock=runtime_lock,
                     runner=runner,
                 )
@@ -2353,7 +2378,7 @@ def install_release(
             "release_manifest_sha256": _sha256_file(final_release / RELEASE_MANIFEST_NAME),
         }
 
-        environment = _candidate_environment(layout, corpus_root)
+        environment = _candidate_environment(layout, smoke_corpus_root)
         if prepare_models:
             runner(
                 (_venv_command(final_release), "models", "prepare", "--json"),
@@ -2407,6 +2432,7 @@ def install_release(
                 "previous_release": None if rollback is None else str(rollback),
                 "current_link": str(layout.current),
                 "corpus_root": str(corpus_root),
+                "corpus_root_source": corpus_root_source,
                 "corpus_root_created": corpus_root_created,
                 "models_prepared": prepare_models,
                 "desktop_published": desktop,
@@ -2483,6 +2509,8 @@ def _receipt_artifact_hash(receipt: dict[str, object], name: str) -> str | None:
 def _verify_release_unlocked(
     layout: LinuxReleaseLayout,
     *,
+    smoke_corpus_root: Path,
+    expected_corpus_root: Path | None = None,
     runner: CommandRunner = _run,
 ) -> dict[str, object]:
     _require_reference_platform()
@@ -2493,9 +2521,13 @@ def _verify_release_unlocked(
     receipt = _latest_receipt(layout)
     if receipt is None:
         raise LinuxReleaseError("no valid installation receipt")
+    if receipt.get("release_id") != current.name or receipt.get("release_path") != str(current):
+        raise LinuxReleaseError("installation receipt does not identify the active release")
     _validate_retention_receipt(layout, current=current, receipt=receipt)
     corpus_root = Path(str(receipt.get("corpus_root", layout.policy.corpus_root)))
     _require_corpus_root(corpus_root)
+    if expected_corpus_root is not None and corpus_root != expected_corpus_root.expanduser():
+        raise LinuxReleaseError("installed corpus root differs from the requested operational root")
     source_sha = receipt.get("source_sha")
     if source_sha == "rollback":
         try:
@@ -2519,15 +2551,35 @@ def _verify_release_unlocked(
         release_name=current.name,
         source_sha=source_sha,
     )
+    # Check the wrapper before executing it.  A receipt hash alone can bless an
+    # obsolete wrapper that hard-codes a smoke fixture and discards overrides.
+    if not layout.alias.is_symlink() or layout.alias.resolve(strict=True) != layout.launcher:
+        raise LinuxReleaseError("user alias does not resolve to the stable launcher")
+    try:
+        launcher_payload = layout.launcher.read_bytes()
+    except OSError as exc:
+        raise LinuxReleaseError("stable launcher is unavailable") from exc
+    expected_launcher = _launcher_payload(
+        corpus_root,
+        current,
+        config_home=layout.policy.config_directory.parent,
+        state_home=layout.policy.state_directory.parents[1],
+        data_home=layout.policy.data_directory.parent,
+    )
+    if launcher_payload != expected_launcher:
+        raise LinuxReleaseError("stable launcher differs from its corpus/runtime configuration")
+    expected_launcher_hash = _receipt_artifact_hash(receipt, "launcher_sha256")
+    if expected_launcher_hash is not None and _sha256_file(layout.launcher) != expected_launcher_hash:
+        raise LinuxReleaseError("stable launcher differs from its installation receipt")
     runtime_lock = _manifest_runtime_dependency_lock(current, manifest)
     versions = _verify_python_release(
         current,
         layout,
-        corpus_root,
+        smoke_corpus_root,
         runtime_lock=runtime_lock,
         runner=runner,
     )
-    environment = _candidate_environment(layout, corpus_root)
+    environment = _candidate_environment(layout, smoke_corpus_root)
     capability = runner(
         (layout.launcher, "doctor", "capabilities", "--json"),
         timeout=300,
@@ -2553,6 +2605,12 @@ def _verify_release_unlocked(
     if bool(receipt.get("models_prepared")) and model_report.returncode != 0:
         raise LinuxReleaseError("prepared model status is incomplete")
     platform_payload = _decode_json_object(platform_report, label="platform status")
+    effective_paths = platform_payload.get("effective_paths")
+    if effective_paths is not None and (
+        not isinstance(effective_paths, dict)
+        or effective_paths.get("corpus") != str(smoke_corpus_root)
+    ):
+        raise LinuxReleaseError("public launcher did not preserve the isolated verification corpus")
     models_payload = _decode_json_object(
         model_report,
         label="model status",
@@ -2575,18 +2633,6 @@ def _verify_release_unlocked(
     languages = frozenset(line.strip() for line in tesseract.stdout.splitlines()[1:])
     if not {"spa", "eng"} <= languages:
         raise LinuxReleaseError("Tesseract must expose spa and eng language data")
-    if not layout.alias.is_symlink() or layout.alias.resolve(strict=True) != layout.launcher:
-        raise LinuxReleaseError("user alias does not resolve to the stable launcher")
-    try:
-        launcher_text = layout.launcher.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        raise LinuxReleaseError("stable launcher is unavailable") from exc
-    expected_exec = f'exec {shlex.quote(str(current / "bin" / "Neocortex"))} "$@"'
-    if expected_exec not in launcher_text:
-        raise LinuxReleaseError("stable launcher does not target the active release")
-    expected_launcher_hash = _receipt_artifact_hash(receipt, "launcher_sha256")
-    if expected_launcher_hash is not None and _sha256_file(layout.launcher) != expected_launcher_hash:
-        raise LinuxReleaseError("stable launcher differs from its installation receipt")
     if bool(receipt.get("desktop_published")):
         runner(("desktop-file-validate", layout.desktop), timeout=60)
     return {
@@ -2596,6 +2642,10 @@ def _verify_release_unlocked(
         "release_id": current.name,
         "release_path": str(current),
         "receipt_path": receipt.get("_path"),
+        "corpus_root": str(corpus_root),
+        "corpus_root_source": receipt.get("corpus_root_source", "legacy_receipt"),
+        "verification_corpus_policy": "ephemeral_empty_v1",
+        "verification_effective_corpus_checked": effective_paths is not None,
         "runtime_profile": manifest.get("runtime_profile", "legacy-qa-bundle"),
         "pip": versions["pip"],
         "qpdf": qpdf,
@@ -2619,14 +2669,23 @@ def _require_clean_staging(layout: LinuxReleaseLayout) -> None:
 def verify_release(
     layout: LinuxReleaseLayout,
     *,
+    expected_corpus_root: Path | None = None,
     runner: CommandRunner = _run,
 ) -> dict[str, object]:
     """Verify one stable generation while holding the release activation lock."""
 
     _validate_layout(layout)
-    with _release_lock(layout):
+    with (
+        _release_lock(layout),
+        tempfile.TemporaryDirectory(prefix="neocortex-release-smoke-") as smoke_directory,
+    ):
         _require_clean_staging(layout)
-        return _verify_release_unlocked(layout, runner=runner)
+        return _verify_release_unlocked(
+            layout,
+            smoke_corpus_root=Path(smoke_directory),
+            expected_corpus_root=expected_corpus_root,
+            runner=runner,
+        )
 
 
 def rollback_release(
@@ -2716,6 +2775,11 @@ def rollback_release(
                 "previous_release": str(current),
                 "current_link": str(layout.current),
                 "corpus_root": str(corpus_root),
+                "corpus_root_source": (
+                    latest.get("corpus_root_source", "legacy_receipt")
+                    if latest is not None
+                    else "platform_default"
+                ),
                 "models_prepared": False,
                 "desktop_published": desktop_published,
                 "retention_policy": "current_and_immediate_rollback_v1",
@@ -2755,7 +2819,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subcommands = parser.add_subparsers(dest="command", required=True)
     install = subcommands.add_parser("install")
-    install.add_argument("--corpus-root", type=Path, required=True)
+    install.add_argument(
+        "--corpus-root",
+        type=Path,
+        help=(
+            "persist this operational corpus default; otherwise use the XDG Documents "
+            "NeoCortex/Corpus directory (verification always uses an isolated empty corpus)"
+        ),
+    )
     install.add_argument(
         "--wheelhouse",
         type=Path,
@@ -2766,7 +2837,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     install.add_argument("--prepare-models", action="store_true")
     install.add_argument("--desktop", action="store_true")
-    subcommands.add_parser("verify")
+    verify = subcommands.add_parser("verify")
+    verify.add_argument(
+        "--corpus-root",
+        type=Path,
+        dest="expected_corpus_root",
+        help="require this installed operational corpus default without reconfiguring it",
+    )
     rollback = subcommands.add_parser("rollback")
     rollback.add_argument("--release")
     return parser
@@ -2785,7 +2862,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 wheelhouse=args.wheelhouse,
             )
         elif args.command == "verify":
-            report = verify_release(layout)
+            report = verify_release(layout, expected_corpus_root=args.expected_corpus_root)
         else:
             report = rollback_release(layout, target_release=args.release)
     except (LinuxReleaseError, OSError, subprocess.SubprocessError) as exc:

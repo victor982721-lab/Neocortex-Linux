@@ -12,6 +12,9 @@ import tomllib
 from pathlib import Path
 from unittest.mock import patch
 
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
+
 import neocortex
 from neocortex.interface.entrypoint import entrypoint
 # endregion [01]
@@ -48,8 +51,38 @@ def test_project_metadata_uses_package_version_and_installed_command() -> None:
     assert "Operating System :: POSIX :: Linux" in metadata["project"]["classifiers"]
     assert not any("Windows" in classifier for classifier in metadata["project"]["classifiers"])
     assert metadata["project"]["scripts"]["Neocortex"] == ("neocortex.interface.entrypoint:entrypoint")
+    repository = "https://github.com/victor982721-lab/Neocortex-Linux"
+    assert metadata["project"]["urls"] == {
+        "Homepage": repository,
+        "Repository": f"{repository}.git",
+        "Issues": f"{repository}/issues",
+    }
     assert metadata["tool"]["setuptools"]["dynamic"]["version"] == {"attr": "neocortex.__version__"}
     assert neocortex.__version__ == "0.12.0"
+
+
+def test_linux_release_direct_pins_satisfy_current_product_metadata() -> None:
+    root = Path(__file__).resolve().parents[1]
+    metadata = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    requirements = [
+        *metadata["project"]["dependencies"],
+        *metadata["project"]["optional-dependencies"]["full"],
+        *metadata["build-system"]["requires"],
+    ]
+    for filename in ("constraints.txt", "constraints-linux-cp314.lock"):
+        pins = {}
+        for line in (root / filename).read_text(encoding="utf-8").splitlines():
+            if not line.strip() or line.startswith("#"):
+                continue
+            requirement = Requirement(line)
+            pin = tuple(requirement.specifier)
+            assert len(pin) == 1 and pin[0].operator == "=="
+            name = canonicalize_name(requirement.name)
+            assert name not in pins
+            pins[name] = pin[0].version
+        for raw in requirements:
+            requirement = Requirement(raw)
+            assert pins[canonicalize_name(requirement.name)] in requirement.specifier
 
 
 def test_source_manifest_excludes_release_internal_material() -> None:

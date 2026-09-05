@@ -60,6 +60,58 @@ def run_framework(args: argparse.Namespace, *, progress=None):
         return _run_framework_with_progress(args, progress)
 
 
+def _emit_unsuccessful_execution(
+    progress,
+    failure: BaseException,
+    *,
+    error_code: str,
+    errors: int = 1,
+    cancelled: bool = False,
+    failed_routes: Sequence[str] = (),
+) -> None:
+    """Terminate the CLI run, not a successful subphase, before its reporter closes."""
+
+    from neocortex.api.read_contract import sanitize_untrusted_text
+    from neocortex.progress import ProgressEvent, ProgressMetric
+
+    progress(
+        ProgressEvent(
+            "framework",
+            "result",
+            "Ejecución cancelada" if cancelled else "Ejecución fallida — resultado incompleto",
+            0,
+            None,
+            "ejecución",
+            True,
+            (
+                ProgressMetric("status", "cancelled" if cancelled else "failed"),
+                ProgressMetric("completion", "incomplete"),
+                ProgressMetric("exit_code", 130 if cancelled else 2),
+                ProgressMetric("error_code", error_code),
+                ProgressMetric(
+                    "error_type", sanitize_untrusted_text(type(failure).__name__, limit=128)
+                ),
+                ProgressMetric("cause", sanitize_untrusted_text(failure, limit=512)),
+                ProgressMetric("errors", errors),
+                ProgressMetric(
+                    "failed_routes",
+                    sanitize_untrusted_text(",".join(sorted(failed_routes)), limit=512),
+                ),
+            ),
+        )
+    )
+
+
+_ROUTE_FAILURE_NEXT_STEP = (
+    "Siguiente paso: consulte --status --status-json con el mismo --state-directory "
+    "y resuelva las causas indicadas antes de reanudar la ejecución."
+)
+_SQLITE_FAILURE_NEXT_STEP = (
+    "Siguiente paso: cuando no haya escritores activos, consulte --status --status-json "
+    "con el mismo --state-directory y revise la lectura estable de SQLite antes de reintentar; "
+    "no borre WAL/SHM."
+)
+
 
 
 
@@ -264,7 +316,9 @@ def main(arguments: Sequence[str] | None = None) -> int:
 
     from neocortex.progress import LineProgress, RichProgress
     from rich.console import Console
+    from neocortex.api.read_contract import sanitize_untrusted_text
     from neocortex.deduplication import InventoryError
+    from neocortex.persistence.sqlite_immutable import ImmutableSQLiteUnavailable
     from neocortex.runtime.orchestration.orchestrator import RouteExecutionError
 
     from .cli_reporting import (
@@ -283,27 +337,59 @@ def main(arguments: Sequence[str] | None = None) -> int:
             LineProgress() if os.environ.get("NEOCORTEX_PROGRESS_STREAM") == "1" else RichProgress()
         )
         with reporter as progress:
-            result = run_framework(args, progress=progress)
-            actions = getattr(result, "actions", None)
-            framework_failed = bool(
-                (actions is not None and actions.errors) or has_organization_errors(result)
-            )
-            if args.all and not framework_failed:
-                from .cli_semantic import run_integrated_all_semantic_index
-
-                semantic_attempted = True
-                semantic_exit_code = run_integrated_all_semantic_index(
-                    args,
-                    progress=progress,
-                    result_sink=lambda scope, value: semantic_results.append((scope, value)),
-                    print_output=not professional_output,
+            try:
+                result = run_framework(args, progress=progress)
+                actions = getattr(result, "actions", None)
+                framework_failed = bool(
+                    (actions is not None and actions.errors) or has_organization_errors(result)
                 )
+                if args.all and not framework_failed:
+                    from .cli_semantic import run_integrated_all_semantic_index
+
+                    semantic_attempted = True
+                    semantic_exit_code = run_integrated_all_semantic_index(
+                        args,
+                        progress=progress,
+                        result_sink=lambda scope, value: semantic_results.append((scope, value)),
+                        print_output=not professional_output,
+                    )
+            except KeyboardInterrupt as exc:
+                _emit_unsuccessful_execution(
+                    progress, exc, error_code="execution_cancelled", errors=0, cancelled=True
+                )
+                # The public entrypoint owns exit 130; direct callers retain
+                # KeyboardInterrupt and the orchestrator's cancellation contract.
+                raise
+            except (InventoryError, RouteExecutionError, ImmutableSQLiteUnavailable) as exc:
+                error_code = (
+                    "route_execution_failed"
+                    if isinstance(exc, RouteExecutionError)
+                    else "sqlite_snapshot_unavailable"
+                    if isinstance(exc, ImmutableSQLiteUnavailable)
+                    else "corpus_unavailable"
+                )
+                _emit_unsuccessful_execution(
+                    progress,
+                    exc,
+                    error_code=error_code,
+                    errors=len(exc.failures) if isinstance(exc, RouteExecutionError) else 1,
+                    failed_routes=tuple(exc.failures) if isinstance(exc, RouteExecutionError) else (),
+                )
+                raise
     except InventoryError as exc:
-        print(f"ERROR corpus_unavailable: {exc}", file=sys.stderr)
+        print(
+            f"ERROR corpus_unavailable: {sanitize_untrusted_text(exc, limit=800)}", file=sys.stderr
+        )
+        return 2
+    except ImmutableSQLiteUnavailable as exc:
+        print(
+            "ERROR sqlite_snapshot_unavailable status=failed completion=incomplete: "
+            + sanitize_untrusted_text(exc, limit=800),
+            file=sys.stderr,
+        )
+        print(_SQLITE_FAILURE_NEXT_STEP, file=sys.stderr)
         return 2
     except RouteExecutionError as exc:
-        from neocortex.api.read_contract import sanitize_untrusted_text
-
         # The owners have already recorded the failed routes.  Present that
         # failure without inventing a completed run or continuing --all's
         # dependent semantic stage; partial results remain with their owners.
@@ -313,11 +399,18 @@ def main(arguments: Sequence[str] | None = None) -> int:
         )
         for route_name, failure in sorted(exc.failures.items()):
             route = sanitize_untrusted_text(route_name, limit=128)
-            reason = sanitize_untrusted_text(failure, limit=1600)
+            reason = sanitize_untrusted_text(failure, limit=800)
+            error_type = sanitize_untrusted_text(type(failure).__name__, limit=128)
             print(
-                f"ERROR route_failed route={route} error_type={type(failure).__name__}: {reason}",
+                f"ERROR route_failed route={route} error_type={error_type}: {reason}",
                 file=sys.stderr,
             )
+        print(
+            _SQLITE_FAILURE_NEXT_STEP
+            if any(isinstance(failure, ImmutableSQLiteUnavailable) for failure in exc.failures.values())
+            else _ROUTE_FAILURE_NEXT_STEP,
+            file=sys.stderr,
+        )
         return 2
 
     if professional_output:

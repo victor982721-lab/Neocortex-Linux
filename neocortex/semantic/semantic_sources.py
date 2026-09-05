@@ -202,6 +202,25 @@ class SemanticSourceError(RuntimeError):
     """A durable route cache contains invalid or unsafe source evidence."""
 
 
+def require_readable_source_heads(heads: Sequence[SemanticSourceHead]) -> None:
+    """Reject unknown owner snapshots before creating an embedding candidate.
+
+    A readable partial projection may still be staged as ``ready_partial``;
+    a blocked projection cannot establish which source revision was indexed.
+    """
+
+    blocked = tuple(
+        head.source_kind
+        for head in heads
+        if head.coverage == "blocked" or (not head.complete and head.coverage != "partial")
+    )
+    if blocked:
+        raise SemanticSourceError(
+            "semantic source heads are blocked; retry after owners are readable and stable: "
+            + ", ".join(blocked)
+        )
+
+
 class _DigestWriter(Protocol):
     def update(self, value: bytes, /) -> object: ...
 
@@ -1602,7 +1621,7 @@ def _image_source_head(state_directory: Path) -> SemanticSourceHead:
             else "image_source_not_complete"
         ),
         "complete" if complete else "partial",
-        "done" if source_statuses == {"done"} else "partial",
+        "done" if source_statuses <= {"done"} else "partial",
         truncated,
     )
 

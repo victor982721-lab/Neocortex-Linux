@@ -35,7 +35,11 @@ from neocortex.workflow.review.review import (
 )
 from neocortex.workflow.review.review_evidence import _materialize_review_decision
 from neocortex.safety.route_filters import CandidateSelection, framework_selection_predicate
-from neocortex.persistence.sqlite_immutable import open_sidecar_safe_sqlite_connection
+from neocortex.persistence.sqlite_immutable import (
+    ImmutableSQLiteUnavailable,
+    open_immutable_sqlite_connection,
+    open_sidecar_safe_sqlite_connection,
+)
 from neocortex.persistence.sqlite_paths import existing_sqlite_uri
 # endregion [01]
 
@@ -97,8 +101,28 @@ class FrameworkRouteState:
 
     CANDIDATE_BATCH_SIZE = 1000
 
-    def __init__(self, database: str | Path):
+    def __init__(
+        self,
+        database: str | Path,
+        *,
+        candidate_database: Path | None = None,
+        resume_source_run_id: int | None = None,
+    ):
+        if resume_source_run_id is not None and (
+            type(resume_source_run_id) is not int or resume_source_run_id <= 0
+        ):
+            raise ValueError("resume source run must be a positive integer")
         self.path = Path(database)
+        # Candidate inputs and explicitly bound terminal resume evidence may
+        # use the published view. Current lifecycle, authorizations and effects
+        # retain the original live owner.
+        self.candidate_database = candidate_database
+        self.resume_source_run_id = resume_source_run_id
+
+    def _connect_candidates(self) -> sqlite3.Connection:
+        if self.candidate_database is None:
+            return self._connect(readonly=True)
+        return open_immutable_sqlite_connection(self.candidate_database)
 
     def _connect(self, *, readonly: bool) -> sqlite3.Connection:
         if readonly:
@@ -130,7 +154,7 @@ class FrameworkRouteState:
     def iter_route_candidates(self, run_id: int, mime: str):
         last_path = ""
         while True:
-            connection = self._connect(readonly=True)
+            connection = self._connect_candidates()
             try:
                 rows = connection.execute(
                     """SELECT path,volume_id,file_id,size,mtime_ns,birthtime_ns
@@ -169,7 +193,7 @@ class FrameworkRouteState:
         )
         last_path = ""
         while True:
-            connection = self._connect(readonly=True)
+            connection = self._connect_candidates()
             try:
                 rows = connection.execute(
                     f"""SELECT c.path,c.volume_id,c.file_id,c.size,c.mtime_ns,
@@ -202,7 +226,7 @@ class FrameworkRouteState:
     def iter_route_candidates_by_prefix(self, run_id: int, mime_prefix: str):
         last_path = ""
         while True:
-            connection = self._connect(readonly=True)
+            connection = self._connect_candidates()
             try:
                 rows = connection.execute(
                     """SELECT mime,path,volume_id,file_id,size,mtime_ns,birthtime_ns
@@ -247,7 +271,7 @@ class FrameworkRouteState:
         )
         last_path = ""
         while True:
-            connection = self._connect(readonly=True)
+            connection = self._connect_candidates()
             try:
                 rows = connection.execute(
                     f"""SELECT c.mime,c.path,c.volume_id,c.file_id,c.size,
@@ -293,7 +317,7 @@ class FrameworkRouteState:
             route_name=route_name,
             candidate_alias="c",
         )
-        connection = self._connect(readonly=True)
+        connection = self._connect_candidates()
         try:
             total = int(
                 connection.execute(
@@ -325,8 +349,23 @@ class FrameworkRouteState:
         run_id: int,
         route_name: str,
     ) -> frozenset[str]:
-        connection = self._connect(readonly=True)
+        historical_input = (
+            self.candidate_database is not None and run_id == self.resume_source_run_id
+        )
+        connection = (
+            self._connect_candidates() if historical_input else self._connect(readonly=True)
+        )
         try:
+            if historical_input:
+                source = connection.execute(
+                    "SELECT status FROM initial_runs WHERE run_id=?", (run_id,)
+                ).fetchone()
+                if source is None or str(source[0]) not in {
+                    "completed", "failed", "cancelled", "interrupted"
+                }:
+                    raise ImmutableSQLiteUnavailable(
+                        "resume phase snapshot requires an explicitly bound terminal source run"
+                    )
             rows = connection.execute(
                 """SELECT phase_name FROM route_phase_runs
                 WHERE run_id=? AND route_name=? AND status='completed'""",

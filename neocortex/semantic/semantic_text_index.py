@@ -19,6 +19,7 @@ from .semantic_config import (
 from .semantic_generation_repository import (
     _enqueue_text_chunk_batch_bounded,
     find_exact_published_generation,
+    invalidate_embedding_generations_for_source_change,
     merge_source_head_ledger,
     published_source_head_ledger,
 )
@@ -58,6 +59,7 @@ from .semantic_sources import (
     iter_text_sections_with_metadata,
     semantic_source_heads,
     semantic_text_processing_signature,
+    require_readable_source_heads,
 )
 from .semantic_schema import semantic_database
 from .semantic_state import (
@@ -437,6 +439,7 @@ def index_text_embeddings(
             source_heads = confirmed_heads
             source_head_payload = [head.as_payload() for head in source_heads]
             replay_entry["source_heads"] = source_head_payload
+    require_readable_source_heads(source_heads)
     source_head_ledger = merge_source_head_ledger(
         published_source_head_ledger(
             database,
@@ -545,7 +548,13 @@ def index_text_embeddings(
 
     if enumeration_complete:
         confirmed_heads = semantic_source_heads(state_directory, selected_sources)
-        if all(head.complete for head in source_heads) and confirmed_heads != source_heads:
+        if confirmed_heads != source_heads:
+            invalidate_embedding_generations_for_source_change(
+                database,
+                (generation_id,),
+                expected_source_heads=source_head_payload,
+                observed_source_heads=[head.as_payload() for head in confirmed_heads],
+            )
             raise RuntimeError("semantic source heads changed during text enumeration")
         update_embedding_generation_cursor(
             database,

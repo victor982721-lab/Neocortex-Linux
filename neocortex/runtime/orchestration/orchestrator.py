@@ -344,6 +344,29 @@ class FrameworkOrchestrator:
         if not self.selected_routes:
             return {}, None
 
+        # Candidates and selection evidence have already been committed. Pin
+        # that input once through the writer owner, before route/event writers
+        # start, rather than copying the changing framework for every batch.
+        # The context outlives executor.shutdown(wait=True), including failure
+        # and cancellation, so no worker can observe an expired snapshot.
+        with state.route_candidate_snapshot() as candidate_database:
+            return self._run_content_routes_with_snapshot(
+                root=root,
+                state=state,
+                run_id=run_id,
+                scan_id=scan_id,
+                candidate_database=candidate_database,
+            )
+
+    def _run_content_routes_with_snapshot(
+        self,
+        *,
+        root: Path,
+        state: FrameworkState,
+        run_id: int,
+        scan_id: int,
+        candidate_database: Path,
+    ) -> tuple[dict[str, object], GlobalResourceSummary | None]:
         state.set_run_phase(run_id, "routes")
         coordinator = self._resource_coordinator()
         with self._coordinator_lock:
@@ -363,7 +386,11 @@ class FrameworkOrchestrator:
             context = RouteExecutionContext(
                 config=self.config,
                 root=root,
-                framework_state=FrameworkRouteState(self.config.framework_database),
+                framework_state=FrameworkRouteState(
+                    self.config.framework_database,
+                    candidate_database=candidate_database,
+                    resume_source_run_id=self.config.resume_run_id,
+                ),
                 run_id=run_id,
                 scan_id=scan_id,
                 progress=self._coordinated_progress,

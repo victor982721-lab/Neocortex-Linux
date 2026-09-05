@@ -462,6 +462,41 @@ def _published_head_id(
     return None if row is None else int(row[0])
 
 
+def _record_generation_failure(
+    connection: sqlite3.Connection,
+    generation_id: int,
+    *,
+    completed_ns: int,
+    details: Mapping[str, object],
+    summary: GenerationSummary | None = None,
+) -> None:
+    """Close a building candidate without deleting its jobs or snapshots."""
+
+    selected_summary = summary or _generation_summary_row(connection, generation_id)
+    if selected_summary.status != "building":
+        raise SemanticStateError("only a building generation can be invalidated")
+    cursor = dict(selected_summary.cursor)
+    cursor.update(details)
+    updated = connection.execute(
+        """UPDATE embedding_generations SET status='failed',completed_ns=?,
+            cursor_json=?,pending_count=?,leased_count=?,done_count=?,
+            error_count=?,stale_count=?
+        WHERE generation_id=? AND status='building'""",
+        (
+            completed_ns,
+            canonical_json(cursor),
+            selected_summary.pending,
+            selected_summary.leased,
+            selected_summary.done,
+            selected_summary.errors,
+            selected_summary.stale,
+            generation_id,
+        ),
+    )
+    if updated.rowcount != 1:
+        raise SemanticStateError("generation changed before its failure was recorded")
+
+
 def _mark_generation_head_conflict(
     connection: sqlite3.Connection,
     generation_id: int,
@@ -489,35 +524,69 @@ def _mark_generation_head_conflict(
     )
     if str(generation["status"]) != "building":
         return conflict
-    selected_summary = summary or _generation_summary_row(connection, generation_id)
-    cursor = dict(selected_summary.cursor)
-    cursor.update(
-        {
+    _record_generation_failure(
+        connection,
+        generation_id,
+        completed_ns=completed_ns,
+        summary=summary,
+        details={
             "failure_reason": "published_head_changed",
             "expected_head": expected_head,
             "observed_head": observed_head,
             "retryable": True,
-        }
+        },
     )
-    updated = connection.execute(
-        """UPDATE embedding_generations SET status='failed',completed_ns=?,
-            cursor_json=?,pending_count=?,leased_count=?,done_count=?,
-            error_count=?,stale_count=?
-        WHERE generation_id=? AND status='building'""",
-        (
-            completed_ns,
-            canonical_json(cursor),
-            selected_summary.pending,
-            selected_summary.leased,
-            selected_summary.done,
-            selected_summary.errors,
-            selected_summary.stale,
-            generation_id,
-        ),
-    )
-    if updated.rowcount != 1:
-        raise SemanticStateError("generation changed before CAS loss was recorded")
     return conflict
+
+
+def invalidate_embedding_generations_for_source_change(
+    path: Path,
+    generation_ids: Sequence[int],
+    *,
+    expected_source_heads: Sequence[Mapping[str, object]],
+    observed_source_heads: Sequence[Mapping[str, object]],
+    completed_ns: int | None = None,
+) -> None:
+    """Atomically fail only this invocation's text or image/OCR candidates."""
+
+    ids = tuple(generation_ids)
+    if (
+        not 1 <= len(ids) <= 2
+        or len(set(ids)) != len(ids)
+        or any(isinstance(value, bool) or not isinstance(value, int) or value < 1 for value in ids)
+    ):
+        raise ValueError("source invalidation requires one or two unique generation IDs")
+    expected = list(expected_source_heads)
+    observed = list(observed_source_heads)
+    if expected == observed:
+        raise ValueError("source heads have not changed")
+    with semantic_database(path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        for generation_id in ids:
+            row = connection.execute(
+                """SELECT generation.status,generation.provenance_json,
+                    EXISTS(SELECT 1 FROM published_embedding_heads head
+                        WHERE head.generation_id=generation.generation_id) AS published
+                FROM embedding_generations generation WHERE generation.generation_id=?""",
+                (generation_id,),
+            ).fetchone()
+            if row is None or str(row["status"]) != "building" or bool(row["published"]):
+                raise SemanticStateError("source invalidation requires an unpublished candidate")
+            provenance = json.loads(str(row["provenance_json"]))
+            if not isinstance(provenance, dict) or provenance.get("source_heads") != expected:
+                raise SemanticStateError("source invalidation does not match candidate provenance")
+        now_ns = _now(completed_ns)
+        for generation_id in ids:
+            _record_generation_failure(
+                connection,
+                generation_id,
+                completed_ns=now_ns,
+                details={
+                    "failure_reason": "source_heads_changed",
+                    "observed_source_heads": observed,
+                    "retryable": True,
+                },
+            )
 
 
 def _fail_empty_superseded_generations(

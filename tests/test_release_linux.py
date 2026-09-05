@@ -766,9 +766,31 @@ def test_corpus_root_preparation_creates_once_and_rejects_non_directories(
         release_linux._prepare_corpus_root(invalid)
 
 
+def test_corpus_root_preparation_rejects_ancestor_alias_before_creating_anything(
+    tmp_path: Path,
+) -> None:
+    real = tmp_path / "real"
+    existing = real / "existing"
+    existing.mkdir(parents=True, mode=0o750)
+    mode = existing.stat().st_mode
+    alias = tmp_path / "alias"
+    alias.symlink_to(real, target_is_directory=True)
+
+    with pytest.raises(release_linux.LinuxReleaseError, match="real directory"):
+        release_linux._prepare_corpus_root(alias / "existing" / "Corpus")
+
+    assert not (existing / "Corpus").exists()
+    assert not tuple(existing.iterdir())
+    assert existing.stat().st_mode == mode
+    assert alias.is_symlink() and alias.resolve() == real
+
+
+@pytest.mark.parametrize("explicit_corpus,corrupt_candidate", [(False, False), (True, False), (False, True)])
 def test_new_virtual_environment_is_created_in_staging_then_published(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    explicit_corpus: bool,
+    corrupt_candidate: bool,
 ) -> None:
     source = tmp_path / "source"
     source.mkdir()
@@ -778,8 +800,16 @@ def test_new_virtual_environment_is_created_in_staging_then_published(
     sha = "e" * 40
     final_release = layout.releases / release_linux.release_id(sha)
     stale_release = _release(layout, release_linux.release_id("f" * 40))
+    if corrupt_candidate:
+        candidate = _release(layout, final_release.name)
+        (candidate / release_linux.RELEASE_MANIFEST_NAME).write_text("{}\n", encoding="utf-8")
+        release_linux._make_immutable(candidate)
     installed_at: list[Path] = []
     validated_wheels: list[Path] = []
+    smoke_roots: list[Path] = []
+    operational_roots: list[Path] = []
+    corpus_root = tmp_path / "corpus" if explicit_corpus else layout.policy.corpus_root
+    monkeypatch.setenv("NEOCORTEX_CORPUS_ROOT", str(tmp_path / "ambient-smoke-fixture"))
 
     monkeypatch.setattr(release_linux, "_require_reference_platform", lambda: None)
     monkeypatch.setattr(release_linux, "_source_sha", lambda *_args, **_kwargs: sha)
@@ -815,33 +845,31 @@ def test_new_virtual_environment_is_created_in_staging_then_published(
 
     monkeypatch.setattr(release_linux, "_build_wheel", build_wheel)
     monkeypatch.setattr(release_linux, "_install_wheel", install_wheel)
-    monkeypatch.setattr(
-        release_linux,
-        "_verify_python_release",
-        lambda release_root, *_args, **_kwargs: (
-            {"pip": release_linux.PIP_BOOTSTRAP_VERSION}
-            if release_root.parent.name.startswith(f"{release_linux.__version__}-")
-            else pytest.fail("release validation used an unexpected path")
-        ),
-    )
+    def verify_candidate(release_root, _layout, smoke_root, **_kwargs):
+        assert release_root.parent.name.startswith(f"{release_linux.__version__}-")
+        assert smoke_root != corpus_root
+        assert smoke_root.is_dir() and not tuple(smoke_root.iterdir())
+        smoke_roots.append(smoke_root)
+        return {"pip": release_linux.PIP_BOOTSTRAP_VERSION}
+
+    monkeypatch.setattr(release_linux, "_verify_python_release", verify_candidate)
     def validate_wheel(path: Path, **_kwargs: object) -> None:
         validated_wheels.append(path)
 
     monkeypatch.setattr(release_linux, "validate_release_artifact", validate_wheel)
     monkeypatch.setattr(release_linux, "_make_immutable", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(release_linux, "_require_immutable", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        release_linux,
-        "_publish_public_access",
-        lambda *_args, **_kwargs: ({}, {}),
-    )
+    def publish_access(_layout, selected_root, **_kwargs):
+        operational_roots.append(selected_root)
+        return {}, {}
 
-    corpus_root = tmp_path / "corpus"
+    monkeypatch.setattr(release_linux, "_publish_public_access", publish_access)
+
     wheelhouse = tmp_path / "wheelhouse"
     wheelhouse.mkdir()
     report = release_linux.install_release(
         layout,
-        corpus_root=corpus_root,
+        corpus_root=corpus_root if explicit_corpus else None,
         prepare_models=False,
         desktop=False,
         wheelhouse=wheelhouse,
@@ -853,6 +881,12 @@ def test_new_virtual_environment_is_created_in_staging_then_published(
     assert installed_at[0].parent.parent == layout.staging
     assert report["release_path"] == str(final_release)
     assert report["corpus_root"] == str(corpus_root)
+    assert report["corpus_root_source"] == (
+        "explicit_install" if explicit_corpus else "platform_default"
+    )
+    assert operational_roots == [corpus_root]
+    assert len(smoke_roots) == 1 and not smoke_roots[0].exists()
+    assert str(smoke_roots[0]) not in json.dumps(report)
     assert report["corpus_root_created"] is True
     assert corpus_root.is_dir()
     assert release_linux._current_target(layout) == final_release.resolve()
@@ -1076,6 +1110,190 @@ def test_launcher_works_through_user_alias_when_alias_lives_elsewhere(tmp_path: 
     assert "unset PYTHONPATH PYTHONHOME PYTHONUSERBASE PIP_CONFIG_FILE" in launcher_text
 
 
+@pytest.mark.parametrize("override", [None, "", "smoke"])
+def test_launcher_preserves_process_corpus_override_without_persisting_it(
+    tmp_path: Path,
+    override: str | None,
+) -> None:
+    layout = LinuxReleaseLayout(tmp_path / "source", _policy(tmp_path))
+    release = _release(layout, "active")
+    (release / "bin" / "Neocortex").write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$NEOCORTEX_CORPUS_ROOT" "$1"\n',
+        encoding="utf-8",
+    )
+    _activate(layout, release)
+    operational_root = tmp_path / "Operational ' corpus $HOME"
+    release_linux._publish_public_access(layout, operational_root, desktop=False)
+    environment = dict(os.environ)
+    environment.pop("NEOCORTEX_CORPUS_ROOT", None)
+    smoke_root = tmp_path / "smoke corpus"
+    if override is not None:
+        environment["NEOCORTEX_CORPUS_ROOT"] = str(smoke_root) if override else ""
+    before = layout.launcher.read_bytes()
+
+    completed = subprocess.run(
+        (layout.alias, "argument with spaces"),
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    expected_root = smoke_root if override else operational_root
+    assert completed.stdout.splitlines() == [str(expected_root), "argument with spaces"]
+    assert layout.launcher.read_bytes() == before
+    assert str(smoke_root).encode() not in before
+
+
+def test_release_parser_distinguishes_persistent_and_expected_corpus() -> None:
+    parser = release_linux.build_parser()
+
+    assert parser.parse_args(["install"]).corpus_root is None
+    assert parser.parse_args(["install", "--corpus-root", "/custom"]).corpus_root == Path("/custom")
+    assert parser.parse_args(["verify"]).expected_corpus_root is None
+    assert parser.parse_args(["verify", "--corpus-root", "/custom"]).expected_corpus_root == Path(
+        "/custom"
+    )
+
+
+@pytest.fixture
+def verification_layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> LinuxReleaseLayout:
+    layout = LinuxReleaseLayout(tmp_path / "source", _policy(tmp_path))
+    sha = ("a" * 12).ljust(40, "0")
+    current = _release(layout, release_linux.release_id(sha))
+    _activate(layout, current)
+    layout.policy.corpus_root.mkdir(parents=True)
+    _, hashes = release_linux._publish_public_access(
+        layout, layout.policy.corpus_root, desktop=False,
+    )
+    release_linux._write_receipt(
+        layout,
+        {
+            "schema_version": release_linux.RECEIPT_SCHEMA_VERSION,
+            "kind": "linux_release_receipt",
+            "operation": "install",
+            "release_id": current.name,
+            "release_path": str(current),
+            "source_sha": sha,
+            "corpus_root": str(layout.policy.corpus_root),
+            "corpus_root_source": "platform_default",
+            "artifacts": hashes,
+            "result": "success",
+        },
+    )
+    release_linux._make_immutable(current)
+    monkeypatch.setattr(release_linux, "_require_reference_platform", lambda: None)
+    monkeypatch.setattr(release_linux, "_require_executable", lambda name: name)
+    return layout
+
+
+@pytest.mark.parametrize("effective_path_report", [False, True])
+def test_verification_keeps_probe_corpus_ephemeral_and_public_configuration_unchanged(
+    verification_layout: LinuxReleaseLayout,
+    effective_path_report: bool,
+) -> None:
+    layout = verification_layout
+    before = {path: path.read_bytes() for path in [layout.launcher, *layout.receipts.glob("*.json")]}
+    smoke_roots: set[Path] = set()
+
+    def runner(command, **kwargs):
+        parts = tuple(map(str, command))
+        environment = kwargs.get("environment")
+        if environment is not None:
+            root = Path(environment["NEOCORTEX_CORPUS_ROOT"])
+            assert root != layout.policy.corpus_root
+            assert root.is_dir() and not tuple(root.iterdir())
+            smoke_roots.add(root)
+        output = "{}"
+        if parts[-1] == "import pip; print(pip.__version__)":
+            output = release_linux.PIP_BOOTSTRAP_VERSION
+        elif Path(parts[0]).name == "Neocortex" and parts[1:] == ("--version",):
+            output = f"Neocortex {release_linux.__version__}"
+        elif parts[1:] == ("doctor", "platform", "--json") and effective_path_report:
+            output = json.dumps({"effective_paths": {"corpus": environment["NEOCORTEX_CORPUS_ROOT"]}})
+        elif parts[0] in {"qpdf", "ffprobe"}:
+            output = f"{parts[0]} fixture version\n"
+        elif parts[0] == "tesseract":
+            output = "Available languages:\neng\nspa\n"
+        return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+
+    for _ in range(2):
+        report = release_linux.verify_release(
+            layout, expected_corpus_root=layout.policy.corpus_root, runner=runner,
+        )
+        assert report["verified"] is True
+        assert report["corpus_root"] == str(layout.policy.corpus_root)
+        assert report["verification_corpus_policy"] == "ephemeral_empty_v1"
+        assert report["verification_effective_corpus_checked"] is effective_path_report
+
+    assert len(smoke_roots) == 2 and all(not root.exists() for root in smoke_roots)
+    assert all(path.read_bytes() == payload for path, payload in before.items())
+
+
+def test_verification_rejects_a_different_requested_corpus_before_execution(
+    verification_layout: LinuxReleaseLayout,
+) -> None:
+    layout = verification_layout
+    with pytest.raises(release_linux.LinuxReleaseError, match="requested operational root"):
+        release_linux.verify_release(
+            layout,
+            expected_corpus_root=layout.policy.corpus_root.parent / "other",
+            runner=lambda *_args, **_kwargs: pytest.fail("drifted install executed"),
+        )
+
+
+@pytest.mark.parametrize("drift", ["legacy_override", "wrong_corpus", "wrong_release"])
+def test_verification_rejects_receipt_matched_launcher_drift_before_execution(
+    verification_layout: LinuxReleaseLayout,
+    drift: str,
+) -> None:
+    layout = verification_layout
+    latest = release_linux._latest_receipt(layout)
+    assert latest is not None
+    if drift == "legacy_override":
+        layout.launcher.write_text(
+            "#!/bin/sh\nexport NEOCORTEX_CORPUS_ROOT=/tmp/old-smoke\nexit 0\n",
+            encoding="utf-8",
+        )
+    elif drift == "wrong_corpus":
+        payload = layout.launcher.read_text(encoding="utf-8")
+        layout.launcher.write_text(
+            payload.replace(str(layout.policy.corpus_root), "/tmp/other-corpus"),
+            encoding="utf-8",
+        )
+    else:
+        latest["release_id"] = release_linux.release_id("b" * 40)
+    latest["artifacts"]["launcher_sha256"] = release_linux._sha256_file(layout.launcher)
+    Path(latest["_path"]).write_text(json.dumps(latest), encoding="utf-8")
+
+    with pytest.raises(release_linux.LinuxReleaseError, match=r"configuration|active release"):
+        release_linux.verify_release(
+            layout, runner=lambda *_args, **_kwargs: pytest.fail("drifted install executed"),
+        )
+
+
+def test_verification_rejects_an_effective_corpus_outside_the_smoke_fixture(
+    verification_layout: LinuxReleaseLayout,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        release_linux,
+        "_verify_python_release",
+        lambda *_args, **_kwargs: {"pip": release_linux.PIP_BOOTSTRAP_VERSION},
+    )
+
+    def runner(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command, 0,
+            stdout=json.dumps({"effective_paths": {"corpus": "/unexpected-corpus"}}),
+            stderr="",
+        )
+
+    with pytest.raises(release_linux.LinuxReleaseError, match="isolated verification corpus"):
+        release_linux.verify_release(verification_layout, runner=runner)
+
+
 def test_desktop_entry_quotes_launcher_paths_with_spaces(tmp_path: Path) -> None:
     policy = _policy(tmp_path)
     spaced_data = tmp_path / "data with space" / "Neocortex"
@@ -1184,6 +1402,77 @@ def test_failed_install_receipt_restores_current_launcher_and_alias(
     assert new.is_dir()
 
 
+@pytest.mark.parametrize("manifest_state", ["missing", "corrupt"])
+def test_install_preserves_active_release_when_its_manifest_is_unusable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    manifest_state: str,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    _write_runtime_lock(source)
+    layout = LinuxReleaseLayout(source, _policy(tmp_path))
+    sha = "a" * 40
+    current = _release(layout, release_linux.release_id(sha))
+    manifest = current / release_linux.RELEASE_MANIFEST_NAME
+    if manifest_state == "missing":
+        manifest.unlink()
+    else:
+        manifest.write_text("{}\n", encoding="utf-8")
+    release_linux._make_immutable(current)
+    _activate(layout, current)
+    command_bytes = (current / "bin" / "Neocortex").read_bytes()
+    monkeypatch.setattr(release_linux, "_source_sha", lambda *_args, **_kwargs: sha)
+    monkeypatch.setattr(release_linux, "_require_reference_platform", lambda: None)
+    monkeypatch.setattr(
+        release_linux,
+        "_build_wheel",
+        lambda *_args, **_kwargs: pytest.fail("unsafe rebuild of the current release"),
+    )
+
+    with pytest.raises(release_linux.LinuxReleaseError, match=r"manifest|identity"):
+        release_linux.install_release(
+            layout,
+            prepare_models=False,
+            desktop=False,
+            wheelhouse=tmp_path,
+        )
+
+    assert current.is_dir()
+    assert layout.current.is_symlink()
+    assert release_linux._current_target(layout) == current.resolve()
+    assert (current / "bin" / "Neocortex").read_bytes() == command_bytes
+    assert manifest.exists() is (manifest_state != "missing")
+    if manifest_state == "corrupt":
+        assert manifest.read_bytes() == b"{}\n"
+
+
+def test_install_preserves_noncurrent_manifestless_release_used_by_a_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    _write_runtime_lock(source)
+    layout = LinuxReleaseLayout(source, _policy(tmp_path))
+    sha = "b" * 40
+    candidate = _release(layout, release_linux.release_id(sha))
+    (candidate / release_linux.RELEASE_MANIFEST_NAME).unlink()
+    current = _release(layout, release_linux.release_id("a" * 40))
+    _activate(layout, current)
+    monkeypatch.setattr(release_linux, "_source_sha", lambda *_args, **_kwargs: sha)
+    monkeypatch.setattr(release_linux, "_require_reference_platform", lambda: None)
+    monkeypatch.setattr(release_linux, "_release_in_use", lambda root: (4242,) if root == candidate else ())
+
+    with pytest.raises(release_linux.LinuxReleaseError, match="in use by host processes"):
+        release_linux.install_release(
+            layout, prepare_models=False, desktop=False, wheelhouse=tmp_path,
+        )
+
+    assert candidate.is_dir() and (candidate / "bin" / "Neocortex").is_file()
+    assert release_linux._current_target(layout) == current.resolve()
+
+
 def test_failed_model_preparation_never_promotes_or_publishes_access(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1213,8 +1502,14 @@ def test_failed_model_preparation_never_promotes_or_publishes_access(
         },
     )
 
+    smoke_roots: list[Path] = []
+
     def fail_prepare(arguments, **_kwargs):
         assert tuple(map(str, arguments))[-3:] == ("models", "prepare", "--json")
+        smoke_root = Path(_kwargs["environment"]["NEOCORTEX_CORPUS_ROOT"])
+        assert smoke_root != tmp_path / "corpus"
+        assert smoke_root.is_dir() and not tuple(smoke_root.iterdir())
+        smoke_roots.append(smoke_root)
         raise release_linux.LinuxReleaseError("synthetic incomplete model cache")
 
     with pytest.raises(release_linux.LinuxReleaseError, match="incomplete model cache"):
@@ -1231,6 +1526,7 @@ def test_failed_model_preparation_never_promotes_or_publishes_access(
     assert not layout.launcher.exists()
     assert not layout.alias.exists()
     assert not layout.desktop.exists()
+    assert len(smoke_roots) == 1 and not smoke_roots[0].exists()
 
 
 def test_repromote_recovers_recorded_rollback_and_prunes_stale_releases(

@@ -369,8 +369,8 @@ class InventoryScanner:
                 else checkpoint.batch_files
             )
         )
-        traversal_holder: dict[str, InventoryTraversal] = {}
         last_checkpoint: list[InventoryResumeCheckpoint | None] = [checkpoint]
+        cursor_evidence: list[tuple[ScanCounters, str]] = []
 
         if store is not None:
             if checkpoint is None:
@@ -421,12 +421,18 @@ class InventoryScanner:
             # the callback after commit then records the exact committed batch.
             work.check()
 
+        def observe_admitted_file(counters: ScanCounters) -> None:
+            # A later interruption can flush this batch after visiting empty
+            # directories, excluded entries or links beyond its last file.
+            # Bind resumable evidence to the file cursor, not to flush time.
+            cursor_evidence[:] = [(replace(counters), directory_digest.value)]
+
         def on_flush(observations: tuple[FileObservation, ...]) -> None:
             if store is None:
                 return
             for observation in observations:
                 prefix_digest.observe(observation)
-            current = traversal_holder["traversal"].counters
+            current, cursor_directory_digest = cursor_evidence[0]
             next_checkpoint = InventoryResumeCheckpoint(
                 root_path=root_identity.path,
                 root_dev=root_identity.volume_id,
@@ -438,7 +444,7 @@ class InventoryScanner:
                 batch_digest=batch_digest(root_identity.path, observations),
                 batch_files=len(observations),
                 prefix_digest=prefix_digest.value,
-                directory_digest=directory_digest.value,
+                directory_digest=cursor_directory_digest,
                 batch_index=(last_checkpoint[0].batch_index + 1 if last_checkpoint[0] else 1),
                 files_seen=current.files_seen,
                 directories_seen=current.directories_seen,
@@ -476,6 +482,7 @@ class InventoryScanner:
                     prefix_batch_observations,
                 )
             ),
+            admitted_file_observer=(None if store is None else observe_admitted_file),
             directory_observer=(
                 None
                 if store is None
@@ -501,7 +508,6 @@ class InventoryScanner:
             file_work_check=work.check_file,
             initial_counters=initial_counters,
         )
-        traversal_holder["traversal"] = traversal
         scan_completed = False
         try:
             self._emit_started(progress)
@@ -673,6 +679,17 @@ class InventoryScanner:
         batch_observations: deque[FileObservation] = deque(maxlen=checkpoint.batch_files or 1)
         counters = ScanCounters()
         work = _InventoryWorkState(budget, files=0, bytes_seen=0)
+        expected_summary = ScanCounters(
+            checkpoint.files_seen,
+            checkpoint.directories_seen,
+            checkpoint.bytes_seen,
+            checkpoint.skipped_links,
+            checkpoint.excluded_directories,
+            checkpoint.errors,
+        ).summary(checkpoint.scan_id, root.path)
+        work.check()
+        if self._read_complete_summary(checkpoint.scan_id, root.path) != expected_summary:
+            raise InventoryResumeConflictError("complete checkpoint scan owner counters changed")
 
         def observe(observation: FileObservation) -> None:
             self._validate_prefix_observation(
@@ -725,6 +742,25 @@ class InventoryScanner:
             )
         ):
             raise InventoryResumeConflictError("complete inventory checkpoint no longer matches")
+
+        # Validating each observed file alone does not detect extra owner rows.
+        # Read in bounded batches so cancellation also applies to this check.
+        stored_files = 0
+        stored_bytes = 0
+        rows = self._connection.execute(
+            "SELECT size FROM files WHERE scan_id=?", (checkpoint.scan_id,)
+        )
+        while True:
+            work.check()
+            batch_rows = rows.fetchmany(MAX_BATCH_SIZE)
+            if not batch_rows:
+                break
+            stored_files += len(batch_rows)
+            stored_bytes += sum(int(row[0]) for row in batch_rows)
+            if stored_files > checkpoint.files_seen or stored_bytes > checkpoint.bytes_seen:
+                raise InventoryResumeConflictError("complete checkpoint scan owner rows changed")
+        if stored_files != checkpoint.files_seen or stored_bytes != checkpoint.bytes_seen:
+            raise InventoryResumeConflictError("complete checkpoint scan owner rows changed")
 
     def _delete_rows_after_cursor(
         self,

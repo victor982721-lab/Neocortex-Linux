@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import sqlite3
 import threading
 import time
 from dataclasses import replace
@@ -250,7 +252,36 @@ def _image_record(
 
 
 def _declare_source_state(state_directory: Path, source_kind: str) -> None:
-    service.semantic_source_database(state_directory, source_kind).touch()
+    with sqlite3.connect(service.semantic_source_database(state_directory, source_kind)) as conn:
+        if source_kind == "pdf":
+            conn.executescript(
+                """CREATE TABLE documents(file_key TEXT PRIMARY KEY,path TEXT,
+                    processing_signature TEXT,status TEXT,size INTEGER,mtime_ns INTEGER,
+                    birthtime_ns INTEGER,last_seen_run_id INTEGER,is_partial INTEGER,
+                    normalized_text_xxh3_128 TEXT,normalized_text_chars INTEGER);
+                CREATE TABLE pages(file_key TEXT,page_number INTEGER,source TEXT,
+                    text_zlib BLOB,text_chars INTEGER);"""
+            )
+        elif source_kind == "image":
+            conn.execute(
+                """CREATE TABLE images(file_key TEXT PRIMARY KEY,path TEXT,size INTEGER,
+                    mtime_ns INTEGER,birthtime_ns INTEGER,last_seen_run_id INTEGER,
+                    processing_signature TEXT,category TEXT,document_candidate INTEGER,
+                    adult_classification TEXT,status TEXT)"""
+            )
+        else:
+            raise ValueError(f"unsupported source-owner fixture: {source_kind}")
+
+
+def _fixture_image_heads(records: Sequence[ImageSourceRecord]) -> tuple[SemanticSourceHead, ...]:
+    """Pair an injected record iterator with the same controlled owner revision."""
+
+    return (
+        SemanticSourceHead(
+            "image", "image.sqlite3", "fixture-image-owner-v1", 1, len(records),
+            "sha256:" + hashlib.sha256(repr(tuple(records)).encode()).hexdigest(), True,
+        ),
+    )
 
 
 # endregion [01]
@@ -843,6 +874,10 @@ def test_image_and_ocr_use_separate_embedding_generations(
         ),
     )
     monkeypatch.setattr(
+        service._image_index, "semantic_source_heads",
+        lambda *_args: _fixture_image_heads((record,)),
+    )
+    monkeypatch.setattr(
         service,
         "iter_image_source_records",
         lambda _state: iter((record,)),
@@ -1003,11 +1038,7 @@ def test_image_and_ocr_use_separate_embedding_generations(
         service.multilingual_text_model().model_signature,
     )
     assert has_active_embeddings(database, compact_model.model_signature)
-    monkeypatch.setattr(
-        service,
-        "iter_image_source_records",
-        lambda _state: iter((ImageSourceRecord(item, None),)),
-    )
+    record = ImageSourceRecord(item, None)
     absent_ocr = service.index_image_embeddings(tmp_path, embed_ocr_text=True)
     assert absent_ocr.chunks_staged == 0
     with semantic_database(database, readonly=True) as connection:
@@ -1142,6 +1173,10 @@ def test_image_deadline_at_end_of_enumeration_preserves_unvisited_items(
         _image_record(tmp_path, "deadline-unvisited"),
     )
     monkeypatch.setattr(
+        service._image_index, "semantic_source_heads",
+        lambda *_args: _fixture_image_heads(records),
+    )
+    monkeypatch.setattr(
         service,
         "iter_image_source_records",
         lambda _state: iter(records),
@@ -1158,6 +1193,10 @@ def test_image_deadline_at_end_of_enumeration_preserves_unvisited_items(
             ).fetchone()[0]
         )
 
+    records = (
+        replace(records[0], ocr_section=TextSection("image_ocr", "ocr", "Changed owner OCR")),
+        records[1],
+    )
     now = [0.0]
     original_stage = service._image_index.stage_image_batch
 
@@ -1216,14 +1255,17 @@ def test_image_deadline_at_end_of_enumeration_preserves_unvisited_items(
     )
     resumed = service.index_image_embeddings(tmp_path, embed_ocr_text=False)
     assert resumed.complete
-    assert resumed.generations[0].summary.generation_id == baseline_head
+    assert resumed.generations[0].summary.generation_id == (
+        paused.generations[0].summary.generation_id
+    )
+    assert resumed.generations[0].summary.generation_id != baseline_head
     with semantic_database(database, readonly=True) as connection:
         assert (
             connection.execute(
-                "SELECT 1 FROM embedding_generations WHERE generation_id=?",
+                "SELECT status FROM embedding_generations WHERE generation_id=?",
                 (paused.generations[0].summary.generation_id,),
-            ).fetchone()
-            is None
+            ).fetchone()[0]
+            == "ready"
         )
 
 
@@ -1258,6 +1300,10 @@ def test_changed_ocr_revision_keeps_other_head_until_its_model_republishes(
             TextSection("image_ocr", "ocr", "Old breaker OCR text."),
         )
     ]
+    monkeypatch.setattr(
+        service._image_index, "semantic_source_heads",
+        lambda *_args: _fixture_image_heads(current_record),
+    )
     monkeypatch.setattr(
         service,
         "iter_image_source_records",

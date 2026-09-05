@@ -5,13 +5,22 @@ import argparse
 import json
 import platform
 import sys
+from pathlib import Path
 
-from neocortex.platform.policy import LINUX_MUTATION_REASON, current_platform_policy
+from neocortex.platform.policy import (
+    LINUX_MUTATION_REASON,
+    current_platform_policy,
+    default_corpus_root,
+)
+from neocortex.runtime.config.app_paths import default_state_directory
 
 PLATFORM_REPORT_SCHEMA_VERSION = 1
 
 
-def platform_report() -> dict[str, object]:
+def platform_report(
+    *, root: Path | None = None, state_directory: Path | None = None
+) -> dict[str, object]:
+    """Distinguish canonical locations from the paths this invocation will use."""
     policy = current_platform_policy()
     return {
         "schema_version": PLATFORM_REPORT_SCHEMA_VERSION,
@@ -34,6 +43,10 @@ def platform_report() -> dict[str, object]:
             "launcher": str(policy.stable_launcher),
             "alias": str(policy.user_alias),
             "desktop": str(policy.desktop_file),
+        },
+        "effective_paths": {
+            "corpus": str(default_corpus_root() if root is None else root),
+            "state": str(default_state_directory() if state_directory is None else state_directory),
         },
         "inventory": {"backend": policy.inventory_backend},
         "identity": {
@@ -74,11 +87,18 @@ def _print_human(report: dict[str, object]) -> None:
     assert isinstance(paths, dict)
     for name, value in paths.items():
         print(f"PLATFORM_PATH name={name} value={json.dumps(value, ensure_ascii=False)}")
+    effective_paths = report["effective_paths"]
+    assert isinstance(effective_paths, dict)
+    for name, value in effective_paths.items():
+        print(f"PLATFORM_EFFECTIVE_PATH name={name} value={json.dumps(value, ensure_ascii=False)}")
 
 
 def run_doctor_platform(args: argparse.Namespace) -> int:
     try:
-        report = platform_report()
+        report = platform_report(
+            root=getattr(args, "root", None),
+            state_directory=getattr(args, "state_directory", None),
+        )
         if args.doctor_platform_json:
             print(
                 json.dumps(

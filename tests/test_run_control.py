@@ -13,7 +13,6 @@ from typing import cast
 
 import pytest
 
-import neocortex.persistence.sqlite_immutable as sqlite_immutable
 from neocortex.enumeration import JournalCursor
 from neocortex.deduplication import (
     DedupIndex,
@@ -719,6 +718,7 @@ def test_route_candidate_inputs_fail_closed_on_zero_mime_candidates(
 
 def test_resume_infers_interrupted_route_and_preserves_phase_evidence(
     tmp_path,
+    monkeypatch,
 ) -> None:
     state_dir = tmp_path / "state"
     state_dir.mkdir()
@@ -729,7 +729,21 @@ def test_resume_infers_interrupted_route_and_preserves_phase_evidence(
     )
 
     def execute(context):
-        completed = context.framework_state.completed_route_phases(source, "probe")
+        from neocortex.persistence import sqlite_immutable
+
+        original_copy = sqlite_immutable._copy_regular_file
+
+        def copy_during_progress(source_path, destination):
+            original_copy(source_path, destination)
+            if source_path == state_dir / "framework.sqlite3":
+                context.framework_state.record_event(
+                    context.run_id, "info", "probe", "concurrent progress"
+                )
+                gc.collect()
+
+        with monkeypatch.context() as patch:
+            patch.setattr(sqlite_immutable, "_copy_regular_file", copy_during_progress)
+            completed = context.framework_state.completed_route_phases(source, "probe")
         return {"source_extraction_complete": "extraction" in completed}
 
     config = FrameworkConfig(
@@ -860,21 +874,31 @@ def test_resume_recovers_legacy_scan_link_from_durable_inventory_evidence(
     seen: list[str] = []
     collected_during_snapshot = False
 
+    if collect_during_snapshot:
+        original_connect = sqlite3.connect
+
+        class CollectDuringBackup(sqlite3.Connection):
+            def backup(self, target, *, progress, **kwargs):
+                def collect_and_progress(status, remaining, total):
+                    nonlocal collected_during_snapshot
+                    if not collected_during_snapshot:
+                        collected_during_snapshot = True
+                        gc.collect()
+                    progress(status, remaining, total)
+
+                return super().backup(target, progress=collect_and_progress, **kwargs)
+
+        def connect_for_collection(database, *args, **kwargs):
+            if str(database) == str(state_dir / "framework.sqlite3"):
+                kwargs.setdefault("factory", CollectDuringBackup)
+            return original_connect(database, *args, **kwargs)
+
+        # Keep the real writer-owned backup, pinned read version and physical
+        # identity checks. Fixture writers must already be closed when cyclic
+        # collection runs inside the pre-worker snapshot acquisition window.
+        monkeypatch.setattr(sqlite3, "connect", connect_for_collection)
+
     def execute(context):
-        nonlocal collected_during_snapshot
-        if collect_during_snapshot:
-            copy_regular_file = sqlite_immutable._copy_regular_file
-
-            def copy_and_collect(source: Path, destination: Path) -> None:
-                nonlocal collected_during_snapshot
-                copy_regular_file(source, destination)
-                if source == state_dir / "framework.sqlite3" and not collected_during_snapshot:
-                    collected_during_snapshot = True
-                    gc.collect()
-
-            # Keep the real copy and both fences; fixture writers must already
-            # be closed even if cyclic collection runs inside the read window.
-            monkeypatch.setattr(sqlite_immutable, "_copy_regular_file", copy_and_collect)
         seen.extend(
             item.path
             for item in context.framework_state.iter_route_candidates(

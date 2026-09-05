@@ -233,6 +233,7 @@ class InventoryTraversal:
         resume_cursor: str | None = None,
         resume_observation: Callable[[FileObservation], None] | None = None,
         observation_observer: Callable[[FileObservation], None] | None = None,
+        admitted_file_observer: Callable[[ScanCounters], None] | None = None,
         directory_observer: Callable[[str, os.stat_result, bool], None] | None = None,
         work_check: Callable[[int], None] | None = None,
         file_work_check: Callable[[int], None] | None = None,
@@ -250,6 +251,7 @@ class InventoryTraversal:
         self._resume_found = resume_cursor is None
         self._resume_observation = resume_observation
         self._observation_observer = observation_observer
+        self._admitted_file_observer = admitted_file_observer
         self._directory_observer = directory_observer
         self._work_check = work_check
         self._file_work_check = file_work_check
@@ -500,6 +502,8 @@ class InventoryTraversal:
         self._row_sink.append(observation)
         self._counters.files_seen += 1
         self._counters.bytes_seen += observation.size
+        if self._admitted_file_observer is not None:
+            self._admitted_file_observer(self._counters)
         self._report_progress()
         if self._row_sink.full:
             self._row_sink.flush()
