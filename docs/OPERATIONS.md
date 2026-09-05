@@ -9,13 +9,16 @@ en [RECOVERY.md](RECOVERY.md).
 Antes de procesar contenido:
 
 1. confirma la raíz y que no sea un árbol interno de NeoCortex;
-2. ejecuta `Neocortex --version` y compara el runtime esperado;
+2. ejecuta `Neocortex --version` y compara también el `source_sha` del manifest,
+   porque dos instalaciones pueden declarar la misma versión;
 3. consulta estado y health sin crear cobertura nueva;
 4. comprueba espacio, memoria, herramientas externas y modelos necesarios;
 5. fija una ruta, máximo de elementos y límite de tiempo;
-6. confirma que no existe otro writer sobre los mismos owners.
+6. confirma que no existe otro writer sobre los mismos owners desde el namespace
+   del host; un `ps` dentro de un sandbox puede mostrar sólo sus procesos.
 
 ```bash
+Neocortex --doctor-platform --doctor-platform-json
 Neocortex status --scope all
 Neocortex --state-health --state-health-json
 ```
@@ -23,10 +26,14 @@ Neocortex --state-health --state-health-json
 No inspecciones SQLite viva con clientes ordinarios. Durante una corrida larga
 observa el stream, transcript, proceso y cgroup; espera el estado terminal antes
 de abrir owners salvo que una superficie pública garantice una lectura compatible.
+La ausencia de WAL no demuestra quiescencia y un fallo de fence no se corrige
+borrando sidecars ni sustituyendo el lector por `mode=ro`.
 
 ## Piloto
 
-Empieza con 20–50 elementos y 10–15 minutos. Para PDF:
+Empieza con una raíz que contenga sólo 20–50 elementos autorizados y cerca la
+corrida completa a 10–15 minutos. `--max-count` limita PDFs, no el inventario
+común; el timeout por documento tampoco es un deadline global. Para PDF:
 
 ```bash
 Root="$HOME/Documentos/NeoCortex/Pilot"
@@ -104,6 +111,10 @@ mientras backend, versión y fingerprint deben permanecer explícitos. Escoger
 `--route text,code` limita expresamente una ejecución, no redefine `--all` ni
 convierte una generación parcial en una publicación completa.
 
+Los límites de inventario y verificación no equivalen a un deadline durable
+global de `--all`: el lifecycle entre workers y la uniformidad de reanudación
+siguen siendo trabajo objetivo de 0.13.0.
+
 ## Modelos y herramientas externas
 
 ```bash
@@ -176,8 +187,8 @@ La [instalación ordinaria offline](LINUX_KUBUNTU.md#instalación-ordinaria-desd
 en venv CPython 3.13 no promueve una release ni requiere Git. El procedimiento
 siguiente conserva el contrato de instalación personal CPython 3.14.
 
-La instalación personal es offline y reproducible desde un wheelhouse local
-autenticado:
+La construcción e instalación de paquetes Python es offline y reproducible
+desde un wheelhouse local autenticado:
 
 ```bash
 python3.14 tools/release_linux.py install \
@@ -186,13 +197,19 @@ python3.14 tools/release_linux.py install \
 python3.14 tools/release_linux.py verify
 ```
 
-No existe fallback de red. El wheelhouse contiene `wheelhouse-manifest.json`,
-wheels compatibles y hashes. Si falta una dependencia, la instalación se
-abstiene; no cambies constraints para sortearla.
+No existe fallback de red para esos paquetes. El wheelhouse contiene
+`wheelhouse-manifest.json`, wheels compatibles y hashes. Si falta una dependencia,
+la instalación se abstiene; no cambies constraints para sortearla.
+
+`--prepare-models` es una operación adicional explícita que puede adquirir pesos
+y requiere su autorización; omítela cuando sólo corresponda usar modelos locales.
 
 Una release termina cuando artefacto, manifest, launcher y `source_sha`
 coinciden, el smoke público pasa sin `PYTHONPATH`, el replay es verificable,
 staging queda vacío y sólo permanecen `current` y el rollback inmediato.
+Conserva además la distinción entre corpus operativo y raíz temporal de smoke;
+la semántica de instalación, overrides y verificación está en
+[LINUX_KUBUNTU.md](LINUX_KUBUNTU.md#verificación).
 
 ## Auditorías técnicas
 

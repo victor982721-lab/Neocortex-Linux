@@ -48,8 +48,8 @@ iniciarse una consulta nueva.
 
 **IMPLEMENTED — ReviewTask advisory:** `curate review` publica una página del
 plan completo como tareas de revisión, y `curate decide` registra por CAS una
-decisión humana. La release instalada previa puede requerir una instalación
-desde el SHA final para exponerlas.
+decisión humana. Son interfaces de 0.12.0; su presencia no demuestra que la
+instalación incluya las correcciones posteriores del checkout.
 
 ```bash
 Neocortex curate review PLAN_ID --limit 50 --json
@@ -209,6 +209,7 @@ del corpus ni produce evidencia de validación del repositorio.
 ## Estado y salud
 
 ```bash
+Neocortex --doctor-platform --doctor-platform-json
 Neocortex --status --status-json
 Neocortex --state-health --state-health-json
 Neocortex --knowledge-status --knowledge-json
@@ -218,6 +219,11 @@ Neocortex --code-status --code-json
 
 Los comandos distinguen `complete`, `partial`, `unavailable`, `blocked`, schemas
 futuros y corrupción. Ausencia de resultados no se presenta como éxito.
+
+El doctor de plataforma separa `paths` canónicos de `effective_paths`, que
+incluyen `--root`, `--state-directory` y overrides de entorno. No crea los
+directorios que informa, por lo que permite detectar una raíz temporal heredada
+del launcher sin abrir el corpus ni producir estado.
 
 ## Búsquedas especializadas
 
@@ -321,11 +327,19 @@ en `page`; review añade `publication`, y decide devuelve el evento e
 exactos pertenecen al comando y su ayuda; como regla:
 
 - `0`: operación solicitada completada dentro de la cobertura declarada;
-- `2`: uso inválido, abstención operativa o cobertura incompleta bajo modo
-  estricto;
+- `2`: uso inválido, abstención operativa, fallo tipado de inventario/ruta/SQLite
+  o cobertura incompleta bajo modo estricto;
 - `5`: cambió el snapshot, digest o event head esperado;
 - `7`: estado corrupto;
+- `130`: cancelación mediante interrupción;
 - otros códigos no se normalizan a éxito y deben conservar su diagnóstico.
+
+Los fallos tipados durante procesamiento no continúan la etapa Semantic de
+`--all` ni imprimen un resumen de éxito. Con `NEOCORTEX_PROGRESS_STREAM=1`, el
+evento terminal `NEOCORTEX_PROGRESS` de `framework/result` declara `finished=true`
+pero `completion=incomplete`, con `status=failed` o `cancelled`, código de salida,
+causa acotada y rutas fallidas. Que termine una fase no acredita el éxito global;
+los errores inesperados conservan su propagación y diagnóstico.
 
 No uses la ausencia de traceback como prueba de completitud. Para procedimientos,
 límites y replay consulta [OPERATIONS.md](OPERATIONS.md).

@@ -134,9 +134,10 @@ inventory, framework, catalog, pdf, docx, office, audio,
 video, image, semantic, code, archive, text
 ```
 
-Cada owner controla su schema y migraciones. `SQLiteReadSession` selecciona un
-modo compatible con la actividad del owner; abrir una base viva con `mode=ro`
-ordinario no es una observación garantizada porque SQLite puede tocar sidecars.
+Cada owner controla su schema y migraciones. Los lectores eligen una estrategia
+de `SQLiteReadSession` compatible con la actividad del owner; abrir una base
+viva con `mode=ro` ordinario no es una observación garantizada porque SQLite
+puede tocar sidecars.
 
 Las publicaciones owner-local usan staging y cambio atómico de head. Las vistas
 multi-owner se validan contra el protocolo de publicación cross-owner y se
@@ -234,6 +235,18 @@ El coordinador limita CPU/memoria y registra fases. Writers toman exclusión
 cooperativa; backup, restore y purge requieren exclusión más fuerte. Los
 subprocesos tardíos no pueden publicar sobre un head nuevo. Un fallo alrededor
 de la frontera de efecto produce un estado conciliable, no un reintento ciego.
+
+La terminación de procesos aislados identifica el wrapper propio por PID y
+starttime y limpia su grupo original aunque el líder ya haya terminado. Este
+límite de PGID no contiene descendientes que creen otra sesión o grupo.
+
+Antes de iniciar workers de contenido, `FrameworkState.route_candidate_snapshot()`
+publica una copia temporal desde la conexión writer que ya posee el owner, con
+lectura fijada, copia por páginas y comprobación acotada. `FrameworkRouteState`
+usa esa vista inmutable sólo para candidatos; eventos, ReviewTasks, acciones y
+lifecycle conservan el owner original. La copia vive hasta que terminan todos
+los workers, incluso ante error o cancelación, sin abrir un lector ordinario
+en el origen ni relajar los fences de `SQLiteReadSession`.
 
 ## Brechas vigentes
 

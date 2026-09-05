@@ -1,13 +1,14 @@
 # Roadmap de NeoCortex
 
-> Actualizado el 4 de septiembre de 2026. Un estado aquí no sustituye código,
+> Actualizado el 5 de septiembre de 2026. Un estado aquí no sustituye código,
 > pruebas ni una release instalada desde el SHA final.
 
 ## Convención de estado
 
-- **CURRENT:** frontera que rige el producto ahora.
-- **IMPLEMENTED:** presente en el checkout y cubierto por pruebas focales, pero
-  pendiente de promoción desde el SHA final cuando corresponda.
+- **CURRENT:** frontera operativa y de seguridad vigente, no identidad de la
+  instalación.
+- **IMPLEMENTED:** presente en el checkout y cubierto por pruebas focales; su
+  disponibilidad instalada depende del SHA del manifest y del comando público.
 - **TARGET:** todavía no implementado.
 
 ## Resultado buscado
@@ -20,7 +21,7 @@ La seguridad se mide por separación de efectos, identidad, revalidación,
 Papelera reversible y recovery. Abstenerse es correcto ante una precondición
 incierta, pero no cuenta como funcionalidad entregada para los casos soportados.
 
-## Línea base 0.9.0
+## Capacidades de la fuente actual
 
 | Capacidad | Estado |
 |---|---|
@@ -134,16 +135,19 @@ el grant y el intento. El restore no-replace de fixtures ya está implementado e
 el corte 0.11.1, pero esos gates reales no se ejecutaron para evitar tocar el
 escritorio o el corpus real.
 
-## 0.12.0 — Escala e inteligencia ampliada (publicada)
+## 0.12.0 — Inventario reanudable y verificación acotada
 
-**Resultado:** la ruta aprobada mantiene utilidad sobre árboles de más de
-100,000 archivos.
+**Resultado demostrado:** inventario y verificación exacta acotados, con
+checkpoint/replay sobre fixtures y un benchmark de 100,001 archivos sintéticos.
+Ese benchmark no demuestra extracción multimodal, búsqueda ni `--all` sobre
+100,000 documentos reales.
 
-La release `0.12.0` quedó instalada y verificada desde el `main` final, con
-manifest, launcher, `current`, rollback, smoke público y replay de inventario
-sobre fixtures temporales.
+La instalación personal de este corte y sus comprobaciones están registradas en
+el handoff de 0.12.0. Los cambios posteriores de la fuente se distinguen en
+[CHANGELOG.md](CHANGELOG.md); publicar una corrección en `main` no actualiza por
+sí solo el launcher ni el artefacto instalado.
 
-**Implementado y publicado:**
+**Implementado en la fuente:**
 
 - `CurationWorkBudget` opcional para verificación exacta, con límites de items,
   archivos, bytes, deadline monotónico y cancelación cooperativa;
@@ -155,9 +159,10 @@ sobre fixtures temporales.
   comparación exacta;
 - fixtures de replay, paginación, límites, cancelación y previews SQLite
   fenced, todos contenidos en temporales.
-- contrato `neocortex.curation-checkpoint/v1` con manifests canónicos bounded,
+- contrato `neocortex.curation-checkpoint/v2` con manifests canónicos bounded,
   validación de root/source/plan/snapshot drift, batch digests, presupuesto
-  acumulado y sucesor idempotente por página mediante API/SDK;
+  acumulado y sucesor idempotente por página mediante API/SDK; las correcciones
+  posteriores al corte 0.12.0 conservan lectura de v1 sin reescribir sus bytes;
 - streaming de verificación con buffers fijos y benchmark opt-in de 100,001
   archivos sintéticos, con throughput, memoria, batches, commits y ETA.
 - contrato `neocortex.inventory-resume/v1` para el inventario DFS, con orden
@@ -181,23 +186,40 @@ sobre fixtures temporales.
 - políticas de canonicalización y versiones con evaluación representativa;
 - acciones MCP opcionales sólo con concesión humana externa y el mismo ledger.
 
-Criterios de aceptación:
+Criterios verificados del corte acotado:
 
 - benchmark reproducible informa archivos/s, bytes/s, memoria, commits y ETA;
 - cancelación deja checkpoint válido;
 - reanudación y replay terminal concilian el inventario contra una corrida
   determinista limpia, rechazan drift y no duplican filas;
-- el estado final concilia conteos de entrada, decisiones, efectos y salida en los
-  owners locales;
-- precisión/recall y falsos positivos se miden en fixtures etiquetados;
 - no se reduce seguridad para ganar throughput.
+
+La conciliación integral entre owners y las métricas de precisión/recall para
+clasificación multimodal siguen siendo objetivos, no resultados de ese benchmark.
+
+## 0.13.0 — TARGET: lifecycle durable de --all
+
+**Resultado objetivo:** reanudar una corrida multimodal interrumpida desde sus
+inputs y publicaciones durables, conservando cobertura, errores y presupuesto
+entre workers, sin repetir trabajo ya comprometido.
+
+- Integrar inventario, rutas y publicaciones en un lifecycle comprobable; los
+  checkpoints DFS y page-level existentes no equivalen todavía a ese contrato.
+- Compartir un presupuesto global de trabajo, deadline y cancelación entre
+  workers, con observabilidad de avance y reanudación.
+- Probar primero 20–50 fixtures heterogéneos: interrupción, replay terminal,
+  drift y paridad de envelopes CLI/API/SDK frente a una corrida limpia.
+- Conservar los fences de lectores y la separación entre consulta, producción
+  de estado y efectos físicos; ni KIO real ni corpus personal forman parte del
+  piloto de desarrollo.
 
 ## Orden inmediato
 
-1. Mantener `verification_mode` explícito, cerrar las regresiones SQLite de estos
-   lectores y conservar MCP sin autoridad de mutación.
-2. Promover KIO/restore de escritorio y sincronización de caches sólo mediante
-   gates humanos independientes, sin alterar el alcance de esta tranche.
+1. Corregir y comprobar los defectos observados del recorrido actual, con
+   publicación de código e instalación como barreras separadas.
+2. Diseñar los fixtures y contratos de 0.13.0 antes de ampliar escala.
+3. Mantener KIO/restore de escritorio, sincronización de caches y cualquier
+   autoridad MCP como gates independientes, no como requisitos de ese piloto.
 
 ## Límites
 

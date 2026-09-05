@@ -1,8 +1,8 @@
 # Kubuntu/Linux
 
 NeoCortex `0.12.0` tiene como única plataforma activa Kubuntu/Ubuntu 26.04
-x86-64. CPython 3.14 es el runtime personal de referencia y 3.13 permanece como
-piso sintáctico.
+x86-64, con CPython 3.13–3.14 con GIL. CPython 3.14 es el runtime personal de
+referencia y 3.13 dispone de la instalación ordinaria offline descrita aquí.
 
 ## Rutas XDG
 
@@ -157,11 +157,24 @@ python3.14 tools/release_linux.py install \
 python3.14 tools/release_linux.py verify
 ~~~
 
+`install --corpus-root` define la raíz operativa persistente; es opcional y, si
+se omite, usa la política de plataforma, no `NEOCORTEX_CORPUS_ROOT` del proceso.
+La instalación y `verify` crean automáticamente otra raíz vacía temporal para
+sus smokes, la eliminan al terminar y nunca la graban como corpus operativo.
+No existe un argumento `--smoke-corpus-root`.
+
+El launcher conserva el default instalado y admite `NEOCORTEX_CORPUS_ROOT` como
+override por proceso, sin reconfigurar la instalación. `verify --corpus-root`
+no cambia ese default: comprueba que coincida con el receipt. Rollback conserva
+la raíz operativa del último receipt, no la de un smoke histórico.
+
 Si falta una rueda o no coincide su hash, la instalación falla cerrada. No
 modifiques constraints ni uses paquetes globales para completar el entorno.
 
-`--prepare-models` es explícito. Los modelos compartidos se conservan fuera de
-las releases y se verifican antes de promover el launcher.
+`--prepare-models` es una adquisición explícita que puede descargar pesos;
+no está cubierta por el cierre offline de paquetes Python. Omítela si no está
+autorizada esa adquisición. Los modelos compartidos se conservan fuera de las
+releases y se verifican antes de promover el launcher.
 
 ## Verificación
 
@@ -169,12 +182,20 @@ Una release válida demuestra:
 
 1. `source_sha` del manifest igual al SHA construido;
 2. árbol inmutable y dependencias compatibles;
-3. launcher y alias resuelven a `current`;
+3. receipt, manifest, launcher y alias concilian con `current`, y el contenido
+   exacto y hash del launcher se comprueban antes de ejecutarlo;
 4. comandos públicos funcionan sin `PYTHONPATH`;
 5. desktop file y PySide6 offscreen pasan cuando se solicitó KDE;
-6. smoke y replay usan fixtures, no el corpus real;
+6. los smokes automáticos usan una raíz vacía temporal y el replay del producto
+   usa fixtures contenidos, no el corpus real;
 7. sólo quedan `current` y el rollback inmediato;
 8. staging queda vacío.
+
+Cuando el runtime expone `effective_paths.corpus`, `verify` comprueba la raíz
+efectiva. Un runtime anterior que no entregue ese campo informa
+`verification_effective_corpus_checked=false`, no una comprobación inventada.
+Un launcher legacy que descarta el override requiere reparación o promoción
+autorizada; actualizar el helper en fuente no modifica el launcher instalado.
 
 ## Estado actual de mutación
 

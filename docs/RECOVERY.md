@@ -127,8 +127,9 @@ La ausencia de la ruta original no demuestra que el archivo esté en Papelera.
 
 La foundation KIO preparada ya clasifica `blocked`, `recovery_required` y
 `applied`, y sólo produce `KioTrashReceipt` cuando el caller confirma ausencia
-del origen y evidencia de Papelera. No está conectada al lifecycle de acciones ni
-incluye por sí sola restauración, autorización o prueba same-filesystem.
+del origen y evidencia de Papelera. `KioTrashBackend` la conecta al lifecycle
+grant-bound mediante un runner y un verificador inyectados; la foundation por
+sí sola no aporta restauración, autorización ni prueba same-filesystem.
 
 La integración de `0.11.x` localiza el efecto por receipt y metadata de KIO, no
 asume que el nombre original quedó intacto y exige un backend inyectado para

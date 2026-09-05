@@ -53,7 +53,8 @@ Neocortex inspect lineage IDENTIFICADOR --scope personal
 Neocortex curate plan --limit 20
 ```
 
-Si el estado no tiene cobertura, prueba una sola ruta sobre una muestra acotada.
+Si el estado no tiene cobertura, prueba una sola ruta sobre una raíz que ya
+contenga únicamente 20–50 archivos autorizados.
 Esta corrida sí lee contenido y actualiza estado, aunque no modifica los
 originales:
 
@@ -64,17 +65,19 @@ Neocortex --root "$Root" --route pdf --max-count 25 --strict-exit-codes
 ```
 
 Repite el mismo comando y revisa cache, errores y tiempo antes de ampliar el
-alcance. `--all` ejecuta todas las rutas de contenido registradas, incluida Code
+alcance. `--max-count` limita PDFs, no el inventario completo. `--all` ejecuta
+todas las rutas de contenido registradas, incluida Code
 como contenido; no ejecuta el código observado ni reintroduce el antiguo
 autoanálisis del propio repositorio.
 
 ## Ruta de curación actual
 
 **CURRENT:** `curate plan` consulta la página estable y paginada del plan local
-sin abrir una ruta nueva ni escribir estado. **IMPLEMENTED en el checkout:**
+sin abrir una ruta nueva ni escribir estado. **IMPLEMENTED:**
 `curate review` publica ReviewTasks advisory, `curate decide` registra por CAS
-una decisión humana y `curate authorize` emite un grant durable separado; la
-release instalada puede requerir promoción desde el SHA final para exponerlos.
+una decisión humana y `curate authorize` emite un grant durable separado. Estas
+interfaces forman parte de 0.12.0, pero compartir versión no implica compartir
+SHA: los cambios posteriores requieren comprobar el manifest instalado.
 
 ```bash
 Neocortex curate plan --limit 20

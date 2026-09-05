@@ -60,19 +60,29 @@ tiene `knowledge.sqlite3`.
 No abras una base viva con `sqlite3.connect(...mode=ro...)` como si fuera
 byte-neutral. SQLite puede crear o tocar `-wal`/`-shm`.
 
-`SQLiteReadSession` distingue:
+`SQLiteReadSession` ofrece:
 
-- `immutable_strict` para una base sin sidecars y con fence verificable;
-- `snapshot_temp` cuando debe capturarse un conjunto consistente;
-- `writer_coordinated` sólo dentro de una frontera que posee coordinación.
+- `immutable_strict` para un owner quiescente, sin sidecars activos y con fence
+  verificable hasta el cierre;
+- `snapshot_temp` para copiar main y sidecars con fence antes/después de la
+  copia y reintentos acotados ante drift; si no obtiene un conjunto estable,
+  se abstiene con `ImmutableSQLiteUnavailable`.
+
+`writer_coordinated` identifica una frontera que debe aportar el owner writer,
+no un modo genérico que esta clase pueda abrir. Un snapshot temporal ya validado
+queda desligado de escrituras posteriores del origen; no promete capturar un
+owner que cambia continuamente mientras se copian sus bytes.
+
+Los candidatos del pipeline integrado usan una publicación específica del writer
+Framework, no ese modo genérico; véase [concurrencia](ARCHITECTURE.md#concurrencia-y-recuperación).
 
 Una consulta pública no crea bases ausentes, no migra y no hace checkpoint. Los
 schemas `future`, incompatibles o corruptos producen abstención tipada.
 
 Un WAL vacío con SHM presente no demuestra que no exista un writer. La
 selección automática utiliza un snapshot en ese caso, sin retirar sidecars del
-origen. Tanto las sesiones como las conexiones bare estrictas verifican el
-fence al cerrar. Health incluye sidecars huérfanos de owners desconocidos y
+origen. Las sesiones `immutable_strict` y las conexiones bare estrictas verifican
+el fence al cerrar. Health incluye sidecars huérfanos de owners desconocidos y
 aplica un presupuesto cooperativo a SQL y a las etapas de comprobación; no
 promete interrumpir de forma forzosa una llamada de filesystem o Python
 bloqueada.

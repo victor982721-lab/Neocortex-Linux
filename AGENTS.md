@@ -64,12 +64,14 @@ Alias:     ~/.local/bin/Neocortex
    frontera de efecto.
 10. **Papelera antes que borrado.** La foundation KIO preparada implementa
     preflight, revalidación y resultados conciliables para `move <origen>
-    trash:/`, pero no está integrada ni promovida. Nunca uses `gio trash` ni
-    invoques KIO real sin un gate explícito y fixtures contenidos.
+    trash:/`, integrada sólo mediante backends inyectados sobre fixtures, no
+    promovida al escritorio. Nunca uses `gio trash` ni invoques KIO real sin un
+    gate explícito y fixtures contenidos.
 11. **AuthorizationGrant separado.** `curate authorize` sólo puede emitir un
     grant append-only ligado a un plan completo y ReviewTasks humanas resueltas,
-    no convierte una decisión ReviewTask en permiso implícito y todavía no
-    crea `file_actions` ni aplica efectos.
+    no convierte una decisión ReviewTask en permiso implícito y no crea
+    `file_actions` ni aplica efectos. El consumo del grant corresponde a
+    `curate apply`, cuyo backend sólo se inyecta explícitamente en fixtures.
 
 El fallo cerrado se aplica a la frontera que carece de evidencia o autoridad,
 no a la observación, la clasificación, la explicación de incertidumbre ni la
@@ -141,7 +143,9 @@ de forma implícita.
 
 Una comprobación focal verde no es aceptación integral. Un commit local no es
 publicación. Si el alcance exige `main`, verifica `HEAD == main == origin/main`,
-árbol limpio y artefacto instalado desde ese SHA.
+árbol limpio y las comprobaciones proporcionales. Sólo si también incluye una
+release, exige el artefacto instalado desde ese SHA y su launcher verificado;
+publicar código no autoriza por sí solo promover una instalación.
 
 ## Dependencias y releases
 

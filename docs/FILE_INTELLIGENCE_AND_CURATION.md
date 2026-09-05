@@ -18,10 +18,10 @@ explique la incertidumbre y prepare una propuesta útil para revisión.
 
 ## Etiquetas de estado
 
-- **CURRENT:** frontera vigente del producto, aunque una capacidad nueva aún no
-  esté instalada desde el SHA final.
-- **IMPLEMENTED:** código y pruebas presentes en el checkout; requiere promoción
-  para considerarse disponible en el launcher instalado.
+- **CURRENT:** frontera operativa y de seguridad vigente; no acredita el SHA de
+  una instalación.
+- **IMPLEMENTED:** código y pruebas presentes en el checkout; la disponibilidad
+  en el launcher se comprueba contra su manifest y su interfaz pública.
 - **TARGET:** contrato futuro que todavía no existe como capacidad pública.
 
 ## Recorrido del producto
@@ -112,7 +112,8 @@ Las brechas principales son:
   pública unificada;
 - MCP expone plan, scan, verify y las escrituras advisory `curation_review` y
   `curation_decide`, pero no `authorize`: falta un principal autenticado;
-- Linux no aplica movimientos ni Papelera;
+- la CLI ordinaria no selecciona un backend físico; movimientos y restore se
+  validan sólo con inyección explícita sobre fixtures;
 - progreso, cancelación y replay no son uniformes en todos los productores.
 
 ## Decisión Linux para Papelera
@@ -123,10 +124,11 @@ configuración y snapshot, ejecuta mediante un runner inyectable
 `move <origen> trash:/` y exige verificación del caller antes de emitir receipt.
 No está conectada a la CLI de aplicación, promovida ni probada contra KIO real.
 
-La integración de producto añadirá raíz, permisos, locks, autorización,
-same-filesystem y recovery sobre esa foundation. Después comprobará la ausencia
-del origen, la entrada esperada en `trash:/`, su metadata de restauración y el
-receipt. Un timeout, error ambiguo, configuración KDE no escribible, symlink,
+La integración grant-bound ya revalida raíz, autorización, límites e identidad
+y conserva ledger y recovery con backends inyectados. La promoción KIO real
+todavía debe demostrar permisos y locks efectivos, ausencia del origen, entrada
+esperada en `trash:/`, metadata de restauración y receipt en el escritorio.
+Un timeout, error ambiguo, configuración KDE no escribible, symlink,
 hard link no admitido, mount inseguro o cambio concurrente deja
 `recovery_required` y no se reintenta a ciegas.
 

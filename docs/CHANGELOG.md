@@ -13,26 +13,49 @@ fuera de `docs/`.
   tamaño de página, revalidan replay terminal y distinguen cobertura parcial
   de paginación terminada, manteniendo lectura de manifests v1.
 - Inventario corrige digest terminal y orden DFS, respeta interrupciones vacías,
-  aísla nombres POSIX no representables y conserva el dispositivo observado.
+  aísla nombres POSIX no representables y conserva el dispositivo observado;
+  el cursor de un lote parcial termina en el último archivo admitido, y el
+  replay rechaza filas adicionales o conteos/bytes incongruentes.
 - Curación verifica outcomes, identidad y evidencia de Papelera también durante
   preview, reconciliación y replay; audio/video revalidan el archivo antes de
   reutilizar caché basada en metadatos.
 - Lecturas SQLite estrictas verifican el fence al cerrar; health distingue WAL
   vacío de inactividad e incluye sidecars desconocidos y presupuesto cooperativo.
+- Las rutas de contenido comparten candidatos de un snapshot publicado desde
+  la conexión writer Framework, mientras progreso y lifecycle escriben en el
+  owner original; la vista permanece válida hasta que terminan los workers.
 - CLI/MCP conservan errores tipados de entrada/dependencias, rechazan valores
   booleanos inválidos y envelopes contradictorios o con colisiones de claves.
+- Los fallos tipados de inventario, rutas y snapshots SQLite cierran el progreso
+  con resultado incompleto y salida 2, sin ejecutar Semantic ni presentar éxito;
+  una interrupción conserva estado cancelado y salida 130.
 - El sdist incluye el cierre local de la herramienta de release y el staging
   verifica los archivos contra el commit identificado, sin depender de una
   segunda lectura del checkout mutable.
+- Release separa el corpus operativo de los smokes temporales, respeta overrides
+  por proceso y valida el launcher antes de ejecutarlo; rollback conserva la
+  raíz operativa y un manifest ausente o corrupto nunca autoriza a retirar la
+  release activa.
 - Instalación ordinaria CPython 3.13 desde archivos sin Git, con cierre offline
   versionado de runtime, construcción, pruebas base y documentos/imagen,
   separado del wheel instalado y de la promoción personal CPython 3.14.
 - Ayuda, estado publicado y contratos ligeros independientes de inferencia y
   Qt; diagnóstico distingue requisitos compatibles, presencia y comprobación.
+- El doctor de plataforma separa rutas canónicas de rutas efectivas por
+  argumentos o entorno, sin crear directorios ni estado.
 - Memoria y CPU consideran límites/consumo de cgroups v2, presión y afinidad,
   conservando los controles y presupuestos del producto.
+- Timeout, cancelación y cierre normal limpian el grupo original de workers aislados aunque
+  su líder ya haya terminado, con identidad del wrapper y limpieza acotada;
+  no se amplía esa garantía a procesos que abandonen el PGID.
 - Modelos locales inspeccionables por selección, sin descarga durante el
   procesamiento offline ni sustitución de backend, pesos o identidades.
+- Semantic rechaza fuentes bloqueadas antes de cargar modelos o crear
+  generaciones, comprueba la deriva de los heads antes de publicar e invalida
+  sólo sus candidatos `building` para permitir un nuevo intento, conservando
+  jobs, historia y el head anterior. Imagen vacía concilia como `done`, y
+  `embed_ocr_text` participa en el ledger para impedir replay de una política
+  obsoleta.
 - Suite seleccionable por capacidades antes de colección y fixtures pequeños
   que recorren CLI, owners SQLite y replay del producto instalado.
 - Muestreo de video acotado por frecuencia al final del clip, con una política
