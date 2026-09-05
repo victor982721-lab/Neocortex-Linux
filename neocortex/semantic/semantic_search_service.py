@@ -548,6 +548,7 @@ def _image_abstention_ranking(
                 "positive_queries": calibration.positive_queries,
                 "negative_queries": calibration.negative_queries,
                 "sample_items": calibration.sample_items,
+                "indexed_processing_signature": calibration.indexed_processing_signature,
             }
         )
     return SemanticRanking(
@@ -572,6 +573,7 @@ def _image_calibration_mismatch(
     *,
     query_model: EmbeddingModelSpec,
     indexed_model: EmbeddingModelSpec,
+    indexed_processing_signature: str | None,
 ) -> str | None:
     if calibration.query_model_signature != query_model.model_signature:
         return "query_model_not_calibrated"
@@ -579,6 +581,11 @@ def _image_calibration_mismatch(
         return "indexed_model_not_calibrated"
     if calibration.pipeline != SEMANTIC_PIPELINE_VERSION:
         return "pipeline_not_calibrated"
+    if calibration.indexed_processing_signature is not None:
+        if indexed_processing_signature is None:
+            return "indexed_processing_signature_unavailable"
+        if calibration.indexed_processing_signature != indexed_processing_signature:
+            return "indexed_processing_signature_not_calibrated"
     return None
 
 
@@ -623,6 +630,7 @@ def apply_image_retrieval_calibration(
         "positive_queries": calibration.positive_queries,
         "negative_queries": calibration.negative_queries,
         "sample_items": calibration.sample_items,
+        "indexed_processing_signature": calibration.indexed_processing_signature,
         "score_interpretation": "cosine_similarity_retrieval_floor_not_probability",
         "raw_hits": len(ranking.hits),
         "retained_hits": len(retained_hits),
@@ -884,15 +892,22 @@ def image_search_ranking(
             calibration=calibration,
         )
     if calibration is None:
+        from .image_retrieval_calibration import load_image_retrieval_calibration
+
+        calibration = load_image_retrieval_calibration(database)
+    if calibration is None:
         return _image_abstention_ranking(
             intent=query_intent,
             reason="image_retrieval_not_calibrated",
             calibration=None,
         )
+    from .image_retrieval_calibration import current_image_processing_signature
+
     if mismatch := _image_calibration_mismatch(
         calibration,
         query_model=query_model,
         indexed_model=indexed_model,
+        indexed_processing_signature=current_image_processing_signature(database),
     ):
         return _image_abstention_ranking(
             intent=query_intent,

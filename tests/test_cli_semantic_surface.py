@@ -110,6 +110,16 @@ EXPECTED_SEMANTIC_ACTIONS = (
         help_text="incrementally index existing durable text caches, images, or both",
     ),
     _expected_store(
+        "--semantic-image-calibrate",
+        "semantic_image_calibrate",
+        type_name="Path",
+        metavar="DATASET.json",
+        help_text=(
+            "measure and persist a bounded local CLIP image-retrieval calibration "
+            "from labelled queries"
+        ),
+    ),
+    _expected_store(
         "--semantic-max-items",
         "semantic_max_items",
         default=50,
@@ -254,6 +264,9 @@ EXPECTED_SEMANTIC_HELP = (
     "  --semantic-index {text,image,all}\n"
     "                        incrementally index existing durable text caches,\n"
     "                        images, or both\n"
+    "  --semantic-image-calibrate DATASET.json\n"
+    "                        measure and persist a bounded local CLIP image-\n"
+    "                        retrieval calibration from labelled queries\n"
     "  --semantic-max-items N\n"
     "                        maximum complete new or changed source items admitted\n"
     "                        by one semantic index run; exact replay is free\n"

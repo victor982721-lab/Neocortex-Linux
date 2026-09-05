@@ -314,6 +314,10 @@ class ImageRetrievalCalibration:
     positive_queries: int
     negative_queries: int
     sample_items: int
+    # Durable calibrations carry the exact indexed-generation contract.  The
+    # optional default preserves the Python API used by older callers and
+    # fixture tests; persisted v1 calibrations always populate it.
+    indexed_processing_signature: str | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -326,6 +330,11 @@ class ImageRetrievalCalibration:
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"image retrieval {name} cannot be blank")
+        if self.indexed_processing_signature is not None and (
+            not isinstance(self.indexed_processing_signature, str)
+            or not self.indexed_processing_signature.strip()
+        ):
+            raise ValueError("image retrieval indexed_processing_signature cannot be blank")
         if (
             isinstance(self.minimum_score, bool)
             or not isinstance(self.minimum_score, (int, float))

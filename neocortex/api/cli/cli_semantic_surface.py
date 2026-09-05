@@ -59,6 +59,15 @@ def register_semantic_arguments(parser: argparse.ArgumentParser) -> None:
         help="incrementally index existing durable text caches, images, or both",
     )
     semantic.add_argument(
+        "--semantic-image-calibrate",
+        type=Path,
+        metavar="DATASET.json",
+        help=(
+            "measure and persist a bounded local CLIP image-retrieval calibration "
+            "from labelled queries"
+        ),
+    )
+    semantic.add_argument(
         "--semantic-max-items",
         type=int,
         default=50,
@@ -285,6 +294,7 @@ def validate_semantic_arguments(args: argparse.Namespace) -> None:
         args.semantic_prepare_models
         or args.semantic_index is not None
         or args.semantic_search is not None
+        or args.semantic_image_calibrate is not None
         or args.semantic_classify is not None
         or code_semantic_search
         or integrated_all

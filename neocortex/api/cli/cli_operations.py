@@ -217,6 +217,13 @@ DIRECT_OPERATIONS: tuple[DirectOperation, ...] = (
         module_name=".cli_semantic",
     ),
     DirectOperation(
+        "semantic_image_calibrate",
+        "run_semantic_image_calibrate",
+        _SEMANTIC,
+        _VALUE,
+        module_name=".cli_semantic",
+    ),
+    DirectOperation(
         "semantic_classify",
         "run_semantic_classify",
         _SEMANTIC,

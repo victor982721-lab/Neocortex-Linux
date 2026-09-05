@@ -30,6 +30,10 @@ fuera de `docs/`.
 - El ledger de presupuesto se conecta al loop de rutas: cada worker reserva su
   workload una sola vez, los reintentos son idempotentes y cancelaciones o
   deadlines impiden cruzar la frontera de trabajo sin efecto parcial.
+- La búsqueda visual CLIP admite calibración local reproducible con una muestra
+  bounded de 20–50 imágenes, persiste el umbral en el owner Semantic ligado al
+  modelo y al `processing_signature`, y se abstiene ante ausencia o deriva del
+  contrato; la CLI expone medición, búsqueda y razones de candidatos rechazados.
 
 - Fingerprinting POSIX rechaza FIFO, symlinks y cambios de identidad sin bloquear;
   la captura de subprocesses usa descriptores no bloqueantes con un presupuesto

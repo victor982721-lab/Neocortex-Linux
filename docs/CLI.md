@@ -242,10 +242,37 @@ Neocortex --knowledge-search "consulta" --knowledge-json
 Neocortex --code-search "consulta" --code-search-mode hybrid --code-json
 Neocortex --code-projects --code-json
 Neocortex --code-reconstruct PROJECT_OR_ID --code-json
+Neocortex --semantic-index image --semantic-max-items 50
+Neocortex --semantic-image-calibrate /ruta/calibration.json \
+  --semantic-model-cache /ruta/models/fastembed
+Neocortex --semantic-search "pink flower" --semantic-search-mode image
 ```
 
 Los localizadores dependen del productor. Si una ruta no conserva página, celda,
 segmento o región, la salida no inventa esa precisión.
+
+La búsqueda visual usa CLIP local sólo cuando existe una calibración durable
+compatible con el modelo, el pipeline y el `processing_signature` de la
+generación de imágenes publicada; sin ella, o ante deriva de cualquiera de
+esos contratos, la consulta se abstiene y declara la razón. El archivo de
+calibración local conserva una muestra de 20–50 `sample_item_ids`, al menos
+tres `positive_queries` con `expected_item_ids` y tres `negative_queries`, por
+ejemplo:
+
+```json
+{
+  "schema": "neocortex-image-retrieval-calibration/v1",
+  "sample_item_ids": ["item:image:..."],
+  "positive_queries": [
+    {"query": "pink flower", "expected_item_ids": ["item:image:..."]}
+  ],
+  "negative_queries": ["a mountain landscape"]
+}
+```
+
+La calibración se escribe en el owner `semantic.sqlite3`, no en el corpus ni
+en un proveedor remoto, y la salida de búsqueda muestra el umbral, la muestra,
+la firma y los candidatos rechazados por debajo del piso medido.
 
 ## Compatibilidad plana de curación
 

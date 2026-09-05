@@ -21,6 +21,7 @@ __all__ = [
     "run_integrated_all_semantic_index",
     "run_semantic_classify",
     "run_semantic_evidence",
+    "run_semantic_image_calibrate",
     "run_semantic_index",
     "run_semantic_plan",
     "run_semantic_prepare_models",
@@ -1028,6 +1029,49 @@ def run_semantic_search(args: argparse.Namespace) -> int:
             f"evidence={evidence or '-'}"
         )
     return 0 if result.complete and available_rankings else 2
+
+
+def run_semantic_image_calibrate(args: argparse.Namespace) -> int:
+    """Measure and persist a bounded local image-retrieval calibration."""
+
+    from neocortex.runtime.control.locking import FrameworkRunLock
+    from neocortex.semantic.semantic_service import (
+        calibrate_image_retrieval,
+        persist_image_retrieval_calibration,
+    )
+
+    try:
+        _validate_semantic_state_write(
+            args.state_directory,
+            database=True,
+        )
+        with FrameworkRunLock(args.state_directory / "framework.lock"):
+            calibration, evidence = calibrate_image_retrieval(
+                args.state_directory,
+                args.semantic_image_calibrate,
+                model_cache=args.semantic_model_cache,
+                local_files_only=True,
+                threads=args.semantic_threads,
+                max_vectors=args.semantic_max_vectors,
+            )
+            persist_image_retrieval_calibration(
+                args.state_directory / "semantic.sqlite3",
+                calibration,
+                evidence,
+            )
+    except Exception as exc:
+        return _semantic_failure("semantic-image-calibrate", exc, offline=True)
+    print(
+        f"SEMANTIC_IMAGE_CALIBRATION signature={calibration.calibration_signature} "
+        f"generation={evidence.generation_id} sample_items={calibration.sample_items} "
+        f"positive_queries={calibration.positive_queries} "
+        f"negative_queries={calibration.negative_queries} "
+        f"positive_floor={evidence.positive_floor:.6f} "
+        f"negative_ceiling={evidence.negative_ceiling:.6f} "
+        f"minimum_score={calibration.minimum_score:.6f} "
+        f"processing_signature={calibration.indexed_processing_signature}"
+    )
+    return 0
 
 
 def run_semantic_classify(args: argparse.Namespace) -> int:

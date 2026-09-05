@@ -73,6 +73,14 @@ from .semantic_ontology import (
 )
 from .semantic_planner import SemanticPlanBlocked as SemanticPlanBlocked
 from .semantic_schema import initialize_semantic_state as initialize_semantic_state
+from .image_retrieval_calibration import (
+    ImageCalibrationError as ImageCalibrationError,
+    ImageCalibrationEvidence as ImageCalibrationEvidence,
+    current_image_processing_signature as current_image_processing_signature,
+    load_image_retrieval_calibration as load_image_retrieval_calibration,
+    measure_image_retrieval_calibration as measure_image_retrieval_calibration,
+    persist_image_retrieval_calibration as persist_image_retrieval_calibration,
+)
 from .semantic_service_contracts import (
     DEFAULT_SEARCH_MAX_VECTORS as DEFAULT_SEARCH_MAX_VECTORS,
     EVIDENCE_PAGE_SIZE as EVIDENCE_PAGE_SIZE,
@@ -173,6 +181,7 @@ __all__ = (
     "SemanticSourcePlan",
     "SemanticStatus",
     "SemanticWorkloadPlan",
+    "calibrate_image_retrieval",
     "classify_semantic_index",
     "index_image_embeddings",
     "index_text_embeddings",
@@ -672,6 +681,31 @@ def search_semantic_index(
         lexical_search=search_lexical_sources,
         evidence_mode=evidence_mode,
         image_calibration=image_calibration,
+        cancellation_check=cancellation_check,
+    )
+
+
+def calibrate_image_retrieval(
+    state_directory: Path,
+    dataset_path: Path,
+    *,
+    model_cache: Path | None = None,
+    local_files_only: bool = True,
+    threads: int | None = None,
+    max_vectors: int = DEFAULT_SEARCH_MAX_VECTORS,
+    cancellation_check: Callable[[], None] | None = None,
+) -> tuple[ImageRetrievalCalibration, ImageCalibrationEvidence]:
+    """Measure the durable local CLIP retrieval contract for one image head."""
+
+    database = state_directory / SEMANTIC_DATABASE_NAME
+    return measure_image_retrieval_calibration(
+        database,
+        dataset_path,
+        cache=_model_cache(state_directory, model_cache),
+        local_files_only=local_files_only,
+        threads=threads,
+        backend_factory=_backend,
+        max_vectors=max_vectors,
         cancellation_check=cancellation_check,
     )
 

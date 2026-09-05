@@ -244,6 +244,7 @@ EXPECTED_FIELDS = {
         "positive_queries",
         "negative_queries",
         "sample_items",
+        "indexed_processing_signature",
     ),
     "FusedResolvedHit": ("fused", "path", "source_kind", "source_identity", "snippet"),
     "SemanticSearchResult": ("query", "rankings", "lexical_rankings", "fused"),
@@ -362,7 +363,8 @@ EXPECTED_SIGNATURES = {
         "(calibration_signature: 'str', query_model_signature: 'str', "
         "indexed_model_signature: 'str', pipeline: 'str', backend: 'str', "
         "minimum_score: 'float', positive_queries: 'int', "
-        "negative_queries: 'int', sample_items: 'int') -> None"
+        "negative_queries: 'int', sample_items: 'int', "
+        "indexed_processing_signature: 'str | None' = None) -> None"
     ),
     "FusedResolvedHit": (
         "(fused: 'FusedHit', path: 'str | None', source_kind: 'str', "

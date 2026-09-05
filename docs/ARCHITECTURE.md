@@ -80,6 +80,12 @@ Knowledge crea un snapshot lógico sobre owners compatibles y fusiona rankings
 sin convertir scores heterogéneos en una sola certeza. Puede entregar evidencia
 y contexto citado, pero no genera autoridad de mutación.
 
+La búsqueda visual mantiene un contrato adicional de calibración local: el piso
+de similitud se mide sobre consultas positivas y negativas, se liga al modelo,
+pipeline y `processing_signature` del head de imágenes publicado y se guarda en
+el owner Semantic. Si el contrato deriva o no existe, la búsqueda visual falla
+cerrada con una abstención explicable en vez de presentar vecinos no calibrados.
+
 ### Review y curación
 
 Framework conserva batches, tareas, decisiones y eventos. **CURRENT:**

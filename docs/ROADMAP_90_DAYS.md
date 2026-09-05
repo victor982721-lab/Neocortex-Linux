@@ -181,7 +181,7 @@ sí solo el launcher ni el artefacto instalado.
 **Trabajo posterior, fuera del gate de 0.12.0:**
 
 - procedencia y localizadores estructurales para más formatos;
-- búsqueda visual y temporal calibrada;
+- búsqueda temporal calibrada y ampliación de la búsqueda visual calibrada;
 - cobertura generacional ampliada a owners que hoy son best-effort;
 - políticas de canonicalización y versiones con evaluación representativa;
 - acciones MCP opcionales sólo con concesión humana externa y el mismo ledger.

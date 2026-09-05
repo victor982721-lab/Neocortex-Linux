@@ -45,6 +45,7 @@ EXPECTED_PUBLIC_API = {
     "SemanticSourcePlan",
     "SemanticStatus",
     "SemanticWorkloadPlan",
+    "calibrate_image_retrieval",
     "classify_semantic_index",
     "index_image_embeddings",
     "index_text_embeddings",
