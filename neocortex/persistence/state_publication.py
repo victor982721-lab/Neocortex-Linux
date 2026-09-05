@@ -214,6 +214,7 @@ class StatePublicationTransaction:
     owners: tuple[str, ...]
     idempotency_key: str
     expected_epoch: int
+    manifest_sha256: str | None = None
 
     def commit(
         self,
@@ -229,7 +230,7 @@ class StatePublicationTransaction:
             status="complete",
             idempotency_key=self.idempotency_key,
             expected_epoch=self.expected_epoch,
-            manifest_sha256=manifest_sha256,
+            manifest_sha256=self.manifest_sha256 if manifest_sha256 is None else manifest_sha256,
             detail=detail,
             owner_heads=owner_heads,
         )
@@ -1115,6 +1116,7 @@ def begin_state_publication(
         owners=selected,
         idempotency_key=idempotency_key,
         expected_epoch=prepared.epoch,
+        manifest_sha256=manifest_sha256,
     )
 
 

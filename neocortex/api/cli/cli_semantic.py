@@ -623,6 +623,44 @@ def _record_integrated_semantic_stage(
         )
 
 
+def _begin_integrated_publication(
+    args: argparse.Namespace,
+    run_id: int | None,
+    *,
+    selected_sources: tuple[str, ...],
+    image_available: bool,
+):
+    """Prepare the logical Semantic/Code publication gate for an ``--all`` run."""
+
+    if run_id is None:
+        return None
+    from neocortex.persistence.framework_state_writer import FrameworkState
+    from neocortex.persistence.state_publication import (
+        begin_state_publication,
+        publication_idempotency_key,
+    )
+
+    with FrameworkState(args.state_directory / "framework.sqlite3", existing_only=True) as state:
+        manifest = state.read_run_manifest(run_id)
+    if manifest is None:
+        raise RuntimeError(f"run {run_id} has no manifest for Semantic publication")
+    owners = ("semantic", "code") if "code" in selected_sources else ("semantic",)
+    key = publication_idempotency_key(
+        "framework-all-semantic",
+        run_id,
+        selected_sources,
+        image_available,
+    )
+    return begin_state_publication(
+        args.state_directory,
+        operation="framework-all-semantic",
+        owners=owners,
+        idempotency_key=key,
+        manifest_sha256=str(manifest["digest"])[len("sha256:") :],
+        detail="Semantic owner work is pending its terminal lifecycle publication",
+    )
+
+
 def run_integrated_all_semantic_index(
     args: argparse.Namespace,
     *,
@@ -698,6 +736,27 @@ def run_integrated_all_semantic_index(
         ),
         idempotency_key="semantic:started",
     )
+    try:
+        publication = _begin_integrated_publication(
+            args,
+            run_id,
+            selected_sources=selected_sources,
+            image_available=image_available,
+        )
+    except BaseException as exc:
+        _record_integrated_semantic_stage(
+            args,
+            run_id,
+            "failed",
+            details=_integrated_stage_details(
+                args,
+                selected_sources=selected_sources,
+                image_available=image_available,
+                error=exc,
+            ),
+            idempotency_key="semantic:publication-failed",
+        )
+        raise
     if print_output:
         print(
             "SEMANTIC_ALL status=starting "
@@ -729,6 +788,8 @@ def run_integrated_all_semantic_index(
             result_sink=result_sink,
             print_output=print_output,
         )
+        if semantic_exit_code == 0 and publication is not None:
+            publication.commit(())
         _record_integrated_semantic_stage(
             args,
             run_id,

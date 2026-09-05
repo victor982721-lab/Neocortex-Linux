@@ -9,10 +9,14 @@ from pathlib import Path
 
 import pytest
 
-from neocortex.api.cli.cli_semantic import run_integrated_all_semantic_index
+from neocortex.api.cli.cli_semantic import (
+    _begin_integrated_publication,
+    run_integrated_all_semantic_index,
+)
 from neocortex.deduplication import DedupIndex, FileSnapshot, InventoryCheckpoint
 from neocortex.enumeration import JournalCursor
 from neocortex.persistence.framework_state_writer import FrameworkState
+from neocortex.persistence.state_publication import read_state_publication_state
 from neocortex.runtime.models import FrameworkConfig
 from neocortex.runtime.orchestration.orchestrator import FrameworkOrchestrator
 from neocortex.runtime.orchestration.route_registry import RouteAdapter
@@ -325,3 +329,28 @@ def test_integrated_semantic_skip_links_to_framework_run(tmp_path: Path) -> None
     assert stage["stage"] == "semantic"
     assert stage["status"] == "skipped"
     assert stage["details"]["publication"]["status"] == "absent"
+
+
+def test_integrated_semantic_publication_gate_is_durable_and_fail_closed(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    state_directory = tmp_path / "state"
+    state_directory.mkdir()
+    database = state_directory / "framework.sqlite3"
+    with FrameworkState(database) as state:
+        run_id = state.begin_initial_run(root, None)
+        state.publish_run_manifest(run_id, _manifest(run_id, root))
+
+    args = Namespace(state_directory=state_directory)
+    transaction = _begin_integrated_publication(
+        args,
+        run_id,
+        selected_sources=("pdf", "code"),
+        image_available=False,
+    )
+    assert transaction is not None
+    assert read_state_publication_state(state_directory).status == "blocked"
+    transaction.commit(())
+    view = read_state_publication_state(state_directory)
+    assert view.status == "complete"
+    assert view.epoch.owners == ("semantic", "code")
