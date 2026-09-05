@@ -48,7 +48,11 @@ from .semantic_service_contracts import (
     SemanticRanking,
     SemanticSearchResult,
 )
-from .semantic_sources import SEMANTIC_TITLE_POLICY, SEMANTIC_TITLE_SECTION_KIND
+from .semantic_sources import (
+    SEMANTIC_TITLE_POLICY,
+    SEMANTIC_TITLE_SECTION_KIND,
+    semantic_source_database,
+)
 from .semantic_state import (
     has_active_embeddings,
     load_embedding_model,
@@ -652,6 +656,7 @@ def default_lexical_paths(state_directory: Path) -> LexicalStatePaths:
         docx=state_directory / "docx.sqlite3",
         office=state_directory / "office.sqlite3",
         audio=state_directory / "audio.sqlite3",
+        video=semantic_source_database(state_directory, "video"),
         archive=state_directory / "archive.sqlite3",
         text=state_directory / "text.sqlite3",
     )

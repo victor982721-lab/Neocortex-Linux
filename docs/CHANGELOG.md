@@ -24,6 +24,8 @@ fuera de `docs/`.
 - Las rutas de contenido comparten candidatos de un snapshot publicado desde
   la conexión writer Framework, mientras progreso y lifecycle escriben en el
   owner original; la vista permanece válida hasta que terminan los workers.
+- La búsqueda lexical conecta también el owner canónico de video, sin declarar
+  cobertura completa cuando una base realmente falta.
 - CLI/MCP conservan errores tipados de entrada/dependencias, rechazan valores
   booleanos inválidos y envelopes contradictorios o con colisiones de claves.
 - Los fallos tipados de inventario, rutas y snapshots SQLite cierran el progreso
