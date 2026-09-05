@@ -161,14 +161,23 @@ Las cuatro superficies deben conservar operación, scope, cobertura, epoch,
 errores y evidencia equivalentes. La salida estructurada es contrato; el texto
 humano no debe convertirse de nuevo en datos mediante parsing.
 
-La primera tranche 0.12 incorpora `CurationWorkBudget` como límite opcional de la
+La tranche 0.12 incorpora `CurationWorkBudget` como límite opcional de la
 verificación exacta, con contabilidad de items, archivos y bytes, deadline
 monotónico y cancelación cooperativa. Un corte por presupuesto conserva los
 resultados ya observados y materializa el resto como `not_verified`. El contrato
 `neocortex.curation-checkpoint/v1` publica manifests bounded con root/source/plan
 digests, cursor, batch digest y presupuesto, y la API/SDK puede validar drift y
-crear un sucesor idempotente por página; esto no convierte la enumeración DFS en
-un checkpoint de inventario ni sustituye el benchmark de desarrollo.
+crear un sucesor idempotente por página.
+
+El inventario Linux añade `neocortex.inventory-resume/v1`: el productor
+checkpointado recorre cada directorio en orden determinista por bytes, conserva
+un cursor DFS, identidad de la raíz y digest de los directorios abiertos, además
+de los digests del prefijo y del último lote. El owner se escribe fuera del
+corpus con bytes canónicos, permisos `0600`, lock y avance monotónico; la
+reanudación elimina sólo el tail posterior al cursor, revalida el prefijo y
+rechaza drift de identidad, política, ancestros o lote antes de publicar. Un
+replay terminal valida el inventario vigente y devuelve el mismo `scan_id`; no
+expone mutación ni se anuncia como herramienta MCP.
 
 No existe una superficie de exportación o ZIP para el lifecycle de curación;
 Archive/ZIP sigue siendo únicamente una ruta de contenido.

@@ -134,7 +134,7 @@ el grant y el intento. El restore no-replace de fixtures ya está implementado e
 el corte 0.11.1, pero esos gates reales no se ejecutaron para evitar tocar el
 escritorio o el corpus real.
 
-## 0.12.0 — Escala e inteligencia ampliada (tranche 1 en curso)
+## 0.12.0 — Escala e inteligencia ampliada (tranche implementada, release pendiente)
 
 **Resultado:** la ruta aprobada mantiene utilidad sobre árboles de más de
 100,000 archivos.
@@ -156,13 +156,23 @@ escritorio o el corpus real.
   acumulado y sucesor idempotente por página mediante API/SDK;
 - streaming de verificación con buffers fijos y benchmark opt-in de 100,001
   archivos sintéticos, con throughput, memoria, batches, commits y ETA.
+- contrato `neocortex.inventory-resume/v1` para el inventario DFS, con orden
+  determinista por bytes, cursor de recorrido real, identidad de raíz y de los
+  directorios abiertos, digests de prefijo/directorio/lote, manifest canónico
+  acotado, escritura atómica `0600`, owner lock y actualización monotónica;
+  una interrupción deja un owner `partial` y una repetición terminal valida el
+  corpus antes de devolver el mismo `scan_id`.
+- `InventoryWorkBudget` global para archivos y bytes, deadline monotónico,
+  cancelación cooperativa y comprobaciones antes y después de cada transacción
+  bounded; los lotes de inventario mantienen el límite común de 10,000 filas.
+- fixtures de reanudación con cursor vacío, nombres cuyo prefijo es directorio,
+  drift de identidad/política, swap de ancestros y paridad contra una corrida
+  limpia, sin filas duplicadas ni omisiones y sin tocar corpus real.
 
-**Entregas aún requeridas para cerrar 0.12.0:**
+**Entregas aún requeridas para publicar 0.12.0:**
 
-- checkpoint DFS/owner durable de inventario y reanudación sin reconstrucciones
-  O(n) innecesarias;
-- integración del presupuesto global con el camino crítico y límites de disco
-  temporales;
+- construir desde el SHA final, verificar el wheelhouse autenticado y comprobar
+  manifest, launcher, `current`, rollback y smoke público;
 - procedencia y localizadores estructurales para más formatos;
 - búsqueda visual y temporal calibrada;
 - cobertura generacional ampliada a owners que hoy son best-effort;
@@ -173,6 +183,8 @@ Criterios de aceptación:
 
 - benchmark reproducible informa archivos/s, bytes/s, memoria, commits y ETA;
 - cancelación deja checkpoint válido;
+- reanudación y replay terminal concilian el inventario contra una corrida
+  determinista limpia, rechazan drift y no duplican filas;
 - el estado final concilia conteos de entrada, decisiones, efectos y salida en los
   owners locales;
 - precisión/recall y falsos positivos se miden en fixtures etiquetados;
@@ -180,16 +192,11 @@ Criterios de aceptación:
 
 ## Orden inmediato
 
-1. Diseñar el checkpoint DFS/owner durable de inventario, con cursor estable de
-   directorios, publicación terminal y rechazo de swaps de ancestros.
-2. Integrar el presupuesto global con el proceso que produce batches, incluyendo
-   disco temporal y cancelación durante flush/commit.
-3. Comparar reanudación de inventario contra una corrida limpia, sin duplicar
-   filas ni omitir entradas, y conservar el benchmark 100,001 ya ejecutado como
-   baseline reproducible.
-4. Mantener `verification_mode` explícito, cerrar las regresiones SQLite de estos
+1. Construir e instalar 0.12.0 desde el SHA final, conservando `current` y el
+   rollback inmediato, y repetir el smoke público desde la instalación.
+2. Mantener `verification_mode` explícito, cerrar las regresiones SQLite de estos
    lectores y conservar MCP sin autoridad de mutación.
-5. Promover KIO/restore de escritorio y sincronización de caches sólo mediante
+3. Promover KIO/restore de escritorio y sincronización de caches sólo mediante
    gates humanos independientes, sin alterar el alcance de esta tranche.
 
 ## Límites

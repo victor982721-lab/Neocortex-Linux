@@ -264,6 +264,21 @@ nulos, exigen un directorio explícito de fixtures y no aceptan overrides de
 presupuesto al reanudar; el estado y la evidencia de la página se revalidan
 antes de publicar el sucesor.
 
+El inventario completo dispone además del contrato `neocortex.inventory-resume/v1`
+para corridas Linux sobre una raíz contenida. El checkpoint conserva el cursor
+DFS determinista, la identidad de raíz y de los directorios recorridos, los
+contadores y los digests canónicos del prefijo y del lote comprometido. Las
+escrituras son atómicas, privadas y monotónicas, y una cancelación deja un
+owner `partial`; al reanudar se revalida el prefijo, se descarta sólo el tail
+posterior al cursor y se continúa con lotes acotados. Si el owner ya es
+terminal, el replay vuelve a comprobar el inventario y no crea otra generación;
+un cambio de contenido, política, identidad o ancestro produce abstención.
+
+La superficie MCP no crea ni reanuda estos owners, porque el contrato requiere
+un directorio de estado explícito y una autoridad local de proceso; la capacidad
+se consume mediante `DedupIndex.scan`/`InventoryScanner` en la API Python y se
+mantiene separada de `curate verify`, que conserva su checkpoint page-level.
+
 No existe una interfaz de exportación ni un paquete ZIP de curación. `--json`
 serializa la respuesta de una operación; no crea un artefacto durable.
 

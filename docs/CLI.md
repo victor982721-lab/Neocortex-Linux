@@ -138,6 +138,15 @@ mediante `neocortex.api.public` o `neocortex.sdk`, exigen un directorio de estad
 explícito para no seleccionar el corpus por accidente y no se exponen en MCP;
 la CLI conserva sus límites seguros por defecto.
 
+El inventario DFS checkpointado se consume en la API Python, no mediante un
+flag genérico de la CLI: `DedupIndex.scan` acepta `checkpoint_path`, `resume`,
+`deterministic` y un `InventoryWorkBudget`. El primer proceso crea un owner
+externo y, si se interrumpe, deja `partial`; la siguiente corrida usa
+`resume=True`, valida raíz, política, prefijo y ancestros, elimina sólo el tail
+no confirmado y continúa. Un owner `complete` se puede repetir para validar
+drift sin crear otro `scan_id`; el contrato no toca el corpus ni se publica como
+operación MCP.
+
 ## Efectos
 
 | Clase | Ejemplos | Efecto |
