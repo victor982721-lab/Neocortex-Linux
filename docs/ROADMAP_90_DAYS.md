@@ -217,6 +217,8 @@ entre workers, sin repetir trabajo ya comprometido.
   idempotencia, cancelación durable y consumo bounded de items/bytes; falta
   ampliar la cobertura a todas las fases y a la recuperación posterior a una
   terminación abrupta.
+- `lifecycle_status` ya está disponible como lectura MCP bounded y read-only;
+  no inicia corridas ni concede autoridad.
 - Probar primero 20–50 fixtures heterogéneos: interrupción, replay terminal,
   drift y paridad de envelopes CLI/API/SDK frente a una corrida limpia.
 - Conservar los fences de lectores y la separación entre consulta, producción

@@ -27,6 +27,9 @@ fuera de `docs/`.
   presupuesto a snapshots coordinados por writer.
 - MCP incorpora `lifecycle_status` como consulta read-only bounded del estado
   Framework, manifest, presupuesto y recuperación, sin iniciar ni autorizar runs.
+- El ledger de presupuesto se conecta al loop de rutas: cada worker reserva su
+  workload una sola vez, los reintentos son idempotentes y cancelaciones o
+  deadlines impiden cruzar la frontera de trabajo sin efecto parcial.
 
 - Fingerprinting POSIX rechaza FIFO, symlinks y cambios de identidad sin bloquear;
   la captura de subprocesses usa descriptores no bloqueantes con un presupuesto
