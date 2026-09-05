@@ -2,13 +2,13 @@
 
 ## Estado verificado
 
-- Commit publicado: `1de273db26c0e7095ee104d6bb7428061b68e5f3`, con
+- Commit publicado: `d955df88a143217fcebcc21b268b4335412aa2db`, con
   `HEAD == main == origin/main` y árbol limpio.
 - Release instalada desde ese SHA:
-  `0.12.0-1de273db26c0-cp314-linux-x86_64`.
+  `0.12.0-d955df88a143-cp314-linux-x86_64`.
 - Rollback inmediato retenido:
-  `0.12.0-ad109861fa9f-cp314-linux-x86_64`.
-- Receipt: `/home/winterboss/.local/state/Neocortex/state/installation-receipts/20260905T201341.497533Z-install-0.12.0-1de273db26c0-cp314-linux-x86_64.json`.
+  `0.12.0-1de273db26c0-cp314-linux-x86_64`.
+- Receipt: `/home/winterboss/.local/state/Neocortex/state/installation-receipts/20260905T201647.599043Z-install-0.12.0-d955df88a143-cp314-linux-x86_64.json`.
 
 ## Cambios
 
