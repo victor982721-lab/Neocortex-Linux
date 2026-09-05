@@ -133,6 +133,10 @@ EXPECTED_EXPORTS = (
     "curation_checkpoint_resume_payload",
     "curation_checkpoint_status_payload",
     LEGACY_EXPORTS[-1],
+    "RunManifest",
+    "RunStatus",
+    "read_run_status",
+    "read_run_status_json",
 )
 
 FUTURE_ENDPOINTS = (

@@ -119,6 +119,23 @@ def test_bounded_capture_terminates_output_overflow(stream: str) -> None:
     assert captured.value.limit_bytes == 1024
 
 
+def test_output_limit_error_preserves_builtin_exception_protocol() -> None:
+    error = SubprocessOutputLimitError("stderr", 17)
+
+    assert error.args == ("stderr", 17)
+    error.add_note("capture cleanup completed")
+    assert error.__notes__ == ["capture cleanup completed"]
+
+    try:
+        raise ValueError("upstream failure")
+    except ValueError as cause:
+        try:
+            raise error from cause
+        except SubprocessOutputLimitError as raised:
+            assert raised.__cause__ is cause
+            assert raised.__traceback__ is not None
+
+
 def test_bounded_capture_kills_and_reaps_timeout() -> None:
     with pytest.raises(subprocess.TimeoutExpired) as captured:
         run_bounded_capture(

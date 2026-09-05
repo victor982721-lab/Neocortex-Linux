@@ -133,6 +133,12 @@ if TYPE_CHECKING:
     from neocortex.runtime.models import FrameworkConfig as FrameworkConfig
     from neocortex.runtime.models import InitialRunResult as InitialRunResult
     from neocortex.runtime.models import RouteOnlyRunResult as RouteOnlyRunResult
+    from neocortex.runtime.orchestration.run_manifest import RunManifest as RunManifest
+    from neocortex.runtime.orchestration.run_status import RunStatus as RunStatus
+    from neocortex.api.run_lifecycle import (
+        read_run_status as read_run_status,
+        read_run_status_json as read_run_status_json,
+    )
     from neocortex.capabilities.formats.office.route import OfficeRoute as OfficeRoute
     from neocortex.capabilities.formats.office.route import OfficeRouteConfig as OfficeRouteConfig
     from neocortex.capabilities.formats.office.route import OfficeRouteSummary as OfficeRouteSummary
@@ -226,6 +232,10 @@ __all__ = [  # noqa: RUF022
     "OfficeRouteConfig",
     "OfficeRouteSummary",
     "RouteOnlyRunResult",
+    "RunManifest",
+    "RunStatus",
+    "read_run_status",
+    "read_run_status_json",
     "StageDescriptor",
     "detect_content_type",
     "verify_pdf_state",
@@ -390,6 +400,10 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "OfficeRouteConfig": ("neocortex.capabilities.formats.office.route", "OfficeRouteConfig"),
     "OfficeRouteSummary": ("neocortex.capabilities.formats.office.route", "OfficeRouteSummary"),
     "RouteOnlyRunResult": ("neocortex.runtime.models", "RouteOnlyRunResult"),
+    "RunManifest": ("neocortex.runtime.orchestration.run_manifest", "RunManifest"),
+    "RunStatus": ("neocortex.runtime.orchestration.run_status", "RunStatus"),
+    "read_run_status": ("neocortex.api.run_lifecycle", "read_run_status"),
+    "read_run_status_json": ("neocortex.api.run_lifecycle", "read_run_status_json"),
     "StageDescriptor": ("neocortex.semantic.derivation_contracts", "StageDescriptor"),
     "detect_content_type": ("neocortex.platform.content_types", "detect_content_type"),
     "verify_pdf_state": ("neocortex.capabilities.formats.pdf.pdf_admin", "verify_pdf_state"),

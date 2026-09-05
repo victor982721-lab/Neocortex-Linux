@@ -19,6 +19,10 @@ from neocortex.runtime.control.memory_runtime import (
 )
 
 
+class _InjectedBaseException(BaseException):
+    pass
+
+
 # region [01] Fair global admission
 
 
@@ -436,6 +440,86 @@ class GlobalResourceCoordinatorTests(unittest.TestCase):
             self.assertEqual(summary.min_effective_cpu_slots, 1)
             self.assertEqual(summary.max_observed_cpu_load_percent, 95.0)
             self.assertEqual(summary.routes["image"].waits, 1)
+
+    def test_baseexception_from_probe_removes_queued_request(self):
+        snapshot = MemorySnapshot(10_000, 10_000, 20_000, 20_000)
+        with patch(
+            "neocortex.runtime.control.global_resources.memory_snapshot",
+            return_value=snapshot,
+        ):
+            coordinator = self._coordinator()
+            failure = _InjectedBaseException("probe interrupted")
+            with patch.object(
+                coordinator, "_observe_live_resources", side_effect=failure
+            ):
+                with self.assertRaises(_InjectedBaseException) as raised:
+                    with coordinator.admit("pdf", 10):
+                        self.fail("interrupted admission unexpectedly entered")
+
+            self.assertIs(raised.exception, failure)
+            self.assertEqual(sum(map(len, coordinator._queues.values())), 0)
+            self.assertEqual(coordinator.route_active_request_count("pdf"), 0)
+            self.assertEqual(coordinator.summary().peak_reserved_bytes, 0)
+
+    def test_baseexception_from_wait_removes_queued_request(self):
+        snapshot = MemorySnapshot(10_000, 10_000, 20_000, 20_000)
+        with patch(
+            "neocortex.runtime.control.global_resources.memory_snapshot",
+            return_value=snapshot,
+        ):
+            coordinator = self._coordinator()
+            entered = threading.Event()
+            release = threading.Event()
+            errors: list[BaseException] = []
+
+            def owner() -> None:
+                with coordinator.admit("pdf", 100):
+                    entered.set()
+                    release.wait(2)
+
+            def waiter() -> None:
+                try:
+                    with coordinator.admit("image", 10):
+                        self.fail("interrupted waiter unexpectedly entered")
+                except BaseException as exc:
+                    errors.append(exc)
+
+            owner_thread = threading.Thread(target=owner)
+            owner_thread.start()
+            self.assertTrue(entered.wait(1))
+            failure = _InjectedBaseException("condition wait interrupted")
+            with patch.object(coordinator._condition, "wait", side_effect=failure):
+                waiter_thread = threading.Thread(target=waiter)
+                waiter_thread.start()
+                waiter_thread.join(1)
+            release.set()
+            owner_thread.join(2)
+
+            self.assertEqual(errors, [failure])
+            self.assertEqual(sum(map(len, coordinator._queues.values())), 0)
+            self.assertEqual(coordinator.route_active_request_count("image"), 0)
+            self.assertEqual(coordinator.summary().peak_reserved_bytes, 100)
+
+    def test_baseexception_in_body_releases_reservation_once(self):
+        snapshot = MemorySnapshot(10_000, 10_000, 20_000, 20_000)
+        with patch(
+            "neocortex.runtime.control.global_resources.memory_snapshot",
+            return_value=snapshot,
+        ):
+            coordinator = self._coordinator()
+            failure = _InjectedBaseException("worker interrupted")
+            with self.assertRaises(_InjectedBaseException) as raised:
+                with coordinator.admit("pdf", 40):
+                    raise failure
+
+            self.assertIs(raised.exception, failure)
+            self.assertEqual(coordinator.route_active_request_count("pdf"), 0)
+            self.assertEqual(coordinator.summary().peak_reserved_bytes, 40)
+            # A subsequent admission proves that the previous cleanup did not
+            # leave a reservation or release the same reservation twice.
+            with coordinator.admit("pdf", 40):
+                self.assertEqual(coordinator.route_active_request_count("pdf"), 1)
+            self.assertEqual(coordinator.route_active_request_count("pdf"), 0)
 
 
 # endregion [01]

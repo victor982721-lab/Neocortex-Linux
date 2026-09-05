@@ -1,0 +1,138 @@
+"""Durable, read-only metadata for one Framework lifecycle run.
+
+The manifest is intentionally a small pure contract.  It does not grant any
+authority and it does not contain corpus contents; it binds a run to the
+effective boundary, selected routes, source run and bounded work policy so a
+later status/resume reader can distinguish replay from a new execution.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass, field
+from typing import Any, Mapping
+
+
+RUN_MANIFEST_SCHEMA = "neocortex.run-manifest/v1"
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _bounded_mapping(value: Mapping[str, Any], *, label: str) -> dict[str, Any]:
+    result = dict(value)
+    encoded = _canonical_json(result).encode("utf-8")
+    if len(encoded) > 512 * 1024:
+        raise ValueError(f"{label} exceeds the durable manifest limit")
+    return result
+
+
+@dataclass(frozen=True, slots=True)
+class RunManifest:
+    """Canonical identity of one initial, route-only or resumed run."""
+
+    run_id: int
+    run_kind: str
+    root: str
+    root_identity: tuple[int, int, int]
+    selected_routes: tuple[str, ...]
+    source_run_id: int | None = None
+    configuration: Mapping[str, Any] = field(default_factory=dict)
+    budget: Mapping[str, Any] = field(default_factory=dict)
+    input_snapshot: Mapping[str, Any] = field(default_factory=dict)
+
+    def payload(self) -> dict[str, Any]:
+        if self.run_id < 1:
+            raise ValueError("run_id must be positive")
+        if self.run_kind not in {"initial", "route_only", "resume"}:
+            raise ValueError(f"unsupported run kind: {self.run_kind}")
+        if len(self.root.encode("utf-8")) > 8192 or not self.root:
+            raise ValueError("manifest root is empty or too large")
+        if len(self.root_identity) != 3 or any(type(item) is not int for item in self.root_identity):
+            raise ValueError("manifest root identity is malformed")
+        routes = tuple(sorted({str(route) for route in self.selected_routes}))
+        if any(not route or len(route) > 128 for route in routes):
+            raise ValueError("manifest route name is empty or too large")
+        return {
+            "schema": RUN_MANIFEST_SCHEMA,
+            "run_id": self.run_id,
+            "run_kind": self.run_kind,
+            "source_run_id": self.source_run_id,
+            "root": self.root,
+            "root_identity": list(self.root_identity),
+            "selected_routes": list(routes),
+            "configuration": _bounded_mapping(self.configuration, label="configuration"),
+            "budget": _bounded_mapping(self.budget, label="budget"),
+            "input_snapshot": _bounded_mapping(self.input_snapshot, label="input_snapshot"),
+        }
+
+    def canonical_json(self) -> str:
+        return _canonical_json(self.payload())
+
+    def digest(self) -> str:
+        return "sha256:" + hashlib.sha256(self.canonical_json().encode("utf-8")).hexdigest()
+
+    def event_payload(self) -> dict[str, Any]:
+        payload = self.payload()
+        payload["digest"] = self.digest()
+        return payload
+
+
+def verify_event_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate and return one persisted manifest without mutating it."""
+
+    if payload.get("schema") != RUN_MANIFEST_SCHEMA:
+        raise ValueError("unsupported run manifest schema")
+    expected = payload.get("digest")
+    if not isinstance(expected, str):
+        raise ValueError("run manifest digest is missing")
+    unsigned = dict(payload)
+    unsigned.pop("digest", None)
+    actual = "sha256:" + hashlib.sha256(_canonical_json(unsigned).encode("utf-8")).hexdigest()
+    if actual != expected:
+        raise ValueError("run manifest digest does not match its payload")
+    return dict(payload)
+
+
+def lifecycle_envelope(
+    *,
+    manifest: Mapping[str, Any] | None,
+    status: str,
+    routes: tuple[Mapping[str, Any], ...] = (),
+    errors: tuple[Mapping[str, Any], ...] = (),
+    resumed_from: int | None = None,
+    replayed: bool = False,
+    skipped: tuple[str, ...] = (),
+    non_replayable: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """Build a bounded read-only envelope shared by status callers."""
+
+    return {
+        "schema": "neocortex.lifecycle-envelope/v1",
+        "status": status,
+        "run_id": None if manifest is None else manifest.get("run_id"),
+        "source_run_id": None if manifest is None else manifest.get("source_run_id"),
+        "manifest_digest": None if manifest is None else manifest.get("digest"),
+        "resumed_from": resumed_from,
+        "replayed": bool(replayed),
+        "skipped": list(skipped),
+        "non_replayable": list(non_replayable),
+        "routes": [dict(route) for route in routes],
+        "errors": [dict(error) for error in errors],
+    }
+
+
+__all__ = [
+    "RUN_MANIFEST_SCHEMA",
+    "RunManifest",
+    "lifecycle_envelope",
+    "verify_event_payload",
+]

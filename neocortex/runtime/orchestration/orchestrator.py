@@ -64,6 +64,7 @@ from neocortex.runtime.orchestration.route_registry import (
 )
 from neocortex.runtime.orchestration.route_selection import ORGANIZABLE_ROUTE_NAMES
 from neocortex.runtime.orchestration.run_lifecycle import RunHeartbeat
+from neocortex.runtime.orchestration.run_manifest import RunManifest
 from neocortex.persistence.framework_route_state import FrameworkRouteState
 from neocortex.persistence.framework_state_writer import FrameworkState
 
@@ -367,53 +368,56 @@ class FrameworkOrchestrator:
         scan_id: int,
         candidate_database: Path,
     ) -> tuple[dict[str, object], GlobalResourceSummary | None]:
-        state.set_run_phase(run_id, "routes")
-        coordinator = self._resource_coordinator()
-        with self._coordinator_lock:
-            self._active_coordinator = coordinator
-        if coordinator is not None:
-            state.record_event(
-                run_id,
-                "info",
-                "resource-coordinator",
-                "Coordinador global iniciado",
-                asdict(coordinator.summary()),
-            )
-        state.begin_route_runs(run_id, self.selected_routes)
-
-        def execute_route(route_name: str):
-            adapter = self.route_registry[route_name]
-            context = RouteExecutionContext(
-                config=self.config,
-                root=root,
-                framework_state=FrameworkRouteState(
-                    self.config.framework_database,
-                    candidate_database=candidate_database,
-                    resume_source_run_id=self.config.resume_run_id,
-                ),
-                run_id=run_id,
-                scan_id=scan_id,
-                progress=self._coordinated_progress,
-                resource_coordinator=coordinator,
-                cancellation=self._cancellation,
-            )
-            started = time.perf_counter_ns()
-            summary = adapter.execute(context)
-            return summary, time.perf_counter_ns() - started
-
-        results: dict[str, object] = {}
-        failures: dict[str, Exception] = {}
-        executor = ThreadPoolExecutor(
-            max_workers=len(self.selected_routes),
-            thread_name_prefix="neocortex-route",
-        )
+        coordinator: GlobalResourceCoordinator | None = None
+        executor: ThreadPoolExecutor | None = None
         interrupted = False
         futures = {}
         try:
-            futures = {
-                executor.submit(execute_route, route_name): route_name
-                for route_name in self.selected_routes
-            }
+            state.set_run_phase(run_id, "routes")
+            coordinator = self._resource_coordinator()
+            with self._coordinator_lock:
+                self._active_coordinator = coordinator
+            if coordinator is not None:
+                state.record_event(
+                    run_id,
+                    "info",
+                    "resource-coordinator",
+                    "Coordinador global iniciado",
+                    asdict(coordinator.summary()),
+                )
+            state.begin_route_runs(run_id, self.selected_routes)
+
+            def execute_route(route_name: str):
+                adapter = self.route_registry[route_name]
+                context = RouteExecutionContext(
+                    config=self.config,
+                    root=root,
+                    framework_state=FrameworkRouteState(
+                        self.config.framework_database,
+                        candidate_database=candidate_database,
+                        resume_source_run_id=self.config.resume_run_id,
+                    ),
+                    run_id=run_id,
+                    scan_id=scan_id,
+                    progress=self._coordinated_progress,
+                    resource_coordinator=coordinator,
+                    cancellation=self._cancellation,
+                )
+                started = time.perf_counter_ns()
+                summary = adapter.execute(context)
+                return summary, time.perf_counter_ns() - started
+
+            results: dict[str, object] = {}
+            failures: dict[str, BaseException] = {}
+            executor = ThreadPoolExecutor(
+                max_workers=len(self.selected_routes),
+                thread_name_prefix="neocortex-route",
+            )
+            # Register each future as it is submitted so a BaseException during
+            # a later submit still leaves the earlier workers cancellable.
+            futures = {}
+            for route_name in self.selected_routes:
+                futures[executor.submit(execute_route, route_name)] = route_name
             pending = set(futures)
             while pending:
                 if self._cancellation.is_cancelled:
@@ -442,7 +446,14 @@ class FrameworkOrchestrator:
                         )
                         results[route_name] = summary
                         self._finish_route_progress(route_name, "completed")
-                    except Exception as exc:
+                    except BaseException as exc:
+                        # KeyboardInterrupt is the run-wide cancellation
+                        # signal and must reach the outer handler. Other
+                        # BaseException subclasses still belong to this route:
+                        # persist the failure before aggregating it, otherwise
+                        # the durable route run remains ``running``.
+                        if isinstance(exc, KeyboardInterrupt):
+                            raise
                         failures[route_name] = exc
                         state.fail_route_run(run_id, route_name, exc)
                         state.record_event(
@@ -462,14 +473,27 @@ class FrameworkOrchestrator:
             for future in futures:
                 future.cancel()
             raise
+        except BaseException:
+            # A worker or executor setup can raise outside ``Exception``.  Do
+            # not leave already-submitted routes running against a coordinator
+            # that is about to be cleared.
+            interrupted = bool(futures)
+            if futures:
+                self.request_cancellation()
+                for future in futures:
+                    future.cancel()
+            raise
         finally:
-            executor.shutdown(wait=True, cancel_futures=interrupted)
-            if interrupted:
-                for route_name in self.selected_routes:
-                    self._finish_route_progress(route_name, "cancelled")
-            with self._coordinator_lock:
-                if self._active_coordinator is coordinator:
-                    self._active_coordinator = None
+            try:
+                if executor is not None:
+                    executor.shutdown(wait=True, cancel_futures=interrupted)
+                    if interrupted:
+                        for route_name in self.selected_routes:
+                            self._finish_route_progress(route_name, "cancelled")
+            finally:
+                with self._coordinator_lock:
+                    if self._active_coordinator is coordinator:
+                        self._active_coordinator = None
 
         resource_summary = self._complete_resource_coordination(
             state,
@@ -659,6 +683,7 @@ class FrameworkOrchestrator:
         journal_error: str | None,
         excluded_paths: tuple[Path, ...],
     ) -> None:
+        configuration = self._initial_configuration_payload(boundary, excluded_paths)
         state.record_event(
             run_id,
             "info",
@@ -679,8 +704,49 @@ class FrameworkOrchestrator:
             "info",
             "configuration",
             "Configuración efectiva",
-            self._initial_configuration_payload(boundary, excluded_paths),
+            configuration,
         )
+        budget_names = (
+            "global_memory_budget_bytes",
+            "global_min_free_memory_bytes",
+            "global_min_free_commit_bytes",
+            "global_cpu_slots",
+            "global_resource_wait_timeout_seconds",
+            "pdf_max_documents",
+            "image_max_documents",
+        )
+        budget = {name: getattr(self.config, name, None) for name in budget_names}
+        manifest = RunManifest(
+            run_id=run_id,
+            run_kind="initial",
+            source_run_id=self.config.resume_run_id,
+            root=str(boundary.access_policy.root),
+            root_identity=(
+                int(boundary.access_policy.root_device_id),
+                int(boundary.access_policy.root_file_id),
+                int(boundary.access_policy.root_birthtime_ns),
+            ),
+            selected_routes=tuple(self.selected_routes),
+            configuration=configuration,
+            budget=budget,
+            input_snapshot={
+                "inventory_policy_signature": boundary.effective_signature,
+                "inventory_exclusion_signature": boundary.exclusion_policy.signature,
+                "journal_before": (
+                    None
+                    if journal_before is None
+                    else {
+                        "volume": journal_before.volume,
+                        "journal_id": str(journal_before.journal_id),
+                        "next_usn": journal_before.next_usn,
+                    }
+                ),
+                "excluded_paths": [str(path) for path in excluded_paths],
+            },
+        )
+        publish_manifest = getattr(state, "publish_run_manifest", None)
+        if callable(publish_manifest):
+            publish_manifest(run_id, manifest.event_payload())
 
     def _prepare_normal_inventory(
         self,
@@ -988,7 +1054,9 @@ class FrameworkOrchestrator:
         *,
         cancelled: bool,
     ) -> None:
-        state.prune_route_candidates((run_id,))
+        keep_runs = set(state.resumable_route_candidate_run_ids())
+        keep_runs.add(run_id)
+        state.prune_route_candidates(tuple(sorted(keep_runs)))
         state.record_event(
             run_id,
             "warning" if cancelled else "error",
@@ -996,10 +1064,23 @@ class FrameworkOrchestrator:
             "Ejecución cancelada por el usuario" if cancelled else "Ejecución fallida",
             None if cancelled else {"error_type": type(exc).__name__, "detail": str(exc)},
         )
-        if cancelled:
+        transitioned = (
             state.cancel_initial_run(run_id)
-        else:
-            state.fail_initial_run(run_id)
+            if cancelled
+            else state.fail_initial_run(run_id)
+        )
+        abandoned_actions = state.mark_abandoned_actions()
+        state.record_event(
+            run_id,
+            "info" if transitioned else "warning",
+            "lifecycle",
+            "Transición durable de terminación registrada",
+            {
+                "status": "cancelled" if cancelled else "failed",
+                "transitioned": transitioned,
+                "abandoned_actions": abandoned_actions,
+            },
+        )
 
     def _manage_initial_run(
         self,
@@ -1381,6 +1462,37 @@ class FrameworkOrchestrator:
             "Ejecución aislada de rutas iniciada",
             self._route_only_start_payload(boundary, source, copied),
         )
+        route_payload = self._route_only_start_payload(boundary, source, copied)
+        publish_manifest = getattr(state, "publish_run_manifest", None)
+        if callable(publish_manifest):
+            publish_manifest(
+                run_id,
+                RunManifest(
+                    run_id=run_id,
+                    run_kind=run_kind,
+                    source_run_id=source.run_id,
+                    root=str(boundary.access_policy.root),
+                    root_identity=(
+                        int(boundary.access_policy.root_device_id),
+                        int(boundary.access_policy.root_file_id),
+                        int(boundary.access_policy.root_birthtime_ns),
+                    ),
+                    selected_routes=tuple(self.selected_routes),
+                    configuration=route_payload,
+                    budget={
+                        "global_memory_budget_bytes": self.config.global_memory_budget_bytes,
+                        "global_cpu_slots": self.config.global_cpu_slots,
+                        "global_resource_wait_timeout_seconds": (
+                            self.config.global_resource_wait_timeout_seconds
+                        ),
+                    },
+                    input_snapshot={
+                        "source_candidate_rows": source.candidate_rows,
+                        "copied_candidates": copied,
+                        "route_input_sources": source.route_input_sources,
+                    },
+                ).event_payload(),
+            )
         return run_id, heartbeat
 
     @staticmethod

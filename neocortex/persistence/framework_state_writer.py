@@ -44,6 +44,7 @@ from neocortex.persistence.framework_state_common import (
     mark_file_actions_applying,
 )
 from neocortex.persistence.sqlite_paths import existing_sqlite_uri
+from neocortex.runtime.orchestration.run_manifest import verify_event_payload
 # endregion [01]
 
 # region [02] Implementación
@@ -1062,6 +1063,68 @@ class FrameworkState:
                 "VALUES(?,?,?,?,?,?)",
                 (run_id, time.time_ns(), level, phase, message, details_json),
             )
+
+    def publish_run_manifest(self, run_id: int, manifest: Mapping[str, Any]) -> bool:
+        """Publish one immutable lifecycle manifest idempotently as an event.
+
+        The existing framework schema deliberately remains at v22; the
+        manifest is an append-only, schema-tagged event so older databases can
+        read it without an unsafe migration while the run tables remain the
+        authoritative lifecycle state.
+        """
+
+        verified = verify_event_payload(manifest)
+        payload_json = json.dumps(verified, ensure_ascii=False, separators=(",", ":"))
+        with self._connection:
+            rows = self._connection.execute(
+                """SELECT details_json FROM run_events
+                WHERE run_id=? AND phase='lifecycle-manifest'
+                AND message='Run manifest published' ORDER BY event_id DESC LIMIT 2""",
+                (run_id,),
+            ).fetchall()
+            if len(rows) > 1:
+                raise RuntimeError(f"run {run_id} has duplicate lifecycle manifests")
+            if rows:
+                existing = rows[0][0]
+                if existing != payload_json:
+                    raise RuntimeError(f"run {run_id} has a conflicting lifecycle manifest")
+                return False
+            self._connection.execute(
+                """INSERT INTO run_events(
+                run_id,occurred_ns,level,phase,message,details_json)
+                VALUES(?,?,'info','lifecycle-manifest','Run manifest published',?)""",
+                (run_id, time.time_ns(), payload_json),
+            )
+        return True
+
+    def read_run_manifest(self, run_id: int) -> dict[str, Any] | None:
+        """Read and validate the immutable manifest for one run."""
+
+        row = self._connection.execute(
+            """SELECT details_json FROM run_events
+            WHERE run_id=? AND phase='lifecycle-manifest'
+            AND message='Run manifest published' ORDER BY event_id DESC LIMIT 1""",
+            (run_id,),
+        ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        try:
+            payload = json.loads(str(row[0]))
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"run {run_id} lifecycle manifest is malformed") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"run {run_id} lifecycle manifest is not an object")
+        return verify_event_payload(payload)
+
+    def resumable_route_candidate_run_ids(self) -> tuple[int, ...]:
+        """Return runs whose route inputs remain needed for recovery/replay."""
+
+        rows = self._connection.execute(
+            """SELECT DISTINCT run_id FROM route_runs
+            WHERE status IN ('running','interrupted','failed','cancelled')
+            ORDER BY run_id"""
+        ).fetchall()
+        return tuple(int(row[0]) for row in rows)
 
     def begin_route_runs(self, run_id: int, route_names: Iterable[str]) -> None:
         now = time.time_ns()

@@ -13,6 +13,10 @@ from neocortex.runtime.orchestration.run_lifecycle import (
     DEFAULT_STALE_HEARTBEAT_SECONDS,
     process_is_alive,
 )
+from neocortex.runtime.orchestration.run_manifest import (
+    lifecycle_envelope,
+    verify_event_payload,
+)
 # region [01] Status models
 
 
@@ -54,6 +58,7 @@ class RunStatus:
     completed_ns: int | None
     routes: tuple[RouteStatus, ...]
     recovery_required_actions: int = 0
+    manifest: dict[str, object] | None = None
 # endregion [01]
 
 
@@ -125,6 +130,7 @@ def _run_status(
     )
     owner_pid = None if row["owner_pid"] is None else int(row["owner_pid"])
     routes = _route_statuses(connection, run_id)
+    manifest = _run_manifest(connection, run_id)
     current_phase = None if row["current_phase"] is None else str(row["current_phase"])
     if current_phase is None:
         current_phase = next(
@@ -156,7 +162,34 @@ def _run_status(
         recovery_required_actions=_recovery_required_action_count(
             connection, run_id
         ),
+        manifest=manifest,
     )
+
+
+def _run_manifest(connection: sqlite3.Connection, run_id: int) -> dict[str, object] | None:
+    """Read one immutable lifecycle manifest without migrating the owner."""
+
+    table = connection.execute(
+        """SELECT 1 FROM sqlite_master
+        WHERE type='table' AND name='run_events'"""
+    ).fetchone()
+    if table is None:
+        return None
+    row = connection.execute(
+        """SELECT details_json FROM run_events
+        WHERE run_id=? AND phase='lifecycle-manifest'
+        AND message='Run manifest published' ORDER BY event_id DESC LIMIT 1""",
+        (run_id,),
+    ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    try:
+        payload = json.loads(str(row[0]))
+        if not isinstance(payload, dict):
+            raise ValueError("manifest is not an object")
+        return verify_event_payload(payload)
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise sqlite3.DatabaseError(f"run {run_id} lifecycle manifest is invalid") from exc
 
 
 def _recovery_required_action_count(
@@ -306,6 +339,34 @@ def serialized_run_status(status: RunStatus) -> str:
             "started_ns": status.started_ns,
             "completed_ns": status.completed_ns,
             "recovery_required_actions": status.recovery_required_actions,
+            "manifest": status.manifest,
+            "lifecycle": lifecycle_envelope(
+                manifest=status.manifest,
+                status=status.status,
+                routes=tuple(
+                    {
+                        "route_name": route.route_name,
+                        "status": route.status,
+                        "current_phase": route.current_phase,
+                    }
+                    for route in status.routes
+                ),
+                errors=tuple(
+                    {
+                        "route_name": route.route_name,
+                        "error_type": route.error_type,
+                    }
+                    for route in status.routes
+                    if route.error_type is not None
+                ),
+                resumed_from=status.source_run_id,
+                replayed=status.run_kind == "resume",
+                non_replayable=tuple(
+                    route.route_name
+                    for route in status.routes
+                    if route.status in {"failed", "cancelled", "interrupted"}
+                ),
+            ),
             "routes": [
                 {
                     "route_name": route.route_name,

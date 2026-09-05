@@ -6,6 +6,19 @@ fuera de `docs/`.
 
 ## Cambios posteriores a 0.12.0
 
+- Snapshots SQLite con WAL o rollback journal se materializan sólo en temporales
+  autocontenidos antes de una lectura inmutable, y el cierre conserva la causa
+  primaria con diagnósticos secundarios acotados.
+- `GlobalResourceCoordinator` y el orquestador retiran admisiones interrumpidas,
+  liberan reservas una sola vez y persisten fallos de workers derivados de
+  `BaseException` sin dejar rutas en estado `running`.
+- Cada corrida Framework publica un manifest `neocortex.run-manifest/v1` con
+  digest, raíz, identidad, rutas, configuración, presupuesto y snapshot de
+  entradas; `--status --status-json`, API y SDK exponen un envelope read-only
+  `neocortex.lifecycle-envelope/v1` sin conceder autoridad de mutación.
+- `SubprocessOutputLimitError` conserva `args`, traceback y `add_note`, y las
+  pruebas de publicación de imagen ya no se seleccionan como `base` sin Pillow.
+
 - Fingerprinting POSIX rechaza FIFO, symlinks y cambios de identidad sin bloquear;
   la captura de subprocesses usa descriptores no bloqueantes con un presupuesto
   total de cleanup, y el preflight ZIP cuenta y valida el directorio central real

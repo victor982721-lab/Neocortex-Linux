@@ -21,8 +21,8 @@ from tests.test_semantic_sources import (
 )
 
 
-TEST_CAPABILITIES = ("base", "inference", "image")
-pytestmark = pytest.mark.capability("base", "inference", "image")
+TEST_CAPABILITIES = ("inference", "image")
+pytestmark = pytest.mark.capability("inference", "image")
 
 
 @pytest.mark.parametrize("embed_ocr_text", (False, True))

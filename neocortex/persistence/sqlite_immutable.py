@@ -252,8 +252,16 @@ def open_immutable_sqlite_connection(
         connection._source_path = selected
         connection._source_fence = fence
         return connection
-    except BaseException:
-        connection.close()
+    except BaseException as exc:
+        try:
+            connection.close()
+        except BaseException as cleanup_error:
+            # Preserve the configuration/open failure as the primary error;
+            # connection cleanup is diagnostic only.
+            exc.add_note(
+                "SQLite immutable connection cleanup failed: "
+                f"{type(cleanup_error).__name__}: {cleanup_error}"
+            )
         raise
 
 
@@ -277,6 +285,70 @@ def _copy_regular_file(source: Path, destination: Path) -> None:
             pass
         destination.unlink(missing_ok=True)
         raise
+
+
+def _materialize_temporary_database(
+    database: Path,
+    *,
+    timeout_seconds: float,
+) -> None:
+    """Recover copied journals into one standalone main database.
+
+    A byte-for-byte copy of a live WAL or rollback journal is not itself an
+    immutable SQLite owner: opening it read-only still depends on sidecars and
+    may try to create or recover them.  The copy is therefore opened writable
+    *inside the temporary directory*, SQLite is asked to use DELETE journaling
+    (which checkpoints WAL frames and recovers a hot rollback journal), and all
+    remaining sidecars are removed before the immutable read is opened.  The
+    source owner is never opened or changed by this operation.
+    """
+
+    connection: sqlite3.Connection | None = None
+    primary: BaseException | None = None
+    try:
+        connection = sqlite3.connect(database, timeout=timeout_seconds)
+        connection.execute(f"PRAGMA busy_timeout={max(1, round(timeout_seconds * 1000))}")
+        journal_mode = connection.execute("PRAGMA journal_mode=DELETE").fetchone()
+        if journal_mode is None or str(journal_mode[0]).lower() != "delete":
+            raise ImmutableSQLiteUnavailable(
+                "temporary SQLite snapshot could not be materialized as DELETE journal"
+            )
+        integrity = connection.execute("PRAGMA quick_check").fetchall()
+        if integrity != [("ok",)]:
+            raise ImmutableSQLiteUnavailable(
+                "temporary SQLite snapshot integrity check failed during materialization"
+            )
+        connection.commit()
+    except BaseException as exc:
+        primary = exc
+    finally:
+        if connection is not None:
+            try:
+                connection.close()
+            except BaseException as exc:
+                if primary is None:
+                    primary = exc
+                else:
+                    primary.add_note(
+                        "temporary SQLite materialization close failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+    if primary is not None:
+        if isinstance(primary, ImmutableSQLiteUnavailable):
+            raise primary
+        raise ImmutableSQLiteUnavailable(
+            f"temporary SQLite snapshot could not be materialized: {database.name}"
+        ) from primary
+
+    for suffix in ("-journal", "-wal", "-shm"):
+        sidecar = Path(f"{database}{suffix}")
+        try:
+            sidecar.unlink(missing_ok=True)
+        except OSError as exc:
+            raise ImmutableSQLiteUnavailable(
+                f"temporary SQLite snapshot sidecar could not be removed: {sidecar.name}"
+            ) from exc
+    capture_sqlite_immutable_fence(database)
 
 
 class SQLiteReadSession:
@@ -346,7 +418,18 @@ class SQLiteReadSession:
         exc_value: BaseException | None,
         traceback: object,
     ) -> Literal[False]:
-        self.close()
+        try:
+            self.close()
+        except BaseException as cleanup_error:
+            # A body exception is the primary failure.  Close/fence/temp
+            # cleanup remains observable as a note rather than replacing it.
+            if exc_value is not None:
+                exc_value.add_note(
+                    "SQLite read session cleanup failed: "
+                    f"{type(cleanup_error).__name__}: {cleanup_error}"
+                )
+            else:
+                raise
         return False
 
     def open(self) -> sqlite3.Connection:
@@ -396,27 +479,27 @@ class SQLiteReadSession:
                     raise ImmutableSQLiteUnavailable(
                         f"SQLite owner changed while creating temporary snapshot: {self.path}"
                     )
-                connection = sqlite3.connect(
-                    readonly_sqlite_uri(temporary_database),
-                    uri=True,
-                    timeout=self.timeout_seconds,
+                _materialize_temporary_database(
+                    temporary_database,
+                    timeout_seconds=self.timeout_seconds,
                 )
-                try:
-                    self._connection = _configure_read_connection(
-                        connection,
-                        timeout_seconds=self.timeout_seconds,
-                        label="SQLite temporary snapshot read",
-                    )
-                except BaseException:
-                    connection.close()
-                    raise
+                self._connection = open_immutable_sqlite_connection(
+                    temporary_database,
+                    timeout_seconds=self.timeout_seconds,
+                )
                 self._temporary_directory = temporary_directory
                 self._temporary_database = temporary_database
                 return self._connection
             except BaseException as exc:
                 last_error = exc
                 if temporary_directory is not None:
-                    temporary_directory.cleanup()
+                    try:
+                        temporary_directory.cleanup()
+                    except BaseException as cleanup_error:
+                        exc.add_note(
+                            "temporary SQLite snapshot cleanup failed: "
+                            f"{type(cleanup_error).__name__}: {cleanup_error}"
+                        )
                 # Retry only a fence race.  An active WAL, a symlink, an
                 # invalid owner, and every other deterministic safety failure
                 # must retain its actionable reason on the first attempt.
@@ -464,7 +547,16 @@ class SQLiteReadSession:
             self._temporary_directory = None
             self._temporary_database = None
             if temporary_directory is not None:
-                temporary_directory.cleanup()
+                try:
+                    temporary_directory.cleanup()
+                except BaseException as cleanup_error:
+                    if primary_error is None:
+                        primary_error = cleanup_error
+                    else:
+                        primary_error.add_note(
+                            "temporary SQLite snapshot cleanup failed: "
+                            f"{type(cleanup_error).__name__}: {cleanup_error}"
+                        )
         if primary_error is not None:
             raise primary_error
 
@@ -530,7 +622,7 @@ def open_sidecar_safe_sqlite_connection(
     connection: sqlite3.Connection | None = None
     try:
         connection = sqlite3.connect(
-            readonly_sqlite_uri(temporary),
+            f"{readonly_sqlite_uri(temporary)}&immutable=1",
             uri=True,
             timeout=float(timeout_seconds),
             factory=_OwnedSnapshotConnection,

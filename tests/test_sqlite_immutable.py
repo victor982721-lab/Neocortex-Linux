@@ -108,6 +108,89 @@ def test_snapshot_temp_reads_active_wal_without_touching_source_sidecars(
         writer.close()
 
 
+@pytest.mark.parametrize("journal_mode", ["WAL", "DELETE"])
+def test_snapshot_temp_materializes_wal_or_rollback_journal_to_immutable_copy(
+    tmp_path: Path, journal_mode: str
+) -> None:
+    database = _database(tmp_path)
+    writer = sqlite3.connect(database)
+    try:
+        assert (
+            writer.execute(f"PRAGMA journal_mode={journal_mode}").fetchone()[0].lower()
+            == journal_mode.lower()
+        )
+        if journal_mode == "WAL":
+            writer.execute("INSERT INTO probe VALUES(8)")
+            writer.commit()
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("INSERT INTO probe VALUES(9)")
+        source_files = {
+            candidate: candidate.read_bytes()
+            for candidate in tmp_path.iterdir()
+            if candidate.name.startswith(database.name)
+        }
+
+        with SQLiteReadSession(
+            database,
+            mode=SQLiteReadMode.SNAPSHOT_TEMP,
+            temp_root=tmp_path,
+        ) as connection:
+            temporary = connection.execute("PRAGMA database_list").fetchone()[2]
+            temporary_database = Path(temporary)
+            assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+            assert [
+                row[0] for row in connection.execute("SELECT value FROM probe ORDER BY value")
+            ] == ([7, 8] if journal_mode == "WAL" else [7])
+            assert all(
+                not Path(f"{temporary_database}{suffix}").exists()
+                for suffix in ("-journal", "-wal", "-shm")
+            )
+            with pytest.raises(sqlite3.OperationalError, match="readonly"):
+                connection.execute("DELETE FROM probe")
+
+        assert source_files == {
+            candidate: candidate.read_bytes()
+            for candidate in tmp_path.iterdir()
+            if candidate.name.startswith(database.name)
+        }
+    finally:
+        writer.rollback()
+        writer.close()
+
+
+def test_snapshot_session_cleanup_does_not_mask_body_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = _database(tmp_path)
+    writer = sqlite3.connect(database)
+    writer.execute("PRAGMA journal_mode=WAL")
+    writer.execute("INSERT INTO probe VALUES(8)")
+    writer.commit()
+    real_temporary_directory = sqlite_immutable.tempfile.TemporaryDirectory
+
+    class FailingCleanup:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self._delegate = real_temporary_directory(*args, **kwargs)
+            self.name = self._delegate.name
+
+        def cleanup(self) -> None:
+            self._delegate.cleanup()
+            raise RuntimeError("injected temporary cleanup failure")
+
+    monkeypatch.setattr(sqlite_immutable.tempfile, "TemporaryDirectory", FailingCleanup)
+    try:
+        with pytest.raises(RuntimeError, match="primary body failure") as raised:
+            with SQLiteReadSession(
+                database,
+                mode=SQLiteReadMode.SNAPSHOT_TEMP,
+                temp_root=tmp_path,
+            ):
+                raise RuntimeError("primary body failure")
+        assert any("injected temporary cleanup failure" in note for note in raised.value.__notes__)
+    finally:
+        writer.close()
+
+
 def test_immutable_strict_rejects_live_wal_and_symlink_owner(tmp_path: Path) -> None:
     database = _database(tmp_path)
     writer = sqlite3.connect(database)

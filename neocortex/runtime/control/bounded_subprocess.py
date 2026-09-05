@@ -43,12 +43,21 @@ class _WindowsJob(Protocol):
     def terminate(self) -> None: ...
 
 
-@dataclass(frozen=True, slots=True)
 class SubprocessOutputLimitError(RuntimeError):
     """Raised after terminating a child whose captured stream exceeded its limit."""
 
     stream: str
     limit_bytes: int
+
+    def __init__(self, stream: str, limit_bytes: int) -> None:
+        # Initialize the built-in exception state explicitly.  A frozen
+        # dataclass installs a generated ``__setattr__`` that interferes with
+        # BaseException's mutable traceback/note fields, while omitting the
+        # RuntimeError initializer makes the public ``args`` contract depend
+        # on implementation details of BaseException.__new__.
+        self.stream = stream
+        self.limit_bytes = limit_bytes
+        super().__init__(stream, limit_bytes)
 
     def __str__(self) -> str:
         return f"subprocess {self.stream} exceeded {self.limit_bytes} bytes"

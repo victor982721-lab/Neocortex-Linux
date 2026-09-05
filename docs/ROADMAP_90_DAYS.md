@@ -199,6 +199,12 @@ clasificación multimodal siguen siendo objetivos, no resultados de ese benchmar
 
 ## 0.13.0 — TARGET: lifecycle durable de --all
 
+**Vertical inicial implementado en la fuente:** las corridas Framework ya
+publican un manifest versionado y con digest, conservan candidatos de rutas
+necesarios para recuperación, y status/API/SDK exponen un envelope read-only;
+este vertical no sustituye todavía el presupuesto durable entre workers ni la
+reanudación multimodal completa.
+
 **Resultado objetivo:** reanudar una corrida multimodal interrumpida desde sus
 inputs y publicaciones durables, conservando cobertura, errores y presupuesto
 entre workers, sin repetir trabajo ya comprometido.

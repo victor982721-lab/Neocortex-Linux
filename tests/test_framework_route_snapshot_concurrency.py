@@ -4,6 +4,7 @@ import sqlite3
 import threading
 from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -12,10 +13,16 @@ from neocortex.persistence import sqlite_immutable
 from neocortex.persistence.framework_route_state import FrameworkRouteState
 from neocortex.persistence.framework_state_writer import FrameworkState
 from neocortex.persistence.sqlite_immutable import ImmutableSQLiteUnavailable
+from neocortex.runtime.control.global_resources import GlobalResourceLimits
+from neocortex.runtime.control.memory_runtime import MemorySnapshot
 from neocortex.runtime.models import FrameworkConfig
 from neocortex.runtime.orchestration.orchestrator import FrameworkOrchestrator, RouteExecutionError
 from neocortex.runtime.orchestration.route_registry import RouteAdapter
 from neocortex.safety.route_filters import CandidateSelection
+
+
+class _InjectedBaseException(BaseException):
+    pass
 
 
 def _populate(state: FrameworkState, root: Path) -> int:
@@ -196,6 +203,115 @@ def test_snapshot_lives_until_workers_finish_on_failure_or_cancellation(
         assert finished == [True]
         assert len(snapshot_paths) == 2
         assert not any(path.exists() for path in snapshot_paths)
+
+
+@pytest.mark.parametrize("failure_phase", ("record", "begin"))
+def test_active_coordinator_is_cleared_when_setup_fails_before_executor(
+    tmp_path: Path, failure_phase: str
+) -> None:
+    failure = _InjectedBaseException(f"setup failed during {failure_phase}")
+
+    class FailingState:
+        def set_run_phase(self, _run_id: int, _phase: str) -> None:
+            return None
+
+        def record_event(self, *_args: object, **_kwargs: object) -> None:
+            if failure_phase == "record":
+                raise failure
+
+        def begin_route_runs(self, _run_id: int, _routes: tuple[str, ...]) -> None:
+            if failure_phase == "begin":
+                raise failure
+
+    config = FrameworkConfig(
+        root=tmp_path,
+        state_directory=tmp_path / "state",
+        route="all",
+    )
+    orchestrator = FrameworkOrchestrator(
+        config,
+        route_registry={
+            name: RouteAdapter(name, lambda _context: {})
+            for name in ("text", "audio")
+        },
+    )
+    snapshot = MemorySnapshot(10_000, 10_000, 20_000, 20_000)
+    limits = GlobalResourceLimits(
+        memory_budget_bytes=100,
+        min_free_memory_bytes=0,
+        min_free_commit_bytes=0,
+        cpu_slots=2,
+        wait_timeout_seconds=1,
+        poll_interval_seconds=0.01,
+    )
+    with (
+        patch(
+            "neocortex.runtime.orchestration.orchestrator.global_resource_limits_from_application",
+            return_value=limits,
+        ),
+        patch(
+            "neocortex.runtime.control.global_resources.memory_snapshot",
+            return_value=snapshot,
+        ),
+        pytest.raises(_InjectedBaseException) as raised,
+    ):
+        orchestrator._run_content_routes_with_snapshot(
+            root=tmp_path,
+            state=FailingState(),  # type: ignore[arg-type]
+            run_id=1,
+            scan_id=1,
+            candidate_database=tmp_path / "candidate.sqlite3",
+        )
+
+    assert raised.value is failure
+    assert orchestrator._active_coordinator is None
+
+
+def test_baseexception_from_worker_is_persisted_as_route_failure(
+    tmp_path: Path,
+) -> None:
+    state_directory = tmp_path / "state"
+    state_directory.mkdir()
+    database = state_directory / "framework.sqlite3"
+    failure = _InjectedBaseException("worker interrupted")
+
+    def fail(_context):
+        raise failure
+
+    with FrameworkState(database) as state:
+        run_id = _populate(state, tmp_path)
+        config = FrameworkConfig(
+            root=tmp_path,
+            state_directory=state_directory,
+            route="all",
+            global_memory_budget_bytes=100,
+            global_min_free_memory_bytes=0,
+            global_min_free_commit_bytes=0,
+            global_cpu_slots=2,
+            global_resource_wait_timeout_seconds=1,
+        )
+        orchestrator = FrameworkOrchestrator(
+            config,
+            route_registry={
+                "text": RouteAdapter("text", fail),
+                "audio": RouteAdapter("audio", lambda _context: {"processed": 0}),
+            },
+        )
+        with pytest.raises(RouteExecutionError) as raised:
+            orchestrator._run_content_routes(
+                root=tmp_path,
+                state=state,
+                run_id=run_id,
+                scan_id=1,
+            )
+
+        assert raised.value.failures == {"text": failure}
+        statuses = state._connection.execute(
+            "SELECT route_name, status FROM route_runs WHERE run_id=? ORDER BY route_name",
+            (run_id,),
+        ).fetchall()
+        assert statuses == [("audio", "completed"), ("text", "failed")]
+        assert orchestrator._active_coordinator is None
 
 
 @pytest.mark.parametrize("replace_during", ("connect", "initialize"))

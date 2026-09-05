@@ -393,3 +393,27 @@ def test_rollback_error_never_masks_the_primary_failure(
         finally:
             sqlite3.Connection.rollback(owner)
     assert not list(tmp_path.glob("neocortex-route-snapshot-*"))
+
+
+def test_temporary_cleanup_does_not_mask_snapshot_body_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "framework.sqlite3"
+    real_rmtree = sqlite_writer_snapshot.shutil.rmtree
+
+    def failing_rmtree(path_arg, *args, **kwargs):
+        real_rmtree(path_arg, *args, **kwargs)
+        raise RuntimeError("injected snapshot temporary cleanup failure")
+
+    monkeypatch.setattr(sqlite_writer_snapshot.shutil, "rmtree", failing_rmtree)
+    with closing(_create_owner(path)) as owner:
+        with pytest.raises(RuntimeError, match="primary snapshot body failure") as raised:
+            with writer_coordinated_sqlite_snapshot(
+                owner, path, owner_identity=_owner_identity(path), temp_root=tmp_path
+            ):
+                raise RuntimeError("primary snapshot body failure")
+        assert any(
+            "injected snapshot temporary cleanup failure" in note
+            for note in raised.value.__notes__
+        )
+    assert not list(tmp_path.glob("neocortex-route-snapshot-*"))

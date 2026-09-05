@@ -80,6 +80,10 @@ class _Request:
     cpu_slots: int
     enqueued_at: float
     waited: bool = False
+    queued: bool = False
+    admitted: bool = False
+    released: bool = False
+    wait_accounted: bool = False
 
 
 def _adaptive_memory_budget(total_physical: int | None) -> int:
@@ -268,6 +272,160 @@ class GlobalResourceCoordinator:
             return fitting_routes[0]
         return None
 
+    def _record_wait_locked(self, request: _Request, now: float) -> None:
+        """Account a request's queue time exactly once while holding the lock."""
+
+        if request.waited and not request.wait_accounted:
+            self._metrics[request.route_name].wait_seconds += max(
+                0.0, now - request.enqueued_at
+            )
+            request.wait_accounted = True
+
+    def _discard_queued_request_locked(self, request: _Request) -> None:
+        """Remove a queued request idempotently, preserving round-robin state."""
+
+        if not request.queued:
+            return
+        queue = self._queues[request.route_name]
+        for index, queued in enumerate(queue):
+            if queued is request:
+                del queue[index]
+                break
+        # The request may already have been removed by an interrupted grant, so
+        # clear the ownership marker even when the identity is no longer found.
+        request.queued = False
+        self._record_wait_locked(request, time.monotonic())
+        self._condition.notify_all()
+
+    def _grant_request_locked(self, request: _Request, route_index: int) -> None:
+        """Commit one admission as a small rollback-safe state transition."""
+
+        metrics = self._metrics[request.route_name]
+        previous = (
+            self._reserved_bytes,
+            self._cpu_in_use,
+            self._active_requests,
+            self._last_granted_index,
+            metrics.admissions,
+            metrics.reserved_bytes,
+            metrics.cpu_slots,
+            metrics.active_requests,
+            metrics.peak_reserved_bytes,
+            metrics.peak_cpu_slots,
+            self._peak_reserved_bytes,
+            self._peak_cpu_slots,
+            self._peak_active_requests,
+            metrics.wait_seconds,
+            request.wait_accounted,
+        )
+        queue = self._queues[request.route_name]
+        try:
+            queue.popleft()
+            request.queued = False
+            self._last_granted_index = route_index
+            self._reserved_bytes += request.memory_bytes
+            self._cpu_in_use += request.cpu_slots
+            self._active_requests += 1
+            metrics.admissions += 1
+            metrics.reserved_bytes += request.memory_bytes
+            metrics.cpu_slots += request.cpu_slots
+            metrics.active_requests += 1
+            metrics.peak_reserved_bytes = max(
+                metrics.peak_reserved_bytes, metrics.reserved_bytes
+            )
+            metrics.peak_cpu_slots = max(metrics.peak_cpu_slots, metrics.cpu_slots)
+            if request.waited:
+                self._record_wait_locked(request, time.monotonic())
+            self._peak_reserved_bytes = max(
+                self._peak_reserved_bytes, self._reserved_bytes
+            )
+            self._peak_cpu_slots = max(self._peak_cpu_slots, self._cpu_in_use)
+            self._peak_active_requests = max(
+                self._peak_active_requests, self._active_requests
+            )
+            request.admitted = True
+            request.released = False
+        except BaseException:
+            (
+                self._reserved_bytes,
+                self._cpu_in_use,
+                self._active_requests,
+                self._last_granted_index,
+                metrics.admissions,
+                metrics.reserved_bytes,
+                metrics.cpu_slots,
+                metrics.active_requests,
+                metrics.peak_reserved_bytes,
+                metrics.peak_cpu_slots,
+                self._peak_reserved_bytes,
+                self._peak_cpu_slots,
+                self._peak_active_requests,
+                metrics.wait_seconds,
+                request.wait_accounted,
+            ) = previous
+            request.queued = False
+            request.admitted = False
+            request.released = False
+            raise
+
+    def _release_admission_locked(self, request: _Request) -> None:
+        """Release an admission exactly once, even if notification is interrupted."""
+
+        if not request.admitted or request.released:
+            return
+        metrics = self._metrics[request.route_name]
+        previous = (
+            self._reserved_bytes,
+            self._cpu_in_use,
+            self._active_requests,
+            metrics.reserved_bytes,
+            metrics.cpu_slots,
+            metrics.active_requests,
+        )
+        try:
+            self._reserved_bytes -= request.memory_bytes
+            self._cpu_in_use -= request.cpu_slots
+            self._active_requests -= 1
+            metrics.reserved_bytes -= request.memory_bytes
+            metrics.cpu_slots -= request.cpu_slots
+            metrics.active_requests -= 1
+        except BaseException:
+            (
+                self._reserved_bytes,
+                self._cpu_in_use,
+                self._active_requests,
+                metrics.reserved_bytes,
+                metrics.cpu_slots,
+                metrics.active_requests,
+            ) = previous
+            raise
+        # Mark the reservation released before waking waiters. If notification
+        # itself is interrupted, a retry cannot double-release the counters.
+        request.admitted = False
+        request.released = True
+        self._condition.notify_all()
+
+    def _cleanup_request(
+        self,
+        request: _Request,
+        primary: BaseException | None,
+    ) -> None:
+        """Clean queued/admitted state without masking a primary exception."""
+
+        try:
+            with self._condition:
+                if request.queued:
+                    self._discard_queued_request_locked(request)
+                elif request.admitted and not request.released:
+                    self._release_admission_locked(request)
+        except BaseException as cleanup_error:
+            if primary is None:
+                raise
+            primary.add_note(
+                "global resource admission cleanup failed: "
+                f"{type(cleanup_error).__name__}: {cleanup_error}"
+            )
+
     @contextmanager
     def admit(self, route_name: str, memory_bytes: int, cpu_slots: int = 1):
         self.cancellation.checkpoint()
@@ -289,111 +447,74 @@ class GlobalResourceCoordinator:
         started = time.monotonic()
         request = _Request(route_name, requested_memory, requested_cpu, started)
         route_index = self.route_order.index(route_name)
-        acquired = False
         headroom_blocked_since: float | None = None
-        with self._condition:
-            self._queues[route_name].append(request)
-            self._condition.notify_all()
-            while True:
-                if self.cancellation.is_cancelled:
-                    self._queues[route_name].remove(request)
-                    if request.waited:
-                        self._metrics[route_name].wait_seconds += (
-                            time.monotonic() - started
+        try:
+            with self._condition:
+                self._queues[route_name].append(request)
+                request.queued = True
+                self._condition.notify_all()
+                while True:
+                    if self.cancellation.is_cancelled:
+                        raise CancellationRequested(
+                            f"{route_name} cancelled while waiting for global resources"
                         )
-                    self._condition.notify_all()
-                    raise CancellationRequested(
-                        f"{route_name} cancelled while waiting for global resources"
-                    )
-                snapshot, effective_cpu_slots = self._observe_live_resources()
-                selected_route = self._next_route(snapshot, effective_cpu_slots)
-                if (
-                    selected_route == route_name
-                    and self._queues[route_name]
-                    and self._queues[route_name][0] is request
-                ):
-                    self._queues[route_name].popleft()
-                    self._last_granted_index = route_index
-                    self._reserved_bytes += requested_memory
-                    self._cpu_in_use += requested_cpu
-                    self._active_requests += 1
-                    metrics = self._metrics[route_name]
-                    metrics.admissions += 1
-                    metrics.reserved_bytes += requested_memory
-                    metrics.cpu_slots += requested_cpu
-                    metrics.active_requests += 1
-                    metrics.peak_reserved_bytes = max(
-                        metrics.peak_reserved_bytes, metrics.reserved_bytes
-                    )
-                    metrics.peak_cpu_slots = max(
-                        metrics.peak_cpu_slots, metrics.cpu_slots
-                    )
-                    if request.waited:
-                        metrics.wait_seconds += time.monotonic() - started
-                    self._peak_reserved_bytes = max(
-                        self._peak_reserved_bytes, self._reserved_bytes
-                    )
-                    self._peak_cpu_slots = max(self._peak_cpu_slots, self._cpu_in_use)
-                    self._peak_active_requests = max(
-                        self._peak_active_requests, self._active_requests
-                    )
-                    acquired = True
-                    self._condition.notify_all()
-                    break
-
-                if not request.waited:
-                    request.waited = True
-                    self._metrics[route_name].waits += 1
-
-                # Active bounded jobs own their reservations legitimately. Their
-                # document/worker supervisors enforce the work deadlines, so a
-                # queue wait caused only by internal contention must not be
-                # mislabeled as a system-memory failure. Apply this timeout only
-                # while no work is active and live physical/commit headroom is
-                # the reason that no queued request can start.
-                remaining: float | None = None
-                if selected_route is None and self._active_requests == 0:
-                    now = time.monotonic()
-                    if headroom_blocked_since is None:
-                        headroom_blocked_since = now
-                    remaining = self.limits.wait_timeout_seconds - (
-                        now - headroom_blocked_since
-                    )
-                    if remaining <= 0:
-                        self._queues[route_name].remove(request)
-                        self._metrics[route_name].wait_seconds += now - started
+                    snapshot, effective_cpu_slots = self._observe_live_resources()
+                    selected_route = self._next_route(snapshot, effective_cpu_slots)
+                    if (
+                        selected_route == route_name
+                        and self._queues[route_name]
+                        and self._queues[route_name][0] is request
+                    ):
+                        self._grant_request_locked(request, route_index)
                         self._condition.notify_all()
-                        raise MemoryHeadroomTimeout(
-                            f"{route_name} timed out waiting for live system "
-                            f"headroom; available_physical="
-                            f"{snapshot.available_physical}, "
-                            f"available_commit={snapshot.available_commit}, "
-                            f"reserved={self._reserved_bytes}, "
-                            f"cpu_in_use={self._cpu_in_use}, "
-                            f"cpu_load={self._last_cpu_load}, "
-                            f"effective_cpu_slots="
-                            f"{self._last_effective_cpu_slots}"
-                        )
-                else:
-                    headroom_blocked_since = None
-                wait_seconds = self.limits.poll_interval_seconds
-                if remaining is not None:
-                    wait_seconds = min(wait_seconds, remaining)
-                self._condition.wait(wait_seconds)
+                        break
 
+                    if not request.waited:
+                        request.waited = True
+                        self._metrics[route_name].waits += 1
+
+                    # Active bounded jobs own resources legitimately. Apply the
+                    # headroom timeout only while no work is active and no
+                    # queued request can start because live headroom is low.
+                    remaining: float | None = None
+                    if selected_route is None and self._active_requests == 0:
+                        now = time.monotonic()
+                        if headroom_blocked_since is None:
+                            headroom_blocked_since = now
+                        remaining = self.limits.wait_timeout_seconds - (
+                            now - headroom_blocked_since
+                        )
+                        if remaining <= 0:
+                            raise MemoryHeadroomTimeout(
+                                f"{route_name} timed out waiting for live system "
+                                f"headroom; available_physical="
+                                f"{snapshot.available_physical}, "
+                                f"available_commit={snapshot.available_commit}, "
+                                f"reserved={self._reserved_bytes}, "
+                                f"cpu_in_use={self._cpu_in_use}, "
+                                f"cpu_load={self._last_cpu_load}, "
+                                f"effective_cpu_slots="
+                                f"{self._last_effective_cpu_slots}"
+                            )
+                    else:
+                        headroom_blocked_since = None
+                    wait_seconds = self.limits.poll_interval_seconds
+                    if remaining is not None:
+                        wait_seconds = min(wait_seconds, remaining)
+                    self._condition.wait(wait_seconds)
+        except BaseException as admission_error:
+            self._cleanup_request(request, admission_error)
+            raise
+
+        primary_error: BaseException | None = None
         try:
             yield
+        except BaseException as exc:
+            primary_error = exc
+            raise
         finally:
-            if acquired:
-                with self._condition:
-                    self._reserved_bytes -= requested_memory
-                    self._cpu_in_use -= requested_cpu
-                    self._active_requests -= 1
-                    metrics = self._metrics[route_name]
-                    metrics.reserved_bytes -= requested_memory
-                    metrics.cpu_slots -= requested_cpu
-                    metrics.active_requests -= 1
-                    self._condition.notify_all()
+            if request.admitted and not request.released:
+                self._cleanup_request(request, primary_error)
 
     def route_peak_reserved_bytes(self, route_name: str) -> int:
         with self._condition:

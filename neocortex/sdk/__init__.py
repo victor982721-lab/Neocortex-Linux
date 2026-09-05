@@ -100,6 +100,10 @@ if TYPE_CHECKING:
         WorkOutcome as WorkOutcome,
         WorkReceipt as WorkReceipt,
         plan_knowledge_query as plan_knowledge_query,
+        RunManifest as RunManifest,
+        RunStatus as RunStatus,
+        read_run_status as read_run_status,
+        read_run_status_json as read_run_status_json,
     )
     from neocortex.curation.preview import CurationPlanPage as CurationPlanPage
     from neocortex.curation.preview import CurationSourceHead as CurationSourceHead
@@ -177,6 +181,10 @@ __all__ = (  # noqa: RUF022
     "curation_checkpoint_resume_payload",
     "curation_checkpoint_status_payload",
     "plan_knowledge_query",
+    "RunManifest",
+    "RunStatus",
+    "read_run_status",
+    "read_run_status_json",
 )
 
 _PUBLIC_NAMES: Final = frozenset(__all__)

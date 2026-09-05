@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import sqlite3
+import shutil
 import stat
 import sys
 import tempfile
@@ -77,10 +78,10 @@ def writer_coordinated_sqlite_snapshot(
         if time.monotonic() >= deadline:
             raise ImmutableSQLiteUnavailable("SQLite coordinated snapshot exceeded its time budget")
 
-    with tempfile.TemporaryDirectory(
-        prefix="neocortex-route-snapshot-", dir=temp_root
-    ) as directory:
-        destination = Path(directory) / source.name
+    directory = Path(tempfile.mkdtemp(prefix="neocortex-route-snapshot-", dir=temp_root))
+    primary_error: BaseException | None = None
+    try:
+        destination = directory / source.name
         began_read = False
         previous_busy_timeout: int | None = None
         try:
@@ -158,7 +159,25 @@ def writer_coordinated_sqlite_snapshot(
                 primary.add_note(f"SQLite snapshot owner cleanup failed: {cleanup_error}")
         _require_owner_identity(source, owner_identity)
         capture_sqlite_immutable_fence(destination)
-        yield destination
+        try:
+            yield destination
+        except BaseException as exc:
+            primary_error = exc
+            raise
+    except BaseException as exc:
+        if primary_error is None:
+            primary_error = exc
+        raise
+    finally:
+        try:
+            shutil.rmtree(directory)
+        except BaseException as cleanup_error:
+            if primary_error is None:
+                raise
+            primary_error.add_note(
+                "SQLite coordinated snapshot temporary cleanup failed: "
+                f"{type(cleanup_error).__name__}: {cleanup_error}"
+            )
 
 
 __all__ = ["writer_coordinated_sqlite_snapshot"]
