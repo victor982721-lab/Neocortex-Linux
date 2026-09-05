@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import argparse
+import hashlib
 import json
 import sys
 from collections.abc import Callable
@@ -639,7 +640,6 @@ def _begin_integrated_publication(
         begin_state_publication,
         publication_idempotency_key,
     )
-
     with FrameworkState(args.state_directory / "framework.sqlite3", existing_only=True) as state:
         manifest = state.read_run_manifest(run_id)
     if manifest is None:
@@ -660,6 +660,74 @@ def _begin_integrated_publication(
         detail="Semantic owner work is pending its terminal lifecycle publication",
     )
 
+
+def _final_publication_owner_heads(
+    args: argparse.Namespace,
+    captured_results: list[tuple[str, object]],
+    *,
+    selected_sources: tuple[str, ...],
+):
+    """Derive bounded owner-head identities from published Semantic results."""
+
+    from neocortex.persistence.state_publication import StateOwnerHead
+
+    generations: list[tuple[int, str]] = []
+    for _scope, value in captured_results:
+        for generation in getattr(value, "generations", ()):
+            summary = getattr(generation, "summary", None)
+            generation_id = getattr(summary, "generation_id", None)
+            model_signature = getattr(summary, "model_signature", None)
+            if isinstance(generation_id, int) and isinstance(model_signature, str):
+                generations.append((generation_id, model_signature))
+    if not generations:
+        raise RuntimeError("Semantic publication produced no owner generation")
+    generation_id, model_signature = max(generations)
+    semantic_payload = json.dumps(
+        {
+            "owner": "semantic",
+            "generation_id": generation_id,
+            "model_signature": model_signature,
+            "sources": list(selected_sources),
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    heads = [
+        StateOwnerHead(
+            owner="semantic",
+            revision=generation_id,
+            digest_sha256=hashlib.sha256(semantic_payload).hexdigest(),
+        )
+    ]
+    if "code" in selected_sources:
+        from neocortex.code.search.code_semantic_links import current_code_embedding_link_counts
+
+        active, current = current_code_embedding_link_counts(
+            args.state_directory,
+            generation_id=generation_id,
+            model_signature=model_signature,
+        )
+        code_payload = json.dumps(
+            {
+                "owner": "code",
+                "generation_id": generation_id,
+                "model_signature": model_signature,
+                "active": active,
+                "current": current,
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        heads.append(
+            StateOwnerHead(
+                owner="code",
+                revision=generation_id,
+                digest_sha256=hashlib.sha256(code_payload).hexdigest(),
+            )
+        )
+    return tuple(heads)
 
 def run_integrated_all_semantic_index(
     args: argparse.Namespace,
@@ -780,16 +848,29 @@ def run_integrated_all_semantic_index(
         ),
     )
     semantic_exit_code: int | None = None
+    captured_results: list[tuple[str, object]] = []
+
+    def capture_result(scope: str, value: object) -> None:
+        captured_results.append((scope, value))
+        if result_sink is not None:
+            result_sink(scope, value)
+
     try:
         semantic_exit_code = run_semantic_index(
             integrated_args,
             incomplete_is_error=False,
             progress=progress,
-            result_sink=result_sink,
+            result_sink=capture_result,
             print_output=print_output,
         )
         if semantic_exit_code == 0 and publication is not None:
-            publication.commit(())
+            publication.commit(
+                _final_publication_owner_heads(
+                    args,
+                    captured_results,
+                    selected_sources=selected_sources,
+                )
+            )
         _record_integrated_semantic_stage(
             args,
             run_id,

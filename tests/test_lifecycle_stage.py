@@ -6,6 +6,7 @@ from argparse import Namespace
 import json
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,6 +14,7 @@ from neocortex.api.cli.cli_semantic import (
     _begin_integrated_publication,
     run_integrated_all_semantic_index,
 )
+from neocortex.api.cli import cli_semantic
 from neocortex.deduplication import DedupIndex, FileSnapshot, InventoryCheckpoint
 from neocortex.enumeration import JournalCursor
 from neocortex.persistence.framework_state_writer import FrameworkState
@@ -354,3 +356,46 @@ def test_integrated_semantic_publication_gate_is_durable_and_fail_closed(tmp_pat
     view = read_state_publication_state(state_directory)
     assert view.status == "complete"
     assert view.epoch.owners == ("semantic", "code")
+
+
+def test_integrated_semantic_commits_authenticated_publication_head(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    state_directory = tmp_path / "state"
+    state_directory.mkdir()
+    (state_directory / "pdf.sqlite3").touch()
+    database = state_directory / "framework.sqlite3"
+    with FrameworkState(database) as state:
+        run_id = state.begin_initial_run(root, None)
+        state.publish_run_manifest(run_id, _manifest(run_id, root))
+
+    fake_result = SimpleNamespace(
+        generations=(
+            SimpleNamespace(
+                summary=SimpleNamespace(generation_id=7, model_signature="fixture-model")
+            ),
+        )
+    )
+
+    def fake_index(args, *, result_sink, **_kwargs):
+        result_sink("text", fake_result)
+        return 0
+
+    monkeypatch.setattr(cli_semantic, "run_semantic_index", fake_index)
+    args = Namespace(
+        all=True,
+        state_directory=state_directory,
+        semantic_source=None,
+        semantic_index="text",
+        semantic_max_items=10,
+        semantic_max_new_jobs=10,
+        semantic_time_budget_seconds=1.0,
+    )
+    assert run_integrated_all_semantic_index(args, print_output=False, run_id=run_id) == 0
+    view = read_state_publication_state(state_directory)
+    assert view.status == "complete"
+    assert view.epoch.owner_heads[0].owner == "semantic"
+    assert view.epoch.content_manifest_name is not None
