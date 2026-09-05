@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import importlib.metadata
 import os
+import sqlite3
 import sys
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Any, Literal, cast
@@ -48,6 +49,7 @@ from .read_contract import (
     AssetHealthOutput,
     LineageOutput,
     ReadContractError,
+    ReadExitCode,
     ReadOperation,
     SearchOutput,
     StatusOutput,
@@ -632,7 +634,7 @@ async def _run_fastmcp_over_streams(
 
 
 def _structured_read_payload(
-    value: object,
+    producer: Callable[[], object],
     operation: ReadOperation,
     *,
     scope: str,
@@ -646,8 +648,34 @@ def _structured_read_payload(
     The MCP adapter is the compatibility boundary for older payload producers,
     so it may fill only omitted identity/envelope fields.  It never repairs a
     field that was present but malformed; those become a typed schema error
-    payload instead of an unstructured Python traceback.
+    payload instead of an unstructured Python traceback.  Only trusted adapter
+    callbacks are executed here, before payload validation but inside the
+    structured boundary; malformed input and unavailable dependencies must not
+    escape as transport-level tool errors.
     """
+
+    def failure(code: ReadExitCode, message: str) -> dict[str, object]:
+        payload = make_error_payload(operation, scope=scope, code=code, message=message)
+        # Failure envelopes retain the same request echoes as successful reads.
+        for key, item in (
+            ("query", query),
+            ("mode", mode),
+            ("include_history", include_history),
+            ("limit_per_scope", limit),
+        ):
+            if item is not None:
+                payload[key] = item
+        payload = normalize_read_payload(payload, operation, scope=scope)
+        return cast(dict[str, object], sanitize_untrusted_payload(payload))
+
+    try:
+        value = producer()
+    except ReadContractError as exc:
+        return failure(ReadExitCode.SCHEMA_INCOMPATIBLE, str(exc))
+    except (TypeError, ValueError) as exc:
+        return failure(ReadExitCode.USAGE, str(exc))
+    except (ModuleNotFoundError, OSError, RuntimeError, sqlite3.Error) as exc:
+        return failure(ReadExitCode.FATAL, str(exc) or type(exc).__name__)
 
     try:
         payload = normalize_read_payload(
@@ -667,15 +695,9 @@ def _structured_read_payload(
         )
         return cast(dict[str, object], sanitize_untrusted_payload(validated))
     except (ReadContractError, TypeError, ValueError) as exc:
-        return cast(
-            dict[str, object],
-            sanitize_untrusted_payload(
-                make_error_payload(
-                    operation,
-                    scope=scope,
-                    message=str(exc) or "MCP read payload failed contract validation",
-                )
-            ),
+        return failure(
+            ReadExitCode.SCHEMA_INCOMPATIBLE,
+            str(exc) or "MCP read payload failed contract validation",
         )
 
 
@@ -747,7 +769,7 @@ def create_server() -> Any:
     )
     def status(scope: _Scope = "all") -> MCPStatusOutput:
         return _structured_read_payload(
-            status_payload(scope),
+            lambda: status_payload(scope),
             ReadOperation.STATUS,
             scope=scope,
         )  # type: ignore[return-value]
@@ -770,7 +792,7 @@ def create_server() -> Any:
         include_history: bool = False,
     ) -> MCPSearchOutput:
         return _structured_read_payload(
-            search_payload(
+            lambda: search_payload(
                 query,
                 scope,
                 limit=limit,
@@ -801,7 +823,7 @@ def create_server() -> Any:
         include_history: bool = False,
     ) -> MCPContextOutput:
         return _structured_read_payload(
-            context_payload(
+            lambda: context_payload(
                 query,
                 scope,
                 limit=limit,
@@ -840,7 +862,7 @@ def create_server() -> Any:
         expected_snapshot_id: _OptionalEvidenceIdentifier = None,
     ) -> MCPEvidenceOutput:
         return _structured_read_payload(
-            evidence_payload(
+            lambda: evidence_payload(
                 query,
                 citation_id,
                 scope,
@@ -869,7 +891,7 @@ def create_server() -> Any:
         mode: _CodeMode = "hybrid",
     ) -> MCPCodeSearchOutput:
         return _structured_read_payload(
-            code_search_payload(query, scope, limit=limit, modes=(mode,)),
+            lambda: code_search_payload(query, scope, limit=limit, modes=(mode,)),
             ReadOperation.INSPECT_CODE,
             scope=scope,
             query=query.strip(),
@@ -891,7 +913,7 @@ def create_server() -> Any:
         scope: _Scope = "all",
     ) -> MCPLineageOutput:
         return _structured_read_payload(
-            lineage_payload(identifier, scope),
+            lambda: lineage_payload(identifier, scope),
             ReadOperation.LINEAGE,
             scope=scope,
         )  # type: ignore[return-value]
@@ -911,7 +933,7 @@ def create_server() -> Any:
         scope: _Scope = "all",
     ) -> MCPAssetHealthOutput:
         return _structured_read_payload(
-            asset_health_payload(resource_id, scope),
+            lambda: asset_health_payload(resource_id, scope),
             ReadOperation.ASSET_HEALTH,
             scope=scope,
         )  # type: ignore[return-value]

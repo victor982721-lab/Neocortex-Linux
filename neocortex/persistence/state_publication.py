@@ -46,6 +46,23 @@ class StatePublicationConflictError(StatePublicationError):
     """The caller's expected epoch no longer matches the durable epoch."""
 
 
+class StatePublicationCommitError(StatePublicationError):
+    """An append may be visible, so owner effects must not be rolled back.
+
+    ``durable`` is true only after the journal file fsync succeeded, with its
+    directory entry already synchronized.  False means recovery is required,
+    not that the append did not happen.  In particular an epoch-pointer error
+    cannot undo a durable complete event in the append-only journal.
+    """
+
+    def __init__(
+        self, message: str, publication: StatePublication, *, durable: bool
+    ) -> None:
+        super().__init__(message)
+        self.publication = publication
+        self.durable = durable
+
+
 @dataclass(frozen=True, slots=True)
 class StateOwnerHead:
     """A bounded, immutable identity for one owner-local published head.
@@ -860,14 +877,26 @@ def _append_journal(path: Path, publication: StatePublication) -> None:
     current_size = 0 if metadata is None else metadata.st_size
     if current_size + len(encoded.encode("utf-8")) > MAX_PUBLICATION_JOURNAL_BYTES:
         raise StatePublicationError("publication journal would exceed its bound")
+    append_started = False
+    durable = False
     try:
         with path.open("a", encoding="utf-8") as stream:
+            # Complete all permission/directory setup before exposing bytes.
+            # Once an append starts, an I/O error does not prove its absence.
+            os.fchmod(stream.fileno(), 0o600)
+            _fsync_directory(path.parent)
+            append_started = True
             stream.write(encoded)
             stream.flush()
             os.fsync(stream.fileno())
-        os.chmod(path, 0o600)
-        _fsync_directory(path.parent)
-    except OSError as exc:
+            durable = True
+    except (OSError, StatePublicationError) as exc:
+        if append_started:
+            raise StatePublicationCommitError(
+                "publication journal append requires reconciliation",
+                publication,
+                durable=durable,
+            ) from exc
         raise StatePublicationError("publication journal cannot be appended") from exc
 
 
@@ -922,85 +951,130 @@ def record_state_publication(
     if detail is not None:
         detail = _required_text(detail, label="detail", maximum=4096)
     digest = _idempotency_digest(operation, selected_owners, idempotency_key)
-    with _publication_lock(selected):
-        current = read_state_epoch(selected)
-        if expected_epoch is not None and current.epoch != expected_epoch:
-            raise StatePublicationConflictError(
-                f"publication epoch changed: expected {expected_epoch}, observed {current.epoch}"
-            )
-        journal = _read_journal(selected)
-        for prior in reversed(journal):
-            if prior.idempotency_key != digest:
-                continue
-            if prior.manifest_sha256 != manifest_sha256:
+    append_completed: StatePublication | None = None
+    try:
+        with _publication_lock(selected):
+            current = read_state_epoch(selected)
+            if expected_epoch is not None and current.epoch != expected_epoch:
                 raise StatePublicationConflictError(
-                    "idempotency key is already bound to a different manifest"
+                    f"publication epoch changed: expected {expected_epoch}, observed {current.epoch}"
                 )
-            # A complete replay is always safe only when the content heads are
-            # identical.  A prepare may be completed with final heads that
-            # differ from its baseline, but a repeated prepare itself must not
-            # create an unbounded journal.
-            if prior.status == "complete":
-                if prior.owner_heads != normalized_owner_heads:
+            journal = _read_journal(selected)
+            latest_by_key = {item.idempotency_key: item for item in journal}
+            if any(
+                item.status == "partial" and item.idempotency_key != digest
+                for item in latest_by_key.values()
+            ):
+                raise StatePublicationConflictError(
+                    "another publication is pending recovery"
+                )
+            latest_complete = next(
+                (item for item in reversed(journal) if item.status == "complete"), None
+            )
+            if latest_complete is not None:
+                _read_content_manifest_for_publication(selected, latest_complete)
+            prior = latest_by_key.get(digest)
+            if prior is not None:
+                if prior.manifest_sha256 != manifest_sha256:
                     raise StatePublicationConflictError(
-                        "idempotency key is already bound to different owner heads"
+                        "idempotency key is already bound to a different manifest"
                     )
-                return prior
-            if prior.status == status and prior.owner_heads == normalized_owner_heads:
-                return prior
-        epoch = current.epoch + (1 if status == "complete" else 0)
-        created_ns = time.time_ns()
-        event_id = f"epoch:{epoch}:event:{created_ns}"
-        publication = StatePublication(
-            event_id=event_id,
-            epoch=epoch,
-            operation=operation,
-            owners=selected_owners,
-            status=status,
-            created_ns=created_ns,
-            idempotency_key=digest,
-            manifest_sha256=manifest_sha256,
-            detail=detail,
-            owner_heads=normalized_owner_heads,
-        )
-        content_manifest_name = None
-        content_manifest_sha256 = None
-        if status == "complete" and normalized_owner_heads:
-            content_manifest_name, content_manifest_sha256 = _write_content_manifest(
-                selected,
-                publication,
-            )
+                if prior.status == "partial":
+                    if status == "failed":
+                        raise StatePublicationConflictError(
+                            "a prepared publication requires a verified abort"
+                        )
+                    if status == "partial" and prior.owner_heads != normalized_owner_heads:
+                        raise StatePublicationConflictError(
+                            "prepared owner heads cannot be replaced on retry"
+                        )
+                    if status == "complete" and prior.owner_heads and not normalized_owner_heads:
+                        raise StatePublicationConflictError(
+                            "prepared owner heads require final owner heads"
+                        )
+                # A complete replay is always safe only when the content heads are
+                # identical.  A prepare may be completed with final heads that
+                # differ from its baseline, but a repeated prepare itself must not
+                # create an unbounded journal.
+                if prior.status == "complete":
+                    if prior.owner_heads != normalized_owner_heads:
+                        raise StatePublicationConflictError(
+                            "idempotency key is already bound to different owner heads"
+                        )
+                    return prior
+                if prior.status == status and prior.owner_heads == normalized_owner_heads:
+                    return prior
+            epoch = current.epoch + (1 if status == "complete" else 0)
+            created_ns = time.time_ns()
+            event_id = f"epoch:{epoch}:event:{created_ns}"
             publication = StatePublication(
-                event_id=publication.event_id,
-                epoch=publication.epoch,
-                operation=publication.operation,
-                owners=publication.owners,
-                status=publication.status,
-                created_ns=publication.created_ns,
-                idempotency_key=publication.idempotency_key,
-                manifest_sha256=publication.manifest_sha256,
-                detail=publication.detail,
-                owner_heads=publication.owner_heads,
-                content_manifest_sha256=content_manifest_sha256,
-                content_manifest_name=content_manifest_name,
+                event_id=event_id,
+                epoch=epoch,
+                operation=operation,
+                owners=selected_owners,
+                status=status,
+                created_ns=created_ns,
+                idempotency_key=digest,
+                manifest_sha256=manifest_sha256,
+                detail=detail,
+                owner_heads=normalized_owner_heads,
             )
-        _append_journal(_journal_path(selected), publication)
-        if status == "complete":
-            _atomic_write_json(
-                _epoch_path(selected),
-                {
-                    "schema": STATE_PUBLICATION_SCHEMA,
-                    "epoch": epoch,
-                    "event_id": event_id,
-                    "operation": operation,
-                    "owners": list(selected_owners),
-                    "manifest_sha256": manifest_sha256,
-                    "owner_heads": [item.as_payload() for item in normalized_owner_heads],
-                    "content_manifest_sha256": content_manifest_sha256,
-                    "content_manifest_name": content_manifest_name,
-                },
-            )
-        return publication
+            content_manifest_name = None
+            content_manifest_sha256 = None
+            if status == "complete" and normalized_owner_heads:
+                content_manifest_name, content_manifest_sha256 = _write_content_manifest(
+                    selected,
+                    publication,
+                )
+                publication = StatePublication(
+                    event_id=publication.event_id,
+                    epoch=publication.epoch,
+                    operation=publication.operation,
+                    owners=publication.owners,
+                    status=publication.status,
+                    created_ns=publication.created_ns,
+                    idempotency_key=publication.idempotency_key,
+                    manifest_sha256=publication.manifest_sha256,
+                    detail=publication.detail,
+                    owner_heads=publication.owner_heads,
+                    content_manifest_sha256=content_manifest_sha256,
+                    content_manifest_name=content_manifest_name,
+                )
+            _append_journal(_journal_path(selected), publication)
+            append_completed = publication
+            if status == "complete":
+                try:
+                    _atomic_write_json(
+                        _epoch_path(selected),
+                        {
+                            "schema": STATE_PUBLICATION_SCHEMA,
+                            "epoch": epoch,
+                            "event_id": event_id,
+                            "operation": operation,
+                            "owners": list(selected_owners),
+                            "manifest_sha256": manifest_sha256,
+                            "owner_heads": [item.as_payload() for item in normalized_owner_heads],
+                            "content_manifest_sha256": content_manifest_sha256,
+                            "content_manifest_name": content_manifest_name,
+                        },
+                    )
+                except (OSError, StatePublicationError) as exc:
+                    raise StatePublicationCommitError(
+                        "complete journal committed; epoch pointer update failed",
+                        publication,
+                        durable=True,
+                    ) from exc
+            return publication
+    except (OSError, StatePublicationError) as exc:
+        if isinstance(exc, StatePublicationCommitError):
+            raise
+        if append_completed is not None:
+            raise StatePublicationCommitError(
+                "publication journal committed; lock cleanup failed",
+                append_completed,
+                durable=True,
+            ) from exc
+        raise
 
 
 def begin_state_publication(
@@ -1138,6 +1212,7 @@ __all__ = [
     "StateEpoch",
     "StateOwnerHead",
     "StatePublication",
+    "StatePublicationCommitError",
     "StatePublicationConflictError",
     "StatePublicationError",
     "StatePublicationTransaction",

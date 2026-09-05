@@ -14,13 +14,13 @@ import os
 import re
 import stat
 from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
 from neocortex.api.read_contract import sanitize_untrusted_text
 from neocortex.curation.checkpoints import (
-    CURATION_CHECKPOINT_CONTRACT,
     MAX_WORK_BYTES,
     MAX_WORK_FILES,
     MAX_WORK_ITEMS,
@@ -31,6 +31,7 @@ from neocortex.curation.checkpoints import (
     CurationCheckpointRoot,
     CurationCheckpointSourceHead,
     CurationCheckpointStorageError,
+    CurationCheckpointValidation,
     CurationSnapshotObservation,
     create_checkpoint,
     compute_batch_digest,
@@ -38,8 +39,19 @@ from neocortex.curation.checkpoints import (
     validate_checkpoint,
     write_checkpoint,
 )
-from neocortex.curation.preview import CurationPlanPage, build_curation_plan_page
-from neocortex.curation.verification import verify_curation_page
+from neocortex.curation.preview import (
+    CurationPlanPage,
+    CurationStateError,
+    _decode_cursor,
+    build_curation_plan_page,
+)
+from neocortex.curation.verification import (
+    MAX_VERIFICATION_BYTES,
+    MAX_VERIFICATION_FILES,
+    MAX_VERIFICATION_ITEMS,
+    CurationWorkBudget,
+    verify_curation_page,
+)
 from neocortex.runtime.config.app_paths import default_state_directory
 
 
@@ -167,108 +179,151 @@ def _observation_from_scan(scan: Mapping[str, object]) -> CurationSnapshotObserv
         raise CurationCheckpointApiError("unavailable", "scan snapshot is not trusted") from error
 
 
+def _cursor(value: object) -> str | None:
+    # The planner owns its cursor encoding; do not maintain a second decoder.
+    try:
+        _decode_cursor(value)  # type: ignore[arg-type]
+    except (CurationStateError, TypeError, ValueError) as error:
+        raise CurationCheckpointApiError("invalid_request", "curation cursor is invalid") from error
+    return value  # type: ignore[return-value]
+
+
 def _bundle(
+    *,
+    state_directory: Path,
+    limit: int,
+    cursor: str | None,
+) -> tuple[CurationPlanPage, CurationSnapshotObservation]:
+    try:
+        page = build_curation_plan_page(state_directory, limit, _cursor(cursor))
+    except CurationStateError as error:
+        message = str(error)
+        code = "snapshot_changed" if message == "curation cursor snapshot changed" else (
+            "invalid_request" if message.startswith("curation cursor") else "unavailable"
+        )
+        raise CurationCheckpointApiError(code, "curation plan cannot be read: " + message) from error
+    except (OSError, RuntimeError, ValueError) as error:
+        raise CurationCheckpointApiError("unavailable", "curation plan cannot be read") from error
+    if not isinstance(page, CurationPlanPage) or page.coverage not in {"complete", "partial"}:
+        raise CurationCheckpointApiError("unavailable", "curation plan coverage is unavailable")
+    observation = _observation_from_scan({"snapshot": {
+        "plan_digest": page.plan_digest,
+        "snapshot_id": page.snapshot_id,
+        "root": page.root,
+        "source_heads": [head.to_dict() for head in page.source_heads],
+    }})
+    return page, observation
+
+
+def _request_budget(
+    *, max_items: int | None, max_files: int | None, max_bytes: int | None,
+) -> CurationCheckpointBudget:
+    # Validate all caller bounds before constructing a page or opening corpus files.
+    return CurationCheckpointBudget(
+        max_items=MAX_WORK_ITEMS if max_items is None else _optional_budget(
+            max_items, label="max_items", maximum=MAX_WORK_ITEMS,
+        ),
+        max_files=MAX_WORK_FILES if max_files is None else _optional_budget(
+            max_files, label="max_files", maximum=MAX_WORK_FILES,
+        ),
+        max_bytes=MAX_WORK_BYTES if max_bytes is None else _optional_budget(
+            max_bytes, label="max_bytes", maximum=MAX_WORK_BYTES,
+        ),
+    )
+
+
+def _budget_available(operation: CheckpointOperation, budget: CurationCheckpointBudget) -> bool:
+    return budget.items_remaining > 0 and (
+        operation == "scan" or (budget.files_remaining > 0 and budget.bytes_remaining > 0)
+    )
+
+
+@dataclass(frozen=True)
+class _PageWork:
+    budget: CurationCheckpointBudget
+    cursor: str | None
+    traversal_complete: bool
+    coverage: Literal["complete", "partial"]
+    coverage_reasons: tuple[str, ...]
+    batch: dict[str, object]
+    stopped: bool
+
+
+def _execute_page(
     operation: CheckpointOperation,
     *,
     state_directory: Path,
-    plan_id: str | None,
-    limit: int,
-    cursor: str | None,
-) -> tuple[Mapping[str, object], Mapping[str, object] | None, dict[str, object], CurationSnapshotObservation]:
-    try:
-        page_object = build_curation_plan_page(state_directory, limit, cursor)
-    except (OSError, RuntimeError, ValueError) as error:
-        raise CurationCheckpointApiError("unavailable", "curation plan cannot be read") from error
-    if not isinstance(page_object, CurationPlanPage):
-        raise CurationCheckpointApiError("unavailable", "curation plan page is invalid")
-    if page_object.coverage not in {"complete", "partial"}:
-        raise CurationCheckpointApiError("unavailable", "curation plan coverage is unavailable")
-    page = page_object.to_dict()
-    source_heads = [head.to_dict() for head in page_object.source_heads]
-    scan: Mapping[str, object] = {
-        "status": "complete" if page_object.coverage == "complete" else "partial",
-        "coverage": page_object.coverage,
-        "snapshot": {
-            "plan_digest": page_object.plan_digest,
-            "snapshot_id": page_object.snapshot_id,
-            "root": page_object.root,
-            "scan_id": page_object.scan_id,
-            "source_heads": source_heads,
-        },
-        "result": {
-            "plan_digest": page_object.plan_digest,
-            "snapshot_id": page_object.snapshot_id,
-            "scan_id": page_object.scan_id,
-            "root": page_object.root,
-            "source_heads": source_heads,
-            "page": page,
-            "source": "published_curation_plan",
-        },
-        "error": None,
-    }
+    page: CurationPlanPage,
+    previous: CurationCheckpointBudget,
+    coverage_reasons: tuple[str, ...] = (),
+) -> _PageWork:
     verify: Mapping[str, object] | None = None
+    completed = len(page.items)
+    files = bytes_checked = 0
+    stopped = False
+    reasons = set(coverage_reasons)
+    reasons.update(
+        "source:" + head.owner + ":" + (head.reason or head.coverage)
+        for head in page.source_heads if head.coverage != "complete"
+    )
+    if page.coverage != "complete" and not reasons:
+        reasons.add("plan_coverage_partial")
     if operation == "verify":
-        if plan_id is None:
-            raise CurationCheckpointApiError("invalid_request", "verify checkpoints require plan_id")
-        if plan_id != page_object.plan_digest:
-            raise CurationCheckpointApiError("snapshot_changed", "curation plan digest changed")
-        verification = verify_curation_page(page_object)
+        # Persisted budgets span all successors; verifier maxima bound one call.
+        # Never pass a synthetic positive allowance when the real remainder is zero.
+        if not _budget_available(operation, previous):
+            raise CurationCheckpointApiError("budget_exhausted", "checkpoint work budget is exhausted")
+        verification = verify_curation_page(page, budget=CurationWorkBudget(
+            max_items=min(previous.items_remaining, MAX_VERIFICATION_ITEMS),
+            max_files=min(previous.files_remaining, MAX_VERIFICATION_FILES),
+            max_bytes=min(previous.bytes_remaining, MAX_VERIFICATION_BYTES),
+        ))
         if verification.status == "snapshot_changed":
             raise CurationCheckpointApiError("snapshot_changed", "curation source changed during verification")
-        verify = {
-            "status": verification.status,
-            "coverage": verification.coverage,
-            "result": verification.to_dict(),
-            "error": None,
-        }
-    observation = _observation_from_scan(scan)
-    return scan, verify, page, observation
-
-
-def _budget_for_page(
-    page: Mapping[str, object],
-    verify: Mapping[str, object] | None,
-    *,
-    max_items: int | None,
-    max_files: int | None,
-    max_bytes: int | None,
-    previous: CurationCheckpointBudget | None = None,
-) -> CurationCheckpointBudget:
-    items = page.get("items")
-    item_count = len(items) if isinstance(items, list) else 0
-    total = page.get("items_total")
-    total_items = total if isinstance(total, int) and not isinstance(total, bool) else item_count
-    default_items = max(total_items, item_count, 1)
-    limit_items = default_items if max_items is None else _optional_budget(
-        max_items, label="max_items", maximum=MAX_WORK_ITEMS
+        files, bytes_checked = verification.files_checked, verification.bytes_checked
+        completed = 0
+        for item in verification.items:
+            if item.reason in {"budget_exhausted", "cancelled", "deadline_exceeded"}:
+                stopped = True
+                break
+            completed += 1
+            if item.status == "not_verified":
+                reasons.add("verification:" + item.reason)
+        verify = {"status": verification.status, "coverage": verification.coverage,
+                  "result": verification.to_dict()}
+    budget = replace(
+        previous,
+        items_completed=previous.items_completed + completed,
+        files_checked=previous.files_checked + files,
+        bytes_checked=previous.bytes_checked + bytes_checked,
     )
-    limit_files = MAX_WORK_FILES if max_files is None else _optional_budget(
-        max_files, label="max_files", maximum=MAX_WORK_FILES
+    next_cursor = page.next_cursor
+    traversal_complete = completed == len(page.items) and next_cursor is None
+    if completed < len(page.items):
+        # The planner constructs the exact prefix cursor; an interrupted item is
+        # not completed and must never be skipped by advancing to the page end.
+        next_cursor = page.cursor
+        if completed:
+            prefix, _observation = _bundle(
+                state_directory=state_directory, limit=completed, cursor=page.cursor,
+            )
+            if (prefix.plan_digest != page.plan_digest or prefix.snapshot_id != page.snapshot_id
+                    or prefix.source_heads != page.source_heads or prefix.items != page.items[:completed]):
+                raise CurationCheckpointApiError("snapshot_changed", "curation prefix changed")
+            next_cursor = prefix.next_cursor
+            if next_cursor is None:
+                raise CurationCheckpointApiError("snapshot_changed", "curation prefix cursor disappeared")
+    stopped = stopped or (not traversal_complete and not _budget_available(operation, budget))
+    if stopped and (completed == 0 or not _budget_available(operation, budget)):
+        # With no completed item, retry would start the same indivisible group
+        # under the same immutable global/per-call bounds. Remember that stop.
+        # A completed prefix may still resume with a fresh per-call allowance.
+        reasons.add("budget_exhausted")
+    coverage: Literal["complete", "partial"] = (
+        "complete" if traversal_complete and not reasons else "partial"
     )
-    limit_bytes = MAX_WORK_BYTES if max_bytes is None else _optional_budget(
-        max_bytes, label="max_bytes", maximum=MAX_WORK_BYTES
-    )
-    result = verify.get("result") if isinstance(verify, Mapping) else None
-    files = result.get("files_checked", 0) if isinstance(result, Mapping) else 0
-    bytes_checked = result.get("bytes_checked", 0) if isinstance(result, Mapping) else 0
-    if not isinstance(files, int) or isinstance(files, bool) or files < 0:
-        raise CurationCheckpointApiError("unavailable", "verify file counter is invalid")
-    if not isinstance(bytes_checked, int) or isinstance(bytes_checked, bool) or bytes_checked < 0:
-        raise CurationCheckpointApiError("unavailable", "verify byte counter is invalid")
-    previous_items = 0 if previous is None else previous.items_completed
-    previous_files = 0 if previous is None else previous.files_checked
-    previous_bytes = 0 if previous is None else previous.bytes_checked
-    try:
-        return CurationCheckpointBudget(
-            max_items=limit_items,
-            max_files=limit_files,
-            max_bytes=limit_bytes,
-            items_completed=previous_items + item_count,
-            files_checked=previous_files + files,
-            bytes_checked=previous_bytes + bytes_checked,
-        )
-    except CurationCheckpointError as error:
-        raise CurationCheckpointApiError("budget_exhausted", "checkpoint work budget is exhausted") from error
+    return _PageWork(budget, next_cursor, traversal_complete, coverage, tuple(sorted(reasons)),
+                     _batch_payload(page.to_dict(), verify), stopped)
 
 
 def _batch_payload(page: Mapping[str, object], verify: Mapping[str, object] | None) -> dict[str, object]:
@@ -289,7 +344,7 @@ def _metadata(checkpoint: CurationCheckpoint, *, checkpoint_id: str | None = Non
     return {
         "checkpoint_id": checkpoint_id or checkpoint.event_id,
         "checkpoint_digest": _checkpoint_digest(checkpoint),
-        "contract": CURATION_CHECKPOINT_CONTRACT,
+        "contract": checkpoint.to_dict()["contract"],
         "operation": checkpoint.operation,
         "state": checkpoint.state,
         "event_id": checkpoint.event_id,
@@ -301,6 +356,11 @@ def _metadata(checkpoint: CurationCheckpoint, *, checkpoint_id: str | None = Non
         "source_heads_digest": checkpoint.source_heads_digest,
         "root": checkpoint.root.to_dict(),
         "source_heads": [head.to_dict() for head in checkpoint.source_heads],
+        "limit": checkpoint.page_limit,
+        "limit_source": "persisted" if checkpoint.schema_version == 2 else "legacy_default",
+        "traversal_complete": checkpoint.traversal_complete,
+        "coverage": checkpoint.coverage,
+        "coverage_reasons": list(checkpoint.coverage_reasons),
         "budget": {
             **budget.to_dict(),
             "items_remaining": budget.items_remaining,
@@ -404,6 +464,87 @@ def _error_envelope(
     )
 
 
+def _resume_metadata(checkpoint: CurationCheckpoint) -> dict[str, object]:
+    terminal = checkpoint.state == "complete" or checkpoint.traversal_complete
+    exhausted = (
+        not _budget_available(checkpoint.operation, checkpoint.budget)
+        or "budget_exhausted" in checkpoint.coverage_reasons
+    )
+    legacy_unknown = checkpoint.schema_version == 1 and not terminal and checkpoint.cursor is None
+    resume_status = (
+        "invalid" if legacy_unknown
+        else "complete" if terminal and checkpoint.coverage == "complete"
+        else "partial" if terminal
+        else "budget_exhausted" if exhausted
+        else "resume"
+    )
+    return {
+        "resume_status": resume_status,
+        "replay_required": not terminal and not exhausted and not legacy_unknown,
+        "reason_code": (
+            "legacy_continuation_unproven" if legacy_unknown
+            else "coverage_partial" if terminal and checkpoint.coverage != "complete"
+            else "checkpoint_complete" if terminal
+            else "budget_exhausted" if exhausted
+            else "snapshot_match"
+        ),
+    }
+
+
+def _published_payload(
+    checkpoint: CurationCheckpoint,
+    *, schema: str, operation: str, request: str, read_only: bool,
+    resumed_from: str | None = None, stopped: bool = False,
+) -> dict[str, object]:
+    result = _metadata(checkpoint)
+    result.update(_resume_metadata(checkpoint))
+    if resumed_from is not None:
+        result["resumed_from"] = resumed_from
+    if stopped:
+        result["reason_code"] = "budget_exhausted"
+    return _envelope(
+        schema=schema, operation=operation, request_id=request,
+        status="partial" if stopped else "complete", coverage=checkpoint.coverage,
+        read_only=read_only, result=result,
+        error={"code": "budget_exhausted", "message": "checkpoint work budget is exhausted",
+               "retryable": False} if stopped else None,
+        exit_code=2 if stopped else 0,
+    )
+
+
+def _live_validation(checkpoint: CurationCheckpoint, state: Path) -> CurationCheckpointValidation:
+    if checkpoint.state in {"invalid", "snapshot_changed"}:
+        return validate_checkpoint(checkpoint, lambda: (_ for _ in ()).throw(RuntimeError()))
+    # Observe current heads without ever applying the previous snapshot's cursor.
+    _page, observation = _bundle(state_directory=state, limit=1, cursor=None)
+    return validate_checkpoint(checkpoint, lambda: observation)
+
+
+def _rejected_snapshot(
+    validation: CurationCheckpointValidation,
+    *, schema: str, operation: str, request: str,
+) -> dict[str, object]:
+    result = _metadata(validation.checkpoint)
+    result.update({
+        "resume_status": validation.status, "reason_code": validation.reason_code,
+        "replay_required": False,
+        "stored_coverage": validation.checkpoint.coverage, "coverage": "unavailable",
+        "observed": None if validation.observed is None else {
+            "root": validation.observed.root.to_dict(),
+            "source_heads": [head.to_dict() for head in validation.observed.source_heads],
+            "plan_digest": validation.observed.plan_digest,
+            "snapshot_id": validation.observed.snapshot_id,
+        },
+    })
+    code = "snapshot_changed" if validation.status == "snapshot_changed" else "corrupt"
+    return _envelope(
+        schema=schema, operation=operation, request_id=request,
+        status=validation.status, coverage="unavailable", read_only=True,
+        result=result, error={"code": code, "message": validation.detail, "retryable": False},
+        exit_code=5 if code == "snapshot_changed" else 7,
+    )
+
+
 def curation_checkpoint_create_payload(
     operation: CheckpointOperation,
     *,
@@ -416,265 +557,185 @@ def curation_checkpoint_create_payload(
     state_directory: str | Path | None = None,
     request_id: str | None = None,
 ) -> dict[str, object]:
-    """Publish one bounded scan/verify page checkpoint on explicit state."""
-
+    """Publish bounded progress even when verification stops inside a page."""
     try:
         request = _request_id(request_id, prefix="curation-checkpoint-create")
-        if operation not in {"scan", "verify"}:
+        if not isinstance(operation, str) or operation not in {"scan", "verify"}:
             raise CurationCheckpointApiError("invalid_request", "checkpoint operation is invalid")
         page_limit = _limit(limit)
-        state_root = _state_directory(state_directory, required=True)
-        if plan_id is not None and (not isinstance(plan_id, str) or plan_id.strip() != plan_id):
+        budget = _request_budget(max_items=max_items, max_files=max_files, max_bytes=max_bytes)
+        cursor = _cursor(cursor)
+        if (plan_id is not None and (not isinstance(plan_id, str)
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", plan_id) is None)):
             raise CurationCheckpointApiError("invalid_request", "plan_id is invalid")
-        _scan, verify, page, observation = _bundle(
-            operation,
-            state_directory=state_root,
-            plan_id=plan_id,
-            limit=page_limit,
-            cursor=cursor,
+        if operation == "verify" and plan_id is None:
+            raise CurationCheckpointApiError("invalid_request", "verify checkpoints require plan_id")
+        state_root = _state_directory(state_directory, required=True)
+        page, observation = _bundle(
+            state_directory=state_root, limit=min(page_limit, budget.items_remaining), cursor=cursor,
         )
-        effective_plan = observation.plan_digest
-        budget = _budget_for_page(
-            page,
-            verify,
-            max_items=max_items,
-            max_files=max_files,
-            max_bytes=max_bytes,
-        )
-        next_cursor = page.get("next_cursor")
-        if next_cursor is not None and not isinstance(next_cursor, str):
-            raise CurationCheckpointApiError("unavailable", "scan next cursor is invalid")
-        operation_status = "complete" if next_cursor is None and (
-            verify is None or verify.get("status") == "complete"
-        ) else "partial"
-        batch = _batch_payload(page, verify)
+        if plan_id is not None and plan_id != observation.plan_digest:
+            raise CurationCheckpointApiError("snapshot_changed", "curation plan digest changed")
+        if max_items is None:
+            budget = replace(budget, max_items=min(MAX_WORK_ITEMS, max(page.items_total, 1)))
+        work = _execute_page(operation, state_directory=state_root, page=page, previous=budget)
         batch_digest = compute_batch_digest(
-            operation=operation,
-            plan_digest=effective_plan,
-            snapshot_id=observation.snapshot_id,
-            cursor_before=page.get("cursor"),
-            cursor_after=next_cursor,
-            batch=batch,
-            budget=budget,
+            operation=operation, plan_digest=observation.plan_digest, snapshot_id=observation.snapshot_id,
+            cursor_before=cursor, cursor_after=work.cursor, batch=work.batch, budget=work.budget,
         )
         checkpoint = create_checkpoint(
-            operation=operation,
-            state=operation_status,  # type: ignore[arg-type]
-            root=observation.root,
-            source_heads=observation.source_heads,
-            plan_digest=effective_plan,
-            snapshot_id=observation.snapshot_id,
-            cursor=next_cursor,
-            batch_digest=batch_digest,
-            budget=budget,
+            operation=operation, state="complete" if work.coverage == "complete" else "partial",
+            root=observation.root, source_heads=observation.source_heads,
+            plan_digest=observation.plan_digest, snapshot_id=observation.snapshot_id,
+            cursor=work.cursor, batch_digest=batch_digest, budget=work.budget,
+            page_limit=page_limit, traversal_complete=work.traversal_complete,
+            coverage=work.coverage, coverage_reasons=work.coverage_reasons,
         )
-        target = _path_for(state_root, checkpoint.event_id)
-        write_checkpoint(target, checkpoint)
-        result = _metadata(checkpoint)
-        return _envelope(
-            schema=CURATION_CHECKPOINT_CREATE_API_SCHEMA,
-            operation="curation-checkpoint-create",
-            request_id=request,
-            status="complete",
-            coverage="complete" if checkpoint.state == "complete" else "partial",
-            read_only=False,
-            result=result,
-            error=None,
-            exit_code=0,
+        write_checkpoint(_path_for(state_root, checkpoint.event_id), checkpoint)
+        return _published_payload(
+            checkpoint, schema=CURATION_CHECKPOINT_CREATE_API_SCHEMA,
+            operation="curation-checkpoint-create", request=request, read_only=False,
+            stopped=work.stopped,
         )
     except (CurationCheckpointApiError, CurationCheckpointError, OSError, TypeError, ValueError) as error:
         request = locals().get("request", f"curation-checkpoint-create-{uuid4().hex}")
         return _error_envelope(
-            schema=CURATION_CHECKPOINT_CREATE_API_SCHEMA,
-            operation="curation-checkpoint-create",
-            request_id=str(request),
-            error=error,
-            read_only=False,
+            schema=CURATION_CHECKPOINT_CREATE_API_SCHEMA, operation="curation-checkpoint-create",
+            request_id=str(request), error=error, read_only=False,
         )
 
 
 def curation_checkpoint_status_payload(
     checkpoint_id: str,
-    *,
-    state_directory: str | Path | None = None,
-    request_id: str | None = None,
+    *, state_directory: str | Path | None = None, request_id: str | None = None,
 ) -> dict[str, object]:
-    """Inspect and revalidate one checkpoint without writing state."""
-
+    """Revalidate all checkpoints, including exhausted traversals, without replay."""
     try:
         request = _request_id(request_id, prefix="curation-checkpoint-status")
         identifier = _checkpoint_id(checkpoint_id)
         state_root = _state_directory(state_directory, required=False)
         checkpoint = read_checkpoint(_path_for(state_root, identifier))
-        if checkpoint.state in {"invalid", "snapshot_changed"}:
-            validation = validate_checkpoint(checkpoint, lambda: (_ for _ in ()).throw(RuntimeError()))
-        else:
-            scan, _verify, _page, observation = _bundle(
-                "scan",
-                state_directory=state_root,
-                plan_id=None,
-                limit=_MAX_PAGE,
-                cursor=checkpoint.cursor,
+        validation = _live_validation(checkpoint, state_root)
+        if validation.status != "valid":
+            return _rejected_snapshot(
+                validation, schema=CURATION_CHECKPOINT_STATUS_API_SCHEMA,
+                operation="curation-checkpoint-status", request=request,
             )
-            validation = validate_checkpoint(checkpoint, lambda: observation)
-        result = _metadata(checkpoint, checkpoint_id=identifier)
-        result.update(
-            {
-                "resume_status": (
-                    "resume" if validation.resumable else "complete" if checkpoint.state == "complete" else validation.status
-                ),
-                "reason_code": validation.reason_code,
-                "replay_required": validation.resumable,
-                "observed": None if validation.observed is None else {
-                    "root": validation.observed.root.to_dict(),
-                    "source_heads": [head.to_dict() for head in validation.observed.source_heads],
-                    "plan_digest": validation.observed.plan_digest,
-                    "snapshot_id": validation.observed.snapshot_id,
-                },
+        _cursor(checkpoint.cursor)
+        payload = _published_payload(
+            checkpoint, schema=CURATION_CHECKPOINT_STATUS_API_SCHEMA,
+            operation="curation-checkpoint-status", request=request, read_only=True,
+        )
+        result = payload["result"]
+        if isinstance(result, dict) and validation.observed is not None:
+            result["observed"] = {
+                "root": validation.observed.root.to_dict(),
+                "source_heads": [head.to_dict() for head in validation.observed.source_heads],
+                "plan_digest": validation.observed.plan_digest,
+                "snapshot_id": validation.observed.snapshot_id,
             }
-        )
-        if validation.status == "valid":
-            return _envelope(
-                schema=CURATION_CHECKPOINT_STATUS_API_SCHEMA,
-                operation="curation-checkpoint-status",
-                request_id=request,
-                status="complete",
-                coverage="complete",
-                read_only=True,
-                result=result,
-                error=None,
-                exit_code=0,
-            )
-        code = "snapshot_changed" if validation.status == "snapshot_changed" else "corrupt"
-        error = {"code": code, "message": validation.detail, "retryable": False}
-        return _envelope(
-            schema=CURATION_CHECKPOINT_STATUS_API_SCHEMA,
-            operation="curation-checkpoint-status",
-            request_id=request,
-            status=validation.status,
-            coverage="unavailable",
-            read_only=True,
-            result=result,
-            error=error,
-            exit_code=5 if code == "snapshot_changed" else 7,
-        )
+        return payload
     except (CurationCheckpointApiError, CurationCheckpointError, OSError, TypeError, ValueError) as error:
         request = locals().get("request", f"curation-checkpoint-status-{uuid4().hex}")
         return _error_envelope(
-            schema=CURATION_CHECKPOINT_STATUS_API_SCHEMA,
-            operation="curation-checkpoint-status",
-            request_id=str(request),
-            error=error,
-            read_only=True,
+            schema=CURATION_CHECKPOINT_STATUS_API_SCHEMA, operation="curation-checkpoint-status",
+            request_id=str(request), error=error, read_only=True,
         )
 
 
 def curation_checkpoint_resume_payload(
     checkpoint_id: str,
-    *,
-    state_directory: str | Path | None = None,
-    request_id: str | None = None,
+    *, state_directory: str | Path | None = None, request_id: str | None = None,
 ) -> dict[str, object]:
-    """Replay the next bounded page and publish a deterministic successor checkpoint."""
-
+    """Revalidate before replay and spend only the immutable remaining budget."""
     try:
         request = _request_id(request_id, prefix="curation-checkpoint-resume")
         identifier = _checkpoint_id(checkpoint_id)
         state_root = _state_directory(state_directory, required=True)
         checkpoint = read_checkpoint(_path_for(state_root, identifier))
-        if checkpoint.state == "complete":
-            result = _metadata(checkpoint, checkpoint_id=identifier)
-            result.update({"resumed_from": identifier, "replay_required": False})
+        validation = _live_validation(checkpoint, state_root)
+        if validation.status != "valid":
+            return _rejected_snapshot(
+                validation, schema=CURATION_CHECKPOINT_RESUME_API_SCHEMA,
+                operation="curation-checkpoint-resume", request=request,
+            )
+        _cursor(checkpoint.cursor)
+        exhausted = (
+            not _budget_available(checkpoint.operation, checkpoint.budget)
+            or "budget_exhausted" in checkpoint.coverage_reasons
+        )
+        if (checkpoint.schema_version == 1 and checkpoint.state != "complete"
+                and checkpoint.cursor is None):
+            result = _metadata(checkpoint)
+            result.update(_resume_metadata(checkpoint))
+            result["resumed_from"] = identifier
             return _envelope(
                 schema=CURATION_CHECKPOINT_RESUME_API_SCHEMA,
-                operation="curation-checkpoint-resume",
-                request_id=request,
-                status="complete",
-                coverage="complete",
-                read_only=True,
-                result=result,
-                error=None,
-                exit_code=0,
+                operation="curation-checkpoint-resume", request_id=request,
+                status="unavailable", coverage="partial", read_only=True, result=result,
+                error={"code": "schema_incompatible", "retryable": False,
+                       "message": "legacy checkpoint has no provable continuation; create a new checkpoint"},
+                exit_code=7,
             )
-        scan, verify, page, observation = _bundle(
-            checkpoint.operation,
+        if checkpoint.state == "complete" or checkpoint.traversal_complete or exhausted:
+            return _published_payload(
+                checkpoint, schema=CURATION_CHECKPOINT_RESUME_API_SCHEMA,
+                operation="curation-checkpoint-resume", request=request, read_only=True,
+                resumed_from=identifier,
+                stopped=exhausted and not checkpoint.traversal_complete,
+            )
+        page, observation = _bundle(
             state_directory=state_root,
-            plan_id=checkpoint.plan_digest if checkpoint.operation == "verify" else None,
-            limit=_MAX_PAGE,
+            limit=min(checkpoint.page_limit, checkpoint.budget.items_remaining),
             cursor=checkpoint.cursor,
         )
+        # Recheck the page itself before verification, not just the earlier head read.
         validation = validate_checkpoint(checkpoint, lambda: observation)
         if validation.status != "valid":
-            error = CurationCheckpointApiError(
-                validation.status,
-                validation.detail,
-                retryable=False,
+            return _rejected_snapshot(
+                validation, schema=CURATION_CHECKPOINT_RESUME_API_SCHEMA,
+                operation="curation-checkpoint-resume", request=request,
             )
-            raise error
-        previous_budget = checkpoint.budget
-        budget = _budget_for_page(
-            page,
-            verify,
-            max_items=previous_budget.max_items,
-            max_files=previous_budget.max_files,
-            max_bytes=previous_budget.max_bytes,
-            previous=previous_budget,
+        work = _execute_page(
+            checkpoint.operation, state_directory=state_root, page=page,
+            previous=checkpoint.budget, coverage_reasons=checkpoint.coverage_reasons,
         )
-        next_cursor = page.get("next_cursor")
-        if next_cursor is not None and not isinstance(next_cursor, str):
-            raise CurationCheckpointApiError("unavailable", "resume next cursor is invalid")
-        next_state = "complete" if next_cursor is None and (
-            verify is None or verify.get("status") == "complete"
-        ) else "partial"
-        batch = _batch_payload(page, verify)
+        if (work.budget == checkpoint.budget and work.cursor == checkpoint.cursor
+                and work.traversal_complete == checkpoint.traversal_complete
+                and work.coverage_reasons == checkpoint.coverage_reasons):
+            # A too-small unchanged budget must not create an infinite successor chain.
+            return _published_payload(
+                checkpoint, schema=CURATION_CHECKPOINT_RESUME_API_SCHEMA,
+                operation="curation-checkpoint-resume", request=request, read_only=True,
+                resumed_from=identifier, stopped=work.stopped,
+            )
         batch_digest = compute_batch_digest(
-            operation=checkpoint.operation,
-            plan_digest=checkpoint.plan_digest,
-            snapshot_id=checkpoint.snapshot_id,
-            cursor_before=checkpoint.cursor,
-            cursor_after=next_cursor,
-            batch=batch,
-            budget=budget,
+            operation=checkpoint.operation, plan_digest=checkpoint.plan_digest,
+            snapshot_id=checkpoint.snapshot_id, cursor_before=checkpoint.cursor,
+            cursor_after=work.cursor, batch=work.batch, budget=work.budget,
         )
-        event_seed = (
-            f"{checkpoint.event_id}\0{batch_digest}\0{next_cursor or ''}".encode("utf-8")
-        )
+        event_seed = f"{checkpoint.event_id}\0{batch_digest}\0{work.cursor or ''}".encode("utf-8")
         event_id = "checkpoint-" + hashlib.sha256(event_seed).hexdigest()[:32]
         successor = create_checkpoint(
-            operation=checkpoint.operation,
-            state=next_state,  # type: ignore[arg-type]
-            root=observation.root,
-            source_heads=observation.source_heads,
-            plan_digest=checkpoint.plan_digest,
-            snapshot_id=checkpoint.snapshot_id,
-            cursor=next_cursor,
-            batch_digest=batch_digest,
-            budget=budget,
-            event_id=event_id,
-            previous_checkpoint_digest=_checkpoint_digest(checkpoint),
+            operation=checkpoint.operation, state="complete" if work.coverage == "complete" else "partial",
+            root=observation.root, source_heads=observation.source_heads,
+            plan_digest=checkpoint.plan_digest, snapshot_id=checkpoint.snapshot_id,
+            cursor=work.cursor, batch_digest=batch_digest, budget=work.budget, event_id=event_id,
+            previous_checkpoint_digest=_checkpoint_digest(checkpoint), page_limit=checkpoint.page_limit,
+            traversal_complete=work.traversal_complete, coverage=work.coverage,
+            coverage_reasons=work.coverage_reasons,
         )
         write_checkpoint(_path_for(state_root, successor.event_id), successor)
-        result = _metadata(successor)
-        result.update({"resumed_from": identifier, "replay_required": successor.state != "complete"})
-        return _envelope(
-            schema=CURATION_CHECKPOINT_RESUME_API_SCHEMA,
-            operation="curation-checkpoint-resume",
-            request_id=request,
-            status="complete",
-            coverage="complete" if successor.state == "complete" else "partial",
-            read_only=False,
-            result=result,
-            error=None,
-            exit_code=0,
+        return _published_payload(
+            successor, schema=CURATION_CHECKPOINT_RESUME_API_SCHEMA,
+            operation="curation-checkpoint-resume", request=request, read_only=False,
+            resumed_from=identifier, stopped=work.stopped,
         )
     except (CurationCheckpointApiError, CurationCheckpointError, OSError, TypeError, ValueError) as error:
         request = locals().get("request", f"curation-checkpoint-resume-{uuid4().hex}")
         return _error_envelope(
-            schema=CURATION_CHECKPOINT_RESUME_API_SCHEMA,
-            operation="curation-checkpoint-resume",
-            request_id=str(request),
-            error=error,
-            read_only=False,
+            schema=CURATION_CHECKPOINT_RESUME_API_SCHEMA, operation="curation-checkpoint-resume",
+            request_id=str(request), error=error, read_only=False,
         )
 
 

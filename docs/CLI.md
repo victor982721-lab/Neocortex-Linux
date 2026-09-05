@@ -147,6 +147,11 @@ no confirmado y continúa. Un owner `complete` se puede repetir para validar
 drift sin crear otro `scan_id`; el contrato no toca el corpus ni se publica como
 operación MCP.
 
+Si un nombre POSIX contiene bytes no representables por SQLite TEXT, el
+inventario conserva los archivos independientes y devuelve salida 2 con
+`unsupported_path_encoding`, sin traceback ni publicación completa. No
+renombra los originales ni sustituye caracteres para inventar otra ruta.
+
 ## Efectos
 
 | Clase | Ejemplos | Efecto |

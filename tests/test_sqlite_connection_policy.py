@@ -545,12 +545,13 @@ def test_route_owner_readers_do_not_recreate_state_deleted_before_open(
         *,
         uri: bool = False,
         timeout: float = 5.0,
+        factory: type[sqlite3.Connection] = sqlite3.Connection,
     ) -> sqlite3.Connection:
         nonlocal removed
         if uri and not removed:
             database.unlink()
             removed = True
-        return real_connect(database_arg, uri=uri, timeout=timeout)
+        return real_connect(database_arg, uri=uri, timeout=timeout, factory=factory)
 
     sqlite3_module = case.module.sqlite3
     with monkeypatch.context() as scoped_patch:

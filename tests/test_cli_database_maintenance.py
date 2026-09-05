@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
 
+from neocortex.capabilities.formats.image.state import initialize_image_state
 from neocortex.interface.entrypoint import entrypoint
 from neocortex.persistence.database_purge import (
     DATABASE_RESTORE_CONFIRMATION,
@@ -16,9 +18,9 @@ from neocortex.persistence.database_purge import (
 
 def _create_database(path: Path, value: str = "before") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path) as connection:
-        connection.execute("CREATE TABLE payload(value TEXT NOT NULL)")
-        connection.execute("INSERT INTO payload(value) VALUES(?)", (value,))
+    initialize_image_state(path)
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute("INSERT INTO metadata VALUES('fixture_payload', ?)", (value,))
 
 
 def _json_output(capsys: pytest.CaptureFixture[str]) -> dict[str, object]:
@@ -160,8 +162,8 @@ def test_database_backup_and_restore_cli_bind_digest_and_confirmation(
     manifest_sha256 = str(backup_result["manifest_sha256"])
     assert manifest.is_file()
 
-    with sqlite3.connect(database) as connection:
-        connection.execute("UPDATE payload SET value='changed'")
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("UPDATE metadata SET value='changed' WHERE key='fixture_payload'")
 
     assert (
         entrypoint(
@@ -209,6 +211,7 @@ def test_database_backup_and_restore_cli_bind_digest_and_confirmation(
     restore_payload = _json_output(capsys)
     assert restore_payload["read_only"] is False
     assert restore_payload["result"]["mode"] == "applied"
-    with sqlite3.connect(database) as connection:
-        assert connection.execute("SELECT value FROM payload").fetchone() == ("before",)
-
+    with closing(sqlite3.connect(database)) as connection, connection:
+        assert connection.execute(
+            "SELECT value FROM metadata WHERE key='fixture_payload'"
+        ).fetchone() == ("before",)

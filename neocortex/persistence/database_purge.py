@@ -14,6 +14,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from importlib import import_module
 from pathlib import Path
 from typing import BinaryIO, Literal
 
@@ -27,13 +28,25 @@ from neocortex.persistence.sqlite_integrity import (
     SQLiteIntegrityReport,
     check_sqlite_integrity,
 )
-from neocortex.persistence.sqlite_immutable import immutable_sqlite_database
+from neocortex.persistence.sqlite_immutable import (
+    ImmutableSQLiteUnavailable,
+    immutable_sqlite_database,
+)
+from neocortex.persistence.sqlite_schema_contract import (
+    SQLiteSchemaContractError,
+    read_application_schema_version,
+)
 from neocortex.persistence.state_publication import (
     StateEpoch,
-    StatePublicationConflictError,
+    StateOwnerHead,
+    StatePublication,
+    StatePublicationCommitError,
     StatePublicationError,
+    abort_state_publication,
     publication_idempotency_key,
     read_state_epoch,
+    read_state_publication_state,
+    read_state_publications,
     record_state_publication,
 )
 from neocortex.safety.state_topology_contracts import STATE_STORE_REGISTRY
@@ -76,6 +89,32 @@ class DatabaseRestoreError(DatabasePurgeError):
 
 class DatabaseRestoreConfirmationError(DatabaseRestoreError):
     """The caller did not provide the exact destructive restore token."""
+
+
+class DatabaseRestoreRecoveryRequiredError(DatabaseRestoreError):
+    """Restore cannot safely roll back or claim a durable publication."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        recovery_directory: Path | None = None,
+        stage_directory: Path | None = None,
+        pre_restore_backup: Path | None = None,
+    ) -> None:
+        super().__init__(f"restore recovery_required: {message}")
+        self.recovery_directory = recovery_directory
+        self.stage_directory = stage_directory
+        self.pre_restore_backup = pre_restore_backup
+
+    def __str__(self) -> str:
+        paths = (
+            ("recovery_directory", self.recovery_directory),
+            ("stage_directory", self.stage_directory),
+            ("pre_restore_backup", self.pre_restore_backup),
+        )
+        suffix = "".join(f"; {name}={path}" for name, path in paths if path is not None)
+        return super().__str__() + suffix
 
 
 FileRole = Literal["database", "sidecar"]
@@ -273,6 +312,7 @@ class DatabaseRestoreResult:
     pre_restore_backup: DatabaseBackupResult | None
     state_epoch: StateEpoch
     complete: bool
+    publication_warning: str | None = None
 
     def as_payload(self) -> dict[str, object]:
         return {
@@ -290,6 +330,7 @@ class DatabaseRestoreResult:
             ),
             "state_epoch": self.state_epoch.as_payload(),
             "complete": self.complete,
+            "publication_warning": self.publication_warning,
         }
 
 
@@ -920,6 +961,99 @@ def _manifest_source_mode(raw: dict[str, object], owner: str) -> int | None:
     return mode
 
 
+_RESTORE_SCHEMA_INITIALIZERS = {
+    "inventory": (
+        "neocortex.deduplication.persistence.lifecycle", "initialize_inventory_schema"
+    ),
+    "catalog": ("neocortex.documents.document_catalog", "initialize_document_catalog"),
+    "pdf": ("neocortex.capabilities.formats.pdf.pdf_state", "initialize_pdf_state"),
+    "docx": ("neocortex.capabilities.formats.docx.state", "initialize_docx_state"),
+    "office": ("neocortex.capabilities.formats.office.state", "initialize_office_state"),
+    "audio": ("neocortex.capabilities.formats.audio.state", "initialize_audio_state"),
+    "video": ("neocortex.capabilities.formats.video.state", "initialize_video_state"),
+    "image": ("neocortex.capabilities.formats.image.state", "initialize_image_state"),
+    "semantic": ("neocortex.semantic.semantic_schema", "initialize_semantic_state"),
+    "code": ("neocortex.code.code_schema", "initialize_code_state"),
+    "archive": ("neocortex.capabilities.formats.archive.state", "initialize_archive_state"),
+    "text": ("neocortex.capabilities.formats.text.text_state", "initialize_text_state"),
+}
+
+
+def _migrate_restore_staged(path: Path, owner: str) -> None:
+    """Delegate compatibility and migration to the owner, on a copy only."""
+
+    try:
+        if owner == "framework":
+            # Its canonical writer supplies the required route-phase backfill;
+            # invoking the schema function with a no-op callback would not.
+            from neocortex.persistence.framework_state_writer import FrameworkState
+
+            with FrameworkState(path, existing_only=True):
+                pass
+        else:
+            module_name, initializer_name = _RESTORE_SCHEMA_INITIALIZERS[owner]
+            initializer = getattr(import_module(module_name), initializer_name)
+            initializer(path)
+    except Exception as exc:
+        raise DatabaseRestoreError(
+            f"restore schema failed owner validation: {owner}"
+        ) from exc
+
+
+def _validate_restore_schema(
+    path: Path, owner: str, *, staged: bool = False, allow_migration: bool = True
+) -> int:
+    """Check the owner contract without migrating the only backup copy.
+
+    Version ceilings come from the registry.  Legacy compatibility is proven
+    by the owner's existing initializer, not by assuming every lower number is
+    supported.  Preview runs it on a disposable copy and apply on staging;
+    neither operation ever migrates the backup source or destination baseline.
+    Current schemas are structurally checked through the same owner API;
+    merely forging the current version marker does not make a schema valid.
+    SQLite's zero user_version is permitted for metadata-only owners, not as
+    evidence that an unversioned or future application schema is compatible.
+    """
+
+    supported = STATE_STORE_REGISTRY.by_owner(owner).expected_schema_version
+    try:
+        with immutable_sqlite_database(path, timeout_seconds=60.0) as connection:
+            version = read_application_schema_version(connection, label=owner)
+            pragma_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    except (OSError, sqlite3.Error, SQLiteSchemaContractError, ImmutableSQLiteUnavailable) as exc:
+        raise DatabaseRestoreError(f"restore schema cannot be verified: {owner}") from exc
+    if version is None or version < 1 or pragma_version < 0:
+        raise DatabaseRestoreError(f"restore schema is not identified: {owner}")
+    if version > supported or pragma_version > supported:
+        raise DatabaseRestoreError(
+            f"restore schema is newer than supported: {owner}; supported={supported}"
+        )
+    if pragma_version not in {0, version}:
+        raise DatabaseRestoreError(f"restore schema version markers disagree: {owner}")
+    if not allow_migration:
+        if version != supported:
+            raise DatabaseRestoreError(
+                f"restore schema lacks verified compatibility: {owner}; "
+                f"observed={version}, supported={supported}"
+            )
+        return version
+    if owner != "framework" and owner not in _RESTORE_SCHEMA_INITIALIZERS:
+        raise DatabaseRestoreError(f"restore schema has no owner validation route: {owner}")
+    if staged:
+        _migrate_restore_staged(path, owner)
+        return _validate_restore_schema(path, owner, allow_migration=False)
+    with tempfile.TemporaryDirectory(prefix="neocortex-restore-schema-") as raw:
+        copy = Path(raw) / path.name
+        shutil.copyfile(path, copy)
+        _migrate_restore_staged(copy, owner)
+        _validate_restore_schema(copy, owner, allow_migration=False)
+        if not check_sqlite_integrity(
+            copy, policy=SQLiteIntegrityPolicy(check_mode="full")
+        ).healthy:
+            raise DatabaseRestoreError(f"restore migrated schema integrity failed: {owner}")
+    return version
+
+
 def _manifest_entries(
     payload: dict[str, object],
     backup_directory: Path,
@@ -989,6 +1123,7 @@ def _manifest_entries(
             )
             if not integrity.healthy:
                 raise DatabaseRestoreError(f"state backup integrity failed: {owner}")
+            _validate_restore_schema(selected, owner)
             raw["resolved_backup"] = selected
         by_owner[owner] = raw
     missing = sorted(set(stores) - set(by_owner))
@@ -1036,12 +1171,15 @@ def _restore_stage(
                 raise DatabaseRestoreError(f"restore source is missing: {owner}")
             destination = stage_directory / database_name
             backup_sqlite_online(source, destination, policy=policy)
+            _validate_restore_schema(destination, owner, staged=True)
             verification = check_sqlite_integrity(
                 destination,
                 policy=SQLiteIntegrityPolicy(check_mode="full"),
             )
             if not verification.healthy:
                 raise DatabaseRestoreError(f"restore staging integrity failed: {owner}")
+            if _sha256(source) != entry["backup_sha256"]:
+                raise DatabaseRestoreError(f"restore source changed during staging: {owner}")
             source_mode = entry.get("source_mode")
             if source_mode is not None:
                 if type(source_mode) is not int:
@@ -1054,11 +1192,63 @@ def _restore_stage(
                     raise DatabaseRestoreError(
                         f"restore staging permissions could not be applied: {owner}"
                     ) from exc
+            with destination.open("rb") as stream:
+                os.fsync(stream.fileno())
             staged[owner] = destination
+        _fsync_directory(stage_directory)
+        _fsync_directory(stage_directory.parent)
         return stage_directory, staged
     except BaseException:
         shutil.rmtree(stage_directory, ignore_errors=True)
         raise
+
+
+def _restore_owner_heads(
+    state_directory: Path, owners: tuple[str, ...], *, revision: int
+) -> tuple[StateOwnerHead, ...]:
+    """Fingerprint exact physical owner sets, including sidecars and absence.
+
+    No SQLite connection is opened against a live owner.  These are physical
+    restore heads, not invented owner-local logical generations.
+    """
+
+    heads: list[StateOwnerHead] = []
+    for owner in owners:
+        database = state_directory / STATE_STORE_REGISTRY.by_owner(owner).database_name
+        files: list[dict[str, object]] = []
+        before: list[tuple[Path, DatabaseFileSnapshot | None]] = []
+        for suffix in ("", *DATABASE_SIDECAR_SUFFIXES):
+            path = database if not suffix else Path(f"{database}{suffix}")
+            role: FileRole = "database" if not suffix else "sidecar"
+            snapshot = _snapshot(path, role)
+            before.append((path, snapshot))
+            files.append(
+                {
+                    "suffix": suffix,
+                    "sha256": None if snapshot is None else _sha256(path),
+                    "mode": None if snapshot is None else snapshot.mode,
+                    "size": None if snapshot is None else snapshot.size,
+                    "device": None if snapshot is None else snapshot.device,
+                    "inode": None if snapshot is None else snapshot.inode,
+                    "uid": None if snapshot is None else snapshot.uid,
+                    "gid": None if snapshot is None else snapshot.gid,
+                }
+            )
+        for path, snapshot in before:
+            role = "database" if path == database else "sidecar"
+            if _snapshot(path, role) != snapshot:
+                raise DatabaseRestoreError(f"restore owner changed while hashing: {owner}")
+        digest = hashlib.sha256(
+            json.dumps(files, sort_keys=True, separators=(",", ":")).encode("ascii")
+        ).hexdigest()
+        heads.append(StateOwnerHead(owner, revision, digest))
+    return tuple(sorted(heads, key=lambda head: head.owner))
+
+
+@dataclass(frozen=True, slots=True)
+class _RestoreRollbackResult:
+    complete: bool
+    errors: tuple[str, ...]
 
 
 def _restore_commit(
@@ -1070,12 +1260,14 @@ def _restore_commit(
         tempfile.mkdtemp(prefix=".neocortex-state-restore-old-", dir=state_directory.parent)
     )
     os.chmod(rollback_directory, 0o700)
+    _fsync_directory(rollback_directory.parent)
     moved_old: list[tuple[Path, Path]] = []
     moved_new: list[Path] = []
     try:
         for entry in entries:
             owner = str(entry["owner"])
             staged_path = staged.get(owner)
+            # An absent backup entry is not authority to delete a live owner.
             if staged_path is None:
                 continue
             database_name = str(entry["database_name"])
@@ -1085,15 +1277,27 @@ def _restore_commit(
                 if not os.path.lexists(current):
                     continue
                 old = rollback_directory / f"{database_name}{suffix}"
-                os.replace(current, old)
+                # Record the intent first: replace can take effect and still
+                # raise (or be interrupted) before Python regains control.
                 moved_old.append((current, old))
-            os.replace(staged_path, live)
+                os.replace(current, old)
             moved_new.append(live)
+            os.replace(staged_path, live)
+        for directory in {path.parent for path in staged.values()}:
+            _fsync_directory(directory)
+        _fsync_directory(rollback_directory)
+        _fsync_directory(state_directory)
+        _fsync_directory(state_directory.parent)
         # Keep the old files until the cross-owner publication event is
         # durable.  The caller removes this directory only after that commit.
         return rollback_directory, moved_old, moved_new
     except BaseException as exc:
-        _restore_revert(moved_old, moved_new, rollback_directory, exc)
+        reverted = _restore_revert(moved_old, moved_new, rollback_directory, exc)
+        if not reverted.complete:
+            raise DatabaseRestoreRecoveryRequiredError(
+                "owner swap and rollback did not complete; old files retained",
+                recovery_directory=rollback_directory,
+            ) from exc
         raise
 
 
@@ -1102,21 +1306,45 @@ def _restore_revert(
     moved_new: list[Path],
     rollback_directory: Path,
     primary: BaseException,
-) -> None:
-    """Restore the pre-publication files and retain any rollback note."""
+) -> _RestoreRollbackResult:
+    """Revert what was moved, retaining every unreturned recovery artifact."""
 
-    for path in reversed(moved_new):
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            pass
+    errors: list[str] = []
+    replaced = {original for original, _old in moved_old}
     for original, old in reversed(moved_old):
         try:
-            if old.exists():
-                os.replace(old, original)
+            if not os.path.lexists(old) and os.path.lexists(original):
+                # A recorded intent may have failed before its effect.  The
+                # caller still has to prove the entire baseline before abort.
+                continue
+            # Replace directly, rather than deleting the new file first: a
+            # failed rename must leave both the old evidence and live bytes.
+            os.replace(old, original)
         except OSError as rollback_error:
-            primary.add_note(f"restore rollback failed for {original}: {rollback_error}")
-    shutil.rmtree(rollback_directory, ignore_errors=True)
+            errors.append(f"restore rollback failed for {original}: {rollback_error}")
+    for path in reversed(moved_new):
+        if path in replaced:
+            continue
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as rollback_error:
+            errors.append(f"restore rollback removal failed for {path}: {rollback_error}")
+    if not errors:
+        try:
+            for directory in {path.parent for path, _old in moved_old} | {
+                path.parent for path in moved_new
+            }:
+                _fsync_directory(directory)
+            _fsync_directory(rollback_directory)
+            # Unknown/residual bytes must never be erased just because a move
+            # did not reach the Python bookkeeping after its physical effect.
+            rollback_directory.rmdir()
+            _fsync_directory(rollback_directory.parent)
+        except (OSError, DatabasePurgeError) as rollback_error:
+            errors.append(f"restore rollback synchronization failed: {rollback_error}")
+    for note in errors:
+        primary.add_note(note)
+    return _RestoreRollbackResult(not errors, tuple(errors))
 
 
 def restore_state_owners(
@@ -1155,16 +1383,16 @@ def restore_state_owners(
             or manifest_sha != expected_manifest_sha256.lower()
         ):
             raise DatabaseRestoreError("state backup manifest hash mismatch")
-    manifest_epoch = _manifest_epoch(payload)
+    # The backup's epoch is provenance, not the destination CAS token.  A
+    # historical backup is precisely what recovery after a later epoch needs.
+    _manifest_epoch(payload)
     entries = _manifest_entries(payload, backup, selected)
+    if expected_epoch is not None and (type(expected_epoch) is not int or expected_epoch < 0):
+        raise ValueError("expected_epoch must be a non-negative integer")
     current_epoch = read_state_epoch(state)
     if expected_epoch is not None and current_epoch.epoch != expected_epoch:
         raise DatabaseRestoreError(
             f"state publication epoch changed: expected {expected_epoch}, observed {current_epoch.epoch}"
-        )
-    if current_epoch.epoch != manifest_epoch:
-        raise DatabaseRestoreError(
-            f"state epoch does not match backup: {current_epoch.epoch} != {manifest_epoch}"
         )
     if not apply:
         if confirmation is not None:
@@ -1184,15 +1412,19 @@ def restore_state_owners(
             f"apply requires confirmation token {DATABASE_RESTORE_CONFIRMATION!r}"
         )
     with _held_locks(state):
-        locked_epoch = read_state_epoch(state)
-        if locked_epoch.epoch != current_epoch.epoch:
+        view = read_state_publication_state(state)
+        if view.status not in {"absent", "complete"}:
+            raise DatabaseRestoreError(
+                "destination publication requires recovery before another restore"
+            )
+        locked_epoch = view.epoch
+        if (
+            locked_epoch.epoch != current_epoch.epoch
+            or locked_epoch.event_id != current_epoch.event_id
+        ):
             raise DatabaseRestoreError("state changed before restore publication")
         pre_restore: DatabaseBackupResult | None = None
-        if any(
-            _snapshot(state / store.database_name, "database") is not None
-            for store in STATE_STORE_REGISTRY.stores
-            if store.state_owner_id in selected
-        ):
+        if _owner_database_targets(state, selected):
             pre_path = (
                 state.parent
                 / "database-backups"
@@ -1208,19 +1440,29 @@ def restore_state_owners(
             )
             if not pre_restore.complete:
                 raise DatabaseRestoreError("pre-restore backup is incomplete")
+        baseline = _restore_owner_heads(state, selected, revision=locked_epoch.epoch)
         stage_directory, staged = _restore_stage(entries, state)
         key = publication_idempotency_key(
             "database-restore",
+            str(state),
             str(backup),
             manifest_sha,
             selected,
+            locked_epoch.epoch,
         )
         restored: tuple[str, ...] = ()
         rollback_directory: Path | None = None
         moved_old: list[tuple[Path, Path]] = []
         moved_new: list[Path] = []
+        prepared: StatePublication | None = None
+        committed: StatePublication | None = None
+        publication_warning: str | None = None
+        commit_attempted = False
+        cleanup_allowed = False
         try:
-            record_state_publication(
+            if _manifest_sha256(manifest) != manifest_sha:
+                raise DatabaseRestoreError("restore manifest changed before publication")
+            prepared = record_state_publication(
                 state,
                 operation="database-restore",
                 owners=selected,
@@ -1229,7 +1471,12 @@ def restore_state_owners(
                 expected_epoch=locked_epoch.epoch,
                 manifest_sha256=manifest_sha,
                 detail="restore staged; owner publication in progress",
+                owner_heads=baseline,
             )
+            if prepared.status != "partial":
+                raise DatabaseRestoreError("restore prepare is already resolved")
+            if _restore_owner_heads(state, selected, revision=locked_epoch.epoch) != baseline:
+                raise DatabaseRestoreError("restore baseline changed before owner swap")
             rollback_directory, moved_old, moved_new = _restore_commit(
                 entries,
                 state,
@@ -1240,8 +1487,12 @@ def restore_state_owners(
                 for entry in entries
                 if entry.get("status") == "backed_up"
             )
+            final_heads = _restore_owner_heads(
+                state, selected, revision=locked_epoch.epoch + 1
+            )
+            commit_attempted = True
             try:
-                record_state_publication(
+                committed = record_state_publication(
                     state,
                     operation="database-restore",
                     owners=selected,
@@ -1249,24 +1500,114 @@ def restore_state_owners(
                     idempotency_key=key,
                     expected_epoch=locked_epoch.epoch,
                     manifest_sha256=manifest_sha,
+                    owner_heads=final_heads,
                 )
-            except (StatePublicationError, StatePublicationConflictError) as exc:
-                if rollback_directory is not None:
-                    # The complete event is the commit point.  If it cannot
-                    # be recorded, restore the old owner set instead of
-                    # leaving a new set with the previous epoch.
-                    _restore_revert(moved_old, moved_new, rollback_directory, exc)
-                    rollback_directory = None
+            except StatePublicationCommitError as exc:
+                if not exc.durable:
+                    raise DatabaseRestoreRecoveryRequiredError(
+                        "complete journal append has uncertain durability",
+                        recovery_directory=rollback_directory,
+                    ) from exc
+                committed = exc.publication
+                publication_warning = str(exc)
+            final_epoch = read_state_epoch(state)
+            if (
+                final_epoch.event_id != committed.event_id
+                or final_epoch.owner_heads != final_heads
+            ):
+                raise DatabaseRestoreRecoveryRequiredError(
+                    "committed publication does not match the observed epoch",
+                    recovery_directory=rollback_directory,
+                )
+            cleanup_allowed = True
+        except BaseException as exc:
+            # Once a complete append is visible, uncertain, or durable, the
+            # old owners MUST NOT replace the new set.  Append-only history
+            # cannot be undone by restoring filesystem bytes.
+            if isinstance(exc, DatabaseRestoreRecoveryRequiredError):
+                recovery = exc
+            else:
+                recovery = None
+                if committed is not None or isinstance(exc, StatePublicationCommitError):
+                    recovery = DatabaseRestoreRecoveryRequiredError(
+                        "publication outcome requires reconciliation",
+                        recovery_directory=rollback_directory,
+                    )
+                elif commit_attempted and prepared is not None:
+                    try:
+                        complete_seen = any(
+                            item.status == "complete"
+                            and item.idempotency_key == prepared.idempotency_key
+                            for item in read_state_publications(state)
+                        )
+                    except StatePublicationError:
+                        complete_seen = True
+                    if complete_seen:
+                        recovery = DatabaseRestoreRecoveryRequiredError(
+                            "complete journal outcome cannot be safely undone",
+                            recovery_directory=rollback_directory,
+                        )
+            if recovery is not None:
+                recovery.stage_directory = stage_directory
+                recovery.pre_restore_backup = (
+                    None if pre_restore is None else pre_restore.backup_directory
+                )
+                if recovery is exc:
+                    raise
+                raise recovery from exc
+            if rollback_directory is not None:
+                reverted = _restore_revert(moved_old, moved_new, rollback_directory, exc)
+                if not reverted.complete:
+                    raise DatabaseRestoreRecoveryRequiredError(
+                        "owner rollback failed; old files retained",
+                        recovery_directory=rollback_directory,
+                        stage_directory=stage_directory,
+                        pre_restore_backup=(
+                            None if pre_restore is None else pre_restore.backup_directory
+                        ),
+                    ) from exc
+                rollback_directory = None
+            try:
+                observed = _restore_owner_heads(state, selected, revision=locked_epoch.epoch)
+                if observed != baseline:
+                    raise DatabaseRestoreError("physical owner heads do not prove rollback")
+                if prepared is not None:
+                    abort_state_publication(
+                        state,
+                        event_id=prepared.event_id,
+                        observed_owner_heads=observed,
+                        expected_epoch=locked_epoch.epoch,
+                    )
+            except (StatePublicationError, DatabasePurgeError, OSError) as abort_error:
+                raise DatabaseRestoreRecoveryRequiredError(
+                    "baseline or publication abort could not be verified",
+                    recovery_directory=rollback_directory,
+                    stage_directory=stage_directory,
+                    pre_restore_backup=(
+                        None if pre_restore is None else pre_restore.backup_directory
+                    ),
+                ) from abort_error
+            cleanup_allowed = True
+            if not isinstance(exc, Exception):
                 raise
-        except (StatePublicationError, StatePublicationConflictError) as exc:
             raise DatabaseRestoreError(
-                "restore publication journal could not be committed"
+                "restore publication journal could not be committed; rollback verified"
             ) from exc
         finally:
-            if rollback_directory is not None:
-                shutil.rmtree(rollback_directory, ignore_errors=True)
-            shutil.rmtree(stage_directory, ignore_errors=True)
-    final_epoch = read_state_epoch(state)
+            if cleanup_allowed:
+                if rollback_directory is not None:
+                    try:
+                        for _original, old in moved_old:
+                            old.unlink(missing_ok=True)
+                        rollback_directory.rmdir()
+                        _fsync_directory(rollback_directory.parent)
+                    except (OSError, DatabasePurgeError):
+                        retained = f"rollback cleanup incomplete: {rollback_directory}"
+                        publication_warning = (
+                            retained if publication_warning is None
+                            else f"{publication_warning}; {retained}"
+                        )
+                shutil.rmtree(stage_directory, ignore_errors=True)
     return DatabaseRestoreResult(
         state_directory=state,
         backup_directory=backup,
@@ -1276,6 +1617,7 @@ def restore_state_owners(
         pre_restore_backup=pre_restore,
         state_epoch=final_epoch,
         complete=True,
+        publication_warning=publication_warning,
     )
 
 
@@ -1575,6 +1917,7 @@ __all__ = [
     "DatabasePurgeTarget",
     "DatabaseRestoreConfirmationError",
     "DatabaseRestoreError",
+    "DatabaseRestoreRecoveryRequiredError",
     "DatabaseRestoreResult",
     "backup_state_owners",
     "execute_database_purge",

@@ -239,7 +239,7 @@ exacta mediante `CurationWorkBudget`, con contabilidad de items, archivos y
 bytes, deadline monotónico y cancelación cooperativa. Las observaciones previas
 se conservan cuando el presupuesto se agota y el resto queda `not_verified`, sin
 crear efectos ni modificar el corpus. El contrato durable
-`neocortex.curation-checkpoint/v1` permite crear, leer, validar y reanudar el
+`neocortex.curation-checkpoint/v2` permite crear, leer, validar y reanudar el
 siguiente lote paginado desde API/SDK, enlazando root identity, source heads,
 plan/snapshot digest, cursor, batch digest y contadores acumulados, con sucesores
 deterministas y escritura atómica no-replace. Su alcance es la página publicada:
@@ -262,7 +262,12 @@ next_page = curation_checkpoint_resume_payload(
 Crear y reanudar escriben únicamente manifests de estado con efectos de corpus
 nulos, exigen un directorio explícito de fixtures y no aceptan overrides de
 presupuesto al reanudar; el estado y la evidencia de la página se revalidan
-antes de publicar el sucesor.
+antes de publicar el sucesor. El presupuesto restante se transmite al
+verificador antes del I/O y los sucesores conservan el tamaño de página. Un
+recorrido agotado con fuentes parciales sigue informando cobertura parcial,
+sin repetir indefinidamente la última página, y el replay terminal comprueba
+el snapshot actual. Los checkpoints v1 se leen sin alterar su representación;
+el contrato v2 conserva explícitamente cobertura, razones y fin del recorrido.
 
 El inventario completo dispone además del contrato `neocortex.inventory-resume/v1`
 para corridas Linux sobre una raíz contenida. El checkpoint conserva el cursor

@@ -175,3 +175,58 @@ def test_concurrent_different_publications_use_epoch_cas(tmp_path: Path) -> None
     assert outcomes.count("conflict") == 7
     assert read_state_publication_state(state).status == "complete"
     assert require_complete_state_epoch(state).epoch == 1
+
+
+def test_unresolved_prepare_blocks_a_different_publication(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    prepared = begin_state_publication(
+        state, operation="restore", owners=("image",), idempotency_key="restore-1",
+        owner_heads=(_head("image", 0, "a"),),
+    )
+    with pytest.raises(StatePublicationConflictError, match="pending recovery"):
+        record_state_publication(
+            state, operation="other", owners=("catalog",), status="complete",
+            idempotency_key="other-1", expected_epoch=0,
+        )
+    assert read_state_publications(state) == (prepared.prepared,)
+    assert read_state_publication_state(state).status == "blocked"
+
+
+def test_prepared_baseline_cannot_be_replaced_or_dropped(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    baseline = (_head("image", 0, "a"),)
+    transaction = begin_state_publication(
+        state, operation="restore", owners=("image",), idempotency_key="restore-1",
+        owner_heads=baseline,
+    )
+    attempts = (
+        ("partial", (_head("image", 0, "b"),)),
+        ("complete", ()),
+        ("failed", baseline),
+    )
+    for status, heads in attempts:
+        with pytest.raises(StatePublicationConflictError):
+            record_state_publication(
+                state, operation="restore", owners=("image",), status=status,
+                idempotency_key="restore-1", owner_heads=heads,
+            )
+    assert read_state_publications(state) == (transaction.prepared,)
+
+
+def test_inconsistent_complete_manifest_cannot_be_hidden_by_new_publication(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    complete = record_state_publication(
+        state, operation="first", owners=("image",), status="complete",
+        idempotency_key="first", owner_heads=(_head("image", 1, "a"),),
+    )
+    assert complete.content_manifest_name is not None
+    (state / complete.content_manifest_name).unlink()
+    with pytest.raises(publication.StatePublicationError, match="manifest is missing"):
+        record_state_publication(
+            state, operation="second", owners=("image",), status="complete",
+            idempotency_key="second", owner_heads=(_head("image", 2, "b"),),
+        )
+    assert read_state_publications(state) == (complete,)

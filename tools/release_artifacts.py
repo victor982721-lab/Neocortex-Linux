@@ -55,6 +55,7 @@ _UI_ASSET_SHA256: Final = {
 }
 _SOURCE_ONLY_TOOLS: Final = (
     "tools/__init__.py",
+    "tools/pip_bootstrap.py",
     "tools/release_archive_safety.py",
     "tools/release_artifacts.py",
     "tools/release_linux.py",

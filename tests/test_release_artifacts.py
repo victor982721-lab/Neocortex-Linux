@@ -60,6 +60,7 @@ _UI_ASSETS = (
 )
 _SOURCE_ONLY_TOOLS = (
     "tools/__init__.py",
+    "tools/pip_bootstrap.py",
     "tools/release_archive_safety.py",
     "tools/release_artifacts.py",
     "tools/release_linux.py",

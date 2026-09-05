@@ -417,6 +417,12 @@ class AudioRoute:
     ) -> bool:
         if cached is None:
             return False
+        try:
+            if not same_snapshot(snapshot, snapshot_path(snapshot.path)):
+                return False
+        except OSError:
+            # Let the normal processing boundary record the typed retryable error.
+            return False
         status = str(cached["status"])
         benign_statuses = {"complete", "no_speech", "no_audio"}
         if status not in benign_statuses and self.config.retry_errors:

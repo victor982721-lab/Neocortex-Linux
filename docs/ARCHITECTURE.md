@@ -165,9 +165,15 @@ La tranche 0.12 incorpora `CurationWorkBudget` como límite opcional de la
 verificación exacta, con contabilidad de items, archivos y bytes, deadline
 monotónico y cancelación cooperativa. Un corte por presupuesto conserva los
 resultados ya observados y materializa el resto como `not_verified`. El contrato
-`neocortex.curation-checkpoint/v1` publica manifests bounded con root/source/plan
-digests, cursor, batch digest y presupuesto, y la API/SDK puede validar drift y
-crear un sucesor idempotente por página.
+`neocortex.curation-checkpoint/v2` publica manifests bounded con root/source/plan
+digests, cursor, batch digest, presupuesto acumulado y tamaño de página. La
+API/SDK admite sólo el trabajo que cabe en el presupuesto restante y revalida
+el snapshot incluso en replay terminal. El fin del recorrido y la cobertura de
+las fuentes son independientes: una página final no completa evidencia parcial.
+Los manifests `neocortex.curation-checkpoint/v1` permanecen legibles sin
+reescribir sus bytes; los sucesores incorporan el contrato vigente. V1 no
+demuestra cobertura ni conserva el tamaño de página: una continuación parcial
+sin cursor se rechaza por ambigüedad, en vez de reiniciar trabajo por inferencia.
 
 El inventario Linux añade `neocortex.inventory-resume/v1`: el productor
 checkpointado recorre cada directorio en orden determinista por bytes, conserva
@@ -178,6 +184,14 @@ reanudación elimina sólo el tail posterior al cursor, revalida el prefijo y
 rechaza drift de identidad, política, ancestros o lote antes de publicar. Un
 replay terminal valida el inventario vigente y devuelve el mismo `scan_id`; no
 expone mutación ni se anuncia como herramienta MCP.
+
+El checkpoint terminal incorpora también directorios observados después del
+último lote, y cancelación/deadline se consultan aunque no haya entradas. Los
+nombres POSIX no representables en SQLite TEXT se aíslan con
+`unsupported_path_encoding`: se conservan las observaciones independientes y
+el scan queda parcial, sin renombrar el corpus ni sustituir bytes de la ruta.
+Se revalidan cambios en directorios activos, sin prometer un snapshot atómico
+global del filesystem.
 
 No existe una superficie de exportación o ZIP para el lifecycle de curación;
 Archive/ZIP sigue siendo únicamente una ruta de contenido.

@@ -1,8 +1,8 @@
 """Read-only adapters for published file value evidence.
 
-Every SQLite connection is opened with ``mode=ro`` and verified with
-``PRAGMA query_only=ON``.  This module never creates, migrates, checkpoints, or
-repairs owner state.
+Every SQLite connection uses the shared immutable or temporary-snapshot read
+kernel and is verified with ``PRAGMA query_only=ON``.  Source fences remain
+required through close; this module never changes or repairs owner state.
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ MAX_SQLITE_CANDIDATES = 25_000
 MAX_VALUE_REVIEW_PAGE_INPUTS = 1_000
 _SQLITE_BATCH = 300
 _KEYSET_IDENTITY_BATCH = 200
-_INACTIVE_SHM_SIZE_BYTES = 32_768
+_SQLITE_SHM_REGION_SIZE_BYTES = 32_768
 _T = TypeVar("_T")
 
 
@@ -664,27 +664,25 @@ def _readonly_connection(path: Path) -> Iterator[sqlite3.Connection]:
     before = _sqlite_read_snapshot(path)
     confirmed = _sqlite_read_snapshot(path)
     if before != confirmed:
-        raise _StateContractError("SQLite owner changed before immutable read")
-    _validate_inactive_sidecar_layout(before)
-    # The shared kernel opens the already-fenced owner with ``immutable=1`` and
-    # verifies its source fence again after close, so this adapter no longer
-    # owns a second direct ``mode=ro`` connection implementation.
+        raise _StateContractError("SQLite owner changed before fenced value review read")
+    mode = _review_read_mode(before)
+    # An empty WAL is not evidence of inactivity: it also occurs with a live
+    # BEGIN IMMEDIATE writer.  Read admitted sidecars only in a detached copy,
+    # retaining this adapter's stronger source-stability requirement at close.
     session = SQLiteReadSession(
         path,
-        mode=SQLiteReadMode.IMMUTABLE_STRICT,
+        mode=mode,
         timeout_seconds=60.0,
     )
-    connection: sqlite3.Connection | None = None
     try:
-        connection = session.open()
-        yield connection
+        with session as connection:
+            yield connection
     except ImmutableSQLiteUnavailable as exc:
         raise _StateContractError(str(exc)) from exc
     finally:
-        session.close()
         after = _sqlite_read_snapshot(path)
         if before != after:
-            raise _StateContractError("SQLite owner changed during immutable read")
+            raise _StateContractError("SQLite owner changed during fenced value review read")
 
 
 def _sqlite_read_snapshot(path: Path) -> _SQLiteReadSnapshot:
@@ -719,7 +717,9 @@ def _sqlite_file_identity(path: Path, *, label: str) -> _SQLiteFileIdentity:
     )
 
 
-def _validate_inactive_sidecar_layout(snapshot: _SQLiteReadSnapshot) -> None:
+def _review_read_mode(snapshot: _SQLiteReadSnapshot) -> SQLiteReadMode:
+    """Preserve review's admitted layouts without inferring writer inactivity."""
+
     sidecars = dict(snapshot.sidecars)
     journal = sidecars.get("-journal")
     wal = sidecars.get("-wal")
@@ -729,16 +729,16 @@ def _validate_inactive_sidecar_layout(snapshot: _SQLiteReadSnapshot) -> None:
     if wal is not None and wal.size > 0:
         raise _StateContractError("SQLite owner has a non-empty WAL")
     if not sidecars:
-        return
+        return SQLiteReadMode.IMMUTABLE_STRICT
     if (
         set(sidecars) == {"-wal", "-shm"}
         and wal is not None
         and wal.size == 0
         and shm is not None
-        and shm.size == _INACTIVE_SHM_SIZE_BYTES
+        and shm.size == _SQLITE_SHM_REGION_SIZE_BYTES
     ):
-        return
-    raise _StateContractError("SQLite owner sidecars are not a proven-inactive layout")
+        return SQLiteReadMode.SNAPSHOT_TEMP
+    raise _StateContractError("SQLite owner sidecar layout is unsupported for value review")
 
 
 def _validate_owner_schema(

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from neocortex.curation.checkpoints import (
+    CURATION_CHECKPOINT_SCHEMA_VERSION,
     MAX_BATCH_PAYLOAD_BYTES,
     MAX_CHECKPOINT_BYTES,
     MAX_SOURCE_HEADS,
@@ -137,7 +139,7 @@ def test_checkpoint_is_canonical_and_source_heads_are_sorted() -> None:
 def test_checkpoint_rejects_future_schema_duplicate_keys_and_unbounded_values() -> None:
     checkpoint = _checkpoint()
     payload = json.loads(checkpoint.to_json())
-    payload["schema_version"] = 2
+    payload["schema_version"] = CURATION_CHECKPOINT_SCHEMA_VERSION + 1
     future = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     with pytest.raises(CurationCheckpointCorruptError):
         parse_checkpoint_json(future)
@@ -172,6 +174,84 @@ def test_checkpoint_rejects_future_schema_duplicate_keys_and_unbounded_values() 
             batch="x" * (MAX_BATCH_PAYLOAD_BYTES + 1),
             budget=_budget(),
         )
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_v1_canonical_manifest_roundtrip_preserves_bytes_without_claiming_coverage(
+    terminal: bool,
+) -> None:
+    checkpoint = _checkpoint(state="complete" if terminal else "partial",
+                             cursor=None if terminal else "cursor-after")
+    payload = checkpoint.to_dict()
+    for field in ("page_limit", "traversal_complete", "coverage", "coverage_reasons"):
+        del payload[field]
+    payload.update(schema_version=1, contract="neocortex.curation-checkpoint/v1")
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    restored = parse_checkpoint_json(raw)
+    assert restored.to_json() == raw
+    assert restored.schema_version == 1
+    assert restored.coverage == "partial"
+    assert restored.coverage_reasons == ("legacy_coverage_unproven",)
+    assert restored.page_limit == 100
+    result = resume_checkpoint(restored, lambda: _observation())
+    assert result.status == ("partial" if terminal else "resume")
+    assert result.replay_required is not terminal
+    payload["coverage"] = "complete"
+    with pytest.raises(CurationCheckpointCorruptError):
+        parse_checkpoint_json(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+
+
+def test_v2_completed_traversal_can_have_partial_evidence_without_replay() -> None:
+    checkpoint = replace(_checkpoint(cursor=None), page_limit=1,
+                         traversal_complete=True, coverage_reasons=("verification:unavailable",))
+    assert parse_checkpoint_json(checkpoint.to_json()) == checkpoint
+    validation = validate_checkpoint(checkpoint, lambda: _observation())
+    assert validation.status == "valid"
+    assert validation.resumable is False
+    resumed = resume_checkpoint(checkpoint, lambda: _observation())
+    assert resumed.status == "partial"
+    assert resumed.replay_required is False
+    assert resumed.reason_code == "coverage_partial"
+
+
+def test_v1_partial_without_cursor_cannot_claim_a_safe_continuation() -> None:
+    payload = _checkpoint(cursor=None).to_dict()
+    for field in ("page_limit", "traversal_complete", "coverage", "coverage_reasons"):
+        del payload[field]
+    payload.update(schema_version=1, contract="neocortex.curation-checkpoint/v1")
+    checkpoint = parse_checkpoint_json(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+    assert validate_checkpoint(checkpoint, lambda: _observation()).resumable is False
+    result = resume_checkpoint(checkpoint, lambda: _observation())
+    assert result.status == "invalid"
+    assert result.reason_code == "legacy_continuation_unproven"
+    assert result.replay_required is False
+
+
+@pytest.mark.parametrize("explicit_stop", [False, True])
+def test_low_level_resume_respects_exhausted_or_unspendable_budget(explicit_stop: bool) -> None:
+    checkpoint = _checkpoint()
+    if explicit_stop:
+        checkpoint = replace(checkpoint, coverage_reasons=("budget_exhausted",))
+        assert checkpoint.budget.bytes_remaining > 0
+    else:
+        checkpoint = replace(checkpoint, budget=replace(checkpoint.budget, max_items=2))
+        assert checkpoint.budget.items_remaining == 0
+    assert validate_checkpoint(checkpoint, lambda: _observation()).resumable is False
+    result = resume_checkpoint(checkpoint, lambda: _observation())
+    assert result.status == "budget_exhausted"
+    assert result.reason_code == "budget_exhausted"
+    assert result.replay_required is False
+
+
+@pytest.mark.parametrize("change", [
+    {"page_limit": 0}, {"page_limit": True}, {"page_limit": 101},
+    {"traversal_complete": "true"}, {"traversal_complete": True},
+    {"coverage": "complete"}, {"coverage_reasons": ("reason", "reason")},
+    {"coverage_reasons": ("b", "a")}, {"coverage_reasons": ("x" * 257,)},
+])
+def test_v2_rejects_unproven_or_unbounded_traversal_metadata(change: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        replace(_checkpoint(), **change)
 
 
 def test_validate_and_resume_fail_closed_on_root_or_head_drift() -> None:

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
 
 import neocortex.persistence.database_purge as purge
+from neocortex.capabilities.formats.image.state import initialize_image_state
 from neocortex.persistence.database_purge import (
     DATABASE_RESTORE_CONFIRMATION,
     DatabasePurgeError,
@@ -33,9 +35,11 @@ from neocortex.persistence.state_publication import (
 
 def _create_database(path: Path, value: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path) as connection:
-        connection.execute("CREATE TABLE payload(value TEXT NOT NULL)")
-        connection.execute("INSERT INTO payload(value) VALUES(?)", (value,))
+    initialize_image_state(path)
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute(
+            "INSERT INTO metadata VALUES('fixture_payload', ?)", (value,)
+        )
 
 
 def test_full_integrity_distinguishes_quick_and_exhaustive_checks(tmp_path: Path) -> None:
@@ -151,8 +155,8 @@ def test_backup_manifest_records_source_permissions_and_restore_preserves_them(
     source_file = next(item for item in entry["source_files"] if item["role"] == "database")
     assert source_file["mode"] == 0o640
 
-    with sqlite3.connect(database) as connection:
-        connection.execute("UPDATE payload SET value='changed'")
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("UPDATE metadata SET value='changed' WHERE key='fixture_payload'")
     restored = restore_state_owners(
         state,
         backup.backup_directory,
@@ -184,8 +188,8 @@ def test_restore_validates_then_publishes_selected_owners(tmp_path: Path) -> Non
     state.mkdir()
     _create_database(state / "image.sqlite3", "before")
     backup = backup_state_owners(state, tmp_path / "backup", stores=("image",))
-    with sqlite3.connect(state / "image.sqlite3") as connection:
-        connection.execute("UPDATE payload SET value='changed'")
+    with closing(sqlite3.connect(state / "image.sqlite3")) as connection, connection:
+        connection.execute("UPDATE metadata SET value='changed' WHERE key='fixture_payload'")
 
     preview = restore_state_owners(state, backup.backup_directory, stores=("image",))
     assert preview.complete is True
@@ -209,8 +213,8 @@ def test_restore_validates_then_publishes_selected_owners(tmp_path: Path) -> Non
     assert result.complete is True
     assert result.restored == ("image",)
     assert result.state_epoch.epoch == 1
-    with sqlite3.connect(state / "image.sqlite3") as connection:
-        assert connection.execute("SELECT value FROM payload").fetchone() == ("before",)
+    with closing(sqlite3.connect(state / "image.sqlite3")) as connection, connection:
+        assert connection.execute("SELECT value FROM metadata WHERE key='fixture_payload'").fetchone() == ("before",)
     assert result.pre_restore_backup is not None
     assert result.pre_restore_backup.complete is True
     assert not tuple(state.parent.glob(".neocortex-state-restore-*"))
@@ -225,8 +229,8 @@ def test_restore_reverts_owner_files_when_epoch_commit_fails(
     database = state / "image.sqlite3"
     _create_database(database, "before")
     backup = backup_state_owners(state, tmp_path / "backup", stores=("image",))
-    with sqlite3.connect(database) as connection:
-        connection.execute("UPDATE payload SET value='changed'")
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("UPDATE metadata SET value='changed' WHERE key='fixture_payload'")
 
     original_record = purge.record_state_publication
 
@@ -245,8 +249,8 @@ def test_restore_reverts_owner_files_when_epoch_commit_fails(
             confirmation=DATABASE_RESTORE_CONFIRMATION,
         )
 
-    with sqlite3.connect(database) as connection:
-        assert connection.execute("SELECT value FROM payload").fetchone() == ("changed",)
+    with closing(sqlite3.connect(database)) as connection, connection:
+        assert connection.execute("SELECT value FROM metadata WHERE key='fixture_payload'").fetchone() == ("changed",)
     assert read_state_epoch(state).epoch == 0
 
 

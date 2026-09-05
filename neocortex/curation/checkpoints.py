@@ -32,8 +32,9 @@ from pathlib import Path
 from typing import Literal, Protocol, cast
 
 
-CURATION_CHECKPOINT_SCHEMA_VERSION = 1
-CURATION_CHECKPOINT_CONTRACT = "neocortex.curation-checkpoint/v1"
+CURATION_CHECKPOINT_SCHEMA_VERSION = 2
+CURATION_CHECKPOINT_CONTRACT = "neocortex.curation-checkpoint/v2"
+_LEGACY_CHECKPOINT_CONTRACT = "neocortex.curation-checkpoint/v1"
 CURATION_BATCH_CONTRACT = "neocortex.curation-batch/v1"
 
 # The manifest is intentionally small enough to pass through a receipt or a
@@ -61,7 +62,7 @@ CheckpointState = Literal[
     "invalid",
 ]
 CheckpointValidationStatus = Literal["valid", "snapshot_changed", "invalid"]
-ResumeStatus = Literal["resume", "complete", "snapshot_changed", "invalid"]
+ResumeStatus = Literal["resume", "complete", "partial", "budget_exhausted", "snapshot_changed", "invalid"]
 SourceHeadCoverage = Literal["complete", "partial", "unavailable"]
 
 _CHECKPOINT_KEYS = frozenset(
@@ -82,6 +83,9 @@ _CHECKPOINT_KEYS = frozenset(
         "state",
     }
 )
+_CHECKPOINT_V2_KEYS = _CHECKPOINT_KEYS | {
+    "page_limit", "traversal_complete", "coverage", "coverage_reasons",
+}
 _ROOT_KEYS = frozenset({"birthtime_ns", "dev", "inode", "path"})
 _SOURCE_HEAD_KEYS = frozenset(
     {
@@ -646,9 +650,13 @@ class CurationCheckpoint:
     batch_digest: str
     budget: CurationCheckpointBudget
     previous_checkpoint_digest: str | None = None
+    page_limit: int = 100
+    traversal_complete: bool = False
+    coverage: Literal["complete", "partial"] = "partial"
+    coverage_reasons: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.schema_version != CURATION_CHECKPOINT_SCHEMA_VERSION or isinstance(
+        if self.schema_version not in {1, CURATION_CHECKPOINT_SCHEMA_VERSION} or isinstance(
             self.schema_version, bool
         ):
             raise CurationCheckpointError("unsupported checkpoint schema version")
@@ -675,6 +683,30 @@ class CurationCheckpoint:
         )
         if self.state == "complete" and self.cursor is not None:
             raise CurationCheckpointError("complete checkpoint must have a null cursor")
+        _integer(self.page_limit, label="page_limit", minimum=1, maximum=100)
+        if not isinstance(self.traversal_complete, bool):
+            raise CurationCheckpointError("traversal_complete must be a boolean")
+        if self.coverage not in {"complete", "partial"}:
+            raise CurationCheckpointError("checkpoint coverage is invalid")
+        if not isinstance(self.coverage_reasons, tuple) or len(self.coverage_reasons) > 256:
+            raise CurationCheckpointError("coverage_reasons are outside their bound")
+        for reason in self.coverage_reasons:
+            _bounded_string(reason, label="coverage_reason", maximum=256)
+        if tuple(sorted(set(self.coverage_reasons))) != self.coverage_reasons:
+            raise CurationCheckpointError("coverage_reasons are not canonical")
+        if self.traversal_complete and self.cursor is not None:
+            raise CurationCheckpointError("completed traversal must have a null cursor")
+        if self.schema_version == 2:
+            if self.state == "complete" and (
+                not self.traversal_complete or self.coverage != "complete"
+            ):
+                raise CurationCheckpointError("complete checkpoint requires complete evidence")
+            if self.coverage == "complete" and (
+                not self.traversal_complete
+                or self.coverage_reasons
+                or any(head.coverage != "complete" for head in self.source_heads)
+            ):
+                raise CurationCheckpointError("complete coverage requires complete sources and traversal")
         encoded = _canonical_json_bytes(self.to_dict(), label="checkpoint", maximum=MAX_CHECKPOINT_BYTES)
         if not encoded:
             raise CurationCheckpointError("checkpoint cannot be empty")
@@ -682,23 +714,40 @@ class CurationCheckpoint:
     @classmethod
     def from_mapping(cls, value: object) -> "CurationCheckpoint":
         mapping = _mapping(value, label="checkpoint")
-        _exact_keys(mapping, _CHECKPOINT_KEYS, label="checkpoint")
-        if mapping["contract"] != CURATION_CHECKPOINT_CONTRACT:
-            raise CurationCheckpointError("checkpoint contract is unsupported")
         schema_version = _integer(
-            mapping["schema_version"],
+            mapping.get("schema_version"),
             label="schema_version",
             minimum=0,
             maximum=CURATION_CHECKPOINT_SCHEMA_VERSION,
         )
-        if schema_version != CURATION_CHECKPOINT_SCHEMA_VERSION:
+        if schema_version not in {1, CURATION_CHECKPOINT_SCHEMA_VERSION}:
             raise CurationCheckpointError("unsupported checkpoint schema version")
+        _exact_keys(mapping, _CHECKPOINT_KEYS if schema_version == 1 else _CHECKPOINT_V2_KEYS, label="checkpoint")
+        expected_contract = _LEGACY_CHECKPOINT_CONTRACT if schema_version == 1 else CURATION_CHECKPOINT_CONTRACT
+        if mapping["contract"] != expected_contract:
+            raise CurationCheckpointError("checkpoint contract is unsupported")
         source_value = mapping["source_heads"]
         if not isinstance(source_value, list):
             raise CurationCheckpointError("source_heads must be a JSON array")
         source_heads = _normalize_source_heads(source_value)
         operation = _operation(mapping["operation"], label="checkpoint.operation")
         state = _state(mapping["state"], label="checkpoint.state")
+        cursor = _validate_cursor(mapping["cursor"])
+        if schema_version == 1:
+            # V1 did not distinguish exhausted pagination from partial evidence.
+            # Never infer complete evidence from its terminal state alone.
+            traversal_complete = state == "complete"
+            coverage = "partial"
+            reasons = ("legacy_coverage_unproven",)
+            page_limit = 100  # V1 did not retain the caller's page size.
+        else:
+            traversal_complete = mapping["traversal_complete"]
+            coverage = mapping["coverage"]
+            reasons_value = mapping["coverage_reasons"]
+            if not isinstance(reasons_value, list):
+                raise CurationCheckpointError("coverage_reasons must be a JSON array")
+            reasons = tuple(reasons_value)
+            page_limit = mapping["page_limit"]
         return cls(
             schema_version=schema_version,
             event_id=_bounded_string(mapping["event_id"], label="event_id", maximum=MAX_EVENT_ID_BYTES),
@@ -713,16 +762,20 @@ class CurationCheckpoint:
                 label="previous_checkpoint_digest",
             ),
             snapshot_id=_digest(mapping["snapshot_id"], label="snapshot_id"),
-            cursor=_validate_cursor(mapping["cursor"]),
+            cursor=cursor,
             batch_digest=_digest(mapping["batch_digest"], label="batch_digest"),
             budget=CurationCheckpointBudget.from_mapping(mapping["budget"]),
+            page_limit=page_limit,  # type: ignore[arg-type]
+            traversal_complete=traversal_complete,  # type: ignore[arg-type]
+            coverage=coverage,  # type: ignore[arg-type]
+            coverage_reasons=reasons,
         )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "batch_digest": self.batch_digest,
             "budget": self.budget.to_dict(),
-            "contract": CURATION_CHECKPOINT_CONTRACT,
+            "contract": _LEGACY_CHECKPOINT_CONTRACT if self.schema_version == 1 else CURATION_CHECKPOINT_CONTRACT,
             "cursor": self.cursor,
             "event_id": self.event_id,
             "operation": self.operation,
@@ -735,6 +788,14 @@ class CurationCheckpoint:
             "source_heads_digest": self.source_heads_digest,
             "state": self.state,
         }
+        if self.schema_version == 2:
+            result.update({
+                "page_limit": self.page_limit,
+                "traversal_complete": self.traversal_complete,
+                "coverage": self.coverage,
+                "coverage_reasons": list(self.coverage_reasons),
+            })
+        return result
 
     def to_json(self) -> str:
         return _canonical_json_bytes(
@@ -755,6 +816,10 @@ def create_checkpoint(
     budget: CurationCheckpointBudget | Mapping[str, object],
     event_id: str | None = None,
     previous_checkpoint_digest: str | None = None,
+    page_limit: int = 100,
+    traversal_complete: bool | None = None,
+    coverage: Literal["complete", "partial"] | None = None,
+    coverage_reasons: tuple[str, ...] = (),
 ) -> CurationCheckpoint:
     """Create and fully validate a checkpoint without opening durable state."""
 
@@ -783,6 +848,10 @@ def create_checkpoint(
         cursor=_validate_cursor(cursor),
         batch_digest=_digest(batch_digest, label="batch_digest"),
         budget=normalized_budget,
+        page_limit=page_limit,
+        traversal_complete=state == "complete" if traversal_complete is None else traversal_complete,
+        coverage=("complete" if state == "complete" else "partial") if coverage is None else coverage,
+        coverage_reasons=coverage_reasons,
     )
 
 
@@ -855,7 +924,17 @@ class CurationCheckpointValidation:
 
     @property
     def resumable(self) -> bool:
-        return self.status == "valid" and self.checkpoint.state in {"partial", "cancelled"}
+        return (
+            self.status == "valid"
+            and self.checkpoint.state in {"partial", "cancelled"}
+            and not self.checkpoint.traversal_complete
+            and not (self.checkpoint.schema_version == 1 and self.checkpoint.cursor is None)
+            and "budget_exhausted" not in self.checkpoint.coverage_reasons
+            and self.checkpoint.budget.items_remaining > 0
+            and (self.checkpoint.operation == "scan" or (
+                self.checkpoint.budget.files_remaining > 0 and self.checkpoint.budget.bytes_remaining > 0
+            ))
+        )
 
 
 def _validation(
@@ -1027,15 +1106,31 @@ def resume_checkpoint(
                 replay_required=False,
                 validation=invalid,
             )
-    if checkpoint.state == "complete":
+    if checkpoint.state == "complete" or checkpoint.traversal_complete:
         return CurationCheckpointResume(
-            status="complete",
-            reason_code="checkpoint_complete",
+            status="complete" if checkpoint.coverage == "complete" else "partial",
+            reason_code="checkpoint_complete" if checkpoint.coverage == "complete" else "coverage_partial",
             checkpoint=checkpoint,
             cursor=None,
             budget=checkpoint.budget,
             replay_required=False,
             validation=validation,
+        )
+    if checkpoint.schema_version == 1 and checkpoint.cursor is None:
+        invalid = _validation(
+            checkpoint, "invalid", "legacy_continuation_unproven",
+            "legacy checkpoint has no provable continuation", validation.observed,
+        )
+        return CurationCheckpointResume(
+            status="invalid", reason_code=invalid.reason_code,
+            checkpoint=checkpoint, cursor=None, budget=checkpoint.budget,
+            replay_required=False, validation=invalid,
+        )
+    if not validation.resumable:
+        return CurationCheckpointResume(
+            status="budget_exhausted", reason_code="budget_exhausted",
+            checkpoint=checkpoint, cursor=checkpoint.cursor, budget=checkpoint.budget,
+            replay_required=False, validation=validation,
         )
     return CurationCheckpointResume(
         status="resume",

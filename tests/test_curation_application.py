@@ -48,7 +48,7 @@ from tests.internal_paths_test_support import begin_signed_normal_run
 class FixtureTrashBackend:
     name = "fixture-trash-v1"
 
-    def __init__(self, trash_root: Path, *, structured: bool = False) -> None:
+    def __init__(self, trash_root: Path, *, structured: bool = True) -> None:
         self.trash_root = trash_root
         self.structured = structured
         self.calls = 0
@@ -194,7 +194,7 @@ def test_apply_trash_is_grant_bound_and_replay_is_idempotent(tmp_path: Path) -> 
     assert second.effects[0].idempotent is True
     assert backend.calls == 1
     assert len(list(corpus.iterdir())) == 1
-    assert len(list(trash.glob("*.trashinfo"))) == 1
+    assert len(list((trash / "info").glob("*.trashinfo"))) == 1
     with closing(sqlite3.connect(framework)) as connection:
         row = connection.execute(
             "SELECT status,effect_receipt_json,evidence FROM file_actions"

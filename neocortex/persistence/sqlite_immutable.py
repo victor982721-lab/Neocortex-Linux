@@ -31,8 +31,6 @@ from typing import Iterator, Literal
 
 from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
 
-_INACTIVE_SHM_SIZE_BYTES = 32_768
-
 
 class ImmutableSQLiteUnavailable(RuntimeError):
     """A database cannot be proven safe for an immutable read."""
@@ -122,25 +120,21 @@ def capture_sqlite_immutable_fence(path: Path) -> SQLiteImmutableFence:
 
 
 def require_inactive_sqlite_sidecars(fence: SQLiteImmutableFence) -> None:
-    """Accept no sidecars or the exact inactive WAL/SHM layout SQLite leaves."""
+    """Require no sidecars; sizes alone cannot establish writer quiescence.
+
+    A writer holding ``BEGIN IMMEDIATE`` can have an empty WAL and a 32 KiB
+    SHM.  Such owners need a temporary snapshot, not an immutable source read.
+    This filesystem preflight is not a replacement for owner coordination.
+    """
 
     sidecars = dict(fence.sidecars)
     journal = sidecars.get("-journal")
     wal = sidecars.get("-wal")
-    shm = sidecars.get("-shm")
     if journal is not None and journal.size > 0:
         raise ImmutableSQLiteUnavailable("SQLite owner has a non-empty rollback journal")
     if wal is not None and wal.size > 0:
         raise ImmutableSQLiteUnavailable("SQLite owner has a non-empty WAL")
     if not sidecars:
-        return
-    if (
-        set(sidecars) == {"-wal", "-shm"}
-        and wal is not None
-        and wal.size == 0
-        and shm is not None
-        and shm.size == _INACTIVE_SHM_SIZE_BYTES
-    ):
         return
     raise ImmutableSQLiteUnavailable("SQLite owner sidecars are not proven inactive")
 
@@ -186,19 +180,57 @@ def _configure_read_connection(
     return connection
 
 
+def _verify_immutable_source(path: Path, fence: SQLiteImmutableFence) -> None:
+    try:
+        after = capture_sqlite_read_fence(path)
+    except (OSError, ImmutableSQLiteUnavailable) as exc:
+        raise ImmutableSQLiteUnavailable(
+            "SQLite owner changed during immutable read"
+        ) from exc
+    if after != fence:
+        raise ImmutableSQLiteUnavailable("SQLite owner changed during immutable read")
+
+
+class _FencedImmutableConnection(sqlite3.Connection):
+    """Keep the after-read fence even for factories returning a bare handle."""
+
+    _source_path: Path | None = None
+    _source_fence: SQLiteImmutableFence | None = None
+
+    def close(self) -> None:
+        path, fence = self._source_path, self._source_fence
+        self._source_path = None
+        self._source_fence = None
+        primary: BaseException | None = None
+        try:
+            super().close()
+        except BaseException as exc:
+            primary = exc
+        if path is not None and fence is not None:
+            try:
+                _verify_immutable_source(path, fence)
+            except BaseException as exc:
+                if primary is None:
+                    primary = exc
+                else:
+                    primary.add_note(f"SQLite final source fence failed: {exc}")
+        if primary is not None:
+            raise primary
+
+
 def open_immutable_sqlite_connection(
     path: str | Path,
     *,
     timeout_seconds: float = 60.0,
 ) -> sqlite3.Connection:
-    """Open one immutable connection after a strict source preflight.
+    """Open one immutable connection with a source fence verified at close.
 
-    This lower-level helper is for legacy connection factories that own the
-    final close/fence themselves.  New code should prefer
-    :class:`SQLiteReadSession`, which also verifies the source after closing.
+    Legacy connection factories must explicitly close the returned handle;
+    SQLite's transaction context manager does not close a connection.  New
+    code should prefer :class:`SQLiteReadSession` for an owned read lifecycle.
     """
 
-    selected = Path(path)
+    selected = Path(path).absolute()
     if isinstance(timeout_seconds, bool) or float(timeout_seconds) <= 0:
         raise ValueError("immutable SQLite timeout must be positive")
     fence = capture_sqlite_immutable_fence(selected)
@@ -208,13 +240,18 @@ def open_immutable_sqlite_connection(
         f"{readonly_sqlite_uri(selected)}&immutable=1",
         uri=True,
         timeout=float(timeout_seconds),
+        factory=_FencedImmutableConnection,
     )
     try:
-        return _configure_read_connection(
+        _configure_read_connection(
             connection,
             timeout_seconds=float(timeout_seconds),
             label="SQLite immutable read",
         )
+        assert isinstance(connection, _FencedImmutableConnection)
+        connection._source_path = selected
+        connection._source_fence = fence
+        return connection
     except BaseException:
         connection.close()
         raise
@@ -410,24 +447,18 @@ class SQLiteReadSession:
             # A temporary snapshot is intentionally detached from subsequent
             # source-owner writes; only strict immutable readers require the
             # source fence to remain unchanged through close.
-            if self._source_fence is not None and self.mode is SQLiteReadMode.IMMUTABLE_STRICT:
+            if (
+                connection is not None
+                and self._source_fence is not None
+                and self.mode is SQLiteReadMode.IMMUTABLE_STRICT
+            ):
                 try:
-                    after = capture_sqlite_read_fence(self.path)
-                except FileNotFoundError as exc:
+                    _verify_immutable_source(self.path, self._source_fence)
+                except BaseException as exc:
                     if primary_error is None:
-                        primary_error = ImmutableSQLiteUnavailable(
-                            "SQLite owner changed during immutable read"
-                            if self.mode is SQLiteReadMode.IMMUTABLE_STRICT
-                            else "SQLite owner changed during temporary snapshot read"
-                        )
-                    primary_error.__context__ = exc
-                else:
-                    if after != self._source_fence and primary_error is None:
-                        primary_error = ImmutableSQLiteUnavailable(
-                            "SQLite owner changed during immutable read"
-                            if self.mode is SQLiteReadMode.IMMUTABLE_STRICT
-                            else "SQLite owner changed during temporary snapshot read"
-                        )
+                        primary_error = exc
+                    elif exc is not primary_error:
+                        primary_error.add_note(f"SQLite final source fence failed: {exc}")
         finally:
             temporary_directory = self._temporary_directory
             self._temporary_directory = None
@@ -475,7 +506,7 @@ def open_sidecar_safe_sqlite_connection(
     """Return a bare connection while retaining safe snapshot ownership.
 
     A few legacy factories expose a connection rather than a context manager.
-    Strict owners can be returned directly; an active WAL is copied to a
+    Strict owners retain their final fence on close; any sidecars are copied to a
     temporary owner and the returned connection closes that session together
     with its own SQLite handle.  New code should prefer ``sqlite_read_session``
     when it can own the context explicitly.
@@ -496,6 +527,7 @@ def open_sidecar_safe_sqlite_connection(
     if temporary is None:
         session.close()
         raise ImmutableSQLiteUnavailable("temporary SQLite snapshot path is unavailable")
+    connection: sqlite3.Connection | None = None
     try:
         connection = sqlite3.connect(
             readonly_sqlite_uri(temporary),
@@ -511,8 +543,16 @@ def open_sidecar_safe_sqlite_connection(
         assert isinstance(connection, _OwnedSnapshotConnection)
         connection._owner_session = session
         return connection
-    except BaseException:
-        session.close()
+    except BaseException as exc:
+        if connection is not None:
+            try:
+                connection.close()
+            except BaseException as cleanup_error:
+                exc.add_note(f"SQLite snapshot handle cleanup failed: {cleanup_error}")
+        try:
+            session.close()
+        except BaseException as cleanup_error:
+            exc.add_note(f"SQLite snapshot session cleanup failed: {cleanup_error}")
         raise
 
 

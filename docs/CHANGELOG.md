@@ -6,6 +6,24 @@ fuera de `docs/`.
 
 ## Cambios posteriores a 0.12.0
 
+- Restore separa commit durable de fallos del puntero, retiene material de
+  recuperación incompleta, valida schemas y usa el CAS del destino para backups
+  históricos; cache-sync prepara la publicación antes de escribir owners.
+- Checkpoints de curación v2 aplican presupuestos antes de verificar, conservan
+  tamaño de página, revalidan replay terminal y distinguen cobertura parcial
+  de paginación terminada, manteniendo lectura de manifests v1.
+- Inventario corrige digest terminal y orden DFS, respeta interrupciones vacías,
+  aísla nombres POSIX no representables y conserva el dispositivo observado.
+- Curación verifica outcomes, identidad y evidencia de Papelera también durante
+  preview, reconciliación y replay; audio/video revalidan el archivo antes de
+  reutilizar caché basada en metadatos.
+- Lecturas SQLite estrictas verifican el fence al cerrar; health distingue WAL
+  vacío de inactividad e incluye sidecars desconocidos y presupuesto cooperativo.
+- CLI/MCP conservan errores tipados de entrada/dependencias, rechazan valores
+  booleanos inválidos y envelopes contradictorios o con colisiones de claves.
+- El sdist incluye el cierre local de la herramienta de release y el staging
+  verifica los archivos contra el commit identificado, sin depender de una
+  segunda lectura del checkout mutable.
 - Instalación ordinaria CPython 3.13 desde archivos sin Git, con cierre offline
   versionado de runtime, construcción, pruebas base y documentos/imagen,
   separado del wheel instalado y de la promoción personal CPython 3.14.

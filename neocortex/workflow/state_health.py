@@ -20,7 +20,8 @@ import os
 import sqlite3
 import stat
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -29,6 +30,10 @@ from typing import Literal
 from neocortex.persistence.sqlite_immutable import (
     ImmutableSQLiteUnavailable,
     immutable_sqlite_database,
+)
+from neocortex.persistence.sqlite_cancellation import (
+    SQLiteCancellationBridge,
+    sqlite_cancellation_scope,
 )
 from neocortex.persistence.sqlite_schema_contract import SQLiteSchemaContractError
 
@@ -295,21 +300,15 @@ def _sidecar_safety(path: Path) -> tuple[str | None, str | None]:
 
     journal = sidecars.get("-journal")
     wal = sidecars.get("-wal")
-    shm = sidecars.get("-shm")
     if journal is not None and journal.st_size > 0:
         return "active", "SQLite owner has a non-empty rollback journal"
     if wal is not None and wal.st_size > 0:
         return "active", "SQLite owner has a non-empty WAL"
     if not sidecars:
         return None, None
-    if (
-        set(sidecars) == {"-wal", "-shm"}
-        and wal is not None
-        and wal.st_size == 0
-        and shm is not None
-        and shm.st_size == 32_768
-    ):
-        return None, None
+    # WAL=0/SHM=32768 also occurs while a live writer holds BEGIN IMMEDIATE.
+    # Filesystem sizes cannot prove inactivity, and health must not open that
+    # source owner just to discover its locks.
     return "blocked", "SQLite owner sidecars are not proven inactive"
 
 
@@ -559,9 +558,13 @@ def _exact_validator(name: str, expected: int) -> Callable[[sqlite3.Connection],
     return _load_registry_validator(name, expected)
 
 
-def _proc_processes(path: Path) -> tuple[dict[str, object], ...]:
+def _proc_processes(
+    path: Path, *, deadline: float | None = None
+) -> tuple[dict[str, object], ...]:
     """Return bounded process holders using only read-only /proc operations."""
 
+    if deadline is not None and time.monotonic() >= deadline:
+        return ()
     targets = {str(path), *(f"{path}{suffix}" for suffix in _SIDECAR_SUFFIXES)}
     try:
         entries = sorted(
@@ -572,6 +575,8 @@ def _proc_processes(path: Path) -> tuple[dict[str, object], ...]:
         return ()
     found: list[dict[str, object]] = []
     for process in entries:
+        if deadline is not None and time.monotonic() >= deadline:
+            break
         fd_directory = process / "fd"
         try:
             descriptors = sorted(
@@ -581,6 +586,8 @@ def _proc_processes(path: Path) -> tuple[dict[str, object], ...]:
             continue
         matching = 0
         for descriptor in descriptors:
+            if deadline is not None and time.monotonic() >= deadline:
+                break
             try:
                 target = os.readlink(descriptor)
             except OSError:
@@ -598,6 +605,32 @@ def _proc_processes(path: Path) -> tuple[dict[str, object], ...]:
         if len(found) >= MAX_PROCESS_RESULTS:
             break
     return tuple(found)
+
+
+def _check_health_budget(deadline: float) -> None:
+    if time.monotonic() >= deadline:
+        raise _HealthBudgetError("state-health inspection time budget exhausted")
+
+
+@contextmanager
+def _health_read(
+    path: Path, *, deadline: float
+) -> Iterator[tuple[sqlite3.Connection, SQLiteCancellationBridge]]:
+    """Apply the shared cooperative budget to all SQL, including validators."""
+
+    _check_health_budget(deadline)
+    remaining = max(0.001, deadline - time.monotonic())
+    with immutable_sqlite_database(path, timeout_seconds=remaining) as connection:
+        bridge = SQLiteCancellationBridge(lambda: _check_health_budget(deadline))
+        with sqlite_cancellation_scope(connection, bridge):
+            bridge.checkpoint()
+            try:
+                yield connection, bridge
+            except Exception:
+                bridge.checkpoint()
+                raise
+            bridge.checkpoint()
+    _check_health_budget(deadline)
 
 
 def _owner_record(
@@ -621,7 +654,7 @@ def _owner_record(
             sidecars=sidecars,
             observations={},
             detail=detail,
-            processes=_proc_processes(path) if status in {"blocked", "active"} else (),
+            processes=_proc_processes(path, deadline=deadline) if status in {"blocked", "active"} else (),
         )
 
     sidecar_status, sidecar_detail = _sidecar_safety(path)
@@ -637,22 +670,22 @@ def _owner_record(
             sidecars=sidecars,
             observations={},
             detail=sidecar_detail,
-            processes=_proc_processes(path),
+            processes=_proc_processes(path, deadline=deadline),
         )
 
     tables: set[str] = set()
     schema_version: int | None = None
     user_version: int | None = None
     try:
-        if time.monotonic() >= deadline:
-            raise _HealthBudgetError("state-health inspection time budget exhausted")
-        with immutable_sqlite_database(path) as connection:
+        with _health_read(path, deadline=deadline) as (connection, budget):
             tables = _table_names(connection)
+            budget.checkpoint()
             schema_version = _canonical_metadata_version(connection, tables)
             user_row = connection.execute("PRAGMA user_version").fetchone()
             if user_row is None:
                 raise _HealthSchemaError("PRAGMA user_version returned no value")
             user_version = int(user_row[0])
+            budget.checkpoint()
             if schema_version is None:
                 raise _HealthSchemaError("schema metadata is absent or invalid")
             if schema_version > expected:
@@ -677,9 +710,15 @@ def _owner_record(
                     f"PRAGMA user_version {user_version} does not match {expected}"
                 )
             _check_quick_integrity(connection)
+            budget.checkpoint()
             _check_foreign_keys(connection)
+            budget.checkpoint()
             _check_fts(connection)
-            _exact_validator(descriptor.name, expected)(connection)
+            budget.checkpoint()
+            validator = _exact_validator(descriptor.name, expected)
+            budget.checkpoint()
+            validator(connection)
+            budget.checkpoint()
             observations = _status_observations(connection, tables)
         return StateOwnerHealth(
             name=descriptor.name,
@@ -706,7 +745,7 @@ def _owner_record(
             sidecars=_sidecars(path),
             observations={},
             detail=str(exc),
-            processes=_proc_processes(path),
+            processes=_proc_processes(path, deadline=deadline),
         )
     except Exception as exc:
         status, detail = _validation_error_status(exc)
@@ -721,29 +760,40 @@ def _owner_record(
             sidecars=_sidecars(path),
             observations={},
             detail=detail,
-            processes=_proc_processes(path) if status in {"blocked", "active"} else (),
+            processes=_proc_processes(path, deadline=deadline) if status in {"blocked", "active"} else (),
         )
 
 
 def _unknown_state_entries(state: Path) -> tuple[Path, ...]:
-    """Find unregistered SQLite files without following links."""
+    """Find unregistered owners, including sidecars with no main, without links."""
 
     known = {filename for _, filename in STATE_OWNER_DATABASES}
     entries: list[Path] = []
+    seen: set[str] = set()
     try:
         children = sorted(state.iterdir(), key=lambda item: item.name)
     except OSError:
         return ()
     for candidate in children:
-        if candidate.name in known or not candidate.name.endswith(".sqlite3"):
+        name = candidate.name
+        for suffix in _SIDECAR_SUFFIXES:
+            if name.endswith(f".sqlite3{suffix}"):
+                name = name.removesuffix(suffix)
+                break
+        if name in known or name in seen or not name.endswith(".sqlite3"):
             continue
         try:
             value = candidate.lstat()
         except OSError:
-            entries.append(candidate)
-            continue
-        if stat.S_ISREG(value.st_mode) or stat.S_ISLNK(value.st_mode):
-            entries.append(candidate)
+            value = None
+        if (
+            name != candidate.name
+            or value is None
+            or stat.S_ISREG(value.st_mode)
+            or stat.S_ISLNK(value.st_mode)
+        ):
+            entries.append(state / name)
+            seen.add(name)
         if len(entries) >= MAX_UNKNOWN_DATABASES:
             break
     return tuple(entries)
@@ -757,8 +807,10 @@ def _unknown_record(
 ) -> StateOwnerHealth:
     status, detail = _regular_owner_kind(path)
     if status == "missing":
-        # An unknown entry came from iterdir, so this is a concurrent removal.
-        status, detail = "blocked", "unknown database disappeared during inspection"
+        if sidecars:
+            status, detail = "orphaned_sidecars", "database is absent but sidecars remain"
+        else:
+            status, detail = "blocked", "unknown database disappeared during inspection"
     if status is not None:
         return StateOwnerHealth(
             name=f"unknown:{path.name}",
@@ -771,7 +823,7 @@ def _unknown_record(
             sidecars=sidecars,
             observations={},
             detail=detail,
-            processes=_proc_processes(path) if status in {"blocked", "active"} else (),
+            processes=_proc_processes(path, deadline=deadline) if status in {"blocked", "active"} else (),
         )
     sidecar_status, sidecar_detail = _sidecar_safety(path)
     if sidecar_status is not None:
@@ -786,22 +838,25 @@ def _unknown_record(
             sidecars=sidecars,
             observations={},
             detail=sidecar_detail,
-            processes=_proc_processes(path),
+            processes=_proc_processes(path, deadline=deadline),
         )
     tables: set[str] = set()
     schema_version: int | None = None
     user_version: int | None = None
     try:
-        if time.monotonic() >= deadline:
-            raise _HealthBudgetError("state-health inspection time budget exhausted")
-        with immutable_sqlite_database(path) as connection:
+        with _health_read(path, deadline=deadline) as (connection, budget):
             tables = _table_names(connection)
+            budget.checkpoint()
             schema_version = _canonical_metadata_version(connection, tables)
             row = connection.execute("PRAGMA user_version").fetchone()
             user_version = None if row is None else int(row[0])
+            budget.checkpoint()
             _check_quick_integrity(connection)
+            budget.checkpoint()
             _check_foreign_keys(connection)
+            budget.checkpoint()
             _check_fts(connection)
+            budget.checkpoint()
             observations = _status_observations(connection, tables)
         return StateOwnerHealth(
             name=f"unknown:{path.name}",
@@ -831,7 +886,7 @@ def _unknown_record(
         sidecars=_sidecars(path),
         observations={},
         detail=detail,
-        processes=_proc_processes(path) if status in {"blocked", "active"} else (),
+        processes=_proc_processes(path, deadline=deadline) if status in {"blocked", "active"} else (),
     )
 
 
@@ -842,11 +897,11 @@ def inspect_state_health(
 ) -> StateHealth:
     """Inspect every registered owner without creating or mutating state.
 
-    ``timeout_seconds`` is a hard, bounded budget for the complete inspection;
-    owners not reached before the budget are returned as ``blocked`` instead of
-    being silently omitted.  The default is intentionally generous for a
-    local fixture, but still prevents a pathological owner from running
-    forever.
+    ``timeout_seconds`` is a shared cooperative budget: SQLite statements are
+    interrupted by a progress handler and stages check the deadline before
+    accepting results.  Registered owners not reached in time are ``blocked``.
+    This is not a hard wall-clock limit for Python validators, imports or
+    blocked filesystem calls; overruns cannot be reported as healthy.
     """
 
     if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)):
@@ -901,7 +956,7 @@ def inspect_state_health(
                         if status == "orphaned_sidecars"
                         else sidecar_detail or detail or "database is absent"
                     ),
-                    processes=_proc_processes(path) if status in {"blocked", "active"} else (),
+                    processes=_proc_processes(path, deadline=deadline) if status in {"blocked", "active"} else (),
                 )
             )
             continue

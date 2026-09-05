@@ -16,11 +16,12 @@ import stat
 import subprocess
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 
-from neocortex.deduplication import FileSnapshot, stat_matches_snapshot
+from neocortex.deduplication import FileSnapshot, full_fingerprint, snapshot_path, stat_matches_snapshot
+from neocortex.workflow.actions.action_policy import validate_mutation_path
 
 
 KIO_CLIENT_NAMES = ("kioclient6", "kioclient5", "kioclient")
@@ -103,6 +104,97 @@ class KioTrashResult:
 KioRunner = Callable[..., subprocess.CompletedProcess[str]]
 KioVerifier = Callable[[Path, FileSnapshot, Path], object]
 ClientResolver = Callable[[str], str | None]
+
+
+def _curation_trash_paths(
+    evidence: object,
+    expected: FileSnapshot,
+    source_digest: str,
+) -> tuple[Path, Path, Path]:
+    """Bind a v1 Trash receipt to the original object, without observing paths."""
+
+    if not isinstance(evidence, dict):
+        raise ValueError("trash receipt lacks destination evidence")
+    paths: list[Path] = []
+    for field in ("trash_root", "trash_path", "info_path"):
+        value = evidence.get(field)
+        if not isinstance(value, str) or not value or "\x00" in value:
+            raise ValueError("trash receipt paths are invalid")
+        path = Path(value)
+        if not path.is_absolute() or ".." in path.parts:
+            raise ValueError("trash receipt paths are not absolute descendants")
+        paths.append(path)
+    root, trash_path, info_path = paths
+    if (
+        trash_path.parent != root / "files"
+        or info_path.parent != root / "info"
+        or info_path.name != trash_path.name + ".trashinfo"
+        or Path(expected.path) in {trash_path, info_path}
+    ):
+        raise ValueError("trash receipt paths are outside the declared Trash layout")
+    if (
+        evidence.get("volume_id") != f"{expected.volume_id:x}"
+        or evidence.get("file_id") != f"{expected.file_id:x}"
+        or type(evidence.get("size")) is not int
+        or evidence.get("size") != expected.size
+        or evidence.get("digest") != source_digest
+        # Original v1 receipts carry birthtime in the grant snapshot rather
+        # than the Trash object.  If duplicated here it must agree as well.
+        or (
+            "birthtime_ns" in evidence
+            and (type(evidence["birthtime_ns"]) is not int or evidence["birthtime_ns"] != expected.birthtime_ns)
+        )
+    ):
+        raise ValueError("trash receipt identity or digest differs from the source")
+    return root, trash_path, info_path
+
+
+def _validate_trash_info(path: Path, source_path: str) -> None:
+    """Read a bounded, non-link .trashinfo and require its exact source."""
+
+    # O_NONBLOCK prevents a concurrently substituted FIFO from blocking before
+    # fstat can reject it; it has no effect on the supported regular files.
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+    with os.fdopen(fd, "rb") as stream:
+        metadata = os.fstat(stream.fileno())
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise ValueError("trash info is not a regular unique file")
+        raw = stream.read(8_193)
+    if len(raw) > 8_192:
+        raise ValueError("trash info exceeds its bound")
+    lines = [line.strip() for line in raw.decode("utf-8").splitlines() if line.strip()]
+    if "[Trash Info]" not in lines:
+        raise ValueError("trash info section is missing")
+    if [line[5:] for line in lines if line.startswith("Path=")] != [source_path]:
+        raise ValueError("trash info source path differs from the grant effect")
+
+
+def _verify_curation_trash_evidence(
+    evidence: object,
+    expected: FileSnapshot,
+    source_digest: str,
+) -> FileSnapshot:
+    """Reobserve the exact moved object and its source-bound restoration data."""
+
+    root, trash_path, info_path = _curation_trash_paths(evidence, expected, source_digest)
+    if root.resolve(strict=True) != root:
+        raise ValueError("trash root traverses a symbolic link")
+    metadata = validate_mutation_path(root, trash_path, role="trash file")
+    info_metadata = validate_mutation_path(root, info_path, role="trash info")
+    if metadata is None or not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        raise ValueError("trash destination is not a regular unique file")
+    if info_metadata is None or not stat.S_ISREG(info_metadata.st_mode) or info_metadata.st_nlink != 1:
+        raise ValueError("trash info is not a regular unique file")
+    relocated = replace(expected, path=str(trash_path))
+    observed = snapshot_path(trash_path)
+    if observed != relocated or not stat_matches_snapshot(relocated, metadata):
+        raise ValueError("trash destination no longer identifies the original source")
+    if "xxh3_128_full_v1:" + full_fingerprint(observed).hex() != source_digest:
+        raise ValueError("trash destination digest changed")
+    _validate_trash_info(info_path, expected.path)
+    if os.path.lexists(expected.path):
+        raise ValueError("trash source is present")
+    return observed
 
 
 def _sanitize_diagnostic(value: object) -> str | None:
@@ -415,7 +507,19 @@ def move_to_trash(
             returncode=None,
         )
 
-    returncode = completed.returncode
+    try:
+        returncode = completed.returncode
+        process_stderr = completed.stderr
+        process_stdout = completed.stdout
+    except BaseException as exc:
+        return _recovery_required(
+            source_path,
+            reason="kio_process_result_invalid",
+            detail=f"{type(exc).__name__}: KIO runner returned an unsupported result",
+            client=preflight.client,
+            command=command,
+            returncode=None,
+        )
     if isinstance(returncode, bool) or not isinstance(returncode, int):
         return _recovery_required(
             source_path,
@@ -426,7 +530,7 @@ def move_to_trash(
             returncode=None,
         )
     if returncode != 0:
-        process_diagnostic = completed.stderr if completed.stderr is not None else completed.stdout
+        process_diagnostic = process_stderr if process_stderr is not None else process_stdout
         return _recovery_required(
             source_path,
             reason="kio_nonzero_effect_ambiguous",
@@ -438,6 +542,10 @@ def move_to_trash(
 
     try:
         verification = verifier(source_path, expected, preflight.client)
+        if isinstance(verification, KioTrashVerification):
+            verification = KioTrashVerification(
+                verification.source_absent, verification.trash_evidence, verification.detail,
+            )
     except BaseException as exc:
         return _recovery_required(
             source_path,
@@ -447,7 +555,12 @@ def move_to_trash(
             command=command,
             returncode=returncode,
         )
-    if not isinstance(verification, KioTrashVerification):
+    if (
+        not isinstance(verification, KioTrashVerification)
+        or type(verification.source_absent) is not bool
+        or (verification.trash_evidence is not None and not isinstance(verification.trash_evidence, str))
+        or (verification.detail is not None and not isinstance(verification.detail, str))
+    ):
         return _recovery_required(
             source_path,
             reason="kio_verification_invalid",

@@ -56,6 +56,19 @@ manifest y `--confirm-database-restore RESTORE_DATABASES`. El CAS se compara con
 el epoch actual esperado; el epoch histórico del backup no se reutiliza como
 identidad del destino.
 
+La compatibilidad se comprueba contra los contratos del owner, no sólo contra
+hashes e integridad SQLite; schemas futuros, desconocidos o sin una ruta
+compatible demostrada se rechazan antes de sustituir el destino. Las
+migraciones admitidas se preparan en copias descartables, nunca en el único
+backup.
+
+El evento `complete` durable es el punto de commit, por lo que un fallo posterior
+del puntero de epoch no autoriza revertir los archivos instalados. Antes de ese
+punto, una reversión se cierra sólo después de comprobar los owners previos y
+registrar el abort. Si la publicación o la reversión quedan inciertas, se
+informa `recovery_required` y se conservan las rutas de staging, rollback y
+backup previo necesarias para conciliación, sin reintentar efectos a ciegas.
+
 Después verifica:
 
 ```bash

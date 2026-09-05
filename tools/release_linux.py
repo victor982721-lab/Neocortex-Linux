@@ -623,18 +623,74 @@ def _source_sha(source_root: Path, runner: CommandRunner = _run) -> str:
     return sha
 
 
-def _tracked_source_paths(
+def _source_commit_blobs(
     source_root: Path,
+    source_sha: str,
     runner: CommandRunner = _run,
-) -> tuple[str, ...]:
+) -> dict[str, tuple[str, str]]:
+    """Read immutable tree modes and blob IDs, never the mutable Git index."""
+
+    if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+        raise LinuxReleaseError("source Git SHA is malformed")
     result = runner(
-        ("git", "-C", source_root, "ls-files", "--cached", "-z"),
+        ("git", "-C", source_root, "ls-tree", "-r", "-z", "--full-tree", source_sha),
         timeout=60,
     )
+    if not result.stdout or not result.stdout.endswith("\0"):
+        raise LinuxReleaseError("source commit tree must be non-empty and NUL-terminated")
+    blobs: dict[str, tuple[str, str]] = {}
+    for record in result.stdout.removesuffix("\0").split("\0"):
+        header, separator, path = record.partition("\t")
+        fields = header.split(" ")
+        if (
+            not separator
+            or len(fields) != 3
+            or fields[0] not in {"100644", "100755", "120000"}
+            or fields[1] != "blob"
+            or not re.fullmatch(r"[0-9a-f]{40}", fields[2])
+            or path in blobs
+        ):
+            raise LinuxReleaseError("source commit contains an unsupported or duplicate owner")
+        blobs[path] = (fields[0], fields[2])
     try:
-        return parse_git_tracked_paths(result.stdout)
+        paths = parse_git_tracked_paths("\0".join(blobs) + "\0")
     except SourceStagingError as error:
         raise LinuxReleaseError(str(error)) from error
+    return {path: blobs[path] for path in paths}
+
+
+def _verify_staged_source_commit(
+    staged_source: Path,
+    blobs: Mapping[str, tuple[str, str]],
+) -> None:
+    """Fence copied bytes and modes against the exact commit named by the release.
+
+    Rechecking Git status is insufficient: an edit may be copied and then
+    reverted before that check. Blob verification detects even that race.
+    """
+
+    for relative, (expected_mode, expected_blob) in blobs.items():
+        owner = staged_source / relative
+        try:
+            metadata = owner.lstat()
+            if stat.S_ISLNK(metadata.st_mode):
+                mode = "120000"
+                payload = os.fsencode(os.readlink(owner))
+                digest = hashlib.sha1(f"blob {len(payload)}\0".encode(), usedforsecurity=False)
+                digest.update(payload)
+            elif stat.S_ISREG(metadata.st_mode):
+                mode = "100755" if metadata.st_mode & stat.S_IXUSR else "100644"
+                with owner.open("rb") as stream:
+                    size = os.fstat(stream.fileno()).st_size
+                    digest = hashlib.sha1(f"blob {size}\0".encode(), usedforsecurity=False)
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+            else:
+                raise LinuxReleaseError(f"staged source owner is unsupported: {relative}")
+        except OSError as error:
+            raise LinuxReleaseError(f"staged source owner is unavailable: {relative}") from error
+        if mode != expected_mode or digest.hexdigest() != expected_blob:
+            raise LinuxReleaseError(f"staged source differs from source commit: {relative}")
 
 
 def _require_reference_platform() -> None:
@@ -778,12 +834,14 @@ def _build_wheel(
     layout: LinuxReleaseLayout,
     workspace: Path,
     *,
+    source_sha: str,
     pip_wheel: Path,
     wheelhouse: Path | None = None,
     runner: CommandRunner = _run,
 ) -> Path:
     staged_source = workspace / "source"
-    tracked_paths = _tracked_source_paths(layout.source_root, runner)
+    source_blobs = _source_commit_blobs(layout.source_root, source_sha, runner)
+    tracked_paths = tuple(source_blobs)
     _validate_tracked_source_links(layout.source_root, tracked_paths)
     try:
         stage_tracked_source(
@@ -793,10 +851,12 @@ def _build_wheel(
         )
     except SourceStagingError as error:
         raise LinuxReleaseError(str(error)) from error
+    _verify_staged_source_commit(staged_source, source_blobs)
+    _validate_tracked_source_links(staged_source, tracked_paths)
     dependency_wheelhouse = pip_wheel.parent if wheelhouse is None else wheelhouse
     wheelhouse_artifacts: dict[str, _WheelhouseArtifact] | None = None
     if wheelhouse is not None:
-        runtime_lock = _runtime_dependency_lock(layout.source_root / RUNTIME_DEPENDENCY_LOCK_NAME)
+        runtime_lock = _runtime_dependency_lock(staged_source / RUNTIME_DEPENDENCY_LOCK_NAME)
         required = {
             **runtime_lock,
             "build": "1.5.0",
@@ -2224,6 +2284,7 @@ def install_release(
                 wheel = _build_wheel(
                     layout,
                     workspace,
+                    source_sha=source_sha,
                     pip_wheel=pip_wheel,
                     wheelhouse=wheelhouse,
                     runner=runner,
@@ -2234,17 +2295,19 @@ def install_release(
                     raise LinuxReleaseError(f"built wheel failed artifact validation: {exc}") from exc
                 wheel_sha = _sha256_file(wheel)
                 candidate_root = workspace / "release"
+                staged_source = workspace / "source"
+                staged_runtime_lock = staged_source / RUNTIME_DEPENDENCY_LOCK_NAME
                 _install_wheel(
                     candidate_root,
                     wheel,
-                    layout.source_root / "constraints.txt",
-                    source_runtime_lock,
+                    staged_source / "constraints.txt",
+                    staged_runtime_lock,
                     pip_wheel=pip_wheel,
                     wheelhouse=wheelhouse,
                     runner=runner,
                 )
                 runtime_lock = candidate_root / RUNTIME_DEPENDENCY_LOCK_NAME
-                shutil.copyfile(source_runtime_lock, runtime_lock)
+                shutil.copyfile(staged_runtime_lock, runtime_lock)
                 _remove_bytecode(candidate_root)
                 candidate_versions = _verify_python_release(
                     candidate_root,

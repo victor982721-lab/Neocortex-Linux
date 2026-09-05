@@ -20,7 +20,13 @@ from pathlib import Path
 from typing import Literal, Protocol
 
 from neocortex.curation.application import _open_parent_dirfd
-from neocortex.deduplication import FileChangedError, FileSnapshot, full_fingerprint, snapshot_path
+from neocortex.deduplication import (
+    FileChangedError,
+    FileSnapshot,
+    full_fingerprint,
+    snapshot_path,
+    stat_matches_snapshot,
+)
 from neocortex.persistence.framework_authorization_schema import (
     AUTHORIZATION_GRANTS_TABLE,
     authorization_extension_present,
@@ -37,6 +43,7 @@ from neocortex.workflow.authorization.repository import (
 )
 from neocortex.workflow.actions.file_action_recovery import expected_identity_json
 from neocortex.persistence.sqlite_immutable import SQLiteReadSession, preferred_sqlite_read_mode
+from neocortex.safety.kio_trash import _curation_trash_paths, _verify_curation_trash_evidence
 
 
 CURATION_RESTORE_SCHEMA = "neocortex.curation-restore/v1"
@@ -80,6 +87,26 @@ class RestoreOutcome:
     detail: str | None = None
     receipt_json: str | None = None
     idempotent: bool = False
+
+    def __post_init__(self) -> None:
+        if type(self.action_id) is not int or self.action_id < 1:
+            raise ValueError("restore outcome action_id must be positive")
+        if not isinstance(self.status, str) or self.status not in {
+            "restored", "already_restored", "blocked", "recovery_required"
+        }:
+            raise ValueError("restore outcome status is unsupported")
+        if not isinstance(self.reason, str) or not self.reason or self.reason.strip() != self.reason:
+            raise ValueError("restore outcome reason must be trimmed non-empty text")
+        if len(self.reason.encode("utf-8")) > 512:
+            raise ValueError("restore outcome reason is too long")
+        if self.detail is not None and (not isinstance(self.detail, str) or len(self.detail.encode("utf-8")) > 4_096):
+            raise ValueError("restore outcome detail is invalid")
+        if self.receipt_json is not None and (not isinstance(self.receipt_json, str) or len(self.receipt_json.encode("utf-8")) > 65_536):
+            raise ValueError("restore outcome receipt is invalid")
+        if self.status == "restored" and not self.receipt_json:
+            raise ValueError("restored outcome requires a receipt")
+        if not isinstance(self.idempotent, bool):
+            raise ValueError("restore outcome idempotent must be boolean")
 
 
 class RestoreBackend(Protocol):
@@ -126,21 +153,6 @@ def _open_dirfd(root: Path, path: Path, *, role: str) -> tuple[int, str]:
         return _open_parent_dirfd(root_fd, parts)
     finally:
         os.close(root_fd)
-
-
-def _validate_trash_info(path: Path, source_path: str) -> None:
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        raise ValueError("trash info cannot be read") from exc
-    if len(raw.encode("utf-8")) > 8_192:
-        raise ValueError("trash info exceeds its bound")
-    lines = [line.strip() for line in raw.splitlines() if line.strip()]
-    if "[Trash Info]" not in lines:
-        raise ValueError("trash info section is missing")
-    path_values = [line[5:] for line in lines if line.startswith("Path=")]
-    if path_values != [source_path]:
-        raise ValueError("trash info source path differs from the grant effect")
 
 
 def _rename_noreplace(
@@ -280,14 +292,12 @@ def _original_receipt_parts(
 
     try:
         receipt = json.loads(receipt_json)
+        if not isinstance(receipt, dict):
+            raise ValueError("original trash receipt is not an object")
         trash = receipt["trash"]
-        trash_root = Path(str(trash["trash_root"]))
-        trash_path = Path(str(trash["trash_path"]))
-        info_path = Path(str(trash["info_path"]))
-        volume_id = int(str(trash["volume_id"]), 16)
-        file_id = int(str(trash["file_id"]), 16)
-        size = int(trash["size"])
-        digest = str(trash["digest"])
+        trash_root, trash_path, info_path = _curation_trash_paths(
+            trash, effect.source, effect.source_digest
+        )
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ValueError("original trash receipt is malformed") from exc
     if (
@@ -299,32 +309,60 @@ def _original_receipt_parts(
         or receipt.get("target_path") is not None
         or receipt.get("effect_id") != effect.effect_id
         or receipt.get("grant_id") != grant_id
-        or not trash_root.is_absolute()
-        or not trash_path.is_absolute()
-        or not info_path.is_absolute()
-        or digest != effect.source_digest
-        or size != effect.source.size
+        or receipt.get("source_digest") != effect.source_digest
     ):
         raise ValueError(f"trash receipt for action {action_id} is not bound to its grant effect")
     try:
         root_snapshot = snapshot_path(trash_root)
     except OSError as exc:
         raise ValueError("trash root cannot be snapshotted") from exc
-    if trash_path.parent != trash_root / "files" or info_path.parent != trash_root / "info":
-        raise ValueError("trash receipt paths are outside the declared Trash layout")
-    return trash_root, trash_path, info_path, root_snapshot, volume_id, file_id
+    return (
+        trash_root, trash_path, info_path, root_snapshot,
+        effect.source.volume_id, effect.source.file_id,
+    )
+
+
+def _verify_trash_candidate(candidate: RestoreCandidate) -> FileSnapshot:
+    effect = candidate.effect
+    return _verify_curation_trash_evidence(
+        {
+            "trash_root": str(candidate.trash_root),
+            "trash_path": str(candidate.trash_path),
+            "info_path": str(candidate.info_path),
+            "volume_id": f"{candidate.trash_volume_id:x}",
+            "file_id": f"{candidate.trash_file_id:x}",
+            "size": effect.source.size,
+            "digest": effect.source_digest,
+        },
+        effect.source,
+        effect.source_digest,
+    )
 
 
 def _verify_restored_source(candidate: RestoreCandidate) -> None:
     path = Path(candidate.effect.source.path)
+    validate_mutation_path(candidate.root, path, role="restored source")
     metadata = os.lstat(path)
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
         raise ValueError("restored source is not a regular file")
     if metadata.st_nlink != 1:
         raise ValueError("restored source has additional hard links")
     restored = snapshot_path(path)
-    if restored.size != candidate.effect.source.size or _digest(restored) != candidate.effect.source_digest:
+    if (
+        restored != candidate.effect.source
+        or not stat_matches_snapshot(candidate.effect.source, metadata)
+        or _digest(restored) != candidate.effect.source_digest
+    ):
         raise ValueError("restored source identity or digest differs")
+
+
+def _verify_restore_postconditions(candidate: RestoreCandidate) -> None:
+    _verify_grant_root(candidate)
+    _verify_restored_source(candidate)
+    for path, role in ((candidate.trash_path, "restored trash file"), (candidate.info_path, "restored trash info")):
+        validate_mutation_path(candidate.trash_root, path, role=role, allow_missing_leaf=True)
+        if os.path.lexists(path):
+            raise ValueError("restore receipt conflicts with retained Trash evidence")
 
 
 def _verify_grant_root(candidate: RestoreCandidate) -> None:
@@ -410,15 +448,7 @@ class PosixRestoreBackend:
                 or info_stat.st_nlink != 1
             ):
                 return RestoreOutcome(candidate.action_id, "blocked", "trash_evidence_not_regular")
-            _validate_trash_info(candidate.info_path, str(source))
-            trash_snapshot = snapshot_path(candidate.trash_path)
-            if (
-                trash_snapshot.size != effect.source.size
-                or _digest(trash_snapshot) != effect.source_digest
-                or trash_snapshot.volume_id != candidate.trash_volume_id
-                or trash_snapshot.file_id != candidate.trash_file_id
-            ):
-                return RestoreOutcome(candidate.action_id, "blocked", "trash_content_changed")
+            trash_snapshot = _verify_trash_candidate(candidate)
             if os.stat(source.parent, follow_symlinks=False).st_dev != trash_snapshot.volume_id:
                 return RestoreOutcome(
                     candidate.action_id,
@@ -486,7 +516,7 @@ class PosixRestoreBackend:
                 "restore_verified",
                 receipt_json=receipt,
             )
-        except (FileChangedError, OSError) as exc:
+        except (FileChangedError, OSError, RuntimeError, ValueError) as exc:
             return RestoreOutcome(
                 candidate.action_id,
                 "recovery_required",
@@ -561,9 +591,19 @@ def restore_curation_preview(database: Path, action_id: int) -> dict[str, object
     """Return read-only restoration evidence and its exact confirmation token."""
 
     database = Path(database)
-    database = Path(database)
     with _readonly_state(database) as state:
         candidate, _run_id, receipt = _candidate_from_action(state, action_id)
+        restorable = True
+        detail = None
+        try:
+            validate_mutation_path(
+                candidate.root, candidate.effect.source.path,
+                role="restore destination", allow_missing_leaf=True,
+            )
+            _verify_trash_candidate(candidate)
+        except (OSError, RuntimeError, ValueError, FileChangedError) as exc:
+            restorable = False
+            detail = str(exc)
         return {
             "schema": CURATION_RESTORE_SCHEMA,
             "schema_version": 1,
@@ -575,7 +615,8 @@ def restore_curation_preview(database: Path, action_id: int) -> dict[str, object
             "info_path": str(candidate.info_path),
             "receipt_digest": hashlib.sha256(receipt.encode("utf-8")).hexdigest(),
             "confirmation": restore_confirmation_token(action_id, receipt),
-            "restorable": not os.path.lexists(candidate.effect.source.path),
+            "restorable": restorable,
+            "detail": detail,
             "read_only": True,
             "effects": {"state": "none", "corpus": "none", "external": "none"},
         }
@@ -640,14 +681,16 @@ def restore_curation_action(
                 receipt = row[2] if row is not None else None
                 if receipt is None or not _restore_receipt_valid(str(receipt), candidate=candidate):
                     raise ValueError("stored restore receipt is invalid")
-                if os.path.lexists(candidate.effect.source.path):
+                try:
+                    _verify_restore_postconditions(candidate)
+                except (OSError, RuntimeError, ValueError, FileChangedError) as exc:
                     return RestoreOutcome(
-                        restore_id,
-                        "already_restored",
-                        "already_restored",
-                        idempotent=True,
+                        restore_id, "recovery_required", "restore_receipt_conflicts",
+                        str(exc), idempotent=True,
                     )
-                return RestoreOutcome(restore_id, "recovery_required", "restore_receipt_conflicts")
+                return RestoreOutcome(
+                    restore_id, "already_restored", "already_restored", idempotent=True,
+                )
             if status in {"recovery_required", "applying"}:
                 if status == "applying":
                     effective_state.require_file_action_recovery(
@@ -674,11 +717,20 @@ def restore_curation_action(
                     "original_action_id": action_id,
                     "restore_actor": actor,
                     "restore_effect_id": original.effect.effect_id,
+                    "source_digest": original.effect.source_digest,
                 }
             )
             effective_state.mark_file_actions_applying(((restore_id, _canonical_json(payload)),))
             try:
                 outcome = backend.restore(candidate)
+                if not isinstance(outcome, RestoreOutcome):
+                    raise ValueError("restore backend returned an unsupported outcome")
+                outcome = RestoreOutcome(
+                    outcome.action_id, outcome.status, outcome.reason, outcome.detail,
+                    outcome.receipt_json, outcome.idempotent,
+                )
+                if outcome.action_id != restore_id or outcome.idempotent:
+                    raise ValueError("restore backend outcome is not bound to the fresh action")
             except BaseException as exc:
                 effective_state.require_file_action_recovery(
                     (restore_id,),
@@ -698,8 +750,8 @@ def restore_curation_action(
                     )
                     return RestoreOutcome(restore_id, "recovery_required", "restore_receipt_invalid")
                 try:
-                    _verify_restored_source(candidate)
-                except (OSError, ValueError, FileChangedError) as exc:
+                    _verify_restore_postconditions(candidate)
+                except (OSError, RuntimeError, ValueError, FileChangedError) as exc:
                     effective_state.require_file_action_recovery(
                         (restore_id,),
                         f"restore postcondition failed: {type(exc).__name__}: {exc}",
@@ -710,7 +762,16 @@ def restore_curation_action(
                         "restore_postcondition_failed",
                         str(exc),
                     )
-                effective_state.confirm_file_actions_applied(((restore_id, outcome.receipt_json),))
+                try:
+                    effective_state.confirm_file_actions_applied(((restore_id, outcome.receipt_json),))
+                except BaseException as exc:
+                    effective_state.require_file_action_recovery(
+                        (restore_id,),
+                        f"restore receipt persistence failed: {type(exc).__name__}: {exc}",
+                    )
+                    return RestoreOutcome(
+                        restore_id, "recovery_required", "restore_receipt_persistence_failed", str(exc),
+                    )
                 return outcome
             detail = outcome.detail or outcome.reason
             effective_state.require_file_action_recovery((restore_id,), detail)

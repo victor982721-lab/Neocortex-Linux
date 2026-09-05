@@ -62,12 +62,20 @@ byte-neutral. SQLite puede crear o tocar `-wal`/`-shm`.
 
 `SQLiteReadSession` distingue:
 
-- `immutable_strict` cuando base y sidecars están quiescentes y demostrables;
+- `immutable_strict` para una base sin sidecars y con fence verificable;
 - `snapshot_temp` cuando debe capturarse un conjunto consistente;
 - `writer_coordinated` sólo dentro de una frontera que posee coordinación.
 
 Una consulta pública no crea bases ausentes, no migra y no hace checkpoint. Los
 schemas `future`, incompatibles o corruptos producen abstención tipada.
+
+Un WAL vacío con SHM presente no demuestra que no exista un writer. La
+selección automática utiliza un snapshot en ese caso, sin retirar sidecars del
+origen. Tanto las sesiones como las conexiones bare estrictas verifican el
+fence al cerrar. Health incluye sidecars huérfanos de owners desconocidos y
+aplica un presupuesto cooperativo a SQL y a las etapas de comprobación; no
+promete interrumpir de forma forzosa una llamada de filesystem o Python
+bloqueada.
 
 ## Transacciones y publicación
 

@@ -54,10 +54,12 @@ def _translate_canonical_arguments(arguments: Sequence[str]) -> list[str]:
         token = arguments[position]
         option, separator, value = token.partition("=")
         if option == "--json":
-            translated.append(flat[1])
+            # Preserve explicit values so argparse can reject them for this
+            # boolean flag instead of silently changing the requested meaning.
+            translated.append(flat[1] + (f"={value}" if separator else ""))
         elif option in option_map:
             translated.append(option_map[option] + (f"={value}" if separator else ""))
-            if not separator:
+            if not separator and position + 1 < len(arguments):
                 position += 1
                 translated.append(arguments[position])
         else:

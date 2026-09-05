@@ -525,7 +525,7 @@ class VideoRoute:
     ) -> None:
         store_video_inventory(connection, snapshot, mime, self.run_id)
         cached = cached_video_document(connection, snapshot, signature)
-        if self._can_reuse_cached(cached):
+        if self._can_reuse_cached(cached, snapshot):
             assert cached is not None
             self._consume_cached(connection, snapshot, mime, cached, metrics)
             return
@@ -538,8 +538,14 @@ class VideoRoute:
             metrics,
         )
 
-    def _can_reuse_cached(self, cached: sqlite3.Row | None) -> bool:
+    def _can_reuse_cached(self, cached: sqlite3.Row | None, snapshot: FileSnapshot) -> bool:
         if cached is None:
+            return False
+        try:
+            if not same_snapshot(snapshot, snapshot_path(snapshot.path)):
+                return False
+        except OSError:
+            # Let the normal processing boundary record the typed retryable error.
             return False
         status = str(cached["status"])
         return status in {"complete", "partial"} or (

@@ -615,10 +615,27 @@ class InventoryResumeCheckpointStore:
                     raise InventoryResumeConflictError("checkpoint owner is terminal")
                 if checkpoint.batch_index < current.batch_index:
                     raise InventoryResumeConflictError("checkpoint progress moved backwards")
+                # Finishing the DFS can observe directories after the last
+                # file batch (or an entirely empty tree).  Only terminal
+                # publication may extend that directory evidence without
+                # moving the committed file cursor to another batch.
+                terminal_directory_extension = (
+                    checkpoint.status == "complete"
+                    and current.status != "complete"
+                    and checkpoint.directories_seen >= current.directories_seen
+                    and checkpoint.skipped_links >= current.skipped_links
+                    and checkpoint.excluded_directories >= current.excluded_directories
+                    and checkpoint.errors == current.errors == 0
+                )
                 if checkpoint.batch_index == current.batch_index and (
                     checkpoint.last_relative_cursor != current.last_relative_cursor
                     or checkpoint.prefix_digest != current.prefix_digest
-                    or checkpoint.directory_digest != current.directory_digest
+                    or (
+                        checkpoint.directory_digest != current.directory_digest
+                        and not terminal_directory_extension
+                    )
+                    or checkpoint.batch_digest != current.batch_digest
+                    or checkpoint.batch_files != current.batch_files
                     or checkpoint.files_seen != current.files_seen
                     or checkpoint.bytes_seen != current.bytes_seen
                 ):

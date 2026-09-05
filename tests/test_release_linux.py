@@ -472,8 +472,15 @@ def test_wheel_build_uses_a_git_owned_source_stage_without_build_residue(
         command = tuple(os.fspath(item) for item in arguments)
         observed_commands.append(command)
         observed_environments.append(_kwargs.get("environment"))
-        if "ls-files" in command:
-            tracked = "constraints.txt\0neocortex/__init__.py\0pyproject.toml\0"
+        if "ls-tree" in command:
+            tracked = ""
+            for path in ("constraints.txt", "neocortex/__init__.py", "pyproject.toml"):
+                payload = (source / path).read_bytes()
+                blob = hashlib.sha1(
+                    f"blob {len(payload)}\0".encode() + payload,
+                    usedforsecurity=False,
+                ).hexdigest()
+                tracked += f"100644 blob {blob}\t{path}\0"
             return subprocess.CompletedProcess(command, 0, tracked, "")
         if "build" in command and "--outdir" in command:
             staged = Path(command[-1])
@@ -490,6 +497,7 @@ def test_wheel_build_uses_a_git_owned_source_stage_without_build_residue(
     wheel = release_linux._build_wheel(
         layout,
         workspace,
+        source_sha="a" * 40,
         pip_wheel=tmp_path / "pip.whl",
         runner=runner,
     )
@@ -765,6 +773,7 @@ def test_new_virtual_environment_is_created_in_staging_then_published(
     source = tmp_path / "source"
     source.mkdir()
     _write_runtime_lock(source)
+    (source / "constraints.txt").write_text("setuptools==83.0.0\n", encoding="utf-8")
     layout = LinuxReleaseLayout(source, _policy(tmp_path))
     sha = "e" * 40
     final_release = layout.releases / release_linux.release_id(sha)
@@ -781,13 +790,23 @@ def test_new_virtual_environment_is_created_in_staging_then_published(
     )
 
     def build_wheel(_layout, workspace, **_kwargs):
+        assert _kwargs["source_sha"] == sha
+        shutil.copytree(source, workspace / "source")
+        (source / release_linux.RUNTIME_DEPENDENCY_LOCK_NAME).write_text(
+            "pip==0.0\n", encoding="utf-8",
+        )
+        (source / "constraints.txt").write_text("changed after staging\n", encoding="utf-8")
         wheelhouse = workspace / "wheelhouse"
         wheelhouse.mkdir()
         wheel = wheelhouse / f"neocortex_framework-{release_linux.__version__}-py3-none-any.whl"
         wheel.write_bytes(b"project")
         return wheel
 
-    def install_wheel(release_root, *_args, **_kwargs):
+    def install_wheel(release_root, _wheel, constraints, runtime_lock, **_kwargs):
+        assert constraints.parent == release_root.parent / "source"
+        assert constraints.read_text(encoding="utf-8") == "setuptools==83.0.0\n"
+        assert runtime_lock.parent == constraints.parent
+        assert runtime_lock.read_text(encoding="utf-8") == f"pip=={release_linux.PIP_BOOTSTRAP_VERSION}\n"
         installed_at.append(release_root)
         (release_root / "bin").mkdir(parents=True)
         command = release_root / "bin" / "Neocortex"

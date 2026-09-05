@@ -276,8 +276,9 @@ def sanitize_untrusted_payload(
     lose ANSI/C0 controls, object keys become JSON-safe strings, non-finite
     floats are replaced, and unknown objects cannot escape as renderer-hostile
     values.  A fixed omission string is transport diagnostics only; it never
-    authorizes an action.  Mapping-key collisions retain the producer value and
-    place the system marker under the next deterministic suffix.
+    authorizes an action.  Producer keys that collide after sanitization are
+    rejected rather than overwriting data or inventing a new field identity.
+    Omission markers use the next deterministic suffix when their key is taken.
     """
 
     if budget is None:
@@ -305,6 +306,8 @@ def sanitize_untrusted_payload(
                 break
             processed += 1
             safe_key = sanitize_untrusted_text(str(key), limit=512, single_line=True)
+            if safe_key in result:
+                raise ReadContractError("payload object keys collide after sanitization")
             result[safe_key] = sanitize_untrusted_payload(item, depth=depth + 1, budget=budget)
         if processed < expected_items:
             marker_key = _SANITIZED_PAYLOAD_TRUNCATION_KEY
@@ -591,7 +594,10 @@ def validate_read_payload(
             raise ReadContractError("review payload is not consultivo/advisory")
         if payload.get("mutation_authorized") is not False:
             raise ReadContractError("review payload is not consultivo: authorizes mutation")
-    if code not in {int(ReadExitCode.SUCCESS), int(ReadExitCode.NO_RESULTS)} and payload.get("error") is None:
+    if code in {int(ReadExitCode.SUCCESS), int(ReadExitCode.NO_RESULTS)}:
+        if payload.get("error") is not None:
+            raise ReadContractError("read payload error is incompatible with a successful or empty outcome")
+    elif payload.get("error") is None:
         raise ReadContractError("read payload must describe an incomplete outcome")
     if payload.get("error") is not None:
         error = _as_mapping(payload["error"], label="error")

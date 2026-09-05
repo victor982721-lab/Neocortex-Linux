@@ -16,7 +16,55 @@ from neocortex.progress import ProgressCallback, ProgressEvent, emit_progress
 from ..domain.errors import InventoryError
 from ..domain.models import ScanSummary
 from .policy import FILE_ATTRIBUTE_REPARSE_POINT, InventoryExclusionPolicy
-from .resume import MAX_SORTED_DIRECTORY_ENTRIES, relative_cursor
+from .resume import MAX_SORTED_DIRECTORY_ENTRIES, dfs_order_key, relative_cursor
+
+
+class InventoryUnsupportedPathEncoding(InventoryError):
+    """The TEXT-backed inventory cannot safely represent some Linux paths."""
+
+    reason_code = "unsupported_path_encoding"
+
+    def __init__(
+        self,
+        paths: tuple[str, ...],
+        *,
+        path_count: int,
+        scan_id: int | None = None,
+    ) -> None:
+        # Keep bounded, reversible samples on the exception, never substitute
+        # escaped text for a filesystem path in the inventory's TEXT column.
+        self.paths = paths
+        self.path_count = path_count
+        self.scan_id = scan_id
+        self.coverage = "unavailable" if scan_id is None else "partial"
+        detail = (
+            "no scan owner was created"
+            if scan_id is None
+            else f"scan_id={scan_id}; independent supported observations were preserved"
+        )
+        super().__init__(
+            f"{self.reason_code}: coverage={self.coverage}; "
+            f"{path_count} path(s) cannot be stored as UTF-8; "
+            f"{detail}; inventory was not published"
+        )
+
+
+def _supports_inventory_path(path: str) -> bool:
+    try:
+        path.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _directory_version(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        stat_birthtime_ns(metadata),
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
 
 
 class DirectoryIterator(Protocol):
@@ -55,6 +103,8 @@ def validate_inventory_root(root: str | Path) -> Path:
     """Reject a reparse root and return its stable canonical path."""
 
     absolute = os.path.abspath(os.fspath(root))
+    if not _supports_inventory_path(absolute):
+        raise InventoryUnsupportedPathEncoding((absolute,), path_count=1)
     try:
         root_stat = os.lstat(absolute)
     except OSError as exc:
@@ -120,6 +170,7 @@ class FileObservation:
     """Stable metadata captured from one non-link file during traversal."""
 
     path: str
+    volume_id: int
     file_id: int
     size: int
     mtime_ns: int
@@ -133,7 +184,8 @@ class FileObservation:
     ) -> "FileObservation":
         return cls(
             path=os.path.abspath(entry.path),
-            file_id=entry.inode(),
+            volume_id=item_stat.st_dev,
+            file_id=item_stat.st_ino,
             size=item_stat.st_size,
             mtime_ns=item_stat.st_mtime_ns,
             birthtime_ns=stat_birthtime_ns(item_stat),
@@ -202,7 +254,9 @@ class InventoryTraversal:
         self._work_check = work_check
         self._file_work_check = file_work_check
         self._last_progress_at = time.monotonic()
-        self._directory_identities: dict[str, tuple[int, int, int]] = {}
+        self._directory_identities: dict[str, tuple[int, int, int, int, int]] = {}
+        self._unsupported_paths: list[str] = []
+        self.unsupported_path_count = 0
         self._prefix_counters = ScanCounters()
         self._counters = (
             ScanCounters()
@@ -235,8 +289,18 @@ class InventoryTraversal:
             self._close_stack(stack)
         if not self._resume_found:
             raise InventoryError(f"inventory resume cursor was not found: {self._resume_cursor}")
+        if self._work_check is not None:
+            self._work_check(0)
         self._row_sink.flush()
+        if self._work_check is not None:
+            self._work_check(0)
         return self._counters
+
+    @property
+    def unsupported_paths(self) -> tuple[str, ...]:
+        """Bounded exact path samples for a typed partial-coverage result."""
+
+        return tuple(self._unsupported_paths)
 
     @property
     def counters(self) -> ScanCounters:
@@ -249,20 +313,14 @@ class InventoryTraversal:
         return self._prefix_counters
 
     def _advance(self, stack: TraversalStack) -> None:
+        if self._work_check is not None:
+            self._work_check(0)
         directory, iterator = stack[-1]
         if iterator is None:
             iterator = self._open_directory(directory, stack)
             if iterator is None:
                 return
-        if self._deterministic:
-            current = os.stat(directory, follow_symlinks=False)
-            observed_identity = (
-                current.st_dev,
-                current.st_ino,
-                stat_birthtime_ns(current),
-            )
-            if observed_identity != self._directory_identities.get(directory):
-                raise InventoryError("inventory directory ancestor changed while scanning")
+        self._verify_directory_unchanged(directory)
         entry = self._next_entry(iterator, stack)
         if entry is not None:
             self._process_entry(entry, stack)
@@ -297,31 +355,20 @@ class InventoryTraversal:
                             raise InventoryError(
                                 "inventory directory exceeds deterministic sort bound"
                             )
+                        if self._work_check is not None:
+                            self._work_check(0)
                         entries.append(entry)
                 entries.sort(key=lambda entry: os.fsencode(entry.name))
                 iterator: DirectoryIterator = _SortedDirectoryIterator(entries)
             else:
                 iterator = os.scandir(directory)
-            if self._deterministic or self._directory_observer is not None:
-                after_stat = os.stat(directory, follow_symlinks=False)
-                if (
-                    after_stat.st_dev,
-                    after_stat.st_ino,
-                    stat_birthtime_ns(after_stat),
-                ) != (
-                    directory_stat.st_dev,
-                    directory_stat.st_ino,
-                    stat_birthtime_ns(directory_stat),
-                ):
-                    iterator.close()
-                    raise InventoryError("inventory directory changed while opening")
+            after_stat = os.stat(directory, follow_symlinks=False)
+            if _directory_version(after_stat) != _directory_version(directory_stat):
+                iterator.close()
+                raise InventoryError("inventory directory changed while opening")
             if self._directory_observer is not None:
                 self._directory_observer(directory, directory_stat, not self._resume_active)
-            self._directory_identities[directory] = (
-                directory_stat.st_dev,
-                directory_stat.st_ino,
-                stat_birthtime_ns(directory_stat),
-            )
+            self._directory_identities[directory] = _directory_version(directory_stat)
         except InventoryError:
             raise
         except OSError:
@@ -334,6 +381,14 @@ class InventoryTraversal:
         stack[-1] = (directory, iterator)
         return iterator
 
+    def _verify_directory_unchanged(self, directory: str) -> None:
+        try:
+            current = os.stat(directory, follow_symlinks=False)
+        except OSError as exc:
+            raise InventoryError("inventory directory cannot be revalidated") from exc
+        if _directory_version(current) != self._directory_identities.get(directory):
+            raise InventoryError("inventory directory ancestor changed while scanning")
+
     def _next_entry(
         self,
         iterator: DirectoryIterator,
@@ -342,6 +397,7 @@ class InventoryTraversal:
         try:
             return next(iterator)
         except StopIteration:
+            self._verify_directory_unchanged(stack[-1][0])
             iterator.close()
             self._directory_identities.pop(stack[-1][0], None)
             stack.pop()
@@ -367,12 +423,15 @@ class InventoryTraversal:
             is_link = entry.is_symlink() or is_junction
             if not self._resume_active:
                 relative = relative_cursor(self._root.path, entry.path)
-                relative_bytes = os.fsencode(relative)
-                cursor_bytes = os.fsencode(self._resume_cursor)  # type: ignore[arg-type]
-                if relative_bytes > cursor_bytes:
+                entry_key = dfs_order_key(self._root.path, entry.path)
+                assert self._resume_cursor is not None
+                cursor_key = dfs_order_key(
+                    self._root.path, os.path.join(self._root.path, self._resume_cursor)
+                )
+                if entry_key > cursor_key:
                     self._resume_active = True
                     self._resume_found = True
-                elif relative_bytes != cursor_bytes and not is_link:
+                elif relative != self._resume_cursor and not is_link:
                     if entry.is_file(follow_symlinks=False):
                         self._process_file(entry)
                         return
@@ -414,10 +473,14 @@ class InventoryTraversal:
             else:
                 self._prefix_counters.excluded_directories += 1
             return
+        if not self._accept_path(entry.path):
+            return
         stack.append((entry.path, None))
 
     def _process_file(self, entry: os.DirEntry[str]) -> None:
         if self._exclusion_policy.excludes_file(entry.path):
+            return
+        if not self._accept_path(entry.path):
             return
         item_stat = entry.stat(follow_symlinks=False)
         observation = FileObservation.capture(entry, item_stat)
@@ -440,6 +503,16 @@ class InventoryTraversal:
         self._report_progress()
         if self._row_sink.full:
             self._row_sink.flush()
+
+    def _accept_path(self, path: str) -> bool:
+        if _supports_inventory_path(path):
+            return True
+        self.unsupported_path_count += 1
+        if len(self._unsupported_paths) < 8:
+            self._unsupported_paths.append(os.path.abspath(path))
+        counters = self._counters if self._resume_active else self._prefix_counters
+        counters.errors += 1
+        return False
 
     def _report_progress(self) -> None:
         now = time.monotonic()
@@ -469,6 +542,7 @@ __all__ = [
     "FileObservation",
     "InventoryRowSink",
     "InventoryTraversal",
+    "InventoryUnsupportedPathEncoding",
     "RootIdentity",
     "ScanCounters",
     "TraversalStack",

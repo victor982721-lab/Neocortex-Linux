@@ -44,6 +44,8 @@ from neocortex.workflow.actions.action_policy import validate_mutation_path
 from neocortex.safety.kio_trash import (
     KioTrashStatus,
     KioTrashVerification,
+    _curation_trash_paths,
+    _verify_curation_trash_evidence,
     move_to_trash,
 )
 from neocortex.workflow.actions.file_action_reconciliation_store import (
@@ -105,15 +107,15 @@ class BackendOutcome:
     receipt_json: str | None = None
 
     def __post_init__(self) -> None:
-        if self.status not in {"applied", "blocked", "recovery_required"}:
+        if not isinstance(self.status, str) or self.status not in {"applied", "blocked", "recovery_required"}:
             raise ValueError("unsupported backend outcome status")
-        if not self.reason or self.reason.strip() != self.reason:
+        if not isinstance(self.reason, str) or not self.reason or self.reason.strip() != self.reason:
             raise ValueError("backend outcome reason must be non-empty and trimmed")
         if len(self.reason.encode("utf-8")) > 512:
             raise ValueError("backend outcome reason is too long")
-        if self.detail is not None and len(self.detail.encode("utf-8")) > 4_096:
+        if self.detail is not None and (not isinstance(self.detail, str) or len(self.detail.encode("utf-8")) > 4_096):
             raise ValueError("backend outcome detail is too long")
-        if self.receipt_json is not None and len(self.receipt_json.encode("utf-8")) > 65_536:
+        if self.receipt_json is not None and (not isinstance(self.receipt_json, str) or len(self.receipt_json.encode("utf-8")) > 65_536):
             raise ValueError("backend outcome receipt is too long")
         if self.status == "applied" and not self.receipt_json:
             raise ValueError("applied backend outcome requires a receipt")
@@ -608,20 +610,10 @@ def _validate_receipt(
         if any(target_identity.get(key) != value for key, value in expected_identity.items()):
             raise CurationApplicationError("rename receipt target identity differs")
     if effect.action == "trash":
-        trash = payload.get("trash")
-        if not isinstance(trash, dict):
-            raise CurationApplicationError("trash receipt lacks typed destination evidence")
-        required = {
-            "trash_root",
-            "trash_path",
-            "info_path",
-            "volume_id",
-            "file_id",
-            "size",
-            "digest",
-        }
-        if not required.issubset(trash):
-            raise CurationApplicationError("trash receipt lacks restoration evidence")
+        try:
+            _curation_trash_paths(payload.get("trash"), effect.source, effect.source_digest)
+        except ValueError as exc:
+            raise CurationApplicationError(str(exc)) from exc
     return _canonical_json(payload)
 
 
@@ -655,36 +647,10 @@ def _validate_applied_effect(
         if _digest_snapshot(target_snapshot) != effect.source_digest:
             raise CurationApplicationError("stored rename target digest changed")
         return
-    trash = receipt.get("trash")
-    if not isinstance(trash, dict):
-        raise CurationApplicationError("stored trash receipt lacks destination evidence")
-    trash_path = Path(str(trash.get("trash_path", "")))
-    info_path = Path(str(trash.get("info_path", "")))
-    if not trash_path.is_absolute() or not info_path.is_absolute():
-        raise CurationApplicationError("stored trash receipt paths are invalid")
-    if info_path.name != trash_path.name + ".trashinfo":
-        raise CurationApplicationError("stored trash receipt info does not identify the file")
     try:
-        trash_stat = os.lstat(trash_path)
-        info_stat = os.lstat(info_path)
-        if (
-            stat.S_ISLNK(trash_stat.st_mode)
-            or not stat.S_ISREG(trash_stat.st_mode)
-            or trash_stat.st_nlink != 1
-            or stat.S_ISLNK(info_stat.st_mode)
-            or not stat.S_ISREG(info_stat.st_mode)
-            or info_stat.st_nlink != 1
-        ):
-            raise CurationApplicationError("stored trash destination is not regular")
-        observed = snapshot_path(trash_path)
-        if (
-            observed.volume_id != effect.source.volume_id
-            or observed.size != effect.source.size
-            or _digest_snapshot(observed) != effect.source_digest
-        ):
-            raise CurationApplicationError("stored trash destination identity or digest changed")
-    except OSError as exc:
-        raise CurationApplicationError("stored trash destination disappeared") from exc
+        _verify_curation_trash_evidence(receipt.get("trash"), effect.source, effect.source_digest)
+    except (OSError, RuntimeError, ValueError, FileChangedError) as exc:
+        raise CurationApplicationError(f"stored trash destination is not verified: {exc}") from exc
 
 
 class PosixRenameBackend:
@@ -874,65 +840,8 @@ class KioTrashBackend:
             return BackendOutcome("recovery_required", "kio_trash_evidence_unstructured")
         if not isinstance(evidence, dict):
             return BackendOutcome("recovery_required", "kio_trash_evidence_unstructured")
-        required = {
-            "trash_root",
-            "trash_path",
-            "info_path",
-            "volume_id",
-            "file_id",
-            "size",
-            "digest",
-        }
-        if not required.issubset(evidence):
-            return BackendOutcome("recovery_required", "kio_trash_evidence_incomplete")
-        trash_path = Path(str(evidence["trash_path"]))
-        info_path = Path(str(evidence["info_path"]))
-        trash_root = Path(str(evidence["trash_root"]))
-        if (
-            not trash_root.is_absolute()
-            or not trash_path.is_absolute()
-            or not info_path.is_absolute()
-            or trash_path.parent != trash_root / "files"
-            or info_path.parent != trash_root / "info"
-        ):
-            return BackendOutcome("recovery_required", "kio_trash_evidence_paths_invalid")
         try:
-            root_stat = os.lstat(trash_root)
-            if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
-                raise CurationApplicationError("KIO Trash root is not a real directory")
-            trash_snapshot = snapshot_path(trash_path)
-            trash_stat = os.lstat(trash_path)
-            info_stat = os.lstat(info_path)
-            if (
-                stat.S_ISLNK(trash_stat.st_mode)
-                or not stat.S_ISREG(trash_stat.st_mode)
-                or trash_stat.st_nlink != 1
-                or stat.S_ISLNK(info_stat.st_mode)
-                or not stat.S_ISREG(info_stat.st_mode)
-                or info_stat.st_nlink != 1
-            ):
-                raise CurationApplicationError("KIO .trashinfo is not a regular file")
-            if info_path.name != trash_path.name + ".trashinfo":
-                raise CurationApplicationError("KIO .trashinfo does not identify the trash file")
-            info_text = info_path.read_text(encoding="utf-8")
-            if "[Trash Info]" not in info_text.splitlines() or [
-                line[5:] for line in info_text.splitlines() if line.startswith("Path=")
-            ] != [effect.source.path]:
-                raise CurationApplicationError("KIO .trashinfo source differs")
-            if trash_snapshot.volume_id != effect.source.volume_id:
-                raise CurationApplicationError("KIO trash destination is on another filesystem")
-            if trash_snapshot.size != effect.source.size:
-                raise CurationApplicationError("KIO trash destination size differs")
-            if int(str(evidence["volume_id"]), 16) != trash_snapshot.volume_id:
-                raise CurationApplicationError("KIO trash evidence volume differs")
-            if int(str(evidence["file_id"]), 16) != trash_snapshot.file_id:
-                raise CurationApplicationError("KIO trash evidence identity differs")
-            if evidence["size"] != trash_snapshot.size or evidence["digest"] != effect.source_digest:
-                raise CurationApplicationError("KIO trash evidence content differs")
-            if _digest_snapshot(trash_snapshot) != effect.source_digest:
-                raise CurationApplicationError("KIO trash destination digest differs")
-            if os.path.lexists(effect.source.path):
-                raise CurationApplicationError("KIO source reappeared after verification")
+            _verify_curation_trash_evidence(evidence, effect.source, effect.source_digest)
         except BaseException as exc:
             return BackendOutcome("recovery_required", "kio_trash_evidence_mismatch", str(exc))
         receipt = effect_receipt_json(
@@ -1190,6 +1099,11 @@ def apply_authorization_grant(
                         outcome = backend.apply(
                             ApplyCandidate(grant.grant_id, _grant_digest(grant), root, effect)
                         )
+                        if not isinstance(outcome, BackendOutcome):
+                            raise CurationApplicationError("backend returned an unsupported outcome")
+                        outcome = BackendOutcome(
+                            outcome.status, outcome.reason, outcome.detail, outcome.receipt_json,
+                        )
                     except CurationApplicationError as exc:
                         if frontier_crossed:
                             effective_state.require_file_action_recovery((action_id,), str(exc))
@@ -1238,7 +1152,7 @@ def apply_authorization_grant(
                                 effect,
                             )
                             _validate_applied_effect(receipt, grant, effect, root)
-                        except CurationApplicationError as exc:
+                        except BaseException as exc:
                             effective_state.require_file_action_recovery((action_id,), str(exc))
                             effects.append(
                                 AppliedEffect(

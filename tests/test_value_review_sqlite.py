@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from pathlib import Path
+from contextlib import closing
 
 import pytest
 
@@ -13,6 +14,7 @@ from neocortex.documents.document_catalog_schema import (
     create_document_catalog_schema,
 )
 from neocortex.persistence.framework_state_writer import FrameworkState
+from neocortex.persistence.sqlite_immutable import capture_sqlite_read_fence
 from neocortex.capabilities.formats.text.text_state import initialize_text_state
 from neocortex.workflow.review.review_task_contracts import (
     CanonicalJsonObject,
@@ -1428,7 +1430,7 @@ def test_absent_catalog_is_not_created_and_absence_is_not_low_value(
     assert _filesystem_snapshot(root) == before
 
 
-def test_inactive_empty_wal_and_32k_shm_are_allowed_without_writes(
+def test_empty_wal_and_32k_shm_remain_readable_without_claiming_inactivity(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "state"
@@ -1449,6 +1451,71 @@ def test_inactive_empty_wal_and_32k_shm_are_allowed_without_writes(
     assert _filesystem_snapshot(root) == before
 
 
+@pytest.mark.parametrize("real_writer", [False, True], ids=["synthetic-layout", "live-writer"])
+def test_value_review_empty_wal_is_read_from_a_temporary_copy(
+    tmp_path: Path, real_writer: bool
+) -> None:
+    paths = _create_state(tmp_path / "state")
+    with closing(sqlite3.connect(paths.inventory)) as writer:
+        if real_writer:
+            writer.execute("PRAGMA journal_mode=WAL")
+            writer.execute("BEGIN IMMEDIATE")
+        else:
+            Path(f"{paths.inventory}-wal").write_bytes(b"")
+            Path(f"{paths.inventory}-shm").write_bytes(b"\0" * 32_768)
+        assert Path(f"{paths.inventory}-wal").stat().st_size == 0
+        assert Path(f"{paths.inventory}-shm").stat().st_size == 32_768
+        before = capture_sqlite_read_fence(paths.inventory)
+        original_bytes = _filesystem_snapshot(paths.inventory.parent)
+
+        with value_review_repository._readonly_connection(paths.inventory) as reader:
+            copied_path = Path(reader.execute("PRAGMA database_list").fetchone()[2])
+            assert copied_path != paths.inventory
+            assert copied_path.exists()
+            assert reader.execute("SELECT COUNT(*) FROM scans").fetchone()[0] > 0
+        assert not copied_path.parent.exists()
+
+        report = preview_value_review(
+            paths, ValueReviewQuery(limit=100, reference_time_ns=REFERENCE_NS)
+        )
+        assert report.availability is ValueReviewAvailability.READY
+        assert report.candidate_count == 7
+        assert capture_sqlite_read_fence(paths.inventory) == before
+        assert _filesystem_snapshot(paths.inventory.parent) == original_bytes
+
+
+@pytest.mark.parametrize("start_with_wal", [False, True], ids=["strict-reader", "snapshot-reader"])
+def test_value_review_detects_real_writer_drift_before_accepting_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, start_with_wal: bool
+) -> None:
+    paths = _create_state(tmp_path / "state")
+    original_heads = value_review_repository._inventory_heads
+    with closing(sqlite3.connect(paths.inventory)) as writer:
+        if start_with_wal:
+            writer.execute("PRAGMA journal_mode=WAL")
+            writer.execute("BEGIN IMMEDIATE")
+        copies: list[Path] = []
+
+        def change_after_heads(connection: sqlite3.Connection):
+            result = original_heads(connection)
+            copies.append(Path(connection.execute("PRAGMA database_list").fetchone()[2]))
+            writer.execute("UPDATE scans SET completed_ns=completed_ns+1 WHERE scan_id=1")
+            writer.commit()
+            return result
+
+        monkeypatch.setattr(value_review_repository, "_inventory_heads", change_after_heads)
+        report = preview_value_review(
+            paths, ValueReviewQuery(limit=100, reference_time_ns=REFERENCE_NS)
+        )
+        assert report.availability is ValueReviewAvailability.UNAVAILABLE
+        assert report.reason == "inventory_state_invalid"
+        assert copies
+        if start_with_wal:
+            assert all(copy != paths.inventory and not copy.parent.exists() for copy in copies)
+        else:
+            assert copies == [paths.inventory]
+
+
 @pytest.mark.parametrize("suffix", ("-wal", "-journal"))
 def test_non_empty_wal_or_journal_fails_closed_without_changing_files(
     tmp_path: Path,
@@ -1467,7 +1534,7 @@ def test_non_empty_wal_or_journal_fails_closed_without_changing_files(
 
 
 @pytest.mark.parametrize("changed_target", ("main", "shm"))
-def test_main_or_sidecar_change_during_immutable_read_fails_closed(
+def test_main_or_sidecar_change_during_fenced_read_fails_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     changed_target: str,

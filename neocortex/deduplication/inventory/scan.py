@@ -38,7 +38,10 @@ from .scanner import (
     MAX_SCAN_FILES as MAX_SCAN_FILES,
     id_blob as id_blob,
 )
-from .traversal import validate_inventory_root as validate_inventory_root
+from .traversal import (
+    InventoryUnsupportedPathEncoding as InventoryUnsupportedPathEncoding,
+    validate_inventory_root as validate_inventory_root,
+)
 
 
 __all__ = [
@@ -62,6 +65,7 @@ __all__ = [
     "InventoryScanCancelled",
     "InventoryScanDeadlineExceeded",
     "InventoryScanner",
+    "InventoryUnsupportedPathEncoding",
     "InventoryWorkBudget",
     "exclusion_path_keys",
     "id_blob",

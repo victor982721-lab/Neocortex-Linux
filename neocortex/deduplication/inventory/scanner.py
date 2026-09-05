@@ -17,7 +17,13 @@ from neocortex.platform.policy import stat_birthtime_ns
 from ..domain.errors import InventoryError
 from ..domain.models import ScanSummary
 from .policy import InventoryExclusionPolicy, resolve_inventory_exclusion_policy
-from .traversal import FileObservation, InventoryTraversal, RootIdentity, ScanCounters
+from .traversal import (
+    FileObservation,
+    InventoryTraversal,
+    InventoryUnsupportedPathEncoding,
+    RootIdentity,
+    ScanCounters,
+)
 from .resume import (
     InventoryDirectoryDigest,
     InventoryPrefixDigest,
@@ -209,14 +215,12 @@ class InventoryBatch:
         connection: sqlite3.Connection,
         *,
         scan_id: int,
-        volume_id: int,
         batch_size: int,
         before_flush: Callable[[], None] | None = None,
         on_flush: Callable[[tuple[FileObservation, ...]], None] | None = None,
     ) -> None:
         self._connection = connection
         self._scan_id = scan_id
-        self._volume_blob = id_blob(volume_id)
         self._batch_size = _validated_batch_size(batch_size)
         self._before_flush = before_flush
         self._on_flush = on_flush
@@ -227,7 +231,7 @@ class InventoryBatch:
         self._rows.append(
             (
                 observation.path,
-                self._volume_blob,
+                id_blob(observation.volume_id),
                 id_blob(observation.file_id),
                 observation.size,
                 observation.mtime_ns,
@@ -295,6 +299,8 @@ class InventoryScanner:
             exclusion_policy,
         )
         root_identity = RootIdentity.capture(root)
+        if effective_policy.excludes_directory(root_identity.path):
+            raise InventoryError("inventory root is excluded by its inventory policy")
         store = (
             None
             if checkpoint_path is None
@@ -448,7 +454,6 @@ class InventoryScanner:
         batch = InventoryBatch(
             self._connection,
             scan_id=scan_id,
-            volume_id=root_identity.volume_id,
             batch_size=batch_size,
             before_flush=before_flush,
             on_flush=on_flush,
@@ -466,7 +471,6 @@ class InventoryScanner:
                 else lambda observation: self._validate_prefix_observation(
                     scan_id,
                     root_identity.path,
-                    root_identity.volume_id,
                     observation,
                     prefix_validation_digest,
                     prefix_batch_observations,
@@ -513,8 +517,16 @@ class InventoryScanner:
                     prefix_batch_observations,
                 )
             root_identity.verify_unchanged()
+            work.check()
             self._complete_scan(scan_id, counters)
             scan_completed = True
+            work.check()
+            if traversal.unsupported_path_count:
+                raise InventoryUnsupportedPathEncoding(
+                    traversal.unsupported_paths,
+                    path_count=traversal.unsupported_path_count,
+                    scan_id=scan_id,
+                )
             if counters.errors:
                 raise InventoryError(
                     f"inventory scan {scan_id} was partial with "
@@ -529,6 +541,7 @@ class InventoryScanner:
                     status="complete",
                     stop_reason=None,
                     prefix_digest=prefix_digest.value,
+                    directory_digest=directory_digest.value,
                     files_seen=counters.files_seen,
                     directories_seen=counters.directories_seen,
                     bytes_seen=counters.bytes_seen,
@@ -536,6 +549,7 @@ class InventoryScanner:
                     excluded_directories=counters.excluded_directories,
                     errors=counters.errors,
                 )
+                work.check()
                 store.write(final)
                 last_checkpoint[0] = final
         except BaseException as exc:
@@ -664,7 +678,6 @@ class InventoryScanner:
             self._validate_prefix_observation(
                 checkpoint.scan_id,
                 root.path,
-                root.volume_id,
                 observation,
                 digest,
                 batch_observations,
@@ -691,6 +704,7 @@ class InventoryScanner:
         )
         observed = traversal.run()
         root.verify_unchanged()
+        work.check()
         if (
             observed.files_seen != checkpoint.files_seen
             or observed.directories_seen != checkpoint.directories_seen
@@ -777,7 +791,6 @@ class InventoryScanner:
         self,
         scan_id: int,
         root: str,
-        volume_id: int,
         observation: FileObservation,
         digest: InventoryPrefixDigest,
         batch_observations: deque[FileObservation] | None = None,
@@ -792,7 +805,7 @@ class InventoryScanner:
                 f"committed inventory prefix is missing {relative_cursor(root, observation.path)}"
             )
         if (
-            bytes(row[0]) != id_blob(volume_id)
+            bytes(row[0]) != id_blob(observation.volume_id)
             or bytes(row[1]) != id_blob(observation.file_id)
             or int(row[2]) != observation.size
             or int(row[3]) != observation.mtime_ns

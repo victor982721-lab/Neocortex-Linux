@@ -7,13 +7,14 @@ import sqlite3
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Callable
 
 from neocortex.platform.policy import sqlite_path_collation
 
 from neocortex.semantic.semantic_schema import SEMANTIC_SCHEMA_VERSION
 from neocortex.persistence.sqlite_paths import existing_sqlite_uri
 from neocortex.persistence.state_publication import (
+    StatePublicationCommitError,
     StatePublicationError,
     publication_idempotency_key,
     read_state_epoch,
@@ -83,8 +84,9 @@ def synchronize_moved_document(
 ) -> DocumentCacheSyncResult:
     """Update current caches and pending plans without rewriting audit history.
 
-    Every database has its own bounded transaction. A partial result is safe to
-    retry because each path transition accepts either the old or final path.
+    A durable prepare blocks cross-owner readers before any bounded owner-local
+    transaction commits. A partial result may resume the same transition;
+    completed replays only verify the final paths and never commit new effects.
     """
 
     if source_kind not in {"pdf", "docx", "xlsx", "pptx", "odt", "text", "audio"}:
@@ -92,12 +94,46 @@ def synchronize_moved_document(
     if _path_key(old_path) == _path_key(new_path):
         raise ValueError("cache synchronization requires two distinct paths")
     now_ns = time.time_ns()
-    epoch_error: StatePublicationError | None = None
+    publication_epoch = 0
+    publication_key = publication_idempotency_key(
+        "document-cache-sync",
+        source_kind,
+        file_key,
+        old_path,
+        new_path,
+        volume_id,
+        file_id,
+    )
+    publication_owners = (
+        source_kind,
+        *(("docx_pdf_counterparts",) if source_kind == "pdf" else ()),
+        "semantic",
+        "framework",
+        "dedup",
+    )
     try:
         initial_epoch = read_state_epoch(state_directory)
-    except StatePublicationError as exc:
-        initial_epoch = None
-        epoch_error = exc
+        publication_epoch = initial_epoch.epoch
+        prepared = record_state_publication(
+            state_directory,
+            operation="document-cache-sync",
+            owners=publication_owners,
+            status="partial",
+            idempotency_key=publication_key,
+            expected_epoch=initial_epoch.epoch,
+            detail="owner-local cache path synchronization prepared",
+        )
+    except (OSError, StatePublicationError) as exc:
+        return DocumentCacheSyncResult(
+            complete=False,
+            updated_rows=0,
+            databases=(
+                CacheDatabaseSync("publication", "error", detail=f"{type(exc).__name__}: {exc}"),
+            ),
+            publication_epoch=publication_epoch,
+            publication_status="failed",
+        )
+    replay = prepared.status == "complete"
     source_database = state_directory / (
         f"{source_kind}.sqlite3"
         if source_kind in {"pdf", "docx", "text", "audio"}
@@ -108,6 +144,7 @@ def synchronize_moved_document(
             source_kind,
             source_database,
             required=True,
+            verify_only=replay,
             operation=lambda connection: _sync_source_cache(
                 connection,
                 source_kind=source_kind,
@@ -124,6 +161,7 @@ def synchronize_moved_document(
                 "docx_pdf_counterparts",
                 state_directory / "docx.sqlite3",
                 required=False,
+                verify_only=replay,
                 operation=lambda connection: _sync_pdf_counterparts(
                     connection,
                     old_path=old_path,
@@ -137,6 +175,7 @@ def synchronize_moved_document(
             "semantic",
             state_directory / "semantic.sqlite3",
             required=False,
+            verify_only=replay,
             operation=lambda connection: _sync_semantic_cache(
                 connection,
                 source_kind=source_kind,
@@ -153,6 +192,7 @@ def synchronize_moved_document(
                 "framework",
                 state_directory / "framework.sqlite3",
                 required=False,
+                verify_only=replay,
                 operation=lambda connection: _sync_framework_cache(
                     connection,
                     old_path=old_path,
@@ -165,6 +205,7 @@ def synchronize_moved_document(
                 "dedup",
                 state_directory / "dedup.sqlite3",
                 required=False,
+                verify_only=replay,
                 operation=lambda connection: _sync_dedup_cache(
                     connection,
                     old_path=old_path,
@@ -176,51 +217,35 @@ def synchronize_moved_document(
         )
     )
     complete = not any(item.status == "error" for item in results)
-    publication_epoch = 0 if initial_epoch is None else initial_epoch.epoch
-    publication_status = "not_published"
-    publication_id: str | None = None
-    if epoch_error is not None:
-        results.append(
-            CacheDatabaseSync(
-                "publication",
-                "error",
-                detail=f"{type(epoch_error).__name__}: {epoch_error}",
-            )
-        )
-        complete = False
-        publication_status = "failed"
-    elif initial_epoch is not None:
-        publication_key = publication_idempotency_key(
-            "document-cache-sync",
-            source_kind,
-            file_key,
-            old_path,
-            new_path,
-            volume_id,
-            file_id,
-        )
-        publication_owners = tuple(item.database for item in results)
-        requested_status: Literal["complete", "partial"] = (
-            "complete" if complete else "partial"
-        )
+    publication_epoch = prepared.epoch
+    publication_status = prepared.status if complete or not replay else "failed"
+    publication_id = prepared.event_id
+    if complete and not replay:
         try:
             publication = record_state_publication(
                 state_directory,
                 operation="document-cache-sync",
                 owners=publication_owners,
-                status=requested_status,
+                status="complete",
                 idempotency_key=publication_key,
                 expected_epoch=initial_epoch.epoch,
-                detail=(
-                    None
-                    if complete
-                    else "one or more owner-local cache transactions remain pending"
-                ),
             )
             publication_epoch = publication.epoch
             publication_status = publication.status
             publication_id = publication.event_id
-        except StatePublicationError as exc:
+        except StatePublicationCommitError as exc:
+            if exc.durable:
+                # The append-only journal committed even if the convenience
+                # epoch pointer failed; retry must not repeat owner effects.
+                publication_epoch = exc.publication.epoch
+                publication_status = exc.publication.status
+                publication_id = exc.publication.event_id
+                results.append(CacheDatabaseSync("publication", "warning", detail=str(exc)))
+            else:
+                complete = False
+                publication_status = "failed"
+                results.append(CacheDatabaseSync("publication", "error", detail=str(exc)))
+        except (OSError, StatePublicationError) as exc:
             results.append(
                 CacheDatabaseSync(
                     "publication",
@@ -246,6 +271,7 @@ def _synchronize_database(
     *,
     required: bool,
     operation: Callable[[sqlite3.Connection], int],
+    verify_only: bool = False,
 ) -> CacheDatabaseSync:
     if not path.is_file():
         if required:
@@ -265,7 +291,12 @@ def _synchronize_database(
             raise RuntimeError(f"{label} cache could not enable foreign keys")
         connection.execute("BEGIN IMMEDIATE")
         updated = operation(connection)
-        connection.commit()
+        if verify_only:
+            if updated:
+                raise RuntimeError("completed cache synchronization no longer matches owner paths")
+            connection.rollback()
+        else:
+            connection.commit()
         return CacheDatabaseSync(label, "synced", updated_rows=updated)
     except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
         if connection is not None:

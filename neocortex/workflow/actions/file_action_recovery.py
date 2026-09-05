@@ -14,9 +14,10 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 
-from neocortex.deduplication import FileSnapshot, full_fingerprint, snapshot_path
+from neocortex.deduplication import FileChangedError, FileSnapshot, full_fingerprint, snapshot_path
 from neocortex.persistence.framework_connection import connect_existing_framework
 from neocortex.persistence.framework_schema import SCHEMA_VERSION as FRAMEWORK_SCHEMA_VERSION
+from neocortex.safety.kio_trash import _verify_curation_trash_evidence
 # endregion [01]
 
 # region [02] Implementación
@@ -369,7 +370,7 @@ def _observe_path(path: str, expected: _ExpectedIdentity) -> tuple[str, str | No
     if expected.source_digest is not None:
         try:
             digest = "xxh3_128_full_v1:" + full_fingerprint(current).hex()
-        except OSError as exc:
+        except (OSError, FileChangedError) as exc:
             return "error", f"full digest observation failed: {type(exc).__name__}: {exc}"
         if digest != expected.source_digest:
             return "different", "observed full digest differs from the mutation evidence"
@@ -511,39 +512,20 @@ def _valid_success_receipt(
     if not valid:
         return False
     if action.action_type == "trash_curation":
-        trash = receipt.get("trash")
-        if (
-            not isinstance(trash, dict)
-            or receipt.get("source_digest") != expected.source_digest
-            or not isinstance(trash.get("trash_path"), str)
-            or not isinstance(trash.get("info_path"), str)
-            or not Path(trash["trash_path"]).is_absolute()
-            or not Path(trash["info_path"]).is_absolute()
-        ):
+        if expected.source_digest is None or receipt.get("source_digest") != expected.source_digest:
             return False
         try:
-            trash_stat = os.lstat(trash["trash_path"])
-            info_stat = os.lstat(trash["info_path"])
-            if (
-                stat.S_ISLNK(trash_stat.st_mode)
-                or not stat.S_ISREG(trash_stat.st_mode)
-                or stat.S_ISLNK(info_stat.st_mode)
-                or not stat.S_ISREG(info_stat.st_mode)
-            ):
-                return False
-            observed = snapshot_path(trash["trash_path"])
-            digest = "xxh3_128_full_v1:" + full_fingerprint(observed).hex()
-        except OSError:
+            _verify_curation_trash_evidence(
+                receipt.get("trash"),
+                FileSnapshot(
+                    action.source_path, expected.volume_id, expected.file_id,
+                    expected.size, expected.mtime_ns, expected.birthtime_ns,
+                ),
+                expected.source_digest,
+            )
+        except (OSError, RuntimeError, ValueError, FileChangedError):
             return False
-        return bool(
-            observed.volume_id == expected.volume_id
-            and observed.size == expected.size
-            and digest == expected.source_digest
-            and trash.get("volume_id") == f"{observed.volume_id:x}"
-            and trash.get("file_id") == f"{observed.file_id:x}"
-            and trash.get("size") == observed.size
-            and trash.get("digest") == expected.source_digest
-        )
+        return True
     return True
 
 

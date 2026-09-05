@@ -423,7 +423,7 @@ def asset_health_payload(
                     "asset_health": report.to_dict(),
                 }
             )
-        except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
+        except (ModuleNotFoundError, OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
             entries.append(_error_entry(binding, exc))
     return _finalize_custom_payload(
         {
@@ -480,7 +480,7 @@ def search_payload(
                     "result": result.to_dict(),
                 }
             )
-        except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
+        except (ModuleNotFoundError, OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
             entries.append(_error_entry(binding, exc))
     return _finalize_read_payload(
         {
@@ -554,7 +554,7 @@ def context_payload(
                     "context": bundle.to_dict(),
                 }
             )
-        except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
+        except (ModuleNotFoundError, OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
             entries.append(_error_entry(binding, exc))
     return _finalize_read_payload(
         {
@@ -900,7 +900,7 @@ def code_search_payload(
                     "hits": [asdict(hit) for hit in hits],
                 }
             )
-        except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
+        except (ModuleNotFoundError, OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
             entries.append(_error_entry(binding, exc))
     return _finalize_read_payload(
         {
@@ -955,7 +955,7 @@ def lineage_payload(
                     "lineage": result,
                 }
             )
-        except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
+        except (ModuleNotFoundError, OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
             entries.append(_error_entry(binding, exc))
     return _finalize_custom_payload(
         {
