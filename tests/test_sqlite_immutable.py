@@ -11,6 +11,8 @@ from neocortex.persistence.sqlite_immutable import (
     ImmutableSQLiteUnavailable,
     SQLiteReadMode,
     SQLiteReadSession,
+    SQLiteSnapshotBudget,
+    SQLiteSnapshotBudgetExceeded,
     immutable_sqlite_database,
 )
 
@@ -106,6 +108,32 @@ def test_snapshot_temp_reads_active_wal_without_touching_source_sidecars(
         )
     finally:
         writer.close()
+
+
+def test_snapshot_preparation_budget_bounds_bytes_and_records_metrics(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path)
+    with pytest.raises(SQLiteSnapshotBudgetExceeded, match="temporary bytes"):
+        with SQLiteReadSession(
+            database,
+            mode=SQLiteReadMode.SNAPSHOT_TEMP,
+            temp_root=tmp_path,
+            budget=SQLiteSnapshotBudget(max_temporary_bytes=1, block_bytes=1),
+        ):
+            pytest.fail("an over-budget temporary snapshot must not publish")
+
+
+def test_snapshot_preparation_cancellation_is_typed_and_bounded(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    with pytest.raises(SQLiteSnapshotBudgetExceeded, match="cancelled"):
+        with SQLiteReadSession(
+            database,
+            mode=SQLiteReadMode.SNAPSHOT_TEMP,
+            temp_root=tmp_path,
+            budget=SQLiteSnapshotBudget(cancellation_check=lambda: True),
+        ):
+            pytest.fail("a cancelled snapshot must not publish")
 
 
 @pytest.mark.parametrize("journal_mode", ["WAL", "DELETE"])

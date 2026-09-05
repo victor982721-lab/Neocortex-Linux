@@ -67,6 +67,7 @@ from .read_api import (
     search_payload,
     status_payload,
 )
+from .lifecycle_read_api import lifecycle_status_payload
 
 
 SERVER_INSTRUCTIONS = """NeoCortex exposes published local evidence through bounded
@@ -773,6 +774,22 @@ def create_server() -> Any:
             ReadOperation.STATUS,
             scope=scope,
         )  # type: ignore[return-value]
+
+    @server.tool(
+        name="lifecycle_status",
+        title="NeoCortex Framework lifecycle status",
+        description=(
+            "Read bounded Framework run manifests, durable budget and recovery status. "
+            "This tool never starts, resumes, authorizes or mutates a run."
+        ),
+        annotations=read_only,
+        structured_output=True,
+    )
+    def lifecycle_status(
+        limit: Annotated[int, _pydantic_field(ge=1, le=20)] = 5,
+        run_id: Annotated[int | None, _pydantic_field(ge=1)] = None,
+    ) -> dict[str, Any]:
+        return lifecycle_status_payload(limit=limit, run_id=run_id)
 
     @server.tool(
         name="search",

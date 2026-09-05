@@ -23,7 +23,9 @@ import os
 import shutil
 import tempfile
 import time
+import math
 from contextlib import contextmanager
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -34,6 +36,181 @@ from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
 
 class ImmutableSQLiteUnavailable(RuntimeError):
     """A database cannot be proven safe for an immutable read."""
+
+
+class SQLiteSnapshotBudgetExceeded(ImmutableSQLiteUnavailable):
+    """A detached SQLite snapshot exceeded a bounded preparation budget."""
+
+    def __init__(self, reason: str) -> None:
+        if reason not in {"temporary_bytes", "prepare_time", "cancelled"}:
+            raise ValueError(f"unsupported SQLite snapshot budget reason: {reason}")
+        self.reason = reason
+        super().__init__(f"SQLite snapshot {reason.replace('_', ' ')} budget exhausted")
+
+
+DEFAULT_SQLITE_SNAPSHOT_MAX_TEMPORARY_BYTES = 256 * 1024 * 1024
+DEFAULT_SQLITE_SNAPSHOT_PREPARE_TIMEOUT_SECONDS = 60.0
+DEFAULT_SQLITE_SNAPSHOT_BLOCK_BYTES = 1024 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class SQLiteSnapshotBudget:
+    """Bound preparation of a detached SQLite view without touching its owner.
+
+    The byte limit measures the high-water mark of files below the temporary
+    snapshot directory.  ``cancellation_check`` is sampled before and after
+    each bounded copy/backup block, before materialization steps, and during
+    integrity checks.  A generation may reuse a prepared view without paying
+    the preparation budget again; callers still own the view lifetime.
+    """
+
+    max_temporary_bytes: int = DEFAULT_SQLITE_SNAPSHOT_MAX_TEMPORARY_BYTES
+    prepare_timeout_seconds: float = DEFAULT_SQLITE_SNAPSHOT_PREPARE_TIMEOUT_SECONDS
+    cancellation_check: Callable[[], bool | None] | None = None
+    monotonic_clock: Callable[[], float] = time.monotonic
+    block_bytes: int = DEFAULT_SQLITE_SNAPSHOT_BLOCK_BYTES
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.max_temporary_bytes, bool)
+            or not isinstance(self.max_temporary_bytes, int)
+            or self.max_temporary_bytes <= 0
+        ):
+            raise ValueError("max_temporary_bytes must be a positive integer")
+        if (
+            isinstance(self.prepare_timeout_seconds, bool)
+            or not isinstance(self.prepare_timeout_seconds, (int, float))
+            or not math.isfinite(float(self.prepare_timeout_seconds))
+            or float(self.prepare_timeout_seconds) <= 0
+        ):
+            raise ValueError("prepare_timeout_seconds must be finite and positive")
+        if (
+            isinstance(self.block_bytes, bool)
+            or not isinstance(self.block_bytes, int)
+            or not 1 <= self.block_bytes <= 16 * 1024 * 1024
+        ):
+            raise ValueError("block_bytes must be between 1 and 16777216")
+        if self.cancellation_check is not None and not callable(self.cancellation_check):
+            raise TypeError("cancellation_check must be callable or None")
+        if not callable(self.monotonic_clock):
+            raise TypeError("monotonic_clock must be callable")
+        object.__setattr__(self, "prepare_timeout_seconds", float(self.prepare_timeout_seconds))
+
+
+@dataclass(slots=True)
+class SQLiteSnapshotMetrics:
+    """Bounded preparation evidence for one snapshot session or generation."""
+
+    temporary_bytes: int = 0
+    attempts: int = 0
+    prepare_time_seconds: float = 0.0
+    reused_views: int = 0
+    generation: object | None = None
+    cancelled: bool = False
+
+    @property
+    def bytes_temporary(self) -> int:
+        """Compatibility alias for callers naming the byte metric explicitly."""
+
+        return self.temporary_bytes
+
+    @property
+    def prepare_time_ns(self) -> int:
+        """Return preparation time in integer nanoseconds for telemetry sinks."""
+
+        return max(0, round(self.prepare_time_seconds * 1_000_000_000))
+
+
+class _SnapshotBudgetState:
+    """Mutable accounting shared by one bounded snapshot preparation."""
+
+    __slots__ = ("_last_tree_bytes", "budget", "deadline", "metrics", "temporary_root")
+
+    def __init__(
+        self,
+        budget: SQLiteSnapshotBudget,
+        *,
+        metrics: SQLiteSnapshotMetrics,
+        temporary_root: Path,
+    ) -> None:
+        self.budget = budget
+        self.deadline = budget.monotonic_clock() + budget.prepare_timeout_seconds
+        self.metrics = metrics
+        self.temporary_root = temporary_root
+        self._last_tree_bytes = 0
+
+    def _tree_bytes(self) -> int:
+        total = 0
+        try:
+            entries = self.temporary_root.rglob("*")
+            for entry in entries:
+                try:
+                    if entry.is_file() and not entry.is_symlink():
+                        total += entry.stat().st_size
+                except FileNotFoundError:
+                    continue
+        except OSError as exc:
+            raise ImmutableSQLiteUnavailable(
+                "SQLite snapshot temporary directory cannot be measured"
+            ) from exc
+        return total
+
+    def checkpoint(self) -> None:
+        callback = self.budget.cancellation_check
+        if callback is not None:
+            try:
+                decision = callback()
+            except BaseException:
+                self.metrics.cancelled = True
+                raise
+            if decision is not None and decision is not False:
+                self.metrics.cancelled = True
+                raise SQLiteSnapshotBudgetExceeded("cancelled")
+        if self.budget.monotonic_clock() >= self.deadline:
+            raise SQLiteSnapshotBudgetExceeded("prepare_time")
+        observed = self._tree_bytes()
+        if observed > self.budget.max_temporary_bytes:
+            raise SQLiteSnapshotBudgetExceeded("temporary_bytes")
+        self._last_tree_bytes = observed
+        self.metrics.temporary_bytes = max(self.metrics.temporary_bytes, observed)
+
+    def before_write(self, size: int) -> None:
+        if size < 0:
+            raise ValueError("SQLite snapshot block size cannot be negative")
+        self.checkpoint()
+        if self._last_tree_bytes + size > self.budget.max_temporary_bytes:
+            raise SQLiteSnapshotBudgetExceeded("temporary_bytes")
+
+    def record_prepare_time(self, started: float) -> None:
+        elapsed = self.budget.monotonic_clock() - started
+        self.metrics.prepare_time_seconds = max(0.0, float(elapsed))
+
+
+def _coerce_snapshot_budget(
+    budget: SQLiteSnapshotBudget | None,
+    *,
+    timeout_seconds: float,
+    cancellation_check: Callable[[], bool | None] | None = None,
+    max_temporary_bytes: int | None = None,
+) -> SQLiteSnapshotBudget:
+    if budget is not None and not isinstance(budget, SQLiteSnapshotBudget):
+        raise TypeError("budget must be a SQLiteSnapshotBudget or None")
+    if budget is not None:
+        if cancellation_check is not None or max_temporary_bytes is not None:
+            raise ValueError("budget cannot be combined with budget override arguments")
+        return budget
+    timeout = float(timeout_seconds)
+    if isinstance(timeout_seconds, bool) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("SQLite snapshot timeout must be finite and positive")
+    return SQLiteSnapshotBudget(
+        max_temporary_bytes=(
+            DEFAULT_SQLITE_SNAPSHOT_MAX_TEMPORARY_BYTES
+            if max_temporary_bytes is None
+            else max_temporary_bytes
+        ),
+        prepare_timeout_seconds=timeout,
+        cancellation_check=cancellation_check,
+    )
 
 
 class SQLiteReadMode(str, Enum):
@@ -265,7 +442,12 @@ def open_immutable_sqlite_connection(
         raise
 
 
-def _copy_regular_file(source: Path, destination: Path) -> None:
+def _copy_regular_file(
+    source: Path,
+    destination: Path,
+    *,
+    budget_state: _SnapshotBudgetState | None = None,
+) -> None:
     """Copy one already-fenced file without following a changed symlink."""
 
     source_fd = os.open(os.fspath(source), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
@@ -273,9 +455,20 @@ def _copy_regular_file(source: Path, destination: Path) -> None:
         with os.fdopen(source_fd, "rb", closefd=True) as source_stream, destination.open(
             "wb"
         ) as destination_stream:
-            shutil.copyfileobj(source_stream, destination_stream, length=1024 * 1024)
+            if budget_state is None:
+                shutil.copyfileobj(source_stream, destination_stream, length=1024 * 1024)
+            else:
+                while True:
+                    chunk = source_stream.read(budget_state.budget.block_bytes)
+                    if not chunk:
+                        break
+                    budget_state.before_write(len(chunk))
+                    destination_stream.write(chunk)
+                    budget_state.checkpoint()
             destination_stream.flush()
             os.fsync(destination_stream.fileno())
+            if budget_state is not None:
+                budget_state.checkpoint()
     except BaseException:
         # ``fdopen`` owns the descriptor after construction; this is only a
         # best-effort guard for an error before that hand-off.
@@ -287,10 +480,30 @@ def _copy_regular_file(source: Path, destination: Path) -> None:
         raise
 
 
+def _copy_regular_file_budgeted(
+    source: Path,
+    destination: Path,
+    budget_state: _SnapshotBudgetState,
+) -> None:
+    """Invoke the copy seam while retaining compatibility with old test hooks."""
+
+    try:
+        _copy_regular_file(source, destination, budget_state=budget_state)
+    except TypeError as exc:
+        # Older injected seams accepted only ``(source, destination)``.  Keep
+        # those bounded fixtures usable while still checkpointing after the
+        # delegated copy; unrelated TypeErrors must propagate unchanged.
+        if "budget_state" not in str(exc) or "unexpected keyword" not in str(exc):
+            raise
+        _copy_regular_file(source, destination)
+        budget_state.checkpoint()
+
+
 def _materialize_temporary_database(
     database: Path,
     *,
     timeout_seconds: float,
+    budget_state: _SnapshotBudgetState | None = None,
 ) -> None:
     """Recover copied journals into one standalone main database.
 
@@ -306,19 +519,48 @@ def _materialize_temporary_database(
     connection: sqlite3.Connection | None = None
     primary: BaseException | None = None
     try:
+        if budget_state is not None:
+            budget_state.checkpoint()
         connection = sqlite3.connect(database, timeout=timeout_seconds)
         connection.execute(f"PRAGMA busy_timeout={max(1, round(timeout_seconds * 1000))}")
+        if budget_state is not None:
+            budget_state.checkpoint()
         journal_mode = connection.execute("PRAGMA journal_mode=DELETE").fetchone()
         if journal_mode is None or str(journal_mode[0]).lower() != "delete":
             raise ImmutableSQLiteUnavailable(
                 "temporary SQLite snapshot could not be materialized as DELETE journal"
             )
-        integrity = connection.execute("PRAGMA quick_check").fetchall()
+        if budget_state is not None:
+            budget_error: BaseException | None = None
+
+            def progress() -> int:
+                nonlocal budget_error
+                try:
+                    budget_state.checkpoint()
+                except BaseException as exc:
+                    budget_error = exc
+                    return 1
+                return 0
+
+            connection.set_progress_handler(progress, 1000)
+        try:
+            integrity = connection.execute("PRAGMA quick_check").fetchall()
+        except sqlite3.Error as exc:
+            if budget_state is not None and budget_error is not None:
+                raise budget_error from exc
+            raise
+        finally:
+            if budget_state is not None:
+                connection.set_progress_handler(None, 0)
+        if budget_state is not None:
+            budget_state.checkpoint()
         if integrity != [("ok",)]:
             raise ImmutableSQLiteUnavailable(
                 "temporary SQLite snapshot integrity check failed during materialization"
             )
         connection.commit()
+        if budget_state is not None:
+            budget_state.checkpoint()
     except BaseException as exc:
         primary = exc
     finally:
@@ -343,12 +585,16 @@ def _materialize_temporary_database(
     for suffix in ("-journal", "-wal", "-shm"):
         sidecar = Path(f"{database}{suffix}")
         try:
+            if budget_state is not None:
+                budget_state.checkpoint()
             sidecar.unlink(missing_ok=True)
         except OSError as exc:
             raise ImmutableSQLiteUnavailable(
                 f"temporary SQLite snapshot sidecar could not be removed: {sidecar.name}"
             ) from exc
     capture_sqlite_immutable_fence(database)
+    if budget_state is not None:
+        budget_state.checkpoint()
 
 
 class SQLiteReadSession:
@@ -368,6 +614,10 @@ class SQLiteReadSession:
         timeout_seconds: float = 60.0,
         temp_root: str | Path | None = None,
         max_attempts: int = 2,
+        budget: SQLiteSnapshotBudget | None = None,
+        max_temporary_bytes: int | None = None,
+        cancellation_check: Callable[[], bool | None] | None = None,
+        generation: object | None = None,
     ) -> None:
         self.path = Path(path)
         try:
@@ -381,6 +631,13 @@ class SQLiteReadSession:
         if type(max_attempts) is not int or not 1 <= max_attempts <= 8:
             raise ValueError("SQLite read max_attempts must be from 1 to 8")
         self.max_attempts = max_attempts
+        self.budget = _coerce_snapshot_budget(
+            budget,
+            timeout_seconds=self.timeout_seconds,
+            cancellation_check=cancellation_check,
+            max_temporary_bytes=max_temporary_bytes,
+        )
+        self._metrics = SQLiteSnapshotMetrics(generation=generation)
         self._connection: sqlite3.Connection | None = None
         self._source_fence: SQLiteImmutableFence | None = None
         self._temporary_directory: tempfile.TemporaryDirectory[str] | None = None
@@ -408,6 +665,12 @@ class SQLiteReadSession:
         """Return the copied database path for a temporary snapshot."""
 
         return self._temporary_database
+
+    @property
+    def metrics(self) -> SQLiteSnapshotMetrics:
+        """Return bounded preparation metrics for this session."""
+
+        return self._metrics
 
     def __enter__(self) -> sqlite3.Connection:
         return self.open()
@@ -452,15 +715,28 @@ class SQLiteReadSession:
 
         last_error: BaseException | None = None
         for _attempt in range(self.max_attempts):
+            self._metrics.attempts += 1
+            attempt_started = self.budget.monotonic_clock()
             temporary_directory: tempfile.TemporaryDirectory[str] | None = None
+            budget_state: _SnapshotBudgetState | None = None
             try:
                 source_fence = capture_sqlite_read_fence(self.path)
                 self._source_fence = source_fence
                 if self.mode is SQLiteReadMode.IMMUTABLE_STRICT:
+                    if self.budget.cancellation_check is not None:
+                        # Strict reads do not allocate temporary bytes, but a
+                        # caller's operation-level cancellation still applies.
+                        callback_result = self.budget.cancellation_check()
+                        if callback_result is not None and callback_result is not False:
+                            self._metrics.cancelled = True
+                            raise SQLiteSnapshotBudgetExceeded("cancelled")
                     require_inactive_sqlite_sidecars(source_fence)
                     self._connection = open_immutable_sqlite_connection(
                         self.path,
-                        timeout_seconds=self.timeout_seconds,
+                        timeout_seconds=min(
+                            self.timeout_seconds,
+                            self.budget.prepare_timeout_seconds,
+                        ),
                     )
                     return self._connection
 
@@ -468,12 +744,19 @@ class SQLiteReadSession:
                     prefix="neocortex-sqlite-read-",
                     dir=None if self.temp_root is None else os.fspath(self.temp_root),
                 )
+                budget_state = _SnapshotBudgetState(
+                    self.budget,
+                    metrics=self._metrics,
+                    temporary_root=Path(temporary_directory.name),
+                )
+                budget_state.checkpoint()
                 temporary_database = Path(temporary_directory.name) / self.path.name
-                _copy_regular_file(self.path, temporary_database)
+                _copy_regular_file_budgeted(self.path, temporary_database, budget_state)
                 for suffix, _identity in source_fence.sidecars:
-                    _copy_regular_file(
+                    _copy_regular_file_budgeted(
                         Path(f"{self.path}{suffix}"),
                         Path(f"{temporary_database}{suffix}"),
+                        budget_state,
                     )
                 if source_fence != capture_sqlite_read_fence(self.path):
                     raise ImmutableSQLiteUnavailable(
@@ -481,11 +764,19 @@ class SQLiteReadSession:
                     )
                 _materialize_temporary_database(
                     temporary_database,
-                    timeout_seconds=self.timeout_seconds,
+                    timeout_seconds=min(
+                        self.timeout_seconds,
+                        self.budget.prepare_timeout_seconds,
+                    ),
+                    budget_state=budget_state,
                 )
+                budget_state.checkpoint()
                 self._connection = open_immutable_sqlite_connection(
                     temporary_database,
-                    timeout_seconds=self.timeout_seconds,
+                    timeout_seconds=min(
+                        self.timeout_seconds,
+                        self.budget.prepare_timeout_seconds,
+                    ),
                 )
                 self._temporary_directory = temporary_directory
                 self._temporary_database = temporary_database
@@ -510,6 +801,9 @@ class SQLiteReadSession:
                     time.sleep(0.01)
                     continue
                 raise
+            finally:
+                elapsed = self.budget.monotonic_clock() - attempt_started
+                self._metrics.prepare_time_seconds += max(0.0, float(elapsed))
         assert last_error is not None
         raise ImmutableSQLiteUnavailable(
             f"SQLite owner changed while creating a stable temporary snapshot: {self.path}"
@@ -594,6 +888,9 @@ def open_sidecar_safe_sqlite_connection(
     *,
     timeout_seconds: float = 60.0,
     max_attempts: int = 2,
+    budget: SQLiteSnapshotBudget | None = None,
+    max_temporary_bytes: int | None = None,
+    cancellation_check: Callable[[], bool | None] | None = None,
 ) -> sqlite3.Connection:
     """Return a bare connection while retaining safe snapshot ownership.
 
@@ -613,6 +910,9 @@ def open_sidecar_safe_sqlite_connection(
         mode=SQLiteReadMode.SNAPSHOT_TEMP,
         timeout_seconds=timeout_seconds,
         max_attempts=max_attempts,
+        budget=budget,
+        max_temporary_bytes=max_temporary_bytes,
+        cancellation_check=cancellation_check,
     )
     session.open()
     temporary = session.temporary_database
@@ -656,6 +956,10 @@ def sqlite_read_session(
     timeout_seconds: float = 60.0,
     temp_root: str | Path | None = None,
     max_attempts: int = 2,
+    budget: SQLiteSnapshotBudget | None = None,
+    max_temporary_bytes: int | None = None,
+    cancellation_check: Callable[[], bool | None] | None = None,
+    generation: object | None = None,
 ) -> Iterator[sqlite3.Connection]:
     """Convenience context manager backed by :class:`SQLiteReadSession`."""
 
@@ -665,6 +969,10 @@ def sqlite_read_session(
         timeout_seconds=timeout_seconds,
         temp_root=temp_root,
         max_attempts=max_attempts,
+        budget=budget,
+        max_temporary_bytes=max_temporary_bytes,
+        cancellation_check=cancellation_check,
+        generation=generation,
     ) as connection:
         yield connection
 
@@ -686,11 +994,17 @@ def immutable_sqlite_database(
 
 
 __all__ = [
+    "DEFAULT_SQLITE_SNAPSHOT_BLOCK_BYTES",
+    "DEFAULT_SQLITE_SNAPSHOT_MAX_TEMPORARY_BYTES",
+    "DEFAULT_SQLITE_SNAPSHOT_PREPARE_TIMEOUT_SECONDS",
     "ImmutableSQLiteUnavailable",
     "SQLiteFileIdentity",
     "SQLiteImmutableFence",
     "SQLiteReadMode",
     "SQLiteReadSession",
+    "SQLiteSnapshotBudget",
+    "SQLiteSnapshotBudgetExceeded",
+    "SQLiteSnapshotMetrics",
     "capture_sqlite_immutable_fence",
     "capture_sqlite_read_fence",
     "immutable_sqlite_database",

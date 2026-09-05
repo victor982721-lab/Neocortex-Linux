@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -64,9 +65,12 @@ from neocortex.runtime.orchestration.route_registry import (
 )
 from neocortex.runtime.orchestration.route_selection import ORGANIZABLE_ROUTE_NAMES
 from neocortex.runtime.orchestration.run_lifecycle import RunHeartbeat
-from neocortex.runtime.orchestration.run_manifest import RunManifest
+from neocortex.runtime.orchestration.run_manifest import RunBudget, RunManifest
 from neocortex.persistence.framework_route_state import FrameworkRouteState
-from neocortex.persistence.framework_state_writer import FrameworkState
+from neocortex.persistence.framework_state_writer import (
+    FrameworkState,
+    RunBudgetExceeded,
+)
 
 
 def query_journal_cursor(volume: str) -> JournalCursor:
@@ -150,6 +154,7 @@ class FrameworkOrchestrator:
         *,
         progress: ProgressCallback | None = None,
         route_registry: Mapping[str, RouteAdapter] | None = None,
+        run_budget: RunBudget | Mapping[str, object] | None = None,
     ):
         self.config = config or FrameworkConfig()
         if self.config.dedup_policy not in {"fast", "exact"}:
@@ -164,11 +169,79 @@ class FrameworkOrchestrator:
         self._cancellation = CancellationToken()
         self._coordinator_lock = threading.Lock()
         self._active_coordinator: GlobalResourceCoordinator | None = None
+        self._active_run: tuple[Path, int] | None = None
+        self._run_budget = (
+            RunBudget.from_mapping(run_budget)
+            if isinstance(run_budget, Mapping)
+            else (run_budget or RunBudget())
+        )
+
+    def _durable_run_budget(self) -> RunBudget:
+        """Resolve explicit lifecycle limits without changing FrameworkConfig.
+
+        The public config grows independently from the lifecycle contract.  A
+        caller may pass ``run_budget`` directly, while forward-compatible
+        config projections can expose any of the aliases below without making
+        old callers reconstruct a new config object.
+        """
+
+        configured = {
+            "max_items": next(
+                (
+                    getattr(self.config, name)
+                    for name in (
+                        "run_max_items",
+                        "lifecycle_max_items",
+                        "max_items",
+                    )
+                    if hasattr(self.config, name)
+                ),
+                None,
+            ),
+            "max_bytes": next(
+                (
+                    getattr(self.config, name)
+                    for name in (
+                        "run_max_bytes",
+                        "lifecycle_max_bytes",
+                        "max_bytes",
+                    )
+                    if hasattr(self.config, name)
+                ),
+                None,
+            ),
+            "max_duration_seconds": next(
+                (
+                    getattr(self.config, name)
+                    for name in (
+                        "run_time_budget_seconds",
+                        "lifecycle_time_budget_seconds",
+                        "max_duration_seconds",
+                    )
+                    if hasattr(self.config, name)
+                ),
+                None,
+            ),
+        }
+        if any(value is not None for value in configured.values()):
+            return RunBudget.from_mapping(configured)
+        return self._run_budget
 
     def request_cancellation(self) -> None:
         """Signal every route and wake any coordinator wait immediately."""
 
         self._cancellation.cancel()
+        active_run = self._active_run
+        if active_run is not None:
+            try:
+                FrameworkState.request_run_cancellation_external(
+                    active_run[0], active_run[1], "user"
+                )
+            except (OSError, RuntimeError, sqlite3.Error):
+                # The foreground termination path records the same durable
+                # request through its owner connection if this side-channel
+                # races a SQLite transaction.
+                pass
         with self._coordinator_lock:
             coordinator = self._active_coordinator
         if coordinator is not None:
@@ -359,6 +432,43 @@ class FrameworkOrchestrator:
                 candidate_database=candidate_database,
             )
 
+    def _reserve_route_work(
+        self,
+        *,
+        state: FrameworkState,
+        run_id: int,
+        route_name: str,
+        input_source: str,
+    ) -> dict[str, object]:
+        """Consume one global route reservation before a worker starts.
+
+        Candidate-backed routes have an exact durable item/byte workload.  An
+        inventory-backed route still participates in the ledger with a zero
+        reservation because its producer owns a different database; the route
+        summary can publish a later bounded observation without guessing at
+        filesystem state here.
+        """
+
+        read_budget = getattr(state, "read_run_budget", None)
+        if not callable(read_budget) or read_budget(run_id) is None:
+            # Legacy/test-created runs may predate lifecycle manifests; keep
+            # their route snapshot behavior compatible until a new run opens
+            # through the manifest-publishing path.
+            return {}
+        items = bytes_count = 0
+        if input_source == "route_candidates":
+            items, bytes_count = state.route_candidate_workload(run_id)
+        # The manifest is published before routes begin, so this call is also
+        # the first live assertion that the durable baseline is available.
+        state.check_run_budget(run_id)
+        return state.reserve_run_budget(
+            run_id,
+            f"route:{route_name}",
+            items=items,
+            bytes=bytes_count,
+            worker=route_name,
+        )
+
     def _run_content_routes_with_snapshot(
         self,
         *,
@@ -417,6 +527,13 @@ class FrameworkOrchestrator:
             # a later submit still leaves the earlier workers cancellable.
             futures = {}
             for route_name in self.selected_routes:
+                adapter = self.route_registry[route_name]
+                self._reserve_route_work(
+                    state=state,
+                    run_id=run_id,
+                    route_name=route_name,
+                    input_source=adapter.input_source,
+                )
                 futures[executor.submit(execute_route, route_name)] = route_name
             pending = set(futures)
             while pending:
@@ -427,6 +544,11 @@ class FrameworkOrchestrator:
                     timeout=0.1,
                     return_when=FIRST_COMPLETED,
                 )
+                # A deadline or durable cancellation is checked by the
+                # foreground owner as well as route-local cooperative checks.
+                read_budget = getattr(state, "read_run_budget", None)
+                if callable(read_budget) and read_budget(run_id) is not None:
+                    state.check_run_budget(run_id)
                 if self._cancellation.is_cancelled:
                     raise KeyboardInterrupt
                 for future in completed:
@@ -715,7 +837,10 @@ class FrameworkOrchestrator:
             "pdf_max_documents",
             "image_max_documents",
         )
-        budget = {name: getattr(self.config, name, None) for name in budget_names}
+        budget = {
+            name: getattr(self.config, name, None) for name in budget_names
+        }
+        budget["durable"] = self._durable_run_budget().as_mapping()
         manifest = RunManifest(
             run_id=run_id,
             run_kind="initial",
@@ -747,6 +872,7 @@ class FrameworkOrchestrator:
         publish_manifest = getattr(state, "publish_run_manifest", None)
         if callable(publish_manifest):
             publish_manifest(run_id, manifest.event_payload())
+            self._active_run = (self.config.framework_database, run_id)
 
     def _prepare_normal_inventory(
         self,
@@ -1064,6 +1190,13 @@ class FrameworkOrchestrator:
             "Ejecución cancelada por el usuario" if cancelled else "Ejecución fallida",
             None if cancelled else {"error_type": type(exc).__name__, "detail": str(exc)},
         )
+        if cancelled:
+            request_cancel = getattr(state, "request_run_cancellation", None)
+            if callable(request_cancel):
+                request_cancel(
+                    run_id,
+                    "budget" if isinstance(exc, RunBudgetExceeded) else "user",
+                )
         transitioned = (
             state.cancel_initial_run(run_id)
             if cancelled
@@ -1109,11 +1242,15 @@ class FrameworkOrchestrator:
         except KeyboardInterrupt as exc:
             self._persist_initial_termination(state, run_id, exc, cancelled=True)
             raise
+        except RunBudgetExceeded as exc:
+            self._persist_initial_termination(state, run_id, exc, cancelled=True)
+            raise
         except BaseException as exc:
             self._persist_initial_termination(state, run_id, exc, cancelled=False)
             raise
         finally:
             heartbeat.stop()
+            self._active_run = None
 
     @staticmethod
     def _initial_result(
@@ -1439,6 +1576,7 @@ class FrameworkOrchestrator:
         source: _RouteOnlySource,
     ) -> tuple[int, RunHeartbeat]:
         run_kind = "resume" if self.config.resume_run_id is not None else "route_only"
+        durable_budget = self._durable_run_budget()
         boundary.verify()
         run_id = state.begin_operational_run(
             boundary.access_policy.root,
@@ -1480,6 +1618,7 @@ class FrameworkOrchestrator:
                     selected_routes=tuple(self.selected_routes),
                     configuration=route_payload,
                     budget={
+                        "durable": durable_budget.as_mapping(),
                         "global_memory_budget_bytes": self.config.global_memory_budget_bytes,
                         "global_cpu_slots": self.config.global_cpu_slots,
                         "global_resource_wait_timeout_seconds": (
@@ -1493,6 +1632,7 @@ class FrameworkOrchestrator:
                     },
                 ).event_payload(),
             )
+            self._active_run = (self.config.framework_database, run_id)
         return run_id, heartbeat
 
     @staticmethod
@@ -1530,6 +1670,9 @@ class FrameworkOrchestrator:
         run_id: int,
     ) -> None:
         self._prune_route_only_candidates(state, source, run_id)
+        request_cancel = getattr(state, "request_run_cancellation", None)
+        if callable(request_cancel):
+            request_cancel(run_id, "user")
         state.cancel_initial_run(run_id)
 
     def _fail_route_only_run(
@@ -1540,6 +1683,10 @@ class FrameworkOrchestrator:
         exc: BaseException,
     ) -> None:
         self._prune_route_only_candidates(state, source, run_id)
+        if isinstance(exc, RunBudgetExceeded):
+            request_cancel = getattr(state, "request_run_cancellation", None)
+            if callable(request_cancel):
+                request_cancel(run_id, "budget")
         state.record_event(
             run_id,
             "error",
@@ -1569,11 +1716,19 @@ class FrameworkOrchestrator:
         except KeyboardInterrupt:
             self._cancel_route_only_run(state, source, run_id)
             raise
+        except RunBudgetExceeded:
+            self._prune_route_only_candidates(state, source, run_id)
+            request_cancel = getattr(state, "request_run_cancellation", None)
+            if callable(request_cancel):
+                request_cancel(run_id, "budget")
+            state.cancel_initial_run(run_id)
+            raise
         except BaseException as exc:
             self._fail_route_only_run(state, source, run_id, exc)
             raise
         finally:
             heartbeat.stop()
+            self._active_run = None
         return _RouteOnlyExecution(
             run_id,
             source.run_id,

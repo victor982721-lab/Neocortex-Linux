@@ -18,6 +18,15 @@ fuera de `docs/`.
   `neocortex.lifecycle-envelope/v1` sin conceder autoridad de mutación.
 - `SubprocessOutputLimitError` conserva `args`, traceback y `add_note`, y las
   pruebas de publicación de imagen ya no se seleccionan como `base` sin Pillow.
+- El lifecycle Framework persiste un ledger `neocortex.run-budget/v1` con
+  reservas globales idempotentes, cancelación durable, deadline y consumo de
+  items/bytes; status distingue reanudación, replay, recuperación y rutas no
+  replayables.
+- La preparación de snapshots SQLite acepta límites bounded de bytes temporales,
+  tiempo y cancelación, emite métricas de intentos/preparación y aplica el mismo
+  presupuesto a snapshots coordinados por writer.
+- MCP incorpora `lifecycle_status` como consulta read-only bounded del estado
+  Framework, manifest, presupuesto y recuperación, sin iniciar ni autorizar runs.
 
 - Fingerprinting POSIX rechaza FIFO, symlinks y cambios de identidad sin bloquear;
   la captura de subprocesses usa descriptores no bloqueantes con un presupuesto

@@ -201,9 +201,9 @@ clasificación multimodal siguen siendo objetivos, no resultados de ese benchmar
 
 **Vertical inicial implementado en la fuente:** las corridas Framework ya
 publican un manifest versionado y con digest, conservan candidatos de rutas
-necesarios para recuperación, y status/API/SDK exponen un envelope read-only;
-este vertical no sustituye todavía el presupuesto durable entre workers ni la
-reanudación multimodal completa.
+necesarios para recuperación, mantienen un ledger durable de presupuesto y
+status/API/SDK/MCP exponen envelopes read-only; este vertical no sustituye
+todavía la reanudación multimodal completa ni la etapa Semantic integrada.
 
 **Resultado objetivo:** reanudar una corrida multimodal interrumpida desde sus
 inputs y publicaciones durables, conservando cobertura, errores y presupuesto
@@ -213,6 +213,10 @@ entre workers, sin repetir trabajo ya comprometido.
   checkpoints DFS y page-level existentes no equivalen todavía a ese contrato.
 - Compartir un presupuesto global de trabajo, deadline y cancelación entre
   workers, con observabilidad de avance y reanudación.
+- El ledger `neocortex.run-budget/v1` ya reserva trabajo por ruta con
+  idempotencia, cancelación durable y consumo bounded de items/bytes; falta
+  ampliar la cobertura a todas las fases y a la recuperación posterior a una
+  terminación abrupta.
 - Probar primero 20–50 fixtures heterogéneos: interrupción, replay terminal,
   drift y paridad de envelopes CLI/API/SDK frente a una corrida limpia.
 - Conservar los fences de lectores y la separación entre consulta, producción

@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 
 RUN_MANIFEST_SCHEMA = "neocortex.run-manifest/v1"
+RUN_BUDGET_SCHEMA = "neocortex.run-budget/v1"
 
 
 def _canonical_json(value: object) -> str:
@@ -33,6 +35,68 @@ def _bounded_mapping(value: Mapping[str, Any], *, label: str) -> dict[str, Any]:
     if len(encoded) > 512 * 1024:
         raise ValueError(f"{label} exceeds the durable manifest limit")
     return result
+
+
+@dataclass(frozen=True, slots=True)
+class RunBudget:
+    """The durable, process-independent limits attached to one run.
+
+    Framework routes have historically exposed several local limits (memory,
+    pages, or documents), but none of those limits was shared by workers.  The
+    lifecycle budget intentionally has a very small contract and is persisted
+    separately from those route-specific knobs.  ``None`` means that a
+    dimension is observed but not capped.
+    """
+
+    max_items: int | None = None
+    max_bytes: int | None = None
+    max_duration_seconds: float | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("max_items", "max_bytes"):
+            value = getattr(self, name)
+            if value is not None and (type(value) is not int or value < 0):
+                raise ValueError(f"{name} must be a non-negative integer or null")
+        if self.max_duration_seconds is not None and (
+            type(self.max_duration_seconds) not in {int, float}
+            or self.max_duration_seconds <= 0
+            or not math.isfinite(float(self.max_duration_seconds))
+        ):
+            raise ValueError("max_duration_seconds must be positive or null")
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any] | None) -> "RunBudget":
+        if value is None:
+            return cls()
+        if not isinstance(value, Mapping):
+            raise ValueError("run budget must be an object")
+
+        def first(*names: str) -> Any:
+            for name in names:
+                if name in value:
+                    return value[name]
+            return None
+
+        return cls(
+            max_items=first("max_items", "items"),
+            max_bytes=first("max_bytes", "bytes"),
+            max_duration_seconds=first(
+                "max_duration_seconds", "time_budget_seconds", "time_seconds"
+            ),
+        )
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "schema": RUN_BUDGET_SCHEMA,
+            "max_items": self.max_items,
+            "max_bytes": self.max_bytes,
+            "max_duration_seconds": self.max_duration_seconds,
+        }
+
+    def as_mapping(self) -> dict[str, Any]:
+        """Return the bounded mapping used inside a run manifest."""
+
+        return self.payload()
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,9 +173,12 @@ def lifecycle_envelope(
     routes: tuple[Mapping[str, Any], ...] = (),
     errors: tuple[Mapping[str, Any], ...] = (),
     resumed_from: int | None = None,
+    resumed: bool | None = None,
     replayed: bool = False,
     skipped: tuple[str, ...] = (),
     non_replayable: tuple[str, ...] = (),
+    budget: Mapping[str, Any] | None = None,
+    recovery: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a bounded read-only envelope shared by status callers."""
 
@@ -122,16 +189,21 @@ def lifecycle_envelope(
         "source_run_id": None if manifest is None else manifest.get("source_run_id"),
         "manifest_digest": None if manifest is None else manifest.get("digest"),
         "resumed_from": resumed_from,
+        "resumed": bool(resumed) if resumed is not None else resumed_from is not None,
         "replayed": bool(replayed),
         "skipped": list(skipped),
         "non_replayable": list(non_replayable),
+        "budget": None if budget is None else dict(budget),
+        "recovery": None if recovery is None else dict(recovery),
         "routes": [dict(route) for route in routes],
         "errors": [dict(error) for error in errors],
     }
 
 
 __all__ = [
+    "RUN_BUDGET_SCHEMA",
     "RUN_MANIFEST_SCHEMA",
+    "RunBudget",
     "RunManifest",
     "lifecycle_envelope",
     "verify_event_payload",

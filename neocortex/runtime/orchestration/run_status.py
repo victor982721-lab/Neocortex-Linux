@@ -14,6 +14,7 @@ from neocortex.runtime.orchestration.run_lifecycle import (
     process_is_alive,
 )
 from neocortex.runtime.orchestration.run_manifest import (
+    RUN_BUDGET_SCHEMA,
     lifecycle_envelope,
     verify_event_payload,
 )
@@ -59,6 +60,12 @@ class RunStatus:
     routes: tuple[RouteStatus, ...]
     recovery_required_actions: int = 0
     manifest: dict[str, object] | None = None
+    budget: dict[str, object] | None = None
+    recovery: dict[str, object] | None = None
+    resumed: bool = False
+    replayed: bool = False
+    skipped_routes: tuple[str, ...] = ()
+    non_replayable_routes: tuple[str, ...] = ()
 # endregion [01]
 
 
@@ -131,6 +138,17 @@ def _run_status(
     owner_pid = None if row["owner_pid"] is None else int(row["owner_pid"])
     routes = _route_statuses(connection, run_id)
     manifest = _run_manifest(connection, run_id)
+    budget = _run_budget(connection, run_id)
+    recovery = _run_recovery(connection, run_id)
+    skipped_routes = tuple(
+        route.route_name for route in routes if route.status == "completed"
+    )
+    non_replayable_routes = _non_replayable_routes(routes, recovery)
+    # An interrupted source is recoverable, but it was not itself resumed.
+    # ``resume`` identifies a new execution linked to that source, while
+    # completed routes identify work that can be replayed without rerunning it.
+    resumed = str(row["run_kind"] or "initial") == "resume"
+    replayed = resumed or bool(skipped_routes)
     current_phase = None if row["current_phase"] is None else str(row["current_phase"])
     if current_phase is None:
         current_phase = next(
@@ -163,6 +181,12 @@ def _run_status(
             connection, run_id
         ),
         manifest=manifest,
+        budget=budget,
+        recovery=recovery,
+        resumed=resumed,
+        replayed=replayed,
+        skipped_routes=skipped_routes,
+        non_replayable_routes=non_replayable_routes,
     )
 
 
@@ -209,6 +233,118 @@ def _recovery_required_action_count(
             (run_id,),
         ).fetchone()[0]
     )
+
+
+def _run_budget(
+    connection: sqlite3.Connection,
+    run_id: int,
+) -> dict[str, object] | None:
+    """Read the append-only budget ledger without opening the owner database."""
+
+    table = connection.execute(
+        """SELECT 1 FROM sqlite_master
+        WHERE type='table' AND name='run_events'"""
+    ).fetchone()
+    if table is None:
+        return None
+    rows = connection.execute(
+        """SELECT event_id,details_json FROM run_events
+        WHERE run_id=? AND phase='lifecycle-budget'
+        ORDER BY event_id""",
+        (run_id,),
+    ).fetchall()
+    if not rows:
+        return None
+    try:
+        baseline = json.loads(str(rows[0]["details_json"]))
+        if not isinstance(baseline, dict) or baseline.get("schema") != RUN_BUDGET_SCHEMA:
+            raise ValueError("unsupported budget schema")
+        reservations: set[str] = set()
+        consumed_items = int(baseline.get("consumed_items", 0))
+        consumed_bytes = int(baseline.get("consumed_bytes", 0))
+        cancelled = bool(baseline.get("cancel_requested", False))
+        cancel_reason = baseline.get("cancel_reason")
+        for row in rows[1:]:
+            event = json.loads(str(row["details_json"]))
+            if not isinstance(event, dict) or event.get("schema") != RUN_BUDGET_SCHEMA:
+                raise ValueError("malformed budget event")
+            if event.get("kind") == "consumed":
+                reservation_id = str(event.get("reservation_id", ""))
+                if reservation_id in reservations:
+                    continue
+                reservations.add(reservation_id)
+                consumed_items += int(event.get("items", 0))
+                consumed_bytes += int(event.get("bytes", 0))
+            elif event.get("kind") == "cancelled":
+                cancelled = True
+                cancel_reason = event.get("reason")
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise sqlite3.DatabaseError(f"run {run_id} lifecycle budget is invalid") from exc
+    now = time.time_ns()
+    started_ns = int(baseline.get("started_ns", now))
+    deadline_ns = baseline.get("deadline_ns")
+    expired = deadline_ns is not None and now >= int(deadline_ns)
+    max_items = baseline.get("max_items")
+    max_bytes = baseline.get("max_bytes")
+    return {
+        "schema": RUN_BUDGET_SCHEMA,
+        "manifest_digest": baseline.get("manifest_digest"),
+        "max_items": max_items,
+        "max_bytes": max_bytes,
+        "max_duration_seconds": baseline.get("max_duration_seconds"),
+        "started_ns": started_ns,
+        "deadline_ns": deadline_ns,
+        "consumed_items": consumed_items,
+        "consumed_bytes": consumed_bytes,
+        "remaining_items": None if max_items is None else max(0, int(max_items) - consumed_items),
+        "remaining_bytes": None if max_bytes is None else max(0, int(max_bytes) - consumed_bytes),
+        "elapsed_seconds": max(0, now - started_ns) / 1_000_000_000,
+        "expired": expired,
+        "cancel_requested": cancelled,
+        "cancel_reason": cancel_reason,
+        "reservation_count": len(reservations),
+        "last_event_id": int(rows[-1]["event_id"]),
+    }
+
+
+def _run_recovery(
+    connection: sqlite3.Connection,
+    run_id: int,
+) -> dict[str, object] | None:
+    table = connection.execute(
+        """SELECT 1 FROM sqlite_master
+        WHERE type='table' AND name='run_events'"""
+    ).fetchone()
+    if table is None:
+        return None
+    row = connection.execute(
+        """SELECT details_json FROM run_events
+        WHERE run_id=? AND phase='lifecycle-recovery'
+        ORDER BY event_id DESC LIMIT 1""",
+        (run_id,),
+    ).fetchone()
+    if row is None or row["details_json"] is None:
+        return None
+    try:
+        value = json.loads(str(row["details_json"]))
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise sqlite3.DatabaseError(f"run {run_id} lifecycle recovery is invalid") from exc
+    if not isinstance(value, dict):
+        raise sqlite3.DatabaseError(f"run {run_id} lifecycle recovery is not an object")
+    return value
+
+
+def _non_replayable_routes(
+    routes: tuple[RouteStatus, ...],
+    recovery: dict[str, object] | None,
+) -> tuple[str, ...]:
+    if recovery is not None and int(recovery.get("candidate_rows", 0)) == 0:
+        return tuple(
+            route.route_name
+            for route in routes
+            if route.status in {"failed", "cancelled", "interrupted"}
+        )
+    return ()
 
 
 def _route_statuses(
@@ -340,6 +476,12 @@ def serialized_run_status(status: RunStatus) -> str:
             "completed_ns": status.completed_ns,
             "recovery_required_actions": status.recovery_required_actions,
             "manifest": status.manifest,
+            "budget": status.budget,
+            "recovery": status.recovery,
+            "resumed": status.resumed,
+            "replayed": status.replayed,
+            "skipped_routes": list(status.skipped_routes),
+            "non_replayable_routes": list(status.non_replayable_routes),
             "lifecycle": lifecycle_envelope(
                 manifest=status.manifest,
                 status=status.status,
@@ -360,12 +502,12 @@ def serialized_run_status(status: RunStatus) -> str:
                     if route.error_type is not None
                 ),
                 resumed_from=status.source_run_id,
-                replayed=status.run_kind == "resume",
-                non_replayable=tuple(
-                    route.route_name
-                    for route in status.routes
-                    if route.status in {"failed", "cancelled", "interrupted"}
-                ),
+                resumed=status.resumed,
+                replayed=status.replayed,
+                skipped=status.skipped_routes,
+                non_replayable=status.non_replayable_routes,
+                budget=status.budget,
+                recovery=status.recovery,
             ),
             "routes": [
                 {

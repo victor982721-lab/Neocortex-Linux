@@ -7,11 +7,12 @@ import json
 import pytest
 
 from neocortex.runtime.orchestration.run_manifest import (
+    RunBudget,
     RunManifest,
     lifecycle_envelope,
     verify_event_payload,
 )
-from neocortex.persistence.framework_state_writer import FrameworkState
+from neocortex.persistence.framework_state_writer import FrameworkState, RunBudgetExceeded
 from neocortex.runtime.orchestration.run_status import list_run_status
 
 
@@ -86,3 +87,32 @@ def test_framework_state_publishes_manifest_idempotently_and_status_reads_it(
 
     status = list_run_status(database, run_id=run_id)[0]
     assert status.manifest == payload
+
+
+def test_run_budget_is_durable_and_reservation_idempotent(tmp_path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    database = tmp_path / "framework.sqlite3"
+    with FrameworkState(database) as state:
+        run_id = state.begin_initial_run(root, None)
+        payload = RunManifest(
+            run_id=run_id,
+            run_kind="initial",
+            root=str(root),
+            root_identity=(1, 2, -1),
+            selected_routes=("text",),
+            budget={"durable": RunBudget(max_items=2, max_bytes=100).payload()},
+        ).event_payload()
+        state.publish_run_manifest(run_id, payload)
+        first = state.reserve_run_budget(run_id, "worker-1", items=1, bytes=40)
+        replay = state.reserve_run_budget(run_id, "worker-1", items=1, bytes=40)
+        assert first["replayed"] is False
+        assert replay["replayed"] is True
+        assert replay["consumed_items"] == 1
+        state.consume_run_budget(run_id, "worker-2", items=1, bytes=40)
+        with pytest.raises(RunBudgetExceeded, match="items"):
+            state.reserve_run_budget(run_id, "worker-3", items=1, bytes=1)
+        assert state.read_run_budget(run_id)["remaining_items"] == 0
+        assert state.request_run_cancellation(run_id, "fixture_cancel") is True
+        with pytest.raises(RunBudgetExceeded, match="cancelled"):
+            state.check_run_budget(run_id)

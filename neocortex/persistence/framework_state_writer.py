@@ -44,12 +44,26 @@ from neocortex.persistence.framework_state_common import (
     mark_file_actions_applying,
 )
 from neocortex.persistence.sqlite_paths import existing_sqlite_uri
-from neocortex.runtime.orchestration.run_manifest import verify_event_payload
+from neocortex.persistence.framework_connection import connect_existing_framework
+from neocortex.runtime.orchestration.run_manifest import (
+    RUN_BUDGET_SCHEMA,
+    RunBudget,
+    verify_event_payload,
+)
 # endregion [01]
 
 # region [02] Implementación
 
 _PATH_COLLATION = sqlite_path_collation()
+
+
+class RunBudgetExceeded(RuntimeError):
+    """A durable run budget rejected additional work."""
+
+    def __init__(self, reason: str, snapshot: Mapping[str, Any] | None = None):
+        self.reason = reason
+        self.snapshot = None if snapshot is None else dict(snapshot)
+        super().__init__(f"run budget exceeded: {reason}")
 
 if TYPE_CHECKING:
 
@@ -425,6 +439,16 @@ class FrameworkState:
             ).fetchone()[0]
         )
 
+    def route_candidate_workload(self, run_id: int) -> tuple[int, int]:
+        """Return bounded item/byte counts for a retained route snapshot."""
+
+        row = self._connection.execute(
+            """SELECT COUNT(*),COALESCE(SUM(size),0)
+            FROM route_candidates WHERE run_id=?""",
+            (run_id,),
+        ).fetchone()
+        return int(row[0]), int(row[1])
+
     def route_run_count(self, run_id: int) -> int:
         return int(
             self._connection.execute(
@@ -565,6 +589,56 @@ class FrameworkState:
             (run_id,),
         ).fetchall()
         return tuple(str(row[0]) for row in rows)
+
+    def run_recovery_plan(self, run_id: int) -> dict[str, Any]:
+        """Describe safe recovery inputs without starting another worker.
+
+        Completed routes are explicitly ``skipped``.  Routes left in a
+        non-terminal state are candidates for a new run only when their
+        retained route inputs still exist; otherwise they are reported as
+        ``non_replayable`` and the caller must abstain rather than repeat an
+        uncertain effect.
+        """
+
+        row = self._connection.execute(
+            """SELECT status,run_kind,source_run_id FROM initial_runs
+            WHERE run_id=?""",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"run {run_id} does not exist")
+        routes = self._connection.execute(
+            """SELECT route_name,status FROM route_runs
+            WHERE run_id=? ORDER BY started_ns,route_name""",
+            (run_id,),
+        ).fetchall()
+        candidate_rows, candidate_bytes = self.route_candidate_workload(run_id)
+        skipped = tuple(str(name) for name, status in routes if str(status) == "completed")
+        pending = tuple(
+            str(name)
+            for name, status in routes
+            if str(status) in {"running", "interrupted", "failed", "cancelled"}
+        )
+        non_replayable = tuple(
+            str(name)
+            for name, status in routes
+            if str(status) in {"failed", "cancelled", "interrupted"}
+            and candidate_rows == 0
+        )
+        return {
+            "run_id": run_id,
+            "status": str(row[0]),
+            "run_kind": str(row[1]),
+            "source_run_id": None if row[2] is None else int(row[2]),
+            "resumed": str(row[1]) == "resume" or str(row[0]) == "interrupted",
+            "replayed": bool(skipped),
+            "skipped": list(skipped),
+            "pending": list(pending),
+            "non_replayable": list(non_replayable),
+            "candidate_rows": candidate_rows,
+            "candidate_bytes": candidate_bytes,
+            "candidates_retained": candidate_rows > 0,
+        }
 
     def copy_route_candidates(self, source_run_id: int, target_run_id: int) -> int:
         """Copy one immutable routing snapshot without walking the filesystem."""
@@ -1064,6 +1138,483 @@ class FrameworkState:
                 (run_id, time.time_ns(), level, phase, message, details_json),
             )
 
+    # ------------------------------------------------------------------
+    # Durable lifecycle budget
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _budget_configuration(manifest: Mapping[str, Any]) -> Mapping[str, Any]:
+        value = manifest.get("budget", {})
+        if not isinstance(value, Mapping):
+            raise ValueError("run manifest budget is not an object")
+        durable = value.get("durable")
+        if durable is not None:
+            if not isinstance(durable, Mapping):
+                raise ValueError("run manifest durable budget is not an object")
+            return durable
+        return value
+
+    def _append_lifecycle_event_once(
+        self,
+        run_id: int,
+        *,
+        level: str,
+        phase: str,
+        message: str,
+        idempotency_key: str,
+        details: Mapping[str, Any],
+    ) -> bool:
+        """Append one lifecycle event exactly once under the writer lock."""
+
+        payload = dict(details)
+        payload["idempotency_key"] = idempotency_key
+        details_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        rows = self._connection.execute(
+            """SELECT details_json FROM run_events
+            WHERE run_id=? AND phase=? AND message=?
+            ORDER BY event_id""",
+            (run_id, phase, message),
+        ).fetchall()
+        for row in rows:
+            try:
+                existing = json.loads(str(row[0]))
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    f"run {run_id} has malformed {phase} lifecycle event"
+                ) from exc
+            if isinstance(existing, Mapping) and existing.get("idempotency_key") == idempotency_key:
+                if str(row[0]) != details_json:
+                    raise RuntimeError(
+                        f"run {run_id} has a conflicting lifecycle event {idempotency_key}"
+                    )
+                return False
+        self._connection.execute(
+            """INSERT INTO run_events(
+            run_id,occurred_ns,level,phase,message,details_json)
+            VALUES(?,?,?,?,?,?)""",
+            (run_id, time.time_ns(), level, phase, message, details_json),
+        )
+        return True
+
+    def _ensure_run_budget_event(
+        self,
+        run_id: int,
+        budget: Mapping[str, Any] | None,
+        *,
+        manifest_digest: str | None = None,
+    ) -> bool:
+        """Create the immutable budget baseline without changing the schema."""
+
+        normalized = RunBudget.from_mapping(budget)
+        rows = self._connection.execute(
+            """SELECT details_json FROM run_events
+            WHERE run_id=? AND phase='lifecycle-budget'
+            AND message='Run budget initialized' ORDER BY event_id DESC LIMIT 2""",
+            (run_id,),
+        ).fetchall()
+        if len(rows) > 1:
+            raise RuntimeError(f"run {run_id} has duplicate lifecycle budgets")
+        if rows:
+            try:
+                existing = json.loads(str(rows[0][0]))
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise RuntimeError(f"run {run_id} lifecycle budget is malformed") from exc
+            if not isinstance(existing, Mapping):
+                raise RuntimeError(f"run {run_id} lifecycle budget is not an object")
+            for key, expected in normalized.payload().items():
+                if existing.get(key) != expected:
+                    raise RuntimeError(f"run {run_id} has a conflicting lifecycle budget")
+            if manifest_digest is not None and existing.get("manifest_digest") != manifest_digest:
+                raise RuntimeError(f"run {run_id} lifecycle budget is bound to another manifest")
+            return False
+
+        now = time.time_ns()
+        deadline_ns = (
+            None
+            if normalized.max_duration_seconds is None
+            else now + int(float(normalized.max_duration_seconds) * 1_000_000_000)
+        )
+        details = {
+            **normalized.payload(),
+            "manifest_digest": manifest_digest,
+            "started_ns": now,
+            "deadline_ns": deadline_ns,
+            "consumed_items": 0,
+            "consumed_bytes": 0,
+            "cancel_requested": False,
+            "cancel_reason": None,
+            "reservation_count": 0,
+            "idempotency_key": "baseline",
+        }
+        self._connection.execute(
+            """INSERT INTO run_events(
+            run_id,occurred_ns,level,phase,message,details_json)
+            VALUES(?,?,'info','lifecycle-budget','Run budget initialized',?)""",
+            (run_id, now, json.dumps(details, ensure_ascii=False, separators=(",", ":"))),
+        )
+        return True
+
+    def _budget_rows(self, run_id: int) -> list[dict[str, Any]]:
+        rows = self._connection.execute(
+            """SELECT event_id,details_json FROM run_events
+            WHERE run_id=? AND phase='lifecycle-budget'
+            ORDER BY event_id""",
+            (run_id,),
+        ).fetchall()
+        parsed: list[dict[str, Any]] = []
+        for event_id, details_json in rows:
+            try:
+                value = json.loads(str(details_json))
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise RuntimeError(f"run {run_id} lifecycle budget is malformed") from exc
+            if not isinstance(value, dict) or value.get("schema") != RUN_BUDGET_SCHEMA:
+                raise RuntimeError(f"run {run_id} lifecycle budget schema is unsupported")
+            value["event_id"] = int(event_id)
+            parsed.append(value)
+        return parsed
+
+    def _read_run_budget_locked(self, run_id: int) -> dict[str, Any] | None:
+        rows = self._budget_rows(run_id)
+        if not rows:
+            return None
+        baseline = rows[0]
+        state: dict[str, Any] = {
+            "schema": RUN_BUDGET_SCHEMA,
+            "manifest_digest": baseline.get("manifest_digest"),
+            "max_items": baseline.get("max_items"),
+            "max_bytes": baseline.get("max_bytes"),
+            "max_duration_seconds": baseline.get("max_duration_seconds"),
+            "started_ns": baseline.get("started_ns"),
+            "deadline_ns": baseline.get("deadline_ns"),
+            "consumed_items": int(baseline.get("consumed_items", 0)),
+            "consumed_bytes": int(baseline.get("consumed_bytes", 0)),
+            "cancel_requested": bool(baseline.get("cancel_requested", False)),
+            "cancel_reason": baseline.get("cancel_reason"),
+            "reservations": {},
+            "last_event_id": int(baseline["event_id"]),
+        }
+        for event in rows[1:]:
+            state["last_event_id"] = int(event["event_id"])
+            kind = event.get("kind")
+            if kind == "consumed":
+                reservation_id = str(event.get("reservation_id", ""))
+                if reservation_id in state["reservations"]:
+                    # A duplicate reservation is not a second effect.
+                    continue
+                items = int(event.get("items", 0))
+                byte_count = int(event.get("bytes", 0))
+                state["consumed_items"] += items
+                state["consumed_bytes"] += byte_count
+                state["reservations"][reservation_id] = {
+                    "items": items,
+                    "bytes": byte_count,
+                    "worker": event.get("worker"),
+                    "event_id": int(event["event_id"]),
+                }
+            elif kind == "cancelled":
+                state["cancel_requested"] = True
+                state["cancel_reason"] = event.get("reason")
+        now = time.time_ns()
+        deadline_ns = state["deadline_ns"]
+        state["elapsed_ns"] = max(0, now - int(state["started_ns"]))
+        state["elapsed_seconds"] = state["elapsed_ns"] / 1_000_000_000
+        state["expired"] = deadline_ns is not None and now >= int(deadline_ns)
+        state["remaining_items"] = (
+            None
+            if state["max_items"] is None
+            else max(0, int(state["max_items"]) - state["consumed_items"])
+        )
+        state["remaining_bytes"] = (
+            None
+            if state["max_bytes"] is None
+            else max(0, int(state["max_bytes"]) - state["consumed_bytes"])
+        )
+        state["reservation_count"] = len(state["reservations"])
+        return state
+
+    def publish_run_budget(
+        self,
+        run_id: int,
+        budget: Mapping[str, Any] | None = None,
+        *,
+        manifest_digest: str | None = None,
+    ) -> bool:
+        """Persist an immutable budget baseline, linked to the manifest."""
+
+        with self._connection:
+            return self._ensure_run_budget_event(
+                run_id,
+                budget,
+                manifest_digest=manifest_digest,
+            )
+
+    def read_run_budget(self, run_id: int) -> dict[str, Any] | None:
+        """Read the current budget snapshot from the writer owner."""
+
+        return self._read_run_budget_locked(run_id)
+
+    def run_budget(self, run_id: int) -> dict[str, Any] | None:
+        """Compatibility alias for callers that treat budgets as run state."""
+
+        return self.read_run_budget(run_id)
+
+    def reserve_run_budget(
+        self,
+        run_id: int,
+        reservation_id: str,
+        *,
+        items: int = 0,
+        bytes: int = 0,
+        worker: str | None = None,
+        item_count: int | None = None,
+        byte_count: int | None = None,
+    ) -> dict[str, Any]:
+        """Atomically reserve durable work for one worker.
+
+        The reservation id is the effect boundary. Repeating it returns the
+        same durable reservation and never increments the counters again.
+        Reservations are deliberately not refunded after a worker failure: a
+        retry must use a new run or an explicitly supported route replay.
+        """
+
+        if item_count is not None:
+            if items != 0 and items != item_count:
+                raise ValueError("items and item_count disagree")
+            items = item_count
+        if byte_count is not None:
+            if bytes != 0 and bytes != byte_count:
+                raise ValueError("bytes and byte_count disagree")
+            bytes = byte_count
+        if not reservation_id or len(reservation_id) > 256:
+            raise ValueError("reservation_id must be non-empty and bounded")
+        if type(items) is not int or items < 0 or type(bytes) is not int or bytes < 0:
+            raise ValueError("budget reservation items and bytes must be non-negative integers")
+        with self._connection:
+            if self._connection.execute(
+                "SELECT 1 FROM initial_runs WHERE run_id=?", (run_id,)
+            ).fetchone() is None:
+                raise ValueError(f"run {run_id} does not exist")
+            snapshot = self._read_run_budget_locked(run_id)
+            if snapshot is None:
+                self._ensure_run_budget_event(run_id, None)
+                snapshot = self._read_run_budget_locked(run_id)
+            assert snapshot is not None
+            existing = snapshot["reservations"].get(reservation_id)
+            if existing is not None:
+                if existing["items"] != items or existing["bytes"] != bytes:
+                    raise ValueError(f"run {run_id} reservation {reservation_id} conflicts")
+                replay = dict(snapshot)
+                replay["replayed"] = True
+                replay["reservation"] = dict(existing)
+                return replay
+            reason = None
+            if snapshot["cancel_requested"]:
+                reason = "cancelled"
+            elif snapshot["expired"]:
+                reason = "time"
+            elif (
+                snapshot["max_items"] is not None
+                and snapshot["consumed_items"] + items > int(snapshot["max_items"])
+            ):
+                reason = "items"
+            elif (
+                snapshot["max_bytes"] is not None
+                and snapshot["consumed_bytes"] + bytes > int(snapshot["max_bytes"])
+            ):
+                reason = "bytes"
+            if reason is not None:
+                raise RunBudgetExceeded(reason, snapshot)
+            details = {
+                "schema": RUN_BUDGET_SCHEMA,
+                "kind": "consumed",
+                "manifest_digest": snapshot["manifest_digest"],
+                "reservation_id": reservation_id,
+                "worker": worker,
+                "items": items,
+                "bytes": bytes,
+                "consumed_items": snapshot["consumed_items"] + items,
+                "consumed_bytes": snapshot["consumed_bytes"] + bytes,
+                "idempotency_key": f"reservation:{reservation_id}",
+            }
+            self._connection.execute(
+                """INSERT INTO run_events(
+                run_id,occurred_ns,level,phase,message,details_json)
+                VALUES(?,?,'info','lifecycle-budget','Run budget consumed',?)""",
+                (run_id, time.time_ns(), json.dumps(details, ensure_ascii=False, separators=(",", ":"))),
+            )
+            result = self._read_run_budget_locked(run_id)
+            assert result is not None
+            result["replayed"] = False
+            result["reservation"] = {
+                "items": items,
+                "bytes": bytes,
+                "worker": worker,
+            }
+            return result
+
+    def consume_run_budget(
+        self,
+        run_id: int,
+        reservation_id: str,
+        *,
+        items: int = 0,
+        bytes: int = 0,
+        worker: str | None = None,
+        item_count: int | None = None,
+        byte_count: int | None = None,
+    ) -> dict[str, Any]:
+        """Record committed work using the same idempotent reservation ledger."""
+
+        return self.reserve_run_budget(
+            run_id,
+            reservation_id,
+            items=items,
+            bytes=bytes,
+            worker=worker,
+            item_count=item_count,
+            byte_count=byte_count,
+        )
+
+    def request_run_cancellation(self, run_id: int, reason: str = "user") -> bool:
+        """Persist cancellation once so a later process observes the request."""
+
+        if not reason or len(reason) > 512:
+            raise ValueError("cancellation reason must be non-empty and bounded")
+        with self._connection:
+            if self._connection.execute(
+                "SELECT 1 FROM initial_runs WHERE run_id=?", (run_id,)
+            ).fetchone() is None:
+                raise ValueError(f"run {run_id} does not exist")
+            snapshot = self._read_run_budget_locked(run_id)
+            if snapshot is None:
+                self._ensure_run_budget_event(run_id, None)
+                snapshot = self._read_run_budget_locked(run_id)
+            assert snapshot is not None
+            if snapshot["cancel_requested"]:
+                if snapshot["cancel_reason"] != reason:
+                    raise ValueError(f"run {run_id} has a conflicting cancellation reason")
+                return False
+            details = {
+                "schema": RUN_BUDGET_SCHEMA,
+                "kind": "cancelled",
+                "manifest_digest": snapshot["manifest_digest"],
+                "reason": reason,
+                "idempotency_key": "cancellation",
+            }
+            self._connection.execute(
+                """INSERT INTO run_events(
+                run_id,occurred_ns,level,phase,message,details_json)
+                VALUES(?,?,'warning','lifecycle-budget','Run cancellation requested',?)""",
+                (run_id, time.time_ns(), json.dumps(details, ensure_ascii=False, separators=(",", ":"))),
+            )
+            return True
+
+    @staticmethod
+    def request_run_cancellation_external(
+        database: str | Path,
+        run_id: int,
+        reason: str = "user",
+    ) -> bool:
+        """Persist cancellation from a signal/UI thread without sharing SQLite objects."""
+
+        if not reason or len(reason) > 512:
+            raise ValueError("cancellation reason must be non-empty and bounded")
+        connection = connect_existing_framework(
+            Path(database), readonly=False, timeout_seconds=10
+        )
+        try:
+            with connection:
+                if connection.execute(
+                    "SELECT 1 FROM initial_runs WHERE run_id=?", (run_id,)
+                ).fetchone() is None:
+                    raise ValueError(f"run {run_id} does not exist")
+                row = connection.execute(
+                    """SELECT details_json FROM run_events
+                    WHERE run_id=? AND phase='lifecycle-budget'
+                    AND message='Run budget initialized'
+                    ORDER BY event_id DESC LIMIT 1""",
+                    (run_id,),
+                ).fetchone()
+                manifest_digest = None
+                if row is not None and row[0] is not None:
+                    try:
+                        baseline = json.loads(str(row[0]))
+                    except (TypeError, json.JSONDecodeError) as exc:
+                        raise RuntimeError(f"run {run_id} lifecycle budget is malformed") from exc
+                    if isinstance(baseline, Mapping):
+                        manifest_digest = baseline.get("manifest_digest")
+                existing = connection.execute(
+                    """SELECT details_json FROM run_events
+                    WHERE run_id=? AND phase='lifecycle-budget'
+                    AND message='Run cancellation requested'
+                    ORDER BY event_id DESC LIMIT 1""",
+                    (run_id,),
+                ).fetchone()
+                if existing is not None:
+                    return False
+                if row is None:
+                    now = time.time_ns()
+                    baseline = {
+                        **RunBudget().payload(),
+                        "manifest_digest": None,
+                        "started_ns": now,
+                        "deadline_ns": None,
+                        "consumed_items": 0,
+                        "consumed_bytes": 0,
+                        "cancel_requested": False,
+                        "cancel_reason": None,
+                        "reservation_count": 0,
+                        "idempotency_key": "baseline",
+                    }
+                    connection.execute(
+                        """INSERT INTO run_events(
+                        run_id,occurred_ns,level,phase,message,details_json)
+                        VALUES(?,?,'info','lifecycle-budget',
+                        'Run budget initialized',?)""",
+                        (
+                            run_id,
+                            now,
+                            json.dumps(baseline, ensure_ascii=False, separators=(",", ":")),
+                        ),
+                    )
+                details = {
+                    "schema": RUN_BUDGET_SCHEMA,
+                    "kind": "cancelled",
+                    "manifest_digest": manifest_digest,
+                    "reason": reason,
+                    "idempotency_key": "cancellation",
+                }
+                connection.execute(
+                    """INSERT INTO run_events(
+                    run_id,occurred_ns,level,phase,message,details_json)
+                    VALUES(?,?,'warning','lifecycle-budget',
+                    'Run cancellation requested',?)""",
+                    (
+                        run_id,
+                        time.time_ns(),
+                        json.dumps(details, ensure_ascii=False, separators=(",", ":")),
+                    ),
+                )
+                return True
+        finally:
+            connection.close()
+
+    def run_cancellation_requested(self, run_id: int) -> bool:
+        snapshot = self._read_run_budget_locked(run_id)
+        return bool(snapshot and snapshot["cancel_requested"])
+
+    def check_run_budget(self, run_id: int) -> dict[str, Any]:
+        """Return a live snapshot or raise before a worker crosses its frontier."""
+
+        snapshot = self._read_run_budget_locked(run_id)
+        if snapshot is None:
+            raise ValueError(f"run {run_id} has no durable lifecycle budget")
+        if snapshot["cancel_requested"]:
+            raise RunBudgetExceeded("cancelled", snapshot)
+        if snapshot["expired"]:
+            raise RunBudgetExceeded("time", snapshot)
+        return snapshot
+
     def publish_run_manifest(self, run_id: int, manifest: Mapping[str, Any]) -> bool:
         """Publish one immutable lifecycle manifest idempotently as an event.
 
@@ -1088,12 +1639,22 @@ class FrameworkState:
                 existing = rows[0][0]
                 if existing != payload_json:
                     raise RuntimeError(f"run {run_id} has a conflicting lifecycle manifest")
+                self._ensure_run_budget_event(
+                    run_id,
+                    self._budget_configuration(verified),
+                    manifest_digest=str(verified["digest"]),
+                )
                 return False
             self._connection.execute(
                 """INSERT INTO run_events(
                 run_id,occurred_ns,level,phase,message,details_json)
                 VALUES(?,?,'info','lifecycle-manifest','Run manifest published',?)""",
                 (run_id, time.time_ns(), payload_json),
+            )
+            self._ensure_run_budget_event(
+                run_id,
+                self._budget_configuration(verified),
+                manifest_digest=str(verified["digest"]),
             )
         return True
 
@@ -1142,7 +1703,8 @@ class FrameworkState:
                 """INSERT INTO route_runs(
                 run_id,route_name,status,started_ns,current_phase,heartbeat_ns,
                 source_run_id)
-                VALUES(?,?,'running',?,'route_start',?,?)""",
+                VALUES(?,?,'running',?,'route_start',?,?)
+                ON CONFLICT(run_id,route_name) DO NOTHING""",
                 ((run_id, route_name, now, now, source_run_id) for route_name in routes),
             )
 
@@ -1156,15 +1718,12 @@ class FrameworkState:
     ) -> None:
         now = time.time_ns()
         with self._connection:
-            self._connection.execute(
+            inserted = self._connection.execute(
                 """INSERT INTO route_phase_runs(
                 run_id,route_name,phase_name,status,started_ns,heartbeat_ns,
                 source_run_id)
                 VALUES(?,?,?,'running',?,?,?)
-                ON CONFLICT(run_id,route_name,phase_name) DO UPDATE SET
-                status='running',started_ns=excluded.started_ns,completed_ns=NULL,
-                heartbeat_ns=excluded.heartbeat_ns,source_run_id=excluded.source_run_id,
-                summary_json=NULL,error_type=NULL,error_message=NULL""",
+                ON CONFLICT(run_id,route_name,phase_name) DO NOTHING""",
                 (
                     run_id,
                     route_name,
@@ -1174,6 +1733,8 @@ class FrameworkState:
                     source_run_id,
                 ),
             )
+            if inserted.rowcount != 1:
+                return
             self._connection.execute(
                 """UPDATE route_runs SET current_phase=?,heartbeat_ns=?
                 WHERE run_id=? AND route_name=? AND status='running'""",
@@ -1186,7 +1747,7 @@ class FrameworkState:
         route_name: str,
         phase_name: str,
         summary: Mapping[str, Any] | None = None,
-    ) -> None:
+    ) -> bool:
         now = time.time_ns()
         payload = (
             None
@@ -1194,11 +1755,23 @@ class FrameworkState:
             else json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
         )
         with self._connection:
-            self._connection.execute(
+            updated = self._connection.execute(
                 """UPDATE route_phase_runs SET status='completed',completed_ns=?,
                 heartbeat_ns=?,summary_json=?,error_type=NULL,error_message=NULL
-                WHERE run_id=? AND route_name=? AND phase_name=?""",
+                WHERE run_id=? AND route_name=? AND phase_name=? AND status='running'""",
                 (now, now, payload, run_id, route_name, phase_name),
+            )
+            if updated.rowcount == 1:
+                return True
+            status = self._connection.execute(
+                """SELECT status FROM route_phase_runs
+                WHERE run_id=? AND route_name=? AND phase_name=?""",
+                (run_id, route_name, phase_name),
+            ).fetchone()
+            if status is not None and str(status[0]) == "completed":
+                return False
+            raise RuntimeError(
+                f"route phase {run_id}/{route_name}/{phase_name} is not running"
             )
 
     def fail_route_phase(
@@ -1230,16 +1803,25 @@ class FrameworkState:
         run_id: int,
         route_name: str,
         summary: Mapping[str, Any],
-    ) -> None:
+    ) -> bool:
         payload = json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
         with self._connection:
-            self._connection.execute(
+            updated = self._connection.execute(
                 """UPDATE route_runs SET status='completed',completed_ns=?,
                 current_phase='completed',heartbeat_ns=?,summary_json=?,
                 error_type=NULL,error_message=NULL
                 WHERE run_id=? AND route_name=? AND status='running'""",
                 (time.time_ns(), time.time_ns(), payload, run_id, route_name),
             )
+            if updated.rowcount == 1:
+                return True
+            status = self._connection.execute(
+                "SELECT status FROM route_runs WHERE run_id=? AND route_name=?",
+                (run_id, route_name),
+            ).fetchone()
+            if status is not None and str(status[0]) == "completed":
+                return False
+            raise RuntimeError(f"route {run_id}/{route_name} is not running")
 
     def fail_route_run(
         self,
@@ -1279,6 +1861,11 @@ class FrameworkState:
         """Close runs left active after an unclean process termination."""
 
         with self._connection:
+            active = self._connection.execute(
+                """SELECT run_id FROM initial_runs
+                WHERE status='running' ORDER BY run_id"""
+            ).fetchall()
+            active_ids = tuple(int(row[0]) for row in active)
             self._connection.execute(
                 """UPDATE route_phase_runs SET status='interrupted',completed_ns=?,
                 heartbeat_ns=?,error_type='InterruptedRun',
@@ -1301,6 +1888,53 @@ class FrameworkState:
                 WHERE status='running'""",
                 (time.time_ns(), time.time_ns()),
             )
+            for active_id in active_ids:
+                route_names = tuple(
+                    str(row[0])
+                    for row in self._connection.execute(
+                        """SELECT route_name FROM route_runs
+                        WHERE run_id=? AND status='interrupted'
+                        ORDER BY route_name""",
+                        (active_id,),
+                    )
+                )
+                candidate_rows, candidate_bytes = self.route_candidate_workload(active_id)
+                budget = self._read_run_budget_locked(active_id)
+                if budget is not None and not budget["cancel_requested"]:
+                    self._connection.execute(
+                        """INSERT INTO run_events(
+                        run_id,occurred_ns,level,phase,message,details_json)
+                        VALUES(?,?,'warning','lifecycle-budget',
+                        'Run cancellation requested',?)""",
+                        (
+                            active_id,
+                            time.time_ns(),
+                            json.dumps(
+                                {
+                                    "schema": RUN_BUDGET_SCHEMA,
+                                    "kind": "cancelled",
+                                    "manifest_digest": budget["manifest_digest"],
+                                    "reason": "abrupt_termination",
+                                    "idempotency_key": "cancellation",
+                                },
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            ),
+                        ),
+                    )
+                self._append_lifecycle_event_once(
+                    active_id,
+                    level="warning",
+                    phase="lifecycle-recovery",
+                    message="Run abandoned after abrupt termination",
+                    idempotency_key="abandoned",
+                    details={
+                        "status": "interrupted",
+                        "routes": list(route_names),
+                        "candidate_rows": candidate_rows,
+                        "candidate_bytes": candidate_bytes,
+                    },
+                )
         return int(result.rowcount)
 
     def mark_abandoned_actions(self) -> int:
@@ -1356,7 +1990,7 @@ class FrameworkState:
         reconciliation_records: int,
         inventory_attempts: int,
         inventory_mode: str,
-    ) -> None:
+    ) -> bool:
         self._validate_inventory_binding(
             scan_id,
             reconciliation_records,
@@ -1388,9 +2022,26 @@ class FrameworkState:
                 ),
             )
             if result.rowcount != 1:
-                raise RuntimeError(f"run {run_id} cannot complete without its published snapshot")
+                status = self._connection.execute(
+                    "SELECT status FROM initial_runs WHERE run_id=?",
+                    (run_id,),
+                ).fetchone()
+                if status is not None and str(status[0]) == "completed":
+                    return False
+                raise RuntimeError(
+                    f"run {run_id} cannot complete without its published snapshot"
+                )
+            self._append_lifecycle_event_once(
+                run_id,
+                level="info",
+                phase="lifecycle-transition",
+                message="Run transitioned",
+                idempotency_key="status:completed",
+                details={"status": "completed"},
+            )
+            return True
 
-    def complete_operational_run(self, run_id: int) -> None:
+    def complete_operational_run(self, run_id: int) -> bool:
         with self._connection:
             result = self._connection.execute(
                 """UPDATE initial_runs SET completed_ns=?,status='completed',
@@ -1400,7 +2051,22 @@ class FrameworkState:
                 (time.time_ns(), time.time_ns(), run_id),
             )
             if result.rowcount != 1:
+                status = self._connection.execute(
+                    "SELECT status FROM initial_runs WHERE run_id=?",
+                    (run_id,),
+                ).fetchone()
+                if status is not None and str(status[0]) == "completed":
+                    return False
                 raise RuntimeError(f"run {run_id} is not a running operational execution")
+            self._append_lifecycle_event_once(
+                run_id,
+                level="info",
+                phase="lifecycle-transition",
+                message="Run transitioned",
+                idempotency_key="status:completed",
+                details={"status": "completed"},
+            )
+            return True
 
     def fail_initial_run(self, run_id: int) -> bool:
         with self._connection:
@@ -1428,6 +2094,14 @@ class FrameworkState:
                 WHERE run_id=? AND status='running'""",
                 (now, now, run_id),
             )
+            self._append_lifecycle_event_once(
+                run_id,
+                level="error",
+                phase="lifecycle-transition",
+                message="Run transitioned",
+                idempotency_key="status:failed",
+                details={"status": "failed"},
+            )
             return True
 
     def cancel_initial_run(self, run_id: int) -> bool:
@@ -1454,6 +2128,14 @@ class FrameworkState:
                 error_type='KeyboardInterrupt',error_message='framework run cancelled'
                 WHERE run_id=? AND status='running'""",
                 (now, now, run_id),
+            )
+            self._append_lifecycle_event_once(
+                run_id,
+                level="warning",
+                phase="lifecycle-transition",
+                message="Run transitioned",
+                idempotency_key="status:cancelled",
+                details={"status": "cancelled"},
             )
             return True
 
