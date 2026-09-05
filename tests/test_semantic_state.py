@@ -80,6 +80,10 @@ from neocortex.semantic.semantic_sources import (
 )
 
 
+TEST_CAPABILITIES = ("base", 'inference')
+pytestmark = pytest.mark.capability("base", 'inference')
+
+
 # region [01] Test builders
 
 

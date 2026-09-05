@@ -14,6 +14,7 @@ from neocortex.foundation.processing_provenance import (
     python_runtime_component,
 )
 from neocortex.safety.route_filters import CandidateSelection
+from neocortex.platform.policy import default_local_models_only
 
 
 # region [01] Processing configuration
@@ -43,7 +44,7 @@ class AudioRouteConfig:
     retry_errors: bool = False
     ffprobe_path: str | None = None
     model_cache_directory: Path | None = None
-    local_models_only: bool = False
+    local_models_only: bool = field(default_factory=default_local_models_only)
     selection: CandidateSelection = field(default_factory=CandidateSelection)
     memory_budget_bytes: int = 2 * 1024 * 1024 * 1024
     min_free_memory_bytes: int = 2 * 1024 * 1024 * 1024
@@ -73,6 +74,8 @@ class AudioRouteConfig:
         resolved_device: str,
         resolved_compute_type: str,
     ) -> ProcessingProvenance:
+        from .whisper import whisper_local_provenance
+
         return build_processing_provenance(
             "audio-route",
             AUDIO_ROUTE_VERSION,
@@ -90,6 +93,7 @@ class AudioRouteConfig:
             },
             (
                 python_runtime_component(),
+                whisper_local_provenance(self.model_name, self.model_cache_directory),
                 {
                     "name": "faster-whisper",
                     "kind": "python-distribution",

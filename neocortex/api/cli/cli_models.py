@@ -37,7 +37,7 @@ def _print(report: dict[str, object], *, as_json: bool) -> None:
 
 def run_models_status(args: argparse.Namespace) -> int:
     try:
-        report = inspect_models()
+        report = inspect_models(**_model_options(args))
         _print(report, as_json=args.models_json)
     except Exception as exc:
         print(f"ERROR models-status {type(exc).__name__}: {exc}", file=sys.stderr)
@@ -47,12 +47,21 @@ def run_models_status(args: argparse.Namespace) -> int:
 
 def run_models_prepare(args: argparse.Namespace) -> int:
     try:
-        report = prepare_models()
+        report = prepare_models(**_model_options(args))
         _print(report, as_json=args.models_json)
     except Exception as exc:
         print(f"ERROR models-prepare {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
     return 0
+
+
+def _model_options(args: argparse.Namespace) -> dict:
+    options = {}
+    if getattr(args, "models_root", None) is not None:
+        options["models_root"] = args.models_root
+    if getattr(args, "models_model_id", None) is not None:
+        options["model_ids"] = args.models_model_id
+    return options
 
 
 __all__ = ["run_models_prepare", "run_models_status"]

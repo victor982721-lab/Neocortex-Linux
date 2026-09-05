@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 import os
 import sqlite3
 import sys
@@ -27,6 +28,9 @@ from neocortex.semantic.semantic_sources import iter_image_source_records
 from neocortex.persistence.sqlite_schema_contract import SQLiteSchemaContractError
 from neocortex.persistence.framework_state_writer import FrameworkState
 from tests.internal_paths_test_support import begin_signed_normal_run
+
+
+TEST_CAPABILITIES = ('documents',)
 
 
 # region [01] Catalog v1 fixtures

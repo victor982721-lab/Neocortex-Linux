@@ -48,7 +48,104 @@ sudo apt install python3.14-venv qpdf tesseract-ocr \
 Instala únicamente los idiomas y binarios necesarios. Las rutas deben hacer
 preflight y declarar cobertura cuando falta una herramienta.
 
-## Wheelhouse e instalación
+## Instalación ordinaria desde una extracción
+
+Kubuntu/CPython 3.14 sigue siendo la referencia productiva; CPython 3.13 con GIL
+también está soportado. GitHub **Code → Download ZIP** entrega los archivos
+necesarios, sin preparación adicional ni historial Git. Usa un venv nuevo, sin
+`--system-site-packages`, para evitar paquetes y precargas del Python global.
+
+`dev-resources/offline/artifacts/` contiene los wheels originales del cierre
+transitivo para CPython 3.13/Linux x86_64, `locks/` fija versiones y SHA-256 por
+capacidad, y `provenance.json` conserva origen y licencias. No requiere cachés
+personales, Git LFS ni otra descarga. `constraints-linux-cp313.lock` reúne ese
+cierre, mientras el lock productivo CPython 3.14 permanece independiente.
+
+| Capacidad | Extra / recurso | Incluido offline |
+|---|---|---|
+| Runtime base, inventario, texto y Code | `packaging`, `rich`, `xxhash` y transitivos | Sí, lock `runtime-base-cp313-linux-x86_64.lock` |
+| Construcción ordinaria | `build`, backend `setuptools` y transitivos | Sí, lock `build-cp313-linux-x86_64.lock` |
+| Pruebas base | `test-base`: pytest y transitivos, sin plugins obligatorios | Sí, lock `test-base-cp313-linux-x86_64.lock` |
+| Documentos e imagen | `documents`, `image`: Pillow, PyMuPDF, pdfminer.six, pytesseract y transitivos | Sí, lock `documents-image-cp313-linux-x86_64.lock` |
+| Inferencia | `semantic`, `audio` y pesos originales locales | No |
+| UI / MCP | `ui` / `agent` | No |
+| Herramientas de desarrollo adicionales | `analysis` | No; no es requisito de las pruebas base |
+
+Desde la extracción, con CPython 3.13 disponible:
+
+~~~bash
+Source="$PWD"
+Offline="$Source/dev-resources/offline"
+Lab="$(mktemp -d)"
+python3.13 -I -m venv "$Lab/venv"
+Python="$Lab/venv/bin/python"
+export PIP_NO_INDEX=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+export PIP_FIND_LINKS="$Offline/artifacts"
+"$Python" -m pip install --require-hashes \
+  -r "$Offline/locks/runtime-base-cp313-linux-x86_64.lock" \
+  -r "$Offline/locks/build-cp313-linux-x86_64.lock" \
+  -r "$Offline/locks/test-base-cp313-linux-x86_64.lock"
+"$Python" -m build --wheel --no-isolation --outdir "$Lab/wheels" "$Source"
+"$Python" -m pip install --no-deps "$Lab"/wheels/neocortex_framework-*.whl
+"$Python" -m pip check
+cd "$Lab"
+"$Lab/venv/bin/Neocortex" --help
+"$Python" -m neocortex --version
+~~~
+
+No se usa el launcher personal, `current`, integración de escritorio ni
+`tools/release_linux.py`. El wheel contiene los recursos de runtime y excluye
+el almacén de dependencias de desarrollo; el paquete instalado no necesita la
+extracción ni su directorio de trabajo. Para ampliar a documentos e imagen:
+
+~~~bash
+"$Python" -m pip install --require-hashes \
+  -r "$Offline/locks/documents-image-cp313-linux-x86_64.lock"
+"$Python" -m pip check
+~~~
+
+Un recorrido pequeño del producto real, repetible sobre los fixtures incluidos:
+
+~~~bash
+mkdir -p "$Lab/corpus"
+cp -R "$Source/tests/fixtures/headless_product/base/." "$Lab/corpus/"
+NEOCORTEX_PROGRESS_STREAM=1 "$Lab/venv/bin/Neocortex" \
+  --root "$Lab/corpus" --state-directory "$Lab/state" \
+  --code-project-root "$Lab/corpus/code" --route text,code --strict-exit-codes
+"$Lab/venv/bin/Neocortex" --root "$Lab/corpus" \
+  --state-directory "$Lab/state" --status --status-json
+~~~
+
+Repite la misma orden de procesamiento para comprobar replay/caché y consulta
+los owners de estado publicados; las pruebas instaladas de
+`tests/test_headless_product_workflows.py` verifican también cambios de un
+archivo, reanudación acotada, documentos, OCR, video y ausencia de modelos.
+
+Los wheels nativos son cp313 o `abi3` aplicable, no cp314 ni free-threaded, y
+declaran su mínimo manylinux/glibc. El intérprete y los ejecutables de sistema
+se provisionan por separado: FFmpeg/ffprobe para multimedia, Tesseract con el
+idioma solicitado para OCR y LibreOffice para conversiones que lo requieran.
+`qpdf` y `catdoc` no son requisitos globales, ni la ausencia de Qt impide CLI.
+La UI necesita PySide6 y sus bibliotecas; `QT_QPA_PLATFORM=offscreen` o un
+display Xvfb permiten ejecución headless, pero no acreditan KDE/Wayland ni KIO.
+
+Las pruebas se seleccionan **antes de importar los módulos**:
+
+~~~bash
+cd "$Source"
+"$Python" -m pytest --capabilities=base
+"$Python" -m pytest --capabilities=base,documents,image
+~~~
+
+La selección predeterminada sigue siendo `all`; también existen `inference`,
+`ui`, `platform` y `agent`. Seleccionar una capacidad no instala dependencias
+ni convierte su ausencia en procesamiento correcto. Véase
+[ejecución y observabilidad](OPERATIONS.md) para rutas, estado y límites.
+La instalación sigue los contratos de [venv](https://docs.python.org/3.13/library/venv.html),
+[instalación repetible de pip](https://pip.pypa.io/en/stable/topics/repeatable-installs/)
+y [tags de wheels](https://packaging.python.org/en/latest/specifications/platform-compatibility-tags/).
+
+## Wheelhouse y release personal
 
 La release canónica no resuelve paquetes desde Internet. Exige un wheelhouse
 local con `wheelhouse-manifest.json`, wheels compatibles y hashes válidos.

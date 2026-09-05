@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import json
 import sqlite3
 import tempfile
@@ -31,6 +32,9 @@ from neocortex.capabilities.formats.pdf.pdf_state import (
 from neocortex.foundation.processing_provenance import (
     TesseractRuntimeProvenance,
 )
+
+
+TEST_CAPABILITIES = ('documents',)
 
 
 def _config(**overrides) -> IsolatedExtractionConfig:

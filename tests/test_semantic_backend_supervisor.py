@@ -19,6 +19,10 @@ from neocortex.semantic.semantic_work_budget import (
 )
 
 
+TEST_CAPABILITIES = ("base", 'inference')
+pytestmark = pytest.mark.capability("base", 'inference')
+
+
 def _model() -> EmbeddingModelSpec:
     return EmbeddingModelSpec(
         "deadline-supervisor-model-v1",

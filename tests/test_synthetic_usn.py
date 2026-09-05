@@ -54,9 +54,19 @@ def test_synthetic_usn_emits_create_modify_delete_and_rename(
     assert journal.raw_volume_open_attempts == 0
 
 
-def test_synthetic_usn_rejects_root_outside_temporary_lab() -> None:
+@pytest.mark.parametrize("candidate_name", ("outside", "laboratory"))
+def test_synthetic_usn_rejects_root_outside_temporary_lab(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, candidate_name: str,
+) -> None:
+    # An ordinary source extraction may itself be under /tmp. Exercise a
+    # controlled boundary rather than assuming the checkout is outside it.
+    laboratory = tmp_path / "laboratory"
+    laboratory.mkdir()
+    candidate = tmp_path / candidate_name
+    candidate.mkdir(exist_ok=True)
+    monkeypatch.setenv("NEOCORTEX_AUDIT_LAB_ROOT", str(laboratory))
     with pytest.raises(SyntheticUsnContainmentError, match="temporary laboratory"):
-        SyntheticUsnJournal(Path.cwd())
+        SyntheticUsnJournal(candidate)
 
 
 def test_synthetic_usn_restores_lookup_points_after_base_exception(

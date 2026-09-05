@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 import os
 import time
 from pathlib import Path
@@ -17,6 +18,9 @@ from PySide6.QtWidgets import QApplication, QLabel
 from neocortex.interface.presentation.windows.main import MainWindow
 from neocortex.interface.read import ReadRequest
 from neocortex.interface.presentation.theme import COLORS, STYLESHEET
+
+
+TEST_CAPABILITIES = ('ui',)
 
 
 def _rgb_distance(first: QColor, second: QColor) -> int:

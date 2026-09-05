@@ -31,6 +31,7 @@ from neocortex.persistence.framework_route_state import (
     ReviewCandidateReconciliation,
 )
 from .frames import (
+    VIDEO_FRAME_SAMPLING_POLICY,
     ExtractedVideoFrame,
     VideoFrameBatch,
     VideoFrameSamplingConfig,
@@ -270,6 +271,7 @@ class VideoRouteConfig:
                 "max_duration_seconds": self.max_duration_seconds,
                 "max_frames": self.max_frames,
                 "interval_seconds": self.interval_seconds,
+                "frame_sampling_policy": VIDEO_FRAME_SAMPLING_POLICY,
                 "scene_threshold": self.scene_threshold,
                 "include_scenes": self.include_scenes,
                 "include_keyframes": self.include_keyframes,
@@ -699,6 +701,7 @@ class VideoRoute:
                 source_width=primary.width,
                 source_height=primary.height,
                 duration_seconds=probe.duration_seconds,
+                frame_rate=primary.frame_rate,
                 config=self.config.frame_sampling_config(),
                 cancellation=self.cancellation,
             ) as batch:

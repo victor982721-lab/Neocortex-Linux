@@ -264,6 +264,31 @@ Neocortex --ui
 `models status` es local; `prepare` puede descargar. La GUI consume los mismos
 contratos y mantiene deshabilitados los efectos de corpus en Linux.
 
+La inspección o preparación puede limitarse al modelo solicitado, sin exigir
+todos los modelos productivos:
+
+```bash
+Neocortex --models-status --models-json --models-root /tmp/models \
+  --models-model-id jinaai/jina-embeddings-v2-base-es
+Neocortex --root /tmp/corpus --state-directory /tmp/state --route audio \
+  --audio-model small --audio-model-cache /tmp/models/whisper
+```
+
+`--models-model-id` es repetible; omitirlo conserva la selección completa. La
+raíz explícita contiene `fastembed/` y `whisper/`, y los procesadores usan
+`--semantic-model-cache` y `--audio-model-cache` respectivamente. Semantic
+requiere el layout de caché Hugging Face con `refs/main`, revisión y
+`snapshots/<revisión>/`: pesos, tokenizer y configuración originales se validan
+juntos y participan en la procedencia. Whisper también admite una carpeta
+directa con `model.bin`, `config.json` y `tokenizer.json`; omitir el tokenizer
+no autoriza una descarga de fallback. Los IDs Jina, MiniLM, CLIP y Whisper no
+se sustituyen por modelos de prueba.
+
+Procesar o consultar offline no prepara modelos: sin backend o archivos locales
+la capacidad declara el requisito ausente. Backend presente, archivos presentes
+y procesamiento comprobado son estados distintos. `--ui --help` no requiere
+Qt; iniciar la UI sí requiere el extra `ui` y bibliotecas de plataforma.
+
 ## MCP local
 
 ```bash

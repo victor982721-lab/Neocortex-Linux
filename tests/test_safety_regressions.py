@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 import os
 import sqlite3
 import tempfile
@@ -11,6 +12,8 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
+import pytest
+
 from unittest.mock import patch
 
 from neocortex.enumeration import JournalCursor
@@ -29,12 +32,13 @@ from neocortex.workflow.actions.action_policy import same_snapshot
 from neocortex.workflow.actions.actions import FrameworkActions
 from neocortex.platform.content_types import DetectedType
 from neocortex.safety.corpus_access import ProtectedAnalysisRootError
-from neocortex.capabilities.formats.image.route import _same_snapshot as image_same_snapshot
 from neocortex.runtime.models import ActionSummary
-from neocortex.capabilities.formats.pdf.pdf_isolation import _source_matches
 from neocortex.persistence.framework_schema import SCHEMA_VERSION
 from neocortex.persistence.framework_state_writer import FrameworkState
 from tests.internal_paths_test_support import begin_signed_normal_run
+
+
+TEST_CAPABILITIES = ("base", "documents", "image")
 
 
 # region [01] Test support
@@ -914,7 +918,10 @@ class PlannerSnapshotSafetyTests(unittest.TestCase):
 
 
 class BirthTimeSnapshotSafetyTests(unittest.TestCase):
+    @pytest.mark.capability("image")
     def test_action_snapshot_comparison_rejects_changed_birth_time(self) -> None:
+        from neocortex.capabilities.formats.image.route import _same_snapshot as image_same_snapshot
+
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "item.bin"
             path.write_bytes(b"content")
@@ -925,7 +932,10 @@ class BirthTimeSnapshotSafetyTests(unittest.TestCase):
             self.assertFalse(same_snapshot(snapshot, changed))
             self.assertFalse(image_same_snapshot(snapshot, changed))
 
+    @pytest.mark.capability("documents")
     def test_hashing_rejects_changed_birth_time(self) -> None:
+        from neocortex.capabilities.formats.pdf.pdf_isolation import _source_matches
+
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "item.bin"
             path.write_bytes(b"content")

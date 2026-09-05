@@ -1,2 +1,8 @@
 neocortex/interface/presentation/assets/neocortex-app-icon.svg text eol=lf
 tools/pyright_runtime_lock/*.json text eol=lf
+
+# Preserve reviewed upstream artifacts and license bytes without newline filters.
+dev-resources/offline/artifacts/*.whl binary
+dev-resources/offline/licenses/** -text whitespace=-blank-at-eol,-blank-at-eof
+# PDF cross-reference records have significant trailing spaces, even for ASCII PDFs.
+tests/fixtures/headless_product/**/*.pdf binary

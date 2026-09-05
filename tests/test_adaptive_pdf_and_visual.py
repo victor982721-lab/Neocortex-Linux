@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
@@ -17,6 +18,9 @@ from neocortex.capabilities.formats.pdf.pdf_route_models import (
 )
 from neocortex.capabilities.formats.pdf.pdf_state import initialize_pdf_state
 from neocortex.safety.route_filters import CandidateSelection
+
+
+TEST_CAPABILITIES = ('documents', 'image')
 
 
 # region [01] Adaptive PDF timeout and cache metrics

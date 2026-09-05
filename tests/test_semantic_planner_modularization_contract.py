@@ -16,6 +16,10 @@ from pathlib import Path
 import pytest
 
 from neocortex.semantic import semantic_planner, semantic_service
+
+
+TEST_CAPABILITIES = ("base", 'inference')
+pytestmark = pytest.mark.capability("base", 'inference')
 # endregion [01]
 
 # region [02] Implementación

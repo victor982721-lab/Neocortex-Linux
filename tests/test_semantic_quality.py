@@ -11,6 +11,10 @@ from neocortex.semantic.semantic_quality import (
 )
 
 
+TEST_CAPABILITIES = ("base", 'inference')
+pytestmark = pytest.mark.capability("base", 'inference')
+
+
 def _chunking() -> TextChunkingConfig:
     return TextChunkingConfig(
         max_chars=2_048,

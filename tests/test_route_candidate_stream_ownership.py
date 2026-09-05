@@ -5,6 +5,7 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+
 import tempfile
 import threading
 import unittest
@@ -21,6 +22,9 @@ from neocortex.capabilities.formats.image.route import (
 )
 from neocortex.capabilities.formats.image.state import iter_candidates
 from neocortex.capabilities.formats.pdf.pdf_route import PdfRoute, PdfRouteConfig, PdfRouteState
+
+
+TEST_CAPABILITIES = ('documents', 'image')
 # endregion [01]
 
 # region [02] Implementación

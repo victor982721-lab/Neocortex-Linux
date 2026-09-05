@@ -43,14 +43,14 @@ if TYPE_CHECKING:
     from neocortex.capabilities.formats.video import route as _video_contracts
     from neocortex.capabilities.formats.archive import route as _archive_contracts
     from neocortex.capabilities.formats.docx import models as _docx_contracts
-    from neocortex.capabilities.formats.image import route as _image_contracts
+    from neocortex.capabilities.formats.image import contracts as _image_contracts
 else:
     _application_contracts = _DeferredTypeModule("neocortex.runtime.models")
     _archive_contracts = _DeferredTypeModule("neocortex.capabilities.formats.archive.route")
     _audio_contracts = _DeferredTypeModule("neocortex.capabilities.formats.audio.models")
     _code_contracts = _DeferredTypeModule("neocortex.code.code_contracts")
     _docx_contracts = _DeferredTypeModule("neocortex.capabilities.formats.docx.models")
-    _image_contracts = _DeferredTypeModule("neocortex.capabilities.formats.image.route")
+    _image_contracts = _DeferredTypeModule("neocortex.capabilities.formats.image.contracts")
     _office_contracts = _DeferredTypeModule("neocortex.capabilities.formats.office.route")
     _pdf_contracts = _DeferredTypeModule("neocortex.capabilities.formats.pdf.pdf_route_models")
     _text_contracts = _DeferredTypeModule("neocortex.capabilities.formats.text.text_route")
@@ -262,7 +262,7 @@ def image_route_config_from_application(
 ) -> _image_contracts.ImageRouteConfig:
     """Project current values and the effective root into the image contract."""
 
-    from neocortex.capabilities.formats.image.route import ImageRouteConfig
+    from neocortex.capabilities.formats.image.contracts import ImageRouteConfig
 
     return ImageRouteConfig(
         state_path=config.image_database,

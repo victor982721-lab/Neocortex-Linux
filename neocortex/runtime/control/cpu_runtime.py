@@ -3,9 +3,71 @@
 from __future__ import annotations
 
 import ctypes
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
+
+from .cgroup_runtime import cgroup_cpu_snapshot
+
+
+@dataclass(frozen=True, slots=True)
+class CpuCapacitySnapshot:
+    system_cpu_count: int | None
+    affinity_cpu_count: int | None
+    cgroup_quota_cpus: float | None
+    cgroup_cpuset_count: int | None
+    effective_cpus: float
+
+
+def cpu_capacity_snapshot() -> CpuCapacitySnapshot:
+    """Read capacity without confusing logical CPUs with usable CPU bandwidth."""
+
+    detected = os.cpu_count()
+    affinity = None
+    getaffinity = getattr(os, "sched_getaffinity", None)
+    if getaffinity is not None:
+        try:
+            affinity = getaffinity(0)
+        except (OSError, ValueError):
+            pass
+    cgroup = cgroup_cpu_snapshot()
+    capacities: list[float] = []
+    if detected is not None and detected > 0:
+        capacities.append(detected)
+    if affinity:
+        capacities.append(len(affinity))
+    cpuset_count = None
+    if cgroup.cpuset_ranges is not None:
+        cpuset_count = sum(last - first + 1 for first, last in cgroup.cpuset_ranges)
+        capacities.append(cpuset_count)
+        if affinity:
+            capacities.append(sum(
+                any(first <= cpu <= last for first, last in cgroup.cpuset_ranges)
+                for cpu in affinity
+            ))
+    quota = None if cgroup.quota_cpus is None else float(cgroup.quota_cpus)
+    if quota is not None:
+        capacities.append(quota)
+    return CpuCapacitySnapshot(
+        detected,
+        None if affinity is None else len(affinity),
+        quota,
+        cpuset_count,
+        min(capacities, default=1.0),
+    )
+
+
+def effective_cpu_count() -> int:
+    """Conservative integral concurrency; fractional quotas still need one worker.
+
+    The precise fractional bandwidth remains visible in cpu_capacity_snapshot().
+    Explicit route configuration remains policy, not a replacement for this probe.
+    """
+
+    return max(1, math.floor(cpu_capacity_snapshot().effective_cpus))
+
+
 # region [01] Platform cumulative CPU counters
 
 

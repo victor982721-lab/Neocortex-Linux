@@ -7,7 +7,9 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+import gc
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -72,7 +74,9 @@ def _published_fixture(state: Path) -> None:
 
     inventory = state / "dedup.sqlite3"
     initialize_inventory_schema(inventory)
-    with sqlite3.connect(inventory) as connection:
+    # Connection.__exit__ commits but does not close: a later GC checkpoint
+    # would legitimately change the published owner's WAL during its snapshot.
+    with closing(sqlite3.connect(inventory)) as connection, connection:
         connection.execute(
             """INSERT INTO scans(
             root,root_volume_id,root_file_id,root_birthtime_ns,started_ns,
@@ -90,7 +94,7 @@ def _published_fixture(state: Path) -> None:
 
     catalog = state / "document_catalog.sqlite3"
     initialize_document_catalog(catalog)
-    with sqlite3.connect(catalog) as connection:
+    with closing(sqlite3.connect(catalog)) as connection, connection:
         connection.execute(
             """INSERT INTO catalog_generations(
             source_kind,status,started_ns,completed_ns,published_ns)
@@ -141,10 +145,10 @@ def _legacy_read_compatible_fixture(
     framework_version: int = 19,
 ) -> None:
     state.mkdir()
-    with sqlite3.connect(state / "dedup.sqlite3") as connection:
+    with closing(sqlite3.connect(state / "dedup.sqlite3")) as connection, connection:
         inventory_ddl.build_v7_schema(connection)
         connection.execute("INSERT INTO metadata(key,value) VALUES('schema_version','7')")
-    with sqlite3.connect(state / "framework.sqlite3") as connection:
+    with closing(sqlite3.connect(state / "framework.sqlite3")) as connection, connection:
         if framework_version == 19:
             framework_schema_module._build_v19_exact_schema(connection)
         elif framework_version == 20:
@@ -160,7 +164,7 @@ def _legacy_read_compatible_fixture(
 
 
 def _populate_review_task_watermark(database: Path, *, multipage: bool = False) -> None:
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         connection.execute("PRAGMA foreign_keys=ON")
         framework_schema_module.initialize_framework_schema(connection, lambda: None)
     review_input = ReviewTaskInput("input-1", "sha256", "1" * 64)
@@ -255,7 +259,7 @@ def _rewrite_framework_as_exact_v21(database: Path) -> None:
         for statement in framework_schema_module._INDEX_STATEMENTS
         if "route_candidates_mime_idx" in statement
     )
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("BEGIN IMMEDIATE")
         connection.execute("DROP TRIGGER file_actions_corpus_policy_insert")
@@ -292,7 +296,7 @@ def _delete_review_task_publication_fact(
     *,
     fact: str,
 ) -> None:
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         if fact == "membership":
             trigger_name = "review_task_batch_memberships_no_delete"
             trigger_sql = str(
@@ -362,7 +366,7 @@ def _set_duplicate_plan_summary(
     redundant_files: int = 0,
     reclaimable_bytes: int = 0,
 ) -> None:
-    with sqlite3.connect(inventory) as connection:
+    with closing(sqlite3.connect(inventory)) as connection, connection:
         scan_id = int(
             connection.execute(
                 "SELECT scan_id FROM inventory_checkpoints WHERE root='C:/Corpus'"
@@ -476,7 +480,7 @@ def test_snapshot_cancellation_rolls_back_and_closes_readonly_connection(
     assert len(opened) == 1
     with pytest.raises(sqlite3.ProgrammingError, match="closed"):
         opened[0].execute("SELECT 1")
-    with sqlite3.connect(inventory, timeout=1) as connection:
+    with closing(sqlite3.connect(inventory, timeout=1)) as connection, connection:
         assert int(connection.execute("PRAGMA query_only").fetchone()[0]) == 0
         connection.execute("BEGIN IMMEDIATE")
         assert connection.in_transaction
@@ -570,7 +574,7 @@ def test_snapshot_sqlite_progress_interrupts_long_owner_query(
     assert len(opened) == 1
     with pytest.raises(sqlite3.ProgrammingError, match="closed"):
         opened[0].execute("SELECT 1")
-    with sqlite3.connect(code, timeout=1) as connection:
+    with closing(sqlite3.connect(code, timeout=1)) as connection, connection:
         assert int(connection.execute("PRAGMA query_only").fetchone()[0]) == 0
         connection.execute("BEGIN IMMEDIATE")
         connection.execute("ROLLBACK")
@@ -719,6 +723,35 @@ def test_snapshot_collects_real_heads_and_marks_absent_owners(tmp_path: Path) ->
     assert _owner(snapshot, "code").watermarks
     assert _owner(snapshot, "pdf").state is OwnerAvailability.ABSENT
     assert not (state / "pdf.sqlite3").exists()
+
+
+def test_snapshot_fixture_closes_writers_before_gc_during_capture(tmp_path: Path) -> None:
+    gc.collect()
+    gc_was_enabled = gc.isenabled()
+    gc.disable()
+    collected_during_capture = False
+
+    def collect_once(owner: str, attempt: int) -> None:
+        nonlocal collected_during_capture
+        if not collected_during_capture:
+            collected_during_capture = True
+            gc.collect()
+
+    try:
+        state = tmp_path / "state"
+        _published_fixture(state)
+        snapshot = collect_knowledge_snapshot(
+            KnowledgeStatePaths.from_directory(state),
+            source_version="0.7.0",
+            _between_observations=collect_once,
+        )
+    finally:
+        if gc_was_enabled:
+            gc.enable()
+
+    assert collected_during_capture
+    assert snapshot.consistency is SnapshotConsistency.STABLE
+    assert snapshot.attempts == 1
 
 
 def test_snapshot_exposes_existing_video_owner_without_creating_absent_state(
@@ -923,7 +956,7 @@ def test_snapshot_bounds_review_source_publication_heads(
 def test_snapshot_rejects_extended_previous_framework_schema(tmp_path: Path) -> None:
     state = tmp_path / "state"
     _legacy_read_compatible_fixture(state)
-    with sqlite3.connect(state / "framework.sqlite3") as connection:
+    with closing(sqlite3.connect(state / "framework.sqlite3")) as connection, connection:
         connection.execute("ALTER TABLE initial_runs ADD COLUMN unexpected TEXT")
 
     snapshot = collect_knowledge_snapshot(
@@ -942,7 +975,7 @@ def test_snapshot_distinguishes_absent_future_and_corrupt_without_mutation(
     state = tmp_path / "state"
     state.mkdir()
     future = state / "pdf.sqlite3"
-    with sqlite3.connect(future) as connection:
+    with closing(sqlite3.connect(future)) as connection, connection:
         connection.execute("CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT)")
         connection.execute(
             "INSERT INTO metadata(key,value) VALUES('schema_version',?)",
@@ -978,7 +1011,7 @@ def test_snapshot_retries_once_after_external_owner_change(tmp_path: Path) -> No
         if owner != "code" or attempt != 1 or changed:
             return
         changed = True
-        with sqlite3.connect(code) as connection:
+        with closing(sqlite3.connect(code)) as connection, connection:
             connection.execute(
                 """INSERT INTO analysis_runs(
                 framework_run_id,scan_id,processing_signature,status,started_ns)
@@ -1009,7 +1042,7 @@ def test_snapshot_retries_after_commit_without_logical_watermark_change(
         if owner != "code" or attempt != 1 or changed:
             return
         changed = True
-        with sqlite3.connect(code) as connection:
+        with closing(sqlite3.connect(code)) as connection, connection:
             connection.execute("INSERT INTO metadata(key,value) VALUES('snapshot_probe','1')")
 
     snapshot = collect_knowledge_snapshot(
@@ -1043,7 +1076,7 @@ def test_snapshot_observes_cancellation_before_global_retry(
         if owner != "code" or attempt != 1 or changed:
             return
         changed = True
-        with sqlite3.connect(code) as connection:
+        with closing(sqlite3.connect(code)) as connection, connection:
             connection.execute(
                 """INSERT INTO analysis_runs(
                 framework_run_id,scan_id,processing_signature,status,started_ns)
@@ -1090,7 +1123,7 @@ def test_snapshot_reports_changed_after_second_bounded_attempt(tmp_path: Path) -
         if owner != "code":
             return
         writes += 1
-        with sqlite3.connect(code) as connection:
+        with closing(sqlite3.connect(code)) as connection, connection:
             connection.execute(
                 """INSERT INTO analysis_runs(
                 framework_run_id,scan_id,processing_signature,status,started_ns)
@@ -1272,7 +1305,7 @@ def test_snapshot_reports_cross_owner_skew_after_second_attempt(
 def test_snapshot_rejects_catalog_head_source_mismatch(tmp_path: Path) -> None:
     state = tmp_path / "state"
     _published_fixture(state)
-    with sqlite3.connect(state / "document_catalog.sqlite3") as connection:
+    with closing(sqlite3.connect(state / "document_catalog.sqlite3")) as connection, connection:
         connection.execute(
             "UPDATE catalog_publications SET source_kind='docx' WHERE source_kind='pdf'"
         )
@@ -1303,7 +1336,7 @@ def test_snapshot_rejects_semantic_head_model_mismatch(tmp_path: Path) -> None:
         (EmbeddingRole.QUERY, EmbeddingRole.PASSAGE),
     )
     register_embedding_model(semantic, other_model, allow_test_provider=True)
-    with sqlite3.connect(semantic) as connection:
+    with closing(sqlite3.connect(semantic)) as connection, connection:
         connection.execute(
             "UPDATE published_embedding_heads SET model_signature=?",
             (other_model.model_signature,),
@@ -1323,7 +1356,7 @@ def test_snapshot_rejects_semantic_head_model_mismatch(tmp_path: Path) -> None:
 def test_snapshot_rejects_catalog_publication_orphan(tmp_path: Path) -> None:
     state = tmp_path / "state"
     _published_fixture(state)
-    with sqlite3.connect(state / "document_catalog.sqlite3") as connection:
+    with closing(sqlite3.connect(state / "document_catalog.sqlite3")) as connection, connection:
         connection.execute(
             "UPDATE catalog_publications SET generation_id=9999 WHERE source_kind='pdf'"
         )
@@ -1344,7 +1377,7 @@ def test_snapshot_rejects_invalid_inventory_checkpoint_head(tmp_path: Path) -> N
     _published_fixture(state)
     inventory = state / "dedup.sqlite3"
     paths = KnowledgeStatePaths.from_directory(state)
-    with sqlite3.connect(inventory) as connection:
+    with closing(sqlite3.connect(inventory)) as connection, connection:
         connection.execute("UPDATE scans SET status='partial'")
 
     incomplete = collect_knowledge_snapshot(paths, source_version="0.7.0")
@@ -1353,7 +1386,7 @@ def test_snapshot_rejects_invalid_inventory_checkpoint_head(tmp_path: Path) -> N
     assert incomplete_inventory.warning is not None
     assert "non-complete scan" in incomplete_inventory.warning
 
-    with sqlite3.connect(inventory) as connection:
+    with closing(sqlite3.connect(inventory)) as connection, connection:
         connection.execute("UPDATE scans SET status='complete',root='D:/Elsewhere'")
 
     mismatched = collect_knowledge_snapshot(paths, source_version="0.7.0")

@@ -12,6 +12,7 @@ import time
 import zipfile
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,7 +21,11 @@ from tools import release_linux
 from tools.release_linux import LinuxReleaseLayout
 
 
+TEST_CAPABILITIES = ("base", 'platform')
+
+
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="Linux release contract")
+pytestmark = [pytestmark, pytest.mark.capability("base", 'platform')]
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -216,7 +221,12 @@ def test_wheel_metadata_ignores_nested_vendor_dist_info(tmp_path: Path) -> None:
 
 def test_install_requires_an_explicit_local_wheelhouse_before_preparing_corpus(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # This unit checks the wheelhouse boundary, not the independently tested
+    # production-interpreter boundary. No release can be prepared in this case.
+    monkeypatch.setattr(release_linux, "_require_reference_platform", lambda: None)
+    monkeypatch.delenv(release_linux.WHEELHOUSE_ENVIRONMENT, raising=False)
     source = tmp_path / "source"
     source.mkdir()
     layout = LinuxReleaseLayout(source, _policy(tmp_path))
@@ -230,6 +240,22 @@ def test_install_requires_an_explicit_local_wheelhouse_before_preparing_corpus(
             desktop=False,
         )
     assert not corpus.exists()
+
+
+@pytest.mark.parametrize("python_version", ((3, 13), (3, 14)))
+def test_reference_platform_guard_keeps_the_production_interpreter_contract(
+    monkeypatch: pytest.MonkeyPatch, python_version: tuple[int, int],
+) -> None:
+    monkeypatch.setattr(release_linux, "sys", SimpleNamespace(
+        platform="linux", implementation=SimpleNamespace(name="cpython"),
+        version_info=python_version,
+    ))
+    monkeypatch.setattr(release_linux, "platform", SimpleNamespace(machine=lambda: "x86_64"))
+    if python_version == (3, 14):
+        release_linux._require_reference_platform()
+    else:
+        with pytest.raises(release_linux.LinuxReleaseError, match=r"CPython 3\.14"):
+            release_linux._require_reference_platform()
 
 
 def test_build_workspace_staging_shares_the_release_filesystem(tmp_path: Path) -> None:

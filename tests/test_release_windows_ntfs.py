@@ -5,6 +5,7 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+
 import ast
 import hashlib
 import importlib
@@ -43,6 +44,10 @@ from tools.release_windows_receipts import (
     ReleaseTransitionError,
     TransitionEffectUncertainError,
 )
+
+
+TEST_CAPABILITIES = ("platform",)
+TEST_PLATFORMS = ("win32",)
 # endregion [01]
 
 # region [02] Implementación

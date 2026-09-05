@@ -12,6 +12,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from neocortex.semantic import semantic_service as service
+
+import pytest
+
+
+TEST_CAPABILITIES = ("base", 'inference')
+pytestmark = pytest.mark.capability("base", 'inference')
 # endregion [01]
 
 # region [02] Implementación

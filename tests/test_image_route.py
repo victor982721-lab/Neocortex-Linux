@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import json
 import sqlite3
 import tempfile
@@ -23,6 +24,9 @@ from neocortex.capabilities.formats.image.state import (
     iter_candidates,
     iter_ocr_text_records,
 )
+
+
+TEST_CAPABILITIES = ('image',)
 
 
 # region [01] Route fixture

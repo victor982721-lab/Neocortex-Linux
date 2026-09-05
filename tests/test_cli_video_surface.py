@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 import json
 from pathlib import Path
 
@@ -15,6 +16,9 @@ from neocortex.api.cli.cli_operations import selected_direct_operations
 from neocortex.api.cli.cli_parser import build_parser
 from neocortex.api.cli.cli_validation import validate_arguments
 from neocortex.api.cli.cli_video import run_video_doctor
+
+
+TEST_CAPABILITIES = ('base', 'documents')
 
 
 def test_video_route_arguments_project_every_safety_bound(tmp_path: Path) -> None:
@@ -156,6 +160,7 @@ def test_video_direct_operations_reject_route_or_mutation_authority() -> None:
             validate_arguments(args)
 
 
+@pytest.mark.capability('documents')
 def test_video_doctor_fails_closed_when_configured_ocr_pack_preflight_fails(
     monkeypatch,
     capsys,

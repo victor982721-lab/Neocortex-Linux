@@ -4,8 +4,10 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
 
-from .semantic_chunking import TextChunkingConfig
+if TYPE_CHECKING:
+    from .semantic_chunking import TextChunkingConfig
 from .semantic_models import (
     EmbeddingModality,
     EmbeddingModelSpec,
@@ -194,6 +196,8 @@ def text_chunking_for_model(model: EmbeddingModelSpec) -> TextChunkingConfig:
     These bounds retain natural context and overlap before that exact guard.
     """
 
+    from .semantic_chunking import TextChunkingConfig
+
     if model.model_signature == COMPACT_TEXT_MODEL_SIGNATURE:
         return TextChunkingConfig(
             max_chars=448,
@@ -309,6 +313,64 @@ def fastembed_cache_contract(model_signature: str) -> FastEmbedCacheContract:
         raise ValueError(f"no FastEmbed cache contract for model: {model_signature}") from exc
 
 
+class SemanticModelUnavailableError(RuntimeError):
+    """An exact local model prerequisite is missing or cannot be used."""
+
+    def __init__(self, reason: str, detail: str | None = None) -> None:
+        if not reason.strip():
+            raise ValueError("semantic model unavailability reason cannot be blank")
+        self.reason = reason
+        self.detail = detail
+        super().__init__(reason if detail is None else f"{reason}: {detail}")
+
+
+def local_fastembed_snapshot(model: EmbeddingModelSpec, cache_dir: Path) -> Path:
+    """Inspect the requested pinned snapshot only, without importing a backend.
+
+    File presence is not proof of model compatibility or successful inference.
+    The backend and exact tokenizer contracts are checked separately at use.
+    """
+
+    contract = fastembed_cache_contract(model.model_signature)
+    if not cache_dir.is_dir():
+        raise SemanticModelUnavailableError(
+            "semantic_model_cache_missing", f"{model.model_id} requires a local cache at {cache_dir}",
+        )
+    repository = cache_dir / ("models--" + contract.repository_id.replace("/", "--"))
+    reference = repository / "refs" / "main"
+    if not reference.is_file():
+        raise SemanticModelUnavailableError(
+            "semantic_query_model_not_cached", f"{model.model_id} requires {reference}",
+        )
+    try:
+        if not 1 <= reference.stat().st_size <= 256:
+            raise SemanticModelUnavailableError("semantic_query_model_cache_invalid")
+        commit = reference.read_text(encoding="ascii").strip()
+    except (OSError, UnicodeError) as exc:
+        raise SemanticModelUnavailableError("semantic_query_model_cache_invalid") from exc
+    if not 40 <= len(commit) <= 64 or any(
+        character not in "0123456789abcdef" for character in commit
+    ):
+        raise SemanticModelUnavailableError("semantic_query_model_cache_invalid")
+    snapshot = repository / "snapshots" / commit
+    if not snapshot.is_dir():
+        raise SemanticModelUnavailableError(
+            "semantic_query_model_not_cached", f"{model.model_id} requires snapshot {snapshot}",
+        )
+    for relative_path in contract.required_files:
+        candidate = snapshot.joinpath(*relative_path.split("/"))
+        try:
+            valid = candidate.is_file() and candidate.stat().st_size > 0
+        except OSError as exc:
+            raise SemanticModelUnavailableError("semantic_query_model_cache_invalid") from exc
+        if not valid:
+            raise SemanticModelUnavailableError(
+                "semantic_query_model_cache_incomplete",
+                f"{model.model_id} requires nonempty local file {candidate}",
+            )
+    return snapshot
+
+
 # endregion [03]
 
 
@@ -324,7 +386,9 @@ def default_semantic_model_cache(state_directory: Path) -> Path:
 
 
 def default_semantic_threads() -> int:
-    return max(1, min(8, os.cpu_count() or 1))
+    from neocortex.runtime.control.cpu_runtime import effective_cpu_count
+
+    return max(1, min(8, effective_cpu_count()))
 
 
 # endregion [04]

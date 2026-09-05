@@ -3,6 +3,9 @@ include constraints.txt
 include constraints-linux-cp314.lock
 exclude AGENTS.md
 prune tests
+# Source snapshots from Git contain this development supply, but built
+# distributions must never embed third-party wheels or duplicate licenses.
+prune dev-resources
 include docs/ARCHITECTURE.md
 include docs/CHANGELOG.md
 include docs/CLI.md

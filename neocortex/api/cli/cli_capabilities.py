@@ -45,7 +45,12 @@ class CapabilitiesExitCode(IntEnum):
 
 
 def _all_available(statuses: tuple[RuntimeCapabilityStatus, ...]) -> bool:
-    return all(status.state is CapabilityState.AVAILABLE for status in statuses)
+    return all(
+        status.state is CapabilityState.AVAILABLE
+        and status.enabled
+        and status.processing_error is None
+        for status in statuses
+    )
 
 
 def _report_payload(
@@ -75,20 +80,29 @@ def _print_human(statuses: tuple[RuntimeCapabilityStatus, ...]) -> None:
     )
     for status in statuses:
         reasons = ",".join(status.degradation_reasons) or "-"
+        model_status = (
+            "not_checked" if status.capability in {"audio", "semantic"} else "not_applicable"
+        )
         print(
             f"CAPABILITY name={status.capability} state={status.state.value} "
-            f"extra={status.extra or '-'} reasons={reasons}"
+            f"extra={status.extra or '-'} reasons={reasons} "
+            f"operational_state={status.operational_state} "
+            f"model_status={model_status} prerequisite_scope=metadata_and_paths"
         )
         for component in status.components:
             requirement = component.requirement
-            reason = "-" if component.available else requirement.missing_reason
+            reason = component.unavailable_reason or "-"
             print(
                 f"CAPABILITY_COMPONENT capability={status.capability} "
                 f"component={requirement.component} kind={requirement.kind.value} "
                 f"required={int(requirement.required)} "
                 f"available={int(component.available)} "
                 f"version={_quoted(component.version)} path={_quoted(component.path)} "
-                f"reason={reason} extra={requirement.extra or '-'}"
+                f"reason={reason} extra={requirement.extra or '-'} "
+                f"status={component.observation_state.value} "
+                f"distribution={_quoted(requirement.distribution)} "
+                f"requirement={_quoted(component.applicable_requirement)} "
+                "functional_status=not_checked"
             )
 
 

@@ -4,6 +4,22 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## Cambios posteriores a 0.12.0
+
+- Instalación ordinaria CPython 3.13 desde archivos sin Git, con cierre offline
+  versionado de runtime, construcción, pruebas base y documentos/imagen,
+  separado del wheel instalado y de la promoción personal CPython 3.14.
+- Ayuda, estado publicado y contratos ligeros independientes de inferencia y
+  Qt; diagnóstico distingue requisitos compatibles, presencia y comprobación.
+- Memoria y CPU consideran límites/consumo de cgroups v2, presión y afinidad,
+  conservando los controles y presupuestos del producto.
+- Modelos locales inspeccionables por selección, sin descarga durante el
+  procesamiento offline ni sustitución de backend, pesos o identidades.
+- Suite seleccionable por capacidades antes de colección y fixtures pequeños
+  que recorren CLI, owners SQLite y replay del producto instalado.
+- Muestreo de video acotado por frecuencia al final del clip, con una política
+  identificada en la procedencia para no reutilizar resultados anteriores.
+
 ## 0.12.0 — 2026-09-04
 
 ### Verificación acotada

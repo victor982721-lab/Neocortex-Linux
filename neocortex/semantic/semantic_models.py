@@ -14,9 +14,6 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
-import xxhash
-
-
 # region [01] Stable enums and JSON policy
 
 
@@ -147,6 +144,8 @@ class ContentFingerprint:
 def fingerprint_bytes(payload: bytes | bytearray | memoryview) -> ContentFingerprint:
     """Return the version-neutral XXH3 identity of an in-memory payload."""
 
+    import xxhash
+
     view = memoryview(payload)
     return ContentFingerprint(
         xxh3_128=xxhash.xxh3_128_hexdigest(view),
@@ -166,6 +165,8 @@ def fingerprint_text(text: str) -> ContentFingerprint:
 
 def fingerprint_chunks(chunks: Iterable[bytes]) -> ContentFingerprint:
     """Fingerprint a byte stream incrementally, without joining it in memory."""
+
+    import xxhash
 
     primary = xxhash.xxh3_128()
     guard = xxhash.xxh3_64(seed=_FINGERPRINT_GUARD_SEED)

@@ -1,0 +1,85 @@
+{
+  "schema": "neocortex.headless_fixture.v1",
+  "origin": "authored synthetic fixtures; no user corpus",
+  "groups": {
+    "base": {
+      "count": 20,
+      "files": {
+        "README.md": "c2b36887cc6843e43a5c9d5c1ed516ea19639a819bae538a0657751c20aa30e1",
+        "code/__init__.py": "5f614a6b084722291cd210c993fd989cf462429d98b2fc4d958fb87ca9a3d291",
+        "code/model.py": "9ebf57810df2fea5c5f2377d7d65f8823096cf0c77685f9b6c124f391c8ba23e",
+        "code/pyproject.toml": "9854ff0bb6e8cd6900ff9055d9402f64c5f7040f1185a99685ebe8f9717808a1",
+        "code/relay.py": "04e3a52b1e249a52638259226634d23211c0345d2ce98e01d9ebece867a633f2",
+        "records.csv": "fcfae2d562e7c993960bc3bfbc94293908a2bb82adc727d1a736659d78badcea",
+        "text/duplicate-a.txt": "7ced6ff8fa19d7d969077fbbef63ef8de7eca44bae1be482d653267c58b357d7",
+        "text/duplicate-b.txt": "7ced6ff8fa19d7d969077fbbef63ef8de7eca44bae1be482d653267c58b357d7",
+        "text/medición_ñ_測定.txt": "673cf723bf639efc5091fa8f6e00bf28fbf96e62df311cd31b0f0aeed7d76ca7",
+        "text/observations.txt": "2565a18d7000ae25380fef937818cbd4cbe35c1afdebd66a01665129da18d4bf",
+        "text/record-00.txt": "91a5b0e646ebc51eb07cf833763ee9d2265ae88f7cdea064eedccb9ef4b88adc",
+        "text/record-01.txt": "abbb026cdda329d27e80bb7d2d6e97a397042eeba8f95157346950aff2726ec4",
+        "text/record-02.txt": "ca86a9bf0d984060745b71ca65b54542bf60753a4dbd72ff04d3d4bdd803feec",
+        "text/record-03.txt": "0d350fec0e0242f1c0689bdd0c7c8ff5c0ab3d9e6111a6f37b07ed02cb9cf561",
+        "text/record-04.txt": "0543d5cd2091b03c711fafd93c7a458526dfc17f62196cae465f984dbef361ca",
+        "text/record-05.txt": "7c6a3dec237c603fed7dddce299c7ac0fdeff8c85a779baa09d6695f09c6377c",
+        "text/record-06.txt": "8b9926bce7aa555f196335a5ec5a6d1eed4df2a748e2d5100d1be75be07a5d4f",
+        "text/record-07.txt": "19d6fd74c30e9defb504b5716a57e010121975c1be8863beb020cf137e10cec9",
+        "text/record-08.txt": "d21c90984290477c39c891c4e445575d02253517625ad890670f7166a5669394",
+        "text/record-09.txt": "82d9a474da0bb03ed23f3e8d1f446f5813c11ff9d89dd548fcdba8d6ae80c822"
+      }
+    },
+    "documents": {
+      "count": 3,
+      "files": {
+        "orchid.docx": "ed613993a4959e6b2fb0a687c8ebb464b6cb9010d3b9b2c58daab8c8b3aae2f9",
+        "orchid.odt": "266c4492d3ca1f30e3de52ed6eac5d2441a42d2cdb7176e58d64e7c7bcc8195c",
+        "orchid.pdf": "09a924bb0546751f5eac8d71b8104e3f0f548e2a8c9658e3a86bd3ce36c73fbf"
+      }
+    },
+    "image": {
+      "count": 1,
+      "files": {
+        "orchid.png": "6fe87738db87d226382fc66dfcb94d113a2ac1f81e2fb6590e5cc6d88e48bb0c"
+      }
+    },
+    "video": {
+      "count": 1,
+      "files": {
+        "orchid.mp4": "ac68c33f8e85a02f513215fe3987c5aaadfd775c714bcc293047d1cd4a8fdd85"
+      }
+    },
+    "legacy": {
+      "count": 1,
+      "files": {
+        "orchid.doc": "a75e2c1d8c3887d2c87d1da498ef2c38583b40f21dbd9aac347a4d753a0a180d"
+      }
+    },
+    "video_low_fps": {
+      "count": 1,
+      "files": {
+        "orchid.mp4": "2a900ad12ad923a6a73353863d900b37879c1c1b8056a6e3dd926efc6d6ae5ae"
+      }
+    },
+    "audio": {
+      "count": 1,
+      "files": {
+        "tone.wav": "4095ae79f04132a26680b2573e0a017b2ea7e5df0d238929a96a65545fc6b5cd"
+      }
+    }
+  },
+  "invariants": {
+    "duplicate_paths": [
+      "text/duplicate-a.txt",
+      "text/duplicate-b.txt"
+    ],
+    "unicode_path": "text/medición_ñ_測定.txt",
+    "code_symbol": "calibrate_relay",
+    "text_search": "NEOCORTEX_ORCHID",
+    "pdf_search": "NEOCORTEX_PDF",
+    "docx_search": "NEOCORTEX_DOCX",
+    "odt_search": "NEOCORTEX_ODT",
+    "ocr_words": [
+      "NEOCORTEX",
+      "ORCHID"
+    ]
+  }
+}

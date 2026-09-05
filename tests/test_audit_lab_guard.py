@@ -181,7 +181,7 @@ def test_windows_ntfs_suite_is_skipped_without_an_activated_lab(
     ordinary = Item(tmp_path / "test_regular.py")
     monkeypatch.setattr(audit_conftest, "_windows_audit_lab_required", lambda: True)
 
-    audit_conftest.pytest_collection_modifyitems([ntfs, ordinary])
+    audit_conftest._mark_windows_audit_tests([ntfs, ordinary])
 
     assert len(ntfs.markers) == 1
     assert ordinary.markers == []

@@ -100,6 +100,7 @@ def test_worker_rejects_a_non_string_model_cache_before_model_loading(
 
 def test_worker_accepts_an_unset_model_cache_and_stops_cleanly(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     captured: dict[str, object] = {}
 
@@ -113,6 +114,9 @@ def test_worker_accepts_an_unset_model_cache_and_stops_cleanly(
         SimpleNamespace(WhisperModel=fake_model),
     )
     monkeypatch.setattr(audio_whisper, "resolve_whisper_runtime", lambda *_args: RUNTIME)
+    for name in ("model.bin", "config.json", "tokenizer.json"):
+        (tmp_path / name).write_bytes(b"local model fixture")
+    monkeypatch.setattr(audio_whisper, "default_whisper_model_cache", lambda: tmp_path)
     task_channel: queue.SimpleQueue[object] = queue.SimpleQueue()
     result_channel: queue.SimpleQueue[tuple[object, ...]] = queue.SimpleQueue()
     task_channel.put(None)
@@ -131,7 +135,7 @@ def test_worker_accepts_an_unset_model_cache_and_stops_cleanly(
 
     assert result_channel.get() == ("ready", RUNTIME)
     assert captured == {
-        "model_name": "small",
+        "model_name": str(tmp_path),
         "device": "cpu",
         "compute_type": "int8",
         "download_root": None,

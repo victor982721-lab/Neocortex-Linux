@@ -13,6 +13,10 @@ import pytest
 
 from neocortex.semantic import semantic_schema
 from neocortex.semantic import semantic_state
+
+
+TEST_CAPABILITIES = ("base", 'inference')
+pytestmark = pytest.mark.capability("base", 'inference')
 # endregion [01]
 
 # region [02] Implementación

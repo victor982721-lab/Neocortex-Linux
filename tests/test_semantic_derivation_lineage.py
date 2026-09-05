@@ -52,6 +52,10 @@ from neocortex.semantic.semantic_state import (
 from tests.test_semantic_generation_publication_v6 import _create_populated_v5
 
 
+TEST_CAPABILITIES = ("base", 'inference')
+pytestmark = pytest.mark.capability("base", 'inference')
+
+
 def _restore_semantic_receipt_update_trigger(
     connection: sqlite3.Connection,
 ) -> None:

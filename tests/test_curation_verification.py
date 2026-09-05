@@ -16,6 +16,9 @@ from neocortex.deduplication import DedupIndex, DedupPlanner, InventoryCheckpoin
 from neocortex.documents.document_catalog import initialize_document_catalog
 
 
+TEST_CAPABILITIES = ('base', 'agent')
+
+
 def _build_state(
     tmp_path: Path,
     *,
@@ -374,6 +377,7 @@ def test_scan_preserves_the_cardinality_of_a_large_valid_page(
     assert len(result["result"]["page"]["items"]) == 100  # type: ignore[index]
 
 
+@pytest.mark.capability('agent')
 def test_bounded_matrix_fixture_replays_across_cli_api_and_mcp(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

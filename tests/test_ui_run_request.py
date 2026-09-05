@@ -22,6 +22,12 @@ from neocortex.interface.application.request import (
     ROUTE_ORDER,
     RunRequest,
 )
+
+import pytest
+
+
+TEST_CAPABILITIES = ("base", 'ui')
+pytestmark = pytest.mark.capability("base", 'ui')
 # endregion [01]
 
 # region [02] Implementación

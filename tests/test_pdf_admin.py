@@ -10,6 +10,11 @@ from pathlib import Path
 from neocortex.capabilities.formats.pdf.pdf_admin import doctor_pdf_runtime, verify_pdf_state
 from neocortex.capabilities.formats.pdf.pdf_state import initialize_pdf_state
 
+import pytest
+
+
+TEST_CAPABILITIES = ('base', 'documents')
+
 
 # region [01] PDF administrative diagnostics
 # Validate healthy state, corruption reporting and OCR-independent runtime checks.
@@ -48,6 +53,7 @@ class PdfAdminTests(unittest.TestCase):
             self.assertFalse(report.ok)
             self.assertEqual(report.corrupt_page_payloads, 1)
 
+    @pytest.mark.capability('documents')
     def test_doctor_without_ocr_checks_integrated_dependencies(self):
         report = doctor_pdf_runtime(ocr_mode="never")
         self.assertTrue(report.ok, report.checks)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 import inspect
 
 import pytest
@@ -13,6 +14,9 @@ from neocortex.capabilities.formats.image.models import (
     VisualSemanticEvidence,
 )
 from neocortex.capabilities.formats.image.semantics import classify_industrial_context
+
+
+TEST_CAPABILITIES = ('image',)
 
 
 PATH_CONTEXT = "transformador mantenimiento sala de control epp"

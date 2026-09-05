@@ -13,6 +13,8 @@ import tomllib
 from importlib import metadata
 from pathlib import Path
 
+from packaging.requirements import Requirement
+
 from neocortex.capabilities.runtime import (
     CAPABILITY_SPECS,
     ROUTE_CAPABILITY_NAMES,
@@ -63,6 +65,8 @@ FULL_DEPENDENCIES = (
 
 OPTIONAL_DEPENDENCIES = {
     "agent": AGENT_DEPENDENCIES,
+    "build": DEV_DEPENDENCIES,
+    "test-base": ("pytest>=9.1,<10",),
     "analysis": ANALYSIS_DEPENDENCIES,
     "documents": (
         "Pillow>=12.3,<13",
@@ -71,9 +75,7 @@ OPTIONAL_DEPENDENCIES = {
         "pytesseract>=0.3.13,<0.4",
     ),
     "audio": ("ctranslate2>=4.8,<5", "faster-whisper>=1.2,<2"),
-    "image": (
-        "Pillow>=12.3,<13",
-    ),
+    "image": ("Pillow>=12.3,<13",),
     "semantic": (
         "fastembed==0.8.0",
         "numpy>=2.1,<3",
@@ -132,7 +134,11 @@ def test_project_metadata_separates_canonical_runtime_and_extras() -> None:
     assert {"coverage>=7.14,<8", "pytest>=9.1,<10"}.isdisjoint(project["dependencies"])
     assert set(extras["agent"]).isdisjoint(project["dependencies"])
     assert set(extras["analysis"]).isdisjoint(project["dependencies"])
-    assert all("nudenet" not in dependency.casefold() for values in extras.values() for dependency in values)
+    assert all(
+        "nudenet" not in dependency.casefold()
+        for values in extras.values()
+        for dependency in values
+    )
     assert {"coverage>=7.14,<8", "pytest>=9.1,<10"}.isdisjoint(extras["dev"])
 
     full_union = {
@@ -159,8 +165,17 @@ def test_project_metadata_separates_canonical_runtime_and_extras() -> None:
 
 
 def _version_reader(available_modules: set[str]):
+    declared = {
+        requirement.name: next(
+            specifier.version
+            for specifier in requirement.specifier
+            if specifier.operator in {">=", "=="}
+        )
+        for value in (*BASE_DEPENDENCIES, *FULL_DEPENDENCIES)
+        for requirement in (Requirement(value),)
+    }
     versions = {
-        requirement.distribution: "fixture-version"
+        requirement.distribution: declared[requirement.distribution]
         for spec in CAPABILITY_SPECS.values()
         for requirement in spec.requirements
         if requirement.distribution is not None and requirement.module in available_modules
@@ -195,7 +210,9 @@ def test_every_builtin_route_has_one_static_capability_declaration() -> None:
 
 
 def test_missing_optional_runtimes_are_explicitly_unavailable_or_degraded() -> None:
-    statuses = {status.capability: status for status in _inspect_with({"rich", "xxhash"})}
+    statuses = {
+        status.capability: status for status in _inspect_with({"packaging", "rich", "xxhash"})
+    }
 
     assert statuses["docx"].state is CapabilityState.AVAILABLE
     assert statuses["office"].state is CapabilityState.AVAILABLE
@@ -216,8 +233,10 @@ def test_missing_optional_runtimes_are_explicitly_unavailable_or_degraded() -> N
 def test_optional_route_components_produce_stable_degradation_reasons() -> None:
     pdf = inspect_runtime_capability(
         "pdf",
-        module_finder=(lambda name: object() if name in {"rich", "xxhash", "fitz"} else None),
-        distribution_version=_version_reader({"rich", "xxhash", "fitz"}),
+        module_finder=(
+            lambda name: object() if name in {"packaging", "rich", "xxhash", "fitz"} else None
+        ),
+        distribution_version=_version_reader({"packaging", "rich", "xxhash", "fitz"}),
         executable_finder=lambda _name: None,
     )
     assert pdf.state is CapabilityState.DEGRADED
@@ -231,8 +250,10 @@ def test_optional_route_components_produce_stable_degradation_reasons() -> None:
 
     image = inspect_runtime_capability(
         "image",
-        module_finder=(lambda name: object() if name in {"rich", "xxhash", "PIL"} else None),
-        distribution_version=_version_reader({"rich", "xxhash", "PIL"}),
+        module_finder=(
+            lambda name: object() if name in {"packaging", "rich", "xxhash", "PIL"} else None
+        ),
+        distribution_version=_version_reader({"packaging", "rich", "xxhash", "PIL"}),
         executable_finder=lambda _name: None,
     )
     assert image.state is CapabilityState.DEGRADED
@@ -242,8 +263,8 @@ def test_optional_route_components_produce_stable_degradation_reasons() -> None:
 
     video = inspect_runtime_capability(
         "video",
-        module_finder=(lambda name: object() if name in {"rich", "xxhash"} else None),
-        distribution_version=_version_reader({"rich", "xxhash"}),
+        module_finder=(lambda name: object() if name in {"packaging", "rich", "xxhash"} else None),
+        distribution_version=_version_reader({"packaging", "rich", "xxhash"}),
         executable_finder=(
             lambda name: f"/fixture/{name}" if name in {"ffmpeg", "ffprobe"} else None
         ),

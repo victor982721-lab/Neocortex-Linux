@@ -20,6 +20,10 @@ from neocortex.semantic.semantic_state import (
 )
 
 
+TEST_CAPABILITIES = ("base", 'inference')
+pytestmark = pytest.mark.capability("base", 'inference')
+
+
 def _model(path: Path, signature: str) -> EmbeddingModelSpec:
     model = EmbeddingModelSpec(
         signature,

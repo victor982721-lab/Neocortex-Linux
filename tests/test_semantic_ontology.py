@@ -6,6 +6,12 @@ from neocortex.semantic.semantic_ontology import (
     resolve_legacy_label,
 )
 
+import pytest
+
+
+TEST_CAPABILITIES = ("base", 'inference')
+pytestmark = pytest.mark.capability("base", 'inference')
+
 
 # region [01] Equipment producer compatibility
 

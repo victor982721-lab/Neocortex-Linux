@@ -5,6 +5,7 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+
 from unittest.mock import Mock
 
 from neocortex.capabilities.formats.pdf.pdf_derived import PdfDerivedSummary
@@ -19,6 +20,9 @@ from neocortex.capabilities.formats.pdf.pdf_route_models import (
     DocumentResult,
     PdfRouteSummary,
 )
+
+
+TEST_CAPABILITIES = ('documents',)
 # endregion [01]
 
 # region [02] Implementación

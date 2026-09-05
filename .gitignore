@@ -53,6 +53,9 @@ dist/
 wheelhouse/
 *.egg-info/
 *.whl
+# Reviewed original CPython 3.13 offline development dependencies are ordinary
+# repository files, intentionally included by GitHub source downloads.
+!dev-resources/offline/artifacts/*.whl
 
 # External snapshots, prior per-file backups, and editor debris
 Checkpoints/

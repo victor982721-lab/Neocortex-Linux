@@ -12,6 +12,11 @@ import textwrap
 import unittest
 from pathlib import Path
 
+import pytest
+
+
+TEST_CAPABILITIES = ('base', 'documents')
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -78,6 +83,7 @@ class RouteRegistryIsolationTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn("REGISTRY_ISOLATED", completed.stdout)
 
+    @pytest.mark.capability('documents')
     def test_registry_does_not_reexport_route_engines(self) -> None:
         completed = _run_isolated(
             """

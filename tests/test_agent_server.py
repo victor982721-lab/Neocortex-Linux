@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import asyncio
 import json
 import os
@@ -13,6 +14,9 @@ from pathlib import Path
 import pytest
 
 from neocortex.api import agent_server, curation_api
+
+
+TEST_CAPABILITIES = ('base', 'agent')
 
 
 def _curation_payload() -> dict[str, object]:
@@ -204,6 +208,7 @@ def test_direct_curation_api_maps_state_errors_to_typed_unavailable_coverage(
     }
 
 
+@pytest.mark.capability('agent')
 def test_agent_server_exposes_read_and_human_gated_curation_tools() -> None:
     server = agent_server.create_server()
     tools = asyncio.run(server.list_tools())
@@ -301,6 +306,7 @@ def test_agent_server_exposes_read_and_human_gated_curation_tools() -> None:
     )
 
 
+@pytest.mark.capability('agent')
 def test_agent_status_tool_returns_structured_read_api_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -315,6 +321,7 @@ def test_agent_status_tool_returns_structured_read_api_payload(
     assert structured["scope"] == "personal"
 
 
+@pytest.mark.capability('agent')
 def test_agent_evidence_forwards_stable_identity_and_expected_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -372,6 +379,7 @@ def test_agent_evidence_forwards_stable_identity_and_expected_snapshot(
     assert structured["found"] is True
 
 
+@pytest.mark.capability('agent')
 def test_agent_curation_plan_returns_the_direct_typed_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -400,6 +408,7 @@ def test_agent_curation_plan_returns_the_direct_typed_payload(
     assert structured["trust"]["actions_authorized"] is False
 
 
+@pytest.mark.capability('agent')
 def test_agent_curation_scan_and_verify_forward_canonical_envelopes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -515,6 +524,7 @@ def test_stdio_is_the_only_transport_started_by_public_runner(
     assert calls == ["stdio"]
 
 
+@pytest.mark.capability('agent')
 def test_windows_stdio_uses_upstream_cross_platform_adapter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -538,6 +548,7 @@ def test_windows_stdio_uses_upstream_cross_platform_adapter(
     assert calls == [server]
 
 
+@pytest.mark.capability('agent')
 def test_linux_stdio_private_sdk_boundary_is_versioned_and_fail_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -578,6 +589,7 @@ def test_server_instructions_treat_corpus_as_untrusted_and_deny_mutation() -> No
     assert "no tool can move, rename, delete" in instructions
 
 
+@pytest.mark.capability('agent')
 def test_public_stdio_server_completes_a_real_read_only_protocol_exchange(
     tmp_path: Path,
 ) -> None:

@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from neocortex.capabilities.formats.audio.models import AudioRouteConfig, AudioRouteSummary
 from neocortex.capabilities.formats.docx.models import DocxRouteConfig, DocxRouteSummary
-from neocortex.capabilities.formats.image.route import ImageRouteConfig, ImageRouteSummary
+from neocortex.capabilities.formats.image.contracts import ImageRouteConfig, ImageRouteSummary
 from neocortex.capabilities.formats.office.route import OfficeRouteConfig, OfficeRouteSummary
 from neocortex.capabilities.formats.pdf.pdf_route_models import (
     PdfRouteConfig,

@@ -15,6 +15,10 @@ from neocortex.semantic.semantic_sources import (
 )
 
 
+TEST_CAPABILITIES = ("base", 'inference')
+pytestmark = pytest.mark.capability("base", 'inference')
+
+
 def _pdf_state(path: Path) -> None:
     with sqlite3.connect(path) as connection:
         connection.executescript(

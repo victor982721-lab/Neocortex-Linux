@@ -100,8 +100,8 @@ if TYPE_CHECKING:
     from neocortex.runtime.control.global_resources import GlobalResourceLimits as GlobalResourceLimits
     from neocortex.runtime.control.global_resources import GlobalResourceSummary as GlobalResourceSummary
     from neocortex.capabilities.formats.image.route import ImageRoute as ImageRoute
-    from neocortex.capabilities.formats.image.route import ImageRouteConfig as ImageRouteConfig
-    from neocortex.capabilities.formats.image.route import ImageRouteSummary as ImageRouteSummary
+    from neocortex.capabilities.formats.image.contracts import ImageRouteConfig as ImageRouteConfig
+    from neocortex.capabilities.formats.image.contracts import ImageRouteSummary as ImageRouteSummary
     from neocortex.knowledge.knowledge_contracts import ContextBundle as ContextBundle
     from neocortex.knowledge.knowledge_contracts import ContextContradictionRef as ContextContradictionRef
     from neocortex.knowledge.knowledge_contracts import ContextEntityRef as ContextEntityRef
@@ -143,7 +143,7 @@ if TYPE_CHECKING:
     from neocortex.capabilities.formats.pdf.pdf_admin import verify_pdf_state as verify_pdf_state
     from neocortex.capabilities.formats.pdf.pdf_derived import PdfDerivedIndexer as PdfDerivedIndexer
     from neocortex.capabilities.formats.pdf.pdf_derived import PdfDerivedSummary as PdfDerivedSummary
-    from neocortex.capabilities.formats.pdf.pdf_derived import search_pdf_state as search_pdf_state
+    from neocortex.capabilities.formats.pdf.pdf_derived_queries import search_pdf_state as search_pdf_state
     from neocortex.capabilities.formats.pdf.pdf_route import PdfRoute as PdfRoute
     from neocortex.capabilities.formats.pdf.pdf_route import PdfRouteConfig as PdfRouteConfig
     from neocortex.capabilities.formats.pdf.pdf_route import PdfRouteSummary as PdfRouteSummary
@@ -364,8 +364,8 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "GlobalResourceLimits": ("neocortex.runtime.control.global_resources", "GlobalResourceLimits"),
     "GlobalResourceSummary": ("neocortex.runtime.control.global_resources", "GlobalResourceSummary"),
     "ImageRoute": ("neocortex.capabilities.formats.image.route", "ImageRoute"),
-    "ImageRouteConfig": ("neocortex.capabilities.formats.image.route", "ImageRouteConfig"),
-    "ImageRouteSummary": ("neocortex.capabilities.formats.image.route", "ImageRouteSummary"),
+    "ImageRouteConfig": ("neocortex.capabilities.formats.image.contracts", "ImageRouteConfig"),
+    "ImageRouteSummary": ("neocortex.capabilities.formats.image.contracts", "ImageRouteSummary"),
     "InputBinding": ("neocortex.semantic.derivation_contracts", "InputBinding"),
     "MaterializationRef": ("neocortex.semantic.derivation_contracts", "MaterializationRef"),
     "OutputBinding": ("neocortex.semantic.derivation_contracts", "OutputBinding"),
@@ -382,7 +382,7 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     ),
     "PdfDerivedIndexer": ("neocortex.capabilities.formats.pdf.pdf_derived", "PdfDerivedIndexer"),
     "PdfDerivedSummary": ("neocortex.capabilities.formats.pdf.pdf_derived", "PdfDerivedSummary"),
-    "search_pdf_state": ("neocortex.capabilities.formats.pdf.pdf_derived", "search_pdf_state"),
+    "search_pdf_state": ("neocortex.capabilities.formats.pdf.pdf_derived_queries", "search_pdf_state"),
     "search_docx_state": ("neocortex.capabilities.formats.docx.route", "search_docx_state"),
     "doctor_pdf_runtime": ("neocortex.capabilities.formats.pdf.pdf_admin", "doctor_pdf_runtime"),
     "InitialRunResult": ("neocortex.runtime.models", "InitialRunResult"),

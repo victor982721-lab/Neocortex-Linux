@@ -18,7 +18,7 @@ from neocortex.capabilities.formats.audio.models import AudioRouteConfig
 from neocortex.code.code_contracts import CodeRouteConfig
 from neocortex.capabilities.formats.docx.models import DocxRouteConfig
 from neocortex.runtime.control.global_resources import GlobalResourceLimits
-from neocortex.capabilities.formats.image.route import ImageRouteConfig
+from neocortex.capabilities.formats.image.contracts import ImageRouteConfig
 from neocortex.capabilities.formats.office.route import OfficeRouteConfig
 from neocortex.capabilities.formats.pdf.pdf_route_models import PdfRouteConfig
 from neocortex.capabilities.formats.video.route import VideoRouteConfig
@@ -138,7 +138,7 @@ def test_projection_module_cold_import_keeps_owner_contracts_deferred() -> None:
             "neocortex.capabilities.formats.docx.models",
             "neocortex.runtime.control.global_resources",
             "neocortex.capabilities.formats.image.route",
-            "neocortex.capabilities.formats.image.route",
+            "neocortex.capabilities.formats.image.contracts",
             "neocortex.runtime.models",
             "neocortex.capabilities.formats.office.route",
             "neocortex.capabilities.formats.pdf.pdf_route_models",

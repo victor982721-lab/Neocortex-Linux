@@ -19,7 +19,7 @@ from neocortex.runtime.config.app_paths import (
     default_code_project_roots,
     source_repository_directory,
 )
-from neocortex.capabilities.formats.image.route import ImageRouteConfig
+from neocortex.capabilities.formats.image.contracts import ImageRouteConfig
 from neocortex.capabilities.formats.office.route import OfficeRouteConfig
 from neocortex.safety.route_filters import CandidateSelection
 from neocortex.runtime.orchestration.route_registry import (

@@ -32,6 +32,10 @@ from neocortex.platform.policy import (
 )
 
 
+TEST_CAPABILITIES = ("base", 'platform')
+pytestmark = pytest.mark.capability("base", 'platform')
+
+
 def test_xdg_documents_parser_accepts_accents_spaces_and_never_evaluates_shell(
     tmp_path: Path,
 ) -> None:

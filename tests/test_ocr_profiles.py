@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import json
 import unicodedata
 from pathlib import Path
@@ -21,6 +22,9 @@ from neocortex.safety.ocr_profiles import (
     resolve_ocr_profile,
     route_ocr_languages,
 )
+
+
+TEST_CAPABILITIES = ('documents', 'image')
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "ocr_multilingual_samples.json"

@@ -1,9 +1,10 @@
 """Lightweight runtime-capability declarations for optional NeoCortex routes.
 
-These probes inspect import specs, distribution metadata and executable paths.
-They never import an optional engine, instantiate a model, inspect user content,
-download data or create runtime state.  Deeper model and binary-version checks
-belong to the later doctor facade and can consume this public contract.
+These probes inspect import specs, declared version requirements, distribution
+metadata and executable paths.  They never import an optional engine,
+instantiate a model, inspect user content, download data or create runtime
+state.  Metadata compatibility and a located executable are prerequisite facts,
+not proof of a loadable native extension, local model or successful processing.
 """
 
 
@@ -41,6 +42,7 @@ from .broker import (
     CapabilityRequest,
     CapabilitySelection,
 )
+from .requirement_metadata import inspect_requirement_compatibility
 
 RUNTIME_CAPABILITY_SCHEMA_VERSION = 1
 RUNTIME_CAPABILITY_PROBE_POLICY = "metadata-spec-path-only-v1"
@@ -52,6 +54,16 @@ class CapabilityState(StrEnum):
     AVAILABLE = "available"
     DEGRADED = "degraded"
     UNAVAILABLE = "unavailable"
+
+
+class RuntimeComponentState(StrEnum):
+    """Evidence observed by a prerequisite probe, not processing success."""
+
+    ABSENT = "absent"
+    PRESENT_COMPATIBLE = "present_compatible"
+    PRESENT_INCOMPATIBLE = "present_incompatible"
+    PRESENT_UNVERIFIED = "present_unverified"
+    EXECUTABLE_LOCATED = "executable_located"
 
 
 class RequirementKind(StrEnum):
@@ -101,6 +113,24 @@ class RuntimeComponentStatus:
     available: bool
     version: str | None = None
     path: str | None = None
+    status: RuntimeComponentState | None = None
+    applicable_requirement: str | None = None
+    requirement_source: str | None = None
+    reason: str | None = None
+
+    @property
+    def observation_state(self) -> RuntimeComponentState:
+        if self.status is not None:
+            return self.status
+        if not self.available:
+            return RuntimeComponentState.ABSENT
+        if self.requirement.kind is RequirementKind.EXECUTABLE:
+            return RuntimeComponentState.EXECUTABLE_LOCATED
+        return RuntimeComponentState.PRESENT_UNVERIFIED
+
+    @property
+    def unavailable_reason(self) -> str | None:
+        return self.reason or (None if self.available else self.requirement.missing_reason)
 
     def to_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -108,15 +138,22 @@ class RuntimeComponentStatus:
             "kind": self.requirement.kind.value,
             "required": self.requirement.required,
             "available": self.available,
+            "status": self.observation_state.value,
+            "functional_status": "not_checked",
         }
+        if self.requirement.distribution is not None:
+            payload["distribution"] = self.requirement.distribution
+            payload["observed_version"] = self.version
+            payload["requirement"] = self.applicable_requirement
+            payload["requirement_source"] = self.requirement_source
         if self.requirement.extra is not None:
             payload["extra"] = self.requirement.extra
         if self.version is not None:
             payload["version"] = self.version
         if self.path is not None:
             payload["path"] = self.path
-        if not self.available:
-            payload["reason"] = self.requirement.missing_reason
+        if self.unavailable_reason is not None:
+            payload["reason"] = self.unavailable_reason
         return payload
 
 
@@ -147,6 +184,20 @@ class RuntimeCapabilityStatus:
     components: tuple[RuntimeComponentStatus, ...]
     degradation_reasons: tuple[str, ...]
     extra: str | None = None
+    enabled: bool = True
+    processing_error: str | None = None
+
+    @property
+    def operational_state(self) -> str:
+        """Keep configuration, prerequisite failure and observed failure separate."""
+
+        if not self.enabled:
+            return "disabled"
+        if self.processing_error is not None:
+            return "failed"
+        if self.state is CapabilityState.UNAVAILABLE:
+            return "blocked_by_requirements"
+        return "not_checked"
 
     def to_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -155,6 +206,10 @@ class RuntimeCapabilityStatus:
             "probe_policy": RUNTIME_CAPABILITY_PROBE_POLICY,
             "capability": self.capability,
             "state": self.state.value,
+            "enabled": self.enabled,
+            "operational_state": self.operational_state,
+            "processing_status": "failed" if self.processing_error is not None else "not_checked",
+            "prerequisite_scope": "metadata_and_paths",
             "models_loaded": False,
             "models_downloaded": False,
             "components": [component.to_dict() for component in self.components],
@@ -162,6 +217,10 @@ class RuntimeCapabilityStatus:
         }
         if self.extra is not None:
             payload["extra"] = self.extra
+        if self.capability in {"semantic", "audio"}:
+            payload["model_status"] = "not_checked"
+        if self.processing_error is not None:
+            payload["processing_error"] = self.processing_error
         return payload
 
 
@@ -210,6 +269,14 @@ def _executable(
 
 
 _BASE_REQUIREMENTS = (
+    _distribution(
+        "packaging",
+        "packaging",
+        "packaging",
+        required=True,
+        missing_reason="base_packaging_unavailable",
+        extra=None,
+    ),
     _distribution(
         "rich",
         "rich",
@@ -614,21 +681,87 @@ def _python_status(
     *,
     module_finder: ModuleFinder,
     distribution_version: DistributionVersion,
+    owner_distribution: str = "neocortex-framework",
 ) -> RuntimeComponentStatus:
     assert requirement.module is not None
     assert requirement.distribution is not None
     try:
-        module_available = module_finder(requirement.module) is not None
+        # find_spec on a dotted name imports its parent.  A metadata probe must
+        # not initialize a native engine merely to look for a child module.
+        module_available = module_finder(requirement.module.partition(".")[0]) is not None
     except (ImportError, ModuleNotFoundError, ValueError):
         module_available = False
     try:
         version = distribution_version(requirement.distribution)
     except (metadata.PackageNotFoundError, OSError, ValueError):
         version = None
+    compatibility = inspect_requirement_compatibility(
+        requirement.distribution,
+        version,
+        extra=requirement.extra,
+        owner_distribution=owner_distribution,
+    )
+    reason: str | None
+    if not module_available and version is None:
+        state = RuntimeComponentState.ABSENT
+        reason = requirement.missing_reason
+    elif not module_available:
+        state = RuntimeComponentState.PRESENT_UNVERIFIED
+        reason = f"{requirement.missing_reason}:module_spec_unavailable"
+    elif version is None:
+        state = RuntimeComponentState.PRESENT_UNVERIFIED
+        reason = f"{requirement.missing_reason}:distribution_metadata_unavailable"
+    elif compatibility.compatible is False:
+        state = RuntimeComponentState.PRESENT_INCOMPATIBLE
+        reason = f"{requirement.missing_reason}:{compatibility.reason}"
+    elif compatibility.compatible is None:
+        state = RuntimeComponentState.PRESENT_UNVERIFIED
+        reason = f"{requirement.missing_reason}:{compatibility.reason}"
+    else:
+        state = RuntimeComponentState.PRESENT_COMPATIBLE
+        reason = None
     return RuntimeComponentStatus(
         requirement,
-        available=module_available and version is not None,
+        available=state is RuntimeComponentState.PRESENT_COMPATIBLE,
         version=version,
+        status=state,
+        applicable_requirement=compatibility.requirement,
+        requirement_source=compatibility.source,
+        reason=reason,
+    )
+
+
+def inspect_python_component(
+    distribution: str,
+    module: str,
+    *,
+    extra: str | None = None,
+    owner_distribution: str = "neocortex-framework",
+    module_finder: ModuleFinder | None = None,
+    distribution_version: DistributionVersion | None = None,
+) -> RuntimeComponentStatus:
+    """Expose the same metadata-only requirement check for local model probes.
+
+    An installed backend is not proof that its extension loads or that model
+    files exist.  Callers retain their own model, provenance and processing
+    contracts; this probe never imports that backend or downloads anything.
+    """
+
+    requirement = _distribution(
+        distribution,
+        distribution,
+        module,
+        required=True,
+        missing_reason=f"{distribution}_unavailable",
+        extra=extra,
+    )
+    return _python_status(
+        requirement,
+        module_finder=importlib.util.find_spec if module_finder is None else module_finder,
+        distribution_version=(
+            metadata.version if distribution_version is None else distribution_version
+        ),
+        owner_distribution=owner_distribution,
     )
 
 
@@ -642,7 +775,16 @@ def _executable_status(
         path = executable_finder(requirement.executable)
     except OSError:
         path = None
-    return RuntimeComponentStatus(requirement, available=path is not None, path=path)
+    return RuntimeComponentStatus(
+        requirement,
+        available=path is not None,
+        path=path,
+        status=(
+            RuntimeComponentState.EXECUTABLE_LOCATED
+            if path is not None
+            else RuntimeComponentState.ABSENT
+        ),
+    )
 
 
 def inspect_runtime_capability(
@@ -651,6 +793,8 @@ def inspect_runtime_capability(
     module_finder: ModuleFinder | None = None,
     distribution_version: DistributionVersion | None = None,
     executable_finder: ExecutableFinder | None = None,
+    enabled: bool = True,
+    processing_error: str | None = None,
 ) -> RuntimeCapabilityStatus:
     """Inspect one declaration without importing an engine or touching models."""
 
@@ -678,12 +822,12 @@ def inspect_runtime_capability(
         components.append(component)
 
     missing_required = tuple(
-        component.requirement.missing_reason
+        component.unavailable_reason or component.requirement.missing_reason
         for component in components
         if component.requirement.required and not component.available
     )
     missing_optional = tuple(
-        component.requirement.missing_reason
+        component.unavailable_reason or component.requirement.missing_reason
         for component in components
         if not component.requirement.required and not component.available
     )
@@ -700,6 +844,8 @@ def inspect_runtime_capability(
         components=tuple(components),
         degradation_reasons=(*missing_required, *missing_optional),
         extra=spec.extra,
+        enabled=enabled,
+        processing_error=processing_error,
     )
 
 
@@ -979,6 +1125,17 @@ def inspect_capability_implementation_availability(
                 )
             )
             continue
+        if not status.enabled:
+            observations.append(
+                CapabilityAvailability(
+                    manifest.implementation_id,
+                    manifest.contract_fingerprint,
+                    request.execution_contract_fingerprint,
+                    available=False,
+                    reasons=("capability_disabled",),
+                )
+            )
+            continue
         if len(status.components) > MAX_CAPABILITY_EVIDENCE_VALUES:
             observations.append(
                 CapabilityAvailability(
@@ -1024,7 +1181,11 @@ def inspect_capability_implementation_availability(
                     )
                 )
             else:
-                missing.append(_bounded_capability_value(component.requirement.missing_reason))
+                missing.append(
+                    _bounded_capability_value(
+                        component.unavailable_reason or component.requirement.missing_reason
+                    )
+                )
         for binary in manifest.required_binaries:
             identity = _binary_identity(binary, find_executable)
             if identity is None:
@@ -1146,10 +1307,12 @@ __all__ = (
     "RequirementKind",
     "RuntimeCapabilitySpec",
     "RuntimeCapabilityStatus",
+    "RuntimeComponentState",
     "RuntimeComponentStatus",
     "RuntimeRequirement",
     "build_runtime_capability_broker",
     "inspect_capability_implementation_availability",
+    "inspect_python_component",
     "inspect_runtime_capabilities",
     "inspect_runtime_capability",
 )

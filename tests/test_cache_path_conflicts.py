@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 import sqlite3
 import tempfile
 import time
@@ -32,6 +33,9 @@ from neocortex.capabilities.formats.pdf.pdf_state import (
     pdf_database,
 )
 from neocortex.persistence.framework_route_state import FrameworkRouteState
+
+
+TEST_CAPABILITIES = ('documents',)
 
 
 # region [01] Fixture helpers

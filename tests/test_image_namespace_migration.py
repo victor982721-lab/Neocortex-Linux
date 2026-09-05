@@ -11,11 +11,17 @@ import sys
 import textwrap
 from pathlib import Path
 
+import pytest
+
+
+TEST_CAPABILITIES = ('base', 'image')
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PRODUCT_ROOT = "neocortex.capabilities.formats.image"
 
 IMAGE_MODULES = (
     "analysis",
+    "contracts",
     "decision",
     "decode",
     "document",
@@ -30,6 +36,7 @@ IMAGE_MODULES = (
     "state",
     "visual",
 )
+@pytest.mark.capability('image')
 def test_image_implementation_lives_under_the_product_namespace() -> None:
     product_root = PROJECT_ROOT / "neocortex" / "capabilities" / "formats" / "image"
     assert not (product_root / "adult.py").exists()
@@ -88,6 +95,7 @@ def test_image_parent_packages_remain_import_light() -> None:
     assert completed.stdout.strip() == "IMAGE_PARENTS_IMPORT_LIGHT"
 
 
+@pytest.mark.capability('image')
 def test_canonical_image_modules_do_not_import_outside_their_tree() -> None:
     script = textwrap.dedent(
         f"""
@@ -123,6 +131,7 @@ def test_canonical_image_modules_do_not_import_outside_their_tree() -> None:
     assert completed.stdout.strip() == "IMAGE_CANONICAL_IMPORTS_ONLY"
 
 
+@pytest.mark.capability('image')
 def test_image_definitions_are_owned_by_canonical_modules() -> None:
     definitions_checked = 0
     for name in IMAGE_MODULES:
@@ -145,6 +154,7 @@ def test_image_definitions_are_owned_by_canonical_modules() -> None:
     assert definitions_checked > 0
 
 
+@pytest.mark.capability('image')
 def test_image_schema_and_processing_contracts_remain_stable() -> None:
     route = importlib.import_module(
         "neocortex.capabilities.formats.image.route"
@@ -152,6 +162,23 @@ def test_image_schema_and_processing_contracts_remain_stable() -> None:
     state = importlib.import_module(
         "neocortex.capabilities.formats.image.state"
     )
+    contracts = importlib.import_module(f"{PRODUCT_ROOT}.contracts")
+    public = importlib.import_module("neocortex.api.public")
+
+    for name in ("ImageRouteConfig", "ImageRouteSummary"):
+        symbol = getattr(contracts, name)
+        assert symbol.__module__ == contracts.__name__
+        assert getattr(route, name) is symbol
+        assert getattr(public, name) is symbol
+        assert pickle.loads(pickle.dumps(symbol, protocol=5)) is symbol
+        legacy_reference = f"c{PRODUCT_ROOT}.route\n{name}\n.".encode("ascii")
+        assert pickle.loads(legacy_reference) is symbol
+    for name in (
+        "IMAGE_ROUTE_VERSION",
+        "_document_verifier_config",
+        "_image_processing_provenance",
+    ):
+        assert getattr(route, name) is getattr(contracts, name)
 
     assert state.SCHEMA_VERSION == 6
     config = route.ImageRouteConfig(Path("state") / "image.sqlite3", Path("corpus"))

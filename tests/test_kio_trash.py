@@ -25,6 +25,10 @@ from neocortex.safety.kio_trash import (
 )
 
 
+TEST_CAPABILITIES = ("base", 'platform')
+pytestmark = pytest.mark.capability("base", 'platform')
+
+
 class RunnerSpy:
     def __init__(
         self,

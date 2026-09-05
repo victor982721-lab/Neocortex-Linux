@@ -22,9 +22,10 @@ from .semantic_chunking import TextTokenCounter
 from .semantic_config import (
     COMPACT_TEXT_MODEL_SIGNATURE,
     FASTEMBED_RUNTIME_VERSION,
+    SemanticModelUnavailableError,
     default_semantic_model_cache,
     default_semantic_threads,
-    fastembed_cache_contract,
+    local_fastembed_snapshot,
     production_models,
 )
 from .semantic_models import (
@@ -110,16 +111,6 @@ def resolve_text_token_guard(
     )
 
 
-class SemanticModelUnavailableError(RuntimeError):
-    """Typed optional-runtime failure safe to degrade during read-only search."""
-
-    def __init__(self, reason: str) -> None:
-        if not reason.strip():
-            raise ValueError("semantic model unavailability reason cannot be blank")
-        self.reason = reason
-        super().__init__(reason)
-
-
 def _is_local_model_runtime_error(exc: Exception) -> bool:
     module = type(exc).__module__
     return isinstance(exc, (OSError, EOFError, UnicodeError)) or module.startswith(
@@ -188,46 +179,26 @@ def require_local_fastembed_model(
 ) -> None:
     """Validate one exact local snapshot without creating or enumerating paths."""
 
+    local_fastembed_snapshot(model, cache_dir)
     availability = fastembed_availability()
     if not availability.installed:
-        raise SemanticModelUnavailableError("semantic_backend_unavailable")
+        raise SemanticModelUnavailableError(
+            "semantic_backend_unavailable",
+            f"FastEmbed/ONNX CPU is required for {model.model_id}; {availability.detail}",
+        )
     expected_version = FASTEMBED_RUNTIME_VERSION.removeprefix("fastembed-")
     if availability.version != expected_version:
-        raise SemanticModelUnavailableError("semantic_backend_version_mismatch")
+        raise SemanticModelUnavailableError(
+            "semantic_backend_version_mismatch",
+            f"{model.model_id} requires fastembed=={expected_version}; "
+            f"observed {availability.version}",
+        )
     if "CPUExecutionProvider" not in availability.providers:
-        raise SemanticModelUnavailableError("semantic_backend_unavailable")
-
-    contract = fastembed_cache_contract(model.model_signature)
-    if not cache_dir.is_dir():
-        raise SemanticModelUnavailableError("semantic_model_cache_missing")
-    repository = cache_dir / ("models--" + contract.repository_id.replace("/", "--"))
-    reference = repository / "refs" / "main"
-    if not reference.is_file():
-        raise SemanticModelUnavailableError("semantic_query_model_not_cached")
-    try:
-        reference_size = reference.stat().st_size
-        if not 1 <= reference_size <= 256:
-            raise SemanticModelUnavailableError("semantic_query_model_cache_invalid")
-        commit = reference.read_text(encoding="ascii").strip()
-    except (OSError, UnicodeError) as exc:
-        raise SemanticModelUnavailableError("semantic_query_model_cache_invalid") from exc
-    if not 40 <= len(commit) <= 64 or any(
-        character not in "0123456789abcdef" for character in commit
-    ):
-        raise SemanticModelUnavailableError("semantic_query_model_cache_invalid")
-
-    snapshot = repository / "snapshots" / commit
-    if not snapshot.is_dir():
-        raise SemanticModelUnavailableError("semantic_query_model_not_cached")
-    for relative_path in contract.required_files:
-        candidate = snapshot.joinpath(*relative_path.split("/"))
-        try:
-            valid = candidate.is_file() and candidate.stat().st_size > 0
-        except OSError as exc:
-            raise SemanticModelUnavailableError("semantic_query_model_cache_invalid") from exc
-        if not valid:
-            raise SemanticModelUnavailableError("semantic_query_model_cache_incomplete")
-
+        raise SemanticModelUnavailableError(
+            "semantic_backend_unavailable",
+            f"ONNX Runtime CPUExecutionProvider is required for {model.model_id}; "
+            f"observed providers {availability.providers}",
+        )
 
 def backend(
     model: EmbeddingModelSpec,
@@ -316,6 +287,7 @@ def prepare_semantic_models(
     *,
     model_cache_override: Path | None = None,
     include_compact: bool = False,
+    model_ids: Sequence[str] | None = None,
     local_files_only: bool = False,
     threads: int | None = None,
     backend_factory: BackendFactory = backend,
@@ -323,12 +295,19 @@ def prepare_semantic_models(
     """Acquire/load explicit production models; this never indexes user content."""
 
     cache = model_cache(state_directory, model_cache_override)
+    models = list(production_models())
+    if model_ids is not None:
+        selected_ids = set(model_ids)
+        unknown = selected_ids - {model.model_id for model in models}
+        if not selected_ids or unknown:
+            raise ValueError(f"invalid semantic model selection: {sorted(unknown)!r}")
+        models = [model for model in models if model.model_id in selected_ids]
+    else:
+        models = [
+            model for model in models
+            if include_compact or model.model_signature != COMPACT_TEXT_MODEL_SIGNATURE
+        ]
     cache.mkdir(parents=True, exist_ok=True)
-    models = [
-        model
-        for model in production_models()
-        if include_compact or model.model_signature != COMPACT_TEXT_MODEL_SIGNATURE
-    ]
     results: list[ModelPreparation] = []
     for model in models:
         started = time.perf_counter()

@@ -6,6 +6,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+
+TEST_CAPABILITIES = ("base", "image")
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SAFETY_ROOT = PROJECT_ROOT / "neocortex" / "safety"
@@ -21,10 +26,13 @@ MODULES = (
 )
 
 
-def test_safety_modules_are_owned_by_the_canonical_tree() -> None:
-    for name in MODULES:
-        product = __import__(f"neocortex.safety.{name}", fromlist=[name])
-        assert Path(product.__file__).resolve().is_relative_to(SAFETY_ROOT)
+@pytest.mark.parametrize("name", [
+    pytest.param(name, marks=pytest.mark.capability("image"))
+    if name == "ocr_image_preprocess" else name for name in MODULES
+])
+def test_safety_modules_are_owned_by_the_canonical_tree(name: str) -> None:
+    product = __import__(f"neocortex.safety.{name}", fromlist=[name])
+    assert Path(product.__file__).resolve().is_relative_to(SAFETY_ROOT)
 
 
 def test_safety_package_remains_import_light() -> None:

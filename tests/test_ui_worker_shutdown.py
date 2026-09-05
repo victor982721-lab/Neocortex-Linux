@@ -15,6 +15,12 @@ from types import SimpleNamespace
 
 from neocortex.interface.protocol.messages import decode_message
 from neocortex.interface.protocol.worker import _summary_payload
+
+import pytest
+
+
+TEST_CAPABILITIES = ("base", 'ui')
+pytestmark = pytest.mark.capability("base", 'ui')
 # endregion [01]
 
 # region [02] Implementación

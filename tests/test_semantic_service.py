@@ -57,6 +57,10 @@ from neocortex.semantic.semantic_state import (
 )
 
 
+TEST_CAPABILITIES = ("base", "inference", "image")
+pytestmark = pytest.mark.capability("base", "inference")
+
+
 # region [01] Deterministic service fixture backend
 
 
@@ -804,6 +808,7 @@ def test_title_policy_bump_prunes_old_title_and_retains_unselected_source(
     ) not in after
 
 
+@pytest.mark.capability('image','inference')
 def test_image_and_ocr_use_separate_embedding_generations(
     tmp_path: Path,
     monkeypatch,
@@ -1027,6 +1032,7 @@ def test_image_and_ocr_use_separate_embedding_generations(
     assert not has_active_embeddings(database, compact_model.model_signature)
 
 
+@pytest.mark.capability('image','inference')
 def test_exact_image_replay_skips_stat_enumeration_chunking_and_backends(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1061,6 +1067,7 @@ def test_exact_image_replay_skips_stat_enumeration_chunking_and_backends(
     assert replay.items_staged == replay.chunks_staged == replay.new_jobs_staged == 0
 
 
+@pytest.mark.capability('image','inference')
 def test_image_and_ocr_share_new_job_budget_and_resume_same_generations(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1123,6 +1130,7 @@ def test_image_and_ocr_share_new_job_budget_and_resume_same_generations(
     assert counts == {result.summary.generation_id: 1 for result in resumed.generations}
 
 
+@pytest.mark.capability('image','inference')
 def test_image_deadline_at_end_of_enumeration_preserves_unvisited_items(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1219,6 +1227,7 @@ def test_image_deadline_at_end_of_enumeration_preserves_unvisited_items(
         )
 
 
+@pytest.mark.capability('image','inference')
 def test_changed_ocr_revision_keeps_other_head_until_its_model_republishes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1329,6 +1338,7 @@ def test_changed_ocr_revision_keeps_other_head_until_its_model_republishes(
     assert current_compact_head != prior_compact_head
 
 
+@pytest.mark.capability('image','inference')
 def test_visual_fingerprint_change_preserves_same_revision_ocr_profiles(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2406,7 +2416,13 @@ def test_unloadable_cached_model_is_optional_and_preserves_lexical(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from neocortex.semantic.semantic_backends import BackendAvailability
+
     _patch_backend(monkeypatch)
+    monkeypatch.setattr(
+        semantic_preparation, "fastembed_availability",
+        lambda: BackendAvailability(True, "0.8.0", ("CPUExecutionProvider",), "fixture"),
+    )
     _declare_source_state(tmp_path, "pdf")
     monkeypatch.setattr(
         service,
@@ -2676,6 +2692,7 @@ def test_semantic_status_reads_v4_state_without_migrating_or_missing_table_error
         )
 
 
+@pytest.mark.capability('inference')
 def test_classification_persists_only_uncalibrated_advisory_evidence(
     tmp_path: Path,
     monkeypatch,
@@ -2765,6 +2782,7 @@ def test_prototype_preparation_reuses_complete_active_version(
     assert second == first
 
 
+@pytest.mark.capability('inference')
 def test_classification_abstains_from_unsupported_negative_scores(
     tmp_path: Path,
     monkeypatch,
@@ -2811,6 +2829,7 @@ def test_classification_abstains_from_unsupported_negative_scores(
     assert evidence == ()
 
 
+@pytest.mark.capability('inference')
 def test_interrupted_evidence_refresh_keeps_published_entity_coherent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

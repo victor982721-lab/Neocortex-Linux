@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import os
 import tempfile
 import threading
@@ -19,6 +20,9 @@ from neocortex.capabilities.formats.image.isolation import (
     ImageWorkerTimeout,
     RemoteImageWorkerError,
 )
+
+
+TEST_CAPABILITIES = ('image',)
 
 
 # region [01] Spawn-safe worker fixture

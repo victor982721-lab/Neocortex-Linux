@@ -7,7 +7,7 @@ the internal layout of the Knowledge, Code and path owners.
 
 from __future__ import annotations
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from neocortex.runtime.config.app_paths import default_state_directory
 from neocortex.api.status_codes import KnowledgeExitCode
@@ -24,11 +24,25 @@ from neocortex.knowledge.knowledge_contracts import (
     SnapshotConsistency,
 )
 from neocortex.knowledge.knowledge_planner import KnowledgeQuery, RetrievalMode
-from neocortex.knowledge.knowledge_service import KnowledgeSearchService
-from neocortex.knowledge.knowledge_snapshot import KnowledgeStatePaths
 
 if TYPE_CHECKING:
     from neocortex.knowledge.knowledge_asset_health_contracts import KnowledgeAssetHealthReport
+    from neocortex.knowledge.knowledge_service import KnowledgeSearchService
+    from neocortex.knowledge.knowledge_snapshot import KnowledgeStatePaths
+
+
+def __getattr__(name: str) -> Any:
+    """Preserve the port exports without loading owner schemas during help."""
+
+    if name == "KnowledgeSearchService":
+        from neocortex.knowledge.knowledge_service import KnowledgeSearchService
+
+        return KnowledgeSearchService
+    if name == "KnowledgeStatePaths":
+        from neocortex.knowledge.knowledge_snapshot import KnowledgeStatePaths
+
+        return KnowledgeStatePaths
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def inspect_derivation_lineage(
@@ -58,6 +72,7 @@ def inspect_knowledge_asset_health(
 
     from neocortex.knowledge.knowledge_asset_health import inspect_knowledge_asset_health as inspect
     from neocortex.knowledge.knowledge_asset_health_contracts import KnowledgeAssetHealthQuery
+    from neocortex.knowledge.knowledge_snapshot import KnowledgeStatePaths
 
     return inspect(
         KnowledgeStatePaths.from_directory(state_directory),

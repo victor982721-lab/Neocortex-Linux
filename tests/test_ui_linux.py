@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 import os
 from pathlib import Path
 
@@ -12,6 +13,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication, QLabel
 
 from neocortex.interface.presentation.windows.main import MainWindow
+
+
+TEST_CAPABILITIES = ('ui',)
 
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="Linux desktop mode contract")

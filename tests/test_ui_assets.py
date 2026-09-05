@@ -5,6 +5,7 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+
 import unittest
 from typing import ClassVar
 
@@ -13,6 +14,9 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from neocortex.interface.presentation.assets import application_icon_path, asset_directory
+
+
+TEST_CAPABILITIES = ('ui',)
 # endregion [01]
 
 # region [02] Implementación

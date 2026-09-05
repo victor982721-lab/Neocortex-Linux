@@ -93,7 +93,7 @@ class GlobalResourceCoordinatorTests(unittest.TestCase):
                 "neocortex.runtime.control.global_resources.memory_snapshot",
                 return_value=snapshot,
             ),
-            patch("neocortex.runtime.control.global_resources.os.cpu_count", return_value=16),
+            patch("neocortex.runtime.control.global_resources.effective_cpu_count", return_value=16),
         ):
             coordinator = GlobalResourceCoordinator(
                 ("pdf", "audio"),

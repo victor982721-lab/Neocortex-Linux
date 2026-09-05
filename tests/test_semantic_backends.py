@@ -29,6 +29,10 @@ from neocortex.semantic.semantic_models import (
 from tests.semantic_test_backend import DeterministicTestBackend
 
 
+TEST_CAPABILITIES = ("base", 'inference')
+pytestmark = pytest.mark.capability("base", 'inference')
+
+
 # region [01] Fixtures and strict backend validation
 
 

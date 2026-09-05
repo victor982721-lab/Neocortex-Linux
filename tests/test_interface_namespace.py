@@ -11,6 +11,11 @@ from unittest.mock import patch
 
 import neocortex.interface as interface
 
+import pytest
+
+
+TEST_CAPABILITIES = ('base', 'ui')
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -39,6 +44,7 @@ assert not any(name == "PySide6" or name.startswith("PySide6.") for name in sys.
     assert completed.returncode == 0, completed.stderr
 
 
+@pytest.mark.capability('ui')
 def test_responsibility_owned_leaf_modules_are_importable() -> None:
     modules = (
         "neocortex.interface.application.app",
@@ -62,6 +68,7 @@ def test_responsibility_owned_leaf_modules_are_importable() -> None:
     assert all(importlib.import_module(name).__name__ == name for name in modules)
 
 
+@pytest.mark.capability('ui')
 def test_public_objects_are_owned_by_canonical_modules() -> None:
     from neocortex.interface.application import RunRequest, WorkerController
     from neocortex.interface.presentation import MainWindow

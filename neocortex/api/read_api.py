@@ -14,6 +14,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from neocortex.api.read_contract import (
@@ -28,9 +29,7 @@ from neocortex.api.read_api_port import (
     KnowledgeCompleteness,
     KnowledgeExitCode,
     KnowledgeQuery,
-    KnowledgeSearchService,
     KnowledgeSnapshot,
-    KnowledgeStatePaths,
     OwnerAvailability,
     RetrievalMode,
     SnapshotConsistency,
@@ -43,6 +42,9 @@ from neocortex.api.read_api_port import (
     search_code,
     validate_knowledge_asset_resource_id,
 )
+
+if TYPE_CHECKING:
+    from neocortex.api.read_api_port import KnowledgeSearchService
 
 
 READ_API_SCHEMA = "neocortex.read-api/v1"
@@ -250,17 +252,25 @@ def _validate_characters(max_characters: int) -> int:
 
 
 def _service(binding: ScopeBinding) -> KnowledgeSearchService:
+    from neocortex.api.read_api_port import KnowledgeSearchService, KnowledgeStatePaths
+
     return KnowledgeSearchService(KnowledgeStatePaths.from_directory(binding.state_directory))
 
 
 def _error_entry(binding: ScopeBinding, exc: BaseException) -> dict[str, object]:
+    reason = str(exc)
+    if isinstance(exc, ModuleNotFoundError) and exc.name:
+        reason = (
+            f"Published-state inspection requires Python dependency {exc.name!r}; "
+            "install the declared dependencies for this capability."
+        )
     return {
         "scope": binding.scope.value,
         "state_directory": str(binding.state_directory),
         "status": "error",
         "exit_code": int(KnowledgeExitCode.FATAL),
         "error_type": type(exc).__name__,
-        "reason": sanitize_untrusted_text(str(exc), limit=800),
+        "reason": sanitize_untrusted_text(reason, limit=800),
     }
 
 
@@ -347,7 +357,7 @@ def status_payload(
                     "snapshot": snapshot.to_dict(),
                 }
             )
-        except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
+        except (ModuleNotFoundError, OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
             entries.append(_error_entry(binding, exc))
     return _finalize_read_payload(
         {

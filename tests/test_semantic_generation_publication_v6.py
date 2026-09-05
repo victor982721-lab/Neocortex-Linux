@@ -58,6 +58,10 @@ from neocortex.semantic.semantic_work_budget import (
     SemanticIndexDeadlineExceeded,
     SemanticWorkBudget,
 )
+
+
+TEST_CAPABILITIES = ("base", 'inference')
+pytestmark = pytest.mark.capability("base", 'inference')
 # endregion [01]
 
 # region [02] Implementación

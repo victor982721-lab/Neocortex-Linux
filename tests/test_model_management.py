@@ -56,7 +56,7 @@ def test_models_status_is_local_read_only_and_reports_five_models(tmp_path: Path
         patch.object(model_management, "current_platform_policy") as policy,
         patch.object(
             model_management,
-            "require_local_fastembed_model",
+            "local_fastembed_snapshot",
             side_effect=model_management.SemanticModelUnavailableError("not_cached"),
         ),
         patch.object(

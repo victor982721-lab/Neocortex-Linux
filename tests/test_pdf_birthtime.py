@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+
 import sqlite3
 import tempfile
 import time
@@ -36,6 +37,9 @@ from neocortex.capabilities.formats.pdf.pdf_state import (
     initialize_pdf_state,
     pdf_database,
 )
+
+
+TEST_CAPABILITIES = ('documents',)
 
 
 class _PdfCandidates:

@@ -265,6 +265,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     from neocortex.progress import LineProgress, RichProgress
     from rich.console import Console
     from neocortex.deduplication import InventoryError
+    from neocortex.runtime.orchestration.orchestrator import RouteExecutionError
 
     from .cli_reporting import (
         has_organization_errors,
@@ -299,6 +300,24 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 )
     except InventoryError as exc:
         print(f"ERROR corpus_unavailable: {exc}", file=sys.stderr)
+        return 2
+    except RouteExecutionError as exc:
+        from neocortex.api.read_contract import sanitize_untrusted_text
+
+        # The owners have already recorded the failed routes.  Present that
+        # failure without inventing a completed run or continuing --all's
+        # dependent semantic stage; partial results remain with their owners.
+        print(
+            "ERROR route_execution_failed status=failed completion=incomplete",
+            file=sys.stderr,
+        )
+        for route_name, failure in sorted(exc.failures.items()):
+            route = sanitize_untrusted_text(route_name, limit=128)
+            reason = sanitize_untrusted_text(failure, limit=1600)
+            print(
+                f"ERROR route_failed route={route} error_type={type(failure).__name__}: {reason}",
+                file=sys.stderr,
+            )
         return 2
 
     if professional_output:

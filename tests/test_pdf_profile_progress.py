@@ -5,11 +5,15 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+
 import time
 from unittest.mock import patch
 
 from neocortex.progress import ProgressEvent
 from neocortex.capabilities.formats.pdf.pdf_derived import PdfDerivedIndexer
+
+
+TEST_CAPABILITIES = ('documents',)
 # endregion [01]
 
 # region [02] Implementación

@@ -14,6 +14,10 @@ from neocortex.semantic import semantic_generation_repository as generation_repo
 from neocortex.semantic import semantic_item_repository as item_repository
 from neocortex.semantic import semantic_schema, semantic_state
 from neocortex.semantic import semantic_search_repository as search_repository
+
+
+TEST_CAPABILITIES = ("base", 'inference')
+pytestmark = pytest.mark.capability("base", 'inference')
 # endregion [01]
 
 # region [02] Implementación

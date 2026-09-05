@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 # region [01] PNG fixture construction
 
 import struct
@@ -8,6 +9,9 @@ from pathlib import Path
 
 from neocortex.capabilities.formats.image.errors import ImageFailure, refine_image_failure
 from neocortex.capabilities.formats.image.png import PNG_SIGNATURE, probe_png_structure
+
+
+TEST_CAPABILITIES = ('image',)
 
 
 def _chunk(kind: bytes, payload: bytes) -> bytes:

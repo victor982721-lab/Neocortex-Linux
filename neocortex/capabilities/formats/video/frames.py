@@ -23,17 +23,20 @@ from typing import Literal
 
 import xxhash
 
-from neocortex.runtime.control.bounded_subprocess import SubprocessOutputLimitError, run_bounded_capture
+from neocortex.runtime.control.bounded_subprocess import (
+    SubprocessOutputLimitError,
+    run_bounded_capture,
+)
 from neocortex.runtime.control.cancellation import CancellationToken
 from neocortex.capabilities.formats.image.png import probe_png_structure
 from .models import VideoProcessingError
+from .limits import MAX_VIDEO_FRAME_PIXELS, MAX_VIDEO_FRAMES
 
 
-MAX_VIDEO_FRAMES = 256
-MAX_VIDEO_FRAME_PIXELS = 40_000_000
 MAX_VIDEO_FRAME_BYTES = 64 * 1024 * 1024
 MAX_VIDEO_FRAME_BATCH_BYTES = 512 * 1024 * 1024
 MAX_VIDEO_FFMPEG_DIAGNOSTIC_BYTES = 2 * 1024 * 1024
+VIDEO_FRAME_SAMPLING_POLICY = "frame-sampling-v2-frame-rate-end-guard"
 _TIMESTAMP_TOLERANCE_MS = 250
 _SHOWINFO_TIMESTAMP = re.compile(rb"\bpts_time:([0-9]+(?:\.[0-9]+)?)")
 
@@ -166,12 +169,27 @@ def _even_subset(values: tuple[int, ...], limit: int) -> tuple[int, ...]:
     return tuple(values[index] for index in sorted(indexes))
 
 
-def _interval_timestamps(duration_seconds: float, interval_seconds: float) -> tuple[int, ...]:
+def _interval_timestamps(
+    duration_seconds: float,
+    interval_seconds: float,
+    *,
+    frame_rate: float | None = None,
+) -> tuple[int, ...]:
     duration_ms = max(0, math.floor(duration_seconds * 1000))
     # Container duration commonly points just beyond the final decodable frame.
     # Stay a small bounded distance inside the media instead of manufacturing a
     # systematic end-of-stream extraction warning.
     end_guard_ms = min(250, max(1, duration_ms // 10)) if duration_ms else 0
+    if frame_rate is not None:
+        # A low-rate stream can hold its final frame for longer than the
+        # historical 250 ms guard.  Respect at least one observed frame period
+        # without changing scene/keyframe evidence or the interval policy.
+        # An average rate is not proof of the last PTS for variable-rate media;
+        # extraction errors remain explicit rather than being treated as success.
+        frame_guard_ms = (
+            duration_ms if frame_rate * duration_seconds <= 1.0 else math.ceil(1000 / frame_rate)
+        )
+        end_guard_ms = max(end_guard_ms, frame_guard_ms)
     final = max(0, duration_ms - end_guard_ms)
     interval_ms = max(1, round(interval_seconds * 1000))
     values = list(range(0, final + 1, interval_ms))
@@ -187,11 +205,12 @@ def build_frame_plan(
     interval_seconds: float,
     scene_timestamps_ms: tuple[int, ...] = (),
     keyframe_timestamps_ms: tuple[int, ...] = (),
+    frame_rate: float | None = None,
 ) -> tuple[VideoFrameCandidate, ...]:
     """Fuse bounded scene, keyframe and uniform coverage without score mixing."""
 
-    _validate_frame_plan_inputs(duration_seconds, max_frames)
-    interval = _interval_timestamps(duration_seconds, interval_seconds)
+    _validate_frame_plan_inputs(duration_seconds, max_frames, frame_rate=frame_rate)
+    interval = _interval_timestamps(duration_seconds, interval_seconds, frame_rate=frame_rate)
     selected = _initial_frame_selections(
         interval,
         scene_timestamps_ms,
@@ -202,11 +221,15 @@ def build_frame_plan(
     return _fuse_frame_candidates(selected, max_frames)
 
 
-def _validate_frame_plan_inputs(duration_seconds: float, max_frames: int) -> None:
+def _validate_frame_plan_inputs(
+    duration_seconds: float, max_frames: int, *, frame_rate: float | None = None
+) -> None:
     if duration_seconds < 0 or not math.isfinite(duration_seconds):
         raise ValueError("video duration must be finite and non-negative")
     if not 1 <= max_frames <= MAX_VIDEO_FRAMES:
         raise ValueError(f"video max_frames must be between 1 and {MAX_VIDEO_FRAMES}")
+    if frame_rate is not None and (frame_rate <= 0 or not math.isfinite(frame_rate)):
+        raise ValueError("video frame_rate must be finite and positive when known")
 
 
 def _initial_frame_selections(
@@ -507,10 +530,12 @@ def sampled_video_frames(
     duration_seconds: float,
     config: VideoFrameSamplingConfig,
     cancellation: CancellationToken,
+    frame_rate: float | None = None,
 ) -> Iterator[VideoFrameBatch]:
     """Yield ephemeral sampled frames and guarantee recursive cleanup on exit."""
 
     config.validate()
+    _validate_frame_plan_inputs(duration_seconds, config.max_frames, frame_rate=frame_rate)
     executable = resolve_video_ffmpeg(config.ffmpeg_path)
     target_width, target_height = bounded_frame_dimensions(
         source_width,
@@ -556,6 +581,7 @@ def sampled_video_frames(
         interval_seconds=config.interval_seconds,
         scene_timestamps_ms=scenes,
         keyframe_timestamps_ms=keyframes,
+        frame_rate=frame_rate,
     )
     if not plan:
         raise VideoProcessingError(
@@ -620,6 +646,7 @@ __all__ = (
     "MAX_VIDEO_FRAME_BATCH_BYTES",
     "MAX_VIDEO_FRAME_BYTES",
     "MAX_VIDEO_FRAME_PIXELS",
+    "VIDEO_FRAME_SAMPLING_POLICY",
     "ExtractedVideoFrame",
     "VideoFrameBatch",
     "VideoFrameCandidate",

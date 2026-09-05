@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import io
 import json
 import subprocess
@@ -20,6 +21,9 @@ from neocortex.foundation.processing_provenance import (
     TesseractRuntimeProvenance,
 )
 from neocortex.capabilities.formats.image.route import ImageRoute, ImageRouteConfig
+
+
+TEST_CAPABILITIES = ('image', 'documents')
 
 
 def _image(root: Path, *, size: tuple[int, int] = (1_800, 1_200)) -> Path:

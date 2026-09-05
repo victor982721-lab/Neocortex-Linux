@@ -28,6 +28,10 @@ from neocortex.semantic.semantic_sources import (
 from neocortex.semantic.semantic_plan_results import _select_plan_sources
 
 
+TEST_CAPABILITIES = ("base", 'inference')
+pytestmark = pytest.mark.capability("base", 'inference')
+
+
 def _create_video_fixture(root: Path, *, status: str = "partial") -> Path:
     path = root / "video.sqlite3"
     initialize_video_state(path)

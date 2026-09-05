@@ -15,7 +15,11 @@ from neocortex.runtime.control import bounded_subprocess as bounded_module
 from neocortex.runtime.control.bounded_subprocess import run_bounded_capture
 
 
+TEST_CAPABILITIES = ("base", 'platform')
+
+
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="POSIX containment contract")
+pytestmark = [pytestmark, pytest.mark.capability("base", 'platform')]
 
 
 def _python(script: str, *arguments: str) -> tuple[str, ...]:

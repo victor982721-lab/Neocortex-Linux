@@ -13,7 +13,12 @@ import textwrap
 import unittest
 from pathlib import Path
 
+import pytest
+
 from neocortex.api import public as operational
+
+
+TEST_CAPABILITIES = ("base", "documents", "image")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_EXPORTS = [
@@ -184,22 +189,22 @@ EXPECTED_SOURCES = {
     "GlobalResourceLimits": "neocortex.runtime.control.global_resources",
     "GlobalResourceSummary": "neocortex.runtime.control.global_resources",
     "ImageRoute": "neocortex.capabilities.formats.image.route",
-    "ImageRouteConfig": "neocortex.capabilities.formats.image.route",
-    "ImageRouteSummary": "neocortex.capabilities.formats.image.route",
+    "ImageRouteConfig": "neocortex.capabilities.formats.image.contracts",
+    "ImageRouteSummary": "neocortex.capabilities.formats.image.contracts",
     "InputBinding": "neocortex.semantic.derivation_contracts",
     "MaterializationRef": "neocortex.semantic.derivation_contracts",
     "OutputBinding": "neocortex.semantic.derivation_contracts",
     "PdfDoctorReport": "neocortex.capabilities.formats.pdf.pdf_admin",
     "PdfRoute": "neocortex.capabilities.formats.pdf.pdf_route",
-    "PdfRouteConfig": "neocortex.capabilities.formats.pdf.pdf_route",
-    "PdfRouteSummary": "neocortex.capabilities.formats.pdf.pdf_route",
+    "PdfRouteConfig": "neocortex.capabilities.formats.pdf.pdf_route_models",
+    "PdfRouteSummary": "neocortex.capabilities.formats.pdf.pdf_route_models",
     "PdfVerifyReport": "neocortex.capabilities.formats.pdf.pdf_admin",
     "RouteAdapter": "neocortex.runtime.orchestration.route_registry",
     "RouteExecutionContext": "neocortex.runtime.orchestration.route_registry",
     "ReproducibilityClass": "neocortex.semantic.derivation_contracts",
     "PdfDerivedIndexer": "neocortex.capabilities.formats.pdf.pdf_derived",
     "PdfDerivedSummary": "neocortex.capabilities.formats.pdf.pdf_derived",
-    "search_pdf_state": "neocortex.capabilities.formats.pdf.pdf_derived",
+    "search_pdf_state": "neocortex.capabilities.formats.pdf.pdf_derived_queries",
     "search_docx_state": "neocortex.capabilities.formats.docx.route",
     "doctor_pdf_runtime": "neocortex.capabilities.formats.pdf.pdf_admin",
     "InitialRunResult": "neocortex.runtime.models",
@@ -263,15 +268,37 @@ EXPECTED_SOURCES = {
 # region [02] Public facade compatibility
 
 
+_OPTIONAL_EXPORT_CAPABILITIES = {
+    "ImageRoute": "image",
+    "PdfRoute": "documents",
+    "PdfDerivedIndexer": "documents",
+    "PdfDerivedSummary": "documents",
+}
+
+
+@pytest.mark.parametrize(("name", "module_name"), [
+    pytest.param(
+        name,
+        module_name,
+        id=name,
+        marks=(
+            pytest.mark.capability(_OPTIONAL_EXPORT_CAPABILITIES[name])
+            if name in _OPTIONAL_EXPORT_CAPABILITIES else ()
+        ),
+    )
+    for name, module_name in EXPECTED_SOURCES.items()
+])
+def test_public_symbol_matches_canonical_source(name: str, module_name: str) -> None:
+    """Only each optional implementation requires its processing capability."""
+    expected = getattr(importlib.import_module(module_name), name)
+    assert getattr(operational, name) is expected
+
+
 class LazyPackageApiTests(unittest.TestCase):
     def test_public_manifest_and_symbols_match_original_sources(self) -> None:
         self.assertEqual(operational.__all__, EXPECTED_EXPORTS)
         self.assertTrue(set(EXPECTED_EXPORTS).issubset(dir(operational)))
-
-        for name, module_name in EXPECTED_SOURCES.items():
-            with self.subTest(name=name):
-                expected = getattr(importlib.import_module(module_name), name)
-                self.assertIs(getattr(operational, name), expected)
+        self.assertEqual(set(EXPECTED_SOURCES), set(EXPECTED_EXPORTS))
 
         with self.assertRaises(AttributeError):
             operational.__getattr__("unsupported_public_symbol")

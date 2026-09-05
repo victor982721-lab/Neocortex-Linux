@@ -1,6 +1,7 @@
 """Terminable FastEmbed worker owned by the SQLite generation coordinator."""
 
 from __future__ import annotations
+import json
 import multiprocessing
 import queue
 from pathlib import Path
@@ -34,6 +35,10 @@ def _remote_failure(exc: BaseException) -> tuple[str, str]:
     elif isinstance(exc, TextTokenLimitExceededError):
         kind = "text_token_limit"
     elif isinstance(exc, SemanticModelUnavailableError):
+        if exc.detail is not None:
+            return "model_unavailable_detail", json.dumps({
+                "reason": exc.reason, "detail": exc.detail[:4000],
+            }, ensure_ascii=True)
         kind = "model_unavailable"
     elif isinstance(exc, OSError):
         kind = "os_error"
@@ -51,6 +56,13 @@ def _raise_remote_failure(kind: str, message: str) -> None:
         raise TextTokenLimitExceededError(message)
     if kind == "model_unavailable":
         raise SemanticModelUnavailableError(message)
+    if kind == "model_unavailable_detail":
+        payload = json.loads(message)
+        if not isinstance(payload, dict) or not all(
+            isinstance(payload.get(name), str) for name in ("reason", "detail")
+        ):
+            raise RuntimeError("invalid semantic model prerequisite response")
+        raise SemanticModelUnavailableError(payload["reason"], payload["detail"])
     if kind == "os_error":
         raise OSError(message)
     if kind == "value_error":

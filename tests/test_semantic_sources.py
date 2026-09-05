@@ -34,6 +34,10 @@ from neocortex.capabilities.formats.text.text_route import TextRoute, TextRouteC
 from neocortex.capabilities.formats.text.text_state import initialize_text_state, text_database
 
 
+TEST_CAPABILITIES = ("base", 'inference')
+pytestmark = pytest.mark.capability("base", 'inference')
+
+
 # region [01] Minimal durable image and dedup states
 
 

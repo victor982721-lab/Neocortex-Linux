@@ -22,6 +22,10 @@ from neocortex.semantic.semantic_state import (
     register_embedding_model,
     semantic_database,
 )
+
+
+TEST_CAPABILITIES = ("base", 'inference')
+pytestmark = pytest.mark.capability("base", 'inference')
 # endregion [01]
 
 # region [02] Implementación

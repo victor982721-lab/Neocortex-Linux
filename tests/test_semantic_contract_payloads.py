@@ -21,6 +21,12 @@ from neocortex.semantic.semantic_service_contracts import (
     SemanticWorkloadPlan,
 )
 from neocortex.semantic.semantic_models import canonical_json, fingerprint_text
+
+import pytest
+
+
+TEST_CAPABILITIES = ("base", 'inference')
+pytestmark = pytest.mark.capability("base", 'inference')
 # endregion [01]
 
 # region [02] Implementación

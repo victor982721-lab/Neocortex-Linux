@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import os
 import queue
 import sqlite3
@@ -10,6 +11,8 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
+import pytest
+
 from unittest.mock import Mock, patch
 
 from neocortex.api.public import FrameworkConfig, FrameworkOrchestrator, RouteAdapter
@@ -29,9 +32,11 @@ from neocortex.runtime.control.global_resources import (
 )
 from neocortex.runtime.control.memory_runtime import MemorySnapshot
 from neocortex.runtime.control.isolated_process import isolated_spawn_process
-from neocortex.capabilities.formats.pdf.pdf_isolation import stream_isolated_profiles
 from neocortex.progress import RecordingProgress
 from tests.synthetic_usn import SyntheticUsnJournal
+
+
+TEST_CAPABILITIES = ("base", "documents")
 
 
 # region [01] Framework-level cancellation
@@ -294,7 +299,10 @@ class BlockingCancellationTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIsInstance(errors[0], CancellationRequested)
 
+    @pytest.mark.capability("documents")
     def test_pdf_isolated_child_is_killed_when_cancelled(self) -> None:
+        from neocortex.capabilities.formats.pdf.pdf_isolation import stream_isolated_profiles
+
         token = CancellationToken()
 
         class FakeQueue:

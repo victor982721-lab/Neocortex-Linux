@@ -11,6 +11,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from neocortex.interface.application.elevation import elevation_launch_spec
+
+import pytest
+
+
+TEST_CAPABILITIES = ("base", 'ui')
+pytestmark = pytest.mark.capability("base", 'ui')
 # endregion [01]
 
 # region [02] Implementación

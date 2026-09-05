@@ -8,7 +8,17 @@ from pathlib import Path
 import pytest
 
 from neocortex.runtime.control import memory_runtime
+from neocortex.runtime.control.cgroup_runtime import CgroupMemorySnapshot
 from neocortex.capabilities.formats.pdf import pdf_runtime
+
+
+@pytest.fixture(autouse=True)
+def _isolate_cgroup_probe(monkeypatch) -> None:
+    monkeypatch.setattr(
+        memory_runtime,
+        "cgroup_memory_snapshot",
+        lambda: CgroupMemorySnapshot(None, None, 0),
+    )
 
 
 def test_linux_meminfo_prefers_memavailable_over_memfree(tmp_path: Path) -> None:

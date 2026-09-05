@@ -134,7 +134,10 @@ publicación. Si el alcance exige `main`, verifica `HEAD == main == origin/main`
 ## Dependencias y releases
 
 - No instales pip, Node ni paquetes Python globalmente.
-- Usa el wheelhouse autenticado y `tools/release_linux.py`.
+- Para releases personales CPython 3.14 usa el wheelhouse autenticado y
+  `tools/release_linux.py`. La instalación ordinaria en venv desde una
+  extracción sin Git utiliza el empaquetado estándar y los wheels originales
+  versionados en `dev-resources/offline/`, sin promover una release.
 - Después de verificar una release conserva sólo `current` y el rollback
   inmediato; nunca borres una release en uso.
 - No uses `PYTHONPATH` ni el checkout para validar el launcher público.

@@ -1,0 +1,12 @@
+# CPython 3.13.5 GIL, Linux x86_64, glibc 2.41 target wheel resolution.
+# Versions reused from the CPython 3.14 product constraints where compatible;
+# this closure was resolved separately against original cp313/abi3 wheels.
+# Install with --no-index --find-links dev-resources/offline/artifacts --require-hashes.
+# Artifact origin, compatibility tags and licenses: ../provenance.json.
+# Profile: runtime-base; complete transitive closure for this profile only.
+markdown-it-py==4.2.0 --hash=sha256:9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a
+mdurl==0.1.2 --hash=sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8
+packaging==26.2 --hash=sha256:5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e
+pygments==2.21.0 --hash=sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9
+rich==15.0.0 --hash=sha256:33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb
+xxhash==3.8.1 --hash=sha256:98ee81b4b7f3023c9cb04a78cc67610baffcb5812d92f2096cb5a5efc6f19437

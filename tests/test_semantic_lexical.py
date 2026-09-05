@@ -22,6 +22,10 @@ from neocortex.semantic.semantic_lexical import (
 from neocortex.semantic.semantic_models import EmbeddingModality
 
 
+TEST_CAPABILITIES = ("base", 'inference')
+pytestmark = pytest.mark.capability("base", 'inference')
+
+
 # region [01] Minimal route-compatible FTS fixtures
 
 

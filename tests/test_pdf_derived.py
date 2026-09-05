@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import json
 import sqlite3
 import tempfile
@@ -13,6 +14,9 @@ from neocortex.capabilities.formats.pdf.pdf_derived import (
 )
 from neocortex.capabilities.formats.pdf.pdf_state import initialize_pdf_state
 from neocortex.platform.policy import sqlite_path_collation
+
+
+TEST_CAPABILITIES = ('documents',)
 
 
 # region [01] Linear FTS/state reconciliation

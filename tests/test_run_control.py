@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import gc
 import inspect
 import json
 import sqlite3
 import time
 from collections.abc import Callable
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
 import pytest
 
+import neocortex.persistence.sqlite_immutable as sqlite_immutable
 from neocortex.enumeration import JournalCursor
 from neocortex.deduplication import (
     DedupIndex,
@@ -476,7 +479,7 @@ def test_route_only_reuses_retained_candidates_without_inventory(tmp_path) -> No
     assert result.source_run_id == source
     assert result.route_results["probe"] == {"processed": 1}
     assert seen == [str(tmp_path / "one.pdf")]
-    with sqlite3.connect(state_dir / "framework.sqlite3") as connection:
+    with closing(sqlite3.connect(state_dir / "framework.sqlite3")) as connection, connection:
         latest = connection.execute(
             """SELECT run_kind,status,source_run_id,current_phase
             FROM initial_runs ORDER BY run_id DESC LIMIT 1"""
@@ -515,7 +518,7 @@ def test_route_only_inventory_snapshot_accepts_zero_mime_candidates(
     assert isinstance(result, RouteOnlyRunResult)
     assert result.source_run_id == source
     assert seen == [(source_scan_id, (str(corpus / "module.py"),))]
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         target_candidates = connection.execute(
             "SELECT COUNT(*) FROM route_candidates WHERE run_id=?",
             (result.run_id,),
@@ -565,7 +568,7 @@ def test_implicit_inventory_route_uses_newest_durable_scan_not_stale_candidates(
             (str(corpus / "module.py"), str(corpus / "one.pdf")),
         )
     ]
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         assert (
             connection.execute(
                 "SELECT COUNT(*) FROM route_candidates WHERE run_id=?",
@@ -615,7 +618,7 @@ def test_failed_inventory_route_preserves_retained_mime_candidates(
         ).run()
 
     assert retained_candidate_run < newest_run
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         assert (
             connection.execute(
                 "SELECT COUNT(*) FROM route_candidates WHERE run_id=?",
@@ -664,7 +667,7 @@ def test_implicit_mime_route_does_not_fallback_to_stale_candidate_run(
 
     assert stale_candidate_run < newest_run
     assert executed is False
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         assert connection.execute("SELECT COUNT(*) FROM initial_runs").fetchone()[0] == 2
 
 
@@ -710,7 +713,7 @@ def test_route_candidate_inputs_fail_closed_on_zero_mime_candidates(
         ).run()
 
     assert executed == []
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         assert connection.execute("SELECT COUNT(*) FROM initial_runs").fetchone()[0] == 1
 
 
@@ -746,7 +749,7 @@ def test_resume_infers_interrupted_route_and_preserves_phase_evidence(
     probe_result = result.route_results["probe"]
     assert isinstance(probe_result, dict)
     assert probe_result["source_extraction_complete"] is True
-    with sqlite3.connect(state_dir / "framework.sqlite3") as connection:
+    with closing(sqlite3.connect(state_dir / "framework.sqlite3")) as connection, connection:
         source_status = connection.execute(
             "SELECT status FROM initial_runs WHERE run_id=?",
             (source,),
@@ -784,7 +787,7 @@ def test_resume_infers_inventory_route_with_zero_mime_candidates(
     assert isinstance(result, RouteOnlyRunResult)
     assert result.source_run_id == source
     assert seen == [(source_scan_id, (str(corpus / "module.py"),))]
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         source_status = connection.execute(
             "SELECT status FROM initial_runs WHERE run_id=?",
             (source,),
@@ -792,8 +795,11 @@ def test_resume_infers_inventory_route_with_zero_mime_candidates(
     assert source_status == "interrupted"
 
 
+@pytest.mark.parametrize("collect_during_snapshot", [False, True])
 def test_resume_recovers_legacy_scan_link_from_durable_inventory_evidence(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    collect_during_snapshot: bool,
 ) -> None:
     corpus = tmp_path / "corpus"
     state_dir = tmp_path / "state"
@@ -842,7 +848,7 @@ def test_resume_recovers_legacy_scan_link_from_durable_inventory_evidence(
                 "attempts": 1,
             },
         )
-    with sqlite3.connect(state_dir / "framework.sqlite3") as connection:
+    with closing(sqlite3.connect(state_dir / "framework.sqlite3")) as connection, connection:
         now = time.time_ns()
         connection.execute(
             """INSERT INTO route_runs(
@@ -852,8 +858,23 @@ def test_resume_recovers_legacy_scan_link_from_durable_inventory_evidence(
         )
 
     seen: list[str] = []
+    collected_during_snapshot = False
 
     def execute(context):
+        nonlocal collected_during_snapshot
+        if collect_during_snapshot:
+            copy_regular_file = sqlite_immutable._copy_regular_file
+
+            def copy_and_collect(source: Path, destination: Path) -> None:
+                nonlocal collected_during_snapshot
+                copy_regular_file(source, destination)
+                if source == state_dir / "framework.sqlite3" and not collected_during_snapshot:
+                    collected_during_snapshot = True
+                    gc.collect()
+
+            # Keep the real copy and both fences; fixture writers must already
+            # be closed even if cyclic collection runs inside the read window.
+            monkeypatch.setattr(sqlite_immutable, "_copy_regular_file", copy_and_collect)
         seen.extend(
             item.path
             for item in context.framework_state.iter_route_candidates(
@@ -876,7 +897,7 @@ def test_resume_recovers_legacy_scan_link_from_durable_inventory_evidence(
             ),
             route_registry={"probe": RouteAdapter("probe", execute)},
         ).run()
-    with sqlite3.connect(state_dir / "framework.sqlite3") as connection:
+    with closing(sqlite3.connect(state_dir / "framework.sqlite3")) as connection, connection:
         assert (
             connection.execute(
                 "SELECT scan_id FROM initial_runs WHERE run_id=?",
@@ -892,14 +913,16 @@ def test_resume_recovers_legacy_scan_link_from_durable_inventory_evidence(
             route="none",
             route_only=True,
             resume_run_id=source_run,
-            heartbeat_interval_seconds=0.01,
+            # Recovery uses the productive heartbeat default, not a 100 Hz
+            # writer racing every bounded SQLite snapshot copy.
         ),
         route_registry={"probe": RouteAdapter("probe", execute)},
     ).run()
 
     assert isinstance(result, RouteOnlyRunResult)
     assert seen == [str(source_path)]
-    with sqlite3.connect(state_dir / "framework.sqlite3") as connection:
+    assert collected_during_snapshot is collect_during_snapshot
+    with closing(sqlite3.connect(state_dir / "framework.sqlite3")) as connection, connection:
         source_row = connection.execute(
             "SELECT status,scan_id FROM initial_runs WHERE run_id=?",
             (source_run,),
@@ -938,7 +961,7 @@ def test_routing_snapshot_accepts_zero_incremental_attempts(tmp_path: Path) -> N
             "incremental",
         )
 
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         row = connection.execute(
             """SELECT status,scan_id,reconciliation_records,inventory_attempts,
             inventory_mode FROM initial_runs WHERE run_id=?""",
@@ -1160,14 +1183,14 @@ def test_route_only_rejects_inconsistent_bound_inventory_scan(
     state_dir.mkdir()
     framework_database = state_dir / "framework.sqlite3"
     source_run = _source_run(framework_database, corpus)
-    with sqlite3.connect(framework_database) as connection:
+    with closing(sqlite3.connect(framework_database)) as connection, connection:
         scan_id = int(
             connection.execute(
                 "SELECT scan_id FROM initial_runs WHERE run_id=?",
                 (source_run,),
             ).fetchone()[0]
         )
-    with sqlite3.connect(state_dir / "dedup.sqlite3") as connection:
+    with closing(sqlite3.connect(state_dir / "dedup.sqlite3")) as connection, connection:
         if tamper == "root_identity":
             connection.execute(
                 "UPDATE scans SET root_file_id=? WHERE scan_id=?",
@@ -1198,7 +1221,7 @@ def test_route_only_rejects_inconsistent_bound_inventory_scan(
             route_registry={"probe": RouteAdapter("probe", execute)},
         ).run()
     assert executed is False
-    with sqlite3.connect(framework_database) as connection:
+    with closing(sqlite3.connect(framework_database)) as connection, connection:
         assert connection.execute("SELECT COUNT(*) FROM initial_runs").fetchone()[0] == 1
 
 
@@ -1236,7 +1259,7 @@ def test_explicit_route_source_with_legacy_policy_fails_before_new_run(
         ).run()
 
     assert not executed
-    with sqlite3.connect(framework_database) as connection:
+    with closing(sqlite3.connect(framework_database)) as connection, connection:
         assert connection.execute("SELECT COUNT(*) FROM initial_runs").fetchone()[0] == 1
 
 
@@ -1254,7 +1277,7 @@ def test_status_reports_stale_dead_owner_without_writing(tmp_path) -> None:
     database = state / "framework.sqlite3"
     run_id = _source_run(database, corpus)
     stale = time.time_ns() - 120_000_000_000
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         connection.execute(
             """UPDATE initial_runs SET status='running',completed_ns=NULL,
             owner_pid=2147483647,heartbeat_ns=?,current_phase='derived'

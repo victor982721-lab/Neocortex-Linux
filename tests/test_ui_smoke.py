@@ -5,6 +5,7 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+
 import os
 import sqlite3
 import tempfile
@@ -21,6 +22,9 @@ from PySide6.QtWidgets import QApplication
 
 from neocortex.interface.presentation.windows.main import MainWindow
 from neocortex.interface.application.request import ROUTE_ORDER
+
+
+TEST_CAPABILITIES = ('ui',)
 
 
 class UiSmokeTests(unittest.TestCase):

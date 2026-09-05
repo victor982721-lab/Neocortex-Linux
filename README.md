@@ -127,9 +127,11 @@ Launcher:    ~/.local/share/Neocortex/bin/Neocortex
 Alias:       ~/.local/bin/Neocortex
 ```
 
-La instalación canónica usa `tools/release_linux.py` y un wheelhouse local
-autenticado. No instales dependencias globalmente ni valides una release mediante
-imports desde el checkout.
+La instalación personal usa `tools/release_linux.py` y un wheelhouse local
+autenticado. Una extracción ordinaria del repositorio también permite construir
+e instalar el mismo paquete en un venv CPython 3.13 sin Git, red, paquetes
+globales ni promoción de release: véase [instalación offline y capacidades](docs/LINUX_KUBUNTU.md#instalación-ordinaria-desde-una-extracción).
+Los wheels de desarrollo incluidos no forman parte del paquete instalado.
 
 ## Documentación
 

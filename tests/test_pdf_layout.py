@@ -5,6 +5,7 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+
 import io
 import tempfile
 import unittest
@@ -14,6 +15,9 @@ import fitz  # type: ignore[import-untyped]
 from PIL import Image, ImageDraw
 
 from neocortex.capabilities.formats.pdf.pdf_layout import map_page_layout, signature_similarity
+
+
+TEST_CAPABILITIES = ('documents',)
 # endregion [01]
 
 # region [02] Implementación

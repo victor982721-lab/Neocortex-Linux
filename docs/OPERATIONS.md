@@ -86,6 +86,24 @@ tiempo. Configura presupuestos globales sólo cuando una medición los justifiqu
 No ejecutes un recorrido largo sin máximo o deadline. Evita un proceso por
 archivo y commits SQLite por elemento; usa streaming y batches acotados.
 
+En contenedores Linux los controladores consideran los límites aplicables de
+cgroups v2: memoria disponible del host y margen `memory.max - memory.current`
+en la jerarquía, además de cuota CPU y afinidad. No se presupone que
+`os.cpu_count()` ni `/proc/meminfo` representen los recursos utilizables.
+
+Para subprocesses sin TTY, `NEOCORTEX_PROGRESS_STREAM=1` reutiliza `LineProgress`
+en stderr con flush; stdout queda reservado a la salida de la operación.
+Indica `--root`, `--state-directory` y, para Code, `--code-project-root`; HOME/XDG
+pueden apuntar a un directorio temporal. Los owners crean estado nuevo sin bases
+productivas. Consulta las SQLite sólo después del estado terminal, mediante
+`SQLiteReadSession` y los contratos públicos de publicación.
+
+Compara cobertura, contenido, errores, procedencia y replay, no bytes idénticos
+de bases entre entornos: rutas, tiempos e identidades físicas pueden variar,
+mientras backend, versión y fingerprint deben permanecer explícitos. Escoger
+`--route text,code` limita expresamente una ejecución, no redefine `--all` ni
+convierte una generación parcial en una publicación completa.
+
 ## Modelos y herramientas externas
 
 ```bash
@@ -153,6 +171,10 @@ Todos muestran preview cuando corresponde. Antes de `--apply`, conserva el
 manifest/digest presentado, detén writers y sigue [RECOVERY.md](RECOVERY.md).
 
 ## Instalación y release
+
+La [instalación ordinaria offline](LINUX_KUBUNTU.md#instalación-ordinaria-desde-una-extracción)
+en venv CPython 3.13 no promueve una release ni requiere Git. El procedimiento
+siguiente conserva el contrato de instalación personal CPython 3.14.
 
 La instalación personal es offline y reproducible desde un wheelhouse local
 autenticado:

@@ -16,16 +16,12 @@ import re
 import subprocess
 import unicodedata
 from collections.abc import Mapping
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, cast
-
-from PIL import Image
+from typing import TYPE_CHECKING, Literal, cast
 
 from neocortex.runtime.control.bounded_subprocess import run_bounded_capture
-from .decode import pillow_decode_scope
-from neocortex.safety.ocr_image_preprocess import bounded_grayscale, orient_and_deskew
 from neocortex.safety.ocr_profiles import (
     OcrOrientation,
     OcrProfileName,
@@ -47,6 +43,9 @@ from neocortex.foundation.processing_provenance import (
     build_processing_provenance,
     resolve_tesseract_runtime,
 )
+
+if TYPE_CHECKING:
+    from PIL import Image
 
 DOCUMENT_OCR_VERSION = "document-text-tesseract-v3"
 # Public sampling bound for callers that report OCR evidence dimensions.
@@ -386,7 +385,19 @@ def _encode_document_sample(contrasted: Image.Image) -> _DocumentOcrSample:
         contrasted.close()
 
 
+def pillow_decode_scope(*, allow_truncated: bool) -> AbstractContextManager[None]:
+    """Load the existing decoder guard only when decoding is requested."""
+
+    from .decode import pillow_decode_scope as decode_scope
+
+    return decode_scope(allow_truncated=allow_truncated)
+
+
 def _sample_document_image(path: Path) -> Image.Image:
+    from PIL import Image
+
+    from neocortex.safety.ocr_image_preprocess import bounded_grayscale
+
     with pillow_decode_scope(allow_truncated=False):
         with Image.open(path) as source:
             return bounded_grayscale(
@@ -679,6 +690,8 @@ def _execute_document_ocr(
             )
         except Exception as exc:
             orientation = _osd_unavailable(exc)
+        from neocortex.safety.ocr_image_preprocess import orient_and_deskew
+
         preprocessed = orient_and_deskew(
             image,
             rotation_clockwise_degrees=orientation.rotate_degrees,

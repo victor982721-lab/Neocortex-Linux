@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -15,6 +16,9 @@ from neocortex.capabilities.formats.image.document import (
     DocumentTextEvidence,
     DocumentVerifierRuntime,
 )
+
+
+TEST_CAPABILITIES = ('image',)
 
 
 # region [01] Deterministic feature/evidence fixtures

@@ -204,6 +204,18 @@ consideran promovidos.
 
 ## Concurrencia y recuperación
 
+Los probes de control Linux incorporan cgroups v2 y afinidad a los datos del
+host. La memoria distingue límite duro y margen antes de presión por
+`memory.high`, y CPU conserva cuota fraccional para el diagnóstico y un número
+conservador de workers para los consumidores existentes. No introduce una
+política fija de recursos ni un segundo coordinador.
+
+Las superficies de ayuda y los contratos de configuración no importan motores
+ni Qt. El diagnóstico de paquetes usa requisitos de `pyproject.toml` en fuente
+o `Requires-Dist` del paquete instalado, sin una lista paralela de versiones;
+inspección de metadata, localización de ejecutable, archivos de modelo y éxito
+de procesamiento no son equivalentes.
+
 El coordinador limita CPU/memoria y registra fases. Writers toman exclusión
 cooperativa; backup, restore y purge requieren exclusión más fuerte. Los
 subprocesos tardíos no pueden publicar sobre un head nuevo. Un fallo alrededor

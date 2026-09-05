@@ -11,6 +11,12 @@ from neocortex.interface.protocol.worker import (
     _reset_active_progress,
     _track_progress,
 )
+
+import pytest
+
+
+TEST_CAPABILITIES = ("base", 'ui')
+pytestmark = pytest.mark.capability("base", 'ui')
 # endregion [01]
 
 # region [02] Implementación

@@ -1286,7 +1286,7 @@ def test_semantic_search_escapes_unencodable_corpus_text_on_cp1252(
     assert output.count("\\uf0b7") == 2
 
 
-def test_offline_semantic_failure_names_explicit_model_preparation(
+def test_offline_semantic_failure_names_explicit_local_model_cache(
     tmp_path,
     capsys,
 ) -> None:
@@ -1308,7 +1308,8 @@ def test_offline_semantic_failure_names_explicit_model_preparation(
         assert dispatch_direct(args) == 2
     output = capsys.readouterr().out
     assert "ERROR semantic-search RuntimeError" in output
-    assert "Neocortex --semantic-prepare-models" in output
+    assert "--semantic-model-cache" in output
+    assert "outside an offline run" in output
 
 
 def test_semantic_classification_is_reported_as_advisory(tmp_path, capsys) -> None:

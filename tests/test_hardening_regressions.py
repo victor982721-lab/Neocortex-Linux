@@ -5,6 +5,7 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -22,15 +23,19 @@ from neocortex.documents.document_taxonomy import (
     MAX_TAXONOMY_BYTES,
     load_taxonomy,
 )
-from neocortex.capabilities.formats.pdf.pdf_isolation import _read_file_tail
-from neocortex.interface.application.controller import MAX_PROCESS_LINE_BYTES, WorkerController
 from tests.internal_paths_test_support import disjoint_internal_paths_policy
+
+
+TEST_CAPABILITIES = ("base", "documents", "ui")
 # endregion [01]
 
 # region [02] Implementación
 
 
+@pytest.mark.capability("documents")
 def test_qpdf_diagnostic_tail_read_is_bounded(tmp_path: Path) -> None:
+    from neocortex.capabilities.formats.pdf.pdf_isolation import _read_file_tail
+
     diagnostics = tmp_path / "qpdf.stderr"
     diagnostics.write_bytes(b"prefix" * 20_000 + b"expected-tail")
 
@@ -64,7 +69,10 @@ identifier_patterns = ["(a+)+$"]
         load_taxonomy(taxonomy_path)
 
 
+@pytest.mark.capability("ui")
 def test_controller_discards_oversized_unterminated_line_and_resynchronizes() -> None:
+    from neocortex.interface.application.controller import MAX_PROCESS_LINE_BYTES, WorkerController
+
     controller = WorkerController()
     emitted: list[str] = []
     controller.output_received.connect(emitted.append)

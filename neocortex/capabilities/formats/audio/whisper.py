@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from typing import Any, Mapping
 
+from neocortex.platform.policy import default_whisper_model_cache
 from .models import (
     AudioProcessingError,
     AudioRouteConfig,
@@ -52,9 +53,10 @@ def _whisper_environment() -> tuple[str, str, int]:
         backend_version = importlib.metadata.version("faster-whisper")
         ctranslate2_version = importlib.metadata.version("ctranslate2")
         import ctranslate2  # type: ignore[import-untyped]
-    except (ImportError, importlib.metadata.PackageNotFoundError) as exc:
+    except (ImportError, OSError, importlib.metadata.PackageNotFoundError) as exc:
         raise WhisperRuntimeError(
-            "faster-whisper and CTranslate2 are required for the audio route"
+            "the audio route requires an importable faster-whisper/CTranslate2 runtime; "
+            f"{type(exc).__name__}: {exc}"
         ) from exc
     try:
         cuda_devices = int(ctranslate2.get_cuda_device_count())
@@ -122,6 +124,93 @@ def audio_runtime_doctor(
 
 
 # region [02] Child protocol and bounded text assembly
+
+
+def local_whisper_model(
+    model_name: str, cache_directory: Path | None,
+) -> tuple[str, Path]:
+    """Resolve complete local weights/tokenizer without calling a downloader.
+
+    Whisper's local_files_only flag does not protect its tokenizer fallback:
+    passing a local directory without tokenizer.json can still fetch a tokenizer.
+    Resolve and validate the directory before entering that backend.
+    """
+
+    from neocortex.runtime.config.model_management import (
+        WHISPER_MODEL_ID,
+        WHISPER_REQUIRED_FILES,
+        _valid_whisper_directory,
+        _whisper_snapshot_directory,
+    )
+
+    candidate = Path(model_name).expanduser()
+    canonical_small = model_name in {"small", WHISPER_MODEL_ID}
+    if not canonical_small and candidate.is_dir():
+        if _valid_whisper_directory(candidate):
+            return model_name, candidate.resolve()
+        missing = [
+            name for name in WHISPER_REQUIRED_FILES
+            if not (candidate / name).is_file() or not (candidate / name).stat().st_size
+        ]
+        raise WhisperRuntimeError(
+            f"Whisper local model {candidate} is incomplete: {', '.join(missing)}; "
+            "offline transcription will not download weights or a tokenizer"
+        )
+    if canonical_small:
+        model_id = WHISPER_MODEL_ID
+    elif "/" in model_name and not candidate.is_absolute() and len(candidate.parts) == 2:
+        model_id = model_name
+    elif "/" in model_name or candidate.is_absolute():
+        raise WhisperRuntimeError(f"Whisper local model directory is missing: {candidate}")
+    else:
+        # Preserve the backend's aliases without maintaining a second registry.
+        try:
+            from faster_whisper.utils import _MODELS  # type: ignore[import-untyped]
+        except (ImportError, OSError) as exc:
+            raise WhisperRuntimeError(
+                f"faster-whisper is required to resolve model alias {model_name!r}; "
+                "provide a canonical repository ID or a complete local directory"
+            ) from exc
+        model_id = _MODELS.get(model_name)
+        if not model_id:
+            raise WhisperRuntimeError(f"Whisper model alias is not supported: {model_name!r}")
+    cache = default_whisper_model_cache() if cache_directory is None else cache_directory
+    snapshot = None if cache is None else _whisper_snapshot_directory(cache, model_id)
+    if snapshot is None:
+        raise WhisperRuntimeError(
+            f"Whisper model {model_id} is not complete in {cache}; required local files: "
+            f"{', '.join(WHISPER_REQUIRED_FILES)}; offline transcription will not download them"
+        )
+    return str(model_id), snapshot.resolve()
+
+
+def whisper_local_provenance(
+    model_name: str, cache_directory: Path | None,
+) -> dict[str, Any]:
+    """Bind available local model bytes to the existing processing provenance."""
+
+    from neocortex.foundation.processing_provenance import file_artifact
+    from neocortex.runtime.config.model_management import WHISPER_REQUIRED_FILES
+
+    try:
+        model_id, snapshot = local_whisper_model(model_name, cache_directory)
+    except (OSError, WhisperRuntimeError) as exc:
+        return {
+            "name": "whisper-local-model", "kind": "model-artifact",
+            "model_id": model_name, "files_available": False,
+            "reason": type(exc).__name__,
+        }
+    names = (
+        *WHISPER_REQUIRED_FILES, "preprocessor_config.json", "vocabulary.json", "vocabulary.txt",
+    )
+    return {
+        "name": "whisper-local-model", "kind": "model-artifact",
+        "model_id": model_id, "files_available": True,
+        "artifacts": [
+            file_artifact(snapshot / name, label=name) for name in names
+            if (snapshot / name).is_file()
+        ],
+    }
 
 
 def _normalized_segment_text(value: object) -> str:
@@ -216,14 +305,20 @@ def _whisper_worker(task_channel, result_channel, settings: Mapping[str, object]
     """Load one model, then service sequential bounded requests."""
 
     try:
-        from faster_whisper import WhisperModel  # type: ignore[import-untyped]
-
-        runtime = resolve_whisper_runtime(str(settings["device"]), str(settings["compute_type"]))
         download_root = settings.get("model_cache_directory")
         if download_root is not None and not isinstance(download_root, str):
             raise ValueError("invalid Whisper model cache directory")
+        model_name = str(settings["model_name"])
+        if bool(settings["local_models_only"]):
+            _model_id, snapshot = local_whisper_model(
+                model_name, None if download_root is None else Path(download_root),
+            )
+            model_name = str(snapshot)
+        from faster_whisper import WhisperModel  # type: ignore[import-untyped]
+
+        runtime = resolve_whisper_runtime(str(settings["device"]), str(settings["compute_type"]))
         model = WhisperModel(
-            str(settings["model_name"]),
+            model_name,
             device=runtime.resolved_device,
             compute_type=runtime.resolved_compute_type,
             download_root=download_root,

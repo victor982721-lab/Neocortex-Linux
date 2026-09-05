@@ -1,0 +1,15 @@
+# CPython 3.13.5 GIL, Linux x86_64, glibc 2.41 target wheel resolution.
+# Versions reused from the CPython 3.14 product constraints where compatible;
+# this closure was resolved separately against original cp313/abi3 wheels.
+# Install with --no-index --find-links dev-resources/offline/artifacts --require-hashes.
+# Artifact origin, compatibility tags and licenses: ../provenance.json.
+# Profile: documents-image; complete transitive closure for this profile only.
+cffi==2.1.1 --hash=sha256:a931079504ecc49efed7744c476a5c343a92fabf66dec2db95edb1b2fdc770e2
+charset-normalizer==3.5.1 --hash=sha256:62b55f6722735a6c472f88361cde6640608773d9443cebdbb51abf436a1fcdd3
+cryptography==50.0.0 --hash=sha256:82148ec5bddac30b51a5b3c1945075f896fa022cb93f8e4a01e9f6ee95292c5f
+packaging==26.2 --hash=sha256:5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e
+pdfminer-six==20260107 --hash=sha256:366585ba97e80dffa8f00cebe303d2f381884d8637af4ce422f1df3ef38111a9
+pillow==12.3.0 --hash=sha256:0847a763afefb695bc912d7c131e7e0632d4edc1d8698f58ddabec8e46b8b6d3
+pycparser==3.0 --hash=sha256:b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992
+pymupdf==1.27.2.3 --hash=sha256:857842b4888827bd6155a1131341b2822a7ebe9a8c15a975fd7d490d7a64a30c
+pytesseract==0.3.13 --hash=sha256:7a99c6c2ac598360693d83a416e36e0b33a67638bb9d77fdcac094a3589d4b34

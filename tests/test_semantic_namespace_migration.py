@@ -8,6 +8,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+
+TEST_CAPABILITIES = ("base", 'inference')
+pytestmark = pytest.mark.capability("base", 'inference')
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SEMANTIC_ROOT = PROJECT_ROOT / "neocortex" / "semantic"

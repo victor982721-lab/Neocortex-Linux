@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 import asyncio
 import json
 
@@ -15,6 +16,9 @@ from neocortex.api.read_contract import (
     sanitize_untrusted_payload,
     validate_read_payload,
 )
+
+
+TEST_CAPABILITIES = ('base', 'agent')
 
 
 def _status_payload(*, exit_code: int = 0) -> dict[str, object]:
@@ -80,8 +84,8 @@ def test_payload_sanitizer_handles_non_json_keys_nonfinite_values_and_objects() 
     json.dumps(sanitized, allow_nan=False)
 
 
+@pytest.mark.capability('agent')
 def test_mcp_input_schema_rejects_whitespace_only_text() -> None:
-    pytest.importorskip("mcp")
     from neocortex.api.agent_server import create_server
 
     server = create_server()

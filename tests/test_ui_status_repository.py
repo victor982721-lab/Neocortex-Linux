@@ -12,6 +12,12 @@ import unittest
 from pathlib import Path
 
 from neocortex.interface.read.status import StatusRepository, StatusRepositoryError
+
+import pytest
+
+
+TEST_CAPABILITIES = ("base", 'ui')
+pytestmark = pytest.mark.capability("base", 'ui')
 # endregion [01]
 
 # region [02] Implementación

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +13,9 @@ from PIL import Image, ImageFile
 from neocortex.capabilities.formats.image.decode import RecoveredImageContentError
 from neocortex.capabilities.formats.image.errors import classify_image_failure
 from neocortex.capabilities.formats.image.features import extract_features
+
+
+TEST_CAPABILITIES = ('image',)
 
 
 # region [01] Temporary image fixtures

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import io
 import json
 import os
@@ -24,6 +25,9 @@ from neocortex.capabilities.formats.archive.state import (
 )
 from neocortex.runtime.control.cancellation import CancellationToken
 from neocortex.safety.route_filters import CandidateSelection
+
+
+TEST_CAPABILITIES = ('base', 'documents', 'image')
 
 
 class FakeFrameworkRouteState:
@@ -80,9 +84,7 @@ def _docx_bytes() -> bytes:
 
 
 def _ocr_png_bytes(text: str) -> bytes:
-    pillow = pytest.importorskip("PIL.Image")
-    image_draw = pytest.importorskip("PIL.ImageDraw")
-    image_font = pytest.importorskip("PIL.ImageFont")
+    from PIL import Image as pillow, ImageDraw as image_draw, ImageFont as image_font
     font_path = Path("/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf")
     if not font_path.is_file():
         pytest.skip("representative OCR font is unavailable")
@@ -394,8 +396,9 @@ def test_changed_container_replaces_old_members_and_full_run_prunes_stale(
     assert search_archive_state(state, "reemplazo consultable")[0].member_chain == "nuevo.txt"
 
 
+@pytest.mark.capability('documents')
 def test_pdf_inside_zip_indexes_native_text_in_isolated_worker(tmp_path: Path) -> None:
-    fitz = pytest.importorskip("fitz")
+    import fitz
     document = fitz.open()
     page = document.new_page()
     page.insert_text((72, 72), "proteccion diferencial archivo PDF interno")
@@ -413,8 +416,11 @@ def test_pdf_inside_zip_indexes_native_text_in_isolated_worker(tmp_path: Path) -
     assert hit.member_chain == "manuales/proteccion.pdf"
 
 
+@pytest.mark.capability('documents', 'image')
 def test_nested_zip_indexes_image_ocr_with_explicit_virtual_path(tmp_path: Path) -> None:
-    pytest.importorskip("pytesseract")
+    import pytesseract
+
+    assert pytesseract.get_tesseract_version()
     if not Path("/usr/bin/tesseract").is_file():
         pytest.skip("Tesseract is unavailable")
     inner = _zip_bytes({"imagenes/tablero.png": _ocr_png_bytes("RELEVADOR ARCO ELECTRICO NORTE")})
@@ -433,9 +439,12 @@ def test_nested_zip_indexes_image_ocr_with_explicit_virtual_path(tmp_path: Path)
     assert hit.container_path == os.fspath(source)
 
 
+@pytest.mark.capability('documents')
 def test_zip_indexes_scanned_pdf_through_bounded_ocr(tmp_path: Path) -> None:
-    fitz = pytest.importorskip("fitz")
-    pytest.importorskip("pytesseract")
+    import fitz
+    import pytesseract
+
+    assert pytesseract.get_tesseract_version()
     if not Path("/usr/bin/tesseract").is_file():
         pytest.skip("Tesseract is unavailable")
     image = _ocr_png_bytes("TRANSFORMADOR POTENCIA DELTA")

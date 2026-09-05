@@ -994,6 +994,29 @@ def test_plain_text_selection_ignores_missing_optional_soffice() -> None:
     assert selection.selected.implementation_id == TEXT_BUILTIN_IMPLEMENTATION_ID
 
 
+def test_explicitly_disabled_capability_cannot_be_selected_from_present_packages() -> None:
+    request = _text_request("text/plain")
+    requirement = RuntimeRequirement(
+        component="xxhash",
+        kind=RequirementKind.PYTHON_DISTRIBUTION,
+        required=True,
+        missing_reason="base_xxhash_unavailable",
+        distribution="xxhash",
+        module="xxhash",
+    )
+    status = RuntimeCapabilityStatus(
+        capability="text",
+        state=CapabilityState.AVAILABLE,
+        components=(RuntimeComponentStatus(requirement, available=True, version="3.8.0"),),
+        degradation_reasons=(),
+        enabled=False,
+    )
+    selection = build_runtime_capability_broker(request, statuses=(status,)).select(request)
+
+    assert selection.selected is None
+    assert selection.candidates[0].rejection_reasons == ("capability_disabled",)
+
+
 def test_legacy_text_abstains_without_a_matching_backend_and_pins_exact_fallback(
     tmp_path: Path,
 ) -> None:

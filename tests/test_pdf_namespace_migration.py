@@ -13,6 +13,9 @@ from pathlib import Path
 import pytest
 
 
+TEST_CAPABILITIES = ("base", "documents")
+
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PRODUCT_ROOT = "neocortex.capabilities.formats.pdf"
 MODULE_NAMES = (
@@ -35,13 +38,17 @@ MODULE_NAMES = (
 )
 
 
-def test_pdf_modules_are_owned_by_the_canonical_tree() -> None:
-    for name in MODULE_NAMES:
-        canonical = importlib.import_module(f"{PRODUCT_ROOT}.{name}")
+@pytest.mark.parametrize("name", [
+    pytest.param(name, marks=pytest.mark.capability("documents"))
+    if name in {"pdf_derived", "pdf_isolation", "pdf_profile", "pdf_route"} else name
+    for name in MODULE_NAMES
+])
+def test_pdf_modules_are_owned_by_the_canonical_tree(name: str) -> None:
+    canonical = importlib.import_module(f"{PRODUCT_ROOT}.{name}")
 
-        assert Path(canonical.__file__).resolve().is_relative_to(
-            PROJECT_ROOT / "neocortex" / "capabilities" / "formats" / "pdf"
-        )
+    assert Path(canonical.__file__).resolve().is_relative_to(
+        PROJECT_ROOT / "neocortex" / "capabilities" / "formats" / "pdf"
+    )
 
 
 def test_pdf_consumers_use_the_product_namespace() -> None:
@@ -102,8 +109,8 @@ def test_pdf_parent_package_remains_import_light() -> None:
     ("module_name", "symbol_name"),
     (
         ("pdf_admin", "PdfDoctorReport"),
-        ("pdf_derived", "PdfDerivedSummary"),
-        ("pdf_route", "PdfRoute"),
+        pytest.param("pdf_derived", "PdfDerivedSummary", marks=pytest.mark.capability("documents")),
+        pytest.param("pdf_route", "PdfRoute", marks=pytest.mark.capability("documents")),
         ("pdf_route_models", "PdfRouteConfig"),
         ("pdf_route_models", "PdfRouteSummary"),
     ),

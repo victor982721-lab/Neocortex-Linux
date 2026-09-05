@@ -5,6 +5,7 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+
 import hashlib
 import inspect
 import json
@@ -35,6 +36,10 @@ from tools.release_windows import (
     recover_pending_transition,
     transition_launcher,
 )
+
+
+TEST_CAPABILITIES = ("platform",)
+TEST_PLATFORMS = ("win32",)
 # endregion [01]
 
 # region [02] Implementación

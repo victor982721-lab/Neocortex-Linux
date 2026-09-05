@@ -35,6 +35,14 @@ Neocortex = "neocortex.interface.entrypoint:entrypoint"
 agent = [
     "mcp==1.29.0",
 ]
+# Build frontend and base tests are independent of optional runtimes/analyzers.
+# The backend version remains governed by [build-system].
+build = [
+    "build>=1.5,<2",
+]
+test-base = [
+    "pytest>=9.1,<10",
+]
 # Development-only tools for individual checks; never required by the runtime.
 analysis = [
     "complexipy>=6.2,<7",
@@ -84,6 +92,8 @@ full = [
     "pytesseract>=0.3.13,<0.4",
 ]
 dev = [
+    # Compatibility alias for existing development environments; use build for
+    # a build-only environment and test-base for dependency-light base tests.
     "build>=1.5,<2",
 ]
 

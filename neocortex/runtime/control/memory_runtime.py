@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from .cancellation import CancellationToken
+from .cgroup_runtime import cgroup_memory_snapshot
 
 
 # region [01] Live physical and commit capacity
@@ -57,7 +58,29 @@ def posix_physical_memory_snapshot(
     *,
     sysconf: Callable[[str], int] | None = None,
 ) -> tuple[int | None, int | None]:
-    """Return total and available POSIX memory, preferring Linux MemAvailable."""
+    """Return usable physical capacity, bounded by host pressure and cgroup use."""
+
+    total, available = _host_physical_memory_snapshot(meminfo_path, sysconf=sysconf)
+    cgroup = cgroup_memory_snapshot()
+    if cgroup.limit_bytes is not None:
+        total = cgroup.limit_bytes if total is None else min(total, cgroup.limit_bytes)
+    if cgroup.available_bytes is not None:
+        available = (
+            cgroup.available_bytes
+            if available is None
+            else min(available, cgroup.available_bytes)
+        )
+    if total is not None and available is not None:
+        available = min(total, available)
+    return total, available
+
+
+def _host_physical_memory_snapshot(
+    meminfo_path: Path,
+    *,
+    sysconf: Callable[[str], int] | None,
+) -> tuple[int | None, int | None]:
+    """Prefer reclaimable MemAvailable over the free-page sysconf fallback."""
 
     try:
         parsed = _linux_meminfo_physical_bytes(meminfo_path.read_text(encoding="ascii"))

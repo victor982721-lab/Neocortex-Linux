@@ -100,8 +100,9 @@ def _semantic_failure(
         print(f"ERROR {label} {type(exc).__name__}: {exc}")
     if offline and print_output:
         print(
-            "HINT semantic model use is offline-only for this action; if weights "
-            "are missing run Neocortex --semantic-prepare-models first"
+            "HINT this action is offline-only; provision the required complete local "
+            "snapshot and select it with --semantic-model-cache. Explicit model "
+            "preparation may download files and belongs outside an offline run."
         )
     return 2
 

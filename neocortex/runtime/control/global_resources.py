@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import math
 import threading
 import time
@@ -11,7 +10,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Callable
 from .cancellation import CancellationRequested, CancellationToken
-from .cpu_runtime import CpuLoadSampler
+from .cpu_runtime import CpuLoadSampler, effective_cpu_count
 from .memory_runtime import (
     MemoryBudgetExceeded,
     MemoryHeadroomTimeout,
@@ -101,7 +100,7 @@ def _adaptive_memory_headroom(total_physical: int | None) -> int:
 
 
 def _adaptive_cpu_slots() -> int:
-    detected = os.cpu_count() or 2
+    detected = effective_cpu_count()
     return max(1, min(8, detected - 1))
 
 

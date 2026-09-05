@@ -35,6 +35,10 @@ from neocortex.semantic.semantic_service_contracts import (
     SemanticStatus,
     SemanticWorkloadPlan,
 )
+
+
+TEST_CAPABILITIES = ("base", 'inference')
+pytestmark = pytest.mark.capability("base", 'inference')
 # endregion [01]
 
 # region [02] Implementación

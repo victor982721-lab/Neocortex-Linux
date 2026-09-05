@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import tempfile
 import threading
 import time
@@ -19,6 +20,9 @@ from neocortex.runtime.control.memory_runtime import (
     MemoryHeadroomTimeout,
     MemorySnapshot,
 )
+
+
+TEST_CAPABILITIES = ('image',)
 
 
 # region [01] Integrated analysis memory bounds

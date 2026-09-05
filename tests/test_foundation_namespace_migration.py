@@ -31,7 +31,7 @@ def test_foundation_implementation_lives_under_product_namespace() -> None:
         "neocortex/capabilities/formats/archive/route.py",
         "neocortex/capabilities/formats/audio/models.py",
         "neocortex/capabilities/formats/docx/models.py",
-        "neocortex/capabilities/formats/image/route.py",
+        "neocortex/capabilities/formats/image/contracts.py",
         "neocortex/capabilities/formats/office/route.py",
         "neocortex/capabilities/formats/pdf/pdf_admin.py",
         "neocortex/capabilities/formats/text/text_route.py",

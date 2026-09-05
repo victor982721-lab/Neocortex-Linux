@@ -5,6 +5,7 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+
 import json
 import os
 import queue
@@ -51,6 +52,9 @@ from neocortex.workflow.review.review import list_review_candidates
 from neocortex.runtime.control.retry_policy import classify_pdf_failure
 from neocortex.persistence.framework_route_state import FrameworkRouteState
 from neocortex.persistence.framework_state_writer import FrameworkState
+
+
+TEST_CAPABILITIES = ('documents',)
 # endregion [01]
 
 # region [02] Implementación

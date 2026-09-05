@@ -16,6 +16,10 @@ from neocortex.interface.read import (
 )
 
 
+TEST_CAPABILITIES = ("base", 'ui')
+pytestmark = pytest.mark.capability("base", 'ui')
+
+
 def _payload(
     operation: str,
     *,

@@ -16,6 +16,10 @@ from neocortex.semantic.semantic_config import (
     production_models,
     text_chunking_for_model,
 )
+
+
+TEST_CAPABILITIES = ("base", 'inference')
+pytestmark = pytest.mark.capability("base", 'inference')
 # endregion [01]
 
 # region [02] Implementación

@@ -839,7 +839,6 @@ def test_contract_module_cold_import_has_a_minimal_dag() -> None:
             "neocortex.knowledge.knowledge_contracts",
             "neocortex.semantic",
             "neocortex.semantic.semantic_models",
-            "xxhash",
         }
         future_extraction_modules = {
             "neocortex.knowledge.knowledge_contract_context",

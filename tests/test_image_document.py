@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import inspect
 import subprocess
 import tempfile
@@ -22,6 +23,9 @@ from neocortex.capabilities.formats.image.document import (
     DocumentVerifierRuntime,
     verify_document_text,
 )
+
+
+TEST_CAPABILITIES = ('image', 'documents')
 
 
 # region [01] Bounded OCR fixtures

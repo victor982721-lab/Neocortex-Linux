@@ -7,6 +7,7 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+
 import os
 from collections.abc import Iterator
 from dataclasses import replace
@@ -23,6 +24,10 @@ from neocortex.safety.windows_handle_mutation import (
     rename_no_replace_by_identity,
 )
 from tests.mutation_containment import ContainedMutationRoot
+
+
+TEST_CAPABILITIES = ("platform",)
+TEST_PLATFORMS = ("win32",)
 # endregion [01]
 
 # region [02] Implementación

@@ -80,6 +80,11 @@ def _print_canonical_help(command: tuple[str, str]) -> None:
 
     parser = argparse.ArgumentParser(prog="Neocortex " + " ".join(command))
     parser.add_argument("--json", action="store_true", help="emit canonical JSON")
+    if command[0] == "models":
+        parser.add_argument("--models-root", help="explicit local model resource directory")
+        parser.add_argument(
+            "--models-model-id", action="append", help="canonical model identity; repeat to select"
+        )
     for option, destination in _CANONICAL_OPTIONS.get(command, {}).items():
         parser.add_argument(option, dest=destination.lstrip("-").replace("-", "_"))
     if command == ("models", "prepare"):
@@ -95,6 +100,11 @@ def _print_canonical_help(command: tuple[str, str]) -> None:
 
 def _run_special_mode(arguments: Sequence[str]) -> int | None:
     if arguments and arguments[0] == "--ui":
+        from neocortex.interface.application.arguments import parse_arguments
+
+        # Help and malformed options belong to the parser, not the Qt/display
+        # runtime.  Use the same argument contract as the desktop application.
+        parse_arguments(arguments[1:])
         from neocortex.interface.application.app import main as run_ui
 
         return run_ui(arguments[1:])
@@ -133,14 +143,24 @@ def entrypoint(arguments: Sequence[str] | None = None) -> int:
             return human_exit_code
         from neocortex.api.cli.cli_app import main as run_cli
 
-        try:
-            return run_cli(forwarded)
-        except SystemExit as exc:
-            # ``argparse`` uses a clean process exit for help/version.  The
-            # installed Python entry point exposes an integer contract instead.
-            if exc.code in (None, 0):
-                return 0
+        return run_cli(forwarded)
+    except SystemExit as exc:
+        # Every parser, including desktop help, has the same entrypoint result.
+        if exc.code in (None, 0):
+            return 0
+        raise
+    except ModuleNotFoundError as exc:
+        if not exc.name or exc.name == "neocortex" or exc.name.startswith("neocortex."):
             raise
+        operation = (
+            "interfaz gráfica (--ui)" if forwarded[:1] == ["--ui"] else "operación solicitada"
+        )
+        print(
+            f"No se puede ejecutar la {operation}: falta la dependencia Python {exc.name!r}. "
+            "Instale los requisitos declarados para esta capacidad desde los recursos offline.",
+            file=sys.stderr,
+        )
+        return 1
     except KeyboardInterrupt:
         print("\nEjecución cancelada por el usuario.", file=sys.stderr)
         return 130

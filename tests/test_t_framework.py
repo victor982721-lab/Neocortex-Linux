@@ -5,6 +5,7 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+
 import io
 import inspect
 import json
@@ -19,9 +20,8 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
-import fitz  # type: ignore[import-untyped]
+import pytest
 from rich.console import Console
-from PIL import Image
 
 from neocortex.enumeration import JournalCursor
 from neocortex.deduplication import DedupIndex
@@ -58,6 +58,9 @@ from tests.internal_paths_test_support import (
     disjoint_internal_paths_policy,
 )
 from tests.synthetic_usn import SyntheticUsnJournal
+
+
+TEST_CAPABILITIES = ("base", "documents", "image", "inference")
 # endregion [01]
 
 # region [02] Implementación
@@ -580,7 +583,10 @@ class OrchestratorTests(unittest.TestCase):
             self.assertIsNone(terminal[0].total)
             self.assertIn("falló", terminal[0].description)
 
+    @pytest.mark.capability("image")
     def test_primary_orchestrator_runs_and_resumes_image_route(self) -> None:
+        from PIL import Image
+
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             corpus = base / "corpus"
@@ -611,7 +617,11 @@ class OrchestratorTests(unittest.TestCase):
             self.assertEqual(second.image.cache_hits, 2)
             self.assertEqual(second.image.classified, 0)
 
+    @pytest.mark.capability("inference")
     def test_primary_orchestrator_coordinates_all_builtin_routes(self) -> None:
+        import fitz
+        from PIL import Image
+
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             corpus = base / "corpus"
@@ -739,6 +749,7 @@ class OrchestratorTests(unittest.TestCase):
                 },
             )
 
+    @pytest.mark.capability("inference")
     @unittest.skipUnless(
         shutil.which("ffmpeg") is not None
         and shutil.which("ffprobe") is not None

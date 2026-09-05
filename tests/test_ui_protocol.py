@@ -17,6 +17,12 @@ from neocortex.interface.protocol.messages import (
     progress_payload,
     sanitize_text,
 )
+
+import pytest
+
+
+TEST_CAPABILITIES = ("base", 'ui')
+pytestmark = pytest.mark.capability("base", 'ui')
 # endregion [01]
 
 # region [02] Implementación

@@ -2,43 +2,30 @@
 
 from __future__ import annotations
 
-import argparse
 import ctypes
 import multiprocessing
 import os
 import sys
 from collections.abc import Sequence
-from pathlib import Path
-from typing import Any, cast
-
-from neocortex.platform.policy import default_corpus_root
-
-from PySide6.QtCore import QCoreApplication, Qt
-from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QApplication
+from typing import TYPE_CHECKING, Any, cast
 
 from neocortex import __version__
-from neocortex.runtime.config.app_paths import default_state_directory
+from .arguments import parse_arguments as _parse_arguments
 
-from ..presentation.assets import application_icon_path
-from ..presentation.theme import STYLESHEET
-from ..presentation.windows.main import MainWindow
+if TYPE_CHECKING:
+    from ..presentation.windows.main import MainWindow
 
 
 # region [01] Bootstrap
 
 
-def _parse_arguments(arguments: Sequence[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="Neocortex --ui", allow_abbrev=False)
-    parser.add_argument("--root", type=Path, default=default_corpus_root())
-    return parser.parse_args(list(arguments))
-
-
 def create_window(arguments: Sequence[str] = ()) -> MainWindow:
     parsed = _parse_arguments(arguments)
+    from ..presentation.windows.main import MainWindow
+
     return MainWindow(
         initial_root=parsed.root,
-        state_directory=default_state_directory(),
+        state_directory=parsed.state_directory,
     )
 
 
@@ -51,6 +38,15 @@ def _set_windows_application_identity() -> None:
 def main(arguments: Sequence[str] | None = None) -> int:
     multiprocessing.freeze_support()
     parsed_arguments = sys.argv[1:] if arguments is None else list(arguments)
+    _parse_arguments(parsed_arguments)
+
+    from PySide6.QtCore import QCoreApplication, Qt
+    from PySide6.QtGui import QIcon
+    from PySide6.QtWidgets import QApplication
+
+    from ..presentation.assets import application_icon_path
+    from ..presentation.theme import STYLESHEET
+
     QCoreApplication.setOrganizationName("NeoCortex")
     QCoreApplication.setApplicationName("NeoCortex")
     QCoreApplication.setApplicationVersion(__version__)
