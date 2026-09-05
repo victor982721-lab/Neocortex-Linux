@@ -2,12 +2,13 @@
 
 ## Estado verificado
 
-- Commit funcional publicado: `863d8b84ab99f3c3253ff98c19dc9d6df0cec511`.
-- Release instalada desde ese SHA:
-  `0.12.0-863d8b84ab99-cp314-linux-x86_64`.
+- Commit funcional publicado: `408562626016eec3888559259c5ded65afd9c63e`;
+  el test MCP posterior quedó en `78f9aa2cb31c`.
+- Release instalada desde ese SHA final:
+  `0.12.0-78f9aa2cb31c-cp314-linux-x86_64`.
 - Rollback inmediato retenido:
-  `0.12.0-04639ca72fd0-cp314-linux-x86_64`.
-- Receipt: `/home/winterboss/.local/state/Neocortex/state/installation-receipts/20260905T211127.153947Z-install-0.12.0-863d8b84ab99-cp314-linux-x86_64.json`.
+  `0.12.0-f94a568f1ac1-cp314-linux-x86_64`.
+- Receipt: `/home/winterboss/.local/state/Neocortex/state/installation-receipts/20260905T212422.401852Z-install-0.12.0-78f9aa2cb31c-cp314-linux-x86_64.json`.
 
 ## Cambios
 
