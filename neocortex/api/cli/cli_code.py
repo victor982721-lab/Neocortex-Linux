@@ -4,10 +4,81 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import asdict
 from pathlib import Path
 from typing import TextIO
+
+
+_CODE_SCOPE_NO_CANDIDATES = "code_scope_no_candidates"
+
+
+def _path_key(path: str | Path) -> str:
+    """Normalize a CLI path using the same lexical rule as Code admission."""
+
+    return os.path.normcase(os.path.abspath(os.fspath(path)))
+
+
+def _path_contains(parent: str, candidate: str) -> bool:
+    """Return whether ``candidate`` is ``parent`` or one of its descendants."""
+
+    try:
+        return os.path.commonpath((parent, candidate)) == parent
+    except ValueError:
+        # Distinct Windows drives have no common path.  The product is
+        # Linux-only today, but keeping this branch makes the diagnostic
+        # deterministic for legacy callers too.
+        return False
+
+
+def _quoted_path(path: str | Path) -> str:
+    """Quote a user path so control characters cannot forge CLI lines."""
+
+    return json.dumps(_path_key(path), ensure_ascii=False)
+
+
+def _code_scope_feedback(
+    *,
+    root: str | Path,
+    project_roots: Iterable[str | Path],
+    candidate_scope: str,
+) -> dict[str, str] | None:
+    """Describe a deterministic Code no-op caused by an explicit root.
+
+    ``ProjectCandidateScope`` admits paths only below its configured roots.
+    When the inventory root is disjoint from every configured project root,
+    ``projects`` cannot admit a candidate, even when the root contains valid
+    source files.  Keep this as a small reusable CLI diagnostic so the parser
+    and other CLI surfaces can report the same actionable reason without
+    opening Code SQLite or walking the corpus.
+    """
+
+    if candidate_scope != "projects":
+        return None
+    root_key = _path_key(root)
+    normalized_roots = tuple(_path_key(value) for value in project_roots)
+    # An empty explicit collection preserves ProjectCandidateScope's marker
+    # discovery fallback, so it cannot prove a zero-candidate outcome.
+    if not normalized_roots:
+        return None
+    if any(
+        _path_contains(root_key, project_root) or _path_contains(project_root, root_key)
+        for project_root in normalized_roots
+    ):
+        return None
+    root_text = _quoted_path(root)
+    return {
+        "code": _CODE_SCOPE_NO_CANDIDATES,
+        "severity": "warning",
+        "message": (
+            "Code scope=projects would admit 0 candidates for explicit --root "
+            f"{root_text}: the root does not overlap the configured project roots. "
+            "Use --code-project-root PATH for that project, or "
+            "--code-scope broad for an intentional broad scan."
+        ),
+    }
 
 
 def _state_path(args: argparse.Namespace) -> Path:

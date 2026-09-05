@@ -14,6 +14,9 @@ fuera de `docs/`.
   y lee páginas mediante keyset, mientras la verificación y autorización recuperan
   la membresía completa de grupos grandes desde el owner SQLite, sin usar la muestra
   visual truncada como permiso físico.
+- La fachada humana convierte entradas inválidas en envelopes tipados sin traceback,
+  ofrece ayuda contextual para subcomandos y rechaza el alcance `projects` de Code
+  cuando una raíz explícita no coincide con ningún proyecto configurado.
 - La ruta PDF coordina lecturas y escrituras del owner en un hilo dedicado durante
   la extracción, `test-base` declara explícitamente `setuptools` y la reanudación
   de inventario cuenta con una regresión de interrupción, reapertura y replay.

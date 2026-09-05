@@ -180,6 +180,11 @@ Neocortex models status --json
 Neocortex databases status --json
 ```
 
+La ayuda contextual reutiliza el contrato de cada subcomando, por ejemplo
+`Neocortex help status`, `Neocortex help curate plan` y
+`Neocortex help inspect code`; las opciones se consultan en el propio comando
+con `--help`.
+
 `personal` consulta las publicaciones del usuario. `all` mantiene owners y
 scores separados y reporta cobertura. Ninguna consulta corrige, migra o crea una
 base ausente.
@@ -202,6 +207,11 @@ Estas corridas actualizan inventario y owners de contenido. `--route-only` usa
 inputs durables y omite inventario, deduplicación, detección y acciones;
 `--candidate-run RUN_ID` elige el inventario y `--resume-run RUN_ID` reanuda
 fases incompletas.
+
+Cuando se proporciona una raíz explícita para Code, el alcance predeterminado
+`projects` exige que esa raíz coincida con un proyecto configurado; si no,
+NeoCortex se abstiene antes de crear estado y muestra cómo usar
+`--code-project-root PATH` o `--code-scope broad`.
 
 `--all` selecciona todas las rutas registradas, incluida Code. No ejecuta código
 del corpus ni produce evidencia de validación del repositorio.

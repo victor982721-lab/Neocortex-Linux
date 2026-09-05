@@ -10,7 +10,13 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TextIO
 
-from neocortex.api.read_contract import sanitize_untrusted_payload, sanitize_untrusted_text
+from neocortex.api.read_contract import (
+    ReadExitCode,
+    ReadOperation,
+    make_error_payload,
+    sanitize_untrusted_payload,
+    sanitize_untrusted_text,
+)
 
 from ..read_api import (
     ReadScope,
@@ -89,6 +95,59 @@ def _json(payload: Mapping[str, object], *, budget_nodes: int | None = None) -> 
 def _exit_code(payload: Mapping[str, object]) -> int:
     value = payload.get("exit_code")
     return value if isinstance(value, int) and not isinstance(value, bool) else 1
+
+
+def _run_usage_error(
+    command: str,
+    operation: ReadOperation,
+    args: argparse.Namespace,
+    error: ValueError,
+    *,
+    query: object = None,
+    mode: object = None,
+    include_history: object = None,
+    limit: object = None,
+    max_characters: object = None,
+    modes: object = None,
+) -> int:
+    """Report malformed read input without leaking a producer traceback."""
+
+    public_scopes = {scope.value for scope in ReadScope}
+    scope = args.scope if args.scope in public_scopes else ReadScope.ALL.value
+    message = _single_line(error, limit=800) or "entrada inválida"
+    payload = make_error_payload(
+        operation,
+        scope=scope,
+        code=ReadExitCode.USAGE,
+        message=message,
+    )
+    # Keep request echoes for valid values, matching the shared read boundary,
+    # while avoiding a second malformed field in a usage-error envelope.
+    if isinstance(query, str) and query.strip() and len(query) <= 4_096 and not any(
+        ord(char) < 32 or ord(char) == 127 for char in query
+    ):
+        payload["query"] = query
+    if mode in {"evidence", "discovery"}:
+        payload["mode"] = mode
+    if isinstance(include_history, bool):
+        payload["include_history"] = include_history
+    if isinstance(limit, int) and not isinstance(limit, bool) and 1 <= limit <= 100:
+        payload["limit_per_scope"] = limit
+    if (
+        isinstance(max_characters, int)
+        and not isinstance(max_characters, bool)
+        and 1 <= max_characters <= 1_000_000
+    ):
+        payload["max_characters_per_scope"] = max_characters
+    if isinstance(modes, (list, tuple)):
+        payload["modes"] = list(modes)
+
+    if args.json:
+        _json(payload)
+    else:
+        _print(f"ERROR {command} uso inválido: {message}", file=sys.stderr)
+        _print(f"Usa `Neocortex {command} --help` para consultar el uso.", file=sys.stderr)
+    return int(ReadExitCode.USAGE)
 
 
 def _add_scope(parser: argparse.ArgumentParser, *, default: ReadScope) -> None:
@@ -726,13 +785,25 @@ def _render_hit(hit: Mapping[str, object], *, prefix: str) -> None:
 
 
 def _run_search(args: argparse.Namespace) -> int:
-    payload = search_payload(
-        args.query,
-        args.scope,
-        limit=args.limit,
-        mode=args.mode,
-        include_history=args.history,
-    )
+    try:
+        payload = search_payload(
+            args.query,
+            args.scope,
+            limit=args.limit,
+            mode=args.mode,
+            include_history=args.history,
+        )
+    except ValueError as exc:
+        return _run_usage_error(
+            "search",
+            ReadOperation.SEARCH,
+            args,
+            exc,
+            query=args.query,
+            mode=args.mode,
+            include_history=args.history,
+            limit=args.limit,
+        )
     if args.json:
         _json(payload)
         return _exit_code(payload)
@@ -766,14 +837,27 @@ def _run_search(args: argparse.Namespace) -> int:
 
 
 def _run_ask(args: argparse.Namespace) -> int:
-    payload = context_payload(
-        args.query,
-        args.scope,
-        limit=args.limit,
-        max_characters=args.characters,
-        mode=args.mode,
-        include_history=args.history,
-    )
+    try:
+        payload = context_payload(
+            args.query,
+            args.scope,
+            limit=args.limit,
+            max_characters=args.characters,
+            mode=args.mode,
+            include_history=args.history,
+        )
+    except ValueError as exc:
+        return _run_usage_error(
+            "ask",
+            ReadOperation.CONTEXT,
+            args,
+            exc,
+            query=args.query,
+            mode=args.mode,
+            include_history=args.history,
+            limit=args.limit,
+            max_characters=args.characters,
+        )
     if args.json:
         _json(payload)
         return _exit_code(payload)
@@ -810,12 +894,24 @@ def _run_ask(args: argparse.Namespace) -> int:
 
 
 def _run_inspect_code(args: argparse.Namespace) -> int:
-    payload = code_search_payload(
-        args.query,
-        args.scope,
-        limit=args.limit,
-        modes=tuple(args.modes or ("hybrid",)),
-    )
+    modes = tuple(args.modes or ("hybrid",))
+    try:
+        payload = code_search_payload(
+            args.query,
+            args.scope,
+            limit=args.limit,
+            modes=modes,
+        )
+    except ValueError as exc:
+        return _run_usage_error(
+            "inspect code",
+            ReadOperation.INSPECT_CODE,
+            args,
+            exc,
+            query=args.query,
+            limit=args.limit,
+            modes=modes,
+        )
     if args.json:
         _json(payload)
         return _exit_code(payload)
@@ -975,12 +1071,21 @@ def _run_review_value(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    return run_value_review(
-        scope=args.scope,
-        limit=args.limit,
-        json_output=args.json,
-        refresh=args.refresh,
-    )
+    try:
+        return run_value_review(
+            scope=args.scope,
+            limit=args.limit,
+            json_output=args.json,
+            refresh=args.refresh,
+        )
+    except ValueError as exc:
+        return _run_usage_error(
+            "review value",
+            ReadOperation.REVIEW,
+            args,
+            exc,
+            limit=args.limit,
+        )
 
 
 def _run_curation_plan(args: argparse.Namespace) -> int:
@@ -1441,6 +1546,16 @@ def _run_database_restore(args: argparse.Namespace) -> int:
 
 def run_human_command(arguments: Sequence[str]) -> int:
     parser = build_human_parser()
+    if arguments and arguments[0] == "help" and len(arguments) > 1:
+        # Reuse argparse's canonical subparser help so ``help COMMAND`` and
+        # nested forms stay identical to ``COMMAND --help``.
+        try:
+            parser.parse_args([*arguments[1:], "--help"])
+        except SystemExit as exc:
+            if exc.code in (None, 0):
+                return 0
+            raise
+        return 0
     args = parser.parse_args(list(arguments))
     if args.command == "help":
         parser.print_help()

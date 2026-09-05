@@ -141,5 +141,58 @@ def validate_code_arguments(args: argparse.Namespace) -> None:
     if code_direct and normalize_route_selection(args.route, BUILTIN_ROUTE_ORDER):
         raise SystemExit("direct code operations cannot be combined with --route")
 
+    _validate_explicit_root_project_scope(args, explicit, code_direct=bool(code_direct))
+
+
+def _validate_explicit_root_project_scope(
+    args: argparse.Namespace,
+    explicit: set[str],
+    *,
+    code_direct: bool,
+) -> None:
+    """Reject an explicit Code route that is provably going to be a no-op.
+
+    A full ``--all`` run may legitimately continue to report failures from
+    other routes, so only an explicitly selected ``--code-scope projects`` is
+    rejected during argument validation.  This keeps the broad integrated
+    command's established failure ordering while making the focused Code
+    command fail closed before it creates inventory or Code state.
+    """
+
+    if code_direct or "root" not in explicit:
+        return
+    if args.code_candidate_scope != "projects":
+        return
+    if args.route_only or args.resume_run is not None:
+        return
+
+    routes = normalize_route_selection(args.route, BUILTIN_ROUTE_ORDER)
+    code_selected = "code" in routes
+    if args.all:
+        # ``--all`` uses the default project scope unless the user opts into
+        # it explicitly.  Do not preempt unrelated route diagnostics for the
+        # legacy default; an explicitly requested project scope is safe to
+        # reject here because its no-candidate outcome is deterministic.
+        code_selected = code_selected and "code_candidate_scope" in explicit
+    if not code_selected:
+        return
+
+    from neocortex.runtime.config.app_paths import default_code_project_roots
+
+    configured_roots = (
+        default_code_project_roots()
+        if args.code_project_root is None
+        else tuple(args.code_project_root)
+    )
+    from .cli_code import _code_scope_feedback
+
+    feedback = _code_scope_feedback(
+        root=args.root,
+        project_roots=configured_roots,
+        candidate_scope=args.code_candidate_scope,
+    )
+    if feedback is not None:
+        raise SystemExit(feedback["message"])
+
 
 __all__ = ["register_code_arguments", "validate_code_arguments"]
