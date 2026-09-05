@@ -134,12 +134,16 @@ el grant y el intento. El restore no-replace de fixtures ya está implementado e
 el corte 0.11.1, pero esos gates reales no se ejecutaron para evitar tocar el
 escritorio o el corpus real.
 
-## 0.12.0 — Escala e inteligencia ampliada (tranche implementada, release pendiente)
+## 0.12.0 — Escala e inteligencia ampliada (publicada)
 
 **Resultado:** la ruta aprobada mantiene utilidad sobre árboles de más de
 100,000 archivos.
 
-**Implementado en el árbol, todavía sin release 0.12.0:**
+La release `0.12.0` quedó instalada y verificada desde el `main` final, con
+manifest, launcher, `current`, rollback, smoke público y replay de inventario
+sobre fixtures temporales.
+
+**Implementado y publicado:**
 
 - `CurationWorkBudget` opcional para verificación exacta, con límites de items,
   archivos, bytes, deadline monotónico y cancelación cooperativa;
@@ -169,10 +173,8 @@ escritorio o el corpus real.
   drift de identidad/política, swap de ancestros y paridad contra una corrida
   limpia, sin filas duplicadas ni omisiones y sin tocar corpus real.
 
-**Entregas aún requeridas para publicar 0.12.0:**
+**Trabajo posterior, fuera del gate de 0.12.0:**
 
-- construir desde el SHA final, verificar el wheelhouse autenticado y comprobar
-  manifest, launcher, `current`, rollback y smoke público;
 - procedencia y localizadores estructurales para más formatos;
 - búsqueda visual y temporal calibrada;
 - cobertura generacional ampliada a owners que hoy son best-effort;
@@ -192,11 +194,9 @@ Criterios de aceptación:
 
 ## Orden inmediato
 
-1. Construir e instalar 0.12.0 desde el SHA final, conservando `current` y el
-   rollback inmediato, y repetir el smoke público desde la instalación.
-2. Mantener `verification_mode` explícito, cerrar las regresiones SQLite de estos
+1. Mantener `verification_mode` explícito, cerrar las regresiones SQLite de estos
    lectores y conservar MCP sin autoridad de mutación.
-3. Promover KIO/restore de escritorio y sincronización de caches sólo mediante
+2. Promover KIO/restore de escritorio y sincronización de caches sólo mediante
    gates humanos independientes, sin alterar el alcance de esta tranche.
 
 ## Límites

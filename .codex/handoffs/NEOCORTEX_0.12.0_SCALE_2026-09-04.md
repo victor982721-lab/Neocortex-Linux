@@ -2,10 +2,10 @@
 
 ## Estado
 
-- La implementación de la tranche de escala está en el commit funcional
-  `9d1299fe9cd51e5ef74b435d99151d2af39d3103`; la release instalada y vigente
-  sigue siendo `0.11.1-976bae8c9ba1-cp314-linux-x86_64`, por lo que todavía no se
-  declara `0.12.0`.
+- La implementación de la tranche de escala quedó en los commits funcionales
+  `9d1299fe9cd51e5ef74b435d99151d2af39d3103` y
+  `d5f63b841a76d83e4c556fdefd0135ead3ade0b8`; la release `0.12.0` ya está
+  instalada desde el `main` final, con su rollback inmediato conservado.
 - El árbol conserva
   `CurationWorkBudget` opcional para la verificación exacta,
   contabilidad incremental de items/archivos/bytes, deadline monotónico,
@@ -53,16 +53,12 @@
 - No se ejecutó KIO real, no se invocó la Papelera del escritorio y no se tocó
   el corpus personal ni una SQLite productiva.
 
-## Gates restantes para 0.12.0
+## Verificación posterior al release
 
 - Resolver sólo las dependencias de análisis necesarias para repetir los 17
   fallos ambientales si se requiere una suite integral, sin convertir Windows
   ni proveedores opcionales en un gate de NeoCortex Linux.
-- Construir desde el SHA documental final, verificar el wheelhouse y comparar de
-  nuevo el replay instalado contra una corrida limpia sin abrir el corpus
-  personal.
 - Mantener MCP sin `authorize`, `apply`, restore ni conciliación escrita, y
   mantener KIO/GUI de escritorio como gates humanos separados.
-- Sólo después de esos gates: versionar `0.12.0`, construir desde el SHA final,
-  verificar wheelhouse/manifest/launcher/current/rollback y ejecutar smoke
-  público desde la instalación, sin `PYTHONPATH`.
+- El siguiente trabajo es `NEO-EVO-004` (`0.13.0`), no una corrección de la
+  release 0.12.0 ya verificada.
