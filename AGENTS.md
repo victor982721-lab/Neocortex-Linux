@@ -98,6 +98,18 @@ impleméntalo antes de escalar.
 
 ## Flujo de trabajo
 
+### Main como destino autorizado
+
+Por indicación expresa permanente de Víctor, las correcciones y mejoras
+autorizadas de NeoCortex se trabajan, integran y publican directamente en
+`main`, sin ramas ni PR intermedios y sin volver a pedir autorización para
+merge o push. Si ya existe una rama con trabajo verificado, intégrala por
+fast-forward cuando sea posible, sin reescribir historia ni forzar el remoto.
+Comprueba cambios ajenos, validaciones proporcionales, `HEAD == main ==
+origin/main` y árbol limpio antes de cerrar. Esta autorización no incluye
+mutar el corpus, promover una release, cambiar privacidad o ejecutar borrados
+destructivos no solicitados.
+
 1. Revisa `git status --short --branch`, HEAD y cambios preexistentes.
 2. Define en una frase qué podrá hacer Víctor al terminar.
 3. Traza productor, owner, publicación, lector y comando visible.
