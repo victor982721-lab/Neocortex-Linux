@@ -227,7 +227,8 @@ def _semantic_generation_timings(
             """SELECT execution_mode,COUNT(*) AS receipts,
                 COALESCE(SUM(duration_ns),0) AS duration_ns
             FROM semantic_work_receipts
-            WHERE generation_id=? AND status='succeeded'
+            WHERE generation_id=? AND stage_id='semantic.embedding'
+              AND status='succeeded'
             GROUP BY execution_mode""",
             (generation_id,),
         ).fetchall()
