@@ -622,6 +622,8 @@ def test_semantic_index_all_runs_text_then_image_offline_with_selected_profile(
     output = capsys.readouterr().out
     assert "SEMANTIC_INDEX scope=text" in output
     assert "SEMANTIC_INDEX scope=image" in output
+    assert "SEMANTIC_TIMING scope=text elapsed_ns=" in output
+    assert "SEMANTIC_TIMING scope=image elapsed_ns=" in output
     assert (tmp_path / "framework.lock").is_file()
 
 

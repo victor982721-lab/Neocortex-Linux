@@ -34,6 +34,11 @@ class PhaseStatus:
     completed_ns: int | None
     error_type: str | None
 
+    @property
+    def elapsed_ns(self) -> int:
+        end = time.time_ns() if self.completed_ns is None else self.completed_ns
+        return max(0, end - self.started_ns)
+
 
 @dataclass(frozen=True, slots=True)
 class RouteStatus:
@@ -52,6 +57,11 @@ class RouteStatus:
     new_work: int = 0
     cached_errors: int = 0
     replay_status: str = "unobserved"
+
+    @property
+    def elapsed_ns(self) -> int:
+        end = time.time_ns() if self.completed_ns is None else self.completed_ns
+        return max(0, end - self.started_ns)
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +88,11 @@ class RunStatus:
     skipped_routes: tuple[str, ...] = ()
     non_replayable_routes: tuple[str, ...] = ()
     stages: tuple[dict[str, object], ...] = ()
+
+    @property
+    def elapsed_ns(self) -> int:
+        end = time.time_ns() if self.completed_ns is None else self.completed_ns
+        return max(0, end - self.started_ns)
 # endregion [01]
 
 
@@ -612,6 +627,7 @@ def serialized_run_status(status: RunStatus) -> str:
             "heartbeat_stale": status.heartbeat_stale,
             "started_ns": status.started_ns,
             "completed_ns": status.completed_ns,
+            "elapsed_ns": status.elapsed_ns,
             "recovery_required_actions": status.recovery_required_actions,
             "manifest": status.manifest,
             "budget": status.budget,
@@ -637,6 +653,7 @@ def serialized_run_status(status: RunStatus) -> str:
                         "cache_hits": route.cache_hits,
                         "new_work": route.new_work,
                         "cached_errors": route.cached_errors,
+                        "elapsed_ns": route.elapsed_ns,
                         "replay_status": route.replay_status,
                     }
                     for route in status.routes
@@ -664,8 +681,9 @@ def serialized_run_status(status: RunStatus) -> str:
                     "route_name": route.route_name,
                     "status": route.status,
                     "current_phase": route.current_phase,
-                    "started_ns": route.started_ns,
-                    "completed_ns": route.completed_ns,
+                        "started_ns": route.started_ns,
+                        "completed_ns": route.completed_ns,
+                        "elapsed_ns": route.elapsed_ns,
                     "heartbeat_ns": route.heartbeat_ns,
                     "error_type": route.error_type,
                     "resume_capability": route.resume_capability,
@@ -682,6 +700,7 @@ def serialized_run_status(status: RunStatus) -> str:
                             "status": phase.status,
                             "started_ns": phase.started_ns,
                             "completed_ns": phase.completed_ns,
+                            "elapsed_ns": phase.elapsed_ns,
                             "error_type": phase.error_type,
                         }
                         for phase in route.phases

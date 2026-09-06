@@ -72,6 +72,7 @@ def run_operational_status(args: argparse.Namespace) -> int:
             f"phase={status.current_phase or '-'} source={status.source_run_id or '-'} "
             f"pid={status.owner_pid or '-'} owner_alive={status.owner_alive} "
             f"heartbeat_stale={status.heartbeat_stale} "
+            f"elapsed_ns={status.elapsed_ns} "
             f"recovery_required={status.recovery_required_actions} root={status.root}"
         )
         for route in status.routes:
@@ -81,6 +82,7 @@ def run_operational_status(args: argparse.Namespace) -> int:
                 f"candidates={route.candidates} processed={route.processed} "
                 f"cache_hits={route.cache_hits} new_work={route.new_work} "
                 f"cached_errors={route.cached_errors} "
+                f"elapsed_ns={route.elapsed_ns} "
                 f"replayability={route.resume_capability} "
                 f"replay_status={route.replay_status} error={route.error_type or '-'}"
             )
@@ -88,6 +90,7 @@ def run_operational_status(args: argparse.Namespace) -> int:
                 print(
                     f"PHASE run={status.run_id} route={route.route_name} "
                     f"name={phase.phase_name} status={phase.status} "
+                    f"elapsed_ns={phase.elapsed_ns} "
                     f"error={phase.error_type or '-'}"
                 )
     return 0

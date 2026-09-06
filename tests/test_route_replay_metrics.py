@@ -104,6 +104,11 @@ def test_status_serializes_replay_counters() -> None:
     assert serialized["candidates"] == 20
     assert serialized["cache_hits"] == 19
     assert serialized["new_work"] == 1
+    assert serialized["elapsed_ns"] == 1
+    assert serialized["phases"][0]["elapsed_ns"] == 1
+    assert payload["elapsed_ns"] == 1
+    assert payload["routes"][0]["elapsed_ns"] == 1
+    assert payload["lifecycle"]["routes"][0]["elapsed_ns"] == 1
     assert serialized["replayability"] == "safe_replay"
     assert serialized["replay_status"] == "mixed"
     assert payload["lifecycle"]["routes"][0]["new_work"] == 1

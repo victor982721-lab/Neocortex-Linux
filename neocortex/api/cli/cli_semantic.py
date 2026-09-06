@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -155,6 +156,7 @@ class _SemanticIndexExecution:
     result_sink: Callable[[str, object], None] | None
     results: list[tuple[str, SemanticIndexResult]] = field(default_factory=list)
     code_link_statuses: list[tuple[int, str, int, int]] = field(default_factory=list)
+    scope_timings: list[tuple[str, int]] = field(default_factory=list)
 
 
 def run_semantic_status(args: argparse.Namespace) -> int:
@@ -412,16 +414,20 @@ def _execute_semantic_text_index(
         raise FileNotFoundError(
             "no durable PDF, DOCX, Office, audio or code text cache is available"
         )
-    result = operation(
-        args.state_directory,
-        source_kinds=execution.selected_sources,
-        model=execution.text_model,
-        model_cache=args.semantic_model_cache,
-        local_files_only=True,
-        threads=args.semantic_threads,
-        work_budget=execution.work_budget,
-        progress=execution.progress,
-    )
+    started = time.perf_counter_ns()
+    try:
+        result = operation(
+            args.state_directory,
+            source_kinds=execution.selected_sources,
+            model=execution.text_model,
+            model_cache=args.semantic_model_cache,
+            local_files_only=True,
+            threads=args.semantic_threads,
+            work_budget=execution.work_budget,
+            progress=execution.progress,
+        )
+    finally:
+        execution.scope_timings.append(("text", time.perf_counter_ns() - started))
     _record_semantic_index_result(execution, "text", result)
     code_link_status = _current_semantic_code_link_status(args.state_directory, result)
     if code_link_status is not None:
@@ -435,16 +441,20 @@ def _execute_semantic_image_index(
     args = execution.args
     if args.semantic_index not in {"image", "all"} or execution.work_budget.truncated:
         return
-    result = operation(
-        args.state_directory,
-        model_cache=args.semantic_model_cache,
-        local_files_only=True,
-        threads=args.semantic_threads,
-        embed_ocr_text=not args.semantic_no_ocr,
-        ocr_model=execution.text_model,
-        work_budget=execution.work_budget,
-        progress=execution.progress,
-    )
+    started = time.perf_counter_ns()
+    try:
+        result = operation(
+            args.state_directory,
+            model_cache=args.semantic_model_cache,
+            local_files_only=True,
+            threads=args.semantic_threads,
+            embed_ocr_text=not args.semantic_no_ocr,
+            ocr_model=execution.text_model,
+            work_budget=execution.work_budget,
+            progress=execution.progress,
+        )
+    finally:
+        execution.scope_timings.append(("image", time.perf_counter_ns() - started))
     _record_semantic_index_result(execution, "image", result)
 
 
@@ -489,6 +499,15 @@ def _semantic_index_failure(
     if print_output:
         for scope, result in execution.results:
             _print_semantic_index_result(scope, result)
+            elapsed = next(
+                (value for name, value in execution.scope_timings if name == scope),
+                None,
+            )
+            if elapsed is not None:
+                print(
+                    f"SEMANTIC_TIMING scope={scope} elapsed_ns={elapsed} "
+                    "basis=monotonic_interval"
+                )
     return _semantic_failure(
         "semantic-index",
         exc,
@@ -507,6 +526,15 @@ def _complete_semantic_index_execution(
     for scope, result in execution.results:
         if print_output:
             _print_semantic_index_result(scope, result)
+            elapsed = next(
+                (value for name, value in execution.scope_timings if name == scope),
+                None,
+            )
+            if elapsed is not None:
+                print(
+                    f"SEMANTIC_TIMING scope={scope} elapsed_ns={elapsed} "
+                    "basis=monotonic_interval"
+                )
         scope_failed = _semantic_index_result_failed(
             result,
             incomplete_is_error=incomplete_is_error,
