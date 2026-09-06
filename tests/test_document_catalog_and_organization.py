@@ -37,6 +37,7 @@ from neocortex.documents.document_organization import (
     plan_document_organization,
 )
 from neocortex.documents.document_taxonomy import (
+    CLASSIFIER_VERSION,
     DocumentSignals,
     classify_document,
     load_taxonomy,
@@ -198,7 +199,7 @@ def test_sector_taxonomy_classifies_with_provenance(
     assert classification.primary_authority == authority
     assert classification.primary_organization == organization
     assert classification.evidence
-    assert classification.classifier_signature.startswith("technical-document-classifier-v15|")
+    assert classification.classifier_signature.startswith(f"{CLASSIFIER_VERSION}|")
     assert classification.classifier_signature.endswith("|technical-document-naming-v9")
 
 
