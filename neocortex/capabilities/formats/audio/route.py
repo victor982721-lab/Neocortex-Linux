@@ -434,7 +434,7 @@ class AudioRoute:
                 snapshot,
                 "current media cache completed successfully",
             )
-            metrics.no_audio += int(status == "no_audio")
+            _record_cached_success(metrics, cached)
         else:
             failure = _cached_failure(cached)
             reviews.store_failure(snapshot, failure)
@@ -689,7 +689,8 @@ def _cached_document(
     processing_signature: str,
 ) -> sqlite3.Row | None:
     return connection.execute(
-        """SELECT status,error_type,error_message,retryable,review_disposition
+        """SELECT status,duration_seconds,speech_duration_seconds,text_chars,
+        segment_count,error_type,error_message,retryable,review_disposition
         FROM documents WHERE file_key=? AND size=? AND mtime_ns=?
         AND birthtime_ns=? AND processing_signature=?""",
         (
@@ -700,6 +701,28 @@ def _cached_document(
             processing_signature,
         ),
     ).fetchone()
+
+
+def _record_cached_success(metrics: _AudioRunMetrics, cached: sqlite3.Row) -> None:
+    """Restore data counters from the durable result represented by ``cached``."""
+
+    status = str(cached["status"])
+    if status == "complete":
+        metrics.transcribed += 1
+        metrics.transcript_chars += int(cached["text_chars"] or 0)
+        metrics.transcript_segments += int(cached["segment_count"] or 0)
+        metrics.media_seconds += float(cached["duration_seconds"] or 0.0)
+        metrics.speech_seconds += float(cached["speech_duration_seconds"] or 0.0)
+    elif status == "no_speech":
+        metrics.no_speech += 1
+        metrics.transcript_chars += int(cached["text_chars"] or 0)
+        metrics.transcript_segments += int(cached["segment_count"] or 0)
+        metrics.media_seconds += float(cached["duration_seconds"] or 0.0)
+        metrics.speech_seconds += float(cached["speech_duration_seconds"] or 0.0)
+    elif status == "no_audio":
+        # The first pass records this abstention only in ``no_audio``; its
+        # stored probe duration is not part of the run metrics for that path.
+        metrics.no_audio += 1
 
 
 def _remove_path_conflict(

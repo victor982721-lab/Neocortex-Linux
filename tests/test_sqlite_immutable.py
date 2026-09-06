@@ -139,6 +139,54 @@ def test_snapshot_preparation_cancellation_is_typed_and_bounded(tmp_path: Path) 
             pytest.fail("a cancelled snapshot must not publish")
 
 
+def test_snapshot_open_failure_after_connection_open_closes_connection_and_temp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = _database(tmp_path)
+    writer = sqlite3.connect(database)
+    writer.execute("PRAGMA journal_mode=WAL")
+    writer.execute("INSERT INTO probe VALUES(8)")
+    writer.commit()
+    opened = False
+    opened_connections: list[sqlite3.Connection] = []
+    real_open = sqlite_immutable.open_immutable_sqlite_connection
+
+    def observe_open(*args: object, **kwargs: object) -> sqlite3.Connection:
+        nonlocal opened
+        connection = real_open(*args, **kwargs)
+        opened = True
+        opened_connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(
+        sqlite_immutable,
+        "open_immutable_sqlite_connection",
+        observe_open,
+    )
+    session = SQLiteReadSession(
+        database,
+        mode=SQLiteReadMode.SNAPSHOT_TEMP,
+        temp_root=tmp_path,
+        max_attempts=1,
+        budget=SQLiteSnapshotBudget(cancellation_check=lambda: opened),
+    )
+    try:
+        with pytest.raises(SQLiteSnapshotBudgetExceeded, match="cancelled"):
+            with session:
+                pytest.fail("a post-open cancellation must not publish a snapshot")
+        assert len(opened_connections) == 1
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            opened_connections[0].execute("SELECT 1")
+        assert session._connection is None
+        assert not any(
+            candidate.name.startswith("neocortex-sqlite-read-")
+            for candidate in tmp_path.iterdir()
+        )
+    finally:
+        writer.close()
+
+
 def test_legacy_strict_connection_honors_cancellation(tmp_path: Path) -> None:
     database = _database(tmp_path)
     with pytest.raises(SQLiteSnapshotBudgetExceeded, match="cancelled"):

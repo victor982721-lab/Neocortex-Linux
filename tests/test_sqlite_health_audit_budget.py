@@ -56,8 +56,10 @@ def test_sql_in_every_health_stage_is_interrupted_and_not_misclassified_as_corru
     elapsed = time.monotonic() - started
     assert elapsed < 1.5
     assert len(result.owners) == 1
-    assert result.owners[0].status == "blocked"
+    assert result.owners[0].status == "not_verified"
     assert "time budget exhausted" in (result.owners[0].detail or "")
+    assert result.not_verified_count == 1
+    assert result.blocked_count == 0
     assert result.corrupt_count == 0
     assert (capture_sqlite_read_fence(path), path.read_bytes()) == before
 
@@ -79,8 +81,10 @@ def test_validator_sql_is_covered_by_the_global_budget(
     started = time.monotonic()
     result = state_health.inspect_state_health(tmp_path, timeout_seconds=0.03)
     assert time.monotonic() - started < 1.5
-    assert result.owners[0].status == "blocked"
+    assert result.owners[0].status == "not_verified"
     assert "time budget exhausted" in (result.owners[0].detail or "")
+    assert result.not_verified_count == 1
+    assert result.blocked_count == 0
 
 
 @pytest.mark.parametrize("stage", ["loader", "validator", "observations"])
@@ -113,8 +117,10 @@ def test_python_stage_overrun_cannot_report_healthy_or_start_the_next_stage(
     monkeypatch.setattr(state_health, "_exact_validator", load)
     monkeypatch.setattr(state_health, "_status_observations", observations)
     result = state_health.inspect_state_health(tmp_path, timeout_seconds=0.5)
-    assert result.owners[0].status == "blocked"
+    assert result.owners[0].status == "not_verified"
     assert "time budget exhausted" in (result.owners[0].detail or "")
+    assert result.not_verified_count == 1
+    assert result.blocked_count == 0
     stages = ["loader", "validator", "observations"]
     assert calls == stages[: stages.index(stage) + 1]
 
@@ -141,4 +147,22 @@ def test_exhausted_budget_keeps_registered_owners_in_the_report(
     monkeypatch.setattr(state_health, "_exact_validator", lambda *_args: validate)
     result = state_health.inspect_state_health(tmp_path, timeout_seconds=0.5)
     assert [owner.name for owner in result.owners] == ["fixture", "next"]
-    assert [owner.status for owner in result.owners] == ["blocked", "blocked"]
+    assert [owner.status for owner in result.owners] == ["not_verified", "not_verified"]
+    assert result.not_verified_count == 2
+    assert result.blocked_count == 0
+    assert result.to_dict()["not_verified_count"] == 2
+
+
+def test_wrapped_budget_error_remains_not_verified_and_not_corrupt() -> None:
+    try:
+        try:
+            raise state_health._HealthBudgetError(
+                "state-health inspection time budget exhausted"
+            )
+        except state_health._HealthBudgetError as budget_error:
+            raise state_health._HealthCorruptError("wrapper must not mask timeout") from budget_error
+    except state_health._HealthCorruptError as wrapped:
+        status, detail = state_health._validation_error_status(wrapped)
+
+    assert status == "not_verified"
+    assert detail == "state-health inspection time budget exhausted"

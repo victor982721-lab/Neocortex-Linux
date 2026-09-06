@@ -561,6 +561,20 @@ def _selection_allows_reuse(selection: CapabilitySelection) -> bool:
     )
 
 
+def _record_extracted_counters(
+    counters: dict[str, int],
+    extracted: _ExtractedText,
+) -> None:
+    counters["text_chars"] += len(extracted.text)
+    counters["truncated"] += int(extracted.truncated)
+    if extracted.content_kind == "email":
+        counters["emails"] += 1
+    elif extracted.content_kind in {"doc", "xls", "ppt"}:
+        counters["legacy_office"] += 1
+    else:
+        counters["plain_text"] += 1
+
+
 def _work_reproducibility(selection: CapabilitySelection) -> ReproducibilityClass:
     return (
         ReproducibilityClass.NON_REPLAYABLE
@@ -1833,7 +1847,7 @@ class TextRoute:
                                 reusable_state[0],
                             )
                             counters["cache_hits"] += 1
-                            counters["text_chars"] += len(reusable_state[1].text)
+                            _record_extracted_counters(counters, reusable_state[1])
                         else:
                             try:
                                 extracted = _extract(
@@ -1870,14 +1884,7 @@ class TextRoute:
                                 )
                                 counters["processed"] += 1
                                 counters["extracted"] += 1
-                                counters["text_chars"] += len(extracted.text)
-                                counters["truncated"] += int(extracted.truncated)
-                                if extracted.content_kind == "email":
-                                    counters["emails"] += 1
-                                elif extracted.content_kind in {"doc", "xls", "ppt"}:
-                                    counters["legacy_office"] += 1
-                                else:
-                                    counters["plain_text"] += 1
+                                _record_extracted_counters(counters, extracted)
                 completed = counters["processed"] + counters["cache_hits"]
                 self._emit(completed, selected, counters)
             pruned = 0

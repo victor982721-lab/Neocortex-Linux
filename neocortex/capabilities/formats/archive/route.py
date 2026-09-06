@@ -1679,7 +1679,6 @@ class ArchiveRoute:
                     cached_errors += int(status_value == "error")
                     complete += int(status_value == "complete")
                     partial += int(status_value == "partial")
-                    errors += int(status_value == "error")
                     members += int(cached["member_count"])
                     indexed += int(cached["indexed_count"])
                     metadata_only += int(cached["metadata_only_count"])

@@ -579,7 +579,6 @@ class VideoRoute:
             failure = _cached_failure(cached)
             self._store_review(snapshot, failure)
             metrics.cached_errors += 1
-            metrics.errors += 1
             metrics.reviews += 1
             metrics.deletion_candidates += int(failure.recommendation == "deletion_candidate")
             metrics.retryable_errors += int(failure.retryable)

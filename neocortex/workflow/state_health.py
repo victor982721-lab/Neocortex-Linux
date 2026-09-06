@@ -137,6 +137,11 @@ class StateHealth:
     active_count: int = 0
     incompatible_count: int = 0
     future_count: int = 0
+    # ``not_verified`` means the bounded inspection could not establish a
+    # result, normally because its shared time budget was exhausted.  It is
+    # deliberately separate from ``blocked``: a timeout is not evidence that
+    # the owner is unsafe or unavailable.
+    not_verified_count: int = 0
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -148,6 +153,7 @@ class StateHealth:
             "incompatible_count": self.incompatible_count,
             "kind": "state-health",
             "missing_count": self.missing_count,
+            "not_verified_count": self.not_verified_count,
             "orphaned_sidecar_count": self.orphaned_sidecar_count,
             "overall": self.overall,
             "owners": [owner.to_dict() for owner in self.owners],
@@ -490,10 +496,11 @@ def _is_corrupt_sqlite_error(exc: BaseException) -> bool:
 
 
 def _validation_error_status(exc: BaseException) -> tuple[str, str]:
+    budget_error = _find_health_budget_error(exc)
+    if budget_error is not None:
+        return "not_verified", str(budget_error)
     if isinstance(exc, _HealthCorruptError) or _is_corrupt_sqlite_error(exc):
         return "corrupt", str(exc)
-    if isinstance(exc, _HealthBudgetError):
-        return "blocked", str(exc)
     if isinstance(exc, (SQLiteSchemaContractError, _HealthSchemaError, RuntimeError, ValueError)):
         return "incompatible", str(exc)
     if isinstance(exc, sqlite3.Error):
@@ -504,6 +511,34 @@ def _validation_error_status(exc: BaseException) -> tuple[str, str]:
             return "incompatible", str(exc)
         return "unreadable", f"{type(exc).__name__}: {exc}"
     return "unreadable", f"{type(exc).__name__}: {exc}"
+
+
+def _find_health_budget_error(exc: BaseException) -> _HealthBudgetError | None:
+    """Find a budget exhaustion cause without hiding the public failure kind.
+
+    SQLite cancellation normally re-raises ``_HealthBudgetError`` directly,
+    but validators and adapters may wrap it while unwinding.  Preserve the
+    distinction in either case: a wrapped timeout is still an unverified
+    observation, not corruption or a blocked owner.
+    """
+
+    pending: list[BaseException] = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        marker = id(current)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        if isinstance(current, _HealthBudgetError):
+            return current
+        cause = current.__cause__
+        context = current.__context__
+        if cause is not None:
+            pending.append(cause)
+        if context is not None and context is not cause:
+            pending.append(context)
+    return None
 
 
 def _load_registry_validator(name: str, expected: int) -> Callable[[sqlite3.Connection], None]:
@@ -899,9 +934,11 @@ def inspect_state_health(
 
     ``timeout_seconds`` is a shared cooperative budget: SQLite statements are
     interrupted by a progress handler and stages check the deadline before
-    accepting results.  Registered owners not reached in time are ``blocked``.
-    This is not a hard wall-clock limit for Python validators, imports or
-    blocked filesystem calls; overruns cannot be reported as healthy.
+    accepting results.  Registered owners not reached in time are
+    ``not_verified``.  This is not a hard wall-clock limit for Python
+    validators, imports or blocked filesystem calls; overruns cannot be
+    reported as healthy, and they do not prove that an owner is blocked or
+    corrupt.
     """
 
     if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)):
@@ -921,7 +958,7 @@ def inspect_state_health(
                 StateOwnerHealth(
                     name=descriptor.name,
                     path=str(path),
-                    status="blocked",
+                    status="not_verified",
                     expected_schema_version=descriptor.expected_schema_version,
                     schema_version=None,
                     user_version=None,
@@ -969,7 +1006,7 @@ def inspect_state_health(
                 StateOwnerHealth(
                     name=f"unknown:{path.name}",
                     path=str(path),
-                    status="blocked",
+                    status="not_verified",
                     expected_schema_version=None,
                     schema_version=None,
                     user_version=None,
@@ -995,6 +1032,7 @@ def inspect_state_health(
     active = count("active")
     incompatible = count("incompatible")
     future = count("future")
+    not_verified = count("not_verified")
     overall = "healthy" if owners and healthy == len(owners) else "partial"
     return StateHealth(
         state_directory=str(state),
@@ -1010,6 +1048,7 @@ def inspect_state_health(
         active_count=active,
         incompatible_count=incompatible,
         future_count=future,
+        not_verified_count=not_verified,
     )
 
 

@@ -42,7 +42,9 @@ from .semantic_quality import (
 )
 from neocortex.persistence.sqlite_immutable import (
     ImmutableSQLiteUnavailable,
+    SQLiteImmutableFence,
     SQLiteReadSession,
+    capture_sqlite_read_fence,
     preferred_sqlite_read_mode,
 )
 from neocortex.capabilities.formats.text.text_derivation_repository import (
@@ -358,14 +360,23 @@ def semantic_source_database(state_directory: Path, source_kind: str) -> Path:
 
 
 @contextmanager
-def _readonly_database(path: Path):
+def _readonly_database(
+    path: Path,
+    *,
+    expected_fence: SQLiteImmutableFence | None = None,
+):
+    """Open one owner through a snapshot matching a fence captured beforehand."""
+
     try:
         mode = preferred_sqlite_read_mode(path)
-        with SQLiteReadSession(
+        session = SQLiteReadSession(
             path,
             mode=mode,
             timeout_seconds=60.0,
-        ) as connection:
+        )
+        with session as connection:
+            if expected_fence is not None and session.source_fence != expected_fence:
+                raise SemanticSourceError("source_changed_before_head_snapshot")
             yield connection
     except FileNotFoundError as exc:
         raise sqlite3.OperationalError(f"unable to open database file: {path}") from exc
@@ -379,6 +390,7 @@ def _attached_readonly_database(
     path: Path,
     *,
     schema: str,
+    expected_fence: SQLiteImmutableFence | None = None,
 ):
     """Attach a second owner through the fenced SQLite read kernel.
 
@@ -400,6 +412,8 @@ def _attached_readonly_database(
         mode = preferred_sqlite_read_mode(path)
         session = SQLiteReadSession(path, mode=mode, timeout_seconds=60.0)
         session.open()
+        if expected_fence is not None and session.source_fence != expected_fence:
+            raise SemanticSourceError("source_changed_before_head_snapshot")
         attached_path = session.temporary_database or path
         # The source has already been lstat/fstat fenced by the session.  The
         # immutable URI is deliberately built here rather than using the old
@@ -448,13 +462,19 @@ def _attached_readonly_database(
 def _borrow_or_open_database(
     path: Path,
     connection: sqlite3.Connection | None,
+    *,
+    expected_fence: SQLiteImmutableFence | None = None,
 ):
     """Use a caller-owned snapshot or open a fenced private reader."""
 
     if connection is not None:
         yield connection
         return
-    with _readonly_database(path) as opened:
+    if expected_fence is None:
+        reader = _readonly_database(path)
+    else:
+        reader = _readonly_database(path, expected_fence=expected_fence)
+    with reader as opened:
         yield opened
 
 
@@ -465,14 +485,25 @@ def _borrow_or_open_image_with_dedup(
     connection: sqlite3.Connection | None,
     *,
     dedup_attached: bool,
+    image_expected_fence: SQLiteImmutableFence | None = None,
+    dedup_expected_fence: SQLiteImmutableFence | None = None,
 ):
     """Borrow/open the image owner and safely attach the optional dedup owner."""
 
-    with _borrow_or_open_database(image_database, connection) as opened:
+    with _borrow_or_open_database(
+        image_database,
+        connection,
+        expected_fence=image_expected_fence,
+    ) as opened:
         if dedup_attached or dedup_database is None or not dedup_database.is_file():
             yield opened
             return
-        with _attached_readonly_database(opened, dedup_database, schema="dedup"):
+        with _attached_readonly_database(
+            opened,
+            dedup_database,
+            schema="dedup",
+            expected_fence=dedup_expected_fence,
+        ):
             yield opened
 
 
@@ -1254,9 +1285,66 @@ def _update_head_digest(hasher: _DigestWriter, value: object) -> None:
     hasher.update(payload)
 
 
+def _required_source_fence(path: Path) -> SQLiteImmutableFence:
+    """Capture an owner fence before any SQLite snapshot can be opened."""
+
+    try:
+        return capture_sqlite_read_fence(path)
+    except FileNotFoundError as exc:
+        # Preserve the historical missing-owner classification used by source
+        # heads while keeping the fence acquisition outside SQLite.
+        raise sqlite3.OperationalError(f"unable to inspect database file: {path}") from exc
+    except ImmutableSQLiteUnavailable as exc:
+        raise SemanticSourceError(str(exc)) from exc
+
+
+def _optional_source_fence(path: Path) -> SQLiteImmutableFence | None:
+    """Capture an optional owner fence, retaining absence as ``None``."""
+
+    try:
+        return capture_sqlite_read_fence(path)
+    except FileNotFoundError:
+        return None
+
+
+def _assert_source_fence_unchanged(
+    path: Path,
+    expected_fence: SQLiteImmutableFence,
+) -> None:
+    """Reject an owner that changed after its snapshot was consumed."""
+
+    try:
+        observed_fence = capture_sqlite_read_fence(path)
+    except (FileNotFoundError, ImmutableSQLiteUnavailable) as exc:
+        raise SemanticSourceError("source_changed_during_head_projection") from exc
+    if observed_fence != expected_fence:
+        raise SemanticSourceError("source_changed_during_head_projection")
+
+
+def _assert_optional_source_fence_unchanged(
+    path: Path,
+    expected_fence: SQLiteImmutableFence | None,
+) -> None:
+    """Reject an optional owner that appeared, disappeared or changed."""
+
+    try:
+        observed_fence = _optional_source_fence(path)
+    except ImmutableSQLiteUnavailable as exc:
+        raise SemanticSourceError("source_changed_during_head_projection") from exc
+    if observed_fence != expected_fence:
+        raise SemanticSourceError("source_changed_during_head_projection")
+
+
 def _owner_stamp(path: Path) -> tuple[tuple[str, int, int, int], ...]:
+    """Legacy observable stamp retained for compatibility with diagnostics.
+
+    The authoritative drift barrier is ``capture_sqlite_read_fence``; this
+    bounded stamp remains as a supplementary hook for older callers that
+    observe or monkeypatch the former owner seam.
+    """
+
     values: list[tuple[str, int, int, int]] = []
-    for suffix in ("", "-wal", "-shm"):
+    for suffix in ("", "-wal", "-shm", "-journal"):
         candidate = Path(str(path) + suffix)
         try:
             metadata = candidate.lstat()
@@ -1271,10 +1359,11 @@ def _text_source_head(state_directory: Path, source_kind: str) -> SemanticSource
     hasher = hashlib.sha256()
     row_count = schema_version = 0
     try:
-        with _readonly_database(database) as connection:
+        before_fence = _required_source_fence(database)
+        before_stamp = _owner_stamp(database)
+        with _readonly_database(database, expected_fence=before_fence) as connection:
             before_version = int(connection.execute("PRAGMA data_version").fetchone()[0])
             schema_version = int(connection.execute("PRAGMA schema_version").fetchone()[0])
-            before_stamp = _owner_stamp(database)
             query, parameters = _source_head_query(connection, source_kind)
             connection.execute("BEGIN")
             try:
@@ -1287,7 +1376,9 @@ def _text_source_head(state_directory: Path, source_kind: str) -> SemanticSource
             finally:
                 connection.execute("COMMIT")
             after_version = int(connection.execute("PRAGMA data_version").fetchone()[0])
-        if before_version != after_version or before_stamp != _owner_stamp(database):
+        _assert_source_fence_unchanged(database, before_fence)
+        after_stamp = _owner_stamp(database)
+        if before_version != after_version or before_stamp != after_stamp:
             raise SemanticSourceError("source_changed_during_head_projection")
     except (OSError, sqlite3.DatabaseError, SemanticSourceError, ValueError) as exc:
         return SemanticSourceHead(
@@ -1518,21 +1609,25 @@ def _image_source_head(state_directory: Path) -> SemanticSourceHead:
     missing_full_digest = False
     source_statuses: set[str] = set()
     try:
-        dedup_attached = dedup_database.is_file()
+        image_fence = _required_source_fence(image_database)
+        dedup_fence = _optional_source_fence(dedup_database)
+        dedup_available = dedup_fence is not None
+        read_dedup_database = dedup_database if dedup_available else None
         with _borrow_or_open_image_with_dedup(
             image_database,
-            dedup_database,
+            read_dedup_database,
             None,
             dedup_attached=False,
+            image_expected_fence=image_fence,
+            dedup_expected_fence=dedup_fence,
         ) as connection:
             before_version = int(connection.execute("PRAGMA data_version").fetchone()[0])
             before_dedup_version = (
                 int(connection.execute("PRAGMA dedup.data_version").fetchone()[0])
-                if dedup_attached
+                if dedup_available
                 else 0
             )
             schema_version = int(connection.execute("PRAGMA schema_version").fetchone()[0])
-            before_stamp = (_owner_stamp(image_database), _owner_stamp(dedup_database))
             status_rows = connection.execute(
                 "SELECT status,COUNT(*) AS count FROM images GROUP BY status ORDER BY status"
             ).fetchall()
@@ -1545,9 +1640,9 @@ def _image_source_head(state_directory: Path) -> SemanticSourceHead:
                     complete = False
             rows = _image_rows(
                 image_database,
-                dedup_database,
+                read_dedup_database,
                 connection,
-                dedup_attached=dedup_attached,
+                dedup_attached=dedup_available,
                 include_ocr_payload=False,
             )
             for row in rows:
@@ -1577,15 +1672,16 @@ def _image_source_head(state_directory: Path) -> SemanticSourceHead:
             after_version = int(connection.execute("PRAGMA data_version").fetchone()[0])
             after_dedup_version = (
                 int(connection.execute("PRAGMA dedup.data_version").fetchone()[0])
-                if dedup_attached
+                if dedup_available
                 else 0
             )
         if (
             before_version != after_version
             or before_dedup_version != after_dedup_version
-            or before_stamp != (_owner_stamp(image_database), _owner_stamp(dedup_database))
         ):
             raise SemanticSourceError("source_changed_during_head_projection")
+        _assert_source_fence_unchanged(image_database, image_fence)
+        _assert_optional_source_fence_unchanged(dedup_database, dedup_fence)
     except (OSError, sqlite3.DatabaseError, SemanticSourceError, ValueError) as exc:
         return SemanticSourceHead(
             IMAGE_SOURCE_KIND,

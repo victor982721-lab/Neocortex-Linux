@@ -944,6 +944,22 @@ class SQLiteReadSession:
                 return self._connection
             except BaseException as exc:
                 last_error = exc
+                # A snapshot connection can already exist when the final
+                # preparation checkpoint rejects the candidate.  Close it
+                # before removing its temporary owner directory; otherwise
+                # the fenced connection retains a handle to a path that has
+                # already disappeared, and a failed ``__enter__`` cannot
+                # reach ``__exit__`` to perform the cleanup later.
+                connection = self._connection
+                self._connection = None
+                if connection is not None:
+                    try:
+                        connection.close()
+                    except BaseException as cleanup_error:
+                        exc.add_note(
+                            "temporary SQLite snapshot connection cleanup failed: "
+                            f"{type(cleanup_error).__name__}: {cleanup_error}"
+                        )
                 if temporary_directory is not None:
                     try:
                         temporary_directory.cleanup()

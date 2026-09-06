@@ -5,8 +5,8 @@ import itertools
 import json
 import sqlite3
 import time
-from collections.abc import Callable, Iterable, Iterator, Sequence
-from dataclasses import replace
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
@@ -36,6 +36,7 @@ from .semantic_models import (
     EmbeddingModelSpec,
     SemanticItem,
     TextSection,
+    canonical_json,
 )
 from .semantic_preparation import (
     BackendFactory,
@@ -56,6 +57,7 @@ from .semantic_service_contracts import (
 from .semantic_sources import (
     SEMANTIC_TITLE_POLICY,
     SEMANTIC_TEXT_ENUMERATION_PROTOCOL,
+    SemanticSourceHead,
     TextSourceRecord,
     iter_text_sections_with_metadata,
     semantic_source_heads,
@@ -85,6 +87,190 @@ TextRecordIterator = Callable[[Path, str], Iterator[TextSourceRecord]]
 SEMANTIC_PROGRESS_ITEM_INTERVAL = 25
 
 
+_TEXT_REPLAY_CONTRACT_KEYS = (
+    "channel",
+    "source_kinds",
+    "pipeline",
+    "base_chunking_signature",
+    "title_policy",
+    "text_quality_policy",
+)
+_SEMANTIC_OBSERVATION_KEYS = frozenset(
+    {
+        "last_seen_run_id",
+        "first_observed_run_id",
+        "last_observed_run_id",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _PublishedTextDelta:
+    """Published text baseline used for source/item-level delta staging."""
+
+    generation_id: int
+    reusable_sources: frozenset[str]
+    provenance: Mapping[str, object]
+
+
+def _source_head_map(raw_heads: object) -> dict[str, dict[str, object]] | None:
+    """Decode one source-head list without accepting duplicates or omissions."""
+
+    if not isinstance(raw_heads, list):
+        return None
+    result: dict[str, dict[str, object]] = {}
+    for raw_head in raw_heads:
+        if not isinstance(raw_head, Mapping):
+            return None
+        source_kind = raw_head.get("source_kind")
+        if not isinstance(source_kind, str) or not source_kind.strip():
+            return None
+        if source_kind in result:
+            return None
+        result[source_kind] = dict(raw_head)
+    return result
+
+
+def _text_replay_contract_matches(
+    provenance: Mapping[str, object],
+    *,
+    replay_scope: str,
+    current_entry: Mapping[str, object],
+    selected_sources: Sequence[str],
+) -> bool:
+    """Require the full text projection contract before relaxing freshness."""
+
+    ledger = provenance.get("source_head_ledger")
+    if not isinstance(ledger, Mapping):
+        return False
+    raw_entry = ledger.get(replay_scope)
+    if not isinstance(raw_entry, Mapping):
+        return False
+    for key in _TEXT_REPLAY_CONTRACT_KEYS:
+        if raw_entry.get(key) != current_entry.get(key):
+            return False
+    if provenance.get("sources") != list(selected_sources):
+        return False
+    for key in _TEXT_REPLAY_CONTRACT_KEYS:
+        if key == "channel" or key == "source_kinds":
+            continue
+        if provenance.get(key) != current_entry.get(key):
+            return False
+    if raw_entry.get("channel") != "text" or raw_entry.get("source_kinds") != list(
+        selected_sources
+    ):
+        return False
+    return True
+
+
+def _published_text_source_delta(
+    database: Path,
+    *,
+    model_signature: str,
+    replay_scope: str,
+    replay_entry: Mapping[str, object],
+    selected_sources: Sequence[str],
+    current_heads: Sequence[SemanticSourceHead],
+) -> _PublishedTextDelta | None:
+    """Return unchanged sources from the ready base, or abstain fail-closed.
+
+    The source head is the cheap owner-level guard.  Only after the complete
+    projection contract matches do we use it to avoid enumerating a source;
+    changed sources are still enumerated and compared item by item below.
+    """
+
+    if not database.is_file():
+        return None
+    try:
+        with semantic_database(database, readonly=True) as connection:
+            row = connection.execute(
+                """SELECT g.generation_id,g.status,g.provenance_json
+                FROM published_embedding_heads head
+                JOIN embedding_generations g ON g.generation_id=head.generation_id
+                WHERE head.model_signature=? AND g.model_signature=?""",
+                (model_signature, model_signature),
+            ).fetchone()
+            if row is None or str(row["status"]) != "ready":
+                return None
+            provenance = json.loads(str(row["provenance_json"]))
+            if not isinstance(provenance, dict):
+                return None
+            if not _text_replay_contract_matches(
+                provenance,
+                replay_scope=replay_scope,
+                current_entry=replay_entry,
+                selected_sources=selected_sources,
+            ):
+                return None
+            ledger = provenance.get("source_head_ledger")
+            assert isinstance(ledger, Mapping)  # guarded by the helper above
+            entry = ledger.get(replay_scope)
+            if not isinstance(entry, Mapping):
+                return None
+            old_raw_heads = entry.get("source_heads")
+            old_by_kind = _source_head_map(old_raw_heads)
+            current_by_kind = _source_head_map(
+                [head.as_payload() for head in current_heads]
+            )
+            if old_by_kind is None or current_by_kind is None:
+                return None
+            selected = set(selected_sources)
+            if (
+                set(old_by_kind) != selected
+                or set(current_by_kind) != selected
+                or provenance.get("source_heads") != old_raw_heads
+            ):
+                return None
+            if any(
+                not isinstance(head, Mapping) or head.get("complete") is not True
+                for head in current_by_kind.values()
+            ):
+                return None
+            reusable_sources = frozenset(
+                source_kind
+                for source_kind in selected_sources
+                if old_by_kind[source_kind] == current_by_kind[source_kind]
+            )
+            return _PublishedTextDelta(
+                int(row["generation_id"]),
+                reusable_sources,
+                provenance,
+            )
+    except (OSError, sqlite3.DatabaseError, TypeError, ValueError):
+        return None
+
+
+def _candidate_base_generation_id(
+    database: Path,
+    generation_id: int,
+) -> int | None:
+    """Read the candidate's pinned base, abstaining on any state error."""
+
+    try:
+        with semantic_database(database, readonly=True) as connection:
+            row = connection.execute(
+                "SELECT base_generation_id FROM embedding_generations WHERE generation_id=?",
+                (generation_id,),
+            ).fetchone()
+            if row is None or row["base_generation_id"] is None:
+                return None
+            return int(row["base_generation_id"])
+    except (OSError, sqlite3.DatabaseError, TypeError, ValueError):
+        return None
+
+
+def _semantic_source_revision_json(value: object) -> str:
+    """Ignore owner observation clocks that are absent from source heads."""
+
+    if isinstance(value, Mapping):
+        value = {
+            key: selected
+            for key, selected in value.items()
+            if key not in _SEMANTIC_OBSERVATION_KEYS
+        }
+    return canonical_json(value)
+
+
 def _content_compatible_text_replay(
     state_directory: Path,
     connection: sqlite3.Connection,
@@ -92,8 +278,9 @@ def _content_compatible_text_replay(
     provenance: dict[str, object],
     *,
     selected_sources: tuple[str, ...],
-    current_heads: Sequence[object],
+    current_heads: Sequence[SemanticSourceHead],
     replay_scope: str,
+    current_entry: Mapping[str, object],
 ) -> bool:
     """Allow replay after route-signature churn only when text content is stable.
 
@@ -106,27 +293,28 @@ def _content_compatible_text_replay(
 
     if "text" not in selected_sources:
         return False
+    if not _text_replay_contract_matches(
+        provenance,
+        replay_scope=replay_scope,
+        current_entry=current_entry,
+        selected_sources=selected_sources,
+    ):
+        return False
     ledger = provenance.get("source_head_ledger")
-    if not isinstance(ledger, dict):
+    if not isinstance(ledger, Mapping):
         return False
     entry = ledger.get(replay_scope)
-    if not isinstance(entry, dict):
+    if not isinstance(entry, Mapping):
         return False
     old_heads = entry.get("source_heads")
     if not isinstance(old_heads, list):
         return False
     current_payloads = [head.as_payload() for head in current_heads]
-    old_by_kind = {
-        str(value.get("source_kind")): value
-        for value in old_heads
-        if isinstance(value, dict) and isinstance(value.get("source_kind"), str)
-    }
-    current_by_kind = {
-        str(value.get("source_kind")): value
-        for value in current_payloads
-        if isinstance(value, dict) and isinstance(value.get("source_kind"), str)
-    }
-    if set(old_by_kind) != set(current_by_kind):
+    old_by_kind = _source_head_map(old_heads)
+    current_by_kind = _source_head_map(current_payloads)
+    if old_by_kind is None or current_by_kind is None:
+        return False
+    if set(old_by_kind) != set(current_by_kind) or set(old_by_kind) != set(selected_sources):
         return False
     for source_kind, old_head in old_by_kind.items():
         if source_kind != "text" and old_head != current_by_kind[source_kind]:
@@ -318,6 +506,112 @@ class _SemanticTextStagingSession:
         self._commit()
 
 
+def _semantic_item_revision_key(item: SemanticItem) -> tuple[object, ...]:
+    """Return the immutable semantic materialization identity for one item."""
+
+    return (
+        item.item_id,
+        item.source_kind,
+        item.source_identity,
+        item.identity_version,
+        item.path,
+        item.fingerprint.xxh3_128,
+        item.fingerprint.byte_count,
+        item.fingerprint.xxh3_64_guard,
+        canonical_json(item.provenance),
+        _semantic_source_revision_json(item.source_revision),
+    )
+
+
+def _decode_json_object(raw: object) -> object:
+    try:
+        return json.loads(str(raw))
+    except (TypeError, ValueError):
+        return raw
+
+
+def _semantic_item_revision_row_key(row: sqlite3.Row) -> tuple[object, ...]:
+    return (
+        str(row["item_id"]),
+        str(row["source_kind"]),
+        str(row["source_identity"]),
+        str(row["identity_version"]),
+        None if row["path"] is None else str(row["path"]),
+        str(row["content_xxh3_128"]),
+        int(row["content_bytes"]),
+        str(row["content_xxh3_64_guard"]),
+        str(row["provenance_json"]),
+        _semantic_source_revision_json(_decode_json_object(row["source_revision_json"])),
+    )
+
+
+def _published_item_revision_keys(
+    connection: sqlite3.Connection,
+    generation_id: int,
+    source_kind: str,
+) -> dict[str, tuple[object, ...] | None]:
+    """Load base item revisions, marking conflicting historical bindings unsafe."""
+
+    rows = connection.execute(
+        """SELECT member.item_id AS member_item_id,
+            revision.item_id,revision.source_kind,revision.source_identity,
+            revision.identity_version,revision.path,revision.content_xxh3_128,
+            revision.content_bytes,revision.content_xxh3_64_guard,
+            revision.provenance_json,revision.source_revision_json
+        FROM embedding_generation_members member
+        JOIN semantic_item_revisions revision
+          ON revision.item_revision_id=member.item_revision_id
+        WHERE member.generation_id=? AND member.entity_kind='text_chunk'
+          AND revision.source_kind=?
+        ORDER BY member.item_id,revision.item_revision_id""",
+        (generation_id, source_kind),
+    ).fetchall()
+    revisions: dict[str, tuple[object, ...] | None] = {}
+    for row in rows:
+        item_id = str(row["member_item_id"])
+        key = _semantic_item_revision_row_key(row)
+        prior = revisions.get(item_id)
+        if prior is None and item_id in revisions:
+            continue
+        if prior is not None and prior != key:
+            revisions[item_id] = None
+        else:
+            revisions[item_id] = key
+    return revisions
+
+
+def _mark_unchanged_item_seen(
+    connection: sqlite3.Connection,
+    item: SemanticItem,
+    *,
+    base_revision: tuple[object, ...] | None,
+    refresh_token: str,
+) -> bool:
+    """Keep an unchanged item active without rebuilding its chunks."""
+
+    if base_revision is None or not refresh_token.strip():
+        return False
+    current_key = _semantic_item_revision_key(item)
+    if base_revision != current_key:
+        return False
+    current = connection.execute(
+        """SELECT item_id,source_kind,source_identity,identity_version,path,
+            content_xxh3_128,content_bytes,content_xxh3_64_guard,
+            provenance_json,source_revision_json
+        FROM semantic_items
+        WHERE item_id=? AND source_kind=? AND active=1""",
+        (item.item_id, item.source_kind),
+    ).fetchone()
+    if current is None or _semantic_item_revision_row_key(current) != current_key:
+        return False
+    updated = connection.execute(
+        """UPDATE semantic_items SET refresh_token=?,updated_ns=?
+        WHERE item_id=? AND source_kind=? AND active=1""",
+        (refresh_token, time.time_ns(), item.item_id, item.source_kind),
+    )
+    return updated.rowcount == 1
+
+
 def _stage_source(
     database: Path,
     state_directory: Path,
@@ -328,6 +622,7 @@ def _stage_source(
     chunking: TextChunkingConfig,
     token_counter: TextTokenCounter | None = None,
     source_record_iterator: TextRecordIterator,
+    base_generation_id: int | None = None,
     work_budget: SemanticWorkBudget | None = None,
     cancellation_check: CancellationCheck | None = None,
     progress: ProgressCallback | None = None,
@@ -367,6 +662,11 @@ def _stage_source(
     )
     with semantic_database(database) as connection:
         with sqlite_cancellation_scope(connection, bridge):
+            base_revisions = (
+                _published_item_revision_keys(connection, base_generation_id, source_kind)
+                if base_generation_id is not None
+                else {}
+            )
             session = _SemanticTextStagingSession(
                 connection,
                 generation_id=generation_id,
@@ -380,12 +680,22 @@ def _stage_source(
             source_complete = True
             for _item_id, grouped in groups:
                 bridge.checkpoint()
-                if not budget.try_admit_item():
-                    source_complete = False
-                    break
                 iterator = iter(grouped)
                 first = next(iterator)
                 item = first.item
+                unchanged = _mark_unchanged_item_seen(
+                    connection,
+                    item,
+                    base_revision=base_revisions.get(item.item_id),
+                    refresh_token=refresh_token,
+                )
+                if unchanged:
+                    for _record in iterator:
+                        bridge.checkpoint()
+                    continue
+                if not budget.try_admit_item():
+                    source_complete = False
+                    break
                 item_rebounds_before = budget.rebound_members
                 sections = itertools.chain(
                     (first.section,),
@@ -499,24 +809,34 @@ def index_text_embeddings(
         "source_heads": source_head_payload,
     }
     replay_scope = "text:" + ",".join(selected_sources)
+    content_compatible_replay = False
     if all(head.complete for head in source_heads):
+        def source_head_compatibility(
+            connection: sqlite3.Connection,
+            generation_id: int,
+            provenance: Mapping[str, object],
+        ) -> bool:
+            nonlocal content_compatible_replay
+            accepted = _content_compatible_text_replay(
+                state_directory,
+                connection,
+                generation_id,
+                dict(provenance),
+                selected_sources=selected_sources,
+                current_heads=source_heads,
+                replay_scope=replay_scope,
+                current_entry=replay_entry,
+            )
+            content_compatible_replay = accepted
+            return accepted
+
         published = find_exact_published_generation(
             database,
             model_signature=selected_model.model_signature,
             required_source_head_ledger={replay_scope: replay_entry},
             writer_coordinated=True,
             source_head_compatibility=(
-                (
-                    lambda connection, generation_id, provenance: _content_compatible_text_replay(
-                        state_directory,
-                        connection,
-                        generation_id,
-                        dict(provenance),
-                        selected_sources=selected_sources,
-                        current_heads=source_heads,
-                        replay_scope=replay_scope,
-                    )
-                )
+                source_head_compatibility
                 if "text" in selected_sources
                 else None
             ),
@@ -548,7 +868,11 @@ def index_text_embeddings(
                     0,
                     (GenerationWorkResult(published, 0, 0, 0, 0),),
                     new_jobs_staged=0,
-                    execution_mode="exact_replay",
+                    execution_mode=(
+                        "content_compatible_replay"
+                        if content_compatible_replay
+                        else "exact_replay"
+                    ),
                     sources_reused=len(selected_sources),
                     sources_enumerated=0,
                 )
@@ -556,6 +880,14 @@ def index_text_embeddings(
             source_head_payload = [head.as_payload() for head in source_heads]
             replay_entry["source_heads"] = source_head_payload
     require_readable_source_heads(source_heads)
+    published_delta = _published_text_source_delta(
+        database,
+        model_signature=selected_model.model_signature,
+        replay_scope=replay_scope,
+        replay_entry=replay_entry,
+        selected_sources=selected_sources,
+        current_heads=source_heads,
+    )
     source_head_ledger = merge_source_head_ledger(
         published_source_head_ledger(
             database,
@@ -610,6 +942,14 @@ def index_text_embeddings(
         },
         materialize_base=False,
     )
+    if published_delta is not None and _candidate_base_generation_id(
+        database,
+        generation_id,
+    ) != published_delta.generation_id:
+        # Do not compare current items with a stale base if another writer
+        # advanced the published head between delta planning and candidate
+        # creation.
+        published_delta = None
     resume_cursor = generation_summary(
         database,
         generation_id,
@@ -623,10 +963,50 @@ def index_text_embeddings(
             if isinstance(source, str) and source in selected_sources
         )
     ) if isinstance(raw_completed_sources, list) else []
+    raw_reused_sources = resume_cursor.get("reused_sources", [])
+    reused_sources = list(
+        dict.fromkeys(
+            source
+            for source in raw_reused_sources
+            if isinstance(source, str) and source in completed_sources
+        )
+    ) if isinstance(raw_reused_sources, list) else []
     items_staged = chunks_staged = queued = 0
     enumeration_complete = resume_cursor.get("enumeration_complete") is True
+    if published_delta is not None and any(
+        published_delta.provenance.get(name) != value
+        for name, value in (
+            ("chunking_signature", active_chunking.signature),
+            ("tokenizer_signature", token_guard.tokenizer_signature),
+            ("model_token_limit", token_guard.token_limit),
+        )
+    ):
+        # A source item is reusable only when the published base used the
+        # exact same physical chunking/tokenizer contract.
+        published_delta = None
     for source_kind in selected_sources:
         if source_kind in completed_sources:
+            continue
+        if (
+            published_delta is not None
+            and source_kind in published_delta.reusable_sources
+        ):
+            completed_sources.append(source_kind)
+            if source_kind not in reused_sources:
+                reused_sources.append(source_kind)
+            update_embedding_generation_cursor(
+                database,
+                generation_id,
+                cursor={
+                    "protocol": SEMANTIC_TEXT_ENUMERATION_PROTOCOL,
+                    "enumeration_complete": False,
+                    "selected_sources": list(selected_sources),
+                    "completed_sources": completed_sources,
+                    "reused_sources": reused_sources,
+                    "completed_source": source_kind,
+                    "items": 0,
+                },
+            )
             continue
         refresh_token = f"generation:{generation_id}:source:{source_kind}"
         source_items, source_chunks, source_jobs, source_complete = _stage_source(
@@ -638,6 +1018,9 @@ def index_text_embeddings(
             chunking=active_chunking,
             token_counter=token_guard.counter,
             source_record_iterator=source_record_iterator,
+            base_generation_id=(
+                None if published_delta is None else published_delta.generation_id
+            ),
             work_budget=budget,
             progress=progress,
         )
@@ -654,6 +1037,7 @@ def index_text_embeddings(
                     "enumeration_complete": False,
                     "selected_sources": list(selected_sources),
                     "completed_sources": completed_sources,
+                    "reused_sources": reused_sources,
                     "current_source": source_kind,
                     "truncation_reason": budget.truncation_reason,
                 },
@@ -668,6 +1052,7 @@ def index_text_embeddings(
                 "enumeration_complete": False,
                 "selected_sources": list(selected_sources),
                 "completed_sources": completed_sources,
+                "reused_sources": reused_sources,
                 "completed_source": source_kind,
                 "items": source_items,
             },
@@ -694,6 +1079,7 @@ def index_text_embeddings(
                 "enumeration_complete": True,
                 "selected_sources": list(selected_sources),
                 "completed_sources": completed_sources,
+                "reused_sources": reused_sources,
             },
         )
 
@@ -732,8 +1118,8 @@ def index_text_embeddings(
         (result,),
         new_jobs_staged=budget.new_jobs_admitted - new_jobs_before,
         execution_mode="enumerated",
-        sources_reused=0,
-        sources_enumerated=len(completed_sources),
+        sources_reused=len(reused_sources),
+        sources_enumerated=len(set(completed_sources).difference(reused_sources)),
         truncated=budget.truncated,
         truncation_reason=budget.truncation_reason,
     )

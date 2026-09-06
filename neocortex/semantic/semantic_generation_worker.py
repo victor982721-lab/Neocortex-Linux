@@ -4,8 +4,9 @@ from __future__ import annotations
 import itertools
 import math
 import os
+import sqlite3
 import threading
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Protocol, TypeVar
 
@@ -17,12 +18,27 @@ from .semantic_backends import (
     TextTokenLimitExceededError,
 )
 from .semantic_config import SEMANTIC_PIPELINE_VERSION
+from .semantic_generation_repository import (
+    _attach_payload,
+    _job_is_current,
+)
+from .semantic_lineage_repository import (
+    _record_discarded_embedding_execution,
+    _record_embedding_attempt_failure,
+)
 from .semantic_models import (
     BackendEmbedding,
     EmbeddingJobLease,
     EmbeddingModality,
     EmbeddingRequest,
     GenerationSummary,
+    canonical_json,
+    encode_vector,
+)
+from .semantic_repository_common import (
+    MAX_ERROR_CHARS,
+    _load_model,
+    _now,
 )
 from .semantic_service_contracts import (
     JOB_BATCH_SIZE,
@@ -39,7 +55,6 @@ from .semantic_work_budget import (
 from .semantic_state import (
     StaleEmbeddingJobError,
     claim_embedding_jobs,
-    complete_embedding_job,
     deactivate_semantic_item_if_fingerprint,
     embedding_request_from_lease,
     fail_embedding_job,
@@ -49,6 +64,7 @@ from .semantic_state import (
     release_embedding_job_lease_for_deadline,
     reuse_cached_jobs,
 )
+from .semantic_schema import SemanticStateError, semantic_database
 
 _T = TypeVar("_T")
 EmbeddingOutcome = tuple[
@@ -225,6 +241,300 @@ def _record_embedding_failures(
     return len(failures)
 
 
+def _complete_embedding_job_on_connection(
+    connection: sqlite3.Connection,
+    job_id: int,
+    *,
+    worker_id: str,
+    vector: Sequence[float],
+    provenance: Mapping[str, object] | None,
+    now_ns: int,
+) -> int:
+    """Complete one leased job without opening a second database connection.
+
+    The single-job public repository function intentionally owns its connection
+    lifecycle.  Generation workers already have a bounded completion batch,
+    however, so reopening that connection for every vector is needlessly
+    expensive.  Keep the exact CAS, payload, member and receipt sequence here,
+    while letting the caller isolate each invocation with a savepoint.
+    """
+
+    provenance_json = canonical_json(provenance)
+    row = connection.execute(
+        "SELECT j.* FROM embedding_jobs j WHERE j.job_id=?",
+        (job_id,),
+    ).fetchone()
+    if row is None:
+        raise KeyError(f"unknown embedding job {job_id}")
+    if (
+        str(row["status"]) != "leased"
+        or str(row["lease_owner"]) != worker_id
+        or row["lease_until_ns"] is None
+        or int(row["lease_until_ns"]) <= now_ns
+    ):
+        raise SemanticStateError("job lease is absent, expired or owned elsewhere")
+    if not _job_is_current(connection, row):
+        raise StaleEmbeddingJobError("source changed before vector completion")
+
+    model = _load_model(connection, str(row["model_signature"]))
+    vector_blob, original_norm = encode_vector(
+        vector,
+        model.dimensions,
+        model.vector_dtype,
+    )
+    inserted_payload = connection.execute(
+        """INSERT INTO vector_payloads(
+            model_signature,content_xxh3_128,content_bytes,
+            content_xxh3_64_guard,dimensions,vector_dtype,vector_blob,
+            original_norm,provenance_json,created_ns)
+        VALUES(?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(model_signature,content_xxh3_128,content_bytes,
+                    content_xxh3_64_guard) DO NOTHING""",
+        (
+            model.model_signature,
+            str(row["content_xxh3_128"]),
+            int(row["content_bytes"]),
+            str(row["content_xxh3_64_guard"]),
+            model.dimensions,
+            model.vector_dtype.value,
+            vector_blob,
+            original_norm,
+            provenance_json,
+            now_ns,
+        ),
+    )
+    payload = connection.execute(
+        """SELECT payload_id FROM vector_payloads
+        WHERE model_signature=? AND content_xxh3_128=? AND content_bytes=?
+          AND content_xxh3_64_guard=?""",
+        (
+            model.model_signature,
+            str(row["content_xxh3_128"]),
+            int(row["content_bytes"]),
+            str(row["content_xxh3_64_guard"]),
+        ),
+    ).fetchone()
+    if payload is None:
+        raise SemanticStateError("vector payload upsert did not produce a row")
+    payload_id = int(payload["payload_id"])
+    if inserted_payload.rowcount not in {0, 1}:
+        raise SemanticStateError("vector payload insert returned an invalid outcome")
+    if inserted_payload.rowcount == 0:
+        _record_discarded_embedding_execution(
+            connection,
+            row=row,
+            incumbent_payload_id=payload_id,
+            candidate_vector_blob=vector_blob,
+            dimensions=model.dimensions,
+            vector_dtype=model.vector_dtype.value,
+            original_norm=original_norm,
+            now_ns=now_ns,
+        )
+    _attach_payload(
+        connection,
+        row,
+        payload_id,
+        provenance_json,
+        now_ns,
+        execution_mode=("executed" if inserted_payload.rowcount == 1 else "cache_hit"),
+    )
+    updated = connection.execute(
+        """UPDATE embedding_jobs SET status='done',lease_owner=NULL,
+        lease_until_ns=NULL,error_type=NULL,error_message=NULL,updated_ns=?
+        WHERE job_id=? AND status='leased' AND lease_owner=?
+          AND lease_until_ns>?""",
+        (now_ns, job_id, worker_id, now_ns),
+    )
+    if updated.rowcount != 1:
+        raise SemanticStateError("job lease changed before completion was recorded")
+    return payload_id
+
+
+def _record_embedding_failure_on_connection(
+    connection: sqlite3.Connection,
+    job_id: int,
+    *,
+    worker_id: str,
+    error_type: str,
+    error_message: str,
+    retryable: bool = False,
+    retry_delay_seconds: float = 0.0,
+    now_ns: int,
+) -> str:
+    """Persist one completion error on the caller's already-open connection."""
+
+    if not worker_id.strip() or not error_type.strip():
+        raise ValueError("worker_id and error_type cannot be blank")
+    if (
+        not math.isfinite(retry_delay_seconds)
+        or retry_delay_seconds < 0
+        or retry_delay_seconds > 86_400
+    ):
+        raise ValueError("retry_delay_seconds must be between 0 and 86400")
+    row = connection.execute(
+        """SELECT attempts,max_attempts,status,lease_owner,lease_until_ns,
+            generation_id,model_signature,entity_kind,entity_id,
+            content_xxh3_128,content_bytes,content_xxh3_64_guard,job_id,
+            attempt_started_ns,attempt_sequence,input_item_revision_id,
+            input_chunk_revision_id
+        FROM embedding_jobs WHERE job_id=?""",
+        (job_id,),
+    ).fetchone()
+    if row is None:
+        raise KeyError(f"unknown embedding job {job_id}")
+    if (
+        str(row["status"]) != "leased"
+        or str(row["lease_owner"]) != worker_id
+        or row["lease_until_ns"] is None
+        or int(row["lease_until_ns"]) <= now_ns
+    ):
+        raise SemanticStateError("job lease is absent, expired or owned elsewhere")
+    should_retry = retryable and int(row["attempts"]) < int(row["max_attempts"])
+    status = "pending" if should_retry else "error"
+    available = now_ns + int(retry_delay_seconds * 1_000_000_000)
+    bounded_type = error_type[:256]
+    bounded_message = error_message[:MAX_ERROR_CHARS]
+    updated = connection.execute(
+        """UPDATE embedding_jobs SET status=?,available_ns=?,lease_owner=NULL,
+        lease_until_ns=NULL,error_type=?,error_message=?,updated_ns=?
+        WHERE job_id=? AND status='leased' AND lease_owner=?
+          AND lease_until_ns>?""",
+        (
+            status,
+            available,
+            bounded_type,
+            bounded_message,
+            now_ns,
+            job_id,
+            worker_id,
+            now_ns,
+        ),
+    )
+    if updated.rowcount != 1:
+        raise SemanticStateError("job lease changed before failure was recorded")
+    _record_embedding_attempt_failure(
+        connection,
+        row=row,
+        status="failed",
+        error_type=bounded_type,
+        error_message=bounded_message,
+        retryable=should_retry,
+        now_ns=now_ns,
+    )
+    return status
+
+
+def _record_stale_embedding_job_on_connection(
+    connection: sqlite3.Connection,
+    job_id: int,
+    *,
+    worker_id: str,
+    now_ns: int,
+) -> None:
+    """Convert a stale completion into a durable per-job terminal outcome."""
+
+    row = connection.execute(
+        "SELECT * FROM embedding_jobs WHERE job_id=?",
+        (job_id,),
+    ).fetchone()
+    if row is None:
+        raise KeyError(f"unknown embedding job {job_id}")
+    if (
+        str(row["status"]) != "leased"
+        or str(row["lease_owner"]) != worker_id
+        or row["lease_until_ns"] is None
+        or int(row["lease_until_ns"]) <= now_ns
+    ):
+        raise SemanticStateError("job lease is absent, expired or owned elsewhere")
+    _record_embedding_attempt_failure(
+        connection,
+        row=row,
+        status="failed",
+        error_type="source_changed",
+        error_message="source changed before vector completion",
+        retryable=False,
+        now_ns=now_ns,
+    )
+    updated = connection.execute(
+        """UPDATE embedding_jobs SET status='stale',lease_owner=NULL,
+        lease_until_ns=NULL,error_type='source_changed',
+        error_message='source changed before vector completion',
+        attempt_started_ns=NULL,updated_ns=?
+        WHERE job_id=? AND status='leased' AND lease_owner=?
+          AND lease_until_ns>?""",
+        (now_ns, job_id, worker_id, now_ns),
+    )
+    if updated.rowcount != 1:
+        raise SemanticStateError("job lease changed before stale state was recorded")
+
+
+def complete_embedding_jobs_batch(
+    database: Path,
+    leases: Sequence[EmbeddingJobLease],
+    successes: Sequence[tuple[int, BackendEmbedding]],
+    *,
+    worker_id: str,
+    now_ns: int | None = None,
+) -> tuple[int, int]:
+    """Complete a bounded set of embedding results in one write transaction.
+
+    Each result retains the single-job CAS and receipt contract, while a
+    savepoint prevents one malformed vector or stale source from rolling back
+    unrelated results from the same inference batch.
+    """
+
+    if not worker_id.strip():
+        raise ValueError("worker_id cannot be blank")
+    if not successes:
+        return 0, 0
+    embedded = failed = 0
+    with semantic_database(database) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        for ordinal, (index, output) in enumerate(successes):
+            lease = leases[index]
+            savepoint = f"embedding_completion_{ordinal}"
+            connection.execute(f"SAVEPOINT {savepoint}")
+            selected_ns = _now(now_ns)
+            try:
+                _complete_embedding_job_on_connection(
+                    connection,
+                    lease.job_id,
+                    worker_id=worker_id,
+                    vector=output.vector,
+                    provenance={
+                        **dict(output.provenance),
+                        "pipeline": SEMANTIC_PIPELINE_VERSION,
+                    },
+                    now_ns=selected_ns,
+                )
+            except StaleEmbeddingJobError:
+                connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+                _record_stale_embedding_job_on_connection(
+                    connection,
+                    lease.job_id,
+                    worker_id=worker_id,
+                    now_ns=_now(now_ns),
+                )
+                failed += 1
+            except Exception as exc:
+                connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+                _record_embedding_failure_on_connection(
+                    connection,
+                    lease.job_id,
+                    worker_id=worker_id,
+                    error_type=type(exc).__name__,
+                    error_message=safe_error(exc),
+                    now_ns=_now(now_ns),
+                )
+                failed += 1
+            else:
+                connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+                embedded += 1
+    return embedded, failed
+
+
 def _record_embedding_successes(
     database: Path,
     leases: Sequence[EmbeddingJobLease],
@@ -232,35 +542,12 @@ def _record_embedding_successes(
     *,
     worker_id: str,
 ) -> tuple[int, int]:
-    embedded = failed = 0
-    for index, output in successes:
-        lease = leases[index]
-        try:
-            complete_embedding_job(
-                database,
-                lease.job_id,
-                worker_id=worker_id,
-                vector=output.vector,
-                provenance={
-                    **dict(output.provenance),
-                    "pipeline": SEMANTIC_PIPELINE_VERSION,
-                },
-            )
-        except StaleEmbeddingJobError:
-            failed += 1
-        except Exception as exc:
-            fail_embedding_job(
-                database,
-                lease.job_id,
-                worker_id=worker_id,
-                error_type=type(exc).__name__,
-                error_message=safe_error(exc),
-                retryable=False,
-            )
-            failed += 1
-        else:
-            embedded += 1
-    return embedded, failed
+    return complete_embedding_jobs_batch(
+        database,
+        leases,
+        successes,
+        worker_id=worker_id,
+    )
 
 
 def _release_interrupted_leases(

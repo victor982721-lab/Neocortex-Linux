@@ -24,8 +24,10 @@ from .semantic_sources import TextSourceRecord
 from neocortex.platform.content_capability_manifest import content_capability_for_source
 from neocortex.persistence.sqlite_immutable import (
     ImmutableSQLiteUnavailable,
+    SQLiteImmutableFence,
+    SQLiteReadMode,
     SQLiteReadSession,
-    immutable_sqlite_database,
+    capture_sqlite_read_fence,
     preferred_sqlite_read_mode,
 )
 
@@ -100,16 +102,31 @@ class _AudioDependencySnapshot:
     reason: str | None = None
 
 
-def _owner_stamp(path: Path) -> tuple[tuple[str, int, int, int], ...]:
-    values: list[tuple[str, int, int, int]] = []
-    for suffix in ("", "-wal", "-shm", "-journal"):
-        candidate = Path(str(path) + suffix)
-        try:
-            stat = candidate.lstat()
-        except FileNotFoundError:
-            continue
-        values.append((suffix, stat.st_ino, stat.st_size, stat.st_mtime_ns))
-    return tuple(values)
+def _assert_owner_fence_unchanged(
+    path: Path,
+    expected_fence: SQLiteImmutableFence,
+    *,
+    owner: str,
+) -> None:
+    """Reject owner drift after a Semantic head projection."""
+
+    try:
+        observed_fence = capture_sqlite_read_fence(path)
+    except (FileNotFoundError, ImmutableSQLiteUnavailable) as exc:
+        raise VideoSourceBlocked(f"{owner} owner changed during head projection") from exc
+    if observed_fence != expected_fence:
+        raise VideoSourceBlocked(f"{owner} owner changed during head projection")
+
+
+def _required_owner_fence(path: Path, *, owner: str) -> SQLiteImmutableFence:
+    """Capture one required owner fence before opening its read session."""
+
+    try:
+        return capture_sqlite_read_fence(path)
+    except FileNotFoundError as exc:
+        raise VideoSourceBlocked(f"{owner} owner cannot be inspected") from exc
+    except ImmutableSQLiteUnavailable as exc:
+        raise VideoSourceBlocked(str(exc)) from exc
 
 
 def _require_sidecar_safe(path: Path) -> None:
@@ -136,7 +153,11 @@ def _require_sidecar_safe(path: Path) -> None:
 
 
 @contextmanager
-def _readonly_video_database(path: Path) -> Iterator[sqlite3.Connection]:
+def _readonly_video_database(
+    path: Path,
+    *,
+    expected_fence: SQLiteImmutableFence | None = None,
+) -> Iterator[sqlite3.Connection]:
     """Open Video through the sidecar-safe immutable or temporary snapshot."""
 
     _require_sidecar_safe(path)
@@ -144,7 +165,14 @@ def _readonly_video_database(path: Path) -> Iterator[sqlite3.Connection]:
         # Video is a published Semantic source: unlike a bounded general
         # reader, it abstains while a writer-owned WAL is active so a frame
         # projection can never silently omit the latest OCR rows.
-        with immutable_sqlite_database(path, timeout_seconds=60.0) as connection:
+        session = SQLiteReadSession(
+            path,
+            mode=SQLiteReadMode.IMMUTABLE_STRICT,
+            timeout_seconds=60.0,
+        )
+        with session as connection:
+            if expected_fence is not None and session.source_fence != expected_fence:
+                raise VideoSourceBlocked("video owner changed before head snapshot")
             yield connection
     except ImmutableSQLiteUnavailable as exc:
         raise VideoSourceBlocked(str(exc)) from exc
@@ -161,12 +189,19 @@ def _audio_dependency_declared() -> bool:
 
 
 @contextmanager
-def _readonly_audio_database(path: Path) -> Iterator[sqlite3.Connection]:
+def _readonly_audio_database(
+    path: Path,
+    *,
+    expected_fence: SQLiteImmutableFence | None = None,
+) -> Iterator[sqlite3.Connection]:
     """Open the optional Audio owner through the shared sidecar-safe kernel."""
 
     try:
         mode = preferred_sqlite_read_mode(path)
-        with SQLiteReadSession(path, mode=mode, timeout_seconds=60.0) as connection:
+        session = SQLiteReadSession(path, mode=mode, timeout_seconds=60.0)
+        with session as connection:
+            if expected_fence is not None and session.source_fence != expected_fence:
+                raise VideoSourceBlocked("audio owner changed before dependency snapshot")
             yield connection
     except ImmutableSQLiteUnavailable as exc:
         raise VideoSourceBlocked(f"audio dependency is unavailable: {exc}") from exc
@@ -201,7 +236,8 @@ def _audio_dependency_snapshot(
     documents: dict[str, tuple[str, str]] = {}
     segments: dict[str, list[_AudioSegment]] = {}
     try:
-        with _readonly_audio_database(audio_path) as connection:
+        audio_fence = _required_owner_fence(audio_path, owner="audio")
+        with _readonly_audio_database(audio_path, expected_fence=audio_fence) as connection:
             # Keep each IN list below SQLite's portable variable limit.
             for offset in range(0, len(selected_keys), 500):
                 keys = selected_keys[offset : offset + 500]
@@ -236,6 +272,7 @@ def _audio_dependency_snapshot(
                             str(row["text"]),
                         )
                     )
+        _assert_owner_fence_unchanged(audio_path, audio_fence, owner="audio")
     except (OSError, sqlite3.Error, RuntimeError, VideoSourceBlocked) as exc:
         return _AudioDependencySnapshot(
             declared,
@@ -502,8 +539,8 @@ def video_source_head(state_directory: Path) -> VideoSourceHead:
     coverage: VideoCoverage
     reason: str | None
     try:
-        with _readonly_video_database(path) as connection:
-            before = _owner_stamp(path)
+        before_fence = _required_owner_fence(path, owner="video")
+        with _readonly_video_database(path, expected_fence=before_fence) as connection:
             rows = connection.execute(
                 """SELECT file_key,path,size,mtime_ns,birthtime_ns,processing_signature,
                 status,title,duration_seconds,frame_count,ocr_frame_count,ocr_text_chars,
@@ -566,9 +603,7 @@ def video_source_head(state_directory: Path) -> VideoSourceHead:
                     + b"\n"
                 )
                 row_count += 1
-            after = _owner_stamp(path)
-        if before != after:
-            raise VideoSourceBlocked("video owner changed during head projection")
+        _assert_owner_fence_unchanged(path, before_fence, owner="video")
     except (OSError, sqlite3.Error, TypeError, ValueError, VideoSourceBlocked) as exc:
         coverage = "blocked"
         reason = type(exc).__name__

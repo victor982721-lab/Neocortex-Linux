@@ -69,7 +69,9 @@ class SemanticIndexResult:
     chunks_staged: int
     generations: tuple[GenerationWorkResult, ...]
     new_jobs_staged: int = 0
-    execution_mode: _Literal["enumerated", "exact_replay"] = "enumerated"
+    execution_mode: _Literal[
+        "enumerated", "exact_replay", "content_compatible_replay"
+    ] = "enumerated"
     sources_reused: int = 0
     sources_enumerated: int = 0
     truncated: bool = False

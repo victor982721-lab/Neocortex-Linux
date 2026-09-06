@@ -323,6 +323,8 @@ def test_corrupt_top_level_zip_is_cached_as_typed_error(tmp_path: Path) -> None:
     assert first.errors == 1
     assert second.cache_hits == 1
     assert second.cached_errors == 1
+    assert second.errors == 0
+    assert second.errors + second.cached_errors == 1
     with archive_database(state, readonly=True) as connection:
         row = connection.execute("SELECT status,error_type FROM containers").fetchone()
     assert tuple(row) == ("error", "archive_corrupt_container")

@@ -35,6 +35,7 @@ def run_state_health(args: argparse.Namespace) -> int:
             f"incompatible={health.incompatible_count} future={health.future_count} "
             f"corrupt={health.corrupt_count} unknown={health.unknown_count} "
             f"unreadable={health.unreadable_count} "
+            f"not_verified={health.not_verified_count} "
             f"state={health.state_directory}"
         )
         for owner in health.owners:

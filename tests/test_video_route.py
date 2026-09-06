@@ -285,3 +285,17 @@ def test_duration_limit_fails_before_any_frame_is_materialized(
     assert summary.review_candidates == 1
     assert state.review_candidates[0].reason_code == "video_duration_limit"
     assert state.review_candidates[0].source_status == "error"
+
+    cached = VideoRoute(
+        config,
+        state,  # type: ignore[arg-type]
+        2,
+        media_probe=lambda *_args, **_kwargs: _probe(duration=6),
+        frame_sampler=forbidden_sampler,
+        ocr_runtime_resolver=lambda _config: _Runtime(enabled=False),
+    ).run()
+
+    assert cached.cache_hits == 1
+    assert cached.cached_errors == 1
+    assert cached.errors == 0
+    assert cached.errors + cached.cached_errors == 1
