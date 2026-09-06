@@ -16,6 +16,7 @@ from .cli_archive_surface import (
 )
 from .cli_capabilities_surface import validate_capabilities_arguments
 from .cli_code_surface import validate_code_arguments
+from .cli_content_diagnostics import validate_content_diagnostics_arguments
 from .cli_docx_surface import validate_docx_arguments, validate_docx_direct_operation
 from .cli_knowledge_surface import validate_knowledge_arguments
 from .cli_models_surface import validate_models_arguments
@@ -233,6 +234,19 @@ def _validate_status_operation(args: argparse.Namespace) -> None:
 def _validate_state_health_operation(args: argparse.Namespace) -> None:
     if args.state_health_json and not args.state_health:
         raise SystemExit("--state-health-json requires --state-health")
+    explicit = set(getattr(args, "_explicit_options", ()))
+    scoped_options = {
+        "state_health_scope", "state_health_owner", "state_health_max_owners",
+        "state_health_after_owner", "state_health_timeout",
+    }
+    if scoped_options.intersection(explicit) and not args.state_health:
+        raise SystemExit("State health scope options require --state-health")
+    timeout = getattr(args, "state_health_timeout", 30.0)
+    if not 0 < timeout <= 900:
+        raise SystemExit("--state-health-timeout must be greater than 0 and at most 900")
+    limit = getattr(args, "state_health_max_owners", None)
+    if limit is not None and not 1 <= limit <= 1000:
+        raise SystemExit("--state-health-max-owners must be between 1 and 1000")
     if args.state_health and args.apply:
         raise SystemExit("--state-health is read-only and cannot be combined with --apply")
     if args.state_health and normalize_route_selection(args.route, BUILTIN_ROUTE_ORDER):
@@ -241,6 +255,10 @@ def _validate_state_health_operation(args: argparse.Namespace) -> None:
 
 def _validate_action_recovery_operation(args: argparse.Namespace) -> None:
     recording = args.action_recovery_record is not None
+    if getattr(args, "action_recovery_json_lines", False) and not (
+        args.action_recovery_json and args.action_recovery_status
+    ):
+        raise SystemExit("--action-recovery-json-lines requires --action-recovery-status and --action-recovery-json")
     if not 1 <= args.action_recovery_limit <= 1000:
         raise SystemExit("--action-recovery-limit must be between 1 and 1000")
     if args.action_recovery_after < 0:
@@ -433,6 +451,14 @@ def _validate_review_evidence_operations(
             "review evidence status/completeness filters require --review-evidence-list"
         )
     review_operation = bool(selected_direct_operations(args, family=DirectOperationFamily.REVIEW))
+    if getattr(args, "review_json_lines", False) and not (
+        args.review_json and args.review_candidates is not None
+    ):
+        raise SystemExit("--review-json-lines requires --review-candidates and --review-json")
+    if getattr(args, "review_after", None) is not None and args.review_candidates is None:
+        raise SystemExit("--review-after requires --review-candidates")
+    if getattr(args, "review_after", None) is not None and getattr(args, "review_json_lines", False):
+        raise SystemExit("--review-after is unavailable in legacy JSON Lines")
     if args.review_json and not review_operation:
         raise SystemExit("--review-json requires a review command")
     if evidence_operation and args.apply:
@@ -596,6 +622,7 @@ def _validate_curation_operation(args: argparse.Namespace, explicit: set[str]) -
 
 def _validate_direct_operations(args: argparse.Namespace) -> None:
     explicit: set[str] = set(getattr(args, "_explicit_options", ()))
+    validate_content_diagnostics_arguments(args)
     validate_knowledge_arguments(args)
     _validate_direct_operation_selection(args)
     validate_capabilities_arguments(args)

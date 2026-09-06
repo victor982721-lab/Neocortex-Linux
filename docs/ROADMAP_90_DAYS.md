@@ -227,6 +227,14 @@ entre workers, sin repetir trabajo ya comprometido.
 
 ## Orden inmediato
 
+El plan funcional autorizado prioriza identidad/ámbito y evidencia verificable,
+contexto v2 realmente utilizado por CLI/MCP, diagnóstico por owners y costos de
+lectura/incrementalidad. Su cierre requiere resolver los incidentes originales
+de curación y recuperación, no sólo reproducciones, y evaluar el candidato con
+familias reservadas que no se hayan utilizado para ajustar el sistema. El
+handoff funcional conserva ese gate separado de la publicación y la instalación;
+no habilita limpieza, KIO real, reindexación global ni modelos nuevos.
+
 1. Corregir y comprobar los defectos observados del recorrido actual, con
    publicación de código e instalación como barreras separadas.
 2. Diseñar los fixtures y contratos de 0.13.0 antes de ampliar escala.

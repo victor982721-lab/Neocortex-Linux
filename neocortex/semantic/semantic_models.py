@@ -657,8 +657,28 @@ class FusionEvidence:
     entity_id: str
     indexed_model_signature: str
     query_model_signature: str | None = None
+    ref_id: int | None = None
+    generation_id: int | None = None
+    witness: ResolvedSearchHit | None = None
 
     def __post_init__(self) -> None:
+        for name in ("ref_id", "generation_id"):
+            value = getattr(self, name)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+            ):
+                raise ValueError(f"fusion {name} must be a non-negative integer")
+        if self.witness is not None:
+            hit = self.witness.hit
+            if (
+                self.entity_id != hit.entity_id
+                or self.raw_score != hit.score
+                or self.indexed_model_signature != hit.indexed_model_signature
+                or self.query_model_signature != hit.query_model_signature
+                or self.ref_id != hit.ref_id
+                or self.generation_id != hit.generation_id
+            ):
+                raise ValueError("fusion witness does not match its scored contribution")
         if self.query_model_signature is not None:
             _require_non_blank_string(
                 "query_model_signature",

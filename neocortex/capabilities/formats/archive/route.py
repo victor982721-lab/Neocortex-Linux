@@ -50,6 +50,14 @@ from neocortex.foundation.processing_provenance import (
 from neocortex.safety.route_filters import CandidateSelection
 from neocortex.persistence.framework_route_state import FrameworkRouteState
 from .models import ArchiveRouteSummary
+from .logical import (
+    LOGICAL_MEDIA_TYPES,
+    MAX_DECLARED_MIME_BYTES,
+    ODF_KINDS,
+    LogicalDocumentEvidence,
+    identify_logical_document,
+    issue_diagnosis,
+)
 from .state import archive_database, initialize_archive_state
 
 
@@ -57,7 +65,7 @@ from .state import archive_database, initialize_archive_state
 
 
 ARCHIVE_MIME = "application/zip"
-ARCHIVE_ROUTE_VERSION = "archive-route-v2"
+ARCHIVE_ROUTE_VERSION = "archive-route-v3"
 DEFAULT_MAX_DEPTH = 5
 DEFAULT_MAX_MEMBERS = 20_000
 DEFAULT_MAX_MEMBER_BYTES = 64 * 1024 * 1024
@@ -426,25 +434,16 @@ def _zip_document_kind(
             max_central_directory_bytes=max_central_directory_bytes,
         )
         with zipfile.ZipFile(io.BytesIO(payload)) as archive:
-            names = {info.filename.replace("\\", "/").casefold() for info in archive.infolist()}
-            if "[content_types].xml" in names:
-                if any(name.startswith("word/") for name in names):
-                    return "docx"
-                if any(name.startswith("xl/") for name in names):
-                    return "xlsx"
-                if any(name.startswith("ppt/") for name in names):
-                    return "pptx"
-            if "mimetype" in names:
-                try:
-                    value = archive.read("mimetype").decode("ascii", "strict")
-                except (KeyError, OSError, UnicodeError, RuntimeError):
-                    value = ""
-                return {
-                    "application/vnd.oasis.opendocument.text": "odt",
-                    "application/vnd.oasis.opendocument.spreadsheet": "ods",
-                    "application/vnd.oasis.opendocument.presentation": "odp",
-                    "application/epub+zip": "epub",
-                }.get(value, "archive")
+            observation, _ = _inspect_logical_document(
+                archive,
+                budget=_WalkBudget(MAX_EMBEDDED_DOCUMENT_MEMBERS, MAX_DECLARED_MIME_BYTES),
+                config=ArchiveRouteConfig(Path("unused"), ocr_mode="never"),
+            )
+            if observation is not None and observation.identified:
+                return observation.logical_kind or "archive"
+    except ArchiveExtractionError:
+        # A safety bound on identification is not proof of a corrupt archive.
+        return "archive"
     except (OSError, RuntimeError, ZipStructureError, zipfile.BadZipFile, zlib.error):
         return "corrupt_archive"
     return "archive"
@@ -514,6 +513,68 @@ def _read_zip_member(
     return b"".join(chunks)
 
 
+def _inspect_logical_document(
+    archive: zipfile.ZipFile,
+    *,
+    budget: _WalkBudget,
+    config: ArchiveRouteConfig,
+) -> tuple[LogicalDocumentEvidence | None, dict[str, bytes]]:
+    infos = archive.infolist()
+    safe_names: list[str] = []
+    for info in infos:
+        try:
+            normalized = _normalized_member_name(info)
+        except ArchiveExtractionError:
+            continue
+        if normalized == info.filename and not info.is_dir() and not _member_is_special(info):
+            safe_names.append(normalized)
+    names = tuple(safe_names)
+    mimetypes = [info for info in infos if info.filename == "mimetype"]
+    prefetched: dict[str, bytes] = {}
+    declared = None
+    if mimetypes:
+        if len(mimetypes) != 1:
+            raise ArchiveExtractionError(
+                "archive_logical_ambiguous_mimetype",
+                "duplicate mimetype declarations; no subtype chosen",
+            )
+        info = mimetypes[0]
+        if (
+            info.flag_bits & 1
+            or info.is_dir()
+            or _member_is_special(info)
+            or info.compress_type not in _SUPPORTED_COMPRESSIONS
+            or _compression_ratio(info) > config.max_compression_ratio
+        ):
+            raise ArchiveExtractionError(
+                "archive_logical_mimetype_unreadable", "mimetype is not safely readable"
+            )
+        try:
+            payload = _read_zip_member(
+                archive,
+                info,
+                budget=budget,
+                max_bytes=min(MAX_DECLARED_MIME_BYTES, config.max_member_bytes),
+            )
+            prefetched["mimetype"] = payload
+            declared = payload.decode("ascii", "strict")
+            if not declared or any(character.isspace() for character in declared):
+                raise ValueError("mimetype is empty or contains whitespace")
+        except (
+            ArchiveExtractionError,
+            OSError,
+            UnicodeError,
+            ValueError,
+            RuntimeError,
+            zipfile.BadZipFile,
+            zlib.error,
+        ) as exc:
+            raise ArchiveExtractionError(
+                "archive_logical_mimetype_unreadable", f"bounded MIME read failed: {exc}"
+            ) from exc
+    return identify_logical_document(names, declared), prefetched
+
+
 def _embedded_part_selected(name: str, kind: str) -> bool:
     lower = name.casefold()
     if kind == "docx":
@@ -540,7 +601,7 @@ def _embedded_part_selected(name: str, kind: str) -> bool:
         return lower == "docprops/core.xml" or (
             lower.startswith(("ppt/slides/", "ppt/notesslides/")) and lower.endswith(".xml")
         )
-    if kind in {"odt", "ods", "odp"}:
+    if kind in ODF_KINDS:
         return lower in {"content.xml", "meta.xml", "styles.xml"}
     if kind == "epub":
         return lower.endswith((".xhtml", ".html", ".htm", ".opf", ".ncx"))
@@ -567,6 +628,7 @@ def _extract_embedded_zip_document(
     seen: set[str] = set()
     with zipfile.ZipFile(io.BytesIO(payload)) as archive:
         for info in archive.infolist():
+            budget.observe_member()
             name = _normalized_member_name(info)
             folded = name.casefold()
             if folded in seen:
@@ -738,18 +800,27 @@ def _extract_member_content(
                 compression_ratio_limit=config.max_compression_ratio,
                 max_central_directory_bytes=config.max_central_directory_bytes,
             )
-        except (ArchiveExtractionError, ZipStructureError, zipfile.BadZipFile, zlib.error) as exc:
+        except (
+            ArchiveExtractionError,
+            OSError,
+            RuntimeError,
+            ZipStructureError,
+            zipfile.BadZipFile,
+            zlib.error,
+        ) as exc:
             return _ExtractedContent(
                 None,
                 zip_kind,
-                f"application/{zip_kind}",
+                LOGICAL_MEDIA_TYPES.get(zip_kind, f"application/{zip_kind}"),
                 f"{type(exc).__name__}: {exc}"[:500],
-                "archive_embedded_document_error",
+                exc.code
+                if isinstance(exc, ArchiveExtractionError)
+                else "archive_embedded_document_error",
             )
         return _ExtractedContent(
             text or None,
             zip_kind,
-            f"application/{zip_kind}",
+            LOGICAL_MEDIA_TYPES.get(zip_kind, f"application/{zip_kind}"),
             "text_truncated" if truncated else None,
             "archive_text_limit" if truncated else None,
         )
@@ -865,6 +936,7 @@ class _ContainerCounters:
     metadata_only: int = 0
     nested_archives: int = 0
     issues: int = 0
+    coverage_issues: int = 0
     text_chars: int = 0
     max_depth: int = 0
 
@@ -877,7 +949,7 @@ def _member_key(container_key: str, member_chain: str) -> str:
 
 
 def _virtual_path(container_path: str, member_chain: str) -> str:
-    return f"{container_path}!/{member_chain}"
+    return f"{container_path}!/{member_chain}" if member_chain else container_path
 
 
 def _delete_container(connection: sqlite3.Connection, container_key: str) -> int:
@@ -945,6 +1017,8 @@ def _record_issue(
     detail: str,
 ) -> None:
     counters.issues += 1
+    if issue_diagnosis(code)[0] != "identification_only":
+        counters.coverage_issues += 1
     connection.execute(
         """INSERT INTO archive_issues(
         container_key,member_chain,archive_depth,reason_code,detail,created_ns)
@@ -964,6 +1038,9 @@ def _store_member(
     content: _ExtractedContent,
     signature: str,
     run_id: int,
+    *,
+    document_role: str = "archive_member",
+    logical_document_chain: str | None = None,
 ) -> None:
     file_key = _member_key(container_key, member_chain)
     path = _virtual_path(snapshot.path, member_chain)
@@ -986,8 +1063,9 @@ def _store_member(
         file_key,container_key,path,container_path,member_chain,member_path,
         archive_depth,content_kind,media_type,size,compressed_size,crc32,
         mtime_ns,birthtime_ns,processing_signature,status,text_zlib,text_chars,
-        text_xxh3_128,detail,error_type,error_message,last_seen_run_id,updated_ns)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        text_xxh3_128,detail,error_type,error_message,last_seen_run_id,updated_ns,
+        document_role,logical_document_chain,independently_organizable)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             file_key,
             container_key,
@@ -1013,6 +1091,9 @@ def _store_member(
             content.detail if content.issue_code else None,
             run_id,
             time.time_ns(),
+            document_role,
+            logical_document_chain,
+            int(document_role == "logical_document"),
         ),
     )
     connection.execute(
@@ -1028,6 +1109,65 @@ def _store_member(
             text or "",
         ),
     )
+
+
+def _store_logical_observation(
+    connection: sqlite3.Connection,
+    container_key: str,
+    member_chain: str,
+    observation: LogicalDocumentEvidence,
+    *,
+    name: str,
+    depth: int,
+    counters: _ContainerCounters,
+) -> None:
+    connection.execute(
+        """INSERT INTO archive_logical_documents(
+        container_key,member_chain,physical_media_type,declared_mime,logical_kind,
+        proposed_extension,evidence_json,identification_status,integrity_status,opening_status)
+        VALUES(?,?,?,?,?,?,?,?,?,?)""",
+        (
+            container_key,
+            member_chain,
+            ARCHIVE_MIME,
+            observation.declared_mime,
+            observation.logical_kind,
+            observation.proposed_extension,
+            json.dumps(observation.evidence),
+            observation.identification_status,
+            observation.integrity_status,
+            observation.opening_status,
+        ),
+    )
+    code = None
+    if observation.identified:
+        if PurePosixPath(name).suffix.casefold() != observation.proposed_extension:
+            code = "archive_logical_extension_mismatch"
+    else:
+        code = f"archive_logical_{observation.identification_status}"
+    if code:
+        _record_issue(
+            connection,
+            container_key,
+            counters,
+            member_chain=member_chain or None,
+            depth=depth,
+            code=code,
+            detail=json.dumps(
+                {
+                    "physical_media_type": ARCHIVE_MIME,
+                    "declared_mime": observation.declared_mime,
+                    "logical_kind_inference": observation.logical_kind,
+                    "proposed_extension": observation.proposed_extension,
+                    "structural_member_names": observation.evidence,
+                    "identification_status": observation.identification_status,
+                    "integrity_status": observation.integrity_status,
+                    "opening_status": observation.opening_status,
+                    "effect_authorized": False,
+                },
+                sort_keys=True,
+            ),
+        )
 
 
 def _metadata_content(
@@ -1057,7 +1197,39 @@ def _walk_zip(
     config: ArchiveRouteConfig,
     run_id: int,
     cancellation: CancellationToken,
+    component_of: str | None = None,
 ) -> None:
+    logical_document: LogicalDocumentEvidence | None = None
+    prefetched: dict[str, bytes] = {}
+    if not prefix:
+        try:
+            logical_document, prefetched = _inspect_logical_document(
+                archive, budget=budget, config=config
+            )
+        except ArchiveExtractionError as exc:
+            _record_issue(
+                connection,
+                container_key,
+                counters,
+                member_chain=None,
+                depth=0,
+                code=exc.code,
+                detail=str(exc),
+            )
+        if logical_document is not None:
+            _store_logical_observation(
+                connection,
+                container_key,
+                "",
+                logical_document,
+                name=snapshot.path,
+                depth=0,
+                counters=counters,
+            )
+    own_logical_document = logical_document is not None and logical_document.identified
+    component_chain = "" if own_logical_document else component_of
+    is_component = component_chain is not None
+    logical_text_parts: list[str] = []
     seen_names: set[str] = set()
     for info in archive.infolist():
         cancellation.checkpoint()
@@ -1073,7 +1245,7 @@ def _walk_zip(
                 code=exc.code,
                 detail=str(exc),
             )
-            return
+            break
         counters.max_depth = max(counters.max_depth, depth)
         try:
             name = _normalized_member_name(info)
@@ -1082,7 +1254,9 @@ def _walk_zip(
                 connection,
                 container_key,
                 counters,
-                member_chain=None,
+                # Preserve the rejected *name as data* so issues remain
+                # filterable without pretending it is a safe virtual path.
+                member_chain=f"{prefix}{info.orig_filename[:MAX_MEMBER_NAME_CHARS]}",
                 depth=depth,
                 code=exc.code,
                 detail=str(exc),
@@ -1104,6 +1278,7 @@ def _walk_zip(
         if info.is_dir():
             continue
         counters.members += 1
+        nested_observation: LogicalDocumentEvidence | None = None
         if info.flag_bits & 0x1:
             content = _metadata_content(
                 detail="encrypted ZIP members are not read",
@@ -1134,18 +1309,22 @@ def _walk_zip(
                 ),
                 issue_code="archive_member_size_limit",
             )
-        elif not budget.can_read(int(info.file_size)):
+        elif name not in prefetched and not budget.can_read(int(info.file_size)):
             content = _metadata_content(
                 detail="member would exceed the total decompression budget",
                 issue_code="archive_total_uncompressed_limit",
             )
         else:
             try:
-                payload = _read_zip_member(
-                    archive,
-                    info,
-                    budget=budget,
-                    max_bytes=config.max_member_bytes,
+                payload = (
+                    prefetched.pop(name)
+                    if name in prefetched
+                    else _read_zip_member(
+                        archive,
+                        info,
+                        budget=budget,
+                        max_bytes=config.max_member_bytes,
+                    )
                 )
             except (
                 ArchiveExtractionError,
@@ -1165,15 +1344,54 @@ def _walk_zip(
                 )
             else:
                 suffix = PurePosixPath(name).suffix.casefold()
-                zip_kind = (
-                    _zip_document_kind(
-                        payload,
-                        max_central_directory_bytes=config.max_central_directory_bytes,
-                    )
-                    if payload.startswith(_ZIP_MAGIC_PREFIXES)
-                    or suffix in _NESTED_ARCHIVE_EXTENSIONS
-                    else None
-                )
+                zip_kind = None
+                if payload.startswith(_ZIP_MAGIC_PREFIXES) or suffix in _NESTED_ARCHIVE_EXTENSIONS:
+                    try:
+                        inspect_zip_bytes(
+                            payload,
+                            max_members=MAX_EMBEDDED_DOCUMENT_MEMBERS,
+                            max_central_directory_bytes=config.max_central_directory_bytes,
+                        )
+                        with zipfile.ZipFile(io.BytesIO(payload)) as nested:
+                            nested_observation, _ = _inspect_logical_document(
+                                nested,
+                                budget=budget,
+                                config=config,
+                            )
+                        zip_kind = (
+                            nested_observation.logical_kind
+                            if nested_observation is not None and nested_observation.identified
+                            else "archive"
+                        )
+                    except ArchiveExtractionError as exc:
+                        zip_kind = "archive"
+                        _record_issue(
+                            connection,
+                            container_key,
+                            counters,
+                            member_chain=member_chain,
+                            depth=depth,
+                            code=exc.code,
+                            detail=str(exc),
+                        )
+                    except (
+                        OSError,
+                        RuntimeError,
+                        ZipStructureError,
+                        zipfile.BadZipFile,
+                        zlib.error,
+                    ):
+                        zip_kind = "corrupt_archive"
+                    if nested_observation is not None:
+                        _store_logical_observation(
+                            connection,
+                            container_key,
+                            member_chain,
+                            nested_observation,
+                            name=name,
+                            depth=depth,
+                            counters=counters,
+                        )
                 if zip_kind == "archive":
                     content = _ExtractedContent(
                         None,
@@ -1213,7 +1431,28 @@ def _walk_zip(
             content,
             config.processing_signature,
             run_id,
+            document_role=(
+                "document_component"
+                if is_component
+                else "logical_document"
+                if nested_observation is not None and nested_observation.identified
+                else "archive_member"
+            ),
+            logical_document_chain=(
+                component_chain
+                if is_component
+                else member_chain
+                if nested_observation is not None and nested_observation.identified
+                else None
+            ),
         )
+        if (
+            is_component
+            and content.text
+            and logical_document is not None
+            and _embedded_part_selected(name, logical_document.logical_kind or "")
+        ):
+            logical_text_parts.append(content.text)
         if content.text is None:
             counters.metadata_only += 1
         else:
@@ -1269,6 +1508,7 @@ def _walk_zip(
                     config=config,
                     run_id=run_id,
                     cancellation=cancellation,
+                    component_of=component_chain,
                 )
         except (
             ArchiveExtractionError,
@@ -1289,6 +1529,34 @@ def _walk_zip(
                 detail=f"{type(exc).__name__}: {exc}"[:2_000],
             )
 
+    if own_logical_document and logical_document is not None:
+        # The root is a physical file-backed logical document, not a fabricated
+        # ZIP entry. Depth/chain/role explicitly distinguish it from members.
+        root_info = zipfile.ZipInfo(Path(snapshot.path).name)
+        root_info.file_size = root_info.compress_size = snapshot.size
+        root_info.CRC = 0  # no member CRC exists for the physical root
+        text = "\n".join(logical_text_parts)[: config.max_total_text_chars]
+        kind = logical_document.logical_kind or "archive"
+        _store_member(
+            connection,
+            snapshot,
+            container_key,
+            "",
+            "",
+            0,
+            root_info,
+            _ExtractedContent(
+                text or None,
+                kind,
+                LOGICAL_MEDIA_TYPES.get(kind, ARCHIVE_MIME),
+                "logical_document_projection; integrity=not_verified; opening=not_verified",
+            ),
+            config.processing_signature,
+            run_id,
+            document_role="logical_document",
+            logical_document_chain="",
+        )
+
 
 def _publish_container(
     connection: sqlite3.Connection,
@@ -1297,7 +1565,7 @@ def _publish_container(
     counters: _ContainerCounters,
     run_id: int,
 ) -> None:
-    status_value = "partial" if counters.issues else "complete"
+    status_value = "partial" if counters.coverage_issues else "complete"
     connection.execute(
         """UPDATE containers SET status=?,member_count=?,indexed_count=?,
         metadata_only_count=?,nested_archive_count=?,issue_count=?,text_chars=?,
@@ -1359,6 +1627,18 @@ def _store_container_error(
             time.time_ns(),
         ),
     )
+    _record_issue(
+        connection,
+        container_key,
+        _ContainerCounters(),
+        member_chain=None,
+        depth=0,
+        code=failure.code,
+        detail=str(failure),
+    )
+    connection.execute(
+        "UPDATE containers SET issue_count=1 WHERE container_key=?", (container_key,)
+    )
 
 
 def _cached_container(
@@ -1366,8 +1646,8 @@ def _cached_container(
     snapshot: FileSnapshot,
     signature: str,
 ) -> sqlite3.Row | None:
-    return connection.execute(
-        """SELECT status,member_count,indexed_count,metadata_only_count,
+    cached = connection.execute(
+        """SELECT path,status,member_count,indexed_count,metadata_only_count,
         nested_archive_count,issue_count,text_chars,max_depth
         FROM containers WHERE container_key=? AND size=? AND mtime_ns=?
         AND birthtime_ns=? AND processing_signature=?""",
@@ -1379,6 +1659,20 @@ def _cached_container(
             signature,
         ),
     ).fetchone()
+    if (
+        cached is not None
+        and Path(cached["path"]).suffix.casefold() != Path(snapshot.path).suffix.casefold()
+        and connection.execute(
+            """SELECT 1 FROM archive_logical_documents
+            WHERE container_key=? AND member_chain=''""",
+            (file_key_from_snapshot(snapshot),),
+        ).fetchone()
+        is not None
+    ):
+        # A user rename may resolve (or introduce) the root extension mismatch,
+        # even though content identity and the extraction signature stayed equal.
+        return None
+    return cached
 
 
 def _refresh_cached_container(
@@ -1405,21 +1699,19 @@ def _refresh_cached_container(
     # SQLite update the whole container in two bounded set-based statements.
     connection.execute(
         """UPDATE documents SET
-            path=? || '!/' || member_chain,
+            path=? || CASE WHEN member_chain='' THEN '' ELSE '!/' || member_chain END,
             container_path=?,last_seen_run_id=?,updated_ns=?
         WHERE container_key=?""",
         (snapshot.path, snapshot.path, run_id, now, container_key),
     )
     connection.execute(
         """UPDATE document_fts SET
-            path=? || '!/' || (
-                SELECT member_chain FROM documents
-                WHERE documents.file_key=document_fts.file_key),
+            path=(SELECT path FROM documents WHERE documents.file_key=document_fts.file_key),
             container_path=?,container_name=?
         WHERE file_key IN (
             SELECT file_key FROM documents WHERE container_key=?
         )""",
-        (snapshot.path, snapshot.path, Path(snapshot.path).name, container_key),
+        (snapshot.path, Path(snapshot.path).name, container_key),
     )
 
 
@@ -1605,7 +1897,9 @@ class ArchiveRoute:
                 counters,
                 self.run_id,
             )
-            return _ContainerOutcome("partial" if counters.issues else "complete", counters)
+            return _ContainerOutcome(
+                "partial" if counters.coverage_issues else "complete", counters
+            )
         except ArchiveExtractionError:
             raise
         except (
@@ -1716,6 +2010,7 @@ class ArchiveRoute:
                     else:
                         connection.commit()
                     errors += 1
+                    issues += 1
                 except BaseException:
                     connection.rollback()
                     raise

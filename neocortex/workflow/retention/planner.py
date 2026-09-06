@@ -17,7 +17,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
@@ -33,6 +33,9 @@ from neocortex.workflow.review.review_task_repository import (
 from neocortex.persistence.sqlite_immutable import (
     SQLiteReadMode,
     SQLiteReadSession,
+    SQLiteSnapshotBudget,
+    SQLiteSnapshotBudgetExceeded,
+    SQLiteSnapshotReuseCache,
 )
 from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
 from neocortex.persistence.sqlite_schema_contract import validate_sqlite_schema_contract
@@ -81,8 +84,14 @@ class RetentionPolicy:
     minimum_age_ns: int | None = None
     keep_published: int = 2
     batch_size: int = 100
+    snapshot_max_temporary_bytes: int = 256 * 1024 * 1024
+    snapshot_prepare_timeout_seconds: float = 5.0
 
     def __post_init__(self) -> None:
+        SQLiteSnapshotBudget(
+            max_temporary_bytes=self.snapshot_max_temporary_bytes,
+            prepare_timeout_seconds=self.snapshot_prepare_timeout_seconds,
+        )
         if self.minimum_age_ns is not None and (
             isinstance(self.minimum_age_ns, bool)
             or not isinstance(self.minimum_age_ns, int)
@@ -142,6 +151,7 @@ class RetentionStorePlan:
     next_after: int | None
     truncated: bool
     detail: str | None = None
+    storage: Mapping[str, int | None] | None = None
 
     @property
     def eligible_rows(self) -> int:
@@ -176,6 +186,8 @@ class RetentionPlan:
     estimate_kind: str = "lower_bound_sqlite_text_blob_payload_bytes"
     snapshot_scope: str = "stable_per_database_not_cross_database_atomic"
     sqlite_read_snapshot_may_touch_shm: bool = True
+    # Operational timing is not part of the identity of a repeatable dry-run.
+    snapshot_metrics: Mapping[str, object] | None = field(default=None, compare=False)
 
 
 @dataclass(slots=True)
@@ -186,6 +198,7 @@ class _StoreSnapshot:
     schema_version: int | None
     connection: sqlite3.Connection | None
     detail: str | None
+    storage: Mapping[str, int | None] | None = None
 
 
 def _check_cancelled(cancelled: Callable[[], bool] | None) -> None:
@@ -197,6 +210,10 @@ def _check_cancelled(cancelled: Callable[[], bool] | None) -> None:
 def _readonly_snapshot(
     database: Path,
     cancelled: Callable[[], bool] | None,
+    *,
+    cache: SQLiteSnapshotReuseCache | None = None,
+    budget: SQLiteSnapshotBudget | None = None,
+    generation: object | None = None,
 ) -> Iterator[sqlite3.Connection]:
     if sqlite3 is not _CANONICAL_SQLITE_MODULE:
         connection = sqlite3.connect(
@@ -231,11 +248,23 @@ def _readonly_snapshot(
     # always detach a bounded snapshot so a later commit cannot invalidate the
     # plan or make its close fence look like a reader failure.
     mode = SQLiteReadMode.SNAPSHOT_TEMP
-    with SQLiteReadSession(
-        database,
-        mode=mode,
-        timeout_seconds=5.0,
-    ) as connection:
+    selected_budget = budget or SQLiteSnapshotBudget(
+        prepare_timeout_seconds=5.0, cancellation_check=cancelled,
+    )
+    read = (
+        SQLiteReadSession(
+            database, mode=mode,
+            timeout_seconds=selected_budget.prepare_timeout_seconds,
+            budget=selected_budget,
+        )
+        if cache is None
+        else cache.acquire(
+            database, generation=generation, mode=mode,
+            timeout_seconds=selected_budget.prepare_timeout_seconds,
+            budget=selected_budget,
+        )
+    )
+    with read as connection:
         # The kernel enables these safeguards, while retention keeps its
         # shorter bounded busy budget and cancellation progress hook.
         connection.execute("PRAGMA busy_timeout=5000")
@@ -1171,16 +1200,37 @@ def _validated_snapshot(
     *,
     cancelled: Callable[[], bool] | None,
     observer: RetentionObserver | None,
+    cache: SQLiteSnapshotReuseCache | None = None,
+    budget: SQLiteSnapshotBudget | None = None,
+    generation: object | None = None,
 ) -> _StoreSnapshot:
     database = state_directory / STORE_DATABASES[store]
     if not database.is_file():
         return _StoreSnapshot(store, database, "absent", None, None, None)
     try:
-        connection = stack.enter_context(_readonly_snapshot(database, cancelled))
+        connection = stack.enter_context(_readonly_snapshot(
+            database, cancelled, cache=cache, budget=budget, generation=generation,
+        ))
         version = _validate_snapshot(store, connection)
+        page_size, page_count, freelist_count = (
+            int(connection.execute(f"PRAGMA {name}").fetchone()[0])
+            for name in ("page_size", "page_count", "freelist_count")
+        )
+        storage: Mapping[str, int | None] = {
+            "page_size": page_size,
+            "allocated_pages": page_count,
+            "freelist_pages": freelist_count,
+            "allocated_page_bytes": page_size * page_count,
+            "freelist_page_bytes": page_size * freelist_count,
+            "physically_recoverable_bytes": None,
+        }
         if observer is not None:
             observer(store, "snapshot_opened")
-        return _StoreSnapshot(store, database, "ready", version, connection, None)
+        return _StoreSnapshot(store, database, "ready", version, connection, None, storage)
+    except SQLiteSnapshotBudgetExceeded as exc:
+        if exc.reason == "cancelled":
+            raise RetentionPlanningCancelled("retention planning was cancelled") from exc
+        return _StoreSnapshot(store, database, "blocked", None, None, str(exc))
     except sqlite3.OperationalError as exc:
         if cancelled is not None and cancelled() and "interrupt" in str(exc).lower():
             raise RetentionPlanningCancelled("retention planning was cancelled") from exc
@@ -1230,6 +1280,9 @@ def _open_retention_snapshots(
     *,
     cancelled: Callable[[], bool] | None,
     observer: RetentionObserver | None,
+    cache: SQLiteSnapshotReuseCache | None = None,
+    budget: SQLiteSnapshotBudget | None = None,
+    generation: object | None = None,
 ) -> dict[RetentionStore, _StoreSnapshot]:
     return {
         store: _validated_snapshot(
@@ -1238,6 +1291,9 @@ def _open_retention_snapshots(
             stack,
             cancelled=cancelled,
             observer=observer,
+            cache=cache,
+            budget=budget,
+            generation=generation,
         )
         for store in STORE_ORDER
         if store in required
@@ -1325,7 +1381,7 @@ def _plan_selected_retention_stores(
     for store in selected:
         _check_cancelled(cancelled)
         plans.append(
-            _plan_retention_store_with_cancellation(
+            replace(_plan_retention_store_with_cancellation(
                 store,
                 snapshots[store],
                 snapshots,
@@ -1333,7 +1389,7 @@ def _plan_selected_retention_stores(
                 after=cursors.get(store, 0),
                 now_ns=now_ns,
                 cancelled=cancelled,
-            )
+            ), storage=snapshots[store].storage)
         )
         if observer is not None:
             observer(store, "planned")
@@ -1359,13 +1415,25 @@ def plan_retention(
         now_ns=now_ns,
     )
     _check_cancelled(cancelled)
+    cache = SQLiteSnapshotReuseCache(
+        max_temporary_bytes=selected_policy.snapshot_max_temporary_bytes,
+    )
+    budget = SQLiteSnapshotBudget(
+        max_temporary_bytes=selected_policy.snapshot_max_temporary_bytes,
+        prepare_timeout_seconds=selected_policy.snapshot_prepare_timeout_seconds,
+        cancellation_check=cancelled,
+    )
     with ExitStack() as stack:
+        stack.enter_context(cache)
         snapshots = _open_retention_snapshots(
             Path(state_directory),
             stack,
             _required_retention_stores(selected),
             cancelled=cancelled,
             observer=observer,
+            cache=cache,
+            budget=budget,
+            generation=now_ns,
         )
         plans = _plan_selected_retention_stores(
             selected,
@@ -1377,7 +1445,9 @@ def plan_retention(
             observer=observer,
         )
         _check_cancelled(cancelled)
-        return RetentionPlan(now_ns, selected_policy, plans)
+    return RetentionPlan(
+        now_ns, selected_policy, plans, snapshot_metrics=asdict(cache.snapshot_metrics),
+    )
 
 
 def retention_plan_payload(plan: RetentionPlan) -> dict[str, object]:
@@ -1392,14 +1462,20 @@ def retention_plan_payload(plan: RetentionPlan) -> dict[str, object]:
             "batch_size": plan.policy.batch_size,
             "keep_published": plan.policy.keep_published,
             "minimum_age_ns": plan.policy.minimum_age_ns,
+            "snapshot_max_temporary_bytes": plan.policy.snapshot_max_temporary_bytes,
+            "snapshot_prepare_timeout_seconds": plan.policy.snapshot_prepare_timeout_seconds,
         },
         "snapshot_scope": plan.snapshot_scope,
         "sqlite_read_snapshot_may_touch_shm": (plan.sqlite_read_snapshot_may_touch_shm),
+        "source_sidecars_touched": False,
+        "snapshot_metrics": plan.snapshot_metrics,
+        "snapshot_budget_scope": "aggregate_retained_temporary_bytes_per_operation",
         "stores": [
             {
                 "after": store.after,
                 "database": str(store.database),
                 "database_bytes": store.database_bytes,
+                "storage": store.storage,
                 "detail": store.detail,
                 "eligible_bytes": store.eligible_bytes,
                 "eligible_rows": store.eligible_rows,

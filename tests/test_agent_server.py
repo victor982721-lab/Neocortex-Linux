@@ -217,6 +217,7 @@ def test_agent_server_exposes_read_and_human_gated_curation_tools() -> None:
     assert names == {
         "status",
         "lifecycle_status",
+        "content_diagnostics",
         "search",
         "context",
         "evidence",
@@ -303,7 +304,7 @@ def test_agent_server_exposes_read_and_human_gated_curation_tools() -> None:
     )
     assert evidence.outputSchema is not None
     assert {"evidence_id", "expected_snapshot_id"}.issubset(
-        evidence.outputSchema["properties"]
+        evidence.outputSchema["$defs"]["MCPEvidenceOutput"]["properties"]
     )
 
 
@@ -678,6 +679,7 @@ def test_public_stdio_server_completes_a_real_read_only_protocol_exchange(
         assert {tool["name"] for tool in tools} == {
             "status",
             "lifecycle_status",
+            "content_diagnostics",
             "search",
             "context",
             "evidence",

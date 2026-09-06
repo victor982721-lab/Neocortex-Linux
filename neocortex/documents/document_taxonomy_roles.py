@@ -1,0 +1,177 @@
+"""Bounded role evidence: what a document is, not everything it mentions.
+
+Signals are untrusted content. Labels are proposals and explicit issuer strings
+are declarations, not authentication of their author or provenance.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from typing import Mapping
+
+from .document_signals import fold_signal
+from .document_taxonomy_models import (
+    DocumentSignals,
+    EntityRoleEvidence,
+    ScoredLabel,
+    StandardReference,
+    TechnicalTaxonomy,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class RoleAssessment:
+    kinds: tuple[ScoredLabel, ...]
+    contradictions: tuple[str, ...] = ()
+    outside_role: str | None = None
+    outside_evidence: tuple[str, ...] = ()
+
+
+def document_role_assessment(
+    signals: DocumentSignals,
+    scopes: Mapping[str, str],
+    kinds: tuple[ScoredLabel, ...],
+) -> RoleAssessment:
+    """Require a heading or structural log evidence before overriding a role."""
+
+    opening = signals.leading_text[:4_000]
+    path = scopes.get("path", "")
+    header = f"{scopes.get('title', '')} {scopes.get('opening', '')[:400]}"
+    headings = (scopes.get("title", "").strip(), scopes.get("opening", "")[:400].strip())
+    explicit_report_heading = any(
+        re.match(r"(?:REPORTE|INFORME|CERTIFICADO|BITACORA|REPORT)\b", heading)
+        for heading in headings
+        if heading
+    )
+    # A mentioned report, standard, or incident does not change the role of a
+    # timestamped command transcript. Filename alone is deliberately insufficient.
+    timestamp_lines = re.findall(
+        r"(?m)^\s*\[?\d{4}-\d{2}-\d{2}[T ][0-9:.+-]+[^\n]{0,180}",
+        opening,
+    )
+    log_fields = re.findall(
+        r"(?im)(?:^|\s)(?:INFO|DEBUG|WARN(?:ING)?|ERROR)\b|"
+        r"\b(?:exit_code|returncode|stdout|stderr|tool_call|command)\s*[:=]",
+        opening,
+    )
+    log_hint = bool(re.search(r"\b(?:LOG|TRANSCRIPT|CODEX|SYNAPTA)\b", path + " " + header))
+    if (
+        signals.source_kind == "text"
+        and not explicit_report_heading
+        and (
+            (len(timestamp_lines) >= 2 and len(log_fields) >= 2)
+            or (log_hint and len(log_fields) >= 3)
+        )
+    ):
+        role = ScoredLabel(
+            "registro_log",
+            0.94,
+            (
+                f"opening:timestamped_records={len(timestamp_lines)}",
+                f"opening:log_fields={len(log_fields)}",
+            ),
+        )
+        return RoleAssessment(
+            kinds=(role,),
+            contradictions=tuple(f"role_vs_mention:{item.label}" for item in kinds[:8]),
+            outside_role="registro_log",
+            outside_evidence=role.evidence,
+        )
+
+    # In particular, an analysis *of* standards is not the source standard.
+    # A body mention is not enough: the report phrase must begin its heading.
+    report_heading = next(
+        (
+            match
+            for heading in headings
+            if (
+                match := re.match(
+                    r"(?:REPORTE|INFORME|ESTUDIO|ANALISIS)\s+(?:DE\s+|SOBRE\s+)?"
+                    r"(?:NORMATIVIDAD|NORMATIVA|CUMPLIMIENTO\s+NORMATIVO|NORMAS)\b",
+                    heading,
+                )
+            )
+        ),
+        None,
+    )
+    if report_heading is not None:
+        role = ScoredLabel(
+            "informe_tecnico",
+            0.94,
+            (f"heading:document_role={report_heading.group(0).strip()}",),
+        )
+        return RoleAssessment(
+            kinds=(
+                role,
+                *(item for item in kinds if item.label not in {"normativa", "informe_tecnico"}),
+            ),
+            contradictions=("cited_standard_not_document_role",),
+        )
+
+    personal_role = re.match(
+        r"\s*(RECETA\s+DE\s+COCINA|DIARIO\s+PERSONAL|LISTA\s+DE\s+COMPRAS)\b",
+        header.strip(),
+    )
+    if personal_role is not None and (not kinds or kinds[0].label == "otro"):
+        return RoleAssessment(
+            kinds=kinds,
+            outside_role="personal_document",
+            outside_evidence=(
+                f"heading:outside_technical_taxonomy={personal_role.group(0).strip()}",
+            ),
+        )
+    return RoleAssessment(kinds=kinds)
+
+
+def entity_role_evidence(
+    signals: DocumentSignals,
+    taxonomy: TechnicalTaxonomy,
+    primary: ScoredLabel,
+    authorities: tuple[ScoredLabel, ...],
+    organizations: tuple[ScoredLabel, ...],
+    standards: tuple[StandardReference, ...],
+) -> tuple[EntityRoleEvidence, ...]:
+    """Separate cited authorities, mentions and attributed issuer declarations."""
+
+    author = fold_signal(signals.author).strip()
+    front = fold_signal(signals.leading_text[:1_000])
+    aliases = {item.code: (*item.aliases, item.code) for item in taxonomy.authorities}
+    aliases.update({item.name: (*item.aliases, item.name) for item in taxonomy.organizations})
+    formal_normative = primary.label == "normativa" and any(
+        item.startswith("opening:estructura_normativa=") for item in primary.evidence
+    )
+    roles: list[EntityRoleEvidence] = []
+    seen: set[str] = set()
+    for label in (*authorities, *organizations):
+        if label.label in seen:
+            continue
+        seen.add(label.label)
+        declared: str | None = None
+        for alias in aliases.get(label.label, (label.label,)):
+            token = fold_signal(alias).strip()
+            if token and author == token:
+                declared = f"author:issuer_declaration={label.label}"
+                break
+            if token and re.search(
+                r"\b(?:EMITIDO\s+POR|PUBLICADO\s+POR|ISSUED\s+BY|PUBLISHED\s+BY)\s*[:=-]?\s*"
+                + re.escape(token)
+                + r"\b",
+                front,
+            ):
+                declared = f"opening:issuer_declaration={label.label}"
+                break
+        if declared is not None:
+            roles.append(EntityRoleEvidence(label.label, "issuer", (declared,), "declaration"))
+        elif formal_normative and authorities and label is authorities[0]:
+            roles.append(EntityRoleEvidence(label.label, "issuer", primary.evidence, "inference"))
+        references = tuple(item.evidence for item in standards if item.authority == label.label)
+        if references and not (formal_normative and authorities and label is authorities[0]):
+            roles.append(EntityRoleEvidence(label.label, "cited", references, "observation"))
+        elif declared is None and not (
+            formal_normative and authorities and label is authorities[0]
+        ):
+            roles.append(
+                EntityRoleEvidence(label.label, "mentioned", label.evidence, "observation")
+            )
+    return tuple(roles)

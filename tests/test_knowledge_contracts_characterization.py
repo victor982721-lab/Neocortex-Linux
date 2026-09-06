@@ -200,6 +200,8 @@ EXPECTED_DATACLASS_SIGNATURES = {
         "generation:int | None=None",
         "contribution:float | None=None",
         "query_model_signature:str | None=None",
+        "evidence:EvidenceRef | None=None",
+        "query_support:Mapping[str, object]=<factory>",
     ),
     "KnowledgeHit": (
         "rank:int=<required>",
@@ -787,6 +789,33 @@ def test_exact_dataclass_signatures_shape_defaults_and_pickle_identity() -> None
         ("KnowledgeTelemetryClock", "read_ns"): (False, False),
         ("ContextBundle", "telemetry"): (False, False),
     }
+
+
+def test_ranking_witness_fields_are_additive_and_keep_passive_hashable_pickle_contract() -> None:
+    first = contracts.RankingSignal("fixture", "rank", 1.0, 1)
+    second = contracts.RankingSignal("fixture", "rank", 1.0, 1)
+    assert first.evidence is None
+    assert first.query_support == {}
+    assert first.query_support is not second.query_support
+    assert first.to_dict() == {
+        "source": "fixture", "score_kind": "rank", "raw_score": 1.0, "source_rank": 1,
+    }
+    evidence = cast(contracts.EvidenceRef, _contract_instances()["EvidenceRef"])
+    enriched = replace(first, evidence=evidence,
+                       query_support={"support": "full_terms", "matched_terms": ["fixture"]})
+    restored = pickle.loads(pickle.dumps(enriched, protocol=5))
+    assert type(restored) is contracts.RankingSignal
+    assert type(restored.evidence) is contracts.EvidenceRef
+    assert restored == enriched
+    assert hash(restored) == hash(enriched)
+    assert len({restored, enriched}) == 1
+    assert restored.to_dict()["evidence"] == evidence.to_dict()
+    assert restored.to_dict()["query_support"] == enriched.query_support
+    support_field = next(field for field in fields(contracts.RankingSignal)
+                         if field.name == "query_support")
+    assert support_field.compare is True and support_field.hash is False
+    with pytest.raises(FrozenInstanceError):
+        enriched.evidence = None  # type: ignore[misc]
 
 
 def test_private_validation_and_serialization_seams_remain_local() -> None:

@@ -183,7 +183,7 @@ def test_human_ask_labels_citations_without_fabricating_an_answer(
         },
     )
 
-    assert human_cli.run_human_command(("ask", "TTR")) == 0
+    assert human_cli.run_human_command(("ask", "TTR", "--response-version", "1")) == 0
     output = capsys.readouterr().out
     assert "[K1] Transformador.pdf" in output
     assert "no inventa una respuesta" in output

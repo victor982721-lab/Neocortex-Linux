@@ -1066,6 +1066,9 @@ def run_semantic_search(args: argparse.Namespace) -> int:
     from neocortex.semantic.semantic_service import search_semantic_index
 
     mode = args.semantic_search_mode
+    diagnostic_options = {}
+    if getattr(args, "semantic_diagnostic_item", None):
+        diagnostic_options["diagnostic_item_ids"] = tuple(args.semantic_diagnostic_item)
     try:
         result = search_semantic_index(
             args.state_directory,
@@ -1079,6 +1082,7 @@ def run_semantic_search(args: argparse.Namespace) -> int:
             model_cache=args.semantic_model_cache,
             local_files_only=True,
             threads=args.semantic_threads,
+            **diagnostic_options,
         )
     except Exception as exc:  # FTS/ONNX backends expose distinct exceptions
         return _semantic_failure("semantic-search", exc, offline=mode != "lexical")

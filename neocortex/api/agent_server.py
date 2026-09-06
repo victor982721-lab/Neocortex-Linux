@@ -12,16 +12,19 @@ import os
 import sqlite3
 import sys
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Annotated, Any, Literal, cast
+from uuid import uuid4
 
 try:  # MCP is optional in the minimal Linux runtime.
-    from pydantic import BaseModel, ConfigDict, Field as _pydantic_field
+    from pydantic import BaseModel, ConfigDict, Field as _pydantic_field, RootModel
 except ImportError:  # pragma: no cover - exercised by minimal installs
     def _pydantic_field(**_kwargs: object) -> object:
         return None
 
     BaseModel = None
     ConfigDict = None
+    RootModel = None
 
 from .curation_api import (
     MAX_CURATION_CURSOR_BYTES,
@@ -56,6 +59,7 @@ from .read_contract import (
     make_error_payload,
     normalize_read_payload,
     sanitize_untrusted_payload,
+    sanitize_untrusted_text,
     validate_read_payload,
 )
 from .read_api import (
@@ -68,6 +72,13 @@ from .read_api import (
     status_payload,
 )
 from .lifecycle_read_api import lifecycle_status_payload
+from .content_diagnostics_api import (
+    CONTENT_DIAGNOSTICS_SCHEMA,
+    content_diagnostics_error_payload,
+    content_diagnostics_payload,
+)
+from neocortex.platform.policy import default_corpus_root
+from neocortex.runtime.config.app_paths import default_state_directory
 
 
 SERVER_INSTRUCTIONS = """NeoCortex exposes published local evidence through bounded
@@ -85,6 +96,7 @@ _MAX_MCP_LINE_BYTES = 1_048_576
 _MCP_STDIO_BRIDGE_VERSIONS = frozenset({"1.23.3", "1.29.0"})
 
 _Scope = Literal["personal", "framework", "all"]
+_ContentDiagnosticOwner = Literal["pdf", "text", "archive"]
 _Query = Annotated[
     str,
     _pydantic_field(min_length=1, max_length=4_096, pattern=r"(?s).*\S.*"),
@@ -190,8 +202,48 @@ if BaseModel is not None:
     class MCPContextOutput(_MCPReadOutput):
         kind: Literal["neocortex_scoped_context"]
 
+    class _MCPCompactEvidenceOutput(BaseModel):
+        """Compact evidence envelope without compatibility copies or defaults."""
+
+        model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+        schema_: str = _pydantic_field(alias="schema")
+        operation: str
+        response_version: Literal[2]
+        request_id: str
+        query: str
+        scope: _Scope
+        mode: str
+        include_history: bool
+        limit_per_scope: int
+        read_only: Literal[True]
+        trust_boundary: str
+        status: str
+        coverage: dict[str, Any]
+        budget: dict[str, Any]
+        sources: list[dict[str, Any]]
+        citations: list[dict[str, Any]]
+        error: dict[str, Any] | None
+        exit_code: int
+
+    class MCPContextV2Output(_MCPCompactEvidenceOutput):
+        schema_: Literal["neocortex.context-response/v2"] = _pydantic_field(alias="schema")
+        operation: Literal["context"]
+
+    class MCPNegotiatedContextOutput(RootModel[MCPContextV2Output | MCPContextOutput]):
+        """Publish both explicit context contracts without a ``result`` wrapper."""
+
+        model_config = ConfigDict(json_schema_extra={"type": "object"})
+
     class MCPEvidenceOutput(_MCPReadOutput):
         kind: Literal["neocortex_evidence"]
+
+    class MCPEvidenceV2Output(_MCPCompactEvidenceOutput):
+        schema_: Literal["neocortex.evidence-response/v2"] = _pydantic_field(alias="schema")
+        operation: Literal["evidence"]
+
+    class MCPNegotiatedEvidenceOutput(RootModel[MCPEvidenceV2Output | MCPEvidenceOutput]):
+        model_config = ConfigDict(json_schema_extra={"type": "object"})
 
     class MCPCodeSearchOutput(_MCPReadOutput):
         kind: Literal["neocortex_scoped_code_search"]
@@ -201,6 +253,43 @@ if BaseModel is not None:
 
     class MCPAssetHealthOutput(_MCPReadOutput):
         kind: Literal["neocortex_scoped_asset_health"]
+
+    class _MCPContentDiagnosticFilters(BaseModel):
+        model_config = ConfigDict(extra="forbid", strict=True)
+
+        file_key: str | None
+        path_fragment: str | None
+        reason: str | None
+
+    class _MCPContentDiagnosticError(BaseModel):
+        model_config = ConfigDict(extra="forbid", strict=True)
+
+        kind: str
+        message: str
+
+    class MCPContentDiagnosticsOutput(BaseModel):
+        """The existing root-scoped format diagnostic envelope, not a new store."""
+
+        model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True)
+
+        schema_: Literal["neocortex.content-diagnostics/v1"] = _pydantic_field(alias="schema")
+        owner: _ContentDiagnosticOwner
+        operation: Literal["pdf-diagnostics", "text-errors", "archive-issues"]
+        status: Literal["ok", "unavailable", "blocked", "error"]
+        read_only: Literal[True]
+        requested_root: str | None
+        owner_path: str | None
+        filters: _MCPContentDiagnosticFilters
+        reason_field: Literal["error_type", "reason_code"]
+        limit: int
+        snapshot_id: str | None
+        error: _MCPContentDiagnosticError | None
+        items: list[dict[str, Any]]
+        count: int
+        matched_count: int | None
+        truncated: bool | None
+        next_cursor: str | None
+        coverage: dict[str, Any]
 
     class MCPCurationPlanOutput(BaseModel):
         """Strict agent response for one fixed-root curation-plan page."""
@@ -541,10 +630,13 @@ else:  # pragma: no cover - minimal install fallback
     MCPStatusOutput = StatusOutput  # type: ignore[misc]
     MCPSearchOutput = SearchOutput  # type: ignore[misc]
     MCPContextOutput = ContextOutput  # type: ignore[misc]
+    MCPNegotiatedContextOutput = ContextOutput  # type: ignore[misc]
     MCPEvidenceOutput = EvidenceOutput  # type: ignore[misc]
+    MCPNegotiatedEvidenceOutput = EvidenceOutput  # type: ignore[misc]
     MCPCodeSearchOutput = CodeSearchOutput  # type: ignore[misc]
     MCPLineageOutput = LineageOutput  # type: ignore[misc]
     MCPAssetHealthOutput = AssetHealthOutput  # type: ignore[misc]
+    MCPContentDiagnosticsOutput = dict[str, object]  # type: ignore[misc,assignment]
     MCPCurationPlanOutput = CurationPlanOutput  # type: ignore[misc]
     MCPCurationReviewOutput = dict[str, object]  # type: ignore[misc,assignment]
     MCPCurationDecisionOutput = dict[str, object]  # type: ignore[misc,assignment]
@@ -702,6 +794,134 @@ def _structured_read_payload(
         )
 
 
+def _structured_compact_read_payload(
+    producer: Callable[[], object],
+    operation: Literal["context", "evidence"],
+    *,
+    scope: str,
+    query: str = "",
+    mode: str = "evidence",
+    include_history: bool = False,
+    limit: int = 8,
+    max_characters: int = 12_000,
+) -> dict[str, Any]:
+    """Keep v2 failures typed without applying a v1 normalizer or renderer."""
+
+    from neocortex.knowledge.knowledge_context_v2 import (
+        build_context_response_v2,
+        validate_context_response,
+    )
+
+    def failure(code: ReadExitCode, reason: str) -> dict[str, Any]:
+        return build_context_response_v2(
+            [{"scope": scope, "exit_code": int(code), "error": {"code": reason}}],
+            query=query,
+            scope=scope,
+            request_id=f"read-{uuid4().hex}",
+            mode=mode,
+            include_history=include_history,
+            limit=limit,
+            max_characters=max_characters,
+            transport="mcp",
+            operation=operation,
+        )
+
+    try:
+        value = producer()
+    except ReadContractError:
+        return failure(ReadExitCode.SCHEMA_INCOMPATIBLE, "schema_incompatible")
+    except (TypeError, ValueError):
+        return failure(ReadExitCode.USAGE, "invalid_request")
+    except (ModuleNotFoundError, OSError, RuntimeError, sqlite3.Error):
+        return failure(ReadExitCode.FATAL, "owner_unavailable")
+
+    try:
+        payload = validate_context_response(value)
+        if (
+            payload.get("schema") != f"neocortex.{operation}-response/v2"
+            or payload.get("operation") != operation
+            or payload.get("scope") != scope
+        ):
+            raise ValueError("MCP compact response identity does not match the request")
+        if BaseModel is not None:
+            # Validate only: model_dump would inject fields and invalidate the
+            # budget that already accounts for both MCP representations.
+            _MCPCompactEvidenceOutput.model_validate(payload)
+        return payload
+    except (ReadContractError, TypeError, ValueError, KeyError, AttributeError):
+        return failure(ReadExitCode.SCHEMA_INCOMPATIBLE, "schema_incompatible")
+
+
+def _structured_content_diagnostics_payload(
+    owner: _ContentDiagnosticOwner,
+    *,
+    limit: int = 20,
+    cursor: str | None = None,
+    file_key: str | None = None,
+    path_fragment: str | None = None,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Bind diagnostics to configured paths and keep adapter failures structured."""
+
+    operations = {"pdf": "pdf-diagnostics", "text": "text-errors", "archive": "archive-issues"}
+    filters = {"file_key": file_key, "path_fragment": path_fragment, "reason": reason}
+    source_root: Path | None = None
+
+    def failure(kind: str, message: str, *, status: str = "error") -> dict[str, Any]:
+        return content_diagnostics_error_payload(
+            owner, source_root,
+            kind=kind, message=sanitize_untrusted_text(message, limit=1_000), status=status,
+            limit=limit, file_key=file_key, path_fragment=path_fragment, reason=reason,
+        )
+
+    try:
+        # These are the same configured/default paths as the ordinary CLI.
+        # Neither a tool argument nor the latest owner run selects the root.
+        source_root = default_corpus_root()
+        state_directory = default_state_directory()
+    except (ModuleNotFoundError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        return failure("configuration_unavailable", str(exc), status="blocked")
+
+    try:
+        raw = content_diagnostics_payload(
+            owner, state_directory, source_root, limit,
+            cursor=cursor, file_key=file_key, path_fragment=path_fragment, reason=reason,
+        )
+    except (TypeError, ValueError) as exc:
+        return failure("invalid_request", str(exc))
+    except (ModuleNotFoundError, OSError, RuntimeError, sqlite3.Error) as exc:
+        return failure("owner_state_unavailable", str(exc), status="blocked")
+
+    try:
+        # Each bounded row gets a proportional traversal allowance, rather than
+        # silently exhausting the status/search adapter's shared node budget.
+        payload = sanitize_untrusted_payload(raw, budget=[20_000 + 256 * limit])
+        if not isinstance(payload, dict):
+            raise ValueError("content diagnostics response must be an object")
+        if BaseModel is not None:
+            MCPContentDiagnosticsOutput.model_validate(payload)
+        if (
+            payload.get("schema") != CONTENT_DIAGNOSTICS_SCHEMA
+            or payload.get("owner") != owner
+            or payload.get("operation") != operations[owner]
+            or payload.get("requested_root") != os.path.normpath(str(source_root))
+            or payload.get("limit") != limit
+            or payload.get("filters") != sanitize_untrusted_payload(filters)
+        ):
+            raise ValueError("content diagnostics response does not match its configured request")
+        items = payload["items"]
+        if payload["count"] != len(items) or len(items) > limit:
+            raise ValueError("content diagnostics page count is inconsistent")
+        if payload["status"] == "ok":
+            if payload["error"] is not None or payload["truncated"] != (payload["next_cursor"] is not None):
+                raise ValueError("content diagnostics page status is inconsistent")
+        elif payload["error"] is None or items:
+            raise ValueError("failed content diagnostics must not publish an apparently valid page")
+        return payload
+    except (ReadContractError, TypeError, ValueError, KeyError, AttributeError) as exc:
+        return failure("adapter_contract_error", str(exc))
+
+
 def create_server() -> Any:
     """Build the MCP server lazily so ordinary CLI use has no MCP import cost."""
 
@@ -709,7 +929,7 @@ def create_server() -> Any:
         from mcp.server.fastmcp import FastMCP
         from mcp.server.fastmcp.server import Settings
         from mcp.server.stdio import stdio_server
-        from mcp.types import ToolAnnotations
+        from mcp.types import CallToolResult, TextContent, ToolAnnotations
     except ImportError as exc:  # pragma: no cover - package gate in minimal installs
         raise RuntimeError(
             "MCP runtime unavailable; install the canonical NeoCortex full runtime"
@@ -792,6 +1012,32 @@ def create_server() -> Any:
         return lifecycle_status_payload(limit=limit, run_id=run_id)
 
     @server.tool(
+        name="content_diagnostics",
+        title="Inspect persisted format diagnostics",
+        description=(
+            "Read a bounded diagnostic page for PDF, Text or Archive from the configured "
+            "state and corpus root, never the latest run. No files are scanned or changed. "
+            "reason is an exact PDF/Text error_type or Archive reason_code; file_key is "
+            "an Archive container_key for that owner. Root coverage and filtered matches "
+            "remain separate; an absent owner does not prove zero issues."
+        ),
+        annotations=read_only,
+        structured_output=True,
+    )
+    def content_diagnostics(
+        owner: _ContentDiagnosticOwner,
+        limit: Annotated[int, _pydantic_field(ge=1, le=1_000)] = 20,
+        cursor: Annotated[str | None, _pydantic_field(min_length=1, max_length=8_192)] = None,
+        file_key: Annotated[str | None, _pydantic_field(min_length=1, max_length=2_048)] = None,
+        path_fragment: Annotated[str | None, _pydantic_field(min_length=1, max_length=2_048)] = None,
+        reason: Annotated[str | None, _pydantic_field(min_length=1, max_length=256)] = None,
+    ) -> MCPContentDiagnosticsOutput:
+        return _structured_content_diagnostics_payload(
+            owner, limit=limit, cursor=cursor, file_key=file_key,
+            path_fragment=path_fragment, reason=reason,
+        )  # type: ignore[return-value]
+
+    @server.tool(
         name="search",
         title="Search NeoCortex evidence",
         description=(
@@ -838,7 +1084,38 @@ def create_server() -> Any:
         max_characters: _Characters = 12_000,
         mode: _SearchMode = "evidence",
         include_history: bool = False,
-    ) -> MCPContextOutput:
+        response_version: Literal[1, 2] = 2,
+    ) -> MCPNegotiatedContextOutput:
+        if response_version == 2:
+            from neocortex.knowledge.knowledge_context_v2 import serialize_context_response
+
+            payload = _structured_compact_read_payload(
+                lambda: context_payload(
+                    query,
+                    scope,
+                    limit=limit,
+                    max_characters=max_characters,
+                    mode=mode,
+                    include_history=include_history,
+                    response_version=2,
+                    response_transport="mcp",
+                ),
+                "context",
+                scope=scope,
+                query=query.strip(),
+                limit=limit,
+                max_characters=max_characters,
+                mode=mode,
+                include_history=include_history,
+            )
+            # FastMCP normally pretty-prints dict results and injects model
+            # defaults into structuredContent. This explicit result preserves
+            # the exact compact duplicate representation budgeted by the core.
+            return CallToolResult(
+                content=[TextContent(type="text", text=serialize_context_response(payload))],
+                structuredContent=payload,
+                isError=False,
+            )  # type: ignore[return-value]
         return _structured_read_payload(
             lambda: context_payload(
                 query,
@@ -847,6 +1124,7 @@ def create_server() -> Any:
                 max_characters=max_characters,
                 mode=mode,
                 include_history=include_history,
+                response_version=1,
             ),
             ReadOperation.CONTEXT,
             scope=scope,
@@ -860,24 +1138,52 @@ def create_server() -> Any:
         name="evidence",
         title="Resolve stable NeoCortex evidence",
         description=(
-            "Resolve one stable evidence ID from a bounded context; citation IDs are "
-            "presentation aliases and an expected snapshot prevents silent reassignment."
+            "Resolve source_ref and evidence_ref from a v2 context without rerunning search. "
+            "Legacy query/citation_id lookup remains available; citation IDs are only aliases."
         ),
         annotations=read_only,
         structured_output=True,
     )
     def evidence(
-        query: _Query,
+        query: Annotated[str, _pydantic_field(max_length=4_096)] = "",
         citation_id: Annotated[
             str,
-            _pydantic_field(min_length=1, max_length=4_096, pattern=r"(?s).*\S.*"),
-        ],
+            _pydantic_field(max_length=4_096),
+        ] = "",
         scope: _Scope = "all",
         limit: _Limit = 8,
         max_characters: _Characters = 12_000,
         evidence_id: _OptionalEvidenceIdentifier = None,
         expected_snapshot_id: _OptionalEvidenceIdentifier = None,
-    ) -> MCPEvidenceOutput:
+        source_ref: dict[str, Any] | None = None,
+        evidence_ref: dict[str, Any] | None = None,
+    ) -> MCPNegotiatedEvidenceOutput:
+        if source_ref is not None or evidence_ref is not None:
+            from neocortex.knowledge.knowledge_context_v2 import serialize_context_response
+
+            payload = _structured_compact_read_payload(
+                lambda: evidence_payload(
+                    query,
+                    citation_id,
+                    scope,
+                    evidence_id=evidence_id,
+                    expected_snapshot_id=expected_snapshot_id,
+                    limit=limit,
+                    max_characters=max_characters,
+                    source_ref=source_ref,
+                    evidence_ref=evidence_ref,
+                    response_transport="mcp",
+                ),
+                "evidence",
+                scope=scope,
+                limit=1,
+                max_characters=max_characters,
+            )
+            return CallToolResult(
+                content=[TextContent(type="text", text=serialize_context_response(payload))],
+                structuredContent=payload,
+                isError=False,
+            )  # type: ignore[return-value]
         return _structured_read_payload(
             lambda: evidence_payload(
                 query,

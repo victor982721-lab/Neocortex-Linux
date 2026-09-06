@@ -7,6 +7,7 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+import ast
 import inspect
 import json
 import subprocess
@@ -141,9 +142,13 @@ _PLAN_CASES = (
     ),
     pytest.param(
         KnowledgeQuery("breaker condition", source_kinds=("image",)),
-        "knowledge-plan-v2:6690a1407b39a13ff078cdba8c6f2fc5",
+        "knowledge-plan-v2:14e562c03470d4145cbfe5905de11f27",
         ("lexical", "semantic", "filtered"),
-        (("owner_fts", 60, False), ("semantic_image", 60, True)),
+        (
+            ("owner_fts", 60, False),
+            ("semantic_text", 60, True),
+            ("semantic_image", 60, True),
+        ),
         id="image",
     ),
     pytest.param(
@@ -412,6 +417,7 @@ print(
         "neocortex.deduplication",
         "neocortex.deduplication.domain",
         "neocortex.deduplication.domain.errors",
+        "neocortex.deduplication.domain.evidence",
         "neocortex.deduplication.domain.models",
         "neocortex.knowledge.knowledge_contract_context",
         "neocortex.knowledge.knowledge_contract_payloads",
@@ -431,6 +437,42 @@ print(
         "neocortex.safety",
         "neocortex.safety.route_filters",
     }
+
+
+def test_cold_evidence_dependency_has_exact_stdlib_imports_and_pure_initialization() -> None:
+    source_path = Path(__file__).resolve().parents[1] / "neocortex/deduplication/domain/evidence.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    assert not any(isinstance(node, ast.Import) for node in ast.walk(tree))
+    imports = [node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
+    assert all(node.level == 0 for node in imports)
+    assert [(node.module, tuple(alias.name for alias in node.names)) for node in imports] == [
+        ("__future__", ("annotations",)),
+        ("dataclasses", ("asdict", "dataclass")),
+        ("typing", ("Literal",)),
+    ]
+    assert all(not node.bases and not node.keywords for node in tree.body if isinstance(node, ast.ClassDef))
+
+    class InitializationCalls(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.calls: list[ast.Call] = []
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            # Bodies run only when called; decorators and defaults run at import.
+            for expression in (*node.decorator_list, *node.args.defaults, *node.args.kw_defaults):
+                if expression is not None:
+                    self.visit(expression)
+
+        def visit_Call(self, node: ast.Call) -> None:
+            self.calls.append(node)
+            self.generic_visit(node)
+
+    initializer = InitializationCalls()
+    initializer.visit(tree)
+    assert [ast.unparse(call) for call in initializer.calls] == [
+        "dataclass(frozen=True, slots=True)",
+        "dataclass(frozen=True, slots=True)",
+        "dataclass(frozen=True, slots=True)",
+    ]
 
 
 # endregion [02]

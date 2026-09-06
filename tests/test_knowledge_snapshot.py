@@ -1412,7 +1412,7 @@ def test_archive_owner_is_additive_only_after_archive_state_exists(
 
     archive = _owner(available, "archive")
     assert archive.state is OwnerAvailability.AVAILABLE
-    assert archive.observed_schema_version == 1
+    assert archive.observed_schema_version == 2
     assert {mark.name: mark.value for mark in archive.watermarks}["current_rows"] == "0"
 
 

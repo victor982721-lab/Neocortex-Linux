@@ -353,6 +353,7 @@ class FrameworkOrchestrator:
             return None, None
         from neocortex.documents.document_organization import (
             apply_all_document_organization,
+            capture_organization_input_scope,
             default_organization_root,
             plan_document_organization,
         )
@@ -369,9 +370,14 @@ class FrameworkOrchestrator:
         if self._cancellation.is_cancelled:
             raise KeyboardInterrupt
         state.set_run_phase(run_id, "organization_plan")
+        source_scope = capture_organization_input_scope(
+            self.config.document_catalog_database,
+            root,
+        )
         plan_summary = plan_document_organization(
             self.config.document_catalog_database,
             organization_root,
+            source_scope=source_scope,
             min_confidence=self.config.organization_min_confidence,
             progress=self.progress,
             mutation_guard=state.corpus_mutation_guard(run_id),

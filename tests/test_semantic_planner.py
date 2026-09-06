@@ -940,7 +940,17 @@ def test_semantic_cache_rejects_every_model_contract_drift(
             (value, model.model_signature),
         )
 
-    with pytest.raises(SemanticPlanBlocked, match=r"semantic model|vector-space"):
+    if field in {"normalization", "distance"}:
+        # These injected values violate physical CHECK constraints.  The
+        # read-only snapshot integrity barrier now rejects them before the
+        # semantic model comparator can inspect the corrupt owner.
+        with sqlite3.connect(semantic) as connection:
+            integrity = tuple(str(row[0]) for row in connection.execute("PRAGMA integrity_check"))
+        assert any("CHECK constraint failed in embedding_models" in line for line in integrity)
+        rejection = "temporary SQLite snapshot integrity check failed"
+    else:
+        rejection = r"semantic model|vector-space"
+    with pytest.raises(SemanticPlanBlocked, match=rejection):
         plan_semantic_index(
             tmp_path,
             scope="text",

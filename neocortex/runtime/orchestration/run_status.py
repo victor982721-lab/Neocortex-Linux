@@ -164,7 +164,12 @@ def _run_status(
     )
     owner_pid = None if row["owner_pid"] is None else int(row["owner_pid"])
     manifest = _run_manifest(connection, run_id)
-    budget = _run_budget(connection, run_id)
+    budget = _run_budget(
+        connection,
+        run_id,
+        completed_ns=None if row["completed_ns"] is None else int(row["completed_ns"]),
+        observed_ns=now,
+    )
     recovery = _run_recovery(connection, run_id)
     stages = _run_stages(connection, run_id)
     route_capabilities = _route_capabilities(manifest)
@@ -273,6 +278,9 @@ def _recovery_required_action_count(
 def _run_budget(
     connection: sqlite3.Connection,
     run_id: int,
+    *,
+    completed_ns: int | None = None,
+    observed_ns: int | None = None,
 ) -> dict[str, object] | None:
     """Read the append-only budget ledger without opening the owner database."""
 
@@ -317,10 +325,11 @@ def _run_budget(
                 baseline["manifest_digest"] = event.get("manifest_digest")
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
         raise sqlite3.DatabaseError(f"run {run_id} lifecycle budget is invalid") from exc
-    now = time.time_ns()
+    now = time.time_ns() if observed_ns is None else observed_ns
     started_ns = int(baseline.get("started_ns", now))
+    elapsed_until_ns = now if completed_ns is None else completed_ns
     deadline_ns = baseline.get("deadline_ns")
-    expired = deadline_ns is not None and now >= int(deadline_ns)
+    expired = deadline_ns is not None and elapsed_until_ns >= int(deadline_ns)
     max_items = baseline.get("max_items")
     max_bytes = baseline.get("max_bytes")
     return {
@@ -333,9 +342,17 @@ def _run_budget(
         "deadline_ns": deadline_ns,
         "consumed_items": consumed_items,
         "consumed_bytes": consumed_bytes,
+        "consumed_bytes_kind": "reserved_input_bytes_not_physical_io",
         "remaining_items": None if max_items is None else max(0, int(max_items) - consumed_items),
         "remaining_bytes": None if max_bytes is None else max(0, int(max_bytes) - consumed_bytes),
-        "elapsed_seconds": max(0, now - started_ns) / 1_000_000_000,
+        "elapsed_ns": max(0, elapsed_until_ns - started_ns),
+        "elapsed_seconds": max(0, elapsed_until_ns - started_ns) / 1_000_000_000,
+        "elapsed_until_ns": elapsed_until_ns,
+        "elapsed_scope": (
+            "budget_start_to_observation"
+            if completed_ns is None
+            else "budget_start_to_run_completion"
+        ),
         "expired": expired,
         "cancel_requested": cancelled,
         "cancel_reason": cancel_reason,

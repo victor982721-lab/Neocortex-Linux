@@ -60,10 +60,17 @@ def test_registry_routes_extracted_handlers_to_family_modules() -> None:
         if operation.destination in {"audio_search", "audio_doctor"}
     )
 
-    assert len(semantic) == 7
+    assert len(semantic) == 8
+    assert "semantic_image_calibrate" in {operation.destination for operation in semantic}
     assert {operation.module_name for operation in semantic} == {".cli_semantic"}
     assert len(audio) == 2
     assert {operation.module_name for operation in audio} == {".cli_audio"}
+    diagnostics = tuple(
+        operation for operation in DIRECT_OPERATIONS
+        if operation.destination in {"pdf_diagnostics", "text_errors", "archive_issues"}
+    )
+    assert len(diagnostics) == 3
+    assert {operation.module_name for operation in diagnostics} == {".cli_content_diagnostics"}
 
 
 def test_family_handlers_remain_lazy_and_isolated_in_a_fresh_process() -> None:

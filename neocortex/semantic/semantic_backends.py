@@ -589,6 +589,8 @@ def reciprocal_rank_fusion(
                     entity_id=hit.entity_id,
                     indexed_model_signature=hit.indexed_model_signature,
                     query_model_signature=hit.query_model_signature,
+                    ref_id=hit.ref_id,
+                    generation_id=hit.generation_id,
                 )
             )
     ordered = sorted(totals, key=lambda item_id: (-totals[item_id], item_id))[:limit]

@@ -452,6 +452,11 @@ def normalize_read_payload(
     The shared client uses the strict default.
     """
 
+    if isinstance(value, Mapping) and value.get("schema") in {
+        "neocortex.context-response/v2", "neocortex.evidence-response/v2",
+    }:
+        return validate_read_payload(value, operation, scope=scope, strict_echo=False)
+
     descriptor = _operation_descriptor(operation)
     payload = dict(_as_mapping(value, label="read payload"))
     selected_scope = scope or payload.get("scope_requested")
@@ -513,6 +518,24 @@ def validate_read_payload(
     """Validate a complete public response and return a plain dict copy."""
 
     descriptor = _operation_descriptor(operation)
+    if isinstance(value, Mapping) and value.get("schema") in {
+        "neocortex.context-response/v2", "neocortex.evidence-response/v2",
+    }:
+        from neocortex.knowledge.knowledge_context_v2 import validate_context_response
+
+        try:
+            compact = validate_context_response(value)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ReadContractError(str(exc)) from exc
+        if compact.get("operation") != descriptor.operation.value:
+            raise ReadContractError("compact response operation differs from requested operation")
+        if scope is not None and compact.get("scope") != scope:
+            raise ReadContractError("compact response scope differs from requested scope")
+        for key, expected in (("query", query), ("mode", mode),
+                              ("include_history", include_history), ("limit_per_scope", limit)):
+            if expected is not None and strict_echo and compact.get(key) != expected:
+                raise ReadContractError(f"compact response {key} differs from request")
+        return compact
     payload = dict(_as_mapping(value, label="read payload"))
     if payload.get("schema") != descriptor.schema or payload.get("kind") != descriptor.kind:
         raise ReadContractError("read payload schema or kind is incompatible")

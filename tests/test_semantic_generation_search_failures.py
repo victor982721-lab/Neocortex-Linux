@@ -281,7 +281,7 @@ def test_resolver_preserves_order_provenance_and_read_only_contract(
 ) -> None:
     assert str(inspect.signature(resolve_search_hits)) == (
         "(path: 'Path', hits: 'Sequence[SearchHit]', *, snippet_chars: 'int' = "
-        "240) -> 'tuple[ResolvedSearchHit, ...]'"
+        "240, query: 'str | None' = None) -> 'tuple[ResolvedSearchHit, ...]'"
     )
     assert semantic_search_repository.resolve_search_hits is resolve_search_hits
     database = tmp_path / "semantic.sqlite3"

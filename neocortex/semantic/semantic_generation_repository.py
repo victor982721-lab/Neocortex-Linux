@@ -120,11 +120,11 @@ def _decode_base_clone_cursor(raw: object) -> dict[str, object]:
     return cursor
 
 
-def _validate_base_clone_snapshot(
+def _validate_base_clone_contract(
     connection: sqlite3.Connection,
     generation: sqlite3.Row,
     base_generation_id: int,
-) -> tuple[int, int]:
+) -> None:
     base = connection.execute(
         """SELECT status,model_signature FROM embedding_generations
         WHERE generation_id=?""",
@@ -134,6 +134,14 @@ def _validate_base_clone_snapshot(
         raise SemanticStateError("generation base snapshot is absent or not immutable-ready")
     if str(base["model_signature"]) != str(generation["model_signature"]):
         raise SemanticStateError("generation base snapshot model differs from candidate")
+
+
+def _validate_base_clone_snapshot(
+    connection: sqlite3.Connection,
+    generation: sqlite3.Row,
+    base_generation_id: int,
+) -> tuple[int, int]:
+    _validate_base_clone_contract(connection, generation, base_generation_id)
     snapshot = connection.execute(
         """SELECT COALESCE(MAX(member_id),0),COUNT(*)
         FROM embedding_generation_members WHERE generation_id=?""",
@@ -214,15 +222,24 @@ def _prepare_base_clone_cursor(
     generation: sqlite3.Row,
     generation_id: int,
     base_generation_id: int,
+    *,
+    validate_extent: bool = True,
 ) -> dict[str, object]:
-    last_member_id, base_member_count = _validate_base_clone_snapshot(
-        connection,
-        generation,
-        base_generation_id,
-    )
     cursor = _decode_base_clone_cursor(generation["cursor_json"])
     raw_clone_cursor = cursor.get("base_clone")
+    snapshot = None
+    if raw_clone_cursor is None or validate_extent:
+        snapshot = _validate_base_clone_snapshot(
+            connection,
+            generation,
+            base_generation_id,
+        )
+    else:
+        _validate_base_clone_contract(connection, generation, base_generation_id)
     if raw_clone_cursor is None:
+        if snapshot is None:  # pragma: no cover - initialized above for new cursors
+            raise SemanticStateError("generation base snapshot was not inspected")
+        last_member_id, base_member_count = snapshot
         return _new_base_clone_cursor(
             connection,
             generation_id,
@@ -230,12 +247,18 @@ def _prepare_base_clone_cursor(
             last_member_id=last_member_id,
             base_member_count=base_member_count,
         )
-    return _resume_base_clone_cursor(
+    clone_cursor = _resume_base_clone_cursor(
         connection,
         generation_id,
         raw_clone_cursor,
         base_generation_id,
     )
+    if snapshot is not None and snapshot != (
+        _base_clone_cursor_int(clone_cursor, "last_member_id"),
+        _base_clone_cursor_int(clone_cursor, "base_member_count"),
+    ):
+        raise SemanticStateError("generation base snapshot changed during resumable clone")
+    return clone_cursor
 
 
 def _base_clone_rows(
@@ -392,6 +415,11 @@ def _clone_published_members(
 ) -> None:
     """Resume a deadline-aware copy of one pinned immutable base snapshot."""
 
+    # A published base is immutable. Recount its extent on entry/resume and at
+    # completion, not for every page; the cheap ready/model and durable cursor
+    # guards still run inside each page transaction. Never retain this hint
+    # across invocations, including a deadline pause or failed page transaction.
+    validated_base_id: int | None = None
     while True:
         if work_budget is not None:
             work_budget.checkpoint()
@@ -425,7 +453,9 @@ def _clone_published_members(
                 generation,
                 generation_id,
                 selected_base_id,
+                validate_extent=validated_base_id != selected_base_id,
             )
+            validated_base_id = selected_base_id
             rows = _base_clone_rows(
                 connection,
                 selected_base_id,

@@ -1,0 +1,8 @@
+# Frozen fixture and judgment hashes refer to exact bytes, including CSV CRLF.
+/dev/corpus/* -text
+/dev/manifest.json -text
+/dev/queries.json -text
+/freeze.json -text
+/reserve.tar.aes -text
+/operationalization-v2.json -text
+/OPERATIONALIZATION_V2.md -text

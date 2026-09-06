@@ -32,6 +32,10 @@ from .document_organization_models import (
     list_organization_plans,
 )
 from .document_organization_planning import plan_document_organization
+from .document_organization_scope import (
+    OrganizationInputScope,
+    capture_organization_input_scope,
+)
 # endregion [01]
 
 # region [02] Implementación
@@ -44,10 +48,12 @@ __all__ = (
     "OrganizationApplyProgress",
     "OrganizationApplyProgressCallback",
     "OrganizationApplySummary",
+    "OrganizationInputScope",
     "OrganizationPlanSummary",
     "OrganizationPlanView",
     "apply_all_document_organization",
     "apply_document_organization",
+    "capture_organization_input_scope",
     "default_organization_root",
     "list_organization_plans",
     "plan_document_organization",

@@ -30,7 +30,13 @@ from neocortex.curation.lifecycle import (
     _validate_actor,
 )
 from neocortex.curation.preview import CurationItem, CurationPlanPage, build_curation_plan_page
-from neocortex.deduplication import FileChangedError, FileSnapshot, files_equal_exact, full_fingerprint, snapshot_path
+from neocortex.deduplication import (
+    FileChangedError,
+    FileSnapshot,
+    files_equal_exact,
+    full_fingerprint,
+    snapshot_path,
+)
 from neocortex.runtime.control.locking import FrameworkRunLock
 from neocortex.workflow.authorization.contracts import (
     AUTHORIZATION_ACTIONS,
@@ -175,7 +181,13 @@ def _item_from_task(record: ReviewTaskRecord, item_id: str, plan_digest: str) ->
         raise CurationAuthorizationError("curation item snapshot is malformed") from exc
 
 
-def _validate_requested_effect(item: CurationItem, action: str) -> int:
+def _validate_requested_effect(
+    item: CurationItem,
+    action: str,
+    *,
+    state_directory: Path | None = None,
+    inventory_root: str | None = None,
+) -> int:
     if action not in AUTHORIZATION_ACTIONS:
         raise ValueError("authorization action is unsupported")
     if action == "trash":
@@ -195,10 +207,67 @@ def _validate_requested_effect(item: CurationItem, action: str) -> int:
             raise CurationAuthorizationError("move/rename requires an absolute destination")
         if destination == item.source_path:
             raise CurationAuthorizationError("move/rename destination equals its source")
+        _validate_organization_effect_scope(
+            item, state_directory=state_directory, inventory_root=inventory_root
+        )
     size = item.evidence.get("size")
     if isinstance(size, bool) or not isinstance(size, int) or size < 0:
         return 0
     return size
+
+
+def _validate_organization_effect_scope(
+    item: CurationItem, *, state_directory: Path | None, inventory_root: str | None
+) -> None:
+    """A logical proposal or legacy unscoped row cannot become a physical grant.
+
+    Backend availability is deliberately not required: authorization and the
+    later explicitly injected effect backend remain independent boundaries.
+    """
+    from neocortex.documents.document_catalog import document_catalog_database
+    from neocortex.documents.document_organization_scope import (
+        OrganizationInputScope,
+        assess_organization_resource,
+    )
+    from neocortex.documents.document_resource_binding import (
+        binding_curation_identity,
+        parse_resource_binding,
+    )
+
+    try:
+        binding = parse_resource_binding(
+            json.dumps(item.evidence.get("resource_binding"), allow_nan=False)
+        )
+        physical = binding_curation_identity(binding)
+        if physical is None or physical != item.evidence.get("identity"):
+            raise ValueError("organization requires a resolved physical resource identity")
+        scope = OrganizationInputScope.from_json(item.evidence.get("source_scope_json"))
+        if scope.scope_id != item.evidence.get("source_scope_id"):
+            raise ValueError("organization scope digest is inconsistent")
+        if inventory_root is not None and not scope.root.is_relative_to(Path(inventory_root)):
+            raise ValueError("organization scope is outside the reviewed inventory root")
+        if state_directory is not None:
+            with document_catalog_database(
+                state_directory / "document_catalog.sqlite3", readonly=True
+            ) as catalog:
+                scope.verify(catalog)
+        else:
+            scope.verify()
+        assessed = assess_organization_resource(
+            {
+                "resource_binding_json": json.dumps(binding),
+                "source_kind": item.evidence.get("source_kind"),
+                "file_key": item.evidence.get("file_key"),
+                "source_path": item.source_path,
+            },
+            scope,
+        )
+        if not assessed.included:
+            raise ValueError(assessed.reason or "organization resource is outside its proven scope")
+    except (ValueError, TypeError, KeyError, OSError) as error:
+        raise CurationAuthorizationError(
+            f"organization physical identity/scope is unverified: {error}"
+        ) from error
 
 
 def _snapshot_from_item_evidence(item: CurationItem) -> FileSnapshot:
@@ -215,10 +284,13 @@ def _snapshot_from_item_evidence(item: CurationItem) -> FileSnapshot:
         mtime_ns = item.evidence["mtime_ns"]
     except (KeyError, TypeError, ValueError) as exc:
         raise CurationAuthorizationError("curation item physical identity is malformed") from exc
-    if any(
-        isinstance(value, bool) or not isinstance(value, int) or value < 0
-        for value in (volume_id, file_id, size, mtime_ns)
-    ) or birthtime_ns < -1:
+    if (
+        any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in (volume_id, file_id, size, mtime_ns)
+        )
+        or birthtime_ns < -1
+    ):
         raise CurationAuthorizationError("curation item physical identity is invalid")
     return FileSnapshot(
         item.source_path,
@@ -271,9 +343,7 @@ def _full_digest(snapshot: FileSnapshot) -> str:
             f"source changed while hashing: {snapshot.path}"
         ) from exc
     except OSError as exc:
-        raise CurationAuthorizationUnavailable(
-            f"source cannot be hashed: {snapshot.path}"
-        ) from exc
+        raise CurationAuthorizationUnavailable(f"source cannot be hashed: {snapshot.path}") from exc
     return "xxh3_128_full_v1:" + digest.hex()
 
 
@@ -336,11 +406,7 @@ def _effect_manifest(
                             raise CurationAuthorizationError(
                                 "duplicate group exceeds the physical effect bound"
                             )
-                        root = (
-                            Path(os.path.abspath(page.root))
-                            if page.root is not None
-                            else None
-                        )
+                        root = Path(os.path.abspath(page.root)) if page.root is not None else None
                         if root is None:
                             raise CurationAuthorizationSnapshotChanged(
                                 "curation plan root is unavailable"
@@ -373,7 +439,9 @@ def _effect_manifest(
                         redundant_list: list[FileSnapshot] = []
                         for raw_member in members:
                             member = _snapshot_from_member(raw_member, item_id=item.item_id)
-                            role = raw_member.get("role") if isinstance(raw_member, Mapping) else None
+                            role = (
+                                raw_member.get("role") if isinstance(raw_member, Mapping) else None
+                            )
                             if role == "keep":
                                 if keep is not None:
                                     raise CurationAuthorizationError(
@@ -394,7 +462,10 @@ def _effect_manifest(
                         expected_keeper_digest = None
                     assert keep is not None
                     keeper_digest = _full_digest(keep)
-                    if expected_keeper_digest is not None and keeper_digest != expected_keeper_digest:
+                    if (
+                        expected_keeper_digest is not None
+                        and keeper_digest != expected_keeper_digest
+                    ):
                         raise CurationAuthorizationSnapshotChanged(
                             f"keeper content changed during authorization: {keep.path}"
                         )
@@ -431,15 +502,16 @@ def _effect_manifest(
                 elif item.kind in {"empty_file", "organization_plan"}:
                     source = _snapshot_from_item_evidence(item)
                     if item.kind == "organization_plan":
-                        # Historical catalog rows can carry a best-effort identity;
-                        # bind the grant to the live source while retaining the
-                        # ReviewTask input fingerprint as the plan evidence fence.
                         try:
-                            source = snapshot_path(item.source_path)
+                            current = snapshot_path(item.source_path)
                         except OSError as exc:
                             raise CurationAuthorizationSnapshotChanged(
                                 f"organization source is unavailable: {item.source_path}"
                             ) from exc
+                        if current != source:
+                            raise CurationAuthorizationSnapshotChanged(
+                                "organization source no longer matches its reviewed physical identity"
+                            )
                     source_digest = _full_digest(source)
                     effects.append(
                         AuthorizationEffect(
@@ -580,7 +652,9 @@ def authorize_curation_items(
                     "ReviewTask head changed during authorization"
                 )
             item = _item_from_task(record, item_id, digest)
-            total_known_bytes += _validate_requested_effect(item, action)
+            total_known_bytes += _validate_requested_effect(
+                item, action, state_directory=state_directory, inventory_root=page.root
+            )
             records.append(record)
             items.append(item)
             review_task_heads.append(
@@ -626,8 +700,12 @@ def authorize_curation_items(
         try:
             root_snapshot_value = snapshot_path(root)
         except (FileNotFoundError, OSError) as exc:
-            raise CurationAuthorizationUnavailable("curation plan root cannot be snapshotted") from exc
-        source_heads = tuple(CanonicalJsonObject.from_mapping(head.to_dict()) for head in page.source_heads)
+            raise CurationAuthorizationUnavailable(
+                "curation plan root cannot be snapshotted"
+            ) from exc
+        source_heads = tuple(
+            CanonicalJsonObject.from_mapping(head.to_dict()) for head in page.source_heads
+        )
         if not source_heads:
             raise CurationAuthorizationUnavailable("curation plan has no source-head manifest")
         from neocortex.workflow.authorization.contracts import _source_heads_digest

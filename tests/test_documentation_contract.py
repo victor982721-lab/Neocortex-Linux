@@ -33,6 +33,9 @@ _SOURCE_ONLY_DOCUMENTS = frozenset(
     {
         ".codex/handoffs/NEOCORTEX_0.12.0_BUGFIX_2026-09-05.md",
         ".codex/handoffs/NEOCORTEX_0.12.0_SCALE_2026-09-04.md",
+        ".codex/handoffs/NEOCORTEX_0.12.1_LIFECYCLE_2026-09-05.md",
+        ".codex/handoffs/NEOCORTEX_0.13.0_BUDGETS_2026-09-05.md",
+        ".codex/handoffs/NEOCORTEX_FUNCTIONAL_2026-09-06.md",
         ".codex/handoffs/NEOCORTEX_0.11.1_RECOVERY_2026-09-04.md",
         ".codex/handoffs/NEOCORTEX_0.11.0_APPLY_2026-09-04.md",
         ".codex/handoffs/NEOCORTEX_0.10.0_CURATION_2026-09-04.md",

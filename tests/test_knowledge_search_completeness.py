@@ -177,7 +177,7 @@ def _install_complete_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
         ),
         pytest.param(
             KnowledgeQuery("substation maintenance", source_kinds=("image",)),
-            ("semantic_image",),
+            ("semantic_text", "semantic_image"),
             id="image-only",
         ),
         pytest.param(
@@ -358,7 +358,7 @@ def test_multiple_missing_semantic_modalities_have_deterministic_warning_order(
         pytest.param(
             KnowledgeQuery("substation maintenance", source_kinds=("image",)),
             7,
-            (("semantic_image", 7),),
+            (("semantic_text", 4), ("semantic_image", 3)),
             True,
             id="image-only",
         ),
@@ -903,10 +903,15 @@ def test_semantic_outer_failure_reports_optional_planned_image_ranking(
     )
 
     semantic_reports = tuple(report for report in result.rankings if report.channel == "semantic")
-    assert tuple(report.name for report in semantic_reports) == ("semantic_image",)
-    assert semantic_reports[0].reason == "owner_read_failed:RuntimeError"
+    assert tuple(report.name for report in semantic_reports) == ("semantic_text", "semantic_image")
+    assert tuple(report.reason for report in semantic_reports) == (
+        "owner_read_failed:RuntimeError", "owner_read_failed:RuntimeError",
+    )
     assert result.complete
-    assert result.warnings == ("ranking_partial:semantic_image:owner_read_failed:RuntimeError",)
+    assert result.warnings == (
+        "ranking_partial:semantic_image:owner_read_failed:RuntimeError",
+        "ranking_partial:semantic_text:owner_read_failed:RuntimeError",
+    )
     assert result.plan is plan
     assert plan.to_json() == serialized_plan
 

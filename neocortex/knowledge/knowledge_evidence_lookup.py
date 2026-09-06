@@ -1,0 +1,381 @@
+"""Direct, revision-bound document evidence reads from published owners.
+
+No query compilation, MATCH, ranking, embedding, arbitrary corpus path or new
+database is involved. Unsupported owner locators abstain instead of rerunning
+the user's search and silently rebinding a citation alias.
+"""
+
+from __future__ import annotations
+
+import json
+import hashlib
+import sqlite3
+from collections.abc import Mapping
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
+
+from neocortex.knowledge.knowledge_contracts import KnowledgeHit
+from neocortex.knowledge.knowledge_search import _LEXICAL_OWNER_FORMATS, _candidate_from_resolved
+from neocortex.knowledge.knowledge_snapshot import (
+    _OWNER_VALIDATORS, _logical_observation, _owner_spec,
+)
+from neocortex.persistence.sqlite_immutable import preferred_sqlite_read_mode
+from neocortex.semantic.semantic_models import EmbeddingModality, ResolvedSearchHit, SearchHit
+from neocortex.semantic.semantic_schema import SemanticReadContext, semantic_database, semantic_read_context
+from neocortex.semantic.semantic_search_repository import resolve_search_hits
+from neocortex.semantic.semantic_sources import TEXT_SOURCE_KINDS
+
+_SQLITE_MAX_INTEGER = (1 << 63) - 1
+
+
+class EvidenceLookupError(ValueError):
+    """A typed inability to prove a supplied immutable reference."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+def _canonical_records(records: object) -> list[str]:
+    if not isinstance(records, list) or any(not isinstance(item, Mapping) for item in records):
+        raise EvidenceLookupError("invalid_evidence_reference")
+    return sorted(json.dumps(item, sort_keys=True, allow_nan=False) for item in records)
+
+
+def _observe_owner(connection: sqlite3.Connection, owner: str) -> dict[str, Any]:
+    validate, legacy = _OWNER_VALIDATORS[owner]
+    validate(connection)
+    observation = _logical_observation(connection, _owner_spec(owner, validate, legacy))
+    return {
+        "owner": owner,
+        "publications": [item.to_dict() for item in observation.publications],
+        "watermarks": [item.to_dict() for item in observation.watermarks],
+    }
+
+
+def _owner_revision(row: sqlite3.Row, owner: str) -> dict[str, object]:
+    revision: dict[str, object] = {name: row[name] for name in (
+        "size", "mtime_ns", "birthtime_ns", "processing_signature", "last_seen_run_id",
+    )}
+    if owner == "text" and row["revision_id"] is not None:
+        revision["revision_id"] = row["revision_id"]
+    if owner == "pdf":
+        revision["is_partial"] = bool(row["is_partial"])
+    return revision
+
+
+def _owner_record(
+    connection: sqlite3.Connection, owner: str, source_kind: str, file_key: str,
+) -> sqlite3.Row:
+    statuses = {
+        "text": {"complete"}, "pdf": {"done", "partial"},
+        "docx": {"complete", "partial"}, "office": {"complete"}, "archive": {"indexed"},
+    }
+    if owner == "archive":
+        rows = connection.execute(
+            """SELECT d.*,c.status AS container_status,c.path AS current_container_path,
+                      c.mtime_ns AS container_mtime_ns,c.birthtime_ns AS container_birthtime_ns,
+                      c.processing_signature AS container_processing_signature,
+                      c.last_seen_run_id AS container_last_seen_run_id
+               FROM documents d JOIN containers c ON c.container_key=d.container_key
+               WHERE d.file_key=? LIMIT 2""", (file_key,),
+        ).fetchall()
+    else:
+        rows = connection.execute(
+            "SELECT * FROM documents WHERE file_key=? LIMIT 2", (file_key,),
+        ).fetchall()
+    if len(rows) != 1 or rows[0]["status"] not in statuses[owner]:
+        raise EvidenceLookupError("published_evidence_absent_or_ambiguous")
+    row = rows[0]
+    if owner == "office" and row["format"] != source_kind:
+        raise EvidenceLookupError("owner_revision_changed")
+    if owner == "archive":
+        if row["container_status"] not in {"complete", "partial"}:
+            raise EvidenceLookupError("published_evidence_absent_or_ambiguous")
+        if row["container_path"] != row["current_container_path"] or any(
+            row[name] != row[f"container_{name}"]
+            for name in ("mtime_ns", "birthtime_ns", "processing_signature", "last_seen_run_id")
+        ):
+            raise EvidenceLookupError("owner_revision_changed")
+    return row
+
+
+def _validate_owner_locator(
+    connection: sqlite3.Connection, owner: str, row: sqlite3.Row, resolved: ResolvedSearchHit,
+) -> None:
+    """Require the same route-owned section, without reconstructing content."""
+    if owner == "office":
+        if (resolved.section_kind, resolved.section_id) != (f"{resolved.source_kind}_document", "body"):
+            raise EvidenceLookupError("unsupported_evidence_lookup")
+    elif owner == "docx":
+        if (resolved.section_kind, resolved.section_id) == ("docx_document", "body"):
+            if connection.execute(
+                "SELECT 1 FROM document_parts WHERE file_key=? LIMIT 1", (row["file_key"],),
+            ).fetchone() is not None:
+                raise EvidenceLookupError("evidence_locator_changed")
+        else:
+            parts = connection.execute(
+                "SELECT part_kind FROM document_parts WHERE file_key=? AND part_name=? LIMIT 2",
+                (row["file_key"], resolved.section_id),
+            ).fetchall()
+            if len(parts) != 1 or resolved.section_kind != f"docx_{parts[0]['part_kind']}":
+                raise EvidenceLookupError("evidence_locator_changed")
+    elif owner == "archive" and (
+        resolved.section_kind != "archive_member" or resolved.section_id != row["member_chain"]
+    ):
+        raise EvidenceLookupError("evidence_locator_changed")
+
+
+def _semantic_fragment(
+    resolved: ResolvedSearchHit, locator: Mapping[str, Any], *, chunk_chars: int,
+) -> tuple[ResolvedSearchHit, dict[str, object]]:
+    """Bind only an explicit range within this immutable, resolved chunk."""
+    chunk_start, chunk_end = resolved.start_char, resolved.end_char
+    requested_start, requested_end = locator.get("start_char"), locator.get("end_char")
+    if any(isinstance(value, bool) or not isinstance(value, int) for value in (
+        chunk_start, chunk_end, requested_start, requested_end,
+    )):
+        raise EvidenceLookupError("invalid_evidence_reference")
+    # Narrowing above is intentionally followed by assertions for static readers.
+    assert isinstance(chunk_start, int) and isinstance(chunk_end, int)
+    assert isinstance(requested_start, int) and isinstance(requested_end, int)
+    if not chunk_start <= requested_start < requested_end <= chunk_end:
+        raise EvidenceLookupError("evidence_range_unavailable")
+    if not 0 < chunk_chars <= chunk_end - chunk_start or len(resolved.snippet or "") != min(chunk_chars, 4096):
+        raise EvidenceLookupError("published_evidence_absent_or_ambiguous")
+    page = (
+        int(resolved.section_id)
+        if resolved.source_kind == "pdf" and resolved.section_id is not None
+        and resolved.section_id.isascii() and resolved.section_id.isdecimal()
+        else None
+    )
+    section_kind = "pdf_page" if page is not None else resolved.section_kind
+    if any(locator.get(name) != actual for name, actual in (
+        ("page", page), ("section_kind", section_kind), ("section_id", resolved.section_id),
+    )):
+        raise EvidenceLookupError("evidence_locator_changed")
+    full_chunk_requested = (requested_start, requested_end) == (chunk_start, chunk_end)
+    # Chunks collapse whitespace: their normalized text need not share the
+    # source section's character coordinates. Never invent that missing map.
+    if not full_chunk_requested and chunk_chars != chunk_end - chunk_start:
+        raise EvidenceLookupError("evidence_range_unavailable")
+    normalized_start = requested_start - chunk_start
+    normalized_end = chunk_chars if full_chunk_requested else requested_end - chunk_start
+    available_end = len(resolved.snippet or "")
+    if normalized_start >= available_end or (normalized_end > available_end and not full_chunk_requested):
+        raise EvidenceLookupError("evidence_range_unavailable")
+    returned_end = min(normalized_end, available_end)
+    snippet = (resolved.snippet or "")[normalized_start:returned_end]
+    extent: dict[str, object] = {
+        "units": "characters",
+        "exact_reference_range": {"start_char": requested_start, "end_char": requested_end, "basis": "source_section"},
+        "chunk_range": {"start_char": chunk_start, "end_char": chunk_end, "basis": "source_section"},
+        "returned_range": {"start_char": normalized_start, "end_char": returned_end, "basis": "normalized_chunk"},
+        "bounded": returned_end < normalized_end,
+    }
+    return replace(resolved, start_char=requested_start, end_char=requested_end, snippet=snippet), extent
+
+
+def _lexical_extent(row: sqlite3.Row, owner: str, snippet: str, page: int | None) -> dict[str, object]:
+    total = row["evidence_total_chars"]
+    if not isinstance(total, int) or total < len(snippet):
+        raise EvidenceLookupError("owner_evidence_extent_unavailable")
+    extent: dict[str, object] = {
+        "units": "characters",
+        "returned_range": {"start_char": 0, "end_char": len(snippet), "basis": "owner_text_prefix"},
+        "source_total_chars": total,
+        "bounded": total > len(snippet),
+        "document_scope": "document" if owner == "text" else "pdf_page",
+    }
+    if owner == "pdf":
+        extent["pdf_page_index"] = page
+    return extent
+
+
+def _semantic_evidence(
+    path: Path, source: Mapping[str, Any], citation: Mapping[str, Any],
+    owner_row: sqlite3.Row, owner: str, source_kind: str, file_key: str, entity_id: str,
+    locator: Mapping[str, Any],
+) -> tuple[ResolvedSearchHit, dict[str, Any], dict[str, object]]:
+    generation = citation.get("generation")
+    if isinstance(generation, bool) or not isinstance(generation, int) or not 1 <= generation <= _SQLITE_MAX_INTEGER:
+        raise EvidenceLookupError("invalid_evidence_reference")
+    with semantic_read_context():
+        with semantic_database(path, readonly=True) as connection:
+            observation = _observe_owner(connection, "semantic")
+            if _canonical_records(source.get("retrieval_publication")) != _canonical_records(observation["publications"]):
+                raise EvidenceLookupError("retrieval_publication_changed")
+            rows = connection.execute(
+                """SELECT member.member_id,member.entity_id,member.item_id,
+                          member.model_signature,model.vector_space,member.generation_id,chunk.text_chars
+                   FROM embedding_generation_members member
+                   JOIN published_embedding_heads head
+                     ON head.generation_id=member.generation_id
+                    AND head.model_signature=member.model_signature
+                   JOIN embedding_generations generation
+                     ON generation.generation_id=head.generation_id
+                    AND generation.model_signature=head.model_signature
+                   JOIN embedding_models model ON model.model_signature=member.model_signature
+                   JOIN semantic_item_revisions revision
+                     ON revision.item_revision_id=member.item_revision_id
+                    AND revision.item_id=member.item_id
+                   JOIN semantic_chunk_revisions chunk
+                     ON chunk.chunk_revision_id=member.chunk_revision_id
+                    AND chunk.item_id=member.item_id AND chunk.chunk_id=member.entity_id
+                   WHERE member.generation_id=? AND member.entity_id=?
+                     AND member.entity_kind='text_chunk' AND model.modality='text'
+                     AND generation.status='ready'
+                     AND revision.source_kind=? AND revision.source_identity=? LIMIT 2""",
+                (generation, entity_id, source_kind, file_key),
+            ).fetchall()
+            if len(rows) != 1:
+                raise EvidenceLookupError("published_evidence_absent_or_ambiguous")
+            member = rows[0]
+            hit = SearchHit(
+                ref_id=int(member["member_id"]), entity_id=str(member["entity_id"]),
+                item_id=str(member["item_id"]), indexed_model_signature=str(member["model_signature"]),
+                vector_space=str(member["vector_space"]), modality=EmbeddingModality.TEXT,
+                score=0.0, generation_id=int(member["generation_id"]),
+            )
+        resolved, = resolve_search_hits(path, (hit,), snippet_chars=4096)
+        if resolved.source_kind != source_kind or resolved.source_identity != file_key:
+            raise EvidenceLookupError("evidence_identity_changed")
+        live_revision = _owner_revision(owner_row, owner)
+        if (resolved.source_revision_is_current is not True
+                or resolved.source_status != owner_row["status"]
+                or any(type(actual := resolved.source_revision.get(name)) is not type(value)
+                       or actual != value for name, value in live_revision.items())
+                or resolved.source_revision.get("revision_id") != live_revision.get("revision_id")):
+            raise EvidenceLookupError("owner_revision_changed")
+        if owner == "archive" and any(
+            resolved.section_provenance.get(name) != owner_row[name]
+            for name in ("container_key", "container_path", "member_chain", "member_path",
+                         "archive_depth", "content_kind", "media_type", "container_status")
+        ):
+            raise EvidenceLookupError("evidence_locator_changed")
+        resolved, extent = _semantic_fragment(resolved, locator, chunk_chars=int(member["text_chars"]))
+    return resolved, observation, extent
+
+
+def lookup_owner_evidence(
+    state_directory: Path,
+    source: Mapping[str, Any],
+    citation: Mapping[str, Any],
+    *, read_context: SemanticReadContext | None = None,
+) -> dict[str, Any]:
+    """Return one ordinary Knowledge result from a bound owner record."""
+    owner = source.get("owner")
+    source_kind = source.get("source_kind")
+    if not isinstance(owner, str) or owner not in {"text", "pdf", "docx", "office", "archive"}:
+        raise EvidenceLookupError("unsupported_evidence_lookup")
+    allowed_kinds = (
+        _LEXICAL_OWNER_FORMATS["office"].intersection(TEXT_SOURCE_KINDS)
+        if owner == "office" else {owner}
+    )
+    if not isinstance(source_kind, str) or source_kind not in allowed_kinds:
+        raise EvidenceLookupError("unsupported_evidence_lookup")
+    file_key = citation.get("source_identity")
+    if not isinstance(file_key, str) or not file_key or len(file_key) > 1024:
+        raise EvidenceLookupError("invalid_evidence_reference")
+    locator = citation.get("locator")
+    if not isinstance(locator, Mapping):
+        raise EvidenceLookupError("invalid_evidence_reference")
+    page = locator.get("page")
+    # PDF owner page_number is zero-based; preserve its locator verbatim.
+    if page is not None and (
+        isinstance(page, bool) or not isinstance(page, int) or not 0 <= page <= _SQLITE_MAX_INTEGER
+    ):
+        raise EvidenceLookupError("invalid_evidence_reference")
+    section = str(page) if owner == "pdf" else "fulltext"
+    lexical_entity_id = (
+        f"lexical:pdf:{file_key}:page:{section}" if owner == "pdf"
+        else f"lexical:text:{file_key}:fulltext" if owner == "text" else None
+    )
+    entity_id = citation.get("retrieval_entity_id")
+    if not isinstance(entity_id, str) or not entity_id or len(entity_id) > 4096:
+        raise EvidenceLookupError("invalid_evidence_reference")
+    lexical = entity_id == lexical_entity_id
+    if entity_id.startswith("lexical:") and not lexical:
+        raise EvidenceLookupError("unsupported_evidence_lookup")
+    if lexical and owner == "pdf" and page is None:
+        raise EvidenceLookupError("unsupported_evidence_lookup")
+    if citation.get("evidence_id") != f"evidence:{source_kind}:{entity_id}":
+        raise EvidenceLookupError("invalid_evidence_reference")
+    source_id = source.get("source_id")
+    if not isinstance(source_id, str) or not source_id or source_id != citation.get("source_id"):
+        raise EvidenceLookupError("invalid_evidence_reference")
+
+    path = state_directory / f"{owner}.sqlite3"
+    extent: dict[str, object] | None = None
+    with semantic_read_context(read_context) as context, context.acquire(
+        path, mode=preferred_sqlite_read_mode(path).value,
+    ) as connection:
+        observation = _observe_owner(connection, owner)
+        owners = [observation]
+        if (_canonical_records(source.get("publication")) != _canonical_records(observation["publications"])
+                or _canonical_records(source.get("owner_watermarks")) != _canonical_records(observation["watermarks"])):
+            raise EvidenceLookupError("owner_publication_changed")
+        if not lexical:
+            row = _owner_record(connection, owner, source_kind, file_key)
+            resolved, semantic_observation, extent = _semantic_evidence(
+                state_directory / "semantic.sqlite3", source, citation, row,
+                owner, source_kind, file_key, entity_id, locator,
+            )
+            _validate_owner_locator(connection, owner, row, resolved)
+            owners.append(semantic_observation)
+        elif owner == "text":
+            rows = connection.execute(
+                """SELECT d.*,substr(f.body,1,4096) AS evidence_text,length(f.body) AS evidence_total_chars
+                   FROM documents d JOIN document_fts f ON f.file_key=d.file_key
+                   WHERE d.file_key=? AND d.status='complete' LIMIT 2""", (file_key,),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """SELECT d.*,substr(f.text,1,4096) AS evidence_text,length(f.text) AS evidence_total_chars
+                   FROM documents d JOIN page_fts f ON f.file_key=d.file_key
+                   WHERE d.file_key=? AND CAST(f.page_number AS INTEGER)=?
+                     AND d.status IN ('done','partial') LIMIT 2""", (file_key, page),
+            ).fetchall()
+        if lexical:
+            if len(rows) != 1:
+                raise EvidenceLookupError("published_evidence_absent_or_ambiguous")
+            row = rows[0]
+            resolved = ResolvedSearchHit(
+                hit=SearchHit(ref_id=0, entity_id=entity_id, item_id=f"item:{owner}:{file_key}",
+                              indexed_model_signature="owner-evidence-direct-v1",
+                              vector_space="owner:evidence:text:v1", modality=EmbeddingModality.TEXT,
+                              score=0.0, generation_id=0),
+                path=str(row["path"]), source_kind=owner, source_identity=file_key,
+                section_kind="page" if owner == "pdf" else "document", section_id=section,
+                start_char=None, end_char=None, snippet=str(row["evidence_text"] or "")[:4096],
+                source_revision=_owner_revision(row, owner), source_status=str(row["status"]),
+            )
+            extent = _lexical_extent(row, owner, resolved.snippet or "", page)
+        candidate = _candidate_from_resolved(resolved, ranking_name=f"fts_{owner}" if lexical else "semantic_text",
+                                             source_rank=1, producer="owner-evidence-direct-v1")
+        for key, actual in (
+            ("resource_id", candidate.resource.resource_id),
+            ("revision_id", candidate.revision.revision_id),
+            ("processing_signature", candidate.revision.processing_signature),
+        ):
+            if source.get(key) != actual:
+                raise EvidenceLookupError("owner_revision_changed")
+        if candidate.evidence.evidence_id != citation["evidence_id"]:
+            raise EvidenceLookupError("evidence_identity_changed")
+        if candidate.resource.owner != owner or candidate.resource.source_kind != source_kind:
+            raise EvidenceLookupError("evidence_identity_changed")
+        hit = KnowledgeHit(rank=1, resource=candidate.resource, revision=candidate.revision,
+                           evidence=candidate.evidence, signals=(candidate.signal,), fused_score=0.0,
+                           reasons=("direct_published_owner_evidence",), warnings=candidate.warnings)
+    payload = hit.to_dict()
+    if extent is not None:
+        payload["evidence_extent"] = extent
+    snapshot_digest = hashlib.sha256(json.dumps(owners, sort_keys=True, allow_nan=False).encode()).hexdigest()
+    return {
+        "complete": True, "truncated": False, "rankings": [], "hits": [payload],
+        "snapshot": {"snapshot_id": f"owner-evidence:{snapshot_digest}",
+                     "origin_snapshot_id": source.get("snapshot_id"),
+                     "consistency": "owner_revalidated", "validation_scope": "referenced_owners_only",
+                     "owners": owners},
+    }

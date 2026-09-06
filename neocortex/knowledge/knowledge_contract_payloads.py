@@ -196,6 +196,10 @@ def ranking_signal_payload(contract: RankingSignal) -> dict[str, object]:
         payload["generation"] = contract.generation
     if contract.contribution is not None:
         payload["contribution"] = contract.contribution
+    if contract.evidence is not None:
+        payload["evidence"] = contract.evidence.to_dict()
+    if contract.query_support:
+        payload["query_support"] = dict(contract.query_support)
     return payload
 
 

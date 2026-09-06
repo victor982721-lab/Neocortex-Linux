@@ -7,7 +7,7 @@ import sqlite3
 from neocortex.platform.policy import sqlite_path_collation
 
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 SCHEMA_LABEL = "dedup inventory"
 PATH_COLLATION = sqlite_path_collation()
 METADATA_DDL = """
@@ -175,7 +175,21 @@ V11_VERIFICATION_MODE_DDL = (
         CHECK(verification_mode IN ('legacy_unknown','fast','partial','full_hash'))
     """,
 )
-CURRENT_DDL = V11_DDL
+V12_EVIDENCE_DDL = (
+    "ALTER TABLE duplicate_plan_summaries ADD COLUMN requested_policy TEXT NOT NULL "
+    "DEFAULT 'legacy_unknown' CHECK(requested_policy IN ('legacy_unknown','fast','exact'))",
+    "ALTER TABLE duplicate_plan_summaries ADD COLUMN coverage TEXT NOT NULL "
+    "DEFAULT 'legacy_unknown' CHECK(coverage IN ('legacy_unknown','complete','partial'))",
+    "ALTER TABLE duplicate_plan_summaries ADD COLUMN exact_comparisons INTEGER DEFAULT NULL "
+    "CHECK(exact_comparisons IS NULL OR exact_comparisons>=0)",
+    "ALTER TABLE duplicate_plan_summaries ADD COLUMN changed_or_unreadable_files INTEGER DEFAULT NULL "
+    "CHECK(changed_or_unreadable_files IS NULL OR changed_or_unreadable_files>=0)",
+    "ALTER TABLE planned_duplicate_groups ADD COLUMN verification_mode TEXT NOT NULL "
+    "DEFAULT 'legacy_unknown' CHECK(verification_mode IN ('legacy_unknown','fast','partial','full_hash'))",
+    "ALTER TABLE planned_duplicate_groups ADD COLUMN proof_json TEXT NOT NULL DEFAULT '{}'",
+    "ALTER TABLE planned_duplicate_members ADD COLUMN proof_json TEXT NOT NULL DEFAULT '{}'",
+)
+CURRENT_DDL = (*V11_DDL, *V12_EVIDENCE_DDL)
 
 # The first seven v9 statements own generation publication; later statements
 # are unchanged cache/plan objects shared with v6 and v7. Explicit legacy
@@ -400,3 +414,7 @@ def build_v9_schema(connection: sqlite3.Connection) -> None:
 
 def build_v10_schema(connection: sqlite3.Connection) -> None:
     execute_ddl(connection, V10_DDL)
+
+
+def build_v11_schema(connection: sqlite3.Connection) -> None:
+    execute_ddl(connection, V11_DDL)

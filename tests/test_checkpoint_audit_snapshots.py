@@ -24,6 +24,7 @@ from neocortex.deduplication import DedupIndex, DedupPlanner, InventoryCheckpoin
 from neocortex.deduplication import snapshot_path
 from neocortex.documents.document_catalog import update_document_catalog_source
 from neocortex.documents.document_organization_planning import plan_document_organization
+from neocortex.documents.document_organization_scope import capture_organization_input_scope
 from tests.test_curation_verification import _build_state
 
 
@@ -69,10 +70,12 @@ def _publish_complete_catalog_scope(state: Path, corpus: Path, tmp_path: Path) -
             ),
         )
     update_document_catalog_source(
-        state / "document_catalog.sqlite3", source_state, "docx", verify_source_paths=True
+        state / "document_catalog.sqlite3", source_state, "docx", verify_source_paths=True,
+        source_root=corpus,
     )
+    source_scope = capture_organization_input_scope(state / "document_catalog.sqlite3", corpus)
     planned = plan_document_organization(
-        state / "document_catalog.sqlite3", tmp_path / "organized"
+        state / "document_catalog.sqlite3", tmp_path / "organized", source_scope=source_scope,
     )
     assert planned.planned + planned.review_required > 0
 

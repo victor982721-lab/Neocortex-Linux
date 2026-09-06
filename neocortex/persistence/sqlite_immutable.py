@@ -27,7 +27,7 @@ import time
 import math
 from contextlib import contextmanager
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import Iterator, Literal
@@ -123,9 +123,43 @@ class SQLiteSnapshotMetrics:
 
 
 @dataclass(slots=True)
+class SQLiteSnapshotOperationMetrics:
+    """Preparation totals and live temporary retention for one reuse cache."""
+
+    attempts: int = 0
+    prepared_views: int = 0
+    reused_views: int = 0
+    invalidated_views: int = 0
+    retained_views: int = 0
+    retained_temporary_bytes: int = 0
+    peak_temporary_bytes: int = 0
+    prepare_time_seconds: float = 0.0
+    cancelled: bool = False
+
+
+def _check_snapshot_cancellation(
+    budget: SQLiteSnapshotBudget,
+    metrics: SQLiteSnapshotMetrics | SQLiteSnapshotOperationMetrics,
+) -> None:
+    callback = budget.cancellation_check
+    if callback is None:
+        return
+    try:
+        decision = callback()
+    except BaseException:
+        metrics.cancelled = True
+        raise
+    if decision is not None and decision is not False:
+        metrics.cancelled = True
+        raise SQLiteSnapshotBudgetExceeded("cancelled")
+
+
+@dataclass(slots=True)
 class _ReusableSnapshot:
     session: "SQLiteReadSession"
     references: int = 0
+    temporary_bytes: int = 0
+    invalidated: bool = False
 
 
 class SQLiteSnapshotReuseCache:
@@ -133,16 +167,71 @@ class SQLiteSnapshotReuseCache:
 
     The cache is deliberately ephemeral: entries are keyed by the source fence
     and caller generation, and ``close`` releases every session.  It never
-    survives a process or becomes a second durable state store.
+    survives a process or becomes a second durable state store. The aggregate
+    byte limit covers all retained views plus preparation of the next view,
+    without increasing an individual snapshot's budget. Idle views may be
+    evicted for space; active leases remain counted until they are released.
     """
 
-    def __init__(self, *, max_entries: int = 32) -> None:
+    def __init__(
+        self,
+        *,
+        max_entries: int = 32,
+        max_temporary_bytes: int = DEFAULT_SQLITE_SNAPSHOT_MAX_TEMPORARY_BYTES,
+    ) -> None:
         if type(max_entries) is not int or not 1 <= max_entries <= 256:
             raise ValueError("max_entries must be between 1 and 256")
+        if type(max_temporary_bytes) is not int or max_temporary_bytes <= 0:
+            raise ValueError("max_temporary_bytes must be a positive integer")
         self._entries: dict[tuple[object, ...], _ReusableSnapshot] = {}
         self._lock = threading.RLock()
         self._owner_thread: int | None = None
         self._max_entries = max_entries
+        self._max_temporary_bytes = max_temporary_bytes
+        self._metrics = SQLiteSnapshotOperationMetrics()
+
+    @property
+    def snapshot_metrics(self) -> SQLiteSnapshotOperationMetrics:
+        """Return independent metrics suitable for ``dataclasses.asdict``.
+
+        Peak bytes include retained views plus a candidate's preparation
+        high-water mark; current bytes count only live prepared snapshots.
+        Invalidations include stale, errored, and capacity-evicted views.
+        """
+
+        with self._lock:
+            return replace(self._metrics)
+
+    @property
+    def remaining_temporary_bytes(self) -> int:
+        """Return the aggregate byte allowance not held by prepared views."""
+
+        with self._lock:
+            return self._max_temporary_bytes - self._metrics.retained_temporary_bytes
+
+    def _discard(self, key: tuple[object, ...], entry: _ReusableSnapshot) -> None:
+        if self._entries.get(key) is not entry:
+            return
+        del self._entries[key]
+        try:
+            entry.session.close()
+        finally:
+            self._metrics.retained_views -= 1
+            self._metrics.retained_temporary_bytes -= entry.temporary_bytes
+
+    def _invalidate(self, key: tuple[object, ...], entry: _ReusableSnapshot) -> None:
+        if not entry.invalidated:
+            entry.invalidated = True
+            self._metrics.invalidated_views += 1
+        if entry.references == 0:
+            self._discard(key, entry)
+
+    def _evict_idle(self) -> bool:
+        for key, entry in self._entries.items():
+            if entry.references == 0:
+                self._invalidate(key, entry)
+                return True
+        return False
 
     @staticmethod
     def _budget_key(budget: SQLiteSnapshotBudget | None) -> object:
@@ -174,6 +263,7 @@ class SQLiteSnapshotReuseCache:
         selected = Path(path).absolute()
         selected_mode = SQLiteReadMode(mode).value
         selected_temp_root = None if temp_root is None else str(Path(temp_root).absolute())
+        selected_budget = _coerce_snapshot_budget(budget, timeout_seconds=timeout_seconds)
         key: tuple[object, ...]
         with self._lock:
             current_thread = threading.get_ident()
@@ -191,39 +281,127 @@ class SQLiteSnapshotReuseCache:
                 selected_temp_root,
                 self._budget_key(budget),
             )
+            # Detached readers can finish their current lease after a publish,
+            # but a new lease must never rediscover an older fence/generation.
+            for old_key, old_entry in tuple(self._entries.items()):
+                if old_key[0] == str(selected) and old_key != key:
+                    self._invalidate(old_key, old_entry)
             entry = self._entries.get(key)
-            if entry is None:
-                idle = next(
-                    (candidate_key for candidate_key, candidate in self._entries.items() if candidate.references == 0),
-                    None,
-                )
-                if idle is not None and len(self._entries) >= self._max_entries:
-                    old = self._entries.pop(idle)
-                    old.session.close()
-                elif len(self._entries) >= self._max_entries:
+            try:
+                _check_snapshot_cancellation(selected_budget, self._metrics)
+            except BaseException as exc:
+                if entry is not None:
+                    try:
+                        self._invalidate(key, entry)
+                    except BaseException as cleanup_error:
+                        exc.add_note(f"cancelled SQLite snapshot cleanup failed: {cleanup_error}")
+                raise
+            if entry is not None:
+                if entry.invalidated:
                     raise ImmutableSQLiteUnavailable(
-                        "SQLite snapshot reuse cache capacity is exhausted"
+                        "SQLite snapshot view was invalidated while still in use"
+                    )
+                try:
+                    # Accessing this local property detects an explicitly
+                    # closed borrowed handle without querying the source.
+                    _ = entry.session.connection.in_transaction
+                except sqlite3.Error:
+                    self._invalidate(key, entry)
+                    if entry.references:
+                        raise
+                    entry = None
+            if entry is None:
+                while len(self._entries) >= self._max_entries:
+                    if not self._evict_idle():
+                        raise ImmutableSQLiteUnavailable(
+                            "SQLite snapshot reuse cache capacity is exhausted"
+                        )
+                preparation_budget = selected_budget
+                if selected_mode == SQLiteReadMode.SNAPSHOT_TEMP.value:
+                    source_bytes = _sqlite_fence_bytes(fence)
+                    # Do not evict usable views for a candidate that cannot
+                    # fit even in an otherwise empty operation.
+                    limit = min(selected_budget.max_temporary_bytes, self._max_temporary_bytes)
+                    if source_bytes <= limit:
+                        while source_bytes > self.remaining_temporary_bytes:
+                            if not self._evict_idle():
+                                break
+                    remaining = self.remaining_temporary_bytes
+                    if remaining <= 0:
+                        raise SQLiteSnapshotBudgetExceeded("temporary_bytes")
+                    preparation_budget = replace(
+                        selected_budget,
+                        max_temporary_bytes=min(selected_budget.max_temporary_bytes, remaining),
                     )
                 session = SQLiteReadSession(
                     selected,
                     mode=mode,
                     timeout_seconds=timeout_seconds,
                     temp_root=temp_root,
-                    budget=budget,
+                    budget=preparation_budget,
                     generation=generation,
                 )
-                session.open()
-                entry = _ReusableSnapshot(session)
+                try:
+                    session.open()
+                finally:
+                    self._metrics.attempts += session.metrics.attempts
+                    self._metrics.prepare_time_seconds += session.metrics.prepare_time_seconds
+                    self._metrics.cancelled |= session.metrics.cancelled
+                    self._metrics.peak_temporary_bytes = max(
+                        self._metrics.peak_temporary_bytes,
+                        self._metrics.retained_temporary_bytes + session.metrics.temporary_bytes,
+                    )
+                # The session may have retried a source race. Its successful
+                # fence, not the cache preflight fence, owns the copied bytes.
+                key = (*key[:2], session.source_fence, *key[3:])
+                temporary_database = session.temporary_database
+                try:
+                    if key in self._entries:
+                        # A retry may rediscover a fence whose invalidated
+                        # view still has active leases. Never overwrite its
+                        # ownership/accounting with the new candidate.
+                        raise ImmutableSQLiteUnavailable(
+                            "SQLite snapshot fence collided with a retained view"
+                        )
+                    temporary_bytes = (
+                        0 if temporary_database is None else temporary_database.stat().st_size
+                    )
+                    if temporary_bytes > self.remaining_temporary_bytes:
+                        raise SQLiteSnapshotBudgetExceeded("temporary_bytes")
+                except BaseException as exc:
+                    try:
+                        session.close()
+                    except BaseException as cleanup_error:
+                        exc.add_note(f"unretained SQLite snapshot cleanup failed: {cleanup_error}")
+                    raise
+                entry = _ReusableSnapshot(session, temporary_bytes=temporary_bytes)
                 self._entries[key] = entry
+                self._metrics.prepared_views += 1
+                self._metrics.retained_views += 1
+                self._metrics.retained_temporary_bytes += temporary_bytes
             else:
                 entry.session.metrics.reused_views += 1
+                self._metrics.reused_views += 1
             entry.references += 1
             connection = entry.session.connection
+        primary: BaseException | None = None
         try:
             yield connection
+        except BaseException as exc:
+            primary = exc
+            raise
         finally:
             with self._lock:
                 entry.references -= 1
+                try:
+                    if primary is not None:
+                        self._invalidate(key, entry)
+                    elif entry.invalidated and entry.references == 0:
+                        self._discard(key, entry)
+                except BaseException as cleanup_error:
+                    if primary is None:
+                        raise
+                    primary.add_note(f"reused SQLite snapshot cleanup failed: {cleanup_error}")
 
     def close(self) -> None:
         primary: BaseException | None = None
@@ -231,17 +409,15 @@ class SQLiteSnapshotReuseCache:
             current_thread = threading.get_ident()
             if self._owner_thread is not None and self._owner_thread != current_thread:
                 raise RuntimeError("SQLite snapshot reuse cache is thread-affine")
-            entries = tuple(self._entries.values())
-            self._entries.clear()
+            for key, entry in tuple(self._entries.items()):
+                try:
+                    self._discard(key, entry)
+                except BaseException as exc:
+                    if primary is None:
+                        primary = exc
+                    else:
+                        primary.add_note(f"reused SQLite snapshot cleanup failed: {exc}")
             self._owner_thread = None
-        for entry in entries:
-            try:
-                entry.session.close()
-            except BaseException as exc:
-                if primary is None:
-                    primary = exc
-                else:
-                    primary.add_note(f"reused SQLite snapshot cleanup failed: {exc}")
         if primary is not None:
             raise primary
 
@@ -302,16 +478,7 @@ class _SnapshotBudgetState:
         return total
 
     def checkpoint(self) -> None:
-        callback = self.budget.cancellation_check
-        if callback is not None:
-            try:
-                decision = callback()
-            except BaseException:
-                self.metrics.cancelled = True
-                raise
-            if decision is not None and decision is not False:
-                self.metrics.cancelled = True
-                raise SQLiteSnapshotBudgetExceeded("cancelled")
+        _check_snapshot_cancellation(self.budget, self.metrics)
         if self.budget.monotonic_clock() >= self.deadline:
             raise SQLiteSnapshotBudgetExceeded("prepare_time")
         observed = self._tree_bytes()
@@ -383,6 +550,10 @@ class SQLiteFileIdentity:
 class SQLiteImmutableFence:
     main: SQLiteFileIdentity
     sidecars: tuple[tuple[str, SQLiteFileIdentity], ...]
+
+
+def _sqlite_fence_bytes(fence: SQLiteImmutableFence) -> int:
+    return fence.main.size + sum(identity.size for _suffix, identity in fence.sidecars)
 
 
 def _file_identity(
@@ -873,16 +1044,10 @@ class SQLiteReadSession:
             try:
                 source_fence = capture_sqlite_read_fence(self.path)
                 self._source_fence = source_fence
+                _check_snapshot_cancellation(self.budget, self._metrics)
+                if self.budget.monotonic_clock() >= self._prepare_deadline:
+                    raise SQLiteSnapshotBudgetExceeded("prepare_time")
                 if self.mode is SQLiteReadMode.IMMUTABLE_STRICT:
-                    if self.budget.cancellation_check is not None:
-                        # Strict reads do not allocate temporary bytes, but a
-                        # caller's operation-level cancellation still applies.
-                        callback_result = self.budget.cancellation_check()
-                        if callback_result is not None and callback_result is not False:
-                            self._metrics.cancelled = True
-                            raise SQLiteSnapshotBudgetExceeded("cancelled")
-                    if self.budget.monotonic_clock() >= self._prepare_deadline:
-                        raise SQLiteSnapshotBudgetExceeded("prepare_time")
                     require_inactive_sqlite_sidecars(source_fence)
                     self._connection = open_immutable_sqlite_connection(
                         self.path,
@@ -899,6 +1064,11 @@ class SQLiteReadSession:
                         raise SQLiteSnapshotBudgetExceeded("prepare_time")
                     return self._connection
 
+                # The complete fenced input is a lower bound on the copy's
+                # footprint. Reject it before creating a directory or opening
+                # a destination, not after writing a budget-sized prefix.
+                if _sqlite_fence_bytes(source_fence) > self.budget.max_temporary_bytes:
+                    raise SQLiteSnapshotBudgetExceeded("temporary_bytes")
                 temporary_directory = tempfile.TemporaryDirectory(
                     prefix="neocortex-sqlite-read-",
                     dir=None if self.temp_root is None else os.fspath(self.temp_root),
@@ -1194,6 +1364,7 @@ __all__ = [
     "SQLiteSnapshotBudget",
     "SQLiteSnapshotBudgetExceeded",
     "SQLiteSnapshotMetrics",
+    "SQLiteSnapshotOperationMetrics",
     "SQLiteSnapshotReuseCache",
     "capture_sqlite_immutable_fence",
     "capture_sqlite_read_fence",

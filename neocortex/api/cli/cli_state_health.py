@@ -12,9 +12,28 @@ def run_state_health(args: argparse.Namespace) -> int:
     """Inspect all known SQLite owners without opening them directly."""
 
     try:
-        health = inspect_state_health(args.state_directory)
+        options = {}
+        for argument, keyword, default in (
+            ("state_health_timeout", "timeout_seconds", 30.0),
+            ("state_health_scope", "scope", "full"),
+            ("state_health_max_owners", "max_owners", None),
+            ("state_health_after_owner", "after_owner", None),
+        ):
+            value = getattr(args, argument, default)
+            if value != default:
+                options[keyword] = value
+        owners = getattr(args, "state_health_owner", None)
+        if owners is not None:
+            options["owners"] = tuple(owners)
+        health = inspect_state_health(args.state_directory, **options)
     except (OSError, RuntimeError, ValueError) as exc:
-        print(f"ERROR state-health {type(exc).__name__}: {exc}")
+        if args.state_health_json:
+            print(json.dumps({
+                "kind": "state-health-error", "complete": False,
+                "error": {"code": "state_health_failed", "type": type(exc).__name__, "detail": str(exc)},
+            }, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")))
+        else:
+            print(f"ERROR state-health {type(exc).__name__}: {exc}")
         return 2
     if args.state_health_json:
         print(
@@ -29,6 +48,7 @@ def run_state_health(args: argparse.Namespace) -> int:
     else:
         print(
             f"STATE_HEALTH overall={health.overall} "
+            f"scope={getattr(args, 'state_health_scope', 'full')} "
             f"healthy={health.healthy_count} missing={health.missing_count} "
             f"orphaned_sidecars={health.orphaned_sidecar_count} "
             f"blocked={health.blocked_count} active={health.active_count} "
@@ -48,7 +68,7 @@ def run_state_health(args: argparse.Namespace) -> int:
                 f"tables={owner.table_count} sidecars={sidecars} "
                 f"detail={owner.detail or '-'} path={owner.path}"
             )
-    return 0 if health.overall == "healthy" else 2
+    return 0 if getattr(health, "scope_complete", health.overall == "healthy") else 2
 
 
 __all__ = ["run_state_health"]

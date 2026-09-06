@@ -124,6 +124,15 @@ def _record_candidate(
     ranking_name: str,
     rrf_k: float,
 ) -> None:
+    if candidate.signal.evidence is not None and any(
+        getattr(candidate.signal.evidence, name) != getattr(candidate.evidence, name)
+        for name in (
+            "evidence_id", "resource_id", "revision_id", "method", "page", "section_kind",
+            "section_id", "start_char", "end_char", "start_line", "end_line", "start_ms",
+            "end_ms", "snippet",
+        )
+    ):
+        raise ValueError("one ranking signal claims a witness different from its scored evidence")
     aggregate = aggregates.get(key)
     if aggregate is None:
         aggregate = _EvidenceAggregate(candidate)
@@ -142,6 +151,7 @@ def _record_candidate(
             source=ranking_name,
             source_rank=source_rank,
             contribution=contribution,
+            evidence=candidate.signal.evidence or candidate.evidence,
         )
     )
     aggregate.reasons.add(candidate.reason)
@@ -237,7 +247,9 @@ def overlaps_or_too_close(
     minimum_distance: int,
 ) -> bool:
     if (
-        selected.section_kind != candidate.section_kind
+        selected.resource_id != candidate.resource_id
+        or selected.revision_id != candidate.revision_id
+        or selected.section_kind != candidate.section_kind
         or selected.section_id != candidate.section_id
     ):
         return False
@@ -278,6 +290,8 @@ def _find_overlap_index(
     overlap_check: _OverlapCheck,
 ) -> int | None:
     for index in prior:
+        if selected[index].revision.revision_id != candidate.revision.revision_id:
+            continue
         if overlap_check(
             selected[index].evidence,
             candidate.evidence,
@@ -382,9 +396,18 @@ def _apply_diversity(
     limit: int,
     max_per_resource: int,
 ) -> tuple[tuple[KnowledgeHit, ...], int]:
+    def scoped_counterevidence(hit: KnowledgeHit) -> bool:
+        witnesses = tuple(signal for signal in hit.signals if signal.evidence is not None)
+        # Preserve contradictory evidence, but do not let an explicitly
+        # non-record/non-occurrence claim outrank a recorded event solely from
+        # repeated channel votes.  An unassessed or supporting witness prevents
+        # this caution from spreading across a merged contribution cluster.
+        return bool(witnesses) and all(signal.query_support.get("role_counterevidence") for signal in witnesses)
+
     clustered = sorted(
         selected,
         key=lambda hit: (
+            scoped_counterevidence(hit),
             -hit.fused_score,
             hit.resource.resource_id,
             hit.revision.revision_id,

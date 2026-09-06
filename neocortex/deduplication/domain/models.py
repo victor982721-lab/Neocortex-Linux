@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from .evidence import DedupPolicy, DuplicateGroupProof, DuplicateMemberProof, PlanCoverage
+
 
 VerificationMode = Literal["legacy_unknown", "fast", "partial", "full_hash"]
 VALID_VERIFICATION_MODES = frozenset(
@@ -59,17 +61,31 @@ class InventoryCheckpoint:
 
 @dataclass(frozen=True, slots=True)
 class DuplicateGroup:
-    """One byte-for-byte equivalent set; no action has been executed."""
+    """One content-equality candidate set; evidence does not authorize effects."""
 
     size: int
     keep: FileSnapshot
     redundant: tuple[FileSnapshot, ...]
     full_fingerprint: str
     verification_mode: VerificationMode = "legacy_unknown"
+    proof: DuplicateGroupProof | None = None
+    member_proofs: tuple[DuplicateMemberProof, ...] = ()
 
     @property
     def reclaimable_bytes(self) -> int:
+        """Compatibility alias for nominal redundant content, not physical savings."""
+
+        return self.nominal_redundant_bytes
+
+    @property
+    def nominal_redundant_bytes(self) -> int:
         return self.size * len(self.redundant)
+
+    @property
+    def physical_reclaimable_bytes(self) -> None:
+        """Link topology, allocated extents and an authorized effect are not proven."""
+
+        return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,7 +100,7 @@ class PlanStatistics:
 
 @dataclass(frozen=True, slots=True)
 class DedupPlan:
-    """Non-destructive plan of exact duplicate groups."""
+    """Non-destructive physical-content plan with explicit verification coverage."""
 
     scan_id: int
     groups: tuple[DuplicateGroup, ...]
@@ -93,6 +109,8 @@ class DedupPlan:
     total_redundant_files: int | None = None
     total_reclaimable_bytes: int | None = None
     verification_mode: VerificationMode = "legacy_unknown"
+    requested_policy: DedupPolicy = "legacy_unknown"
+    coverage: PlanCoverage = "legacy_unknown"
 
     @property
     def group_count(self) -> int:
@@ -109,6 +127,14 @@ class DedupPlan:
         if self.total_reclaimable_bytes is not None:
             return self.total_reclaimable_bytes
         return sum(group.reclaimable_bytes for group in self.groups)
+
+    @property
+    def nominal_redundant_bytes(self) -> int:
+        return self.reclaimable_bytes
+
+    @property
+    def physical_reclaimable_bytes(self) -> None:
+        return None
 
 
 __all__ = [

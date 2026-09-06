@@ -2298,6 +2298,32 @@ def read_review_task_publication(
     return result
 
 
+def read_current_review_task_source_publication(
+    database: str | Path, fence: ReviewTaskSourceFence, *,
+    cancellation_check: CancellationCheck | None = None,
+) -> ReviewTaskSourcePublication | None:
+    """Return an exact current source head only after validating final receipts."""
+
+    if not isinstance(fence, ReviewTaskSourceFence):
+        raise TypeError("fence must be a ReviewTaskSourceFence")
+    bridge = SQLiteCancellationBridge(cancellation_check)
+    connection = connect_existing_framework(Path(database), readonly=True)
+    try:
+        with sqlite_cancellation_scope(connection, bridge):
+            _checkpoint(bridge)
+            connection.execute("BEGIN")
+            _require_review_task_schema(connection)
+            selected = _current_source_publication(connection, fence)
+            if selected is None or selected.fence != fence:
+                return None
+            validated = _effective_source_publications_by_id(connection, (selected.publication_id,))
+            _checkpoint(bridge)
+            connection.commit()
+            return validated[selected.publication_id]
+    finally:
+        connection.close()
+
+
 def read_review_task_progress(
     database: str | Path,
     fence: ReviewTaskSourceFence,
@@ -3063,6 +3089,7 @@ __all__ = (
     "list_current_review_tasks",
     "lookup_review_task_version_heads",
     "publish_review_task_page",
+    "read_current_review_task_source_publication",
     "read_latest_complete_review_task_progress",
     "read_review_task",
     "read_review_task_event_by_key",

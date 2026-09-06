@@ -29,6 +29,9 @@ from neocortex.api.cli.cli_validation import validate_arguments
 
 
 DIRECT_ARGUMENT_CASES = (
+    ("pdf_diagnostics", "run_pdf_diagnostics", ("--pdf-diagnostics", "20")),
+    ("text_errors", "run_text_errors", ("--text-errors", "20")),
+    ("archive_issues", "run_archive_issues", ("--archive-issues", "20")),
     (
         "doctor_capabilities",
         "run_doctor_capabilities",
@@ -78,6 +81,10 @@ DIRECT_ARGUMENT_CASES = (
     ),
     ("semantic_index", "run_semantic_index", ("--semantic-index", "text")),
     ("semantic_search", "run_semantic_search", ("--semantic-search", "query")),
+    (
+        "semantic_image_calibrate", "run_semantic_image_calibrate",
+        ("--semantic-image-calibrate", "calibration.json"),
+    ),
     (
         "semantic_classify",
         "run_semantic_classify",

@@ -1344,6 +1344,11 @@ def capture_knowledge_asset_fact_snapshot(
             ),
         )
     )
+    from .knowledge_asset_diagnosis_owners import capture_supplemental_diagnosis
+
+    diagnostic_observations, diagnostic_gaps = capture_supplemental_diagnosis(
+        paths, identity, snapshot.snapshot_id, inventory_fact,
+    )
     return KnowledgeAssetFactSnapshot.create(
         resource_id=identity.resource_id,
         knowledge_snapshot_id=snapshot.snapshot_id,
@@ -1352,6 +1357,8 @@ def capture_knowledge_asset_fact_snapshot(
         counterevidence=tuple(sorted(counterevidence)),
         examples=ordered_examples,
         examples_truncated=examples.truncated,
+        diagnostic_observations=diagnostic_observations,
+        diagnostic_gaps=diagnostic_gaps,
     )
 
 

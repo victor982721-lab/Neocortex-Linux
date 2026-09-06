@@ -216,7 +216,8 @@ def test_authorization_expands_a_truncated_group_from_published_owner(tmp_path: 
 
     assert len(outcome.grant.authorized_effects or ()) == 64
     assert outcome.grant.authorized_effects is not None
-    assert outcome.grant.authorized_effects[-1].source.path.endswith("member-0000.bin")
+    assert outcome.grant.authorized_effects[-1].source.path.endswith("member-0064.bin")
+    assert all(effect.source.path != duplicate.item.evidence["keep_path"] for effect in outcome.grant.authorized_effects)
 
 
 def test_authorization_does_not_use_a_tampered_preview_sample(tmp_path: Path) -> None:

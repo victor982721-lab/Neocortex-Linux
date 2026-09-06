@@ -20,6 +20,7 @@ from .cli_audio_surface import register_audio_arguments
 from .cli_archive_surface import register_archive_arguments
 from .cli_capabilities_surface import register_capabilities_arguments
 from .cli_code_surface import register_code_arguments
+from .cli_content_diagnostics import register_content_diagnostics_arguments
 from .cli_docx_surface import register_docx_arguments
 from .cli_knowledge_surface import register_knowledge_arguments
 from .cli_models_surface import register_models_arguments
@@ -218,6 +219,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="emit --state-health as one structured JSON object",
     )
+    status.add_argument(
+        "--state-health-scope",
+        choices=("full", "compatibility", "integrity", "referential"),
+        default="full",
+        help="declare which checks are requested; omitted checks are not healthy",
+    )
+    status.add_argument("--state-health-owner", action="append", metavar="OWNER")
+    status.add_argument("--state-health-max-owners", type=int, metavar="N")
+    status.add_argument("--state-health-after-owner", metavar="OWNER")
+    status.add_argument("--state-health-timeout", type=float, default=30.0, metavar="SECONDS")
     recovery = parser.add_argument_group("Uncertain file-action recovery")
     recovery.add_argument(
         "--action-recovery-status",
@@ -274,6 +285,10 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="RUN_ID",
     )
     recovery.add_argument("--action-recovery-json", action="store_true")
+    recovery.add_argument(
+        "--action-recovery-json-lines", action="store_true",
+        help="preserve legacy per-record JSONL output; requires --action-recovery-json",
+    )
     retention = parser.add_argument_group("Read-only retention planning")
     retention.add_argument(
         "--retention-status",
@@ -731,8 +746,13 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument(
         "--review-json",
         action="store_true",
-        help="emit review command results as deterministic JSON Lines",
+        help="emit candidate pages as structured JSON; other review commands retain JSON Lines",
     )
+    review.add_argument(
+        "--review-json-lines", action="store_true",
+        help="preserve legacy candidate JSON Lines; requires --review-candidates and --review-json",
+    )
+    review.add_argument("--review-after", metavar="CURSOR", help="resume a fenced candidate page")
     parser.add_argument(
         "--dedup-policy",
         choices=("fast", "exact"),
@@ -979,6 +999,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     register_code_arguments(parser, megabyte_type=decimal_megabytes)
 
+    register_content_diagnostics_arguments(parser)
     register_semantic_arguments(parser)
 
     register_knowledge_arguments(parser)

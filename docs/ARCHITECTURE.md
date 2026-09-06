@@ -53,6 +53,17 @@ la ruta Linux normal.
 
 ### Inventario y deduplicación
 
+La identidad física se valida con `FileIdentity` y el codec explícito del owner;
+un recurso virtual conserva su `ResourceRef` y ancla, sin reinterpretarlo como
+inode. Catálogo v8 añade bindings y ámbito mediante migración aditiva con copia
+consistente previa, preservando claves e identidades históricas. Las lecturas
+legacy ambiguas se abstienen de producir efectos y conservan el diagnóstico.
+
+Inventario v12 conserva evidencia por grupo/miembro y separa política solicitada,
+verificación efectuada y cobertura del plan. La selección de keeper es explicable,
+las preferencias explícitas prevalecen y mtime no representa versión documental;
+aliases y bytes redundantes nominales no demuestran liberación física de espacio.
+
 `neocortex.deduplication` conserva snapshots, generaciones, fingerprints y
 planes no destructivos. Reduce candidatos por tamaño y huella, pero la igualdad
 destructiva exige comparación byte a byte. `mark_abandoned_scans()` concilia
@@ -79,6 +90,26 @@ Catálogo y Semantic son proyecciones reconstruibles con heads publicados.
 Knowledge crea un snapshot lógico sobre owners compatibles y fusiona rankings
 sin convertir scores heterogéneos en una sola certeza. Puede entregar evidencia
 y contexto citado, pero no genera autoridad de mutación.
+
+La planificación organizativa selecciona una raíz de entrada con identidad y
+heads publicados antes de calcular destinos. Clasificación, elegibilidad,
+operación y ejecutabilidad son dimensiones distintas; los miembros/componentes
+virtuales no reciben movimientos físicos ni un flag SQLite concede autoridad.
+Los planes legacy sin ámbito probado permanecen advisory y no ejecutables.
+
+Knowledge v2 proyecta fuentes únicas y citas con localizadores, manteniendo
+recuperación, relaciones, evidencia y presentación como coberturas separadas.
+El lookup por referencia valida owner, revisión y publicación sin repetir la
+búsqueda; un rango o propietario no soportado se declara explícitamente. Salud
+del pipeline, condición del archivo, contenido documentado y preferencia
+organizativa no son equivalentes. El diagnóstico consulta owners especializados,
+sin copiar sus datos a otro almacén monolítico.
+
+Archive distingue ZIP físico, documento lógico y componentes, incluido OTT
+exterior/anidado; MIME declarado, estructura e integridad pendiente se conservan
+separados. PDF informa el resultado publicado sin sumar como omisiones actuales
+las páginas fallidas de intentos históricos. Una imagen candidata a documento
+es una observación, no una decisión humana ni un candidato automático a borrar.
 
 La búsqueda visual mantiene un contrato adicional de calibración local: el piso
 de similitud se mide sobre consultas positivas y negativas, se liga al modelo,

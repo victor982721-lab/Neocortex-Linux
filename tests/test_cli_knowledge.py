@@ -321,6 +321,8 @@ def test_context_handler_forwards_the_character_budget(
             "--knowledge-context-characters",
             "34567",
             "--knowledge-json",
+            "--knowledge-response-version",
+            "1",
         )
     )
     validate_arguments(args)
@@ -360,7 +362,7 @@ def test_absent_status_json_is_successful_and_creates_no_state(
     (
         ("--knowledge-status",),
         ("--knowledge-search", "relay protection"),
-        ("--knowledge-context", "relay protection"),
+        ("--knowledge-context", "relay protection", "--knowledge-response-version", "1"),
     ),
 )
 def test_existing_non_directory_state_root_is_fatal_not_absent_success(
@@ -394,7 +396,7 @@ def test_existing_non_directory_state_root_is_fatal_not_absent_success(
     (
         ("--knowledge-status",),
         ("--knowledge-search", "relay protection"),
-        ("--knowledge-context", "relay protection"),
+        ("--knowledge-context", "relay protection", "--knowledge-response-version", "1"),
     ),
 )
 def test_inaccessible_state_root_is_fatal_for_every_knowledge_action(
@@ -448,6 +450,7 @@ def test_absent_query_is_partial_not_false_no_results_and_creates_no_state(
             operation,
             "relay protection",
             "--knowledge-json",
+            *(("--knowledge-response-version", "1") if operation == "--knowledge-context" else ()),
         )
     )
 

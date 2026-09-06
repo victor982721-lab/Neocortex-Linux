@@ -51,6 +51,7 @@ class DirectOperationFamily(Enum):
     CODE = auto()
     KNOWLEDGE = auto()
     CURATION = auto()
+    CONTENT_DIAGNOSTICS = auto()
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,8 +106,21 @@ _ARCHIVE = DirectOperationFamily.ARCHIVE
 _CODE = DirectOperationFamily.CODE
 _KNOWLEDGE = DirectOperationFamily.KNOWLEDGE
 _CURATION = DirectOperationFamily.CURATION
+_CONTENT_DIAGNOSTICS = DirectOperationFamily.CONTENT_DIAGNOSTICS
 
 DIRECT_OPERATIONS: tuple[DirectOperation, ...] = (
+    DirectOperation(
+        "pdf_diagnostics", "run_pdf_diagnostics", _CONTENT_DIAGNOSTICS,
+        SelectionMode.NOT_NONE, module_name=".cli_content_diagnostics",
+    ),
+    DirectOperation(
+        "text_errors", "run_text_errors", _CONTENT_DIAGNOSTICS,
+        SelectionMode.NOT_NONE, module_name=".cli_content_diagnostics",
+    ),
+    DirectOperation(
+        "archive_issues", "run_archive_issues", _CONTENT_DIAGNOSTICS,
+        SelectionMode.NOT_NONE, module_name=".cli_content_diagnostics",
+    ),
     DirectOperation(
         "doctor_capabilities",
         "run_doctor_capabilities",

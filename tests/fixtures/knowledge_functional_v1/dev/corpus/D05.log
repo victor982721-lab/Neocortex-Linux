@@ -1,0 +1,3 @@
+Terminación por presión de memoria
+
+El proceso de renderizado del lote Atlas terminó con SIGKILL. El kernel registró Out of memory y seleccionó al worker de mayor RSS cuando la RAM disponible cayó a 90 MiB y swap estaba agotada. La caída se debió a presión de memoria, no a un archivo inexistente. Se conservaron los documentos originales.

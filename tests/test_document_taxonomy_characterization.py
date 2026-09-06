@@ -1,4 +1,4 @@
-"""Representative byte-stable characterization for document classifier v14."""
+"""Preserved v14 behavioral payload plus v15 additive role evidence."""
 
 from __future__ import annotations
 
@@ -446,11 +446,23 @@ def test_classifier_v14_representative_payload_is_characterized(
 ) -> None:
     classification = classify_document(case.signals)
 
-    assert CLASSIFIER_VERSION == "technical-document-classifier-v14"
+    assert CLASSIFIER_VERSION == "technical-document-classifier-v15"
     assert classification.primary_kind == case.expected_primary
     assert classification.confidence == case.expected_confidence
     assert classification.uncertainty == case.expected_uncertainty
-    assert _payload_fingerprint(asdict(classification)) == case.expected_fingerprint
+    payload = asdict(classification)
+    # Keep the 30 original fingerprints instead of silently rebaselining their
+    # behavior when v15 adds independent explanatory dimensions.
+    for field in (
+        "document_role", "role_evidence", "entity_roles", "issuer_status",
+        "taxonomy_status", "contradictions", "unknowns", "confidence_kind",
+    ):
+        payload.pop(field)
+    payload["classifier_signature"] = payload["classifier_signature"].replace(
+        "classifier-v15", "classifier-v14"
+    )
+    assert _payload_fingerprint(payload) == case.expected_fingerprint
+    assert classification.confidence_kind == "uncalibrated_heuristic"
 
 
 def test_characterization_matrix_is_bounded_and_covers_uncertainty() -> None:

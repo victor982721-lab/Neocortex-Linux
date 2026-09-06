@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import stat
 import threading
 import time
 import zlib
@@ -49,9 +50,20 @@ from .document_catalog_schema import (
     migrate_document_catalog_schema,
     validate_v5_document_catalog_schema,
     validate_v6_document_catalog_schema,
+    validate_v7_document_catalog_schema,
+)
+from .document_resource_binding import (
+    ResourceBindingError,
+    build_resource_binding,
+    parse_resource_binding,
+    physical_identity_from_components,
 )
 from neocortex.runtime.control.cancellation import CancellationRequested
-from neocortex.foundation.file_identity import decode_file_identity
+from neocortex.foundation.file_identity import (
+    FileIdentity,
+    FileIdentityEncoding,
+    decode_file_identity,
+)
 from neocortex.persistence.sqlite_schema_contract import (
     read_metadata_schema_version,
     validate_sqlite_schema_contract,
@@ -124,6 +136,7 @@ _CATALOG_DOCUMENT_COLUMNS = (
     "active",
     "last_seen_catalog_run_id",
     "updated_ns",
+    "resource_binding_json",
 )
 
 
@@ -147,6 +160,7 @@ class SourceDocument:
     coverage: SourceCoverage = "complete"
     text_truncated: bool = False
     virtual: bool = False
+    resource_binding_json: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,7 +279,7 @@ def document_catalog_database(path: Path, *, readonly: bool = False):
 
 
 def initialize_document_catalog(path: Path) -> None:
-    """Validate v7 read-only or atomically migrate one known legacy catalog."""
+    """Validate current state read-only or back up and migrate a known legacy catalog."""
 
     with _CATALOG_WRITE_LOCK:
         prior = _read_catalog_version(path)
@@ -282,6 +296,8 @@ def initialize_document_catalog(path: Path) -> None:
                     raise RuntimeError(
                         "document catalog schema version changed before migration lock"
                     )
+                if locked_prior is not None:
+                    _backup_catalog_before_migration(path, locked_prior)
                 migrate_document_catalog_schema(
                     connection,
                     locked_prior or 0,
@@ -321,7 +337,73 @@ def _read_catalog_version(path: Path) -> int | None:
             validate_v5_document_catalog_schema(connection)
         elif version == 6:
             validate_v6_document_catalog_schema(connection)
+        elif version == 7:
+            validate_v7_document_catalog_schema(connection)
     return version
+
+
+def _backup_catalog_before_migration(path: Path, prior: int) -> Path:
+    """Keep a consistent, private pre-migration copy before any schema change.
+
+    The caller already holds BEGIN IMMEDIATE. The sidecar-safe read kernel sees
+    exactly that committed base without opening a second ordinary owner reader.
+    """
+    destination = path.with_name(
+        f"{path.name}.pre-v{prior}-to-v{CATALOG_SCHEMA_VERSION}-{time.time_ns()}.sqlite3"
+    )
+    descriptor = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    os.close(descriptor)
+    deadline = time.monotonic() + 60.0
+
+    def bounded_backup(_status: int, _remaining: int, _total: int) -> None:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("document catalog migration backup deadline exceeded")
+
+    try:
+        with document_catalog_database(path, readonly=True) as source:
+            target = connect_sqlite(
+                destination,
+                mode=READWRITE_CREATE,
+                policy=SQLiteConnectionPolicy(label="catalog migration backup"),
+            )
+            try:
+                source.backup(target, pages=256, progress=bounded_backup, sleep=0.01)
+                if target.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                    raise RuntimeError("catalog migration backup failed integrity verification")
+            finally:
+                target.close()
+        with destination.open("rb") as handle:
+            digest = hashlib.file_digest(handle, "sha256").hexdigest()
+            os.fsync(handle.fileno())
+        receipt = destination.with_suffix(destination.suffix + ".json")
+        with receipt.open("x", encoding="utf-8") as handle:
+            os.chmod(receipt, 0o600)
+            json.dump(
+                {
+                    "source": str(path.absolute()),
+                    "backup": str(destination.absolute()),
+                    "prior_schema": prior,
+                    "target_schema": CATALOG_SCHEMA_VERSION,
+                    "sha256": digest,
+                    "bytes": destination.stat().st_size,
+                },
+                handle,
+                sort_keys=True,
+            )
+            handle.flush()
+            os.fsync(handle.fileno())
+        parent_descriptor = os.open(
+            destination.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        )
+        try:
+            os.fsync(parent_descriptor)
+        finally:
+            os.close(parent_descriptor)
+    except BaseException:
+        # The exclusive destination is our own incomplete staging, never a source.
+        destination.unlink(missing_ok=True)
+        raise
+    return destination
 
 
 def _migrate_identity_text_to_decimal(connection: sqlite3.Connection) -> None:
@@ -340,6 +422,8 @@ def _migrate_identity_text_to_decimal(connection: sqlite3.Connection) -> None:
             break
         updates: list[tuple[str, str, str, str]] = []
         for row in rows:
+            if row["source_kind"] in {"archive", "code"}:
+                continue  # owner keys are not filesystem keys; preserve legacy evidence
             volume_id, file_id = _split_file_key(str(row["file_key"]))
             if volume_id and (volume_id != str(row["volume_id"]) or file_id != str(row["file_id"])):
                 updates.append((volume_id, file_id, str(row["source_kind"]), str(row["file_key"])))
@@ -353,7 +437,7 @@ def _migrate_identity_text_to_decimal(connection: sqlite3.Connection) -> None:
     last_plan_id = 0
     while True:
         rows = connection.execute(
-            """SELECT plan_id,file_key,volume_id,file_id FROM organization_plans
+            """SELECT plan_id,file_key,volume_id,file_id,source_kind FROM organization_plans
             WHERE plan_id>? ORDER BY plan_id LIMIT 500""",
             (last_plan_id,),
         ).fetchall()
@@ -361,6 +445,8 @@ def _migrate_identity_text_to_decimal(connection: sqlite3.Connection) -> None:
             break
         plan_updates: list[tuple[str, str, int]] = []
         for row in rows:
+            if row["source_kind"] in {"archive", "code"}:
+                continue
             volume_id, file_id = _split_file_key(str(row["file_key"]))
             if volume_id and (volume_id != str(row["volume_id"]) or file_id != str(row["file_id"])):
                 plan_updates.append((volume_id, file_id, int(row["plan_id"])))
@@ -407,7 +493,73 @@ def _source_coverage(
 def _catalog_source_is_virtual(document: SourceDocument) -> bool:
     """Return whether ``document.path`` is a logical locator, not a file path."""
 
-    return document.virtual or document.source_kind == "archive"
+    return document.virtual
+
+
+def _catalog_input_root(
+    source_root: Path | None,
+) -> tuple[Path | None, tuple[int, int, int] | None]:
+    if source_root is None:
+        return None, None
+    root = Path(os.path.abspath(source_root))
+    metadata = root.lstat()
+    if not stat.S_ISDIR(metadata.st_mode) or root.resolve(strict=True) != root:
+        raise ValueError(
+            "catalog source_root must be a canonical directory without symlink aliases"
+        )
+    return root, (metadata.st_dev, metadata.st_ino, stat_birthtime_ns(metadata))
+
+
+def _catalog_path_in_scope(path: str, root: Path) -> bool:
+    # Persisted owner anchors, never a parsed archive locator or a resolved link.
+    return Path(path).is_absolute() and Path(os.path.abspath(path)).is_relative_to(root)
+
+
+def _source_document_is_in_scope(document: SourceDocument, root: Path) -> bool:
+    if document.resource_binding_json is not None:
+        binding = parse_resource_binding(document.resource_binding_json)
+        anchor = binding["physical_anchor_path"]
+    else:
+        anchor = None if document.virtual else document.path
+    if anchor is None:
+        raise ResourceBindingError(
+            "source scope requires a proven physical anchor",
+            field="physical_anchor_path",
+            encoding="unresolved",
+            value=document.file_key,
+            code="source_scope_unresolved",
+        )
+    return _catalog_path_in_scope(anchor, root)
+
+
+def _preserve_catalog_outside_scope(
+    connection: sqlite3.Connection, build: CatalogBuild, root: Path
+) -> None:
+    """Carry unchanged published rows outside this input into the next generation.
+
+    Untagged historical archive references are retained, not reclassified or
+    retired by guessing a physical path. The organization reader keeps these
+    unresolved references advisory-only.
+    """
+    columns = ",".join(_CATALOG_DOCUMENT_COLUMNS)
+    rows = connection.execute(
+        "SELECT source_kind,file_key,path,resource_binding_json FROM documents "
+        "WHERE source_kind=? AND active=1 ORDER BY file_key",
+        (build.source_kind,),
+    )
+    for row in rows:
+        raw = row["resource_binding_json"]
+        if raw is not None:
+            anchor = parse_resource_binding(raw)["physical_anchor_path"]
+        else:
+            anchor = None if row["source_kind"] == "archive" else str(row["path"])
+        if anchor is not None and _catalog_path_in_scope(anchor, root):
+            continue
+        connection.execute(
+            f"INSERT INTO catalog_generation_documents(generation_id,{columns}) "
+            f"SELECT ?,{columns} FROM documents WHERE source_kind=? AND file_key=?",
+            (build.generation_id, build.source_kind, row["file_key"]),
+        )
 
 
 def update_document_catalog_source(
@@ -422,6 +574,7 @@ def update_document_catalog_source(
     progress: ProgressCallback | None = None,
     progress_operation: str | None = None,
     cancellation: "CancellationToken | None" = None,
+    source_root: Path | None = None,
 ) -> CatalogUpdateSummary:
     """Classify one source cache incrementally with bounded text sampling."""
 
@@ -429,6 +582,7 @@ def update_document_catalog_source(
     # catalog, so a new owner cannot silently enter the generic office reader
     # without declaring its route, state database and consumers.
     content_capability_for_source(source_kind)
+    scoped_root, root_identity = _catalog_input_root(source_root)
     if max_text_chars < 1:
         raise ValueError("max_text_chars must be positive")
     max_text_chars = min(max_text_chars, MAX_CLASSIFICATION_TEXT_CHARS)
@@ -462,6 +616,8 @@ def update_document_catalog_source(
             return summary
         candidates = classified = hits = review = errors = source_stale = 0
         try:
+            if scoped_root is not None:
+                _preserve_catalog_outside_scope(catalog, build, scoped_root)
             with _readonly_source(source_path) as source:
                 candidate_total = _source_document_count(source, source_kind)
                 _emit_catalog_progress(
@@ -475,9 +631,18 @@ def update_document_catalog_source(
                     errors=0,
                     review=0,
                 )
-                for document in _iter_source_documents(source, source_kind):
+                for document in _iter_source_documents(
+                    source,
+                    source_kind,
+                    verify_source_paths=verify_source_paths,
+                    source_root=scoped_root,
+                ):
                     if cancellation is not None:
                         cancellation.checkpoint()
+                    if scoped_root is not None and not _source_document_is_in_scope(
+                        document, scoped_root
+                    ):
+                        continue
                     candidates += 1
                     if (
                         verify_source_paths
@@ -486,6 +651,7 @@ def update_document_catalog_source(
                     ):
                         source_stale += 1
                         continue
+                    document = _attach_resource_binding(document)
                     if _catalog_cache_hit(catalog, document, taxonomy):
                         _stage_cached_document(catalog, build, document)
                         hits += 1
@@ -527,6 +693,16 @@ def update_document_catalog_source(
                                 exc,
                             )
                             errors += 1
+                    catalog.execute(
+                        "UPDATE catalog_generation_documents SET resource_binding_json=? "
+                        "WHERE generation_id=? AND source_kind=? AND file_key=?",
+                        (
+                            document.resource_binding_json,
+                            build.generation_id,
+                            document.source_kind,
+                            document.file_key,
+                        ),
+                    )
                     if candidates % CATALOG_PROGRESS_INTERVAL == 0 or candidates == candidate_total:
                         _emit_catalog_progress(
                             progress,
@@ -551,6 +727,8 @@ def update_document_catalog_source(
                 errors=errors,
                 source_stale=source_stale,
             )
+            if scoped_root is not None and _catalog_input_root(scoped_root)[1] != root_identity:
+                raise RuntimeError("catalog input root identity changed before publication")
             summary = _publish_catalog_build(catalog, build, summary)
             _emit_catalog_progress(
                 progress,
@@ -593,8 +771,7 @@ def _source_document_count(
         parameters = ()
     elif source_kind == "image":
         return int(
-            connection.execute("SELECT COUNT(*) FROM images WHERE status='done'")
-            .fetchone()[0]
+            connection.execute("SELECT COUNT(*) FROM images WHERE status='done'").fetchone()[0]
         )
     elif source_kind == "archive":
         return int(
@@ -669,6 +846,7 @@ def update_document_catalog(
     *,
     taxonomy_path: Path | None = None,
     framework_run_id: int | None = None,
+    source_root: Path | None = None,
 ) -> tuple[CatalogUpdateSummary, ...]:
     """Update every durable document cache without scanning the filesystem."""
 
@@ -693,10 +871,7 @@ def update_document_catalog(
             source_kind,
         )
         for source_kind in ("archive", "code", "image", "video")
-        if (
-            state_directory
-            / content_capability_for_source(source_kind).state_database
-        ).is_file()
+        if (state_directory / content_capability_for_source(source_kind).state_database).is_file()
     )
     return tuple(
         update_document_catalog_source(
@@ -705,6 +880,7 @@ def update_document_catalog(
             source_kind,
             framework_run_id=framework_run_id,
             taxonomy_path=taxonomy_path,
+            source_root=source_root,
         )
         for source_path, source_kind in (*sources, *optional_assets)
     )
@@ -989,6 +1165,9 @@ def _readonly_source(path: Path):
 def _iter_source_documents(
     connection: sqlite3.Connection,
     source_kind: SourceKind,
+    *,
+    verify_source_paths: bool = False,
+    source_root: Path | None = None,
 ) -> Iterator[SourceDocument]:
     if source_kind == "pdf":
         rows = connection.execute(
@@ -1173,9 +1352,7 @@ def _iter_source_documents(
                 source_status=status,
                 processing_signature=str(row["processing_signature"] or "image-state-v6"),
                 text_fingerprint=(
-                    None
-                    if row["ocr_text_xxh3_128"] is None
-                    else str(row["ocr_text_xxh3_128"])
+                    None if row["ocr_text_xxh3_128"] is None else str(row["ocr_text_xxh3_128"])
                 ),
                 title=Path(str(row["path"])).stem,
                 author="",
@@ -1189,11 +1366,31 @@ def _iter_source_documents(
             )
         return
     elif source_kind == "archive":
+        archive_columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(documents)")
+        }
+        container_columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(containers)")
+        }
+        anchor_projection = ",".join(
+            f"c.{field} AS anchor_{field}"
+            if field in container_columns
+            else f"NULL AS anchor_{field}"
+            for field in ("size", "mtime_ns", "birthtime_ns")
+        )
+        role_projection = (
+            "d.document_role,d.logical_document_chain,d.independently_organizable,d.independently_disposable"
+            if "document_role" in archive_columns
+            else "'archive_member' AS document_role,NULL AS logical_document_chain,"
+            "0 AS independently_organizable,0 AS independently_disposable"
+        )
         rows = connection.execute(
-            """SELECT d.file_key,d.path,d.container_path,d.member_chain,
+            f"""SELECT d.file_key,d.path,d.container_path,d.member_chain,
             d.member_path,d.size,d.mtime_ns,d.birthtime_ns,d.status,
             d.processing_signature,d.text_xxh3_128,d.content_kind,d.media_type,
-            c.status AS container_status
+            c.status AS container_status,c.container_key,c.path AS anchor_path,
+            {anchor_projection},
+            {role_projection}
             FROM documents AS d JOIN containers AS c
             ON c.container_key=d.container_key
             WHERE c.status IN ('complete','partial')
@@ -1212,8 +1409,59 @@ def _iter_source_documents(
                 "media_type": row["media_type"],
                 "member_status": status,
                 "container_status": container_status,
+                "document_role": row["document_role"],
+                "logical_document_chain": row["logical_document_chain"],
+                "independently_organizable": bool(row["independently_organizable"]),
+                "independently_disposable": bool(row["independently_disposable"]),
             }
             volume_id, file_id = _split_file_key(str(row["file_key"]))
+            anchor_identity = (
+                decode_file_identity(
+                    str(row["container_key"]), encoding=FileIdentityEncoding.PACKED_HEX_V1
+                )
+                if all(
+                    row[f"anchor_{field}"] is not None
+                    for field in ("size", "mtime_ns", "birthtime_ns")
+                )
+                else None
+            )
+            logical_root = row["document_role"] == "logical_document" and row["member_chain"] == ""
+            if logical_root:
+                if anchor_identity is None:
+                    raise ResourceBindingError(
+                        "logical outer document lacks its physical anchor",
+                        field="container_key",
+                        encoding="packed-hex-v1",
+                        value=row["container_key"],
+                    )
+                volume_id, file_id = anchor_identity.decimal_components
+            binding = build_resource_binding(
+                source_kind="archive",
+                file_key=str(row["file_key"]),
+                path=str(row["path"]),
+                identity=anchor_identity,
+                birthtime_ns=-1 if anchor_identity is None else int(row["anchor_birthtime_ns"]),
+                size=0 if anchor_identity is None else int(row["anchor_size"]),
+                mtime_ns=0 if anchor_identity is None else int(row["anchor_mtime_ns"]),
+                representation_kind="physical_file" if logical_root else "archive_member",
+                anchor_path=str(row["anchor_path"]),
+                archive_member=None
+                if logical_root
+                else {
+                    "container_key": str(row["container_key"]),
+                    "container_path": str(row["anchor_path"]),
+                    "member_chain": str(row["member_chain"]),
+                },
+                representation_metadata={
+                    key: metadata[key]
+                    for key in (
+                        "document_role",
+                        "logical_document_chain",
+                        "independently_organizable",
+                        "independently_disposable",
+                    )
+                },
+            )
             yield SourceDocument(
                 source_kind="archive",
                 file_key=str(row["file_key"]),
@@ -1226,9 +1474,7 @@ def _iter_source_documents(
                 source_status=status,
                 processing_signature=str(row["processing_signature"]),
                 text_fingerprint=(
-                    None
-                    if row["text_xxh3_128"] is None
-                    else str(row["text_xxh3_128"])
+                    None if row["text_xxh3_128"] is None else str(row["text_xxh3_128"])
                 ),
                 title=title,
                 author="",
@@ -1238,7 +1484,8 @@ def _iter_source_documents(
                     status,
                     container_status=container_status,
                 ),
-                virtual=True,
+                virtual=not logical_root,
+                resource_binding_json=json.dumps(binding, sort_keys=True, separators=(",", ":")),
             )
         return
     elif source_kind == "code":
@@ -1254,8 +1501,16 @@ def _iter_source_documents(
             ORDER BY f.current_path"""
         )
         for row in rows:
+            if source_root is not None and not _catalog_path_in_scope(
+                str(row["current_path"]), source_root
+            ):
+                continue
             status = str(row["analysis_status"])
             file_key = f"code:{int(row['file_id'])}"
+            identity = _code_source_identity(
+                connection, row, verify_source_paths=verify_source_paths
+            )
+            volume_id, physical_file_id = identity.decimal_components
             metadata = {
                 "language": row["language"],
                 "artifact_kind": row["artifact_kind"],
@@ -1266,17 +1521,15 @@ def _iter_source_documents(
                 source_kind="code",
                 file_key=file_key,
                 path=str(row["current_path"]),
-                volume_id=str(row["volume_id"]),
-                file_id=str(row["physical_file_id"]),
+                volume_id=volume_id,
+                file_id=physical_file_id,
                 size=int(row["size"]),
                 mtime_ns=int(row["mtime_ns"]),
                 birthtime_ns=int(row["birthtime_ns"]),
                 source_status=status,
                 processing_signature=str(row["processing_signature"]),
                 text_fingerprint=(
-                    None
-                    if row["text_xxh3_128"] is None
-                    else str(row["text_xxh3_128"])
+                    None if row["text_xxh3_128"] is None else str(row["text_xxh3_128"])
                 ),
                 title=Path(str(row["current_path"])).stem,
                 author="",
@@ -1456,27 +1709,96 @@ def _split_file_key(file_key: str) -> tuple[str, str]:
         raise
 
 
+def _code_source_identity(
+    connection: sqlite3.Connection, row: sqlite3.Row, *, verify_source_paths: bool
+) -> FileIdentity:
+    """Decode the Code owner codec; legacy decimal needs independent evidence."""
+    volume, inode = str(row["volume_id"]), str(row["physical_file_id"])
+    hexadecimal = physical_identity_from_components(volume, inode, encoding="code-owner-hex")
+    metadata = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata'"
+    ).fetchone()
+    versions = (
+        []
+        if metadata is None
+        else connection.execute(
+            "SELECT value FROM metadata WHERE key='schema_version' LIMIT 2"
+        ).fetchall()
+    )
+    if len(versions) > 1 or (
+        versions and str(versions[0][0]) not in {str(number) for number in range(1, 8)}
+    ):
+        raise ResourceBindingError(
+            "Code owner schema is unsupported",
+            field="schema_version",
+            encoding="code-owner-schema",
+            value=versions,
+        )
+    if versions and str(versions[0][0]) == "7":
+        # A declared current producer always owns hex. Never reinterpret a
+        # stale current identity as decimal just because that matches a path.
+        return hexadecimal
+    if verify_source_paths:
+        try:
+            current = os.stat(str(row["current_path"]), follow_symlinks=False)
+        except OSError:
+            return hexadecimal  # the caller records this observation as stale
+        if (hexadecimal.volume_id, hexadecimal.file_id) == (current.st_dev, current.st_ino):
+            return hexadecimal
+        try:
+            decimal = physical_identity_from_components(volume, inode, encoding="legacy-decimal")
+        except ResourceBindingError:
+            return hexadecimal
+        if (decimal.volume_id, decimal.file_id) == (current.st_dev, current.st_ino):
+            return decimal
+        return hexadecimal  # neither codec matches: the snapshot check must fail
+    try:
+        decimal = physical_identity_from_components(volume, inode, encoding="legacy-decimal")
+    except ResourceBindingError:
+        return hexadecimal  # alphabetic hex is not a valid legacy decimal identity
+    if decimal != hexadecimal:
+        raise ResourceBindingError(
+            "legacy Code identity encoding requires owner or physical evidence",
+            field="volume_id,file_id",
+            encoding="unresolved",
+            value=[volume, inode],
+            code="identity_encoding_unresolved",
+        )
+    return hexadecimal
+
+
+def _attach_resource_binding(document: SourceDocument) -> SourceDocument:
+    if document.resource_binding_json is not None:
+        return document
+    identity = physical_identity_from_components(
+        document.volume_id, document.file_id, encoding="legacy-decimal"
+    )
+    binding = build_resource_binding(
+        source_kind=document.source_kind,
+        file_key=document.file_key,
+        path=document.path,
+        identity=identity,
+        birthtime_ns=document.birthtime_ns,
+        size=document.size,
+        mtime_ns=document.mtime_ns,
+        representation_kind="physical_file",
+    )
+    return replace(
+        document, resource_binding_json=json.dumps(binding, sort_keys=True, separators=(",", ":"))
+    )
+
+
 def _source_snapshot_is_current(document: SourceDocument) -> bool:
     try:
         stat = os.stat(document.path, follow_symlinks=False)
     except OSError:
         return False
     birthtime_ns = stat_birthtime_ns(stat)
-    # Code's owner identity is normally persisted as the hexadecimal
-    # representation emitted by ``code_state._identity``.  The other
-    # filesystem-backed owners expose decimal components through
-    # ``_split_file_key``.  Accept the legacy decimal Code form as well so a
-    # catalog built by an older fixture or release remains verifiable.
-    if document.source_kind == "code":
-        identity_matches = (document.volume_id, document.file_id) in {
-            (format(stat.st_dev, "x"), format(stat.st_ino, "x")),
-            (str(stat.st_dev), str(stat.st_ino)),
-        }
-    else:
-        identity_matches = (
-            document.volume_id == str(stat.st_dev)
-            and document.file_id == str(stat.st_ino)
-        )
+    # Every physical adapter has already resolved its owner's codec into
+    # neutral decimal components. This check must not guess another radix.
+    identity_matches = document.volume_id == str(stat.st_dev) and document.file_id == str(
+        stat.st_ino
+    )
     return (
         identity_matches
         and int(stat.st_size) == document.size
@@ -1498,7 +1820,7 @@ def _catalog_cache_hit(
 ) -> bool:
     row = connection.execute(
         """SELECT path,size,mtime_ns,birthtime_ns,source_status,
-        processing_signature,text_fingerprint,classifier_signature,catalog_status
+        processing_signature,text_fingerprint,classifier_signature,catalog_status,resource_binding_json
         FROM documents WHERE source_kind=? AND file_key=?""",
         (document.source_kind, document.file_key),
     ).fetchone()
@@ -1506,12 +1828,14 @@ def _catalog_cache_hit(
         return False
     classifier_signature = document_classifier_signature(taxonomy)
     return (
+        row["resource_binding_json"] == document.resource_binding_json
+        and row["resource_binding_json"] is not None
+        and
         # Do not reuse a legacy cache row that predates the coverage contract:
         # partial or truncated producer output must be reclassified so its
         # published catalog status is downgraded to ``review``.
         not (document.coverage != "complete" and str(row["catalog_status"]) == "classified")
-        and
-        _catalog_paths_equal(str(row["path"]), document.path)
+        and _catalog_paths_equal(str(row["path"]), document.path)
         and int(row["size"]) == document.size
         and int(row["mtime_ns"]) == document.mtime_ns
         and int(row["birthtime_ns"]) == document.birthtime_ns

@@ -6,6 +6,9 @@ from importlib import import_module
 from typing import TYPE_CHECKING, Any, Final
 
 if TYPE_CHECKING:
+    from .domain.evidence import DuplicateGroupProof as DuplicateGroupProof
+    from .domain.evidence import DuplicateMemberProof as DuplicateMemberProof
+    from .domain.evidence import KeeperPolicy as KeeperPolicy
     from .domain.errors import DedupError as DedupError
     from .domain.errors import FileChangedError as FileChangedError
     from .domain.errors import InventoryError as InventoryError
@@ -44,6 +47,9 @@ if TYPE_CHECKING:
     from .planning.planner import DedupPlanner as DedupPlanner
 
 _EXPORTS: Final = {
+    "DuplicateGroupProof": (".domain.evidence", "DuplicateGroupProof"),
+    "DuplicateMemberProof": (".domain.evidence", "DuplicateMemberProof"),
+    "KeeperPolicy": (".domain.evidence", "KeeperPolicy"),
     "DedupError": (".domain.errors", "DedupError"),
     "DedupIndex": (".inventory.index", "DedupIndex"),
     "DedupPlan": (".domain.models", "DedupPlan"),
@@ -119,6 +125,8 @@ __all__ = [
     "DedupPlan",
     "DedupPlanner",
     "DuplicateGroup",
+    "DuplicateGroupProof",
+    "DuplicateMemberProof",
     "FileChangedError",
     "FileSnapshot",
     "InventoryCheckpoint",
@@ -133,6 +141,7 @@ __all__ = [
     "InventoryScanCancelled",
     "InventoryScanDeadlineExceeded",
     "InventoryWorkBudget",
+    "KeeperPolicy",
     "MissingDependencyError",
     "PlanStatistics",
     "ScanSummary",

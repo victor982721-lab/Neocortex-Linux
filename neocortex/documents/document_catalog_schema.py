@@ -20,7 +20,7 @@ from neocortex.persistence.sqlite_schema_contract import (
 # region [01] Canonical schema
 
 
-CATALOG_SCHEMA_VERSION = 7
+CATALOG_SCHEMA_VERSION = 8
 _PATH_COLLATION = sqlite_path_collation()
 
 
@@ -258,7 +258,53 @@ def _document_catalog_schema_ddl(path_collation: str) -> tuple[str, ...]:
     )
 
 
-_CURRENT_SCHEMA_DDL = _document_catalog_schema_ddl(_PATH_COLLATION)
+_V7_SCHEMA_DDL = _document_catalog_schema_ddl(_PATH_COLLATION)
+_ORGANIZATION_BINDING_COLUMNS = (
+    ("resource_binding_json", "TEXT"),
+    ("source_scope_json", "TEXT"),
+    ("source_scope_id", "TEXT"),
+    ("representation_kind", "TEXT"),
+    ("operation_kind", "TEXT"),
+    ("executable", "INTEGER NOT NULL DEFAULT 0 CHECK(executable IN (0,1))"),
+    ("blockers_json", "TEXT NOT NULL DEFAULT '[]'"),
+    ("eligibility_status", "TEXT NOT NULL DEFAULT 'unverified'"),
+)
+
+
+def _binding_schema_statement(statement: str) -> str:
+    if any(
+        f"CREATE TABLE IF NOT EXISTS {table}(" in statement
+        for table in ("documents", "catalog_generation_documents")
+    ):
+        return statement.replace(
+            "updated_ns INTEGER NOT NULL,",
+            "updated_ns INTEGER NOT NULL, resource_binding_json TEXT,",
+        )
+    if "CREATE TABLE IF NOT EXISTS organization_plans(" in statement:
+        columns = ",".join(
+            f"{name} {definition}" for name, definition in _ORGANIZATION_BINDING_COLUMNS
+        )
+        return statement.replace("cache_sync_error TEXT", f"cache_sync_error TEXT,{columns}")
+    return statement
+
+
+_CURRENT_SCHEMA_DDL = tuple(_binding_schema_statement(statement) for statement in _V7_SCHEMA_DDL)
+
+
+def _create_v7_schema(connection: sqlite3.Connection) -> None:
+    for statement in _V7_SCHEMA_DDL:
+        connection.execute(statement)
+
+
+@lru_cache(maxsize=1)
+def _v7_schema_contract() -> SQLiteSchemaContract:
+    return schema_contract_from_builder(_create_v7_schema)
+
+
+def validate_v7_document_catalog_schema(connection: sqlite3.Connection) -> None:
+    validate_sqlite_schema_contract(
+        connection, _v7_schema_contract(), label="document catalog v7", exact=True
+    )
 
 
 def create_document_catalog_schema(connection: sqlite3.Connection) -> None:
@@ -270,7 +316,7 @@ def create_document_catalog_schema(connection: sqlite3.Connection) -> None:
 
 @lru_cache(maxsize=1)
 def document_catalog_schema_contract() -> SQLiteSchemaContract:
-    """Return the immutable structural contract for schema v7."""
+    """Return the immutable structural contract for schema v8."""
 
     return schema_contract_from_builder(create_document_catalog_schema)
 
@@ -755,7 +801,7 @@ def _migrate_to_v7(connection: sqlite3.Connection) -> None:
     connection.execute("DROP TABLE catalog_generation_documents")
     connection.execute("DROP TABLE organization_plans")
     connection.execute("DROP TABLE documents")
-    create_document_catalog_schema(connection)
+    _create_v7_schema(connection)
 
     for table in _PATH_REBUILD_TABLES:
         backup = f"document_catalog_v6_{table}"
@@ -771,6 +817,15 @@ def _migrate_to_v7(connection: sqlite3.Connection) -> None:
     violation = connection.execute("PRAGMA foreign_key_check").fetchone()
     if violation is not None:
         raise RuntimeError("document catalog path migration violated foreign keys")
+
+
+def _migrate_to_v8(connection: sqlite3.Connection) -> None:
+    """Add explicit bindings without rewriting historical identities or plan IDs."""
+    validate_v7_document_catalog_schema(connection)
+    for table in ("documents", "catalog_generation_documents"):
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN resource_binding_json TEXT")
+    for name, definition in _ORGANIZATION_BINDING_COLUMNS:
+        connection.execute(f"ALTER TABLE organization_plans ADD COLUMN {name} {definition}")
 
 
 def migrate_document_catalog_schema(
@@ -789,6 +844,7 @@ def migrate_document_catalog_schema(
         5: lambda: _migrate_to_v5(connection),
         6: lambda: _migrate_to_v6(connection),
         7: lambda: _migrate_to_v7(connection),
+        8: lambda: _migrate_to_v8(connection),
     }
     for target_version in range(prior_version + 1, CATALOG_SCHEMA_VERSION + 1):
         migrations[target_version]()
@@ -806,4 +862,5 @@ __all__ = [
     "migrate_document_catalog_schema",
     "validate_v5_document_catalog_schema",
     "validate_v6_document_catalog_schema",
+    "validate_v7_document_catalog_schema",
 ]

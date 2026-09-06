@@ -11,7 +11,7 @@ Fuentes documentales:
 - visión y resultado de producto: `docs/FILE_INTELLIGENCE_AND_CURATION.md`;
 - arquitectura implementada: `docs/ARCHITECTURE.md`;
 - prioridades y releases objetivo: `docs/ROADMAP_90_DAYS.md`;
-- operación activa: `.codex/handoffs/NEOCORTEX_0.12.0_SCALE_2026-09-04.md`;
+- operación activa: `.codex/handoffs/NEOCORTEX_FUNCTIONAL_2026-09-06.md`;
 - compromisos durables: `$CODEX_HOME/PENDIENTES.md`.
 
 ## Resultado de producto

@@ -32,6 +32,7 @@ from neocortex.documents.document_organization import (
     OrganizationApplySummary,
     OrganizationPlanSummary,
 )
+from neocortex.documents.document_catalog import initialize_document_catalog
 from neocortex.platform.policy import default_corpus_root
 from neocortex.runtime.orchestration.route_selection import (
     BUILTIN_ROUTE_ORDER,
@@ -1078,6 +1079,42 @@ class OrchestratorTests(unittest.TestCase):
             self.assertEqual(modes, ["full", expected_replay_mode, expected_replay_mode])
             self.assertGreaterEqual(event_count, 9)
 
+    def test_real_empty_pdf_route_has_an_empty_scoped_organization_plan(self) -> None:
+        for filename in (None, "unclassified.bin"):
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as directory:
+                base = Path(directory)
+                corpus = base / "corpus"
+                corpus.mkdir()
+                if filename is not None:
+                    (corpus / filename).write_bytes(b"\x00unclassified fixture\xff")
+                state_directory = base / "state"
+                journal = SyntheticUsnJournal(corpus).start()
+                self.addCleanup(journal.close)
+                result = FrameworkOrchestrator(
+                    FrameworkConfig(
+                        root=corpus,
+                        state_directory=state_directory,
+                        route="pdf",
+                        apply_actions=True,
+                        pdf_ocr_mode="never",
+                        pdf_workers=1,
+                        pdf_ocr_workers=1,
+                        global_min_free_memory_bytes=0,
+                        global_min_free_commit_bytes=0,
+                    )
+                ).run_initial()
+                self.assertIsNotNone(result.pdf)
+                self.assertIsNotNone(result.organization_plan)
+                self.assertIsNotNone(result.organization_apply)
+                assert result.organization_plan is not None
+                assert result.organization_apply is not None
+                self.assertEqual(result.organization_plan.considered, 0)
+                self.assertEqual(result.organization_plan.source_root, str(corpus))
+                self.assertEqual(result.organization_apply.applied, 0)
+                self.assertFalse((corpus / "Consulta_Tecnica_Organizada").exists())
+                self.assertTrue((state_directory / "document_catalog.sqlite3").is_file())
+                self.assertEqual(len(tuple(corpus.iterdir())), int(filename is not None))
+
     def test_all_apply_runs_organization_after_routes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -1091,17 +1128,24 @@ class OrchestratorTests(unittest.TestCase):
 
             def route(_context):
                 order.append("route")
+                # Real content routes publish even an empty catalog.  This
+                # ordering fixture must supply that owner, not mock its scope.
+                initialize_document_catalog(state / "document_catalog.sqlite3")
                 return {"processed": 1}
 
             def plan(
                 _catalog,
                 destination,
                 *,
+                source_scope,
                 min_confidence,
                 progress,
                 mutation_guard,
             ):
                 order.append("plan")
+                self.assertEqual(source_scope.root, corpus)
+                self.assertEqual(source_scope.publication_heads, ())
+                source_scope.verify()
                 self.assertIsNotNone(progress)
                 self.assertIsNone(mutation_guard.reason_code)
                 self.assertIsNotNone(mutation_guard.protected_content_policy)

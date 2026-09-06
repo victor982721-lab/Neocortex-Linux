@@ -35,6 +35,7 @@ from .document_taxonomy_models import (
     ClientSpec,
     DocumentClassification,
     DocumentSignals,
+    EntityRoleEvidence,
     OrganizationSpec,
     ProjectSpec,
     ScoredLabel,
@@ -55,6 +56,11 @@ from .document_taxonomy_references import (
     _document_authority_adjustment,
     _naming_reference_rank,
 )
+from .document_taxonomy_roles import (
+    RoleAssessment,
+    document_role_assessment,
+    entity_role_evidence,
+)
 from .document_taxonomy_vocabulary import (
     BUILTIN_TAXONOMY_VERSION,
     _ACTIVITY_PATTERNS,
@@ -71,6 +77,7 @@ __all__ = (  # noqa: RUF022
     "ClientSpec",
     "DocumentClassification",
     "DocumentSignals",
+    "EntityRoleEvidence",
     "MAX_TAXONOMY_BYTES",
     "MAX_TAXONOMY_PATTERNS",
     "MAX_TAXONOMY_PATTERN_CHARS",
@@ -92,7 +99,7 @@ __all__ = (  # noqa: RUF022
 
 # region [01] Stable public classification contract
 
-CLASSIFIER_VERSION = "technical-document-classifier-v14"
+CLASSIFIER_VERSION = "technical-document-classifier-v15"
 
 
 def document_classifier_signature(taxonomy: TechnicalTaxonomy) -> str:
@@ -128,6 +135,7 @@ class _ClassificationEvidence:
     document_subtypes: tuple[ScoredLabel, ...]
     equipment: tuple[ScoredLabel, ...]
     activities: tuple[ScoredLabel, ...]
+    role_assessment: RoleAssessment
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,6 +208,8 @@ def _collect_document_evidence(
             context.folded,
             managed_path=context.managed_path,
         )
+    role_assessment = document_role_assessment(signals, context.folded, kinds)
+    kinds = role_assessment.kinds
     primary = kinds[0] if kinds else ScoredLabel("otro", 0.35, ("sin_regla_fuerte",))
     document_subtypes = _document_subtype_evidence(
         context.folded,
@@ -219,6 +229,7 @@ def _collect_document_evidence(
         document_subtypes=document_subtypes,
         equipment=equipment,
         activities=activities,
+        role_assessment=role_assessment,
     )
 
 
@@ -347,15 +358,26 @@ def _materialize_document_classification(
             ),
         )
     )
+    if decision.primary.label.startswith(("informe_", "reporte_")) or decision.primary.label == "registro_log":
+        # Referenced standards stay searchable as references, not issuer/type
+        # evidence or a prefix that impersonates the cited source document.
+        naming_references = ()
+    entity_roles = entity_role_evidence(
+        signals, taxonomy, decision.primary, evidence.authorities,
+        evidence.organizations, evidence.standards,
+    )
+    issuers = tuple(item for item in entity_roles if item.role == "issuer")
+    role_assessment = evidence.role_assessment
+    naming_organization = evidence.organizations[0].label if evidence.organizations else None
+    if decision.primary.label == "registro_log" or "cited_standard_not_document_role" in role_assessment.contradictions:
+        naming_organization = issuers[0].entity if issuers else None
     naming = suggest_document_stem(
         path=signals.path,
         title=signals.title,
         leading_text=signals.leading_text,
         primary_kind=decision.primary.label,
         standard_identifiers=(reference.identifier for reference in naming_references),
-        organization=evidence.organizations[0].label
-        if evidence.organizations
-        else None,
+        organization=naming_organization,
         topic=topics[0].label if topics else None,
     )
     return DocumentClassification(
@@ -378,6 +400,20 @@ def _materialize_document_classification(
         suggested_stem=naming.stem,
         naming_signature=NAMING_VERSION,
         naming_evidence=naming.evidence,
+        document_role=role_assessment.outside_role or decision.primary.label,
+        role_evidence=role_assessment.outside_evidence or decision.primary.evidence,
+        entity_roles=entity_roles,
+        issuer_status=(
+            "declared" if any(item.evidence_kind == "declaration" for item in issuers)
+            else "inferred" if issuers else "unknown"
+        ),
+        taxonomy_status=(
+            "outside_taxonomy" if role_assessment.outside_role is not None
+            else "insufficient_identification" if decision.primary.label == "otro"
+            else "in_taxonomy"
+        ),
+        contradictions=role_assessment.contradictions,
+        unknowns=("issuer_identity_unverified",) if issuers else ("issuer_unverified",),
     )
 
 

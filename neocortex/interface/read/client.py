@@ -113,6 +113,7 @@ class SharedReadClient:
             limit=request.limit,
             max_characters=12_000,
             mode="evidence",
+            response_version=1,
         )
 
 

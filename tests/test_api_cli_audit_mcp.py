@@ -18,7 +18,7 @@ TEST_CAPABILITIES = ("agent",)
 _READ_TOOLS = [
     ("status", "status_payload", {}),
     ("search", "search_payload", {"query": "fixture"}),
-    ("context", "context_payload", {"query": "fixture"}),
+    ("context", "context_payload", {"query": "fixture", "response_version": 1}),
     ("evidence", "evidence_payload", {"query": "fixture", "citation_id": "C1"}),
     ("inspect_code", "code_search_payload", {"query": "fixture"}),
     ("lineage", "lineage_payload", {"identifier": "fixture"}),

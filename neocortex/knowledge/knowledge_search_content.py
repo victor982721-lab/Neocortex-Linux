@@ -34,6 +34,7 @@ from .knowledge_contracts import (
 )
 from .knowledge_exact import ExactLookupResult, ExactOwnerTiming
 from .knowledge_planner import KnowledgePlan, RetrievalMode, RetrievalStep
+from .knowledge_planner_steps import image_only_source_filters
 from .knowledge_search_contracts import (
     KnowledgeCandidate,
     RankingExecution,
@@ -47,6 +48,7 @@ from neocortex.semantic.semantic_lexical import (
 )
 from neocortex.semantic.semantic_models import ContentFingerprint, ResolvedSearchHit
 from neocortex.semantic.semantic_sources import SEMANTIC_TITLE_POLICY, SEMANTIC_TITLE_SECTION_KIND
+from neocortex.semantic.semantic_search_service import classify_image_query_intent
 from neocortex.persistence.sqlite_cancellation import SQLiteCancellationBridge
 # endregion [01]
 
@@ -438,6 +440,21 @@ def candidate_from_resolved(
         extracted_method=extracted_method,
     )
     score_kind = "bm25" if ranking_name.startswith("fts_") else "cosine"
+    support_value = resolved.section_provenance.get(
+        "query_support", resolved.hit.provenance.get("query_support"),
+    )
+    query_support = dict(support_value) if isinstance(support_value, Mapping) else {}
+    support_warnings = (
+        ("query_matches_partial_terms_only",)
+        if query_support.get("support") == "partial_terms" else ()
+    )
+    if query_support.get("missing_negation_terms"):
+        support_warnings += ("query_negation_not_supported_by_evidence",)
+    if query_support.get("role_counterevidence"):
+        support_warnings += ("source_has_scoped_query_role_counterevidence",)
+    checks = query_support.get("requested_witness_checks")
+    if isinstance(checks, Mapping) and checks.get("status") == "missing":
+        support_warnings += ("related_evidence_does_not_establish_requested_witnesses",)
     return candidate_type(
         resource=resource,
         revision=revision,
@@ -450,9 +467,11 @@ def candidate_from_resolved(
             model_signature=resolved.hit.indexed_model_signature,
             generation=generation,
             query_model_signature=resolved.hit.query_model_signature,
+            evidence=evidence,
+            query_support=query_support,
         ),
         reason=f"{ranking_name} returned this concrete evidence",
-        warnings=tuple(sorted({*revision_warnings, *identity_warnings})),
+        warnings=tuple(sorted({*revision_warnings, *identity_warnings, *support_warnings})),
     )
 
 
@@ -780,6 +799,9 @@ def _semantic_result_report(
     channel: str = "semantic",
 ) -> RankingExecution:
     calibration = ranking.provenance.get("retrieval_abstention")
+    routing = ranking.provenance.get("image_query_routing")
+    routed_away = isinstance(routing, Mapping) and routing.get("executed") is False
+    routing_reason = routing.get("reason") if isinstance(routing, Mapping) else None
     calibrated_abstained = bool(
         isinstance(calibration, Mapping) and calibration.get("query_abstained") is True
     )
@@ -803,7 +825,7 @@ def _semantic_result_report(
     return RankingExecution(
         name=expected_name,
         channel=channel,
-        executed=True,
+        executed=not routed_away,
         available=ranking.available,
         complete=(
             ranking.available and ranking.complete and not vector_cutoff and not unexpected_cutoff
@@ -812,6 +834,7 @@ def _semantic_result_report(
         vectors_scanned=ranking.scanned,
         reason=(
             ranking.unavailable_reason
+            or (routing_reason if isinstance(routing_reason, str) else None)
             or (
                 "semantic_vector_limit_reached"
                 if vector_cutoff
@@ -926,6 +949,16 @@ def _search_semantic_step(
     include_title: bool,
 ) -> SemanticSearchResult:
     expected_name = step.ranking_name
+    # Channel isolation is an implementation detail, not a user request to see
+    # images.  Derive modality once from the original query and explicit filters.
+    original_image_only = image_only_source_filters(
+        context.plan.source_kinds, context.plan.formats,
+    )
+    image_intent = classify_image_query_intent(
+        context.plan.normalized_query, image_only=False,
+    )
+    if original_image_only and image_intent == "ambiguous":
+        image_intent = "explicit_visual"
     return context.semantic_search(
         context.paths.semantic.parent,
         context.plan.normalized_query,
@@ -937,6 +970,8 @@ def _search_semantic_step(
         include_title=include_title,
         include_images=expected_name == "semantic_image",
         include_lexical=False,
+        image_query_intent=image_intent,
+        allow_ambiguous_images=False,
         local_files_only=True,
         evidence_mode=context.plan.retrieval_mode is context.evidence_mode,
         cancellation_check=(

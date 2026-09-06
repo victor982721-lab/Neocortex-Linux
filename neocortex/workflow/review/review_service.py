@@ -37,6 +37,7 @@ if TYPE_CHECKING:
         ReviewTaskEvent,
         ReviewTaskRecord,
     )
+    from .review_task_query import ReviewTaskReadQuery, ReviewTaskReadResult
     from .value_review_tasks import (
         ClockNs,
         ValueReviewTaskQueue,
@@ -93,6 +94,14 @@ class ReviewReader(Protocol):
         *,
         cancellation_check: CancellationCheck | None = None,
     ) -> ReviewTaskRecord | None: ...
+
+    def query_current_review_tasks(
+        self,
+        database: str | Path,
+        query: ReviewTaskReadQuery,
+        *,
+        cancellation_check: CancellationCheck | None = None,
+    ) -> ReviewTaskReadResult: ...
 
 
 class ReviewService:
@@ -287,6 +296,19 @@ class ReviewService:
             task_id,
             limit=limit,
             cancellation_check=cancellation_check,
+        )
+
+    def query_current_review_tasks(
+        self,
+        database: str | Path,
+        query: ReviewTaskReadQuery,
+        *,
+        cancellation_check: CancellationCheck | None = None,
+    ) -> ReviewTaskReadResult:
+        from .review_task_query import query_current_review_tasks
+
+        return query_current_review_tasks(
+            database, query, cancellation_check=cancellation_check,
         )
 
     def read_review_task_event_by_key(

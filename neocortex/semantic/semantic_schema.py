@@ -6,7 +6,8 @@ import sqlite3
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from contextvars import ContextVar
+from dataclasses import asdict, dataclass
 from functools import lru_cache
 from pathlib import Path
 
@@ -54,6 +55,121 @@ class SemanticStateError(RuntimeError):
     """Base class for durable semantic-state failures."""
 
 
+class SemanticReadContext:
+    """Own reusable fenced views for one operation, never a process-global cache.
+
+    A second acquisition after source drift fails instead of mixing publication
+    generations. A new operation may acquire the newer view. The underlying
+    reader's strict/snapshot safety contracts remain unchanged.
+    """
+
+    def __init__(
+        self,
+        *,
+        generation: object | None = None,
+        max_temporary_bytes: int = 256 * 1024 * 1024,
+        timeout_seconds: float = 60.0,
+        cancellation_check: Callable[[], bool | None] | None = None,
+    ) -> None:
+        from neocortex.persistence.sqlite_immutable import (
+            SQLiteSnapshotBudget,
+            SQLiteSnapshotReuseCache,
+        )
+
+        self._generation = object() if generation is None else generation
+        hash(self._generation)
+        self._budget = SQLiteSnapshotBudget(
+            max_temporary_bytes=max_temporary_bytes,
+            prepare_timeout_seconds=timeout_seconds,
+            cancellation_check=cancellation_check,
+        )
+        self._cache = SQLiteSnapshotReuseCache(max_temporary_bytes=max_temporary_bytes)
+        self._fences: dict[str, object] = {}
+        self._closed = False
+
+    @property
+    def metrics(self) -> dict[str, object]:
+        """Return bounded preparation counters, not physical disk-I/O claims."""
+
+        return asdict(self._cache.snapshot_metrics)
+
+    def verify_owner_fences(self) -> None:
+        """Reject hidden owner drift using filesystem evidence only.
+
+        Callers aggregating partial owner results can use this final barrier
+        even when an inner facade translated its read error into a payload.
+        """
+
+        from neocortex.persistence.sqlite_immutable import capture_sqlite_read_fence
+
+        if self._closed:
+            raise RuntimeError("semantic read context is closed")
+        for path, expected in self._fences.items():
+            if capture_sqlite_read_fence(Path(path)) != expected:
+                raise SemanticStateError("semantic owner changed within one read operation")
+
+    @contextmanager
+    def acquire(self, path: Path, *, mode: str) -> Iterator[sqlite3.Connection]:
+        from neocortex.persistence.sqlite_immutable import capture_sqlite_read_fence
+
+        if self._closed:
+            raise RuntimeError("semantic read context is closed")
+        selected = path.absolute()
+        key = str(selected)
+        fence = capture_sqlite_read_fence(selected)
+        previous = self._fences.get(key)
+        if previous is not None and previous != fence:
+            raise SemanticStateError("semantic owner changed within one read operation")
+        with self._cache.acquire(
+            selected,
+            generation=self._generation,
+            mode=mode,
+            timeout_seconds=self._budget.prepare_timeout_seconds,
+            budget=self._budget,
+        ) as connection:
+            if capture_sqlite_read_fence(selected) != fence:
+                raise SemanticStateError("semantic owner changed while preparing its read view")
+            self._fences[key] = fence
+            yield connection
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            self._cache.close()
+
+
+_SEMANTIC_READ_CONTEXT: ContextVar[SemanticReadContext | None] = ContextVar(
+    "neocortex_semantic_read_context", default=None,
+)
+
+
+@contextmanager
+def semantic_read_context(
+    context: SemanticReadContext | None = None,
+) -> Iterator[SemanticReadContext]:
+    """Share the enclosing operation's view and release only at its boundary."""
+
+    current = _SEMANTIC_READ_CONTEXT.get()
+    if current is not None and (context is None or context is current):
+        yield current
+        return
+    selected = SemanticReadContext() if context is None else context
+    if selected._closed:
+        raise RuntimeError("semantic read context is closed")
+    token = _SEMANTIC_READ_CONTEXT.set(selected)
+    try:
+        yield selected
+    except BaseException as exc:
+        try:
+            selected.close()
+        except BaseException as cleanup_error:
+            exc.add_note(f"semantic read context cleanup failed: {cleanup_error}")
+        raise
+    finally:
+        _SEMANTIC_READ_CONTEXT.reset(token)
+        selected.close()
+
+
 # region [01] Connection lifecycle
 
 
@@ -85,6 +201,7 @@ def semantic_database(
     *,
     readonly: bool = False,
     read_mode: str | None = None,
+    read_context: SemanticReadContext | None = None,
 ) -> Iterator[sqlite3.Connection]:
     """Open the semantic database with bounded WAL/cache settings."""
 
@@ -100,11 +217,13 @@ def semantic_database(
             if read_mode is None
             else SQLiteReadMode(read_mode)
         )
-        with sqlite_read_session(
-            path,
-            mode=selected_mode,
-            timeout_seconds=60.0,
-        ) as connection:
+        context = read_context if read_context is not None else _SEMANTIC_READ_CONTEXT.get()
+        read = (
+            sqlite_read_session(path, mode=selected_mode, timeout_seconds=60.0)
+            if context is None
+            else context.acquire(path, mode=selected_mode.value)
+        )
+        with read as connection:
             _configure_common_connection(connection)
             _configure_read_connection(connection)
             yield connection

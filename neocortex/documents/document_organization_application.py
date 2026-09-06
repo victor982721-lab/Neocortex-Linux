@@ -6,6 +6,7 @@
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
+import json
 import os
 import sqlite3
 import stat as stat_module
@@ -36,6 +37,7 @@ from neocortex.safety.corpus_access import (
 )
 from .document_cache_sync import synchronize_moved_document
 from .document_catalog import document_catalog_database, initialize_document_catalog
+from .document_organization_scope import OrganizationInputScope, assess_organization_resource
 from .document_organization_models import (
     ORGANIZATION_APPLY_BATCH_SIZE,
     ORGANIZATION_PROGRESS_INTERVAL,
@@ -200,6 +202,7 @@ def _execute_organization_apply_run(
         root,
         rows,
         mutation_guard,
+        connection=connection,
     )
     counters = _OrganizationApplyCounters()
     _apply_selected_organization_rows(
@@ -227,8 +230,12 @@ def _prepare_selected_organization_plans(
     root: Path,
     rows: list[sqlite3.Row],
     mutation_guard: CorpusMutationGuard,
+    *,
+    connection: sqlite3.Connection,
 ) -> tuple[dict[str, str], os.stat_result | None]:
-    protected_denials = _protected_organization_plan_denials(rows, mutation_guard)
+    protected_denials = _organization_execution_denials(connection, rows)
+    remaining_rows = [row for row in rows if str(row["plan_id"]) not in protected_denials]
+    protected_denials.update(_protected_organization_plan_denials(remaining_rows, mutation_guard))
     admitted_rows = [row for row in rows if str(row["plan_id"]) not in protected_denials]
     if not admitted_rows:
         return protected_denials, None
@@ -239,6 +246,41 @@ def _prepare_selected_organization_plans(
         mutation_guard,
     )
     return protected_denials, _prepare_apply_root(catalog_path, root, mutation_guard)
+
+
+def _organization_execution_denials(
+    connection: sqlite3.Connection, rows: list[sqlite3.Row]
+) -> dict[str, str]:
+    """Reject advisory/legacy proposals before any destination preparation."""
+
+    denials: dict[str, str] = {}
+    for row in rows:
+        plan_id = str(row["plan_id"])
+        try:
+            if "source_scope_json" not in row.keys() or row["source_scope_json"] is None:
+                denials[plan_id] = "legacy_unscoped_organization_plan"
+                continue
+            scope = OrganizationInputScope.from_json(row["source_scope_json"])
+            if scope.scope_id != row["source_scope_id"]:
+                raise ValueError("organization_scope_digest_mismatch")
+            scope.verify(connection)
+            assessment = assess_organization_resource(row, scope)
+            if not assessment.included:
+                denials[plan_id] = assessment.reason or "organization_scope_unverified"
+            elif (
+                row["representation_kind"] != "physical_file"
+                or row["operation_kind"] != "move_physical"
+            ):
+                denials[plan_id] = "organization_operation_not_physical"
+            elif not row["executable"] or json.loads(row["blockers_json"]):
+                denials[plan_id] = "organization_plan_advisory_only"
+            else:
+                # This legacy API has no explicit grant-consuming backend.
+                # A writable database flag is not an AuthorizationGrant.
+                denials[plan_id] = "organization_authorized_backend_unavailable"
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            denials[plan_id] = f"organization_contract_invalid:{type(exc).__name__}"
+    return denials
 
 
 def _apply_selected_organization_rows(
@@ -375,6 +417,13 @@ def _record_protected_organization_plan(
     row: sqlite3.Row,
     detail: str,
 ) -> _ApplyRowOutcome:
+    if str(row["status"]) in {"applying", "moved_cache_pending"}:
+        connection.execute(
+            """UPDATE organization_plans SET status='recovery_required',detail=?,completed_ns=NULL
+            WHERE plan_id=?""",
+            (detail, row["plan_id"]),
+        )
+        return _ApplyRowOutcome("recovery_required")
     connection.execute(
         """UPDATE organization_plans
         SET status='blocked',detail=?,completed_ns=?,

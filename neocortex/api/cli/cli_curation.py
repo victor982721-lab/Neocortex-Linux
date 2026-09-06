@@ -127,9 +127,7 @@ def _safe_preview_payload(preview: Any) -> dict[str, object]:
 
     items = raw.get("items")
     if isinstance(items, (list, tuple)):
-        payload["items"] = [
-            _safe_item_payload(item) for item in items[:_CLI_ITEMS_LIMIT]
-        ]
+        payload["items"] = [_safe_item_payload(item) for item in items[:_CLI_ITEMS_LIMIT]]
     else:
         payload["items"] = []
     return payload
@@ -153,8 +151,15 @@ def run_curation_preview(args: argparse.Namespace) -> int:
     """Show bounded duplicate, organization, and empty-file proposals."""
 
     if _root_was_explicit(args):
-        print("ERROR curation-preview cannot be combined with --root")
-        return 2
+        if not getattr(args, "curation_json", False):
+            print("ERROR curation-preview cannot be combined with --root")
+            return 2
+        return _print_curation_error(
+            args,
+            CurationStateError(
+                "curation-preview cannot be combined with --root", code="invalid_arguments"
+            ),
+        )
 
     try:
         preview = build_curation_preview(
@@ -162,11 +167,7 @@ def run_curation_preview(args: argparse.Namespace) -> int:
             limit=args.curation_preview,
         )
     except (CurationStateError, OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
-        print(
-            f"ERROR curation-preview {_safe_text(type(exc).__name__)}: "
-            f"{_safe_text(exc)}"
-        )
-        return 2
+        return _print_curation_error(args, exc)
 
     payload = _safe_preview_payload(preview)
     if args.curation_json:
@@ -214,6 +215,29 @@ def run_curation_preview(args: argparse.Namespace) -> int:
             f"evidence={evidence}"
         )
     return 0 if payload.get("coverage") == "complete" else 2
+
+
+def _print_curation_error(args: argparse.Namespace, error: BaseException) -> int:
+    if getattr(args, "curation_json", False):
+        payload = (
+            error.to_dict()
+            if isinstance(error, CurationStateError)
+            else {
+                "kind": "curation-error",
+                "coverage": "unavailable",
+                "executable": False,
+                "code": "curation_read_failed",
+                "error_type": type(error).__name__,
+                "message": str(error),
+                "context": {},
+            }
+        )
+        print(_json_text(_safe_payload(payload)))
+    else:
+        print(f"ERROR curation-preview {_safe_text(type(error).__name__)}: {_safe_text(error)}")
+        if isinstance(error, CurationStateError) and error.context:
+            print(f"CURATION_ERROR_CONTEXT {_json_text(_safe_payload(error.context))}")
+    return 2
 
 
 __all__ = ["run_curation_preview"]

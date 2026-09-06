@@ -6,7 +6,7 @@ the facade may delegate to them without creating reverse import edges.
 """
 
 from __future__ import annotations
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
 
@@ -216,6 +216,12 @@ class EvidenceRef(Protocol):
 
 class RankingSignal(Protocol):
     """Read-only structural view of ``RankingSignal``."""
+
+    @property
+    def evidence(self) -> EvidenceRef | None: ...
+
+    @property
+    def query_support(self) -> Mapping[str, object]: ...
 
     @property
     def source(self) -> str: ...

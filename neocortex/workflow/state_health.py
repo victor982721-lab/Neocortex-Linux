@@ -20,7 +20,7 @@ import os
 import sqlite3
 import stat
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
@@ -79,6 +79,27 @@ MAX_PROCESS_IDS = 256
 MAX_PROCESS_FDS = 256
 MAX_PROCESS_RESULTS = 16
 DEFAULT_INSPECTION_TIMEOUT_SECONDS = 30.0
+MAX_INSPECTION_OWNER_BATCH = 256
+
+HealthScope = Literal["compatibility", "integrity", "referential", "full"]
+HEALTH_SCOPES: tuple[HealthScope, ...] = (
+    "compatibility", "integrity", "referential", "full"
+)
+_SCOPE_CHECKS: dict[str, tuple[str, ...]] = {
+    "compatibility": ("metadata",),
+    "integrity": ("metadata", "quick_integrity", "fts"),
+    "referential": ("metadata", "foreign_keys", "exact_schema"),
+    "full": (
+        "metadata", "quick_integrity", "foreign_keys", "fts", "exact_schema",
+        "status_observations",
+    ),
+}
+_SCOPE_SUCCESS = {
+    "compatibility": "metadata_compatible",
+    "integrity": "integrity_verified",
+    "referential": "referential_verified",
+    "full": "healthy",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,9 +126,18 @@ class StateOwnerHealth:
     # Only bounded process identity is retained.  We intentionally do not
     # expose command lines, environments or open-file paths from /proc.
     processes: tuple[dict[str, object], ...] = ()
+    checks_completed: tuple[str, ...] = ()
+    checks_attempted: tuple[str, ...] = ()
+
+    @property
+    def checks_not_run(self) -> tuple[str, ...]:
+        return tuple(check for check in _SCOPE_CHECKS["full"] if check not in self.checks_attempted)
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "checks_attempted": list(self.checks_attempted),
+            "checks_completed": list(self.checks_completed),
+            "checks_not_run": list(self.checks_not_run),
             "detail": self.detail,
             "expected_schema_version": self.expected_schema_version,
             "name": self.name,
@@ -142,12 +172,47 @@ class StateHealth:
     # deliberately separate from ``blocked``: a timeout is not evidence that
     # the owner is unsafe or unavailable.
     not_verified_count: int = 0
+    scope: str = "full"
+    selected_owners: tuple[str, ...] = ()
+    omitted_owners: tuple[str, ...] = ()
+    deferred_owners: tuple[str, ...] = ()
+    next_after_owner: str | None = None
+    retry_owners: tuple[str, ...] = ()
+    retry_unknown_owners: tuple[str, ...] = ()
+    scope_complete_count: int = 0
+    unknown_discovery: str = "complete"
+    unknown_discovery_detail: str | None = None
+    timeout_seconds: float = DEFAULT_INSPECTION_TIMEOUT_SECONDS
+
+    @property
+    def scope_complete(self) -> bool:
+        """Only the selected batch, not unobserved owners or a prior page."""
+
+        return (
+            bool(self.owners) and self.scope_complete_count == len(self.owners)
+            and self.unknown_discovery in {"complete", "not_requested"}
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {
             "active_count": self.active_count,
             "blocked_count": self.blocked_count,
             "corrupt_count": self.corrupt_count,
+            "coverage": {
+                "budget_kind": "cooperative",
+                "checks_requested": list(_SCOPE_CHECKS[self.scope]),
+                "deferred_owners": list(self.deferred_owners),
+                "next_after_owner": self.next_after_owner,
+                "omitted_owners": list(self.omitted_owners),
+                "retry_owners": list(self.retry_owners),
+                "retry_unknown_owners": list(self.retry_unknown_owners),
+                "scope_complete": self.scope_complete,
+                "scope_complete_count": self.scope_complete_count,
+                "selected_owners": list(self.selected_owners),
+                "timeout_seconds": self.timeout_seconds,
+                "unknown_discovery": self.unknown_discovery,
+                "unknown_discovery_detail": self.unknown_discovery_detail,
+            },
             "future_count": self.future_count,
             "healthy_count": self.healthy_count,
             "incompatible_count": self.incompatible_count,
@@ -158,6 +223,7 @@ class StateHealth:
             "overall": self.overall,
             "owners": [owner.to_dict() for owner in self.owners],
             "schema_version": STATE_HEALTH_SCHEMA_VERSION,
+            "scope": self.scope,
             "state_directory": self.state_directory,
             "unreadable_count": self.unreadable_count,
             "unknown_count": self.unknown_count,
@@ -668,12 +734,54 @@ def _health_read(
     _check_health_budget(deadline)
 
 
+def _run_scoped_checks(
+    connection: sqlite3.Connection,
+    budget: SQLiteCancellationBridge,
+    tables: set[str],
+    *,
+    descriptor: _OwnerDescriptor | None,
+    scope: str,
+    completed: list[str],
+    attempted: list[str],
+) -> dict[str, dict[str, int]]:
+    """Run only the requested stages, preserving full inspection ordering.
+
+    Metadata compatibility is intentionally not exact schema validation: an
+    owner validator can inspect rows or import expensive optional runtimes.
+    The lightweight path must not invoke it or collect status observations.
+    """
+
+    observations: dict[str, dict[str, int]] = {}
+    for check in _SCOPE_CHECKS[scope][1:]:
+        if check == "exact_schema" and descriptor is None:
+            continue
+        budget.checkpoint()
+        attempted.append(check)
+        if check == "quick_integrity":
+            _check_quick_integrity(connection)
+        elif check == "foreign_keys":
+            _check_foreign_keys(connection)
+        elif check == "fts":
+            _check_fts(connection)
+        elif check == "exact_schema":
+            assert descriptor is not None
+            validator = _exact_validator(descriptor.name, descriptor.expected_schema_version)
+            budget.checkpoint()
+            validator(connection)
+        elif check == "status_observations":
+            observations = _status_observations(connection, tables)
+        budget.checkpoint()
+        completed.append(check)
+    return observations
+
+
 def _owner_record(
     descriptor: _OwnerDescriptor,
     path: Path,
     sidecars: tuple[SQLiteSidecarHealth, ...],
     *,
     deadline: float,
+    scope: str = "full",
 ) -> StateOwnerHealth:
     expected = descriptor.expected_schema_version
     status, detail = _regular_owner_kind(path)
@@ -711,8 +819,11 @@ def _owner_record(
     tables: set[str] = set()
     schema_version: int | None = None
     user_version: int | None = None
+    completed: list[str] = []
+    attempted: list[str] = []
     try:
         with _health_read(path, deadline=deadline) as (connection, budget):
+            attempted.append("metadata")
             tables = _table_names(connection)
             budget.checkpoint()
             schema_version = _canonical_metadata_version(connection, tables)
@@ -735,6 +846,7 @@ def _owner_record(
                     sidecars=sidecars,
                     observations={},
                     detail=f"schema version {schema_version} is newer than {expected}",
+                    checks_attempted=tuple(attempted),
                 )
             if schema_version != expected:
                 raise _HealthSchemaError(
@@ -744,27 +856,24 @@ def _owner_record(
                 raise _HealthSchemaError(
                     f"PRAGMA user_version {user_version} does not match {expected}"
                 )
-            _check_quick_integrity(connection)
             budget.checkpoint()
-            _check_foreign_keys(connection)
-            budget.checkpoint()
-            _check_fts(connection)
-            budget.checkpoint()
-            validator = _exact_validator(descriptor.name, expected)
-            budget.checkpoint()
-            validator(connection)
-            budget.checkpoint()
-            observations = _status_observations(connection, tables)
+            completed.append("metadata")
+            observations = _run_scoped_checks(
+                connection, budget, tables, descriptor=descriptor, scope=scope,
+                completed=completed, attempted=attempted,
+            )
         return StateOwnerHealth(
             name=descriptor.name,
             path=str(path),
-            status="healthy",
+            status=_SCOPE_SUCCESS[scope],
             expected_schema_version=expected,
             schema_version=schema_version,
             user_version=user_version,
             table_count=len(tables),
             sidecars=sidecars,
             observations=observations,
+            checks_completed=tuple(completed),
+            checks_attempted=tuple(attempted),
         )
     except ImmutableSQLiteUnavailable as exc:
         # A sidecar may have appeared or changed after the preflight; this is
@@ -781,6 +890,8 @@ def _owner_record(
             observations={},
             detail=str(exc),
             processes=_proc_processes(path, deadline=deadline),
+            # Source drift invalidates every observation from this read.
+            checks_attempted=tuple(attempted),
         )
     except Exception as exc:
         status, detail = _validation_error_status(exc)
@@ -796,6 +907,8 @@ def _owner_record(
             observations={},
             detail=detail,
             processes=_proc_processes(path, deadline=deadline) if status in {"blocked", "active"} else (),
+            checks_completed=tuple(completed),
+            checks_attempted=tuple(attempted),
         )
 
 
@@ -807,7 +920,7 @@ def _unknown_state_entries(state: Path) -> tuple[Path, ...]:
     seen: set[str] = set()
     try:
         children = sorted(state.iterdir(), key=lambda item: item.name)
-    except OSError:
+    except FileNotFoundError:
         return ()
     for candidate in children:
         name = candidate.name
@@ -839,6 +952,7 @@ def _unknown_record(
     sidecars: tuple[SQLiteSidecarHealth, ...],
     *,
     deadline: float,
+    scope: str = "full",
 ) -> StateOwnerHealth:
     status, detail = _regular_owner_kind(path)
     if status == "missing":
@@ -878,21 +992,22 @@ def _unknown_record(
     tables: set[str] = set()
     schema_version: int | None = None
     user_version: int | None = None
+    completed: list[str] = []
+    attempted: list[str] = []
     try:
         with _health_read(path, deadline=deadline) as (connection, budget):
+            attempted.append("metadata")
             tables = _table_names(connection)
             budget.checkpoint()
             schema_version = _canonical_metadata_version(connection, tables)
             row = connection.execute("PRAGMA user_version").fetchone()
             user_version = None if row is None else int(row[0])
             budget.checkpoint()
-            _check_quick_integrity(connection)
-            budget.checkpoint()
-            _check_foreign_keys(connection)
-            budget.checkpoint()
-            _check_fts(connection)
-            budget.checkpoint()
-            observations = _status_observations(connection, tables)
+            completed.append("metadata")
+            observations = _run_scoped_checks(
+                connection, budget, tables, descriptor=None, scope=scope,
+                completed=completed, attempted=attempted,
+            )
         return StateOwnerHealth(
             name=f"unknown:{path.name}",
             path=str(path),
@@ -904,10 +1019,13 @@ def _unknown_record(
             sidecars=sidecars,
             observations=observations,
             detail="database is not registered in the state topology",
+            checks_completed=tuple(completed),
+            checks_attempted=tuple(attempted),
         )
     except ImmutableSQLiteUnavailable as exc:
         status = "blocked"
         detail = str(exc)
+        completed.clear()
     except Exception as exc:
         status, detail = _validation_error_status(exc)
     return StateOwnerHealth(
@@ -922,6 +1040,8 @@ def _unknown_record(
         observations={},
         detail=detail,
         processes=_proc_processes(path, deadline=deadline) if status in {"blocked", "active"} else (),
+        checks_completed=tuple(completed),
+        checks_attempted=tuple(attempted),
     )
 
 
@@ -929,16 +1049,33 @@ def inspect_state_health(
     state_directory: Path,
     *,
     timeout_seconds: float = DEFAULT_INSPECTION_TIMEOUT_SECONDS,
+    scope: str = "full",
+    owners: Sequence[str] | None = None,
+    max_owners: int | None = None,
+    after_owner: str | None = None,
 ) -> StateHealth:
-    """Inspect every registered owner without creating or mutating state.
+    """Inspect a fair, bounded selection without creating or mutating state.
 
-    ``timeout_seconds`` is a shared cooperative budget: SQLite statements are
-    interrupted by a progress handler and stages check the deadline before
-    accepting results.  Registered owners not reached in time are
-    ``not_verified``.  This is not a hard wall-clock limit for Python
-    validators, imports or blocked filesystem calls; overruns cannot be
-    reported as healthy, and they do not prove that an owner is blocked or
-    corrupt.
+    ``full`` retains all legacy checks. ``compatibility`` only reads bounded
+    metadata, ``integrity`` adds quick_check/FTS and ``referential`` instead
+    adds foreign keys/exact owner validation. A lighter result is never
+    called healthy, and compatibility does not validate the exact schema.
+
+    ``owners`` selects registry names in canonical order. ``max_owners`` and
+    ``after_owner`` page that selection without trusting previous results.
+    Omitted/deferred owners have no implied health; ``next_after_owner``
+    advances the page and ``retry_owners`` separately identifies unfinished
+    registered reads in the current page. Unknown owners are discovered only
+    without an explicit selection or pagination, and coverage declares this
+    distinction. ``retry_unknown_owners`` need another unselected inspection,
+    not registry selectors. No continuation caches or trusts earlier reads.
+
+    ``timeout_seconds`` is a shared cooperative budget, divided fairly among
+    remaining owners. Unused slices pass to later owners; a slow SQL stage is
+    interrupted before monopolizing the full budget. Python validators,
+    imports and blocked filesystem calls cannot be forcibly interrupted, so
+    this is not a hard wall-clock limit. Overruns are ``not_verified``, never
+    evidence of corruption, unavailability or a completed health check.
     """
 
     if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)):
@@ -946,15 +1083,67 @@ def inspect_state_health(
     timeout = float(timeout_seconds)
     if timeout <= 0 or not math.isfinite(timeout):
         raise ValueError("state-health timeout must be a positive finite number")
-    state = Path(state_directory).expanduser().resolve(strict=False)
+    if not isinstance(scope, str) or scope not in HEALTH_SCOPES:
+        raise ValueError(f"state-health scope must be one of {', '.join(HEALTH_SCOPES)}")
+    if max_owners is not None and (
+        isinstance(max_owners, bool)
+        or not isinstance(max_owners, int)
+        or not 1 <= max_owners <= MAX_INSPECTION_OWNER_BATCH
+    ):
+        raise ValueError(f"state-health max_owners must be between 1 and {MAX_INSPECTION_OWNER_BATCH}")
     deadline = time.monotonic() + timeout
     descriptors = _state_store_descriptors()
-    owners: list[StateOwnerHealth] = []
-    for descriptor in descriptors:
+    names = tuple(descriptor.name for descriptor in descriptors)
+    if owners is not None:
+        if isinstance(owners, (str, bytes)) or not isinstance(owners, Sequence) or not owners:
+            raise ValueError("state-health owners must be a non-empty sequence of registry names")
+        if any(not isinstance(name, str) or name not in names for name in owners):
+            raise ValueError("state-health owners must contain only registered owner names")
+        if len(set(owners)) != len(owners):
+            raise ValueError("state-health owners must not repeat")
+    selected = tuple(item for item in descriptors if owners is None or item.name in owners)
+    selected_names = tuple(item.name for item in selected)
+    if after_owner is not None:
+        if not isinstance(after_owner, str) or after_owner not in selected_names:
+            raise ValueError("state-health after_owner must name a selected registered owner")
+        selected = selected[selected_names.index(after_owner) + 1 :]
+    batch = selected if max_owners is None else selected[:max_owners]
+    deferred = tuple(item.name for item in selected[len(batch) :])
+    batch_names = tuple(item.name for item in batch)
+    omitted = tuple(name for name in names if name not in batch_names and name not in deferred)
+    next_after_owner = batch[-1].name if batch and deferred else None
+
+    # Every selector/cursor is validated before resolving or inspecting the
+    # target path. A typo must not open even one owner or enumerate its files.
+    state = Path(state_directory).expanduser().resolve(strict=False)
+    discover_unknown = owners is None and max_owners is None and after_owner is None
+    unknown_paths: tuple[Path, ...] = ()
+    unknown_discovery = "not_requested"
+    unknown_discovery_detail: str | None = None
+    if discover_unknown:
+        try:
+            unknown_paths = _unknown_state_entries(state)
+        except OSError as exc:
+            unknown_discovery = "not_verified"
+            unknown_discovery_detail = f"{type(exc).__name__}: {exc}"[:512]
+        else:
+            unknown_discovery = "bounded" if len(unknown_paths) >= MAX_UNKNOWN_DATABASES else "complete"
+    records: list[StateOwnerHealth] = []
+    remaining_owners = len(batch) + len(unknown_paths)
+
+    def owner_deadline() -> float:
+        # A cooperative owner may exceed its slice in Python/FS, but SQL and
+        # stage checkpoints ensure no subsequent result accepts that overrun.
+        now = time.monotonic()
+        return min(deadline, now + max(0.0, deadline - now) / max(1, remaining_owners))
+
+    for descriptor in batch:
         path = state / descriptor.filename
         sidecars = _sidecars(path)
+        slice_deadline = owner_deadline()
+        remaining_owners -= 1
         if time.monotonic() >= deadline:
-            owners.append(
+            records.append(
                 StateOwnerHealth(
                     name=descriptor.name,
                     path=str(path),
@@ -977,7 +1166,7 @@ def inspect_state_health(
             # existence and no bytes are followed or modified here.
             status = "orphaned_sidecars" if sidecars else None
             sidecar_detail = None
-            owners.append(
+            records.append(
                 StateOwnerHealth(
                     name=descriptor.name,
                     path=str(path),
@@ -993,16 +1182,20 @@ def inspect_state_health(
                         if status == "orphaned_sidecars"
                         else sidecar_detail or detail or "database is absent"
                     ),
-                    processes=_proc_processes(path, deadline=deadline) if status in {"blocked", "active"} else (),
+                    processes=(),
                 )
             )
             continue
-        owners.append(_owner_record(descriptor, path, sidecars, deadline=deadline))
+        records.append(
+            _owner_record(descriptor, path, sidecars, deadline=slice_deadline, scope=scope)
+        )
 
-    for path in _unknown_state_entries(state):
+    for path in unknown_paths:
         sidecars = _sidecars(path)
+        slice_deadline = owner_deadline()
+        remaining_owners -= 1
         if time.monotonic() >= deadline:
-            owners.append(
+            records.append(
                 StateOwnerHealth(
                     name=f"unknown:{path.name}",
                     path=str(path),
@@ -1017,10 +1210,10 @@ def inspect_state_health(
                 )
             )
             continue
-        owners.append(_unknown_record(path, sidecars, deadline=deadline))
+        records.append(_unknown_record(path, sidecars, deadline=slice_deadline, scope=scope))
 
     def count(status: str) -> int:
-        return sum(owner.status == status for owner in owners)
+        return sum(owner.status == status for owner in records)
 
     healthy = count("healthy")
     missing = count("missing")
@@ -1033,11 +1226,16 @@ def inspect_state_health(
     incompatible = count("incompatible")
     future = count("future")
     not_verified = count("not_verified")
-    overall = "healthy" if owners and healthy == len(owners) else "partial"
+    overall = (
+        "healthy"
+        if records and healthy == len(records) and not omitted and not deferred
+        and unknown_discovery == "complete"
+        else "partial"
+    )
     return StateHealth(
         state_directory=str(state),
         overall=overall,
-        owners=tuple(owners),
+        owners=tuple(records),
         healthy_count=healthy,
         missing_count=missing,
         orphaned_sidecar_count=orphaned,
@@ -1049,13 +1247,31 @@ def inspect_state_health(
         incompatible_count=incompatible,
         future_count=future,
         not_verified_count=not_verified,
+        scope=scope,
+        selected_owners=tuple(owner.name for owner in records),
+        omitted_owners=omitted,
+        deferred_owners=deferred,
+        next_after_owner=next_after_owner,
+        retry_owners=tuple(
+            owner.name for owner in records if owner.status == "not_verified" and owner.name in names
+        ),
+        retry_unknown_owners=tuple(
+            owner.name for owner in records if owner.status == "not_verified" and owner.name not in names
+        ),
+        scope_complete_count=count(_SCOPE_SUCCESS[scope]),
+        unknown_discovery=unknown_discovery,
+        unknown_discovery_detail=unknown_discovery_detail,
+        timeout_seconds=timeout,
     )
 
 
 __all__ = [
     "DEFAULT_INSPECTION_TIMEOUT_SECONDS",
+    "HEALTH_SCOPES",
+    "MAX_INSPECTION_OWNER_BATCH",
     "STATE_HEALTH_SCHEMA_VERSION",
     "STATE_OWNER_DATABASES",
+    "HealthScope",
     "SQLiteSidecarHealth",
     "StateHealth",
     "StateOwnerHealth",

@@ -14,10 +14,13 @@ import sqlite3
 import stat
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass, replace
 from enum import Enum, StrEnum
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from .archive_review_tasks import ArchiveReviewRefreshResult
 
 from neocortex.persistence.sqlite_schema_contract import (
     SQLiteSchemaContractError,
@@ -118,6 +121,7 @@ class ValueReviewTaskQueue:
     progress: ReviewTaskScanProgress | None
     records: tuple[ReviewTaskRecord, ...]
     has_more: bool
+    related_reviews: dict[str, object] | None = None
 
     @property
     def complete(self) -> bool:
@@ -150,7 +154,7 @@ class ValueReviewTaskQueue:
             ValueReviewTaskQueueStatus.ABSENT: ValueReviewAvailability.UNAVAILABLE.value,
             ValueReviewTaskQueueStatus.UNAVAILABLE: ValueReviewAvailability.UNAVAILABLE.value,
         }[self.status]
-        return {
+        payload: dict[str, object] = {
             "advisory_only": True,
             "availability": availability,
             "candidate_count": scanned_count,
@@ -186,6 +190,9 @@ class ValueReviewTaskQueue:
             "truncated": self.has_more,
             "uncertainties": ([] if self.reason is None else [self.reason]),
         }
+        if self.related_reviews is not None:
+            payload["related_review_tasks"] = self.related_reviews
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,10 +203,11 @@ class ValueReviewTaskRefreshResult:
     page_report: dict[str, object] | None
     publication: ReviewTaskPublicationResult | None
     wrote_state: bool
+    related_sources: tuple[ArchiveReviewRefreshResult, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         progress = None if self.publication is None else self.publication.progress
-        return {
+        payload: dict[str, object] = {
             "kind": "neocortex_value_review_task_refresh",
             "schema_version": 1,
             "status": self.status,
@@ -225,6 +233,9 @@ class ValueReviewTaskRefreshResult:
             ),
             "page_report": self.page_report,
         }
+        if self.related_sources:
+            payload["related_sources"] = [source.to_dict() for source in self.related_sources]
+        return payload
 
 
 class ValueReviewTaskStateError(RuntimeError):
@@ -265,7 +276,7 @@ def build_value_review_task_fence(
     )
 
 
-def read_value_review_task_queue(
+def _read_value_review_task_queue_only(
     database: Path,
     paths: ValueReviewPaths,
     *,
@@ -443,7 +454,7 @@ def read_value_review_task_queue(
     )
 
 
-def refresh_value_review_tasks(
+def _refresh_value_review_tasks_only(
     database: Path,
     paths: ValueReviewPaths,
     *,
@@ -610,6 +621,54 @@ def refresh_value_review_tasks(
         result,
         not result.idempotent,
     )
+
+
+def read_value_review_task_queue(
+    database: Path, paths: ValueReviewPaths, *, scope: str, limit: int,
+    reference_time_ns: int, cancellation_check: CancellationCheck | None = None,
+) -> ValueReviewTaskQueue:
+    """Read Value v1 and, when present, the published cross-source grouped view."""
+
+    queue = _read_value_review_task_queue_only(
+        database, paths, scope=scope, limit=limit, reference_time_ns=reference_time_ns,
+        cancellation_check=cancellation_check,
+    )
+    if paths.archive is None or not paths.archive.exists() or not database.exists():
+        return queue
+    from .review_task_query import ReviewTaskReadQuery, query_current_review_tasks
+
+    related = query_current_review_tasks(database, ReviewTaskReadQuery(limit=limit, scope=scope),
+                                         archive_path=paths.archive, cancellation_check=cancellation_check)
+    status = queue.status
+    if related.page.items and status in {ValueReviewTaskQueueStatus.ABSENT, ValueReviewTaskQueueStatus.UNAVAILABLE}:
+        status = ValueReviewTaskQueueStatus.PARTIAL
+    return replace(queue, status=status, related_reviews=related.to_dict())
+
+
+def refresh_value_review_tasks(
+    database: Path, paths: ValueReviewPaths, *, scope: str,
+    clock_ns: ClockNs = time.time_ns, cancellation_check: CancellationCheck | None = None,
+) -> ValueReviewTaskRefreshResult:
+    """Existing explicit refresh, federated to real Archive issues when available."""
+
+    now_ns = clock_ns()
+    result = _refresh_value_review_tasks_only(database, paths, scope=scope,
+                                             clock_ns=lambda: now_ns, cancellation_check=cancellation_check)
+    if paths.archive is None or not paths.archive.exists():
+        return result
+    from .archive_review_tasks import _refresh_archive_review_tasks
+
+    archive = _refresh_archive_review_tasks(database, paths.archive, scope=scope, now_ns=now_ns,
+                                            cancellation_check=cancellation_check)
+    status, reason = result.status, result.reason
+    if archive.status == "snapshot_changed":
+        status, reason = "snapshot_changed", archive.reason
+    elif archive.status != "complete" and status == "complete":
+        status, reason = "partial", archive.reason or "archive_review_scan_partial"
+    elif status == "unavailable" and archive.status in {"complete", "partial"}:
+        status = "partial"
+    return replace(result, status=status, reason=reason,
+                   wrote_state=result.wrote_state or archive.wrote_state, related_sources=(archive,))
 
 
 def _publication(

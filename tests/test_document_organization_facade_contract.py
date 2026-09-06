@@ -24,10 +24,12 @@ EXPECTED_PUBLIC_NAMES = (
     "OrganizationApplyProgress",
     "OrganizationApplyProgressCallback",
     "OrganizationApplySummary",
+    "OrganizationInputScope",
     "OrganizationPlanSummary",
     "OrganizationPlanView",
     "apply_all_document_organization",
     "apply_document_organization",
+    "capture_organization_input_scope",
     "default_organization_root",
     "list_organization_plans",
     "plan_document_organization",
@@ -42,10 +44,7 @@ def test_document_organization_facade_exports_stable_names() -> None:
 def test_document_organization_facade_delegates_to_bounded_layers() -> None:
     assert facade.plan_document_organization is planning.plan_document_organization
     assert facade.apply_document_organization is application.apply_document_organization
-    assert (
-        facade.apply_all_document_organization
-        is application.apply_all_document_organization
-    )
+    assert facade.apply_all_document_organization is application.apply_all_document_organization
     assert facade.default_organization_root is models.default_organization_root
     assert facade.list_organization_plans is models.list_organization_plans
     assert facade.OrganizationPlanSummary is models.OrganizationPlanSummary
@@ -67,11 +66,11 @@ def test_document_organization_public_signatures_require_mutation_guard() -> Non
     }
     assert signatures == {
         "default_organization_root": (
-            "(framework_database: 'Path', *, analysis_root: 'Path | None' = None) "
-            "-> 'Path'"
+            "(framework_database: 'Path', *, analysis_root: 'Path | None' = None) -> 'Path'"
         ),
         "plan_document_organization": (
             "(catalog_path: 'Path', organization_root: 'Path', *, "
+            "source_scope: 'OrganizationInputScope', "
             "min_confidence: 'float' = 0.72, progress: 'ProgressCallback | None' "
             "= None, progress_operation: 'str' = 'framework', "
             "mutation_guard: 'CorpusMutationGuard | None' = None) -> "
@@ -94,4 +93,6 @@ def test_document_organization_public_signatures_require_mutation_guard() -> Non
             "-> 'tuple[OrganizationPlanView, ...]'"
         ),
     }
+
+
 # endregion [02]

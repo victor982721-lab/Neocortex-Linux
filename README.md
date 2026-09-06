@@ -39,7 +39,8 @@ fallback destructivo.
 
 ## Empieza por una consulta
 
-Estas operaciones no recorren el corpus ni crean estado:
+Estas operaciones consultan el estado publicado sin actualizar los owners ni
+modificar archivos del corpus:
 
 ```bash
 Neocortex --version
@@ -48,10 +49,26 @@ Neocortex help
 Neocortex status --scope all
 Neocortex search "consulta" --scope personal --limit 20
 Neocortex ask "consulta" --scope personal --limit 12
+Neocortex ask "consulta" --scope personal --characters 12000 --json
 Neocortex inspect code "consulta" --scope personal
 Neocortex inspect lineage IDENTIFICADOR --scope personal
 Neocortex curate plan --limit 20
+Neocortex --pdf-diagnostics 20 --diagnostics-json
+Neocortex --text-errors 20 --diagnostics-json
+Neocortex --archive-issues 20 --diagnostics-json
 ```
+
+`ask`, `ask --json`, `--knowledge-context` y la herramienta MCP `context` usan
+el contexto compacto v2: fuentes sin repetición, fragmentos citables y cobertura
+explícita, con presupuesto para la respuesta completa. `ask --response-version 1`
+o `--knowledge-response-version 1` conservan el contrato anterior; Python/SDK y
+la GUI mantienen v1 mientras su consumidor no solicite v2. Un resultado completo
+de búsqueda no prueba que la pregunta tenga respuesta ni autoriza acciones.
+
+Las consultas de diagnóstico respetan `--root` (o el corpus predeterminado),
+distinguen cero resultados de owner ausente/error y exponen cursores ligados a
+su ámbito. MCP ofrece la misma lectura mediante `content_diagnostics`. Una
+recomendación declara evidencia y comprobaciones faltantes, no permiso de borrar.
 
 Si el estado no tiene cobertura, prueba una sola ruta sobre una raíz que ya
 contenga únicamente 20–50 archivos autorizados.

@@ -10,7 +10,7 @@ snapshots.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -517,8 +517,20 @@ def context_payload(
     include_history: bool = False,
     cancellation_check: CancellationCheck | None = None,
     request_id: str | None = None,
+    response_version: int = 1,
+    response_transport: str = "json",
 ) -> dict[str, object]:
     """Build citation-first contexts independently for each fixed scope."""
+
+    if isinstance(response_version, bool) or response_version not in {1, 2}:
+        raise ValueError("response_version must be 1 or 2")
+    if response_version == 2:
+        return _context_payload_v2(
+            query, scope, limit=limit, max_characters=max_characters,
+            mode=mode, include_history=include_history,
+            cancellation_check=cancellation_check, request_id=request_id,
+            response_transport=response_transport,
+        )
 
     normalized = _validate_query(query)
     selected = _scope(scope)
@@ -579,6 +591,62 @@ def context_payload(
         mode=retrieval_mode.value,
         include_history=include_history,
         limit=bounded_limit,
+    )
+
+
+def _context_payload_v2(
+    query: str, scope: str | ReadScope, *, limit: int, max_characters: int,
+    mode: str | RetrievalMode, include_history: bool,
+    cancellation_check: CancellationCheck | None, request_id: str | None,
+    response_transport: str,
+) -> dict[str, object]:
+    from neocortex.knowledge.knowledge_context_v2 import build_context_response_v2
+    from neocortex.knowledge.knowledge_context_hydration import search_context_evidence
+
+    try:
+        normalized = _validate_query(query)
+        selected = _scope(scope)
+        bounded_limit = _validate_limit(limit)
+        bounded_characters = _validate_characters(max_characters)
+        retrieval_mode = mode if isinstance(mode, RetrievalMode) else RetrievalMode(mode)
+        if not isinstance(include_history, bool):
+            raise ValueError("include_history must be a bool")
+        resolved_request_id = _request_id(request_id)
+    except (TypeError, ValueError):
+        return build_context_response_v2(
+            [{"scope": str(scope), "exit_code": 2, "error": {"code": "invalid_request"}}],
+            query=str(query), scope=str(scope), request_id=f"read-{uuid4().hex}",
+            mode=str(mode), include_history=include_history, limit=limit,
+            max_characters=max_characters, transport=response_transport,
+        )
+    minimum = build_context_response_v2(
+        [], query=normalized, scope=selected.value, request_id=resolved_request_id,
+        mode=retrieval_mode.value, include_history=include_history, limit=bounded_limit,
+        max_characters=bounded_characters, transport=response_transport,
+    )
+    if minimum["exit_code"] == 2:
+        return minimum
+    request = KnowledgeQuery(normalized, retrieval_mode=retrieval_mode,
+                             include_history=include_history, limit=bounded_limit)
+    entries: list[dict[str, object]] = []
+    for binding in scope_bindings(selected):
+        try:
+            # Both presentations use the same immutable search service. V2
+            # must not first discard hits through the v1 per-scope renderer.
+            result, evidence_projection = search_context_evidence(
+                _service(binding), request, scope=binding.scope.value,
+                cancellation_check=cancellation_check,
+            )
+            entries.append({"scope": binding.scope.value, "result": evidence_projection,
+                            "exit_code": int(knowledge_search_exit_code(result))})
+        except (ModuleNotFoundError, OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
+            entries.append({"scope": binding.scope.value, "error": {
+                "code": "owner_unavailable", "message": sanitize_untrusted_text(str(exc)),
+            }})
+    return build_context_response_v2(
+        entries, query=normalized, scope=selected.value, request_id=resolved_request_id,
+        mode=retrieval_mode.value, include_history=include_history,
+        limit=bounded_limit, max_characters=bounded_characters, transport=response_transport,
     )
 
 
@@ -703,9 +771,47 @@ def _incomplete_evidence_error(code: int) -> dict[str, object] | None:
     }
 
 
+def _direct_evidence_payload(
+    source_ref: Mapping[str, object] | None,
+    evidence_ref: Mapping[str, object] | None, *, scope: str | ReadScope,
+    max_characters: int, request_id: str | None, response_transport: str,
+) -> dict[str, object]:
+    from neocortex.knowledge.knowledge_context_v2 import build_context_response_v2
+    from neocortex.knowledge.knowledge_evidence_lookup import EvidenceLookupError, lookup_owner_evidence
+
+    selected_scope = str(scope)
+    request = f"read-{uuid4().hex}"
+    entries: list[dict[str, object]]
+    try:
+        request = _request_id(request_id)
+        selected = _scope(scope)
+        selected_scope = selected.value
+        if not isinstance(source_ref, Mapping) or not isinstance(evidence_ref, Mapping):
+            raise EvidenceLookupError("invalid_evidence_reference")
+        binding = next((item for item in scope_bindings(selected)
+                        if item.scope.value == source_ref.get("scope")), None)
+        if binding is None:
+            raise EvidenceLookupError("evidence_scope_mismatch")
+        result = lookup_owner_evidence(binding.state_directory, source_ref, evidence_ref)
+        entries = [{"scope": binding.scope.value, "result": result}]
+    except EvidenceLookupError as exc:
+        entries = [{"scope": selected_scope, "exit_code": 4,
+                    "error": {"code": exc.code}}]
+    except (TypeError, ValueError):
+        entries = [{"scope": selected_scope, "exit_code": 2,
+                    "error": {"code": "invalid_request"}}]
+    except (OSError, RuntimeError, sqlite3.Error):
+        entries = [{"scope": selected_scope, "exit_code": 4,
+                    "error": {"code": "owner_evidence_unavailable"}}]
+    return build_context_response_v2(
+        entries, query="", scope=selected_scope, request_id=request, limit=1,
+        max_characters=max_characters, transport=response_transport, operation="evidence",
+    )
+
+
 def evidence_payload(
-    query: str,
-    citation_id: str,
+    query: str = "",
+    citation_id: str = "",
     scope: str | ReadScope = ReadScope.ALL,
     *,
     evidence_id: str | None = None,
@@ -713,8 +819,17 @@ def evidence_payload(
     limit: int = 8,
     max_characters: int = 12_000,
     request_id: str | None = None,
+    source_ref: Mapping[str, object] | None = None,
+    evidence_ref: Mapping[str, object] | None = None,
+    response_transport: str = "json",
 ) -> dict[str, object]:
     """Resolve stable evidence from one fresh context without arbitrary file reads."""
+
+    if source_ref is not None or evidence_ref is not None:
+        return _direct_evidence_payload(
+            source_ref, evidence_ref, scope=scope, max_characters=max_characters,
+            request_id=request_id, response_transport=response_transport,
+        )
 
     normalized_query = _validate_query(query)
     normalized_citation_id = _evidence_identifier("citation_id", citation_id, required=True)

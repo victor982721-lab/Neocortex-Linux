@@ -9,6 +9,7 @@ import threading
 from collections.abc import Callable
 from neocortex.api.status_codes import KnowledgeExitCode
 from typing import TYPE_CHECKING, TextIO, TypeVar
+from uuid import uuid4
 
 from neocortex.runtime.control.console_cancellation import ConsoleCancellationBridge
 from neocortex.knowledge.knowledge_contracts import (
@@ -295,7 +296,65 @@ def run_knowledge_search(args: argparse.Namespace) -> int:
     return int(knowledge_search_exit_code(result))
 
 
+def _run_knowledge_context_v2(args: argparse.Namespace) -> int:
+    from neocortex.knowledge.knowledge_context_v2 import (
+        build_context_response_v2,
+        render_context_response,
+        serialize_context_response,
+    )
+
+    entries: list[dict[str, object]]
+    try:
+        query = _query(args, args.knowledge_context)
+        from neocortex.knowledge.knowledge_context_hydration import search_context_evidence
+
+        result, evidence_projection = _with_cancellation(
+            lambda checkpoint: search_context_evidence(
+                _service(args),
+                query,
+                scope="personal",
+                cancellation_check=checkpoint,
+            )
+        )
+        entries = [{"scope": "personal", "result": evidence_projection,
+                    "exit_code": int(knowledge_search_exit_code(result))}]
+    except (ModuleNotFoundError, OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
+        invalid_request = isinstance(exc, (TypeError, ValueError))
+        entries = [
+            {
+                "scope": "personal",
+                "error": {
+                    "code": "invalid_request" if invalid_request else "owner_unavailable",
+                    "message": f"{type(exc).__name__}: {exc}",
+                },
+                "exit_code": int(
+                    KnowledgeExitCode.USAGE if invalid_request else KnowledgeExitCode.FATAL
+                ),
+            }
+        ]
+    payload = build_context_response_v2(
+        entries,
+        query=args.knowledge_context,
+        scope="personal",
+        request_id=f"read-{uuid4().hex}",
+        mode=args.knowledge_mode,
+        include_history=args.knowledge_history,
+        limit=args.knowledge_limit,
+        max_characters=args.knowledge_context_characters,
+        transport="json" if args.knowledge_json else "text",
+    )
+    # The budget covers the complete output, including this single newline.
+    print(
+        serialize_context_response(payload)
+        if args.knowledge_json
+        else render_context_response(payload)
+    )
+    return int(payload["exit_code"])
+
+
 def run_knowledge_context(args: argparse.Namespace) -> int:
+    if getattr(args, "knowledge_response_version", 2) == 2:
+        return _run_knowledge_context_v2(args)
     try:
         query = _query(args, args.knowledge_context)
         bundle = _with_cancellation(

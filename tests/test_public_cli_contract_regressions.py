@@ -16,7 +16,13 @@ from neocortex.api.read_contract import ReadOperation, validate_read_payload
     ("arguments", "operation", "scope", "query", "limit"),
     (
         (("search", "relay", "--json"), ReadOperation.SEARCH, "all", "relay", 10),
-        (("ask", "relay", "--json"), ReadOperation.CONTEXT, "all", "relay", 10),
+        (
+            ("ask", "relay", "--json", "--response-version", "1"),
+            ReadOperation.CONTEXT,
+            "all",
+            "relay",
+            10,
+        ),
         (
             ("inspect", "code", "relay", "--json"),
             ReadOperation.INSPECT_CODE,
@@ -100,7 +106,11 @@ def test_review_value_error_emits_the_review_contract(
     ("arguments", "producer", "expected_usage"),
     (
         (("search", "relay"), "search_payload", "Neocortex search --help"),
-        (("ask", "relay"), "context_payload", "Neocortex ask --help"),
+        (
+            ("ask", "relay", "--response-version", "1"),
+            "context_payload",
+            "Neocortex ask --help",
+        ),
         (("inspect", "code", "relay"), "code_search_payload", "Neocortex inspect code --help"),
     ),
 )

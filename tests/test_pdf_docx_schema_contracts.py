@@ -23,6 +23,7 @@ from neocortex.persistence.sqlite_schema_contract import (
     schema_contract_from_builder,
     validate_sqlite_schema_contract,
 )
+from neocortex.persistence.sqlite_immutable import ImmutableSQLiteUnavailable
 from neocortex.platform.policy import sqlite_path_collation
 
 
@@ -473,12 +474,43 @@ def test_docx_current_contract_requires_fts_shadow_tables(tmp_path: Path) -> Non
     docx_state.initialize_docx_state(database)
     with sqlite3.connect(database) as connection:
         connection.execute("DROP TABLE document_fts_data")
+    # sqlite3.Connection.__exit__ commits but does not close: make this the
+    # cold-owner schema-contract test, not the live-WAL materialization case.
+    connection.close()
     before = database.read_bytes()
 
     with pytest.raises(SQLiteSchemaContractError, match="document_fts_data"):
         docx_state.initialize_docx_state(database)
 
     assert database.read_bytes() == before
+
+
+def test_docx_shadow_table_corruption_in_live_wal_rejects_snapshot_without_source_changes(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "docx.sqlite3"
+    docx_state.initialize_docx_state(database)
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute("DROP TABLE document_fts_data")
+        connection.commit()
+        wal = Path(f"{database}-wal")
+        assert wal.is_file(), "the fixture must exercise uncheckpointed WAL state"
+        source_files = (database, wal, Path(f"{database}-shm"))
+        before = {path: path.read_bytes() if path.exists() else None for path in source_files}
+
+        # The immutable kernel now verifies a temporary WAL materialization
+        # before the DOCX schema reader. Require the actual FTS corruption as
+        # the cause, not merely a generic refusal or a changed exception class.
+        with pytest.raises(ImmutableSQLiteUnavailable, match="temporary SQLite snapshot") as rejected:
+            docx_state.initialize_docx_state(database)
+
+        assert isinstance(rejected.value.__cause__, sqlite3.DatabaseError)
+        assert "vtable constructor failed: document_fts" in str(rejected.value.__cause__)
+        after = {path: path.read_bytes() if path.exists() else None for path in source_files}
+        assert after == before
+    finally:
+        connection.close()
 
 
 @pytest.mark.parametrize("spec", _ROUTES, ids=_route_id)

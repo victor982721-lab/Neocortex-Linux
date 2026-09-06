@@ -21,6 +21,7 @@ from neocortex.deduplication import (
     DedupPlanner,
     FileChangedError,
     InventoryCheckpoint,
+    KeeperPolicy,
     files_equal_exact,
     full_fingerprint,
     partial_fingerprint,
@@ -191,7 +192,7 @@ class PlannerTests(unittest.TestCase):
                 for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
             }
             connection.close()
-            self.assertEqual(version, "11")
+            self.assertEqual(version, str(INVENTORY_SCHEMA_VERSION))
             self.assertIn("planned_duplicate_groups", tables)
             self.assertIn("planned_duplicate_members", tables)
             self.assertIn("inventory_checkpoints", tables)
@@ -358,12 +359,12 @@ class PlannerTests(unittest.TestCase):
             finally:
                 kernel32.SetFileAttributesW(str(hidden), attributes)
 
-    def test_plans_only_exact_duplicates_and_keeps_newest(self) -> None:
+    def test_exact_duplicates_prefer_clean_name_unless_keeper_explicit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "corpus"
             root.mkdir()
-            older = root / "older.dat"
-            newer = root / "newer.dat"
+            older = root / "report.dat"
+            newer = root / "report (1).dat"
             collision = root / "same_size_not_duplicate.dat"
             unique = root / "unique.dat"
             older.write_bytes(b"duplicate-content")
@@ -380,8 +381,10 @@ class PlannerTests(unittest.TestCase):
                 self.assertEqual(scan.files_seen, 4)
                 self.assertEqual(len(plan.groups), 1)
                 group = plan.groups[0]
-                self.assertEqual(Path(group.keep.path).name, "newer.dat")
-                self.assertEqual([Path(item.path).name for item in group.redundant], ["older.dat"])
+                self.assertEqual(group.keep.path, str(older))
+                self.assertEqual([item.path for item in group.redundant], [str(newer)])
+                assert group.proof is not None
+                self.assertEqual(group.proof.keeper_reason, "clean_name_tiebreak")
                 self.assertEqual(group.reclaimable_bytes, len(b"duplicate-content"))
                 self.assertEqual(plan.verification_mode, "full_hash")
                 self.assertEqual(group.verification_mode, "full_hash")
@@ -389,6 +392,12 @@ class PlannerTests(unittest.TestCase):
                     "same_size_not_duplicate.dat",
                     {Path(item.path).name for item in group.redundant},
                 )
+                policy = KeeperPolicy(explicit_keep_identities=(snapshot_path(newer).identity,))
+                explicit = DedupPlanner(index, keeper_policy=policy).plan(scan.scan_id, preview_limit=1)
+                self.assertEqual(explicit.groups[0].keep.path, str(newer))
+                assert explicit.groups[0].proof is not None
+                self.assertEqual(explicit.groups[0].proof.keeper_reason, "explicit_user_decision")
+                self.assertEqual(explicit.groups[0].member_proofs[1].comparison_result, "equal")
 
     def test_second_plan_reuses_cached_hashes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -505,7 +514,10 @@ class PlannerTests(unittest.TestCase):
 
             self.assertEqual(plan.group_count, 1)
             self.assertEqual(plan.verification_mode, "partial")
-            self.assertEqual(groups[0].verification_mode, "partial")
+            self.assertEqual(plan.coverage, "partial")
+            self.assertEqual(plan.requested_policy, "fast")
+            self.assertEqual(groups[0].verification_mode, "fast")
+            self.assertEqual(groups[0].member_proofs[1].comparison_result, "fingerprint_match")
 
 
 if __name__ == "__main__":

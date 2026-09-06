@@ -12,7 +12,8 @@ pickle identity. This helper has no runtime dependency on that facade.
 # region [01] Dependencias del módulo
 from __future__ import annotations
 import math
-from collections.abc import Callable
+import json
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 # endregion [01]
 
@@ -250,6 +251,17 @@ def validate_ranking_signal(
         raise ValueError("ranking generation cannot be negative")
     if contract.contribution is not None and not math.isfinite(contract.contribution):
         raise ValueError("ranking contribution must be finite")
+    if contract.evidence is not None:
+        required_text_fn("ranking evidence_id", contract.evidence.evidence_id)
+        required_text_fn("ranking revision_id", contract.evidence.revision_id)
+    if not isinstance(contract.query_support, Mapping):
+        raise ValueError("ranking query support must be a bounded JSON object")
+    try:
+        serialized = json.dumps(dict(contract.query_support), allow_nan=False)
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ValueError("ranking query support must be finite JSON") from exc
+    if len(serialized) > 16_384:
+        raise ValueError("ranking query support exceeds its JSON budget")
 
 
 def validate_knowledge_hit(
@@ -270,6 +282,12 @@ def validate_knowledge_hit(
         raise ValueError("evidence does not belong to hit revision")
     if not contract.signals:
         raise ValueError("knowledge hit requires at least one ranking signal")
+    for signal in contract.signals:
+        if signal.evidence is not None and (
+            signal.evidence.resource_id != contract.resource.resource_id
+            or signal.evidence.revision_id != contract.revision.revision_id
+        ):
+            raise ValueError("ranking evidence does not belong to hit resource and revision")
     if not contract.reasons:
         raise ValueError("knowledge hit requires at least one retrieval reason")
     for reason in contract.reasons:

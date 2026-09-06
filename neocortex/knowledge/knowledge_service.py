@@ -8,7 +8,8 @@ retrieval once when that view is unstable, and exposes a partial result with a
 
 from __future__ import annotations
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from importlib import import_module
 from typing import TYPE_CHECKING, Any, Protocol, cast
@@ -44,6 +45,44 @@ else:
 
 CancellationCheck = Callable[[], None]
 ClockNanoseconds = Callable[[], int]
+ReadMetricsSink = Callable[[dict[str, object]], None]
+
+
+class _ReadAttemptInvalidated(Exception):
+    """Carry the primary fence failure through strict-view cleanup."""
+
+
+@contextmanager
+def _read_attempt_scope(context: Any) -> Iterator[None]:
+    from neocortex.semantic.semantic_schema import semantic_read_context
+
+    try:
+        with semantic_read_context(context):
+            yield
+    except _ReadAttemptInvalidated:
+        # The context manager preserves this primary failure and attaches any
+        # strict-fence cleanup error as a note. The caller retries outside it.
+        pass
+
+
+def _read_owner_fences(paths: KnowledgeStatePaths) -> dict[str, object]:
+    """Capture filesystem-only witnesses, without opening owner databases."""
+    from neocortex.persistence.sqlite_immutable import capture_sqlite_read_fence
+    from neocortex.safety.state_topology_contracts import STATE_STORE_REGISTRY
+
+    fences: dict[str, object] = {}
+    for store in STATE_STORE_REGISTRY.stores:
+        path = getattr(paths, store.knowledge_path_attribute)
+        if path is None:
+            continue
+        try:
+            fences[store.state_owner_id] = capture_sqlite_read_fence(path)
+        except FileNotFoundError:
+            fences[store.state_owner_id] = None
+        except (OSError, RuntimeError):
+            # Unobserved is not unchanged, nor proof of a particular mutation.
+            continue
+    return fences
 
 
 def _default_snapshot_collector(
@@ -270,8 +309,11 @@ def _marked_retrieval_owners(
 def _changed_snapshot_marker(
     retrieval_snapshot: KnowledgeSnapshot,
     after: KnowledgeSnapshot,
+    *,
+    forced_changed_owners: tuple[str, ...] = (),
 ) -> KnowledgeSnapshot:
-    changed_owners = _changed_owner_names(retrieval_snapshot, after)
+    changed_owners = tuple(sorted(set(_changed_owner_names(retrieval_snapshot, after))
+                                 | set(forced_changed_owners)))
     warnings = list(retrieval_snapshot.warnings)
     warnings.append("snapshot_changed_during_query")
     if changed_owners:
@@ -281,7 +323,10 @@ def _changed_snapshot_marker(
         source_version=retrieval_snapshot.source_version,
         captured_at_utc=retrieval_snapshot.captured_at_utc,
         captured_monotonic_ns=retrieval_snapshot.captured_monotonic_ns,
-        owners=_marked_retrieval_owners(retrieval_snapshot, after),
+        owners=tuple(
+            replace(owner, identity_changed=True) if owner.owner in forced_changed_owners else owner
+            for owner in _marked_retrieval_owners(retrieval_snapshot, after)
+        ),
         active_models=retrieval_snapshot.active_models,
         consistency=SnapshotConsistency.SNAPSHOT_CHANGED,
         attempts=2,
@@ -369,8 +414,14 @@ class KnowledgeSearchService:
         query: KnowledgeQuery,
         *,
         cancellation_check: CancellationCheck | None = None,
+        read_metrics_sink: ReadMetricsSink | None = None,
+        _attempt_consumer: Callable[[KnowledgeSearchResult], object] | None = None,
+        _consumer_commit: Callable[[object], None] | None = None,
     ) -> KnowledgeSearchResult:
         """Execute against a stable view, retrying the whole retrieval once."""
+
+        if read_metrics_sink is not None and not callable(read_metrics_sink):
+            raise ValueError("read_metrics_sink must be callable when provided")
 
         clock_contract = self._clock_contract()
         clock = clock_contract.now_ns
@@ -399,21 +450,74 @@ class KnowledgeSearchService:
                 )
             )
             executor_started_ns = clock()
+            fences_before = _read_owner_fences(self.paths)
             trusted_clock_handoff = self.search_executor is _default_search_executor
-            if trusted_clock_handoff:
-                result = _default_search_executor(
-                    self.paths,
-                    plan,
-                    before,
-                    cancellation_check=cancellation_check,
-                    telemetry_clock=clock_contract,
-                )
-            else:
-                result = self.search_executor(
-                    self.paths,
-                    plan,
-                    before,
-                    cancellation_check=cancellation_check,
+            from neocortex.semantic.semantic_schema import (
+                SemanticReadContext,
+            )
+
+            # Explicit context overrides a caller's ambient scope. Every retry
+            # must get fresh views; nested Text/Image/evidence facade calls
+            # reuse this attempt's preparation, never a prior attempt's cache.
+            read_context = SemanticReadContext(cancellation_check=cancellation_check)
+            owner_fence_changed = False
+            changed_fence_owners: tuple[str, ...] = ()
+            consumed: object = None
+            result = None
+            with _read_attempt_scope(read_context):
+                execution_error: OSError | RuntimeError | None = None
+                try:
+                    if trusted_clock_handoff:
+                        result = _default_search_executor(
+                            self.paths, plan, before,
+                            cancellation_check=cancellation_check,
+                            telemetry_clock=clock_contract,
+                        )
+                    else:
+                        result = self.search_executor(
+                            self.paths, plan, before,
+                            cancellation_check=cancellation_check,
+                        )
+                    if _attempt_consumer is not None:
+                        consumed = _attempt_consumer(result)
+                except (OSError, RuntimeError) as exc:
+                    execution_error = exc
+                # Some facades report a caught read failure as a partial
+                # channel. This public fence-only barrier also detects that
+                # case even when the logical snapshot remains unchanged.
+                try:
+                    read_context.verify_owner_fences()
+                except (OSError, RuntimeError):
+                    owner_fence_changed = True
+                    result = None
+                fences_after = _read_owner_fences(self.paths)
+                changed_fence_owners = tuple(sorted(
+                    owner for owner in fences_before.keys() & fences_after.keys()
+                    if fences_before[owner] != fences_after[owner]
+                ))
+                if changed_fence_owners:
+                    owner_fence_changed = True
+                    result = None
+                if execution_error is not None and not owner_fence_changed:
+                    raise execution_error
+                if owner_fence_changed:
+                    raise _ReadAttemptInvalidated("read attempt changed before commit")
+
+            if result is None and not owner_fence_changed:
+                raise TypeError("Knowledge search executor returned no result")
+            if result is None:
+                from .knowledge_search_contracts import KnowledgeSearchResult as SearchResult
+
+                result = SearchResult(
+                    plan=plan, snapshot=before, hits=(), rankings=(),
+                    complete=False, truncated=False, omitted_candidates=0,
+                    rows_scanned=0, vectors_scanned=0, elapsed_milliseconds=0,
+                    warnings=(
+                        ("owner_read_fence_changed",) +
+                        (("semantic_owner_fence_changed",) if "semantic" in changed_fence_owners else ())
+                        if changed_fence_owners else ("owner_read_fence_unverified",)
+                    ),
+                    blocking_owners=changed_fence_owners or ("semantic",),
                 )
             executor_duration_ns = _duration_ns(clock, executor_started_ns)
             attempt_phases = _attempt_phases(
@@ -443,7 +547,19 @@ class KnowledgeSearchService:
                     snapshot_id=after.snapshot_id,
                 )
             )
-            if _stable_identity(before, after):
+            stable_attempt = not owner_fence_changed and _stable_identity(before, after)
+            if read_metrics_sink is not None:
+                read_metrics_sink({
+                    "schema": "neocortex.knowledge-read-attempt/v1",
+                    "service_attempt": service_attempt,
+                    "outcome": "stable" if stable_attempt else (
+                        "owner_fence_changed" if owner_fence_changed else "snapshot_changed"
+                    ),
+                    "semantic_read": read_context.metrics,
+                })
+            if stable_attempt:
+                if _consumer_commit is not None:
+                    _consumer_commit(consumed)
                 warnings = result.warnings
                 if first_view_changed:
                     warnings = _deduplicate(
@@ -466,7 +582,12 @@ class KnowledgeSearchService:
                 _checkpoint(cancellation_check)
                 continue
 
-            changed_snapshot = _changed_snapshot_marker(before, after)
+            changed_snapshot = (
+                before if owner_fence_changed and not changed_fence_owners
+                and _stable_identity(before, after) else
+                _changed_snapshot_marker(before, after,
+                                         forced_changed_owners=changed_fence_owners)
+            )
             warnings = _deduplicate(
                 (
                     *result.warnings,
@@ -490,6 +611,19 @@ class KnowledgeSearchService:
 
         raise AssertionError("bounded Knowledge service loop did not return")
 
+    def _search_with_consumer(
+        self, query: KnowledgeQuery,
+        consumer: Callable[[KnowledgeSearchResult], object], *,
+        cancellation_check: CancellationCheck | None = None,
+        read_metrics_sink: ReadMetricsSink | None = None,
+    ) -> tuple[KnowledgeSearchResult, object | None]:
+        """Commit a detached projection only after the owning attempt is stable."""
+        committed: list[object] = []
+        result = self.search(query, cancellation_check=cancellation_check,
+                             read_metrics_sink=read_metrics_sink,
+                             _attempt_consumer=consumer, _consumer_commit=committed.append)
+        return result, committed[0] if committed else None
+
     def context(
         self,
         query: KnowledgeQuery,
@@ -497,6 +631,7 @@ class KnowledgeSearchService:
         max_characters: int | None = None,
         max_hits: int | None = None,
         cancellation_check: CancellationCheck | None = None,
+        read_metrics_sink: ReadMetricsSink | None = None,
     ) -> ContextBundle:
         """Search a stable view and compile a bounded context from its hits."""
 
@@ -522,7 +657,12 @@ class KnowledgeSearchService:
         clock_contract = self._clock_contract()
         clock = clock_contract.now_ns
         operation_started_ns = clock()
-        result = self.search(query, cancellation_check=cancellation_check)
+        result = (
+            self.search(query, cancellation_check=cancellation_check)
+            if read_metrics_sink is None else
+            self.search(query, cancellation_check=cancellation_check,
+                        read_metrics_sink=read_metrics_sink)
+        )
         _checkpoint(cancellation_check)
         builder = self.context_builder or _default_context_builder
         context_started_ns = clock()

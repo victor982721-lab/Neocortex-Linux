@@ -232,7 +232,15 @@ def build_human_parser() -> argparse.ArgumentParser:
         type=int,
         default=12_000,
         metavar="N",
-        help="presupuesto máximo de contexto por scope",
+        help="presupuesto máximo de la respuesta completa (por scope en versión 1)",
+    )
+    ask.add_argument(
+        "--response-version",
+        type=int,
+        choices=(1, 2),
+        default=2,
+        metavar="{1,2}",
+        help="contrato de respuesta: 2 compacto (default), 1 heredado",
     )
 
     curate = commands.add_parser(
@@ -837,6 +845,7 @@ def _run_search(args: argparse.Namespace) -> int:
 
 
 def _run_ask(args: argparse.Namespace) -> int:
+    response_version = getattr(args, "response_version", 2)
     try:
         payload = context_payload(
             args.query,
@@ -845,6 +854,8 @@ def _run_ask(args: argparse.Namespace) -> int:
             max_characters=args.characters,
             mode=args.mode,
             include_history=args.history,
+            response_version=response_version,
+            response_transport="json" if args.json else "text",
         )
     except ValueError as exc:
         return _run_usage_error(
@@ -858,6 +869,20 @@ def _run_ask(args: argparse.Namespace) -> int:
             limit=args.limit,
             max_characters=args.characters,
         )
+    if response_version == 2:
+        from neocortex.knowledge.knowledge_context_v2 import (
+            render_context_response,
+            serialize_context_response,
+        )
+
+        # The shared serializer budgets this exact output, including print's
+        # newline. Do not add a second renderer, escaping pass or CLI prefix.
+        print(
+            serialize_context_response(payload)
+            if args.json
+            else render_context_response(payload)
+        )
+        return _exit_code(payload)
     if args.json:
         _json(payload)
         return _exit_code(payload)

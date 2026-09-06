@@ -23,6 +23,9 @@ from neocortex.workflow.authorization.repository import (
 from neocortex.curation.preview import build_curation_plan_page
 from neocortex.deduplication import DedupIndex, DedupPlanner, InventoryCheckpoint
 from neocortex.documents.document_catalog import initialize_document_catalog
+from neocortex.documents.document_organization_scope import OrganizationInputScope
+from neocortex.documents.document_resource_binding import build_resource_binding
+from neocortex.foundation.file_identity import FileIdentity
 from neocortex.persistence.framework_schema import initialize_framework_schema
 
 
@@ -75,6 +78,31 @@ def _state(tmp_path: Path) -> tuple[Path, Path, str]:
                 "classification_above_threshold",
                 '{"uncertainty":"low"}',
                 1,
+            ),
+        )
+        source = corpus / "keep.txt"
+        physical = source.stat()
+        binding = build_resource_binding(
+            source_kind="text",
+            file_key="text:1",
+            path=str(source),
+            identity=FileIdentity(physical.st_dev, physical.st_ino),
+            birthtime_ns=-1,
+            size=physical.st_size,
+            mtime_ns=physical.st_mtime_ns,
+            representation_kind="physical_file",
+        )
+        scope = OrganizationInputScope.capture(corpus, publication_heads=())
+        connection.execute(
+            "UPDATE organization_plans SET volume_id=?,file_id=?,size=?,mtime_ns=?,resource_binding_json=?,source_scope_json=?,source_scope_id=?",
+            (
+                str(physical.st_dev),
+                str(physical.st_ino),
+                physical.st_size,
+                physical.st_mtime_ns,
+                json.dumps(binding),
+                scope.serialized,
+                scope.scope_id,
             ),
         )
         connection.commit()

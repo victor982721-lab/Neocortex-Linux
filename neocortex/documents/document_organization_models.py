@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 import json
@@ -16,6 +15,7 @@ from pathlib import Path
 from typing import Callable
 
 from .document_catalog import document_catalog_database
+from .document_organization_scope import OrganizationInputScope
 from neocortex.persistence.framework_connection import connect_existing_framework
 # endregion [01]
 
@@ -35,6 +35,12 @@ class OrganizationPlanSummary:
     review_required: int = 0
     blocked: int = 0
     already_organized: int = 0
+    excluded_out_of_scope: int = 0
+    unresolved_scope: int = 0
+    excluded_components: int = 0
+    source_scope_id: str | None = None
+    source_root: str | None = None
+    executable: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +88,17 @@ class OrganizationPlanView:
     status: str
     reason: str
     detail: str | None
+    source_scope_id: str | None = None
+    source_root: str | None = None
+    classification_status: str = "unverified"
+    taxonomy_status: str = "unverified"
+    confidence_kind: str = "uncalibrated_heuristic"
+    suggested_logical_location: str | None = None
+    representation_kind: str = "unknown"
+    operation_kind: str = "unresolved"
+    eligibility_status: str = "unverified"
+    executable: bool = False
+    blockers: tuple[str, ...] = ("legacy_unscoped",)
 
 
 def default_organization_root(
@@ -102,10 +119,7 @@ def default_organization_root(
             framework_database, readonly=True, timeout_seconds=10
         )
         try:
-            columns = {
-                str(row[1])
-                for row in connection.execute("PRAGMA table_info(initial_runs)")
-            }
+            columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(initial_runs)")}
             if not {"root", "status", "run_id"}.issubset(columns):
                 raise ValueError("framework state lacks a compatible analysis history")
             kind_predicate = "AND run_kind='initial'" if "run_kind" in columns else ""
@@ -140,9 +154,7 @@ def list_organization_plans(
         predicate = "" if status is None else "WHERE status=?"
         parameters: tuple[object, ...] = () if status is None else (status,)
         rows = connection.execute(
-            f"""SELECT plan_id,source_kind,source_path,destination_path,
-            primary_kind,confidence,status,reason,detail
-            FROM organization_plans {predicate}
+            f"""SELECT * FROM organization_plans {predicate}
             ORDER BY plan_id DESC LIMIT ?""",
             (*parameters, limit),
         ).fetchall()
@@ -152,24 +164,73 @@ def list_organization_plans(
                 source_kind=str(row["source_kind"]),
                 source_path=str(row["source_path"]),
                 destination_path=(
-                    None
-                    if row["destination_path"] is None
-                    else str(row["destination_path"])
+                    None if row["destination_path"] is None else str(row["destination_path"])
                 ),
                 primary_kind=str(row["primary_kind"]),
                 confidence=float(row["confidence"]),
                 status=str(row["status"]),
                 reason=str(row["reason"]),
                 detail=None if row["detail"] is None else str(row["detail"]),
+                **_organization_plan_contract_view(row),
             )
             for row in rows
         )
+
+
+def _organization_plan_contract_view(row: sqlite3.Row) -> dict[str, object]:
+    """Old proposals stay visible, but missing scope never implies executability."""
+
+    columns = set(row.keys())
+    base: dict[str, object] = {}
+    try:
+        evidence = json.loads(row["evidence_json"])
+        if isinstance(evidence, dict):
+            base = {
+                "classification_status": str(evidence.get("classification_status", "unverified")),
+                "taxonomy_status": str(evidence.get("taxonomy_status", "unverified")),
+                "confidence_kind": str(
+                    evidence.get("classification_score_kind", "uncalibrated_heuristic")
+                ),
+                "suggested_logical_location": evidence.get("suggested_logical_location"),
+            }
+    except (ValueError, TypeError, KeyError):
+        pass
+    if not {"source_scope_json", "source_scope_id", "blockers_json"}.issubset(columns):
+        return base
+    raw_scope = row["source_scope_json"]
+    if raw_scope is None:
+        return base
+    try:
+        scope = OrganizationInputScope.from_json(raw_scope)
+        if scope.scope_id != row["source_scope_id"]:
+            raise ValueError("organization_scope_digest_mismatch")
+        blockers = json.loads(row["blockers_json"])
+        if not isinstance(blockers, list) or not all(isinstance(value, str) for value in blockers):
+            raise ValueError("organization_blockers_invalid")
+        return {
+            **base,
+            "source_scope_id": scope.scope_id,
+            "source_root": str(scope.root),
+            "representation_kind": str(row["representation_kind"] or "unknown"),
+            "operation_kind": str(row["operation_kind"] or "unresolved"),
+            "eligibility_status": str(row["eligibility_status"]),
+            # This facade has no grant-consuming backend.  A persisted flag
+            # alone cannot attest execution authority or backend availability.
+            "executable": False,
+            "blockers": tuple(
+                sorted(set(blockers) | {"backend_unavailable", "authorization_required"})
+            ),
+        }
+    except (ValueError, TypeError, KeyError):
+        return {**base, "blockers": ("organization_contract_invalid",)}
 
 
 def _begin_organization_run(
     connection: sqlite3.Connection,
     mode: str,
     root: Path,
+    *,
+    source_scope: OrganizationInputScope | None = None,
 ) -> int:
     connection.execute(
         """UPDATE catalog_runs SET status='interrupted',completed_ns=?,
@@ -182,7 +243,16 @@ def _begin_organization_run(
         """INSERT INTO catalog_runs(
         source_kind,mode,status,started_ns,summary_json)
         VALUES('all',?,'running',?,?)""",
-        (mode, time.time_ns(), json.dumps({"organization_root": str(root)})),
+        (
+            mode,
+            time.time_ns(),
+            json.dumps(
+                {
+                    "organization_root": str(root),
+                    "source_scope": None if source_scope is None else source_scope.to_dict(),
+                }
+            ),
+        ),
     )
     connection.commit()
     if cursor.lastrowid is None:
@@ -218,4 +288,6 @@ def _fail_organization_run(
         (time.time_ns(), type(error).__name__, str(error), run_id),
     )
     connection.commit()
+
+
 # endregion [02]

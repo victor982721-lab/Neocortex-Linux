@@ -261,6 +261,8 @@ def _report_from_fact_snapshot(
         counterevidence=fact_snapshot.counterevidence,
         examples=fact_snapshot.examples,
         examples_truncated=fact_snapshot.examples_truncated,
+        diagnostic_observations=fact_snapshot.diagnostic_observations,
+        diagnostic_gaps=fact_snapshot.diagnostic_gaps,
     )
 
 
@@ -283,6 +285,8 @@ def _snapshot_changed_report(
         counterevidence=tuple(sorted(counterevidence)),
         examples=fact_snapshot.examples,
         examples_truncated=fact_snapshot.examples_truncated,
+        diagnostic_observations=fact_snapshot.diagnostic_observations,
+        diagnostic_gaps=fact_snapshot.diagnostic_gaps,
     )
     return KnowledgeAssetHealthReport(
         resource_id=fenced.resource_id,
@@ -298,6 +302,8 @@ def _snapshot_changed_report(
         counterevidence=fenced.counterevidence,
         examples=fenced.examples,
         examples_truncated=fenced.examples_truncated,
+        diagnostic_observations=fenced.diagnostic_observations,
+        diagnostic_gaps=fenced.diagnostic_gaps,
     )
 
 

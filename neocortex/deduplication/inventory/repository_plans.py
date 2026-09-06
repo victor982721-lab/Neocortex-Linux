@@ -15,6 +15,9 @@ from ..domain.models import (
     FileSnapshot,
     VerificationMode,
 )
+from ..domain.evidence import DedupPolicy, PlanCoverage, DuplicateMemberProof
+from ..planning.keeper import KeeperRank
+from .plan_evidence import decode_group_proof, decode_member_proof, encode_proof
 from .scan import id_blob as _id_blob
 
 
@@ -35,6 +38,7 @@ class PlanRepositoryMixin:
             f"""
             DROP TABLE IF EXISTS temp.planning_seen;
             DROP TABLE IF EXISTS temp.planning_fingerprints;
+            DROP TABLE IF EXISTS temp.planning_observations;
             CREATE TEMP TABLE planning_seen(
                 volume_id BLOB NOT NULL,
                 file_id BLOB NOT NULL,
@@ -49,10 +53,21 @@ class PlanRepositoryMixin:
                 size INTEGER NOT NULL,
                 mtime_ns INTEGER NOT NULL,
                 birthtime_ns INTEGER NOT NULL,
+                computed INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY(stage,volume_id,file_id)
             ) WITHOUT ROWID;
             CREATE INDEX planning_fingerprint_collision_idx
                 ON planning_fingerprints(stage,digest);
+            CREATE TEMP TABLE planning_observations(
+                path TEXT PRIMARY KEY COLLATE {_PATH_COLLATION},
+                volume_id BLOB NOT NULL, file_id BLOB NOT NULL,
+                size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL, birthtime_ns INTEGER NOT NULL,
+                explicit_rank INTEGER NOT NULL, location_rank INTEGER NOT NULL,
+                reference_rank INTEGER NOT NULL, name_rank INTEGER NOT NULL,
+                identity_rank TEXT NOT NULL, link_count INTEGER NOT NULL
+            ) WITHOUT ROWID;
+            CREATE INDEX planning_observation_identity_idx
+                ON planning_observations(volume_id,file_id);
             """
         )
 
@@ -60,6 +75,56 @@ class PlanRepositoryMixin:
         with self._connection:
             self._connection.execute("DELETE FROM planning_seen")
             self._connection.execute("DELETE FROM planning_fingerprints")
+            self._connection.execute("DELETE FROM planning_observations")
+
+    def store_planning_observations(
+        self, rows: Iterable[tuple[FileSnapshot, KeeperRank, int]],
+    ) -> None:
+        with self._connection:
+            self._connection.executemany(
+                "INSERT INTO planning_observations VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    (snapshot.path, _id_blob(snapshot.volume_id), _id_blob(snapshot.file_id),
+                     snapshot.size, snapshot.mtime_ns, snapshot.birthtime_ns,
+                     *rank[:5], link_count)
+                    for snapshot, rank, link_count in rows
+                ),
+            )
+
+    def iter_planning_identities(self) -> Iterator[FileSnapshot]:
+        """Choose a preferred observed alias before hashing each object once."""
+
+        rows = self._connection.execute(
+            """SELECT path,volume_id,file_id,size,mtime_ns,birthtime_ns FROM (
+                SELECT *,ROW_NUMBER() OVER(PARTITION BY volume_id,file_id ORDER BY
+                    explicit_rank,location_rank,reference_rank,name_rank,identity_rank,path) AS ordinal
+                FROM planning_observations
+            ) WHERE ordinal=1 ORDER BY path"""
+        )
+        for path, volume, file_id, size, mtime, birth in rows:
+            yield FileSnapshot(path, int.from_bytes(volume, "little"),
+                               int.from_bytes(file_id, "little"), size, mtime, birth)
+
+    def planning_member_metadata(
+        self, snapshot: FileSnapshot, *, alias_limit: int = 128,
+    ) -> tuple[tuple[str, ...], int, int, bool]:
+        identity = (_id_blob(snapshot.volume_id), _id_blob(snapshot.file_id))
+        count, links = self._connection.execute(
+            "SELECT COUNT(*),MAX(link_count) FROM planning_observations "
+            "WHERE volume_id=? AND file_id=?", identity,
+        ).fetchone()
+        aliases = tuple(row[0] for row in self._connection.execute(
+            "SELECT path FROM planning_observations WHERE volume_id=? AND file_id=? "
+            "ORDER BY CASE WHEN path=? THEN 0 ELSE 1 END,path LIMIT ?",
+            (*identity, snapshot.path, alias_limit),
+        ))
+        computed = self._connection.execute(
+            "SELECT computed FROM planning_fingerprints WHERE stage='full' "
+            "AND volume_id=? AND file_id=?", identity,
+        ).fetchone()
+        if not count or links is None or computed is None:
+            raise InventoryError("duplicate member lacks complete planning observations")
+        return aliases, int(count), int(links), bool(computed[0])
 
     def claim_planning_identity(self, snapshot: FileSnapshot) -> bool:
         cursor = self._connection.execute(
@@ -72,12 +137,14 @@ class PlanRepositoryMixin:
         self,
         stage: str,
         rows: Iterable[tuple[FileSnapshot, bytes]],
+        *,
+        computed_identities: frozenset[tuple[int, int]] = frozenset(),
     ) -> None:
         with self._connection:
             self._connection.executemany(
                 """INSERT OR REPLACE INTO planning_fingerprints(
-                stage,digest,path,volume_id,file_id,size,mtime_ns,birthtime_ns)
-                VALUES(?,?,?,?,?,?,?,?)""",
+                stage,digest,path,volume_id,file_id,size,mtime_ns,birthtime_ns,computed)
+                VALUES(?,?,?,?,?,?,?,?,?)""",
                 (
                     (
                         stage,
@@ -88,6 +155,7 @@ class PlanRepositoryMixin:
                         snapshot.size,
                         snapshot.mtime_ns,
                         snapshot.birthtime_ns,
+                        int(snapshot.identity in computed_identities),
                     )
                     for snapshot, digest in rows
                 ),
@@ -112,8 +180,9 @@ class PlanRepositoryMixin:
                 SELECT digest FROM planning_fingerprints WHERE stage=?
                 GROUP BY digest HAVING COUNT(*)>1
             ) collisions ON collisions.digest=w.digest
-            WHERE w.stage=? ORDER BY w.digest,w.mtime_ns DESC,
-            w.birthtime_ns DESC,w.path COLLATE {_PATH_COLLATION} DESC""",
+            LEFT JOIN planning_observations o ON o.path=w.path
+            WHERE w.stage=? ORDER BY w.digest,o.explicit_rank,o.location_rank,
+            o.reference_rank,o.name_rank,o.identity_rank,w.path COLLATE {_PATH_COLLATION}""",
             (stage, stage),
         )
         for digest, path, volume, file_id, size, mtime, birth in rows:
@@ -133,6 +202,11 @@ class PlanRepositoryMixin:
         """Discard any incomplete prior plan for this scan."""
 
         with self._connection:
+            scan = self._connection.execute(
+                "SELECT status FROM scans WHERE scan_id=?", (scan_id,),
+            ).fetchone()
+            if scan is None or scan[0] != "complete":
+                raise InventoryError("duplicate planning requires a complete inventory scan")
             self._connection.execute(
                 "DELETE FROM planned_duplicate_members WHERE group_id IN "
                 "(SELECT group_id FROM planned_duplicate_groups WHERE scan_id=?)",
@@ -150,10 +224,35 @@ class PlanRepositoryMixin:
 
         with self._connection:
             for group in groups:
+                members = (group.keep, *group.redundant)
+                if (
+                    group.size <= 0 or not group.redundant
+                    or any(member.size != group.size for member in members)
+                    or len({member.identity for member in members}) != len(members)
+                    or len({member.path for member in members}) != len(members)
+                ):
+                    raise InventoryError("duplicate group physical membership is inconsistent")
+                if group.member_proofs and len(group.member_proofs) != 1 + len(group.redundant):
+                    raise InventoryError("duplicate member proof count is inconsistent")
+                group_proof = encode_proof(group.proof)
+                if group.proof is not None:
+                    expected_mode = "full_hash" if group.proof.requested_policy == "exact" else "fast"
+                    if group.verification_mode != expected_mode or not group.member_proofs:
+                        raise InventoryError("duplicate group proof does not cover its members")
+                    for position, (member, proof) in enumerate(zip(members, group.member_proofs, strict=True)):
+                        expected_result = "reference" if position == 0 else (
+                            "equal" if expected_mode == "full_hash" else "fingerprint_match"
+                        )
+                        if proof.comparison_result != expected_result or member.path not in proof.aliases or (
+                            position > 0 and proof.compared_to_identity != group.keep.identity
+                        ) or (
+                            proof.comparison_result == "equal" and proof.comparison_bytes != member.size
+                        ):
+                            raise InventoryError("duplicate member proof does not match the keeper")
                 result = self._connection.execute(
                     "INSERT INTO planned_duplicate_groups"
-                    "(scan_id,size,keep_path,redundant_count,reclaimable_bytes,full_fingerprint) "
-                    "VALUES(?,?,?,?,?,?)",
+                    "(scan_id,size,keep_path,redundant_count,reclaimable_bytes,full_fingerprint,"
+                    "verification_mode,proof_json) VALUES(?,?,?,?,?,?,?,?)",
                     (
                         scan_id,
                         group.size,
@@ -161,16 +260,17 @@ class PlanRepositoryMixin:
                         len(group.redundant),
                         group.reclaimable_bytes,
                         group.full_fingerprint,
+                        group.verification_mode if group.proof is not None else "legacy_unknown",
+                        group_proof,
                     ),
                 )
                 if result.lastrowid is None:
                     raise InventoryError("SQLite did not return a duplicate-group identifier")
                 group_id = int(result.lastrowid)
-                members = (group.keep, *group.redundant)
                 self._connection.executemany(
                     "INSERT INTO planned_duplicate_members"
-                    "(group_id,member_order,role,path,volume_id,file_id,size,mtime_ns,birthtime_ns) "
-                    "VALUES(?,?,?,?,?,?,?,?,?)",
+                    "(group_id,member_order,role,path,volume_id,file_id,size,mtime_ns,birthtime_ns,"
+                    "proof_json) VALUES(?,?,?,?,?,?,?,?,?,?)",
                     (
                         (
                             group_id,
@@ -182,6 +282,7 @@ class PlanRepositoryMixin:
                             member.size,
                             member.mtime_ns,
                             member.birthtime_ns,
+                            encode_proof(group.member_proofs[order]) if group.member_proofs else "{}",
                         )
                         for order, member in enumerate(members)
                     ),
@@ -195,14 +296,84 @@ class PlanRepositoryMixin:
         redundant_files: int,
         reclaimable_bytes: int,
         verification_mode: VerificationMode,
+        requested_policy: DedupPolicy = "legacy_unknown",
+        coverage: PlanCoverage = "legacy_unknown",
+        exact_comparisons: int | None = None,
+        changed_or_unreadable_files: int | None = None,
     ) -> None:
         if verification_mode not in VALID_VERIFICATION_MODES:
             raise InventoryError("dedup inventory plan has an invalid verification mode")
+        if requested_policy not in {"legacy_unknown", "fast", "exact"} or coverage not in {
+            "legacy_unknown", "complete", "partial"
+        }:
+            raise InventoryError("dedup inventory plan policy or coverage is invalid")
         with self._connection:
+            # Publication is the last owner transaction, never a configured
+            # policy masquerading as completed evidence.  Incomplete batches
+            # stay invisible to readers until all groups/members reconcile.
+            scan = self._connection.execute(
+                "SELECT status FROM scans WHERE scan_id=?", (scan_id,),
+            ).fetchone()
+            if scan is None or scan[0] != "complete":
+                raise InventoryError("duplicate plan cannot publish without a complete inventory scan")
+            actual = self._connection.execute(
+                "SELECT COUNT(*),COALESCE(SUM(redundant_count),0),"
+                "COALESCE(SUM(reclaimable_bytes),0) FROM planned_duplicate_groups WHERE scan_id=?",
+                (scan_id,),
+            ).fetchone()
+            members = self._connection.execute(
+                "SELECT COUNT(*) FROM planned_duplicate_members m JOIN planned_duplicate_groups g "
+                "ON g.group_id=m.group_id WHERE g.scan_id=?", (scan_id,),
+            ).fetchone()[0]
+            if actual != (group_count, redundant_files, reclaimable_bytes) or members != (
+                group_count + redundant_files
+            ):
+                raise InventoryError("duplicate plan cannot publish incomplete owner evidence")
+            malformed = self._connection.execute(
+                """SELECT COUNT(*) FROM planned_duplicate_groups g WHERE g.scan_id=? AND (
+                    g.size<=0 OR g.redundant_count<1
+                    OR g.reclaimable_bytes!=g.size*g.redundant_count
+                    OR (SELECT COUNT(*) FROM planned_duplicate_members m WHERE m.group_id=g.group_id)
+                        !=g.redundant_count+1
+                    OR (SELECT MAX(member_order) FROM planned_duplicate_members m WHERE m.group_id=g.group_id)
+                        !=g.redundant_count
+                    OR NOT EXISTS(SELECT 1 FROM planned_duplicate_members m WHERE m.group_id=g.group_id
+                        AND m.member_order=0 AND m.role='keep' AND m.path=g.keep_path AND m.size=g.size)
+                    OR EXISTS(SELECT 1 FROM planned_duplicate_members m WHERE m.group_id=g.group_id AND (
+                        m.member_order<0 OR m.size!=g.size
+                        OR m.role!=CASE WHEN m.member_order=0 THEN 'keep' ELSE 'redundant' END))
+                    OR (SELECT COUNT(DISTINCT hex(volume_id)||':'||hex(file_id))
+                        FROM planned_duplicate_members m WHERE m.group_id=g.group_id)!=g.redundant_count+1
+                )""", (scan_id,),
+            ).fetchone()[0]
+            if malformed:
+                raise InventoryError("duplicate plan cannot publish inconsistent group membership")
+            if requested_policy != "legacy_unknown":
+                if (
+                    type(exact_comparisons) is not int or exact_comparisons < 0
+                    or type(changed_or_unreadable_files) is not int or changed_or_unreadable_files < 0
+                    or coverage != ("partial" if changed_or_unreadable_files else "complete")
+                    or verification_mode != (
+                        "partial" if changed_or_unreadable_files else
+                        "full_hash" if requested_policy == "exact" else "fast"
+                    )
+                    or (requested_policy == "fast" and exact_comparisons != 0)
+                    or (requested_policy == "exact" and exact_comparisons < redundant_files)
+                ):
+                    raise InventoryError("duplicate plan comparison coverage is inconsistent")
+                missing = self._connection.execute(
+                    "SELECT COUNT(*) FROM planned_duplicate_groups g JOIN planned_duplicate_members m "
+                    "ON m.group_id=g.group_id WHERE g.scan_id=? AND "
+                    "(g.proof_json='{}' OR m.proof_json='{}' OR g.verification_mode!=?)",
+                    (scan_id, "full_hash" if requested_policy == "exact" else "fast"),
+                ).fetchone()[0]
+                if missing:
+                    raise InventoryError("duplicate plan cannot publish missing member proofs")
             self._connection.execute(
                 "INSERT OR REPLACE INTO duplicate_plan_summaries"
                 "(scan_id,group_count,redundant_files,reclaimable_bytes,completed_ns,"
-                "verification_mode) VALUES(?,?,?,?,?,?)",
+                "verification_mode,requested_policy,coverage,exact_comparisons,"
+                "changed_or_unreadable_files) VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (
                     scan_id,
                     group_count,
@@ -210,6 +381,10 @@ class PlanRepositoryMixin:
                     reclaimable_bytes,
                     time.time_ns(),
                     verification_mode,
+                    requested_policy,
+                    coverage,
+                    exact_comparisons,
+                    changed_or_unreadable_files,
                 ),
             )
 
@@ -217,9 +392,9 @@ class PlanRepositoryMixin:
         """Stream a persisted plan in descending reclaimable-byte order."""
 
         rows = self._connection.execute(
-            "SELECT g.group_id,g.size,g.full_fingerprint,s.verification_mode,"
+            "SELECT g.group_id,g.size,g.full_fingerprint,g.verification_mode,g.proof_json,"
             "m.member_order,m.path,"
-            "m.volume_id,m.file_id,m.size,m.mtime_ns,m.birthtime_ns "
+            "m.volume_id,m.file_id,m.size,m.mtime_ns,m.birthtime_ns,m.proof_json "
             "FROM planned_duplicate_groups g JOIN planned_duplicate_members m "
             "ON m.group_id=g.group_id "
             "JOIN duplicate_plan_summaries s ON s.scan_id=g.scan_id "
@@ -232,11 +407,15 @@ class PlanRepositoryMixin:
         group_size = 0
         fingerprint = ""
         members: list[FileSnapshot] = []
+        member_proofs: list[DuplicateMemberProof] = []
+        group_proof = None
+        group_mode: VerificationMode = "legacy_unknown"
         for (
             group_id,
             size,
             digest,
             verification_mode,
+            proof_json,
             _order,
             path,
             volume,
@@ -244,6 +423,7 @@ class PlanRepositoryMixin:
             member_size,
             mtime,
             birth,
+            member_proof_json,
         ) in rows:
             if current_group is not None and group_id != current_group:
                 yield DuplicateGroup(
@@ -251,12 +431,18 @@ class PlanRepositoryMixin:
                     members[0],
                     tuple(members[1:]),
                     fingerprint,
-                    verification_mode,
+                    group_mode,
+                    group_proof,
+                    tuple(member_proofs),
                 )
                 members = []
+                member_proofs = []
             current_group = group_id
             group_size = size
             fingerprint = digest
+            group_mode = verification_mode
+            group_proof = decode_group_proof(proof_json)
+            member_proofs.append(decode_member_proof(member_proof_json))
             members.append(
                 FileSnapshot(
                     path,
@@ -273,7 +459,9 @@ class PlanRepositoryMixin:
                 members[0],
                 tuple(members[1:]),
                 fingerprint,
-                verification_mode,
+                group_mode,
+                group_proof,
+                tuple(member_proofs),
             )
 
 

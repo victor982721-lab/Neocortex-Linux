@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 import re
 import sqlite3
+import unicodedata
 import stat
 import time
 from collections.abc import Callable
@@ -36,7 +37,7 @@ MAX_CJK_SUBSTRING_TERMS = 8
 _CANCELLATION_BATCH_ROWS = 128
 
 LEXICAL_MODEL_SIGNATURE = "sqlite-fts5-unicode61-rd2-cjk-substring-v3"
-LEXICAL_QUERY_POLICY_SIGNATURE = "sqlite-fts5-natural-strict-soft-cjk-v4"
+LEXICAL_QUERY_POLICY_SIGNATURE = "sqlite-fts5-natural-strict-soft-cjk-concepts-v6"
 _SOURCE_ORDER = ("pdf", "docx", "office", "audio", "video", "archive", "text")
 
 
@@ -278,9 +279,152 @@ _NATURAL_STOPWORDS = frozenset(
 )
 _MAX_SOFT_FALLBACK_TERMS = 5
 
+# Dropping one of these tokens can reverse the requested condition.  A bag of
+# words cannot safely recover its scope, so only the all-content-term fallback
+# is allowed for such queries; semantic retrieval remains an independent path.
+_PROTECTED_NEGATIONS = frozenset(
+    {
+        "no", "sin", "nunca", "ningun", "ninguno", "ninguna", "ningunos", "ningunas",
+        "not", "without", "never", "neither", "nor",
+        "nicht", "ohne", "kein", "keine", "keinen", "keinem", "keiner", "keines",
+    }
+)
+QUERY_SUPPORT_POLICY = "retrieval-query-support-v1"
+
+
+def _fold_retrieval_term(term: str) -> str:
+    return "".join(
+        character for character in unicodedata.normalize("NFKD", term.casefold())
+        if not unicodedata.combining(character)
+    )
+
+
+def _query_support_terms(query: str) -> tuple[str, ...]:
+    # Semantic accepts longer queries than the FTS adapter.  Diagnostics are
+    # bounded independently and must not narrow that existing query contract.
+    terms = dict.fromkeys(
+        _fold_retrieval_term(term) for term in _NATURAL_TERM.findall(query[:MAX_QUERY_CHARS])
+        if term.casefold() not in _NATURAL_STOPWORDS
+    )
+    return tuple(terms)[:MAX_QUERY_TERMS]
+
+
+def _query_term_matches(
+    text: str, terms: tuple[str, ...],
+) -> tuple[tuple[int, int, int, str], ...]:
+    wanted = set(terms)
+    return tuple(
+        (index, match.start(), match.end(), folded)
+        for index, match in enumerate(_NATURAL_TERM.finditer(text))
+        if (folded := _fold_retrieval_term(match.group())) in wanted
+    )
+
+
+def _minimum_term_span(matches: tuple[tuple[int, int, int, str], ...]) -> int | None:
+    if not matches:
+        return None
+    target_count = len({match[3] for match in matches})
+    counts: dict[str, int] = {}
+    left = 0
+    best: int | None = None
+    for right, match in enumerate(matches):
+        counts[match[3]] = counts.get(match[3], 0) + 1
+        while len(counts) == target_count:
+            span = matches[right][0] - matches[left][0] + 1
+            best = span if best is None else min(best, span)
+            term = matches[left][3]
+            counts[term] -= 1
+            if counts[term] == 0:
+                del counts[term]
+            left += 1
+    return best
+
+
+def query_term_support(query: str, text: str, *, basis: str) -> dict[str, object]:
+    """Explain literal coverage, never infer entailment or relevance probability."""
+    from .semantic_query_evidence import query_role_counterevidence, requested_evidence_checks
+
+    terms = _query_support_terms(query)
+    matches = _query_term_matches(text, terms)
+    observed = {match[3] for match in matches}
+    missing = [term for term in terms if term not in observed]
+    text_terms = [_fold_retrieval_term(match.group()) for match in _NATURAL_TERM.finditer(text)]
+    phrase_terms = tuple(
+        _fold_retrieval_term(term) for term in _NATURAL_TERM.findall(query[:MAX_QUERY_CHARS])
+    )[:MAX_QUERY_TERMS]
+    phrase_match = bool(phrase_terms) and any(
+        tuple(text_terms[index:index + len(phrase_terms)]) == phrase_terms
+        for index in range(max(0, len(text_terms) - len(phrase_terms) + 1))
+    )
+    negations = [term for term in terms if term in _PROTECTED_NEGATIONS]
+    return {
+        "policy_signature": QUERY_SUPPORT_POLICY,
+        "basis": basis,
+        "interpretation": "literal_overlap_not_entailment",
+        "support": (
+            "no_content_terms" if not terms else "no_terms" if not observed
+            else "partial_terms" if missing else "full_terms"
+        ),
+        "matched_terms": [term for term in terms if term in observed],
+        "missing_terms": missing,
+        "negation_terms": negations,
+        "missing_negation_terms": [term for term in negations if term not in observed],
+        "term_coverage": len(observed) / len(terms) if terms else 0.0,
+        "phrase_match": phrase_match,
+        "minimum_span_terms": _minimum_term_span(matches),
+        "role_counterevidence": query_role_counterevidence(query, text),
+        "requested_witness_checks": requested_evidence_checks(query, text),
+    }
+
+
+def query_centered_snippet(
+    text: str, query: str | None, *, max_chars: int,
+) -> tuple[str | None, dict[str, object]]:
+    """Select a verbatim window of the scored chunk, with explicit local offsets."""
+    if max_chars < 0:
+        raise ValueError("snippet max_chars cannot be negative")
+    start = 0
+    matches = _query_term_matches(text, _query_support_terms(query or ""))
+    if max_chars and len(text) > max_chars and matches:
+        # Prefer the window containing the most distinct query terms; then the
+        # shortest covering span and earliest occurrence.  Only the displayed
+        # witness changes, never the vector score or document ranking.
+        best: tuple[int, int, int] | None = None
+        best_bounds = (matches[0][1], matches[0][2])
+        counts: dict[str, int] = {}
+        left = 0
+        for right, match in enumerate(matches):
+            counts[match[3]] = counts.get(match[3], 0) + 1
+            while left <= right and (
+                match[2] - matches[left][1] > max_chars or counts[matches[left][3]] > 1
+            ):
+                term = matches[left][3]
+                counts[term] -= 1
+                if counts[term] == 0:
+                    del counts[term]
+                left += 1
+            if left <= right:
+                key = (-len(counts), match[2] - matches[left][1], matches[left][1])
+                if best is None or key < best:
+                    best, best_bounds = key, (matches[left][1], match[2])
+        span = best_bounds[1] - best_bounds[0]
+        start = max(0, best_bounds[0] - max(0, max_chars - span) // 2)
+        start = min(start, max(0, len(text) - max_chars))
+    end = min(len(text), start + max_chars)
+    return (text[start:end] if max_chars else None), {
+        "policy_signature": "query-centered-scored-chunk-v1",
+        "basis": "normalized_scored_chunk",
+        "start_in_chunk": start,
+        "end_in_chunk": end,
+        "chunk_chars": len(text),
+        "truncated": start > 0 or end < len(text),
+        "query_terms_found": bool(matches),
+    }
+
 
 @dataclass(frozen=True, slots=True)
 class _NaturalFTSQueryPlan:
+    original_query: str
     normalized_query: str
     primary_query: str
     primary_strategy: str
@@ -358,13 +502,31 @@ def _all_terms_query(terms: tuple[str, ...]) -> str:
 def _soft_content_query(terms: tuple[str, ...]) -> str | None:
     """Require any two content terms for a bounded, deterministic fallback."""
 
-    if not 3 <= len(terms) <= _MAX_SOFT_FALLBACK_TERMS:
+    if not 3 <= len(terms) <= _MAX_SOFT_FALLBACK_TERMS or any(
+        _fold_retrieval_term(term) in _PROTECTED_NEGATIONS for term in terms
+    ):
         return None
     pairs = (
         f"({_quoted_fts_term(left)} AND {_quoted_fts_term(right)})"
         for left, right in combinations(terms, 2)
     )
     return " OR ".join(pairs)
+
+
+def _condition_concept_query(query: str) -> str | None:
+    """Bounded bilingual recall for an explicit cooling/pressure-absence query.
+
+    Both concepts remain mandatory.  This is a retrieval expansion, not proof
+    of arrival, a pressure-loss cause, or equivalence of physical equipment.
+    Unlike the any-two fallback it cannot drop the requested negative condition.
+    """
+    from .semantic_query_variants import cooling_pressure_concepts
+
+    if not cooling_pressure_concepts(query):
+        return None
+    subjects = ("radiador", "radiadores", "enfriador", "enfriadores", "radiator", "radiators", "cooler", "coolers")
+    conditions = ("sin presión", "ausencia de presión", "despresurizado", "despresurizados", "despresurizada", "despresurizadas", "without pressure", "unpressurized", "depressurized", "unpressurised", "depressurised")
+    return "(" + " OR ".join(_quoted_fts_term(term) for term in subjects) + ") AND (" + " OR ".join(_quoted_fts_term(term) for term in conditions) + ")"
 
 
 def _cjk_substring_terms(query: str) -> tuple[tuple[str, ...], bool]:
@@ -428,6 +590,9 @@ def _compile_natural_fts_query_plan(query: str) -> _NaturalFTSQueryPlan:
     fallbacks: list[tuple[str, str]] = []
     if primary_strategy == "strict_all_terms" and content_terms and content_terms != terms:
         fallbacks.append(("content_terms_all", _all_terms_query(content_terms)))
+    concept_query = _condition_concept_query(query)
+    if concept_query is not None:
+        fallbacks.append(("cooling_pressure_absence_concepts", concept_query))
     cjk_terms, cjk_rewritten = _cjk_substring_terms(query)
     # Never let the Latin any-two recovery path discard the Han subject of a
     # mixed query.  If exact FTS matching fails, the CJK fallback below keeps
@@ -440,6 +605,7 @@ def _compile_natural_fts_query_plan(query: str) -> _NaturalFTSQueryPlan:
         }:
             fallbacks.append(("content_terms_any_two", soft))
     return _NaturalFTSQueryPlan(
+        original_query=query,
         normalized_query=normalized,
         primary_query=primary_query,
         primary_strategy=primary_strategy,
@@ -719,6 +885,23 @@ def _resolved_hit(
         entity_id = f"lexical:{item_source_kind}:{file_key}:fulltext"
 
     is_cjk_substring = retrieval_backend == "sqlite_bounded_cjk_substring"
+    snippet = _bounded_snippet(row["snippet"])
+    support = query_term_support(query_plan.original_query, snippet or "", basis="fts_snippet")
+    support.update(
+        {
+            "query_strategy": query_strategy,
+            "query_fallback_used": is_cjk_substring or query_strategy not in {
+                "strict_all_terms", "question_content_terms_all",
+            },
+        }
+    )
+    if query_strategy == "cooling_pressure_absence_concepts":
+        support["query_expansion"] = {
+            "policy_signature": "cooling-pressure-absence-aliases-v1",
+            "required_concepts": ["cooling_component", "pressure_absence"],
+            "interpretation": "retrieval_aliases_not_arrival_or_causal_evidence",
+            "applied_query": applied_query,
+        }
     provenance: dict[str, object] = {
         "backend": retrieval_backend,
         "fts_table": spec.fts_table,
@@ -738,6 +921,7 @@ def _resolved_hit(
         "ranking_source_kind": spec.source_kind,
         "source_kind": item_source_kind,
         "state_path": str(state_path.resolve(strict=False)),
+        "query_support": support,
     }
     if is_cjk_substring:
         provenance.update(
@@ -820,7 +1004,7 @@ def _resolved_hit(
         section_id=section_id,
         start_char=None,
         end_char=None,
-        snippet=_bounded_snippet(row["snippet"]),
+        snippet=snippet,
     )
 
 
@@ -906,15 +1090,14 @@ def _search_compiled_source(
     cjk_scanned_rows: int | None = None
     from neocortex.persistence.sqlite_immutable import (
         preferred_sqlite_read_mode,
-        sqlite_read_session,
     )
+    from .semantic_schema import semantic_read_context
 
     rows: list[sqlite3.Row]
-    with sqlite_read_session(
-        path,
-        mode=preferred_sqlite_read_mode(path),
-        timeout_seconds=60.0,
-    ) as connection:
+    with (
+        semantic_read_context() as read_context,
+        read_context.acquire(path, mode=preferred_sqlite_read_mode(path).value) as connection,
+    ):
         with sqlite_cancellation_scope(connection, cancellation):
             connection.execute("PRAGMA busy_timeout=60000")
             connection.execute("PRAGMA foreign_keys=ON")

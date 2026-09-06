@@ -214,6 +214,13 @@ EXPECTED_SEMANTIC_ACTIONS = (
         metavar="N",
     ),
     _expected_store(
+        "--semantic-diagnostic-item",
+        "semantic_diagnostic_item",
+        metavar="ITEM_ID",
+        help_text="trace a known item through the same bounded search (repeat up to 20 times)",
+        action_name="_AppendAction",
+    ),
+    _expected_store(
         "--semantic-max-vectors",
         "semantic_max_vectors",
         default=500_000,
@@ -298,6 +305,9 @@ EXPECTED_SEMANTIC_HELP = (
     "                        rank all spaces by default, or select one independent\n"
     "                        mode\n"
     "  --semantic-search-limit N\n"
+    "  --semantic-diagnostic-item ITEM_ID\n"
+    "                        trace a known item through the same bounded search\n"
+    "                        (repeat up to 20 times)\n"
     "  --semantic-max-vectors N\n"
     "                        hard exact-search scan bound; incomplete results are\n"
     "                        reported\n"

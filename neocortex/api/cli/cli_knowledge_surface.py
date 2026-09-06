@@ -42,6 +42,13 @@ def register_knowledge_arguments(parser: argparse.ArgumentParser) -> None:
         help="build a bounded cited context from one read-only Knowledge search",
     )
     knowledge.add_argument("--knowledge-json", action="store_true")
+    knowledge.add_argument(
+        "--knowledge-response-version",
+        type=int,
+        choices=(1, 2),
+        default=2,
+        help="context response contract: compact agent v2 (default) or legacy v1",
+    )
     knowledge.add_argument("--knowledge-limit", type=int, default=20, metavar="N")
     knowledge.add_argument(
         "--knowledge-context-characters",
@@ -100,8 +107,11 @@ def validate_knowledge_arguments(args: argparse.Namespace) -> None:
         raise SystemExit("--knowledge-context-characters must be between 1 and 1000000")
     if "knowledge_context_characters" in explicit and args.knowledge_context is None:
         raise SystemExit("--knowledge-context-characters requires --knowledge-context")
+    if "knowledge_response_version" in explicit and args.knowledge_context is None:
+        raise SystemExit("--knowledge-response-version requires --knowledge-context")
     optional = {
         "knowledge_context_characters",
+        "knowledge_response_version",
         "knowledge_json",
         "knowledge_limit",
         "knowledge_history",

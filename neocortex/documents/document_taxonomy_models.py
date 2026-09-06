@@ -42,6 +42,16 @@ class StandardReference:
 
 
 @dataclass(frozen=True, slots=True)
+class EntityRoleEvidence:
+    """A textual attribution, never verified provenance or identity."""
+
+    entity: str
+    role: str
+    evidence: tuple[str, ...]
+    evidence_kind: str = "inference"
+
+
+@dataclass(frozen=True, slots=True)
 class DocumentClassification:
     classifier_signature: str
     primary_kind: str
@@ -62,6 +72,21 @@ class DocumentClassification:
     suggested_stem: str
     naming_signature: str
     naming_evidence: tuple[str, ...]
+    document_role: str = "unknown"
+    role_evidence: tuple[str, ...] = ()
+    entity_roles: tuple[EntityRoleEvidence, ...] = ()
+    issuer_status: str = "unknown"
+    taxonomy_status: str = "insufficient_identification"
+    contradictions: tuple[str, ...] = ()
+    unknowns: tuple[str, ...] = ("issuer_unverified",)
+    confidence_kind: str = "uncalibrated_heuristic"
+
+    @property
+    def primary_issuer(self) -> str | None:
+        return next(
+            (item.entity for item in self.entity_roles if item.role == "issuer"),
+            None,
+        )
 
     @property
     def primary_authority(self) -> str | None:

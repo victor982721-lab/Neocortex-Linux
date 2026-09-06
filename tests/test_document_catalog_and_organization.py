@@ -28,6 +28,8 @@ from neocortex.documents.document_catalog import (
 )
 from neocortex.documents.document_naming import suggest_document_stem
 from neocortex.documents.document_organization import (
+    OrganizationInputScope,
+    capture_organization_input_scope,
     apply_all_document_organization,
     apply_document_organization,
     default_organization_root,
@@ -196,7 +198,7 @@ def test_sector_taxonomy_classifies_with_provenance(
     assert classification.primary_authority == authority
     assert classification.primary_organization == organization
     assert classification.evidence
-    assert classification.classifier_signature.startswith("technical-document-classifier-v14|")
+    assert classification.classifier_signature.startswith("technical-document-classifier-v15|")
     assert classification.classifier_signature.endswith("|technical-document-naming-v9")
 
 
@@ -2281,6 +2283,7 @@ def test_protected_organization_root_fails_before_catalog_creation(
         plan_document_organization(
             catalog_path,
             protected_root,
+            source_scope=OrganizationInputScope.capture(tmp_path, publication_heads=()),
             mutation_guard=guard,
         )
 
@@ -2317,6 +2320,7 @@ def test_planner_blocks_only_protected_source_and_keeps_no_destination(
     summary = plan_document_organization(
         catalog_path,
         destination_root,
+        source_scope=capture_organization_input_scope(catalog_path, tmp_path),
         mutation_guard=guard,
     )
     plans = list_organization_plans(catalog_path, limit=10)
@@ -2775,6 +2779,9 @@ def test_plan_organizes_standards_and_company_formats_without_moving(
     summary = plan_document_organization(
         state_directory / "document_catalog.sqlite3",
         destination_root,
+        source_scope=capture_organization_input_scope(
+            state_directory / "document_catalog.sqlite3", tmp_path
+        ),
     )
     plans = list_organization_plans(
         state_directory / "document_catalog.sqlite3",
@@ -2897,7 +2904,11 @@ def test_plan_routes_malpaso_work_to_andritz_while_norms_stay_separate(
         workstream="muestreo_aceite_transformadores",
     )
     destination_root = tmp_path / "organizados"
-    summary = plan_document_organization(catalog_path, destination_root)
+    summary = plan_document_organization(
+        catalog_path,
+        destination_root,
+        source_scope=capture_organization_input_scope(catalog_path, tmp_path),
+    )
     plans = list_organization_plans(catalog_path, limit=10, status="planned")
     destinations = {
         Path(plan.source_path).name: Path(plan.destination_path)
@@ -2958,7 +2969,11 @@ def test_plan_uses_andritz_company_as_account_root_without_changing_client_role(
         organization="ANDRITZ",
     )
     destination_root = tmp_path / "organizados"
-    summary = plan_document_organization(catalog_path, destination_root)
+    summary = plan_document_organization(
+        catalog_path,
+        destination_root,
+        source_scope=capture_organization_input_scope(catalog_path, tmp_path),
+    )
     plans = list_organization_plans(catalog_path, limit=10, status="planned")
 
     assert len(documents) == 1
@@ -3014,6 +3029,9 @@ def test_plan_routes_observed_quality_safety_and_test_records(
     summary = plan_document_organization(
         state_directory / "document_catalog.sqlite3",
         destination_root,
+        source_scope=capture_organization_input_scope(
+            state_directory / "document_catalog.sqlite3", tmp_path
+        ),
     )
     plans = list_organization_plans(
         state_directory / "document_catalog.sqlite3",
@@ -3074,6 +3092,9 @@ def test_plan_routes_second_pass_families_and_reviews_sensitive_artifacts(
     summary = plan_document_organization(
         state_directory / "document_catalog.sqlite3",
         destination_root,
+        source_scope=capture_organization_input_scope(
+            state_directory / "document_catalog.sqlite3", tmp_path
+        ),
     )
     planned = list_organization_plans(
         state_directory / "document_catalog.sqlite3",
@@ -3129,6 +3150,9 @@ def test_plan_semantically_renames_low_quality_calibration_certificate(
     summary = plan_document_organization(
         state_directory / "document_catalog.sqlite3",
         destination_root,
+        source_scope=capture_organization_input_scope(
+            state_directory / "document_catalog.sqlite3", tmp_path
+        ),
     )
     plans = list_organization_plans(
         state_directory / "document_catalog.sqlite3",
@@ -3921,7 +3945,11 @@ def test_plan_rejects_destination_intersecting_framework_state(tmp_path: Path) -
 
     for requested_catalog, organization_root in cases:
         with pytest.raises(ValueError, match="framework state directory"):
-            plan_document_organization(requested_catalog, organization_root)
+            plan_document_organization(
+                requested_catalog,
+                organization_root,
+                source_scope=OrganizationInputScope.capture(tmp_path, publication_heads=()),
+            )
         assert not catalog_path.exists()
 
 
@@ -3936,7 +3964,11 @@ def test_plan_rejects_destination_aliasing_framework_state(tmp_path: Path) -> No
     catalog_path = state_directory / "document_catalog.sqlite3"
 
     with pytest.raises(ValueError, match="framework state directory"):
-        plan_document_organization(catalog_path, state_alias / "organized")
+        plan_document_organization(
+            catalog_path,
+            state_alias / "organized",
+            source_scope=OrganizationInputScope.capture(tmp_path, publication_heads=()),
+        )
 
     assert not catalog_path.exists()
 

@@ -258,6 +258,8 @@ class PdfReadOnlyQueryTests(unittest.TestCase):
 
 class OrganizationApplyBoundaryTests(unittest.TestCase):
     def test_direct_plan_passes_identity_bound_protected_guard(self):
+        from neocortex.documents.document_organization import OrganizationInputScope
+
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             root = base / "corpus"
@@ -281,12 +283,17 @@ class OrganizationApplyBoundaryTests(unittest.TestCase):
             )
             internal_policy = disjoint_internal_paths_policy(base)
             protected_policy = ProtectedContentPolicy.capture(())
+            source_scope = OrganizationInputScope.capture(root, publication_heads=())
 
             with (
                 patch(
                     "neocortex.documents.document_catalog.update_document_catalog",
                     return_value=(),
-                ),
+                ) as catalog_update,
+                patch(
+                    "neocortex.documents.document_organization.capture_organization_input_scope",
+                    return_value=source_scope,
+                ) as scope_capture,
                 patch(
                     "neocortex.documents.document_organization."
                     "plan_document_organization",
@@ -323,6 +330,9 @@ class OrganizationApplyBoundaryTests(unittest.TestCase):
                 (state_directory / "document_catalog.sqlite3", organization_root),
             )
             self.assertEqual(call.kwargs["min_confidence"], 0.81)
+            self.assertIs(call.kwargs["source_scope"], source_scope)
+            scope_capture.assert_called_once_with(state_directory / "document_catalog.sqlite3", root)
+            catalog_update.assert_called_once_with(state_directory, taxonomy_path=None, source_root=root)
 
     def test_direct_apply_passes_identity_bound_normal_guard(self):
         with tempfile.TemporaryDirectory() as temporary:

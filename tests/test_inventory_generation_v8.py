@@ -75,7 +75,7 @@ def _create_populated_v7(
             connection.execute("UPDATE scans SET unexpected='preserve-me' WHERE scan_id=7")
 
 
-def test_fresh_v8_persists_policy_signature_and_is_idempotent(
+def test_current_schema_persists_v8_policy_signature_and_is_idempotent(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "inventory.sqlite3"
@@ -105,7 +105,7 @@ def test_fresh_v8_persists_policy_signature_and_is_idempotent(
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
-        ).fetchone() == ("11",)
+        ).fetchone() == (str(inventory_schema_module.SCHEMA_VERSION),)
         assert connection.execute(
             "SELECT inventory_policy_signature FROM scans WHERE scan_id=?",
             (scan.scan_id,),
@@ -125,6 +125,11 @@ def test_v7_to_v8_preserves_rows_and_bytes_but_invalidates_checkpoint(
     database = tmp_path / "inventory-v7.sqlite3"
     root = tmp_path / "historical-root"
     _create_populated_v7(database, root)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone() == ("7",)
+        assert "proof_json" not in {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(planned_duplicate_members)")
+        }
 
     inventory_schema_module.initialize_inventory_schema(database)
     inventory_schema_module.initialize_inventory_schema(database)
@@ -132,7 +137,7 @@ def test_v7_to_v8_preserves_rows_and_bytes_but_invalidates_checkpoint(
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
-        ).fetchone() == ("11",)
+        ).fetchone() == (str(inventory_schema_module.SCHEMA_VERSION),)
         assert connection.execute(
             """SELECT scan_id,status,files_seen,bytes_seen,
             inventory_policy_signature FROM scans"""

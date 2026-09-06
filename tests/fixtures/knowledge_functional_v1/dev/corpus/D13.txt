@@ -1,0 +1,3 @@
+Solicitud de cable de reserva
+
+Se solicitó una bobina azul para mantener existencias. La solicitud no se originó en un circuito abierto ni acredita que se sustituyera cable alguno. X4 y X9 aparecen sólo en el catálogo de borneras.

@@ -22,12 +22,21 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Iterator
+from itertools import chain, groupby
 from threading import RLock
 from typing import Any, Literal, cast
 
 from neocortex.deduplication.domain.models import VALID_VERIFICATION_MODES, VerificationMode
+from neocortex.deduplication.domain.errors import InventoryError
+from neocortex.deduplication.domain.evidence import (
+    DedupPolicy, DuplicateGroupProof, PlanCoverage,
+)
+from neocortex.deduplication.inventory.plan_evidence import decode_group_proof, decode_member_proof
 from neocortex.deduplication.persistence.validation import validate_inventory_schema
-from neocortex.documents.document_catalog_schema import document_catalog_schema_contract
+from neocortex.documents.document_catalog_schema import (
+    document_catalog_schema_contract,
+    validate_v7_document_catalog_schema,
+)
 from neocortex.persistence.sqlite_immutable import (
     ImmutableSQLiteUnavailable,
     SQLiteReadSession,
@@ -68,6 +77,28 @@ _REQUIRED_CATALOG_PLAN_COLUMNS = {
 
 class CurationStateError(RuntimeError):
     """Published state is missing or cannot satisfy the preview contract."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "curation_state_unavailable",
+        context: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.context = {} if context is None else context
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": "curation-error",
+            "coverage": "unavailable",
+            "executable": False,
+            "code": self.code,
+            "error_type": type(self).__name__,
+            "message": str(self),
+            "context": self.context,
+        }
 
 
 def _owner_is_regular_file(path: Path, *, label: str) -> bool:
@@ -132,12 +163,21 @@ class CurationPreview:
     items: tuple[CurationItem, ...]
     source_heads: tuple["CurationSourceHead", ...] = ()
 
+    @property
+    def nominal_redundant_bytes(self) -> int:
+        return self.reclaimable_bytes
+
+    @property
+    def physical_reclaimable_bytes(self) -> None:
+        return None
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "coverage": self.coverage,
             "empty_files": self.empty_files,
             "duplicate_groups": self.duplicate_groups,
             "duplicate_members": self.duplicate_members,
+            "dedup_verification": _dedup_summary_from_heads(self.source_heads),
             "inventory_files": self.inventory_files,
             "items": [item.to_dict() for item in self.items],
             "items_total": self.items_total,
@@ -147,6 +187,8 @@ class CurationPreview:
             "preview_fingerprint": self.preview_fingerprint,
             "preview_limit": self.preview_limit,
             "reclaimable_bytes": self.reclaimable_bytes,
+            "nominal_redundant_bytes": self.nominal_redundant_bytes,
+            "physical_reclaimable_bytes": self.physical_reclaimable_bytes,
             "root": self.root,
             "scan_id": self.scan_id,
             "schema_version": self.schema_version,
@@ -182,12 +224,21 @@ class CurationPlanPage:
     def items_truncated(self) -> bool:
         return self.next_cursor is not None
 
+    @property
+    def nominal_redundant_bytes(self) -> int:
+        return self.reclaimable_bytes
+
+    @property
+    def physical_reclaimable_bytes(self) -> None:
+        return None
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "coverage": self.coverage,
             "cursor": self.cursor,
             "duplicate_groups": self.duplicate_groups,
             "duplicate_members": self.duplicate_members,
+            "dedup_verification": _dedup_summary_from_heads(self.source_heads),
             "empty_files": self.empty_files,
             "inventory_files": self.inventory_files,
             "items": [item.to_dict() for item in self.items],
@@ -199,6 +250,8 @@ class CurationPlanPage:
             "organization_plans": self.organization_plans,
             "plan_digest": self.plan_digest,
             "reclaimable_bytes": self.reclaimable_bytes,
+            "nominal_redundant_bytes": self.nominal_redundant_bytes,
+            "physical_reclaimable_bytes": self.physical_reclaimable_bytes,
             "root": self.root,
             "scan_id": self.scan_id,
             "schema_version": self.schema_version,
@@ -242,6 +295,19 @@ class CurationSourceHead:
         }
 
 
+def _dedup_summary_from_heads(heads: tuple[CurationSourceHead, ...]) -> dict[str, object]:
+    head = next((item for item in heads if item.owner == "dedup.sqlite3"), None)
+    metadata = {} if head is None else dict(head.metadata)
+    return {
+        "requested_policy": metadata.get("requested_policy", "legacy_unknown"),
+        "verification_coverage": metadata.get("verification_coverage", "legacy_unknown"),
+        "verification_mode": None if head is None else head.verification_mode,
+        "verification_scope": "plan",
+        "exact_comparisons": metadata.get("exact_comparisons"),
+        "changed_or_unreadable_files": metadata.get("changed_or_unreadable_files"),
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class _InventoryHead:
     scan_id: int
@@ -259,6 +325,10 @@ class _DuplicatePlanState:
     completed_ns: int | None
     dangling_groups: int
     verification_mode: VerificationMode
+    requested_policy: DedupPolicy = "legacy_unknown"
+    verification_coverage: PlanCoverage = "legacy_unknown"
+    exact_comparisons: int | None = None
+    changed_or_unreadable_files: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -469,29 +539,59 @@ def _identity_payload(
     volume_id: object,
     file_id: object,
     birthtime_ns: object,
+    *,
+    context: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    def _identity_number(value: object) -> int:
-        if isinstance(value, (bytes, bytearray, memoryview)):
-            return int.from_bytes(bytes(value), "little")
-        if isinstance(value, int) and not isinstance(value, bool):
-            return value
-        if isinstance(value, str) and value.strip() == value and value:
-            return int(value, 0 if value.lower().startswith("0x") else 10)
-        raise ValueError("identity value is not a supported integer representation")
+    from neocortex.documents.document_resource_binding import (
+        ResourceBindingError,
+        physical_identity_from_components,
+    )
 
+    encoding = (
+        "unsigned-128-le"
+        if isinstance(volume_id, (bytes, bytearray, memoryview))
+        else "integer"
+        if type(volume_id) is int
+        else "legacy-decimal"
+    )
     try:
-        volume = _identity_number(volume_id)
-        file_number = _identity_number(file_id)
-        if isinstance(birthtime_ns, bool) or not isinstance(birthtime_ns, (int, str)):
-            raise ValueError("birth-time value is not an integer")
-        birthtime = int(birthtime_ns)
-    except (TypeError, ValueError) as error:
-        raise CurationStateError("curation inventory contains a malformed file identity") from error
+        identity = physical_identity_from_components(volume_id, file_id, encoding=encoding)
+        if type(birthtime_ns) is not int or birthtime_ns < -1:
+            raise ResourceBindingError(
+                "birthtime_ns must be -1 or a non-negative integer",
+                field="birthtime_ns",
+                encoding="integer",
+                value=birthtime_ns,
+            )
+    except ResourceBindingError as error:
+        raise _curation_identity_error(error, context=context) from error
     return {
-        "birthtime_ns": birthtime,
-        "file_id": f"{file_number:x}",
-        "volume_id": f"{volume:x}",
+        "birthtime_ns": birthtime_ns,
+        "file_id": f"{identity.file_id:x}",
+        "volume_id": f"{identity.volume_id:x}",
     }
+
+
+def _curation_identity_error(
+    error: Any, *, context: dict[str, object] | None
+) -> CurationStateError:
+    raw = error.value
+    # Identifiers are diagnostic data, never terminal control sequences or an
+    # unbounded dump of a row. The CLI applies its normal sanitizer as well.
+    if isinstance(raw, (bytes, bytearray, memoryview)):
+        raw = {"type": type(raw).__name__, "bytes": len(raw), "hex_prefix": bytes(raw[:64]).hex()}
+    else:
+        raw = {"type": type(raw).__name__, "value": str(raw)[:512]}
+    return CurationStateError(
+        f"curation source identity rejected: {error}",
+        code=error.code,
+        context={
+            **(context or {}),
+            "field": error.field,
+            "encoding": error.encoding,
+            "original": raw,
+        },
+    )
 
 
 def _duplicate_plan_state(
@@ -513,9 +613,14 @@ def _duplicate_plan_state(
         int(actual[1]),
         int(actual[2]),
     )
+    individual = "requested_policy" in _table_columns(connection, "duplicate_plan_summaries")
+    extras = (
+        "requested_policy,coverage,exact_comparisons,changed_or_unreadable_files"
+        if individual else "'legacy_unknown','legacy_unknown',NULL,NULL"
+    )
     summary = connection.execute(
-        """SELECT group_count,redundant_files,reclaimable_bytes,completed_ns,
-        verification_mode
+        f"""SELECT group_count,redundant_files,reclaimable_bytes,completed_ns,
+        verification_mode,{extras}
         FROM duplicate_plan_summaries WHERE scan_id=?""",
         (scan_id,),
     ).fetchone()
@@ -529,6 +634,22 @@ def _duplicate_plan_state(
     verification_mode = str(summary[4])
     if verification_mode not in VALID_VERIFICATION_MODES:
         raise CurationStateError("duplicate plan verification mode is invalid")
+    requested_policy, verification_coverage, comparisons, failures = summary[5:9]
+    if requested_policy not in {"legacy_unknown", "fast", "exact"} or verification_coverage not in {
+        "legacy_unknown", "complete", "partial"
+    }:
+        raise CurationStateError("duplicate plan requested policy or verification coverage is invalid")
+    if requested_policy != "legacy_unknown" and (
+        type(comparisons) is not int or comparisons < 0 or type(failures) is not int or failures < 0
+        or verification_coverage != ("partial" if failures else "complete")
+        or verification_mode != ("partial" if failures else "full_hash" if requested_policy == "exact" else "fast")
+        or (requested_policy == "fast" and comparisons != 0)
+        or (requested_policy == "exact" and comparisons < expected_redundant)
+    ):
+        raise CurationStateError("duplicate plan comparison coverage is inconsistent")
+    proof_state = (
+        cast(DedupPolicy, requested_policy), cast(PlanCoverage, verification_coverage), comparisons, failures,
+    )
     stored_members = int(
         connection.execute(
             """SELECT COUNT(*) FROM planned_duplicate_members m
@@ -537,11 +658,11 @@ def _duplicate_plan_state(
             (scan_id,),
         ).fetchone()[0]
     )
-    complete = (
-        (actual_groups, actual_redundant, actual_reclaimable)
-        == (expected_groups, expected_redundant, expected_reclaimable)
-        and stored_members == expected_groups + expected_redundant
-    )
+    complete = (actual_groups, actual_redundant, actual_reclaimable) == (
+        expected_groups,
+        expected_redundant,
+        expected_reclaimable,
+    ) and stored_members == expected_groups + expected_redundant
     if not complete:
         return _DuplicatePlanState(
             False,
@@ -551,6 +672,7 @@ def _duplicate_plan_state(
             completed_ns,
             actual_groups,
             cast(VerificationMode, verification_mode),
+            *proof_state,
         )
     return _DuplicatePlanState(
         True,
@@ -560,7 +682,103 @@ def _duplicate_plan_state(
         completed_ns,
         0,
         cast(VerificationMode, verification_mode),
+        *proof_state,
     )
+
+
+def _duplicate_group_projection(connection: sqlite3.Connection, *, alias: str = "") -> str:
+    prefix = f"{alias}." if alias else ""
+    fields = ",".join(prefix + name for name in (
+        "group_id", "size", "keep_path", "redundant_count", "reclaimable_bytes", "full_fingerprint",
+    ))
+    if "proof_json" in _table_columns(connection, "planned_duplicate_groups"):
+        return fields + f",{prefix}verification_mode,{prefix}proof_json,1"
+    return fields + ",'legacy_unknown','{}',0"
+
+
+def _duplicate_proof_error(error: object, *, scan_id: int, group_id: int, order: int | None = None) -> CurationStateError:
+    return CurationStateError(
+        f"duplicate content proof rejected: {error}", code="curation_duplicate_proof_invalid",
+        context={
+            "owner": "dedup.sqlite3",
+            "table": "planned_duplicate_groups" if order is None else "planned_duplicate_members",
+            "record_id": {"group_id": group_id, **({} if order is None else {"member_order": order})},
+            "publication": {"scan_id": scan_id},
+        },
+    )
+
+
+def _duplicate_group_record(
+    scan_id: int, row: Any, plan_verification_mode: VerificationMode,
+) -> tuple[dict[str, object], DuplicateGroupProof | None]:
+    group_id = int(row[0])
+    if int(row[3]) < 0:
+        raise CurationStateError(f"duplicate group {group_id} has an invalid member count")
+    raw_mode = str(row[6])
+    try:
+        proof = decode_group_proof(str(row[7]))
+        expected_mode = "legacy_unknown" if proof is None else (
+            "full_hash" if proof.requested_policy == "exact" else "fast"
+        )
+        if raw_mode != expected_mode:
+            raise InventoryError("group verification label is not supported by its own proof")
+    except InventoryError as error:
+        raise _duplicate_proof_error(error, scan_id=scan_id, group_id=group_id) from error
+    return {
+        "full_fingerprint": str(row[5]), "group_id": group_id, "keep_path": str(row[2]),
+        "reclaimable_bytes": int(row[4]), "nominal_redundant_bytes": int(row[4]),
+        "physical_reclaimable_bytes": None, "redundant_count": int(row[3]),
+        "scan_id": scan_id, "size": int(row[1]), "verification_mode": raw_mode,
+        "verification_scope": "group", "plan_verification_mode": plan_verification_mode,
+        "requested_policy": "legacy_unknown" if proof is None else proof.requested_policy,
+        "group_proof": None if proof is None else proof.as_dict(),
+        "actionability": "review_required", "source_scope": "physical_files",
+    }, proof
+
+
+def _duplicate_member_record(
+    scan_id: int, group_id: int, member: Any, group_proof: DuplicateGroupProof | None,
+    keeper_identity: tuple[int, int] | None,
+) -> tuple[dict[str, object], tuple[int, int]]:
+    order = int(member[0])
+    identity = _identity_payload(
+        member[3], member[4], member[7],
+        context={"owner": "dedup.sqlite3", "table": "planned_duplicate_members",
+                 "record_id": {"group_id": group_id, "member_order": order},
+                 "publication": {"scan_id": scan_id}},
+    )
+    physical_identity = (int(str(identity["volume_id"]), 16), int(str(identity["file_id"]), 16))
+    try:
+        proof = decode_member_proof(str(member[8]))
+        if group_proof is not None:
+            keeper_role = str(member[1]) == "keep"
+            expected_result = "reference" if keeper_role else (
+                "equal" if group_proof.requested_policy == "exact" else "fingerprint_match"
+            )
+            if (
+                proof.comparison_result != expected_result or str(member[2]) not in proof.aliases
+                or (not keeper_role and keeper_identity is not None and proof.compared_to_identity != keeper_identity)
+                or (keeper_role and keeper_identity is not None and physical_identity != keeper_identity)
+                or (proof.comparison_result == "equal" and proof.comparison_bytes != int(member[5]))
+            ):
+                raise InventoryError("member receipt is not bound to the group's physical snapshots")
+        elif proof.proof_version != "legacy_unknown":
+            raise InventoryError("individual member proof has no supporting group proof")
+    except InventoryError as error:
+        raise _duplicate_proof_error(error, scan_id=scan_id, group_id=group_id, order=order) from error
+    return {
+        "identity": identity, "member_order": order, "mtime_ns": int(member[6]),
+        "path": str(member[2]), "role": str(member[1]), "size": int(member[5]),
+        "proof": proof.as_dict(),
+    }, physical_identity
+
+
+def _duplicate_member_projection(*, has_proof: bool, alias: str = "") -> str:
+    prefix = f"{alias}." if alias else ""
+    fields = ",".join(prefix + name for name in (
+        "member_order", "role", "path", "volume_id", "file_id", "size", "mtime_ns", "birthtime_ns",
+    ))
+    return fields + (f",{prefix}proof_json" if has_proof else ",'{}'")
 
 
 def _duplicate_item(
@@ -570,111 +788,45 @@ def _duplicate_item(
     digest: Any | None,
     verification_mode: VerificationMode,
 ) -> CurationItem:
-    """Materialize one selected duplicate group only.
+    """Materialize only a selected bounded sample, retaining actual proof scope."""
 
-    A complete plan publication uses ``_digest_duplicate_group`` below and
-    streams every member without constructing a response item.  Page reads
-    pass ``digest=None`` and fetch only the bounded evidence sample for the
-    groups that actually made the page, while retaining an authoritative
-    member count from SQLite.
-    """
-
+    group_record, group_proof = _duplicate_group_record(scan_id, row, verification_mode)
     group_id = int(row[0])
-    redundant_count = int(row[3])
-    if redundant_count < 0:
-        raise CurationStateError(f"duplicate group {group_id} has an invalid member count")
-    group_record = {
-        "full_fingerprint": str(row[5]),
-        "group_id": group_id,
-        "keep_path": str(row[2]),
-        "reclaimable_bytes": int(row[4]),
-        "redundant_count": redundant_count,
-        "scan_id": scan_id,
-        "size": int(row[1]),
-        "verification_mode": verification_mode,
-    }
+    projection = _duplicate_member_projection(has_proof=bool(row[8]))
+    limit_clause = "" if digest is not None else " LIMIT ?"
+    params = (group_id,) if digest is not None else (group_id, _MAX_GROUP_MEMBERS_IN_EVIDENCE + 1)
+    members = connection.execute(
+        f"SELECT {projection},COUNT(*) OVER() FROM planned_duplicate_members WHERE group_id=? "
+        "ORDER BY member_order" + limit_clause, params,
+    )
     if digest is not None:
         _digest_record(digest, "duplicate_group", group_record)
-
-    member_payload: list[dict[str, object]] = []
-    expected_member_count = redundant_count + 1
-    if digest is not None:
-        member_count = 0
-        members = connection.execute(
-            """SELECT member_order,role,path,volume_id,file_id,size,mtime_ns,birthtime_ns
-            FROM planned_duplicate_members WHERE group_id=?
-            ORDER BY member_order""",
-            (group_id,),
+    payload: list[dict[str, object]] = []
+    member_count = sampled_count = 0
+    keeper_identity = None
+    for member in members:
+        member_count = int(member[9])
+        record, physical_identity = _duplicate_member_record(
+            scan_id, group_id, member, group_proof, keeper_identity,
         )
-        for member in members:
-            identity = _identity_payload(member[3], member[4], member[7])
-            member_record = {
-                "identity": identity,
-                "member_order": int(member[0]),
-                "mtime_ns": int(member[6]),
-                "path": str(member[2]),
-                "role": str(member[1]),
-                "size": int(member[5]),
-            }
-            _digest_record(
-                digest,
-                "duplicate_member",
-                {"group_id": group_id, **member_record},
-            )
-            if member_count < _MAX_GROUP_MEMBERS_IN_EVIDENCE:
-                member_payload.append(member_record)
-            member_count += 1
-    else:
-        member_count_row = connection.execute(
-            "SELECT COUNT(*) FROM planned_duplicate_members WHERE group_id=?",
-            (group_id,),
-        ).fetchone()
-        if member_count_row is None:
-            raise CurationStateError(f"duplicate group {group_id} member count is unavailable")
-        member_count = int(member_count_row[0])
-        members = connection.execute(
-            """SELECT member_order,role,path,volume_id,file_id,size,mtime_ns,birthtime_ns
-            FROM planned_duplicate_members WHERE group_id=?
-            ORDER BY member_order LIMIT ?""",
-            (group_id, _MAX_GROUP_MEMBERS_IN_EVIDENCE + 1),
-        )
-        sampled_count = 0
-        for member in members:
-            identity = _identity_payload(member[3], member[4], member[7])
-            member_record = {
-                "identity": identity,
-                "member_order": int(member[0]),
-                "mtime_ns": int(member[6]),
-                "path": str(member[2]),
-                "role": str(member[1]),
-                "size": int(member[5]),
-            }
-            if sampled_count < _MAX_GROUP_MEMBERS_IN_EVIDENCE:
-                member_payload.append(member_record)
-            sampled_count += 1
-        if sampled_count < min(member_count, _MAX_GROUP_MEMBERS_IN_EVIDENCE + 1):
-            raise CurationStateError(f"duplicate group {group_id} member rows are inconsistent")
-    if member_count != expected_member_count:
+        if keeper_identity is None:
+            if record["role"] == "keep":
+                keeper_identity = physical_identity
+            elif group_proof is not None:
+                keeper_identity = cast(tuple[int, int], cast(dict[str, object], record["proof"])["compared_to_identity"])
+        if digest is not None:
+            _digest_record(digest, "duplicate_member", {"group_id": group_id, **record})
+        if sampled_count < _MAX_GROUP_MEMBERS_IN_EVIDENCE:
+            payload.append(record)
+        sampled_count += 1
+    if member_count != int(row[3]) + 1 or sampled_count < min(member_count, _MAX_GROUP_MEMBERS_IN_EVIDENCE + 1):
         raise CurationStateError(f"duplicate group {group_id} member count is inconsistent")
     return CurationItem(
-        item_id=f"duplicate:{scan_id}:{group_id}",
-        kind="duplicate_group",
-        status="review",
-        action="review_duplicate_group",
-        source_path=str(row[2]),
-        destination_path=None,
+        item_id=f"duplicate:{scan_id}:{group_id}", kind="duplicate_group", status="review",
+        action="review_duplicate_group", source_path=str(row[2]), destination_path=None,
         reason="duplicate_content_candidate",
-        evidence={
-            "full_fingerprint": str(row[5]),
-            "group_id": group_id,
-            "keep_path": str(row[2]),
-            "member_count": member_count,
-            "members": member_payload,
-            "members_truncated": member_count > _MAX_GROUP_MEMBERS_IN_EVIDENCE,
-            "reclaimable_bytes": int(row[4]),
-            "size": int(row[1]),
-            "verification_mode": verification_mode,
-        },
+        evidence={**group_record, "member_count": member_count, "members": payload,
+                  "members_truncated": member_count > _MAX_GROUP_MEMBERS_IN_EVIDENCE},
     )
 
 
@@ -684,71 +836,82 @@ def _digest_duplicate_group(
     row: Any,
     digest: Any,
     verification_mode: VerificationMode,
+    *,
+    members: Iterator[Any] | None = None,
 ) -> None:
-    """Digest one complete group without materializing its response evidence."""
+    """Digest all individual proofs, including members omitted from page samples."""
 
+    group_record, group_proof = _duplicate_group_record(scan_id, row, verification_mode)
     group_id = int(row[0])
-    redundant_count = int(row[3])
-    if redundant_count < 0:
-        raise CurationStateError(f"duplicate group {group_id} has an invalid member count")
-    _digest_record(
-        digest,
-        "duplicate_group",
-        {
-            "full_fingerprint": str(row[5]),
-            "group_id": group_id,
-            "keep_path": str(row[2]),
-            "reclaimable_bytes": int(row[4]),
-            "redundant_count": redundant_count,
-            "scan_id": scan_id,
-            "size": int(row[1]),
-            "verification_mode": verification_mode,
-        },
-    )
-    member_count = 0
-    members = connection.execute(
-        """SELECT member_order,role,path,volume_id,file_id,size,mtime_ns,birthtime_ns
-        FROM planned_duplicate_members WHERE group_id=?
-        ORDER BY member_order""",
-        (group_id,),
-    )
+    _digest_record(digest, "duplicate_group", group_record)
+    if members is None:
+        projection = _duplicate_member_projection(has_proof=bool(row[8]))
+        members = iter(connection.execute(
+            f"SELECT {projection} FROM planned_duplicate_members WHERE group_id=? ORDER BY member_order",
+            (group_id,),
+        ))
+    member_count = keeper_count = 0
+    keeper_identity = None
     for member in members:
-        member_record = {
-            "identity": _identity_payload(member[3], member[4], member[7]),
-            "member_order": int(member[0]),
-            "mtime_ns": int(member[6]),
-            "path": str(member[2]),
-            "role": str(member[1]),
-            "size": int(member[5]),
-        }
-        _digest_record(
-            digest,
-            "duplicate_member",
-            {"group_id": group_id, **member_record},
+        record, physical_identity = _duplicate_member_record(
+            scan_id, group_id, member, group_proof, keeper_identity,
         )
+        if keeper_identity is None:
+            # A legacy presentation may order the keeper after the bounded
+            # page sample.  A comparison anchor is provisional until this
+            # full stream reaches exactly one keep role at g.keep_path and
+            # verifies its physical identity against every comparison.
+            if record["role"] == "keep":
+                keeper_identity = physical_identity
+            elif group_proof is not None:
+                keeper_identity = cast(tuple[int, int], cast(dict[str, object], record["proof"])["compared_to_identity"])
+        if int(member[0]) != member_count or str(member[1]) not in {"keep", "redundant"}:
+            raise CurationStateError(f"duplicate group {group_id} roles or member order are inconsistent")
+        if str(member[1]) == "keep":
+            keeper_count += 1
+        if int(member[5]) != int(row[1]) or (str(member[1]) == "keep" and str(member[2]) != str(row[2])):
+            raise CurationStateError(f"duplicate group {group_id} member snapshot is inconsistent")
+        _digest_record(digest, "duplicate_member", {"group_id": group_id, **record})
         member_count += 1
-    if member_count != redundant_count + 1:
+    if member_count != int(row[3]) + 1 or keeper_count != 1:
         raise CurationStateError(f"duplicate group {group_id} member count is inconsistent")
 
 
-def _iter_duplicate_items(
-    connection: sqlite3.Connection,
-    scan_id: int,
-    digest: Any,
-    verification_mode: VerificationMode,
-) -> Iterator[tuple[_SortKey, CurationItem]]:
+def _digest_duplicate_groups(
+    connection: sqlite3.Connection, scan_id: int, digest: Any, verification_mode: VerificationMode,
+) -> int:
+    """One ordered join streams every group and member instead of N member queries."""
+
+    groups = _duplicate_group_projection(connection, alias="g")
+    member_fields = _duplicate_member_projection(
+        has_proof="proof_json" in _table_columns(connection, "planned_duplicate_members"), alias="m",
+    )
     rows = connection.execute(
-        """SELECT group_id,size,keep_path,redundant_count,reclaimable_bytes,
-        full_fingerprint FROM planned_duplicate_groups WHERE scan_id=?
-        ORDER BY reclaimable_bytes DESC,keep_path COLLATE BINARY,group_id""",
+        f"SELECT {groups},{member_fields} FROM planned_duplicate_groups g "
+        "JOIN planned_duplicate_members m ON m.group_id=g.group_id WHERE g.scan_id=? "
+        "ORDER BY g.reclaimable_bytes DESC,g.keep_path COLLATE BINARY,g.group_id,m.member_order",
         (scan_id,),
+    )
+    count = 0
+    for _group_id, stream in groupby(rows, key=lambda item: item[0]):
+        first = next(stream)
+        members = (item[9:] for item in chain((first,), stream))
+        _digest_duplicate_group(connection, scan_id, first[:9], digest, verification_mode, members=members)
+        count += 1
+    return count
+
+
+def _iter_duplicate_items(
+    connection: sqlite3.Connection, scan_id: int, digest: Any, verification_mode: VerificationMode,
+) -> Iterator[tuple[_SortKey, CurationItem]]:
+    projection = _duplicate_group_projection(connection)
+    rows = connection.execute(
+        f"SELECT {projection} FROM planned_duplicate_groups WHERE scan_id=? "
+        "ORDER BY reclaimable_bytes DESC,keep_path COLLATE BINARY,group_id", (scan_id,),
     )
     for row in rows:
         item = _duplicate_item(connection, scan_id, row, digest, verification_mode)
-        yield (
-            (0, -int(row[4]), str(row[2]), int(row[0])),
-            item,
-        )
+        yield (0, -int(row[4]), str(row[2]), int(row[0])), item
 
 
 def _empty_file_summary(connection: sqlite3.Connection, scan_id: int) -> int:
@@ -787,7 +950,7 @@ def _empty_file_item(scan_id: int, row: Any) -> CurationItem:
         destination_path=None,
         reason="empty_file_requires_human_review",
         evidence={
-            "identity": _identity_payload(row[1], row[2], row[5]),
+            "identity": _identity_payload(row[1], row[2], row[5], context={"owner": "dedup.sqlite3", "table": "files", "record_id": str(row[0]), "publication": {"scan_id": scan_id}}),
             "mtime_ns": int(row[4]),
             "size": int(row[3]),
         },
@@ -877,11 +1040,12 @@ def _iter_organization_rows(
     if scope is None:
         return
     source_predicate, source_parameters = _organization_source_predicate(inventory_root)
+    bindings = _organization_binding_projection(connection)
     rows = connection.execute(
-        """SELECT plan_id,catalog_run_id,source_kind,file_key,source_path,
+        f"""SELECT plan_id,catalog_run_id,source_kind,file_key,source_path,
         destination_path,organization_root,volume_id,file_id,size,mtime_ns,
         birthtime_ns,classifier_signature,primary_kind,confidence,status,reason,
-        evidence_json FROM organization_plans
+        evidence_json,{bindings} FROM organization_plans
         WHERE catalog_run_id=?
           AND organization_root COLLATE BINARY=? COLLATE BINARY
           AND status<>'superseded'
@@ -894,6 +1058,46 @@ def _iter_organization_rows(
     for row in rows:
         if _path_is_within_root(row[4], inventory_root):
             yield row
+
+
+def _organization_binding_projection(connection: sqlite3.Connection) -> str:
+    columns = _table_columns(connection, "organization_plans")
+    fields = (
+        "resource_binding_json",
+        "source_scope_json",
+        "source_scope_id",
+        "representation_kind",
+        "operation_kind",
+        "executable",
+        "blockers_json",
+        "eligibility_status",
+    )
+    return ",".join(field if field in columns else f"NULL AS {field}" for field in fields)
+
+
+def _validate_readable_catalog(connection: sqlite3.Connection) -> None:
+    from neocortex.persistence.sqlite_schema_contract import read_metadata_schema_version
+
+    version = read_metadata_schema_version(connection, label="document catalog")
+    if version == 7:
+        validate_v7_document_catalog_schema(connection)
+    else:
+        validate_sqlite_schema_contract(
+            connection, document_catalog_schema_contract(), label="document catalog", exact=True
+        )
+
+
+def _validate_readable_inventory(connection: sqlite3.Connection) -> None:
+    from neocortex.persistence.sqlite_schema_contract import read_metadata_schema_version
+    from neocortex.deduplication.persistence.contracts import inventory_v11_schema_contract
+
+    version = read_metadata_schema_version(connection, label="dedup inventory")
+    if version == 11:
+        validate_sqlite_schema_contract(
+            connection, inventory_v11_schema_contract(), label="dedup inventory v11", exact=True
+        )
+    else:
+        validate_inventory_schema(connection)
 
 
 def _organization_summary(
@@ -949,9 +1153,7 @@ def _source_heads(
         duplicate_complete = bool(duplicate_plan and duplicate_plan.complete)
         duplicate_mode = None if duplicate_plan is None else duplicate_plan.verification_mode
         inventory_coverage: SourceHeadCoverage = (
-            "complete"
-            if duplicate_complete and duplicate_mode != "partial"
-            else "partial"
+            "complete" if duplicate_complete and duplicate_mode != "partial" else "partial"
         )
         inventory_reason = (
             None
@@ -980,6 +1182,14 @@ def _source_heads(
                     "reclaimable_bytes": (
                         0 if duplicate_plan is None else duplicate_plan.reclaimable_bytes
                     ),
+                    "nominal_redundant_bytes": 0 if duplicate_plan is None else duplicate_plan.reclaimable_bytes,
+                    "physical_reclaimable_bytes": None,
+                    "requested_policy": "legacy_unknown" if duplicate_plan is None else duplicate_plan.requested_policy,
+                    "verification_coverage": "legacy_unknown" if duplicate_plan is None else duplicate_plan.verification_coverage,
+                    "verification_scope": "plan",
+                    "exact_comparisons": None if duplicate_plan is None else duplicate_plan.exact_comparisons,
+                    "changed_or_unreadable_files": None if duplicate_plan is None else duplicate_plan.changed_or_unreadable_files,
+                    "duplicate_plan_completed_ns": None if duplicate_plan is None else duplicate_plan.completed_ns,
                 },
             )
         )
@@ -1047,6 +1257,66 @@ def _iter_organization_items(
 def _organization_item_from_row(row: Any) -> CurationItem:
     """Decode one catalog row into the bounded public item shape."""
 
+    from neocortex.documents.document_resource_binding import (
+        ResourceBindingError,
+        binding_curation_identity,
+        legacy_resource_binding,
+        parse_resource_binding,
+    )
+
+    context = {
+        "owner": "document_catalog.sqlite3",
+        "table": "organization_plans",
+        "record_id": int(row[0]),
+        "source_kind": str(row[2]),
+        "file_key": str(row[3]),
+        "publication": {"catalog_run_id": row[1]},
+    }
+    raw_binding = row[18] if len(row) > 18 else None
+    try:
+        binding = (
+            parse_resource_binding(raw_binding)
+            if raw_binding is not None
+            else legacy_resource_binding(
+                source_kind=str(row[2]),
+                file_key=str(row[3]),
+                path=str(row[4]),
+                volume_id=row[7],
+                file_id=row[8],
+                birthtime_ns=row[11],
+                size=row[9],
+                mtime_ns=row[10],
+            )
+        )
+        if (
+            binding["source_kind"],
+            binding["file_key"],
+            binding["resource_ref"]["current_path"],
+        ) != (str(row[2]), str(row[3]), str(row[4])):
+            raise ResourceBindingError(
+                "binding differs from its organization record",
+                field="resource_binding_json",
+                encoding=binding["schema"],
+                value=raw_binding,
+            )
+        identity = binding_curation_identity(binding)
+        if raw_binding is not None and identity is not None:
+            from neocortex.documents.document_resource_binding import physical_identity_from_components
+            stored = physical_identity_from_components(row[7], row[8], encoding="legacy-decimal")
+            if (format(stored.volume_id, "x"), format(stored.file_id, "x"), row[11]) != (
+                identity["volume_id"], identity["file_id"], identity["birthtime_ns"]
+            ) or binding["physical_anchor_revision"] != {"size": row[9], "mtime_ns": row[10]}:
+                raise ResourceBindingError("physical binding differs from its recorded source revision",
+                                           field="resource_binding_json", encoding=binding["schema"], value=raw_binding)
+    except ResourceBindingError as error:
+        raise _curation_identity_error(error, context=context) from error
+    scoped = len(row) > 20 and row[19] is not None and row[20] is not None
+    blockers = ["backend_unavailable", "authorization_required"]
+    if not scoped:
+        blockers.append("legacy_scope_unresolved")
+    if identity is None:
+        blockers.append("virtual_resource_requires_logical_review")
+
     try:
         evidence = json.loads(str(row[17]))
     except (TypeError, ValueError) as error:
@@ -1085,7 +1355,15 @@ def _organization_item_from_row(row: Any) -> CurationItem:
             "classifier_signature": str(row[12]),
             "confidence": confidence,
             "file_key": str(row[3]),
-            "identity": _identity_payload(row[7], row[8], row[11]),
+            "identity": identity,
+            "resource_binding": binding,
+            "representation_kind": binding["representation_kind"],
+            "executable": False,
+            "blockers": blockers,
+            "source_scope_id": row[20] if scoped else None,
+            "source_scope_json": row[19] if scoped else None,
+            "operation_kind": row[22] if len(row) > 22 else None,
+            "eligibility_status": row[25] if len(row) > 25 else "unverified",
             "organization_root": str(row[6]),
             "plan_id": int(row[0]),
             "primary_kind": str(row[13]),
@@ -1177,9 +1455,9 @@ def _decode_cursor(cursor: str | None) -> _CursorState | None:
 
 
 def _semantic_snapshot_id(plan_digest: str) -> str:
-    payload = _canonical_json(
-        {"contract": _SNAPSHOT_CONTRACT, "plan_digest": plan_digest}
-    ).encode("utf-8")
+    payload = _canonical_json({"contract": _SNAPSHOT_CONTRACT, "plan_digest": plan_digest}).encode(
+        "utf-8"
+    )
     return "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
@@ -1206,8 +1484,15 @@ def _plan_envelope(
                 "dangling_groups": duplicate_plan.dangling_groups,
                 "groups": duplicate_plan.groups,
                 "reclaimable_bytes": duplicate_plan.reclaimable_bytes,
+                "nominal_redundant_bytes": duplicate_plan.reclaimable_bytes,
+                "physical_reclaimable_bytes": None,
                 "redundant_members": duplicate_plan.redundant_members,
                 "verification_mode": duplicate_plan.verification_mode,
+                "verification_scope": "plan",
+                "requested_policy": duplicate_plan.requested_policy,
+                "verification_coverage": duplicate_plan.verification_coverage,
+                "exact_comparisons": duplicate_plan.exact_comparisons,
+                "changed_or_unreadable_files": duplicate_plan.changed_or_unreadable_files,
             }
         ),
         "empty_files": empty_files,
@@ -1308,21 +1593,9 @@ def _digest_plan_publication(
 
     duplicate_count = 0
     if duplicate_plan.complete:
-        rows = inventory.execute(
-            """SELECT group_id,size,keep_path,redundant_count,reclaimable_bytes,
-            full_fingerprint FROM planned_duplicate_groups WHERE scan_id=?
-            ORDER BY reclaimable_bytes DESC,keep_path COLLATE BINARY,group_id""",
-            (head.scan_id,),
+        duplicate_count = _digest_duplicate_groups(
+            inventory, head.scan_id, digest, duplicate_plan.verification_mode,
         )
-        for row in rows:
-            _digest_duplicate_group(
-                inventory,
-                head.scan_id,
-                row,
-                digest,
-                duplicate_plan.verification_mode,
-            )
-            duplicate_count += 1
 
     organization_count = 0
     if catalog is not None:
@@ -1386,9 +1659,7 @@ def _plan_publication(
             _PLAN_PUBLICATION_CACHE.pop(cache_key, None)
 
         organization_scope = (
-            None
-            if catalog is None
-            else _organization_plan_scope(catalog, inventory_root=head.root)
+            None if catalog is None else _organization_plan_scope(catalog, inventory_root=head.root)
         )
         organization_plans = (
             0
@@ -1438,9 +1709,7 @@ def _cursor_key_exists(
     elif category == 1:
         if catalog is None or publication.organization_scope is None:
             return False
-        source_predicate, source_parameters = _organization_source_predicate(
-            publication.head.root
-        )
+        source_predicate, source_parameters = _organization_source_predicate(publication.head.root)
         row = catalog.execute(
             """SELECT 1 FROM organization_plans
             WHERE plan_id=? AND catalog_run_id=?
@@ -1487,9 +1756,9 @@ def _duplicate_page_rows(
         )"""
         parameters.extend((reclaimable, reclaimable, text, reclaimable, text, identity))
     parameters.append(limit + 1)
+    projection = _duplicate_group_projection(connection)
     rows = connection.execute(
-        """SELECT group_id,size,keep_path,redundant_count,reclaimable_bytes,
-        full_fingerprint FROM planned_duplicate_groups
+        f"""SELECT {projection} FROM planned_duplicate_groups
         WHERE scan_id=?"""
         + after_sql
         + """
@@ -1520,11 +1789,12 @@ def _organization_page_rows(
         parameters.append(after_plan_id)
     parameters.extend(source_parameters)
     parameters.append(limit + 1)
+    bindings = _organization_binding_projection(connection)
     rows = connection.execute(
-        """SELECT plan_id,catalog_run_id,source_kind,file_key,source_path,
+        f"""SELECT plan_id,catalog_run_id,source_kind,file_key,source_path,
         destination_path,organization_root,volume_id,file_id,size,mtime_ns,
         birthtime_ns,classifier_signature,primary_kind,confidence,status,reason,
-        evidence_json FROM organization_plans
+        evidence_json,{bindings} FROM organization_plans
         WHERE catalog_run_id=?
           AND organization_root COLLATE BINARY=? COLLATE BINARY
           AND status<>'superseded'"""
@@ -1850,7 +2120,7 @@ def build_curation_plan_page(
         label="dedup",
         expected_generation=inventory_generation,
     ) as inventory:
-        validate_inventory_schema(inventory)
+        _validate_readable_inventory(inventory)
         if cached_publication is None:
             head = _published_inventory_head(inventory)
             duplicate_plan = _duplicate_plan_state(inventory, head.scan_id)
@@ -1878,23 +2148,25 @@ def build_curation_plan_page(
             label="document catalog",
             expected_generation=catalog_generation,
         ) as catalog:
-            validate_sqlite_schema_contract(
-                catalog,
-                document_catalog_schema_contract(),
-                label="document catalog",
-                exact=True,
-            )
-            return _build_plan_page_from_connections(
-                inventory=inventory,
-                catalog=catalog,
-                missing_owners=missing_owners,
-                head=head,
-                duplicate_plan=duplicate_plan,
-                limit=limit,
-                cursor=cursor,
-                cursor_state=cursor_state,
-                cache_key=cache_key,
-            )
+            _validate_readable_catalog(catalog)
+            try:
+                return _build_plan_page_from_connections(
+                    inventory=inventory,
+                    catalog=catalog,
+                    missing_owners=missing_owners,
+                    head=head,
+                    duplicate_plan=duplicate_plan,
+                    limit=limit,
+                    cursor=cursor,
+                    cursor_state=cursor_state,
+                    cache_key=cache_key,
+                )
+            except CurationStateError as error:
+                publication = error.context.setdefault("publication", {})
+                if isinstance(publication, dict):
+                    publication.setdefault("scan_id", head.scan_id)
+                    publication.setdefault("inventory_root", head.root)
+                raise
 
 
 def build_curation_preview(state_directory: Path, *, limit: int) -> CurationPreview:

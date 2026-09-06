@@ -1406,10 +1406,22 @@ class FrameworkState:
             elif kind == "bound":
                 state["manifest_digest"] = event.get("manifest_digest")
         now = time.time_ns()
+        terminal = self._connection.execute(
+            "SELECT completed_ns FROM initial_runs WHERE run_id=?", (run_id,)
+        ).fetchone()
+        completed_ns = None if terminal is None or terminal[0] is None else int(terminal[0])
+        elapsed_until_ns = now if completed_ns is None else completed_ns
         deadline_ns = state["deadline_ns"]
-        state["elapsed_ns"] = max(0, now - int(state["started_ns"]))
+        state["elapsed_ns"] = max(0, elapsed_until_ns - int(state["started_ns"]))
         state["elapsed_seconds"] = state["elapsed_ns"] / 1_000_000_000
-        state["expired"] = deadline_ns is not None and now >= int(deadline_ns)
+        state["elapsed_until_ns"] = elapsed_until_ns
+        state["elapsed_scope"] = (
+            "budget_start_to_observation"
+            if completed_ns is None
+            else "budget_start_to_run_completion"
+        )
+        state["consumed_bytes_kind"] = "reserved_input_bytes_not_physical_io"
+        state["expired"] = deadline_ns is not None and elapsed_until_ns >= int(deadline_ns)
         state["remaining_items"] = (
             None
             if state["max_items"] is None
@@ -1481,9 +1493,10 @@ class FrameworkState:
         if type(items) is not int or items < 0 or type(bytes) is not int or bytes < 0:
             raise ValueError("budget reservation items and bytes must be non-negative integers")
         with self._connection:
-            if self._connection.execute(
-                "SELECT 1 FROM initial_runs WHERE run_id=?", (run_id,)
-            ).fetchone() is None:
+            run = self._connection.execute(
+                "SELECT status FROM initial_runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+            if run is None:
                 raise ValueError(f"run {run_id} does not exist")
             snapshot = self._read_run_budget_locked(run_id)
             if snapshot is None:
@@ -1498,6 +1511,8 @@ class FrameworkState:
                 replay["replayed"] = True
                 replay["reservation"] = dict(existing)
                 return replay
+            if str(run[0]) != "running":
+                raise RunBudgetExceeded("terminal", snapshot)
             reason = None
             if snapshot["cancel_requested"]:
                 reason = "cancelled"
@@ -1700,6 +1715,8 @@ class FrameworkState:
         snapshot = self._read_run_budget_locked(run_id)
         if snapshot is None:
             raise ValueError(f"run {run_id} has no durable lifecycle budget")
+        if snapshot["elapsed_scope"] == "budget_start_to_run_completion":
+            raise RunBudgetExceeded("terminal", snapshot)
         if snapshot["cancel_requested"]:
             raise RunBudgetExceeded("cancelled", snapshot)
         if snapshot["expired"]:

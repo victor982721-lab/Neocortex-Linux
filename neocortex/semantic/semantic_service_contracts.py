@@ -357,7 +357,7 @@ class FusedResolvedHit:
     source_kind: str
     source_identity: str
     snippet: str | None
-
+    primary_evidence: ResolvedSearchHit | None = None
 
 @dataclass(frozen=True, slots=True)
 class SemanticSearchResult:

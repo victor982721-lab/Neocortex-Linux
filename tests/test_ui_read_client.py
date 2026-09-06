@@ -108,6 +108,7 @@ def test_shared_client_routes_all_operations_without_state_paths(
         "limit": 4,
         "max_characters": 12_000,
         "mode": "evidence",
+        "response_version": 1,
     }
     assert calls[3][1] == ("personal",)
     assert calls[3][2] == {"limit": 12}

@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from functools import partial
 from pathlib import Path
-from typing import TypeVar
+from typing import Literal, TypeVar
 
 from neocortex.progress import ProgressCallback
 
@@ -657,32 +657,40 @@ def search_semantic_index(
     threads: int | None = None,
     evidence_mode: bool = False,
     image_calibration: ImageRetrievalCalibration | None = None,
+    image_query_intent: Literal["explicit_visual", "explicit_textual", "ambiguous"] | None = None,
+    allow_ambiguous_images: bool = True,
+    diagnostic_item_ids: tuple[str, ...] = (),
     cancellation_check: Callable[[], None] | None = None,
 ) -> SemanticSearchResult:
     """Search incompatible spaces with discovery or concrete-evidence retention."""
+    from .semantic_schema import semantic_read_context
 
-    return _search.search_semantic_index(
-        state_directory,
-        query,
-        limit=limit,
-        candidate_limit=candidate_limit,
-        max_vectors=max_vectors,
-        include_text=include_text,
-        include_title=include_title,
-        include_images=include_images,
-        include_lexical=include_lexical,
-        lexical_paths=lexical_paths,
-        semantic_database=semantic_database,
-        text_model=text_model,
-        model_cache_override=model_cache,
-        local_files_only=local_files_only,
-        threads=threads,
-        backend_factory=_backend,
-        lexical_search=search_lexical_sources,
-        evidence_mode=evidence_mode,
-        image_calibration=image_calibration,
-        cancellation_check=cancellation_check,
-    )
+    with semantic_read_context():
+        return _search.search_semantic_index(
+            state_directory,
+            query,
+            limit=limit,
+            candidate_limit=candidate_limit,
+            max_vectors=max_vectors,
+            include_text=include_text,
+            include_title=include_title,
+            include_images=include_images,
+            include_lexical=include_lexical,
+            lexical_paths=lexical_paths,
+            semantic_database=semantic_database,
+            text_model=text_model,
+            model_cache_override=model_cache,
+            local_files_only=local_files_only,
+            threads=threads,
+            backend_factory=_backend,
+            lexical_search=search_lexical_sources,
+            evidence_mode=evidence_mode,
+            image_calibration=image_calibration,
+            image_query_intent=image_query_intent,
+            allow_ambiguous_images=allow_ambiguous_images,
+            diagnostic_item_ids=diagnostic_item_ids,
+            cancellation_check=cancellation_check,
+        )
 
 
 def calibrate_image_retrieval(

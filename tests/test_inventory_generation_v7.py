@@ -110,6 +110,11 @@ def test_populated_v6_migration_preserves_rows_checkpoint_and_bytes(
     database = tmp_path / "inventory-v6.sqlite3"
     root = tmp_path / "historical-root"
     _create_populated_v6(database, root)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone() == ("6",)
+        assert "proof_json" not in {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(planned_duplicate_members)")
+        }
 
     inventory_schema_module.initialize_inventory_schema(database)
     inventory_schema_module.initialize_inventory_schema(database)
@@ -117,7 +122,7 @@ def test_populated_v6_migration_preserves_rows_checkpoint_and_bytes(
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
-        ).fetchone() == ("11",)
+        ).fetchone() == (str(inventory_schema_module.SCHEMA_VERSION),)
         assert connection.execute(
             """SELECT scan_id,status,files_seen,bytes_seen,
             inventory_policy_signature FROM scans"""

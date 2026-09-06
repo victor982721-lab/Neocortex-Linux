@@ -34,6 +34,8 @@ from .document_organization_models import (
     _complete_organization_run,
     _fail_organization_run,
 )
+from .document_organization_scope import OrganizationInputScope, assess_organization_resource
+from .document_resource_binding import parse_resource_binding
 from neocortex.safety.protected_content import ProtectedContentError
 # endregion [01]
 
@@ -134,6 +136,7 @@ _REVIEW_ONLY_KINDS = frozenset(
         "expediente_personal",
         "instruccion_cuenta_bancaria",
         "otro",
+        "registro_log",
         "reporte_inventario_archivo",
     }
 )
@@ -143,6 +146,7 @@ def plan_document_organization(
     catalog_path: Path,
     organization_root: Path,
     *,
+    source_scope: OrganizationInputScope,
     min_confidence: float = 0.72,
     progress: ProgressCallback | None = None,
     progress_operation: str = "framework",
@@ -152,6 +156,9 @@ def plan_document_organization(
 
     if not 0.0 <= min_confidence <= 1.0:
         raise ValueError("min_confidence must be between 0 and 1")
+    if not isinstance(source_scope, OrganizationInputScope):
+        raise ValueError("organization_input_scope_required")
+    source_scope.verify()
     root = Path(os.path.abspath(organization_root.expanduser()))
     if mutation_guard is not None:
         mutation_guard.require_paths_allowed(root)
@@ -161,12 +168,35 @@ def plan_document_organization(
     _reject_state_destination(catalog_path, root)
     initialize_document_catalog(catalog_path)
     with document_catalog_database(catalog_path) as connection:
-        run_id = _begin_organization_run(connection, "plan", root)
+        source_scope.verify(connection)
+        run_id = _begin_organization_run(connection, "plan", root, source_scope=source_scope)
         considered = planned = review = blocked = organized = 0
+        excluded_out_of_scope = unresolved_scope = excluded_components = 0
         try:
-            total = int(
-                connection.execute("SELECT COUNT(*) FROM documents WHERE active=1").fetchone()[0]
-            )
+            # Publish one complete plan generation.  An interrupted rebuild must
+            # not supersede the previous proposals or expose half a new scope.
+            connection.execute("BEGIN IMMEDIATE")
+            source_scope.verify(connection)
+            rows: list[sqlite3.Row] = []
+            for candidate in connection.execute(
+                """SELECT * FROM documents WHERE active=1
+                ORDER BY path,source_kind,file_key"""
+            ):
+                assessment = assess_organization_resource(candidate, source_scope)
+                if assessment.included:
+                    metadata = (assessment.binding or {}).get("representation_metadata", {})
+                    if (
+                        metadata.get("document_role") == "document_component"
+                        and metadata.get("independently_organizable") is False
+                    ):
+                        excluded_components += 1
+                    else:
+                        rows.append(candidate)
+                elif assessment.reason == "source_outside_scope":
+                    excluded_out_of_scope += 1
+                else:
+                    unresolved_scope += 1
+            total = len(rows)
             managed_locations = {
                 (
                     str(source_kind),
@@ -191,10 +221,6 @@ def plan_document_organization(
                 blocked=0,
                 organized=0,
             )
-            rows = connection.execute(
-                """SELECT * FROM documents WHERE active=1
-                ORDER BY path,source_kind,file_key"""
-            )
             for row in rows:
                 considered += 1
                 status = _plan_catalog_document(
@@ -205,6 +231,7 @@ def plan_document_organization(
                     min_confidence=min_confidence,
                     managed_locations=managed_locations,
                     mutation_guard=mutation_guard,
+                    source_scope=source_scope,
                 )
                 if status == "planned":
                     planned += 1
@@ -225,8 +252,7 @@ def plan_document_organization(
                         blocked=blocked,
                         organized=organized,
                     )
-                if considered % 100 == 0:
-                    connection.commit()
+            source_scope.verify(connection)
             summary = OrganizationPlanSummary(
                 catalog_run_id=run_id,
                 considered=considered,
@@ -234,6 +260,11 @@ def plan_document_organization(
                 review_required=review,
                 blocked=blocked,
                 already_organized=organized,
+                excluded_out_of_scope=excluded_out_of_scope,
+                unresolved_scope=unresolved_scope,
+                excluded_components=excluded_components,
+                source_scope_id=source_scope.scope_id,
+                source_root=str(source_scope.root),
             )
             _complete_organization_run(connection, run_id, summary)
             _emit_organization_plan_progress(
@@ -249,6 +280,7 @@ def plan_document_organization(
             )
             return summary
         except BaseException as exc:
+            connection.rollback()
             _fail_organization_run(connection, run_id, exc)
             raise
 
@@ -262,22 +294,34 @@ def _plan_catalog_document(
     min_confidence: float,
     managed_locations: set[tuple[str, str, str]],
     mutation_guard: CorpusMutationGuard | None,
+    source_scope: OrganizationInputScope,
 ) -> str:
+    assessment = assess_organization_resource(row, source_scope)
+    if not assessment.included:
+        return _persist_catalog_plan(
+            connection,
+            run_id,
+            row,
+            root,
+            None,
+            "blocked",
+            assessment.reason or "resource_scope_unverified",
+            mutation_guard=mutation_guard,
+            source_scope=source_scope,
+        )
+    binding = parse_resource_binding(row["resource_binding_json"])
     managed_source = (
-        str(row["source_kind"]),
-        str(row["file_key"]),
-        os.path.normcase(os.path.abspath(str(row["path"]))),
-    ) in managed_locations
-    connection.execute(
-        """UPDATE organization_plans SET status='superseded',
-        completed_ns=?,detail='replaced by a newer organization plan'
-        WHERE source_kind=? AND file_key=? AND organization_root=?
-        AND status='planned'""",
-        (time.time_ns(), row["source_kind"], row["file_key"], str(root)),
+        binding["representation_kind"] == "physical_file"
+        and (
+            str(row["source_kind"]),
+            str(row["file_key"]),
+            os.path.normcase(os.path.abspath(str(row["path"]))),
+        )
+        in managed_locations
     )
     protected_reason = _protected_content_reason(
         mutation_guard,
-        Path(str(row["path"])),
+        Path(binding["physical_anchor_path"]),
     )
     if protected_reason is not None:
         return _persist_catalog_plan(
@@ -289,6 +333,7 @@ def _plan_catalog_document(
             "blocked",
             protected_reason,
             mutation_guard=mutation_guard,
+            source_scope=source_scope,
         )
     destination, status, reason = _proposed_destination(
         row,
@@ -296,6 +341,15 @@ def _plan_catalog_document(
         min_confidence=min_confidence,
         managed_source=managed_source,
     )
+    if status == "planned" and str(row["catalog_status"]) != "classified":
+        status, reason = "review", "source_classification_requires_review"
+    if binding["representation_kind"] != "physical_file":
+        destination = None
+        status, reason = "review", "virtual_resource_requires_logical_organization"
+    metadata = binding.get("representation_metadata", {})
+    if metadata.get("independently_organizable") is False:
+        destination = None
+        status, reason = "review", "document_component_not_independently_organizable"
     if status == "planned" and destination is not None:
         protected_reason = _protected_content_reason(mutation_guard, destination)
         if protected_reason is not None:
@@ -318,6 +372,7 @@ def _plan_catalog_document(
         status,
         reason,
         mutation_guard=mutation_guard,
+        source_scope=source_scope,
     )
 
 
@@ -363,6 +418,7 @@ def _persist_catalog_plan(
     reason: str,
     *,
     mutation_guard: CorpusMutationGuard | None,
+    source_scope: OrganizationInputScope,
 ) -> str:
     try:
         _insert_plan(
@@ -373,6 +429,7 @@ def _persist_catalog_plan(
             destination,
             status,
             reason,
+            source_scope=source_scope,
         )
         return status
     except sqlite3.IntegrityError:
@@ -394,6 +451,7 @@ def _persist_catalog_plan(
                     None,
                     "blocked",
                     protected_reason,
+                    source_scope=source_scope,
                 )
                 return "blocked"
             _insert_plan(
@@ -404,6 +462,7 @@ def _persist_catalog_plan(
                 resolved,
                 status,
                 "classification_above_threshold_with_identity_disambiguation",
+                source_scope=source_scope,
             )
             return status
         _insert_plan(
@@ -414,6 +473,7 @@ def _persist_catalog_plan(
             destination,
             "blocked",
             "destination_conflict_with_another_plan",
+            source_scope=source_scope,
         )
         return "blocked"
 
@@ -455,6 +515,17 @@ def _proposed_destination(
 
     if str(row["catalog_status"]) == "error":
         return review("classification_error")
+    try:
+        classification = json.loads(str(row["classification_json"]))
+    except (TypeError, ValueError):
+        classification = {}
+    taxonomy_status = (
+        classification.get("taxonomy_status") if isinstance(classification, dict) else None
+    )
+    if taxonomy_status == "outside_taxonomy":
+        return review("outside_organization_taxonomy")
+    if taxonomy_status == "insufficient_identification":
+        return review("insufficient_document_identification")
     confidence = float(row["confidence"])
     if confidence < min_confidence:
         return review("classification_confidence_below_threshold")
@@ -478,6 +549,7 @@ def _proposed_destination(
             "expediente_personal": "personal_or_sensitive_document_requires_review",
             "instruccion_cuenta_bancaria": ("financial_or_sensitive_document_requires_review"),
             "otro": "document_kind_not_safe_for_automatic_organization",
+            "registro_log": "log_record_requires_organization_policy",
             "reporte_inventario_archivo": ("generated_file_inventory_report_requires_review"),
         }
         if kind in _REVIEW_ONLY_KINDS:
@@ -509,6 +581,8 @@ def _proposed_destination(
 
     destination = root.joinpath(*parts, filename)
     _validate_destination(root, destination)
+    if str(row["catalog_status"]) != "classified":
+        return destination, "review", "source_classification_requires_review"
     return destination, "planned", "classification_above_threshold"
 
 
@@ -607,8 +681,8 @@ def _plan_destination_available(
         WHERE destination_path=? COLLATE {_PATH_COLLATION}
         AND status IN (
             'planned','applying','moved_cache_pending','recovery_required'
-        ) LIMIT 1""",
-        (str(destination),),
+        ) AND NOT (source_kind=? AND file_key=? AND status='planned') LIMIT 1""",
+        (str(destination), row["source_kind"], row["file_key"]),
     ).fetchone()
     return plan_conflict is None
 
@@ -658,9 +732,51 @@ def _insert_plan(
     destination: Path | None,
     status: str,
     reason: str,
+    *,
+    source_scope: OrganizationInputScope,
 ) -> None:
+    binding = parse_resource_binding(row["resource_binding_json"])
+    try:
+        classification = json.loads(str(row["classification_json"]))
+    except (TypeError, ValueError):
+        classification = {}
+    if not isinstance(classification, dict):
+        classification = {}
+    representation = binding["representation_kind"]
+    virtual = representation != "physical_file"
+    operation = "logical_organization" if virtual else "move_physical"
+    eligibility = (
+        "logical_only"
+        if virtual
+        else (
+            "eligible"
+            if status == "planned" and row["catalog_status"] == "classified"
+            else "blocked"
+        )
+    )
+    blockers = ["backend_unavailable", "authorization_required"]
+    if virtual:
+        blockers.append("virtual_resource_requires_materialization")
+    if binding.get("representation_metadata", {}).get("independently_organizable") is False:
+        blockers.append("document_component_not_independently_organizable")
+    if str(row["catalog_status"]) != "classified":
+        blockers.append("source_classification_requires_review")
+    if eligibility == "blocked":
+        blockers.append(reason)
+    # A logical location is classification evidence, not a writable file path.
+    logical_destination = None
+    if virtual:
+        proposed, _, _ = _proposed_destination(row, root, min_confidence=0.0, managed_source=False)
+        logical_destination = None if proposed is None else str(proposed)
     evidence = json.dumps(
         {
+            "primary_kind": row["primary_kind"],
+            "classification_status": row["catalog_status"],
+            "classification_score_kind": classification.get(
+                "confidence_kind", "uncalibrated_heuristic"
+            ),
+            "taxonomy_status": classification.get("taxonomy_status", "unverified"),
+            "suggested_logical_location": logical_destination,
             "primary_subtype": row["primary_subtype"],
             "primary_authority": row["primary_authority"],
             "primary_organization": row["primary_organization"],
@@ -680,19 +796,55 @@ def _insert_plan(
         sort_keys=True,
         separators=(",", ":"),
     )
+    prior = connection.execute(
+        """SELECT * FROM organization_plans WHERE source_kind=? AND file_key=?
+        AND organization_root=? AND status IN ('planned','review','blocked','already_organized')
+        ORDER BY plan_id DESC LIMIT 1""",
+        (row["source_kind"], row["file_key"], str(root)),
+    ).fetchone()
+    destination_value = None if destination is None else str(destination)
+    blockers_json = json.dumps(sorted(set(blockers)), separators=(",", ":"))
+    if prior is not None and all(
+        (
+            prior["source_scope_id"] == source_scope.scope_id,
+            prior["source_scope_json"] == source_scope.serialized,
+            prior["resource_binding_json"] == row["resource_binding_json"],
+            prior["classifier_signature"] == row["classifier_signature"],
+            prior["primary_kind"] == row["primary_kind"],
+            prior["confidence"] == row["confidence"],
+            prior["representation_kind"] == representation,
+            prior["operation_kind"] == operation,
+            prior["eligibility_status"] == eligibility,
+            prior["destination_path"] == destination_value,
+            prior["status"] == status,
+            prior["reason"] == reason,
+            prior["evidence_json"] == evidence,
+            prior["blockers_json"] == blockers_json,
+            not prior["executable"],
+        )
+    ):
+        return
+    connection.execute(
+        """UPDATE organization_plans SET status='superseded',completed_ns=?,
+        detail='replaced by a complete scoped organization plan'
+        WHERE source_kind=? AND file_key=? AND organization_root=?
+        AND status IN ('planned','review','blocked','already_organized')""",
+        (time.time_ns(), row["source_kind"], row["file_key"], str(root)),
+    )
     connection.execute(
         """INSERT INTO organization_plans(
         catalog_run_id,source_kind,file_key,source_path,destination_path,
         organization_root,volume_id,file_id,size,mtime_ns,birthtime_ns,
         classifier_signature,primary_kind,confidence,status,reason,evidence_json,
-        planned_ns)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        planned_ns,source_scope_json,source_scope_id,resource_binding_json,
+        representation_kind,operation_kind,eligibility_status,executable,blockers_json)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             catalog_run_id,
             row["source_kind"],
             row["file_key"],
             row["path"],
-            None if destination is None else str(destination),
+            destination_value,
             str(root),
             row["volume_id"],
             row["file_id"],
@@ -706,6 +858,14 @@ def _insert_plan(
             reason,
             evidence,
             time.time_ns(),
+            source_scope.serialized,
+            source_scope.scope_id,
+            row["resource_binding_json"],
+            representation,
+            operation,
+            eligibility,
+            0,
+            blockers_json,
         ),
     )
 

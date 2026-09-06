@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from ..domain.models import DedupPlan, FileSnapshot
+from ..domain.evidence import KeeperPolicy
 from ..fingerprinting import (
     FULL_ALGORITHM,
     PARTIAL_ALGORITHM,
@@ -32,18 +33,20 @@ from neocortex.progress import ProgressCallback
 
 
 class DedupPlanner:
-    """Build exact duplicate plans while hashing only size-collision candidates."""
+    """Build content evidence while hashing only physical size-collision candidates."""
 
     def __init__(
         self,
         index: DedupIndex,
         *,
         partial_threshold: int = DEFAULT_PARTIAL_THRESHOLD,
+        keeper_policy: KeeperPolicy | None = None,
     ):
         if partial_threshold < 0:
             raise ValueError("partial_threshold cannot be negative")
         self._index = index
         self._partial_threshold = partial_threshold
+        self._keeper_policy = keeper_policy or KeeperPolicy()
 
     def _fingerprint(self, snapshot: FileSnapshot, *, partial: bool) -> tuple[bytes, bool]:
         algorithm = PARTIAL_ALGORITHM if partial else FULL_ALGORITHM
@@ -74,6 +77,7 @@ class DedupPlanner:
             fingerprint=self._fingerprint,
             capture_snapshot=snapshot_path,
             exact_matcher=files_equal_exact,
+            keeper_policy=self._keeper_policy,
         ).run()
 
 

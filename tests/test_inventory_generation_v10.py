@@ -1,4 +1,4 @@
-"""Identity-query indexes and migration contracts for inventory schema v11.
+"""Identity-query indexes and migration contracts through current inventory schema.
 
 Every database is a bounded synthetic ``tmp_path`` fixture.  The regression
 executes the production Knowledge inventory query and inspects SQLite's query
@@ -17,7 +17,7 @@ from neocortex.deduplication.domain.errors import InventoryError
 from neocortex.deduplication.persistence import (
     inventory_schema_contract as persistent_inventory_schema_contract,
 )
-from neocortex.deduplication.persistence.ddl import V10_DDL, V9_DDL
+from neocortex.deduplication.persistence.ddl import V10_DDL, V11_DDL, V9_DDL
 from neocortex.deduplication.persistence.migrations import MIGRATIONS
 from neocortex.knowledge import knowledge_search_inventory
 
@@ -47,7 +47,7 @@ def test_schema_persistence_api_and_versioned_migration_registry_are_explicit() 
     )
     assert {version: migration.__module__ for version, migration in MIGRATIONS.items()} == {
         version: f"neocortex.deduplication.persistence.migrations.v{version}_to_v{version + 1}"
-        for version in range(1, 11)
+        for version in range(1, inventory_schema_module.SCHEMA_VERSION)
     }
 
 
@@ -155,10 +155,37 @@ def _indexes(connection: sqlite3.Connection) -> dict[str, str]:
     }
 
 
-def test_fresh_v11_has_exact_identity_indexes_and_verification_mode(
+def _legacy_duplicate_projection(connection: sqlite3.Connection) -> tuple[tuple[tuple[object, ...], ...], ...]:
+    """Compare original identity/hash bytes, not just their aggregate counts."""
+
+    return tuple(tuple(connection.execute(query)) for query in (
+        "SELECT scan_id,path,volume_id,file_id,size,mtime_ns,birthtime_ns FROM files ORDER BY scan_id,path",
+        "SELECT scan_id,group_count,redundant_files,reclaimable_bytes,completed_ns "
+        "FROM duplicate_plan_summaries ORDER BY scan_id",
+        "SELECT group_id,scan_id,size,keep_path,redundant_count,reclaimable_bytes,full_fingerprint "
+        "FROM planned_duplicate_groups ORDER BY group_id",
+        "SELECT group_id,member_order,role,path,volume_id,file_id,size,mtime_ns,birthtime_ns "
+        "FROM planned_duplicate_members ORDER BY group_id,member_order",
+    ))
+
+
+def _assert_individual_evidence_unknown(connection: sqlite3.Connection) -> None:
+    assert connection.execute(
+        "SELECT requested_policy,coverage,exact_comparisons,changed_or_unreadable_files "
+        "FROM duplicate_plan_summaries WHERE scan_id=9"
+    ).fetchone() == ("legacy_unknown", "legacy_unknown", None, None)
+    assert connection.execute(
+        "SELECT verification_mode,proof_json FROM planned_duplicate_groups WHERE group_id=90"
+    ).fetchone() == ("legacy_unknown", "{}")
+    assert connection.execute(
+        "SELECT proof_json FROM planned_duplicate_members WHERE group_id=90 ORDER BY member_order"
+    ).fetchall() == [("{}",), ("{}",)]
+
+
+def test_fresh_current_has_exact_identity_indexes_and_individual_evidence(
     tmp_path: Path,
 ) -> None:
-    database = tmp_path / "inventory-v10.sqlite3"
+    database = tmp_path / "inventory-current.sqlite3"
 
     inventory_schema_module.initialize_inventory_schema(database)
     inventory_schema_module.initialize_inventory_schema(database)
@@ -166,19 +193,28 @@ def test_fresh_v11_has_exact_identity_indexes_and_verification_mode(
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
-        ).fetchone() == ("11",)
+        ).fetchone() == (str(inventory_schema_module.SCHEMA_VERSION),)
         columns = {
             str(row[1])
             for row in connection.execute("PRAGMA table_info(duplicate_plan_summaries)")
         }
-        assert "verification_mode" in columns
+        assert {
+            "verification_mode", "requested_policy", "coverage",
+            "exact_comparisons", "changed_or_unreadable_files",
+        } <= columns
+        assert {"verification_mode", "proof_json"} <= {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(planned_duplicate_groups)")
+        }
+        assert "proof_json" in {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(planned_duplicate_members)")
+        }
         assert _indexes(connection) == _NEW_INDEXES
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         inventory_schema_module.validate_inventory_schema(connection)
 
 
-def test_populated_v9_to_v11_preserves_rows_bytes_and_foreign_keys(
+def test_populated_v9_to_current_preserves_rows_bytes_and_foreign_keys(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "inventory-v9.sqlite3"
@@ -186,6 +222,7 @@ def test_populated_v9_to_v11_preserves_rows_bytes_and_foreign_keys(
     _create_populated_v9(database, root)
     with sqlite3.connect(database) as connection:
         assert _indexes(connection) == {}
+        before_projection = _legacy_duplicate_projection(connection)
 
     inventory_schema_module.initialize_inventory_schema(database)
     migrated = database.read_bytes()
@@ -193,9 +230,11 @@ def test_populated_v9_to_v11_preserves_rows_bytes_and_foreign_keys(
 
     assert database.read_bytes() == migrated
     with sqlite3.connect(database) as connection:
+        assert _legacy_duplicate_projection(connection) == before_projection
+        _assert_individual_evidence_unknown(connection)
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
-        ).fetchone() == ("11",)
+        ).fetchone() == (str(inventory_schema_module.SCHEMA_VERSION),)
         assert connection.execute(
             "SELECT verification_mode FROM duplicate_plan_summaries WHERE scan_id=9"
         ).fetchone() == ("legacy_unknown",)
@@ -215,12 +254,14 @@ def test_populated_v9_to_v11_preserves_rows_bytes_and_foreign_keys(
         inventory_schema_module.validate_inventory_schema(connection)
 
 
-def test_populated_v10_to_v11_adds_unknown_verification_mode(
+def test_populated_v10_to_current_adds_unknown_individual_evidence(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "inventory-v10.sqlite3"
     root = tmp_path / "historical-root"
     _create_populated_v9(database, root, ddl=V10_DDL, schema_version=10)
+    with sqlite3.connect(database) as connection:
+        before_projection = _legacy_duplicate_projection(connection)
 
     inventory_schema_module.initialize_inventory_schema(database)
     migrated = database.read_bytes()
@@ -228,9 +269,11 @@ def test_populated_v10_to_v11_adds_unknown_verification_mode(
 
     assert database.read_bytes() == migrated
     with sqlite3.connect(database) as connection:
+        assert _legacy_duplicate_projection(connection) == before_projection
+        _assert_individual_evidence_unknown(connection)
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
-        ).fetchone() == ("11",)
+        ).fetchone() == (str(inventory_schema_module.SCHEMA_VERSION),)
         assert connection.execute(
             "SELECT verification_mode FROM duplicate_plan_summaries WHERE scan_id=9"
         ).fetchone() == ("legacy_unknown",)
@@ -239,7 +282,42 @@ def test_populated_v10_to_v11_adds_unknown_verification_mode(
         inventory_schema_module.validate_inventory_schema(connection)
 
 
-def test_schema_one_migrates_sequentially_through_v11(tmp_path: Path) -> None:
+@pytest.mark.parametrize("legacy_mode", ("legacy_unknown", "fast", "partial", "full_hash"))
+def test_populated_v11_to_current_keeps_global_label_without_individual_receipts(
+    tmp_path: Path, legacy_mode: str,
+) -> None:
+    database = tmp_path / "inventory-v11.sqlite3"
+    _create_populated_v9(database, tmp_path / "historical-root", ddl=V11_DDL, schema_version=11)
+    with sqlite3.connect(database) as connection:
+        assert "proof_json" not in {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(planned_duplicate_groups)")
+        }
+        connection.execute(
+            "UPDATE duplicate_plan_summaries SET verification_mode=? WHERE scan_id=9", (legacy_mode,),
+        )
+        before_projection = _legacy_duplicate_projection(connection)
+
+    inventory_schema_module.initialize_inventory_schema(database)
+    migrated = database.read_bytes()
+    inventory_schema_module.initialize_inventory_schema(database)
+
+    assert database.read_bytes() == migrated
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone() == (
+            str(inventory_schema_module.SCHEMA_VERSION),
+        )
+        assert _legacy_duplicate_projection(connection) == before_projection
+        assert connection.execute(
+            "SELECT verification_mode FROM duplicate_plan_summaries WHERE scan_id=9"
+        ).fetchone() == (legacy_mode,)
+        _assert_individual_evidence_unknown(connection)
+        assert _indexes(connection) == _NEW_INDEXES
+        assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        inventory_schema_module.validate_inventory_schema(connection)
+
+
+def test_schema_one_migrates_sequentially_through_current(tmp_path: Path) -> None:
     database = tmp_path / "inventory-v1.sqlite3"
     with sqlite3.connect(database) as connection:
         connection.executescript(
@@ -255,7 +333,7 @@ def test_schema_one_migrates_sequentially_through_v11(tmp_path: Path) -> None:
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
-        ).fetchone() == ("11",)
+        ).fetchone() == (str(inventory_schema_module.SCHEMA_VERSION),)
         assert _indexes(connection) == _NEW_INDEXES
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         inventory_schema_module.validate_inventory_schema(connection)

@@ -6,6 +6,19 @@ fuera de `docs/`.
 
 ## Cambios posteriores a 0.12.0
 
+- Identidad por codec/owner y bindings de recursos físicos/lógicos, planes
+  organizativos delimitados por raíz y errores de curación localizables en JSON.
+- Evidencia dedup por miembro, keeper explicable y distinción entre redundancia
+  nominal y espacio liberable; detalle de grupos consistente en terminal/pipe.
+- Contexto v2 como flujo CLI/MCP, con presupuesto global, fuentes únicas,
+  referencias directas y compatibilidad explícita con v1; diagnósticos de
+  contenido y páginas vacías con cobertura y causas visibles.
+- Documentos compuestos OTT/ZIP, papel documental separado de menciones,
+  cobertura final PDF separada de intentos históricos y revisión informativa
+  sin convertir scores en decisiones o autorizaciones.
+- Duración terminal estable, scopes de salud, snapshots con presupuesto/reuso
+  y eliminación de agregaciones globales repetidas durante clonación semántica.
+
 - La extracción activa de texto queda limitada a formatos actuales, y se retiran
   del runtime los lectores CFB de DOC/XLS/PPT, sus convertidores externos y sus
   contadores de ejecución no reutilizable; DOCX/XLSX/PPTX/ODT conservan sus rutas

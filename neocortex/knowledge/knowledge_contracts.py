@@ -371,6 +371,8 @@ class RankingSignal:
     generation: int | None = None
     contribution: float | None = None
     query_model_signature: str | None = None
+    evidence: EvidenceRef | None = None
+    query_support: Mapping[str, object] = field(default_factory=dict, hash=False)
 
     def __post_init__(self) -> None:
         _contract_references.validate_ranking_signal(

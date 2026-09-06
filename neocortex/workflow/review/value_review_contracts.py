@@ -121,6 +121,7 @@ class ValueReviewPaths:
     office: Path | None = None
     text: Path | None = None
     audio: Path | None = None
+    archive: Path | None = None
 
     @classmethod
     def from_directory(cls, state_directory: Path) -> ValueReviewPaths:
@@ -133,6 +134,7 @@ class ValueReviewPaths:
             office=root / "office.sqlite3",
             text=root / "text.sqlite3",
             audio=root / "audio.sqlite3",
+            archive=root / "archive.sqlite3",
         )
 
 

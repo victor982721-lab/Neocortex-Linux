@@ -170,6 +170,30 @@ Neocortex curate reconcile --actor ACTOR --confirm-reconcile --json
 
 ## Mantenimiento de estado
 
+Las comprobaciones tienen alcance explícito y no convierten lo omitido en sano:
+
+```bash
+Neocortex --state-health --state-health-scope compatibility --state-health-json
+Neocortex --state-health --state-health-owner semantic --state-health-timeout 180 --state-health-json
+Neocortex --archive-issues 20 --diagnostics-reason archive_member_count_limit --diagnostics-json
+Neocortex --review-candidates 20 --review-json
+Neocortex --action-recovery-status --action-recovery-json
+```
+
+`--state-health-max-owners` y `--state-health-after-owner` permiten continuar una
+comprobación acotada; revisa también los owners que requieren reintento. Los
+diagnósticos de contenido usan `--diagnostics-cursor` y filtros ligados al mismo
+snapshot. Las páginas vacías explican disponibilidad y cobertura; JSONL legacy
+se solicita explícitamente con `--review-json-lines` o
+`--action-recovery-json-lines`, junto a su selector JSON.
+
+Los presupuestos de snapshots se comprueban antes de copiar y pueden agotarse;
+eso no demuestra corrupción. Retención sigue siendo diagnóstico/planificación,
+no compactación ni garantía de liberar espacio. Una nueva ejecución y sus
+recibos son compatibles con replay, pero no justifican rehacer derivados sin
+cambio de entrada. Un piloto detenido a los 15 minutos queda pendiente con su
+continuación y no se considera aprobado.
+
 ```bash
 Neocortex databases status --json
 Neocortex databases backup --backup-directory "$Backup" --json

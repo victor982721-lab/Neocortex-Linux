@@ -3,7 +3,7 @@
 from __future__ import annotations
 import argparse
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING
 
 from neocortex.runtime.orchestration.replay_metrics import route_replay_metrics
@@ -304,6 +304,10 @@ def _print_dedup_report(result) -> None:
     print(
         f"duplicate_groups={plan.group_count} "
         f"reclaimable_bytes={plan.reclaimable_bytes} "
+        f"reclaimable_bytes_kind=nominal_redundant "
+        f"physical_reclaimable_bytes=not_verified "
+        f"requested_policy={getattr(plan, 'requested_policy', 'legacy_unknown')} "
+        f"dedup_coverage={getattr(plan, 'coverage', 'legacy_unknown')} "
         f"journal_usn_span={journal_span if journal_span is not None else 'unavailable'} "
         f"reconciliation_records={result.reconciliation_records} "
         f"inventory_attempts={result.inventory_attempts} "
@@ -410,11 +414,29 @@ def has_organization_errors(result) -> bool:
     )
 
 
-def _print_duplicate_groups(result, limit: int) -> None:
-    for group in result.dedup_plan.groups[:limit]:
-        print(f"KEEP {group.keep.path}")
+def _print_duplicate_groups(
+    result, limit: int, *, emit: Callable[[str], object] = print,
+) -> None:
+    """Use the same bounded evidence detail for terminals and pipes."""
+    plan = getattr(result, "dedup_plan", None)
+    if plan is None or limit <= 0:
+        return
+    groups = tuple(getattr(plan, "groups", ()))[:limit]
+    total = int(plan.group_count)
+    emit(
+        f"DUPLICATE_GROUPS shown={len(groups)} total={total} "
+        f"limit={limit} truncated={int(len(groups) < total)} "
+        "scope=physical_files physical_reclaimable_bytes=not_verified"
+    )
+    for ordinal, group in enumerate(groups, 1):
+        emit(
+            f"GROUP position={ordinal} "
+            f"verification_mode={getattr(group, 'verification_mode', 'legacy_unknown')} "
+            f"evidence={'available' if getattr(group, 'proof', None) is not None else 'legacy_unknown'}"
+        )
+        emit(f"KEEP {group.keep.path}")
         for redundant in group.redundant:
-            print(f"CANDIDATE {redundant.path}")
+            emit(f"CANDIDATE {redundant.path}")
 
 
 def print_reports(result, args: argparse.Namespace) -> None:
@@ -455,8 +477,8 @@ def _human_count(value: int | float) -> str:
 
 def _human_bytes(value: int) -> str:
     amount = float(value)
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if amount < 1024.0 or unit == "TB":
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if amount < 1024.0 or unit == "TiB":
             return f"{amount:.1f} {unit}" if unit != "B" else f"{int(amount)} B"
         amount /= 1024.0
     raise AssertionError("unreachable")
@@ -491,6 +513,7 @@ def _professional_route_rows(result) -> tuple[tuple[str, object], ...]:
         ("DOCX", "docx"),
         ("Office", "office"),
         ("ZIP", "archive"),
+        ("Texto", "text"),
         ("Audio", "audio"),
         ("Video", "video"),
         ("Imágenes", "image"),
@@ -607,6 +630,7 @@ def print_professional_summary(
             "DOCX": "docx",
             "Office": "office",
             "ZIP": "archive",
+            "Texto": "text",
             "Audio": "audio",
             "Video": "video",
             "Imágenes": "image",
@@ -701,7 +725,7 @@ def print_professional_summary(
                 _human_count(plan.group_count),
                 " grupos · ",
                 _human_bytes(plan.reclaimable_bytes),
-                " recuperables",
+                " redundantes nominales · espacio liberable no verificado",
             )
         )
     actions = getattr(result, "actions", None)
@@ -732,7 +756,7 @@ def print_professional_summary(
     if getattr(result, "inventory_mode", None) == "full":
         details.append(
             Text(
-                "Incremental NTFS no disponible: esta ejecución hizo inventario completo.",
+                "Esta ejecución hizo inventario completo; no acredita extracción completa.",
                 style="yellow",
             )
         )
@@ -742,6 +766,11 @@ def print_professional_summary(
             title="Resultado operativo",
             border_style="yellow" if has_attention else "green",
         )
+    )
+    _print_duplicate_groups(
+        result,
+        int(getattr(args, "show_groups", 0)),
+        emit=lambda line: console.print(Text(line), soft_wrap=True),
     )
 
 

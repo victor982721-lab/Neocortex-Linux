@@ -88,6 +88,19 @@ EXPECTED_KNOWLEDGE_ACTIONS = (
         None,
     ),
     (
+        ("--knowledge-response-version",),
+        "knowledge_response_version",
+        "_StoreAction",
+        None,
+        None,
+        2,
+        "int",
+        (1, 2),
+        None,
+        False,
+        "context response contract: compact agent v2 (default) or legacy v1",
+    ),
+    (
         ("--knowledge-limit",),
         "knowledge_limit",
         "_StoreAction",
@@ -158,6 +171,9 @@ EXPECTED_KNOWLEDGE_HELP = (
     "                        build a bounded cited context from one read-only\n"
     "                        Knowledge search\n"
     "  --knowledge-json\n"
+    "  --knowledge-response-version {1,2}\n"
+    "                        context response contract: compact agent v2 (default)\n"
+    "                        or legacy v1\n"
     "  --knowledge-limit N\n"
     "  --knowledge-context-characters N\n"
     "                        maximum ContextBundle characters; defaults to 12000\n"

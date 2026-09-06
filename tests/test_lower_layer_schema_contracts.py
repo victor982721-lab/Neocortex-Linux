@@ -16,6 +16,7 @@ from neocortex.enumeration.path_index.schema import (
 )
 from neocortex.deduplication import DedupIndex, InventoryError
 from neocortex.deduplication.persistence import (
+    SCHEMA_VERSION as INVENTORY_SCHEMA_VERSION,
     initialize_inventory_schema,
     validate_inventory_schema,
 )
@@ -203,7 +204,7 @@ def test_dedup_migrates_each_historical_version_and_preserves_rows(
 
     initialize_inventory_schema(database)
 
-    assert _metadata(database) == {"preserved": "yes", "schema_version": "11"}
+    assert _metadata(database) == {"preserved": "yes", "schema_version": str(INVENTORY_SCHEMA_VERSION)}
     with sqlite3.connect(database) as connection:
         validate_inventory_schema(connection)
         if version in {2, 3, 5}:
@@ -250,20 +251,9 @@ def test_dedup_records_every_sequential_version_inside_migration(
     updates = [
         statement for statement in traces if statement.startswith("UPDATE metadata SET value=")
     ]
-    assert [
-        f"'{version}'" in statement
-        for version, statement in zip(range(2, 12), updates, strict=True)
-    ] == [
-        True,
-        True,
-        True,
-        True,
-        True,
-        True,
-        True,
-        True,
-        True,
-        True,
+    assert updates == [
+        f"UPDATE metadata SET value='{version}' WHERE key='schema_version'"
+        for version in range(2, INVENTORY_SCHEMA_VERSION + 1)
     ]
 
 
@@ -300,7 +290,7 @@ def test_dedup_rolls_back_all_steps_when_final_contract_fails(
 # region [03] Dedup read-only rejection and exact index semantics
 
 
-@pytest.mark.parametrize("raw_version", ("12", "09", "future"))
+@pytest.mark.parametrize("raw_version", (str(INVENTORY_SCHEMA_VERSION + 1), "09", "future"))
 def test_dedup_rejects_unsupported_or_noncanonical_version_without_mutation(
     tmp_path: Path,
     raw_version: str,

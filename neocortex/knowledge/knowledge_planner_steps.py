@@ -112,10 +112,12 @@ def semantic_ranking_names(
 ) -> tuple[str, ...]:
     format_keys = tuple(value.removeprefix(".") for value in formats)
     if source_kinds:
-        include_text = any(source_kind != "image" for source_kind in source_kinds)
+        # An image source can carry OCR text in the textual vector space.
+        # Source filters are not an instruction to discard that content channel.
+        include_text = True
         include_image = "image" in source_kinds
     elif formats:
-        include_text = any(value not in _IMAGE_FORMATS for value in format_keys)
+        include_text = True
         include_image = any(value in _IMAGE_FORMATS for value in format_keys)
     else:
         include_text = True
@@ -126,6 +128,13 @@ def semantic_ranking_names(
     if include_image:
         rankings.append("semantic_image")
     return tuple(rankings)
+
+
+def image_only_source_filters(source_kinds: tuple[str, ...], formats: tuple[str, ...]) -> bool:
+    """Recognize an explicit source filter independently of selected channels."""
+    if source_kinds:
+        return all(source_kind == "image" for source_kind in source_kinds)
+    return bool(formats) and all(value.removeprefix(".") in _IMAGE_FORMATS for value in formats)
 
 
 def _has_explicit_catalog_filters(

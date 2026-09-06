@@ -246,7 +246,7 @@ EXPECTED_FIELDS = {
         "sample_items",
         "indexed_processing_signature",
     ),
-    "FusedResolvedHit": ("fused", "path", "source_kind", "source_identity", "snippet"),
+    "FusedResolvedHit": ("fused", "path", "source_kind", "source_identity", "snippet", "primary_evidence"),
     "SemanticSearchResult": ("query", "rankings", "lexical_rankings", "fused"),
     "ModelPreparation": (
         "model_signature",
@@ -368,7 +368,7 @@ EXPECTED_SIGNATURES = {
     ),
     "FusedResolvedHit": (
         "(fused: 'FusedHit', path: 'str | None', source_kind: 'str', "
-        "source_identity: 'str', snippet: 'str | None') -> None"
+        "source_identity: 'str', snippet: 'str | None', primary_evidence: 'ResolvedSearchHit | None' = None) -> None"
     ),
     "SemanticSearchResult": (
         "(query: 'str', rankings: 'tuple[SemanticRanking, ...]', "

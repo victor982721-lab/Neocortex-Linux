@@ -521,9 +521,21 @@ def test_action_recovery_cli_json_returns_two_for_ambiguity(
     payload = json.loads(capsys.readouterr().out)
 
     assert exit_code == 2
-    assert payload["kind"] == "file-action-reconciliation"
-    assert payload["classification"] == "ambiguous"
-    assert payload["action_id"] == action_id
+    assert payload["kind"] == "file-action-reconciliation-page"
+    assert payload["availability"] == "ready"
+    assert payload["returned"] == 1
+    assert payload["complete"] is False
+    assert payload["items"][0]["classification"] == "ambiguous"
+    assert payload["items"][0]["action_id"] == action_id
+    legacy_exit = cli_main([
+        "--state-directory", str(state_directory), "--action-recovery-status",
+        "--action-recovery-json", "--action-recovery-json-lines",
+    ])
+    legacy = json.loads(capsys.readouterr().out)
+    assert legacy_exit == 2
+    assert legacy["kind"] == "file-action-reconciliation"
+    assert legacy["classification"] == "ambiguous"
+    assert legacy["action_id"] == action_id
 
 
 # endregion [02]

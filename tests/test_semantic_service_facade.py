@@ -106,7 +106,10 @@ EXPECTED_SIGNATURES = {
         "model_cache: 'Path | None' = None, "
         "local_files_only: 'bool' = True, threads: 'int | None' = None, "
         "evidence_mode: 'bool' = False, image_calibration: "
-        "'ImageRetrievalCalibration | None' = None, cancellation_check: "
+        "'ImageRetrievalCalibration | None' = None, image_query_intent: "
+        "\"Literal['explicit_visual', 'explicit_textual', 'ambiguous'] | None\" = None, "
+        "allow_ambiguous_images: 'bool' = True, diagnostic_item_ids: 'tuple[str, ...]' = (), "
+        "cancellation_check: "
         "'Callable[[], None] | None' = None) -> "
         "'SemanticSearchResult'"
     ),
@@ -188,6 +191,9 @@ def test_semantic_search_facade_forwards_exact_database_and_candidate_limit() ->
         lexical_search=service.search_lexical_sources,
         evidence_mode=True,
         image_calibration=None,
+        image_query_intent=None,
+        allow_ambiguous_images=True,
+        diagnostic_item_ids=(),
         cancellation_check=cancel,
     )
 

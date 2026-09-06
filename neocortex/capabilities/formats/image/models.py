@@ -122,6 +122,11 @@ class DocumentCandidate:
     kinds: tuple[str, ...]
     evidence: tuple[str, ...]
     provenance: tuple[str, ...]
+    score_semantics: str = "uncalibrated_heuristic"
+    severity: str = "informational"
+    suggested_action: str = "extract_or_associate"
+    logical_document_status: str = "unverified"
+    human_review_required: bool = False
 
 
 @dataclass(frozen=True)

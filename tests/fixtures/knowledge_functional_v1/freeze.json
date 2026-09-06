@@ -1,0 +1,40 @@
+{
+  "acceptance": "Run reserve only after candidate SHA freeze; failures never feed this tuning cycle.",
+  "baseline_release": "0.12.0-d1e06b9519fe-cp314-linux-x86_64",
+  "created_utc": "2026-09-06T17:05:29.184947+00:00",
+  "dev": {
+    "files": 24,
+    "logical_resources": 23,
+    "manifest_sha256": "09a79131f8f0e3db229647c8ce7c42df351030c557a2c0b351919e258a48eed6",
+    "negative_queries": 4,
+    "positive_queries": 16,
+    "queries": 20,
+    "queries_sha256": "b6d57e50faa56cf72c63ca6acbb5134691fbac96004f015a8af6eaf0cfdbf106"
+  },
+  "family_disjoint": true,
+  "measurement_unit": "unique logical document with pinned content revision, not chunk",
+  "reserve": {
+    "files": 16,
+    "logical_resources": 16,
+    "manifest_sha256": "c8a8b8d786992a4b415b34e9e418936347cca50c04b328b3ca0cff26de449c80",
+    "negative_queries": 2,
+    "positive_queries": 8,
+    "queries": 10,
+    "queries_sha256": "0639ec1cd49d092c4e5634e777c4c58021cd51ca65acfd4685b25c358bb44cef"
+  },
+  "reserve_archive_sha256": "eebb0cdd83cad2676ef46996bd40a038b987a4e126876eacd8d1fd848ddaa630",
+  "reserve_plaintext_archive_sha256": "74c8d1b75ead94ad62d96e5a680db1c06f4a86f0d4bf0c5701a0299282981834",
+  "reserve_visibility": "steward-only; do not decrypt for tuning",
+  "schema": "neocortex.functional-freeze/v1",
+  "synthetic_only": true,
+  "thresholds": {
+    "citation_integrity": 1.0,
+    "locator_integrity": 1.0,
+    "ndcg_at_10": "candidate >= baseline using frozen graded relevance",
+    "negative_unsupported_evidence": 0,
+    "recall_at_5": "mean(|R intersect top5 unique documents| / |R|) over positive queries",
+    "reserve_positive_hits_required": 8,
+    "reserve_positive_queries": 8,
+    "reserve_success_at_5": 0.9
+  }
+}

@@ -141,6 +141,10 @@ def register_semantic_arguments(parser: argparse.ArgumentParser) -> None:
         metavar="N",
     )
     semantic.add_argument(
+        "--semantic-diagnostic-item", action="append", metavar="ITEM_ID",
+        help="trace a known item through the same bounded search (repeat up to 20 times)",
+    )
+    semantic.add_argument(
         "--semantic-max-vectors",
         type=int,
         default=500_000,
@@ -278,7 +282,11 @@ def validate_semantic_arguments(args: argparse.Namespace) -> None:
         "semantic_search_mode",
         "semantic_search_limit",
         "semantic_max_vectors",
+        "semantic_diagnostic_item",
     }
+    diagnostic_items = getattr(args, "semantic_diagnostic_item", None) or ()
+    if len(diagnostic_items) > 20 or any(not item.strip() or len(item) > 512 for item in diagnostic_items):
+        raise SystemExit("--semantic-diagnostic-item requires 1..512 characters per item and at most 20 items")
     if search_only.intersection(explicit) and args.semantic_search is None:
         raise SystemExit("semantic search options require --semantic-search")
     if "semantic_evidence_limit" in explicit and args.semantic_evidence is None:

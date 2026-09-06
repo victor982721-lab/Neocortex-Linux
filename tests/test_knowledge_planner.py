@@ -404,14 +404,14 @@ def test_broad_multimodal_query_requires_lexical_and_semantic_coverage() -> None
     )
 
 
-def test_image_query_requires_image_semantics_not_document_fts() -> None:
+def test_image_source_query_requires_visual_and_ocr_semantics_not_document_fts() -> None:
     plan = plan_knowledge_query(
         KnowledgeQuery("estado del interruptor", source_kinds=("image",))
     )
     steps = {step.channel: step for step in plan.steps}
 
     assert not steps["lexical"].required
-    assert _semantic_steps(plan) == (("semantic_image", True),)
+    assert _semantic_steps(plan) == (("semantic_text", True), ("semantic_image", True))
 
 
 def test_image_ocr_query_maps_to_text_semantics() -> None:
@@ -455,7 +455,7 @@ def test_mixed_document_and_image_query_requires_each_semantic_modality() -> Non
     ("formats", "expected"),
     (
         (("pdf",), (("semantic_text", True),)),
-        (("jpg",), (("semantic_image", True),)),
+        (("jpg",), (("semantic_text", True), ("semantic_image", True))),
         (
             ("pdf", "jpg"),
             (("semantic_text", True), ("semantic_image", True)),

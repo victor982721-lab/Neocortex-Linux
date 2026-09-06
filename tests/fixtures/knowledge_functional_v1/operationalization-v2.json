@@ -1,0 +1,38 @@
+{
+  "adapter_sha256": "c6acac048f9ed649c8a678ed9ca8608c7fbaaae0442bcf6bce9c18fa2501e25d",
+  "authority": "Explicit root instruction before final SHA: preserve literal authorized plan and add a separate v2 supplement; do not rewrite v1 baseline",
+  "authorized_criterion": "do_not_present_unsupported_material_as_sufficient_evidence",
+  "candidate_gate_status": "WAITING_FOR_ROOT_CANDIDATE_SHA_FREEZE",
+  "compact_schema": "missing false flags are allowed only with policy v1 limits, evaluated_chars exact, emitted_extent exact, and explicit final scopes; explicit malformed values fail",
+  "counterevidence_requirements": "applicable literal reason and exact offsets/text within the final emitted excerpt; omitted or metadata-only text cannot justify exclusion",
+  "discrepancy": "The original v1 harness counted every negative selected context item, which additionally prohibited related material even when it was not presented as sufficient evidence.",
+  "documentation_sha256": "dc15efa25850067e04569de0dfd2df908e5ccefaec668d15c3f22e70b613ab2c",
+  "frozen_dataset_sha256": "02c43c7100db4493785b3bd69ae43358115e800050eac8ac1d0fff4817921ce9",
+  "frozen_queries_or_judgments_changed": false,
+  "legacy_baseline_reclassified": false,
+  "legacy_counter_retained": "legacy_negative_context_selections; original negative_unsupported_evidence remains in the unchanged canonical baseline",
+  "model_quality_evaluation_for_this_supplement": false,
+  "original_dev_baseline_sha256": "d793c199718b68bc4a3701cc86a88f0605af54e1a7f17197175539fe5cfe931f",
+  "original_dev_legacy_negative_context_selections": 8,
+  "original_dev_negative_queries_with_selections": 3,
+  "original_harness_sha256": "cce9ebcd0dbd37a34fb31cb9bf36b2307e3b6acad8e3a58220664b7e923ed0e8",
+  "positive_sufficiency": "valid evidence_candidate, frozen grade-3 logical document, entire factual body present in the final excerpt; otherwise UNKNOWN, never automatic failure-as-fact or pass",
+  "recorded_before_candidate_sha_freeze": true,
+  "recorded_utc": "2026-09-06T19:00:37.582723+00:00",
+  "related_material_requirements": [
+    "query-applicable recognized necessary-witness policy",
+    "nonempty missing necessary requirements reproduced from final text",
+    "pinned bytes and captured resource/revision/evidence references",
+    "concrete source locator and exact final emitted extent",
+    "explicit excerpt-only scope and complete bounded checks"
+  ],
+  "reserved_queries_or_individual_results_read_for_this_supplement": false,
+  "retrieval_metrics_unchanged": [
+    "Success@5 over unique pinned logical resources",
+    "Recall@5 = mean(|R intersect top5|/|R|)",
+    "nDCG@10 with frozen graded relevance, not below the immutable baseline"
+  ],
+  "schema": "neocortex.functional-context-operationalization/v2",
+  "v2_negative_gate": "unsupported_sufficient_evidence == 0, with no unverified dispositions",
+  "validation_scope": "independent dev metric unit tests and two synthetic core-v2 compatibility probes only; not acceptance of a model or candidate"
+}

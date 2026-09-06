@@ -4,12 +4,14 @@ from __future__ import annotations
 import heapq
 import json
 import sqlite3
+import unicodedata
 from collections.abc import Callable, Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
 from .semantic_item_repository import _decode_chunk_text
+from .semantic_lexical import query_centered_snippet, query_term_support
 from .semantic_models import (
     ActiveEmbeddingPage,
     ActiveEmbeddingRecord,
@@ -35,6 +37,110 @@ from .semantic_sources import SEMANTIC_TITLE_SECTION_KIND
 TextEmbeddingScope = Literal["all", "content", "title"]
 
 _VECTORIZED_SEARCH_MIN_ROWS = 8
+MAX_DIAGNOSTIC_ITEMS = 20
+_MAX_DIAGNOSTIC_RANK_ENTRIES = 100_000
+_MAX_DIAGNOSTIC_RANK_BYTES = 64 * 1024 * 1024
+
+
+def validate_diagnostic_item_ids(value: object) -> tuple[str, ...]:
+    if not isinstance(value, tuple) or len(value) > MAX_DIAGNOSTIC_ITEMS or any(
+        not isinstance(item_id, str) or not item_id.strip() or len(item_id) > 512
+        or any(unicodedata.category(character) == "Cc" for character in item_id)
+        for item_id in value
+    ):
+        raise ValueError("diagnostic_item_ids must be a tuple of at most 20 bounded item IDs")
+    return tuple(dict.fromkeys(value))
+
+
+@dataclass
+class _TargetedSearchDiagnostics:
+    """Bounded score-only rank accounting during the original exact scan.
+
+    No model call or vector reread is performed.  Exhausting the optional rank
+    accounting budget disables global-rank claims, never truncates retrieval.
+    """
+
+    item_ids: tuple[str, ...]
+    evidence_mode: bool
+    best: dict[tuple[str, str], tuple[float, int, str, str]] = field(default_factory=dict)
+    targets: dict[str, SearchHit] = field(default_factory=dict)
+    rank_budget_exhausted: bool = False
+    rank_bytes: int = 0
+
+    def observe(self, hit: SearchHit) -> None:
+        if hit.item_id in self.item_ids:
+            prior_target = self.targets.get(hit.item_id)
+            same_key = prior_target is not None and (
+                not self.evidence_mode or hit.entity_id == prior_target.entity_id
+            )
+            better = prior_target is None or (
+                (hit.score, hit.ref_id) > (prior_target.score, prior_target.ref_id)
+                if same_key else self._order(hit) < self._order(prior_target)
+            )
+            if better:
+                self.targets[hit.item_id] = hit
+        if self.rank_budget_exhausted:
+            return
+        key = (hit.item_id, hit.entity_id if self.evidence_mode else "")
+        entry = (hit.score, hit.ref_id, hit.entity_id, hit.indexed_model_signature)
+        prior = self.best.get(key)
+        if prior is None:
+            self.rank_bytes += 256 + 4 * (len(hit.item_id) + len(hit.entity_id) + len(hit.indexed_model_signature))
+            if len(self.best) >= _MAX_DIAGNOSTIC_RANK_ENTRIES or self.rank_bytes > _MAX_DIAGNOSTIC_RANK_BYTES:
+                self.best.clear()
+                self.rank_budget_exhausted = True
+                return
+        if prior is None or entry[:2] > prior[:2]:
+            self.best[key] = entry
+
+    @staticmethod
+    def _order(hit: SearchHit) -> tuple[float, str, str, str]:
+        return -hit.score, hit.item_id, hit.entity_id, hit.indexed_model_signature
+
+    def export(self, page: ExactSearchPage) -> dict[str, object]:
+        entries: list[dict[str, object]] = []
+        target_hits: list[SearchHit] = []
+        for item_id in self.item_ids:
+            hit = next((selected for selected in page.hits if selected.item_id == item_id), None)
+            hit = hit or self.targets.get(item_id)
+            if hit is not None:
+                target_hits.append(hit)
+            candidate_rank = next(
+                (rank for rank, selected in enumerate(page.hits, 1) if selected.item_id == item_id), None,
+            )
+            observed_rank: int | None = None
+            if hit is not None and not self.rank_budget_exhausted:
+                target_order = self._order(hit)
+                observed_rank = 1 + sum(
+                    (-entry[0], key[0], entry[2], entry[3]) < target_order
+                    for key, entry in self.best.items()
+                )
+            elif candidate_rank is not None:
+                observed_rank = candidate_rank
+            entry: dict[str, object] = {
+                "item_id": item_id,
+                "observed_in_published_scope": hit is not None,
+                "within_candidate_window": candidate_rank is not None,
+                "candidate_rank": candidate_rank,
+                "observed_rank": observed_rank,
+                "raw_rank": observed_rank if page.complete else None,
+                "rank_is_global": page.complete and observed_rank is not None,
+                "rank_granularity": "evidence" if self.evidence_mode else "item",
+                "rank_budget_exhausted": self.rank_budget_exhausted,
+                "stage": (
+                    "candidate_selected" if candidate_rank is not None
+                    else "outside_candidate_window" if hit is not None
+                    else "not_in_published_search_scope" if page.complete
+                    else "unobserved_in_incomplete_scan"
+                ),
+            }
+            if hit is not None:
+                entry.update({
+                    "raw_score": hit.score, "ref_id": hit.ref_id, "entity_id": hit.entity_id,
+                    "generation_id": hit.generation_id, "model_signature": hit.indexed_model_signature,
+                })
+            entries.append(entry)
+        return {"target_diagnostics": entries, "target_hits": tuple(target_hits)}
 
 # region [06] Bounded exact cosine fallback
 
@@ -390,10 +496,17 @@ def _search_exact_page(
     evidence_mode: bool,
     text_scope: TextEmbeddingScope = "all",
     cancellation_check: Callable[[], None] | None = None,
+    diagnostic_item_ids: tuple[str, ...] = (),
+    diagnostics: dict[str, object] | None = None,
 ) -> ExactSearchPage:
     """Shared bounded scan for discovery and concrete-evidence retrieval."""
 
     _validate_text_scope(query.target_modality, text_scope)
+    selected_diagnostic_ids = validate_diagnostic_item_ids(diagnostic_item_ids)
+    target_diagnostics = (
+        _TargetedSearchDiagnostics(selected_diagnostic_ids, evidence_mode)
+        if selected_diagnostic_ids else None
+    )
     if not 1 <= limit <= 10_000:
         raise ValueError("limit must be between 1 and 10000")
     if not 1 <= max_vectors <= 10_000_000:
@@ -415,7 +528,10 @@ def _search_exact_page(
         model_signatures = _search_models(connection, query)
         pairs = _published_model_generations(connection, model_signatures)
         if not pairs:
-            return ExactSearchPage((), 0, None, True)
+            empty_page = ExactSearchPage((), 0, None, True)
+            if target_diagnostics is not None and diagnostics is not None:
+                diagnostics.update(target_diagnostics.export(empty_page))
+            return empty_page
         sql = _search_sql(
             query.target_modality,
             len(pairs),
@@ -438,6 +554,8 @@ def _search_exact_page(
             for hit in page_hits:
                 if cancellation_check is not None and scanned % 128 == 0:
                     cancellation_check()
+                if target_diagnostics is not None:
+                    target_diagnostics.observe(hit)
                 if evidence_mode:
                     _retain_exact_evidence_hit(
                         hit,
@@ -470,12 +588,15 @@ def _search_exact_page(
             ),
         )
     )
-    return ExactSearchPage(
+    page = ExactSearchPage(
         hits=hits,
         scanned=scanned,
         next_cursor=last_ref_id if has_more else None,
         complete=not has_more,
     )
+    if target_diagnostics is not None and diagnostics is not None:
+        diagnostics.update(target_diagnostics.export(page))
+    return page
 
 
 def search_exact_page(
@@ -488,6 +609,8 @@ def search_exact_page(
     batch_size: int = 512,
     text_scope: TextEmbeddingScope = "all",
     cancellation_check: Callable[[], None] | None = None,
+    diagnostic_item_ids: tuple[str, ...] = (),
+    diagnostics: dict[str, object] | None = None,
 ) -> ExactSearchPage:
     """Scan discovery hits, retaining the best entity per resource item."""
 
@@ -501,6 +624,8 @@ def search_exact_page(
         evidence_mode=False,
         text_scope=text_scope,
         cancellation_check=cancellation_check,
+        diagnostic_item_ids=diagnostic_item_ids,
+        diagnostics=diagnostics,
     )
 
 
@@ -514,6 +639,8 @@ def search_exact_evidence_page(
     batch_size: int = 512,
     text_scope: TextEmbeddingScope = "all",
     cancellation_check: Callable[[], None] | None = None,
+    diagnostic_item_ids: tuple[str, ...] = (),
+    diagnostics: dict[str, object] | None = None,
 ) -> ExactSearchPage:
     """Scan concrete evidence while retaining several entities per resource."""
 
@@ -527,6 +654,8 @@ def search_exact_evidence_page(
         evidence_mode=True,
         text_scope=text_scope,
         cancellation_check=cancellation_check,
+        diagnostic_item_ids=diagnostic_item_ids,
+        diagnostics=diagnostics,
     )
 
 
@@ -831,6 +960,7 @@ def _resolved_text_search_hit(
     source: _ResolvedSearchSource,
     *,
     snippet_chars: int,
+    query: str | None = None,
 ) -> ResolvedSearchHit:
     row = source.row
     section_provenance = _json_object(
@@ -839,7 +969,13 @@ def _resolved_text_search_hit(
     )
     fingerprint = _fingerprint_from_row(row)
     text = _decode_chunk_text(bytes(row["text_zlib"]), fingerprint)
-    snippet = text[:snippet_chars] if snippet_chars else None
+    snippet, excerpt = query_centered_snippet(text, query, max_chars=snippet_chars)
+    if query is not None:
+        section_provenance = {**section_provenance, "retrieval_excerpt": excerpt}
+        section_provenance["query_support"] = query_term_support(query, text, basis="scored_chunk")
+        section_provenance["snippet_query_support"] = query_term_support(
+            query, snippet or "", basis="scored_chunk_window",
+        )
     return ResolvedSearchHit(
         hit=hit,
         path=None if row["path"] is None else str(row["path"]),
@@ -885,6 +1021,7 @@ def _resolved_search_hit(
     source: sqlite3.Row | None,
     *,
     snippet_chars: int,
+    query: str | None = None,
 ) -> ResolvedSearchHit:
     resolved_source = _resolved_search_source(hit, source)
     if hit.modality is EmbeddingModality.TEXT:
@@ -892,6 +1029,7 @@ def _resolved_search_hit(
             hit,
             resolved_source,
             snippet_chars=snippet_chars,
+            query=query,
         )
     return _resolved_image_search_hit(hit, resolved_source)
 
@@ -901,6 +1039,7 @@ def resolve_search_hits(
     hits: Sequence[SearchHit],
     *,
     snippet_chars: int = 240,
+    query: str | None = None,
 ) -> tuple[ResolvedSearchHit, ...]:
     """Resolve immutable evidence with an identity-safe locator and DB currency.
 
@@ -918,6 +1057,7 @@ def resolve_search_hits(
             hit,
             snapshots.get(hit.ref_id),
             snippet_chars=snippet_chars,
+            query=query,
         )
         for hit in hits
     )

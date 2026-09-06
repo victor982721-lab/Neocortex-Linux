@@ -1,0 +1,3 @@
+Reanudación después de desconexión
+
+Para recuperar una consulta después del cierre inesperado del WebSocket se guardó el cursor de eventos y se solicitó el estado persistido al reconectar. El cliente fusionó el snapshot con los eventos posteriores, evitó mensajes duplicados y mostró el resultado previamente terminado en el servidor.

@@ -38,6 +38,7 @@ from .state import audio_database, initialize_audio_state
 from .whisper import WhisperTranscriber, resolve_whisper_runtime
 from neocortex.runtime.control.cancellation import CancellationToken
 from neocortex.foundation.file_identity import file_key_from_snapshot as _file_key
+from neocortex.foundation.processing_provenance import ProcessingProvenance
 from neocortex.runtime.control.memory_runtime import MemoryResourceLimits, WeightedMemoryGate
 from neocortex.workflow.review.review import ReviewCandidate
 from neocortex.persistence.framework_route_state import (
@@ -204,13 +205,32 @@ class _AudioReviewBuffer:
 class _TranscriberLease:
     """Own the lazily admitted model and close it before its memory lease."""
 
-    def __init__(self, route: AudioRoute, runtime: WhisperRuntime) -> None:
+    def __init__(self, route: AudioRoute) -> None:
         self._route = route
-        self._runtime = runtime
+        self._runtime: WhisperRuntime | None = None
+        self.processing: ProcessingProvenance | None = None
         self._resources = ExitStack()
         self._transcriber: Transcriber | None = None
 
+    def resolve_processing(self) -> ProcessingProvenance:
+        """Called only after a current probe proves an audio stream is present."""
+
+        if self.processing is None:
+            runtime = self._route.runtime_resolver(
+                self._route.config.device, self._route.config.compute_type,
+            )
+            self._runtime = runtime
+            self.processing = self._route.config.processing_provenance(
+                backend_version=runtime.backend_version,
+                ctranslate2_version=runtime.ctranslate2_version,
+                resolved_device=runtime.resolved_device,
+                resolved_compute_type=runtime.resolved_compute_type,
+            )
+        return self.processing
+
     def acquire(self) -> Transcriber:
+        self.resolve_processing()
+        assert self._runtime is not None
         if self._transcriber is None:
             self._resources.enter_context(
                 self._route.memory_gate.admit(_estimated_audio_memory_bytes(self._route.config))
@@ -289,23 +309,17 @@ class AudioRoute:
         self.cancellation.checkpoint()
         self._validate()
         initialize_audio_state(self.config.state_path)
-        runtime = self.runtime_resolver(self.config.device, self.config.compute_type)
-        processing = self.config.processing_provenance(
-            backend_version=runtime.backend_version,
-            ctranslate2_version=runtime.ctranslate2_version,
-            resolved_device=runtime.resolved_device,
-            resolved_compute_type=runtime.resolved_compute_type,
-        )
         ordered_mimes = self._ordered_mimes()
         metrics = self._plan(ordered_mimes)
+        probe_processing = self.config.probe_processing_provenance() if metrics.selected else None
         reviews = _AudioReviewBuffer(self.framework_state, self.run_id)
-        lease = _TranscriberLease(self, runtime)
+        lease = _TranscriberLease(self)
         try:
             with audio_database(self.config.state_path, create=False) as connection:
                 self._run_candidates(
                     connection,
                     ordered_mimes,
-                    processing.signature,
+                    probe_processing.signature if probe_processing is not None else "",
                     lease,
                     metrics,
                     reviews,
@@ -313,6 +327,7 @@ class AudioRoute:
                 self._finalize_database(connection, metrics, reviews)
         finally:
             lease.close()
+        processing = lease.processing or probe_processing
         self._report(metrics, finished=True)
         return AudioRouteSummary(
             candidate_pool=metrics.candidate_pool,
@@ -336,8 +351,8 @@ class AudioRoute:
             speech_seconds=metrics.speech_seconds,
             peak_reserved_bytes=self.memory_gate.peak_reserved_bytes,
             memory_waits=self.memory_gate.wait_count,
-            processing_signature=processing.signature,
-            processing_provenance=processing.manifest,
+            processing_signature=processing.signature if processing is not None else None,
+            processing_provenance=processing.manifest if processing is not None else None,
         )
 
     def _ordered_mimes(self) -> tuple[str, ...]:
@@ -375,6 +390,8 @@ class AudioRoute:
         metrics: _AudioRunMetrics,
         reviews: _AudioReviewBuffer,
     ) -> None:
+        if not metrics.selected:
+            return
         for mime in ordered_mimes:
             iterator = self.framework_state.iter_selected_route_candidates(
                 self.run_id,
@@ -456,7 +473,12 @@ class AudioRoute:
         reviews: _AudioReviewBuffer,
     ) -> None:
         try:
-            probe, result = self._transcribe(snapshot, lease)
+            probe = self._probe_candidate(snapshot)
+            signature = lease.resolve_processing().signature
+            cached = _cached_document(connection, snapshot, signature)
+            if self._consume_cached(connection, snapshot, mime, cached, metrics, reviews):
+                return
+            probe, result = self._transcribe(snapshot, lease, probe=probe)
             _store_success(
                 connection,
                 snapshot,
@@ -510,20 +532,11 @@ class AudioRoute:
         self,
         snapshot: FileSnapshot,
         lease: _TranscriberLease,
+        *,
+        probe: MediaProbe | None = None,
     ) -> tuple[MediaProbe, TranscriptResult]:
-        current = snapshot_path(snapshot.path)
-        if not same_snapshot(snapshot, current):
-            raise AudioProcessingError(
-                "audio_source_changed",
-                "media source changed after inventory",
-                recommendation="retry",
-                retryable=True,
-            )
-        probe = self.media_probe(
-            Path(snapshot.path),
-            ffprobe_path=self.config.ffprobe_path,
-        )
-        self._validate_duration(probe)
+        if probe is None:
+            probe = self._probe_candidate(snapshot)
         result = lease.acquire().transcribe(
             Path(snapshot.path),
             cancellation=self.cancellation,
@@ -537,6 +550,34 @@ class AudioRoute:
                 retryable=True,
             )
         return probe, result
+
+    def _probe_candidate(self, snapshot: FileSnapshot) -> MediaProbe:
+        current = snapshot_path(snapshot.path)
+        if not same_snapshot(snapshot, current):
+            raise AudioProcessingError(
+                "audio_source_changed",
+                "media source changed after inventory",
+                recommendation="retry",
+                retryable=True,
+            )
+        probe = self.media_probe(
+            Path(snapshot.path),
+            ffprobe_path=self.config.ffprobe_path,
+        )
+        if probe.audio_streams < 1:
+            raise AudioProcessingError(
+                "media_without_audio_stream",
+                "the media container has no audio stream",
+                recommendation="manual_review",
+                retryable=False,
+                evidence={
+                    "duration_seconds": probe.duration_seconds,
+                    "format_name": probe.format_name,
+                    "video_streams": probe.video_streams,
+                },
+            )
+        self._validate_duration(probe)
+        return probe
 
     def _validate_duration(self, probe: MediaProbe) -> None:
         if probe.duration_seconds <= self.config.max_duration_seconds:

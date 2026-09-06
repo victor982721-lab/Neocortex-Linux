@@ -12,6 +12,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from .knowledge_asset_diagnosis_contracts import (
+    MAX_DIAGNOSTIC_OBSERVATIONS,
+    AssetDiagnosticObservation,
+)
+
 
 KNOWLEDGE_ASSET_HEALTH_CONTRACT_VERSION = 1
 KNOWLEDGE_ASSET_HEALTH_SCHEMA = "neocortex.knowledge-asset-health/v1"
@@ -282,8 +287,10 @@ def _facts_payload(
     counterevidence: tuple[str, ...],
     examples: tuple[KnowledgeAssetHealthExample, ...],
     examples_truncated: bool,
+    diagnostic_observations: tuple[AssetDiagnosticObservation, ...] = (),
+    diagnostic_gaps: tuple[str, ...] = (),
 ) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "counterevidence": list(counterevidence),
         "examples": [example.to_dict() for example in examples],
         "examples_truncated": examples_truncated,
@@ -293,6 +300,12 @@ def _facts_payload(
         "resource_id": resource_id,
         "schema": "neocortex.knowledge-asset-facts/v1",
     }
+    # Preserve v1 snapshot identities for the original four-stage projection.
+    if diagnostic_observations:
+        payload["diagnostic_observations"] = [item.to_dict() for item in diagnostic_observations]
+    if diagnostic_gaps:
+        payload["diagnostic_gaps"] = list(diagnostic_gaps)
+    return payload
 
 
 def _sha256_payload(payload: object) -> str:
@@ -316,6 +329,8 @@ class KnowledgeAssetFactSnapshot:
     counterevidence: tuple[str, ...] = ()
     examples: tuple[KnowledgeAssetHealthExample, ...] = ()
     examples_truncated: bool = False
+    diagnostic_observations: tuple[AssetDiagnosticObservation, ...] = ()
+    diagnostic_gaps: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         parse_knowledge_asset_resource_id(self.resource_id)
@@ -332,6 +347,7 @@ class KnowledgeAssetFactSnapshot:
             raise ValueError("fact snapshot stages must be unique and ordered")
         _validate_codes("gaps", self.gaps)
         _validate_codes("counterevidence", self.counterevidence)
+        _validate_codes("diagnostic_gaps", self.diagnostic_gaps)
         if len(self.examples) > MAX_KNOWLEDGE_ASSET_HEALTH_EXAMPLES or any(
             not isinstance(example, KnowledgeAssetHealthExample) for example in self.examples
         ):
@@ -351,6 +367,17 @@ class KnowledgeAssetFactSnapshot:
             raise ValueError("fact snapshot examples must be deterministically ordered")
         if not isinstance(self.examples_truncated, bool):
             raise ValueError("examples_truncated must be boolean")
+        if (
+            not isinstance(self.diagnostic_observations, tuple)
+            or len(self.diagnostic_observations) > MAX_DIAGNOSTIC_OBSERVATIONS
+            or any(
+                not isinstance(item, AssetDiagnosticObservation)
+                or item.resource_id != self.resource_id
+                or any(ref.snapshot_id != self.knowledge_snapshot_id for ref in item.evidence_refs)
+                for item in self.diagnostic_observations
+            )
+        ):
+            raise ValueError("diagnostic observations must be bounded and bound to this resource")
         expected = _sha256_payload(
             _facts_payload(
                 resource_id=self.resource_id,
@@ -360,6 +387,8 @@ class KnowledgeAssetFactSnapshot:
                 counterevidence=self.counterevidence,
                 examples=self.examples,
                 examples_truncated=self.examples_truncated,
+                diagnostic_observations=self.diagnostic_observations,
+                diagnostic_gaps=self.diagnostic_gaps,
             )
         )
         if self.fact_snapshot_id != expected:
@@ -376,6 +405,8 @@ class KnowledgeAssetFactSnapshot:
         counterevidence: tuple[str, ...] = (),
         examples: tuple[KnowledgeAssetHealthExample, ...] = (),
         examples_truncated: bool = False,
+        diagnostic_observations: tuple[AssetDiagnosticObservation, ...] = (),
+        diagnostic_gaps: tuple[str, ...] = (),
     ) -> KnowledgeAssetFactSnapshot:
         payload = _facts_payload(
             resource_id=resource_id,
@@ -385,6 +416,8 @@ class KnowledgeAssetFactSnapshot:
             counterevidence=counterevidence,
             examples=examples,
             examples_truncated=examples_truncated,
+            diagnostic_observations=diagnostic_observations,
+            diagnostic_gaps=diagnostic_gaps,
         )
         return cls(
             resource_id=resource_id,
@@ -395,6 +428,8 @@ class KnowledgeAssetFactSnapshot:
             counterevidence=counterevidence,
             examples=examples,
             examples_truncated=examples_truncated,
+            diagnostic_observations=diagnostic_observations,
+            diagnostic_gaps=diagnostic_gaps,
         )
 
 
@@ -418,6 +453,8 @@ class KnowledgeAssetHealthReport:
     read_only: bool = True
     advisory_only: bool = True
     mutation_authorized: bool = False
+    diagnostic_observations: tuple[AssetDiagnosticObservation, ...] = ()
+    diagnostic_gaps: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         parse_knowledge_asset_resource_id(self.resource_id)
@@ -449,10 +486,12 @@ class KnowledgeAssetHealthReport:
             counterevidence=self.counterevidence,
             examples=self.examples,
             examples_truncated=self.examples_truncated,
+            diagnostic_observations=self.diagnostic_observations,
+            diagnostic_gaps=self.diagnostic_gaps,
         )
         if self.fact_snapshot_id is not None and self.fact_snapshot_id != snapshot.fact_snapshot_id:
             raise ValueError("report fact_snapshot_id does not match its evidence payload")
-        if self.fact_snapshot_id is None and (self.facts or self.examples):
+        if self.fact_snapshot_id is None and (self.facts or self.examples or self.diagnostic_observations):
             raise ValueError("a report with fact evidence requires fact_snapshot_id")
         if self.health is KnowledgeAssetHealthState.HEALTHY and (
             self.completeness is not KnowledgeAssetHealthCompleteness.COMPLETE
@@ -464,6 +503,8 @@ class KnowledgeAssetHealthReport:
             raise ValueError("healthy requires one complete stable four-stage causal trace")
 
     def to_dict(self) -> dict[str, Any]:
+        from .knowledge_asset_diagnosis import build_knowledge_asset_diagnosis
+
         return {
             "advisory_only": self.advisory_only,
             "attempts": self.attempts,
@@ -484,6 +525,7 @@ class KnowledgeAssetHealthReport:
             "resource_id": self.resource_id,
             "schema": KNOWLEDGE_ASSET_HEALTH_SCHEMA,
             "snapshot_consistency": self.snapshot_consistency,
+            "diagnosis": build_knowledge_asset_diagnosis(self).to_dict(),
         }
 
     def to_json(self) -> str:

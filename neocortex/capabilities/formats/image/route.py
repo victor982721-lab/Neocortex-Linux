@@ -1085,7 +1085,7 @@ def _successful_review_reconciliation(
 
     return ReviewCandidateReconciliation(
         snapshot=snapshot,
-        resolution_note=note,
+        resolution_note=f"{note}; detector_policy=raster-observation-v2",
         evaluated_reason_codes=tuple(sorted(IMAGE_COMPLETE_REVIEW_REASON_CODES)),
         active_reason_codes=tuple(sorted(_review_reason_codes(candidates))),
     )
@@ -1096,27 +1096,10 @@ def _success_review_candidates(
     decision: Decision,
 ) -> tuple[ReviewCandidate, ...]:
     candidates: list[ReviewCandidate] = []
-    document = decision.document_candidate
-    if document.is_candidate:
-        candidates.append(
-            ReviewCandidate(
-                route_name="image",
-                snapshot=snapshot,
-                reason_code="image_raster_document_candidate",
-                source_status="done",
-                recommendation="manual_review",
-                retryable=False,
-                confidence=document.heuristic_score,
-                evidence={
-                    "category": decision.category,
-                    "uncertainty": document.uncertainty,
-                    "kinds": document.kinds,
-                    "signals": document.evidence,
-                    "provenance": document.provenance,
-                },
-                detector_version="document-candidate-v1",
-            )
-        )
+    # Raster detection is an extraction/association observation, not a defect or
+    # an individual human decision. Its evidence remains in the image owner.
+    # Retain the reason in IMAGE_COMPLETE_REVIEW_REASON_CODES so a successful
+    # replay reconciles old detector generations without deleting human history.
     if decision.features.decode_quality == "recovered_truncated":
         candidates.append(
             ReviewCandidate(
@@ -1143,34 +1126,7 @@ def _cached_success_review_candidates(
     row: Any,
     snapshot: FileSnapshot,
 ) -> tuple[ReviewCandidate, ...]:
-    payload: dict[str, Any] = {}
-    try:
-        decoded = json.loads(row["evidence_json"] or "{}")
-        if isinstance(decoded, dict):
-            payload = decoded
-    except (TypeError, ValueError):
-        pass
     candidates: list[ReviewCandidate] = []
-    if row["document_candidate"]:
-        document = payload.get("document_candidate")
-        document_payload = document if isinstance(document, dict) else {}
-        candidates.append(
-            ReviewCandidate(
-                route_name="image",
-                snapshot=snapshot,
-                reason_code="image_raster_document_candidate",
-                source_status="done",
-                recommendation="manual_review",
-                retryable=False,
-                confidence=float(row["document_candidate_score"] or 0.64),
-                evidence={
-                    "category": str(row["category"]),
-                    "uncertainty": str(row["document_candidate_uncertainty"] or "alta"),
-                    "details": document_payload,
-                },
-                detector_version="document-candidate-v1",
-            )
-        )
     if row["decode_quality"] == "recovered_truncated":
         candidates.append(
             ReviewCandidate(

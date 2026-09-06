@@ -51,6 +51,28 @@ class AudioRouteConfig:
     min_free_commit_bytes: int = 2 * 1024 * 1024 * 1024
     memory_wait_timeout_seconds: float = 300.0
 
+    def probe_processing_provenance(self) -> ProcessingProvenance:
+        """Version stream inspection without claiming an available speech engine."""
+
+        return build_processing_provenance(
+            "audio-route-probe",
+            "audio-probe-v1",
+            {
+                "operation": "media_probe_only",
+                "speech_runtime_resolved": False,
+                "max_duration_seconds": self.max_duration_seconds,
+                "include_video": self.include_video,
+            },
+            (
+                python_runtime_component(),
+                executable_component(
+                    "ffprobe", default_name="ffprobe", explicit=self.ffprobe_path,
+                    version_arguments=("-version",),
+                ),
+            ),
+            compatibility_tag="audio-probe-v1",
+        )
+
     def processing_signature(
         self,
         *,

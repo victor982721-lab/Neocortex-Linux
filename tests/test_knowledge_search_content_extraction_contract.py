@@ -399,6 +399,8 @@ def test_semantic_wrapper_resolves_provider_materializer_clock_and_cancellation(
             "include_title": False,
             "include_images": False,
             "include_lexical": False,
+            "image_query_intent": "ambiguous",
+            "allow_ambiguous_images": False,
             "local_files_only": True,
             "evidence_mode": True,
             "cancellation_check": None,

@@ -109,15 +109,73 @@ def run_file_action_recovery_status(args: argparse.Namespace) -> int:
 
     database_path = args.state_directory / "framework.sqlite3"
     try:
+        database_path.lstat()
         results = list_file_action_reconciliations(
             database_path,
             limit=args.action_recovery_limit,
             after_action_id=args.action_recovery_after,
             run_id=args.action_recovery_run,
         )
-    except (OSError, sqlite3.Error, ValueError) as exc:
-        print(f"ERROR action-recovery-status {exc}")
+    except FileNotFoundError:
+        if args.action_recovery_json and not getattr(args, "action_recovery_json_lines", False):
+            print(json.dumps({
+                "kind": "file-action-reconciliation-page", "schema_version": 2,
+                "availability": "absent", "returned": 0, "total_matching": None,
+                "has_more": None, "next_cursor": None, "items": [],
+                "complete": False, "reason_code": "owner_absent", "read_only": True,
+                "actions_applied": False,
+                "scope": {"owner": "framework", "limit": args.action_recovery_limit,
+                          "after_action_id": args.action_recovery_after, "run_id": args.action_recovery_run},
+            }, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        else:
+            print("ACTION_RECOVERY_PAGE returned=0 availability=absent complete=false reason=owner_absent")
         return 2
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        if args.action_recovery_json and not getattr(args, "action_recovery_json_lines", False):
+            print(json.dumps({
+                "kind": "file-action-reconciliation-page", "complete": False,
+                "availability": "failed", "returned": 0, "total_matching": None,
+                "items": [], "reason_code": "recovery_query_failed", "error": str(exc),
+            }, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        else:
+            print(f"ERROR action-recovery-status {exc}")
+        return 2
+    ready = database_path.is_file()
+    limit_reached = len(results) == args.action_recovery_limit
+    if args.action_recovery_json and not getattr(args, "action_recovery_json_lines", False):
+        items = []
+        for result in results:
+            items.append({
+                "kind": "file-action-reconciliation",
+                **{name: getattr(result, name) for name in (
+                    "action_id", "action_type", "classification", "detail",
+                    "idempotency_key", "recommendation", "recorded_status",
+                    "reconciler_signature", "run_id", "source_path", "target_path",
+                )},
+            })
+        unsafe = any(item["classification"] in {"ambiguous", "impossible_to_check"} for item in items)
+        print(json.dumps({
+            "kind": "file-action-reconciliation-page", "schema_version": 2,
+            "availability": "ready" if ready else "absent", "returned": len(items),
+            "total_matching": None, "has_more": None if limit_reached else False,
+            "next_cursor": results[-1].action_id if results and limit_reached else None,
+            "complete": ready and not limit_reached and not unsafe,
+            "reason_code": (
+                "owner_absent" if not ready else "limit_reached_more_not_verified" if limit_reached
+                else "uncertain_actions" if unsafe else None
+            ),
+            "scope": {"owner": "framework", "limit": args.action_recovery_limit,
+                      "after_action_id": args.action_recovery_after, "run_id": args.action_recovery_run},
+            "items": items, "read_only": True, "actions_applied": False,
+        }, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")))
+        return 2 if unsafe or not ready else 0
+    if not args.action_recovery_json:
+        print(
+            f"ACTION_RECOVERY_PAGE returned={len(results)} limit={args.action_recovery_limit} "
+            f"availability={'ready' if ready else 'absent'} "
+            f"has_more={'not_verified' if limit_reached else 'false'} "
+            f"after_action_id={args.action_recovery_after}"
+        )
     unsafe = False
     for result in results:
         unsafe = unsafe or result.classification in {
@@ -156,7 +214,7 @@ def run_file_action_recovery_status(args: argparse.Namespace) -> int:
             f"source={result.source_path} target={result.target_path or '-'} "
             f"detail={result.detail}"
         )
-    return 2 if unsafe else 0
+    return 2 if unsafe or not ready else 0
 
 
 def run_file_action_recovery_record(args: argparse.Namespace) -> int:
@@ -260,14 +318,37 @@ def run_review_candidates(args: argparse.Namespace) -> int:
     from neocortex.workflow.review.review import list_review_candidates
 
     database_path = args.state_directory / "framework.sqlite3"
-    try:
-        candidates = list_review_candidates(
-            database_path,
-            limit=args.review_candidates,
-            route_name=args.review_route,
-            recommendation=args.review_recommendation,
-            status=args.review_status,
+    if not getattr(args, "review_json_lines", False):
+        from neocortex.workflow.review.review_candidate_query import list_review_candidates_page
+
+        page = list_review_candidates_page(
+            database_path, limit=args.review_candidates,
+            route_name=args.review_route, recommendation=args.review_recommendation,
+            status=args.review_status, after=getattr(args, "review_after", None),
         )
+        payload = page.to_dict()
+        if getattr(args, "review_json", False):
+            print(json.dumps(payload, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")))
+            return 0 if page.availability == "ready" else 2
+        print(
+            f"REVIEW_PAGE returned={len(page.items)} availability={page.availability} "
+            f"has_more={str(page.has_more).lower()} complete={str(payload['complete']).lower()} "
+            f"reason={page.reason_code or '-'} next_cursor={payload.get('next_cursor') or '-'}"
+        )
+        if page.availability != "ready":
+            return 2
+        candidates = page.items
+    else:
+        candidates = None
+    try:
+        if candidates is None:
+            candidates = list_review_candidates(
+                database_path,
+                limit=args.review_candidates,
+                route_name=args.review_route,
+                recommendation=args.review_recommendation,
+                status=args.review_status,
+            )
     except (OSError, sqlite3.Error, ValueError) as exc:
         print(f"ERROR review-candidates {exc}")
         return 2
@@ -309,6 +390,7 @@ def run_review_candidates(args: argparse.Namespace) -> int:
             f"recommendation={candidate.recommendation} "
             f"retryable={int(candidate.retryable)} "
             f"confidence={candidate.confidence:.6f} "
+            "confidence_kind=uncalibrated_heuristic "
             f"reason={candidate.reason_code} path={candidate.path} "
             f"evidence={evidence}"
         )
@@ -618,11 +700,9 @@ def _resolved_organization_root(args: argparse.Namespace) -> Path:
         return args.organization_root
     from neocortex.documents.document_organization import default_organization_root
 
-    explicit = set(getattr(args, "_explicit_options", ()))
-    analysis_root = args.root if "root" in explicit else None
     return default_organization_root(
         args.state_directory / "framework.sqlite3",
-        analysis_root=analysis_root,
+        analysis_root=args.root,
     )
 
 
@@ -700,7 +780,10 @@ def run_organization_plan(args: argparse.Namespace) -> int:
     """Refresh the catalog and persist destinations without moving files."""
 
     from neocortex.documents.document_catalog import update_document_catalog
-    from neocortex.documents.document_organization import plan_document_organization
+    from neocortex.documents.document_organization import (
+        capture_organization_input_scope,
+        plan_document_organization,
+    )
     from neocortex.safety.corpus_access import CorpusAccessPolicy, CorpusMutationGuard
     from neocortex.runtime.control.locking import FrameworkRunLock
 
@@ -723,10 +806,15 @@ def run_organization_plan(args: argparse.Namespace) -> int:
             catalog_summaries = update_document_catalog(
                 args.state_directory,
                 taxonomy_path=args.document_taxonomy,
+                source_root=args.root,
+            )
+            source_scope = capture_organization_input_scope(
+                args.state_directory / "document_catalog.sqlite3", args.root,
             )
             summary = plan_document_organization(
                 args.state_directory / "document_catalog.sqlite3",
                 organization_root,
+                source_scope=source_scope,
                 min_confidence=args.organization_min_confidence,
                 mutation_guard=mutation_guard,
             )
@@ -744,7 +832,8 @@ def run_organization_plan(args: argparse.Namespace) -> int:
         f"ORGANIZATION_PLAN considered={summary.considered} "
         f"planned={summary.planned} review={summary.review_required} "
         f"blocked={summary.blocked} already_organized={summary.already_organized} "
-        f"organization_root={organization_root}"
+        f"source_root={source_scope.root} scope_id={source_scope.scope_id} "
+        f"organization_root={organization_root} executable=false"
     )
     return 0 if not any(item.errors for item in catalog_summaries) else 2
 
@@ -767,6 +856,9 @@ def run_organization_preview(args: argparse.Namespace) -> int:
         print(
             f"ORGANIZATION plan_id={plan.plan_id} status={plan.status} "
             f"kind={plan.primary_kind} confidence={plan.confidence:.6f} "
+            f"operation={getattr(plan, 'operation_kind', 'legacy_unscoped')} "
+            f"executable={str(getattr(plan, 'executable', False)).lower()} "
+            f"blockers={','.join(getattr(plan, 'blockers', ()))} "
             f"reason={plan.reason} source={plan.source_path} "
             f"destination={plan.destination_path or '-'} detail={plan.detail or '-'}"
         )
