@@ -689,19 +689,37 @@ def start_embedding_generation(
                 existing = None
         if existing is not None:
             if str(existing["provenance_json"]) != provenance_json:
-                raise ValueError("resumed generation provenance does not match")
-            generation_id = int(existing["generation_id"])
-            if existing["base_generation_id"] is None and not bool(existing["base_clone_complete"]):
-                connection.execute(
-                    """UPDATE embedding_generations
-                    SET base_generation_id=?,base_clone_complete=?
-                    WHERE generation_id=? AND status='building'""",
-                    (
-                        base_generation_id,
-                        int(base_generation_id is None),
-                        generation_id,
-                    ),
+                # Source adapters are content-addressed inputs.  A published
+                # owner may advance while a building generation is paused;
+                # retaining the old candidate as building makes every later
+                # resume fail with a provenance mismatch and strands its
+                # durable jobs.  Close that candidate, preserve its jobs and
+                # start a fresh generation against the current manifest.
+                _record_generation_failure(
+                    connection,
+                    int(existing["generation_id"]),
+                    completed_ns=selected_ns,
+                    details={
+                        "failure_reason": "provenance_changed",
+                        "retryable": True,
+                    },
                 )
+                existing = None
+            else:
+                generation_id = int(existing["generation_id"])
+                if existing["base_generation_id"] is None and not bool(
+                    existing["base_clone_complete"]
+                ):
+                    connection.execute(
+                        """UPDATE embedding_generations
+                        SET base_generation_id=?,base_clone_complete=?
+                        WHERE generation_id=? AND status='building'""",
+                        (
+                            base_generation_id,
+                            int(base_generation_id is None),
+                            generation_id,
+                        ),
+                    )
         if existing is None:
             cursor_row = connection.execute(
                 """INSERT INTO embedding_generations(
@@ -2159,36 +2177,100 @@ def _lease_rows(
               AND candidate.attempts<candidate.max_attempts
               AND candidate.available_ns<=?)"""
     if modality is EmbeddingModality.TEXT:
-        return connection.execute(
-            f"""SELECT j.*,m.vector_space,c.text_zlib
-            FROM embedding_jobs j
-            JOIN embedding_models m ON m.model_signature=j.model_signature
-            JOIN text_chunks c ON c.chunk_id=j.entity_id
-            JOIN semantic_items i ON i.item_id=c.item_id
-            JOIN semantic_chunk_revisions revision ON revision.chunk_id=c.chunk_id
-            WHERE {common} AND c.active=1 AND i.active=1
-              AND c.content_xxh3_128=j.content_xxh3_128
-              AND c.content_bytes=j.content_bytes
-              AND c.content_xxh3_64_guard=j.content_xxh3_64_guard
-              AND (
-                EXISTS(
-                    SELECT 1 FROM semantic_chunk_derivations derivation
-                    WHERE derivation.chunk_revision_id=revision.chunk_revision_id
-                      AND derivation.refresh_token=c.refresh_token
-                      AND derivation.publication_receipt_id IS NOT NULL)
-                OR (
-                    NOT EXISTS(
-                        SELECT 1 FROM semantic_chunk_derivations derivation
-                        WHERE derivation.chunk_revision_id=revision.chunk_revision_id)
-                    AND EXISTS(
-                        SELECT 1 FROM embedding_generation_members member
-                        JOIN published_embedding_heads head
-                          ON head.generation_id=member.generation_id
-                        WHERE member.chunk_revision_id=revision.chunk_revision_id
-                          AND member.entity_kind='text_chunk')))
-            ORDER BY j.job_id LIMIT ?""",
-            (generation_id, now_ns, now_ns, limit),
-        ).fetchall()
+        # The previous correlated derivation/legacy-members predicates ran
+        # once per pending job and became quadratic after a large text
+        # generation was staged.  Read a bounded candidate page, resolve the
+        # two publication contracts in set-based queries, then lease the first
+        # eligible content identities in job order.
+        leased_keys = {
+            (
+                str(row[0]),
+                str(row[1]),
+                int(row[2]),
+                str(row[3]),
+            )
+            for row in connection.execute(
+                """SELECT model_signature,content_xxh3_128,content_bytes,
+                    content_xxh3_64_guard FROM embedding_jobs
+                    WHERE generation_id=? AND status='leased'""",
+                (generation_id,),
+            )
+        }
+        selected: list[sqlite3.Row] = []
+        selected_keys: set[tuple[str, str, int, str]] = set()
+        last_job_id = 0
+        page_size = min(MAX_WRITE_BATCH, max(limit * 4, 64))
+        while len(selected) < limit:
+            rows = connection.execute(
+                """SELECT j.*,m.vector_space,c.text_zlib,c.refresh_token,
+                    revision.chunk_revision_id
+                    FROM embedding_jobs j
+                    JOIN embedding_models m ON m.model_signature=j.model_signature
+                    JOIN text_chunks c ON c.chunk_id=j.entity_id
+                    JOIN semantic_items i ON i.item_id=c.item_id
+                    JOIN semantic_chunk_revisions revision ON revision.chunk_id=c.chunk_id
+                    WHERE j.generation_id=? AND j.attempts<j.max_attempts
+                      AND j.status='pending' AND j.available_ns<=? AND j.job_id>?
+                      AND c.active=1 AND i.active=1
+                      AND c.content_xxh3_128=j.content_xxh3_128
+                      AND c.content_bytes=j.content_bytes
+                      AND c.content_xxh3_64_guard=j.content_xxh3_64_guard
+                    ORDER BY j.job_id LIMIT ?""",
+                (generation_id, now_ns, last_job_id, page_size),
+            ).fetchall()
+            if not rows:
+                break
+            last_job_id = int(rows[-1]["job_id"])
+            revision_ids = tuple(dict.fromkeys(int(row["chunk_revision_id"]) for row in rows))
+            placeholders = ",".join("?" for _ in revision_ids)
+            derivation_rows = connection.execute(
+                f"""SELECT chunk_revision_id,refresh_token,publication_receipt_id
+                    FROM semantic_chunk_derivations
+                    WHERE chunk_revision_id IN ({placeholders})""",
+                revision_ids,
+            ).fetchall()
+            derivations: dict[int, list[tuple[str, object]]] = {}
+            for derivation in derivation_rows:
+                derivations.setdefault(int(derivation[0]), []).append(
+                    (str(derivation[1]), derivation[2])
+                )
+            legacy_rows = connection.execute(
+                f"""SELECT member.chunk_revision_id
+                    FROM embedding_generation_members member
+                    JOIN published_embedding_heads head
+                      ON head.generation_id=member.generation_id
+                    WHERE member.chunk_revision_id IN ({placeholders})
+                      AND member.entity_kind='text_chunk'""",
+                revision_ids,
+            ).fetchall()
+            legacy_revisions = {int(row[0]) for row in legacy_rows}
+            for row in rows:
+                key = (
+                    str(row["model_signature"]),
+                    str(row["content_xxh3_128"]),
+                    int(row["content_bytes"]),
+                    str(row["content_xxh3_64_guard"]),
+                )
+                if key in leased_keys or key in selected_keys:
+                    continue
+                revision_id = int(row["chunk_revision_id"])
+                current_derivations = derivations.get(revision_id, [])
+                eligible = (
+                    any(
+                        refresh_token == str(row["refresh_token"])
+                        and receipt_id is not None
+                        for refresh_token, receipt_id in current_derivations
+                    )
+                    if current_derivations
+                    else revision_id in legacy_revisions
+                )
+                if not eligible:
+                    continue
+                selected.append(row)
+                selected_keys.add(key)
+                if len(selected) >= limit:
+                    break
+        return selected
     return connection.execute(
         f"""SELECT j.*,m.vector_space,i.path,i.source_revision_json
         FROM embedding_jobs j
@@ -2766,8 +2848,23 @@ def _generation_summary_row(
     return _generation_summary_rows(connection, (generation_id,))[0]
 
 
-def generation_summary(path: Path, generation_id: int) -> GenerationSummary:
-    with semantic_database(path, readonly=True) as connection:
+def generation_summary(
+    path: Path,
+    generation_id: int,
+    *,
+    writer_coordinated: bool = False,
+) -> GenerationSummary:
+    """Read one generation summary without copying a large active owner.
+
+    Generation workers already own the semantic writer cohort.  Reopening a
+    multi-gigabyte owner through a temporary immutable snapshot for every
+    progress tick both exhausts the bounded snapshot budget and leaves a
+    resumable run unable to make progress.  The worker-only flag reuses the
+    owner write connection policy for its bounded read; public callers retain
+    the fenced read-only default.
+    """
+
+    with semantic_database(path, readonly=not writer_coordinated) as connection:
         return _generation_summary_row(connection, generation_id)
 
 
@@ -2777,13 +2874,14 @@ def find_exact_published_generation(
     model_signature: str,
     required_provenance: Mapping[str, object] | None = None,
     required_source_head_ledger: Mapping[str, object] | None = None,
+    writer_coordinated: bool = False,
 ) -> GenerationSummary | None:
-    """Read an already-published exact head without creating a generation."""
+    """Read an exact head, reusing the owner writer during an active index."""
 
     if not path.is_file():
         return None
     try:
-        with semantic_database(path, readonly=True) as connection:
+        with semantic_database(path, readonly=not writer_coordinated) as connection:
             row = connection.execute(
                 """SELECT g.generation_id,g.status,g.provenance_json
                 FROM published_embedding_heads h
@@ -2827,13 +2925,14 @@ def published_source_head_ledger(
     path: Path,
     *,
     model_signature: str,
+    writer_coordinated: bool = False,
 ) -> dict[str, object]:
-    """Read the bounded source ledger carried by one current published head."""
+    """Read the bounded source ledger, optionally through the active writer."""
 
     if not path.is_file():
         return {}
     try:
-        with semantic_database(path, readonly=True) as connection:
+        with semantic_database(path, readonly=not writer_coordinated) as connection:
             row = connection.execute(
                 """SELECT g.provenance_json FROM published_embedding_heads h
                 JOIN embedding_generations g ON g.generation_id=h.generation_id

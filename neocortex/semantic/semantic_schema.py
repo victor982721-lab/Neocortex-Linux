@@ -1340,12 +1340,20 @@ def _migrate_from(connection: sqlite3.Connection, version: int | None) -> None:
 
 
 def _inspect_existing_schema(path: Path) -> int | None:
-    """Validate an existing semantic schema without opening a write transaction."""
+    """Validate an existing owner through its coordinated writer boundary.
+
+    Semantic indexing already owns the framework lock and may be recovering a
+    stale WAL after an interrupted embedding slice.  A read-only snapshot of
+    the multi-gigabyte vector owner would either copy the whole database or
+    fail its bounded temporary-byte budget before the writer can recover it.
+    The coordinated writer connection performs only schema reads here and
+    commits no data, while allowing SQLite to recover its own sidecars.
+    """
 
     if not path.is_file() or path.stat().st_size == 0:
         return None
     try:
-        with semantic_database(path, readonly=True) as connection:
+        with semantic_database(path) as connection:
             version = _read_schema_version(connection)
             if version is not None:
                 _validate_version_contract(connection, version)

@@ -668,20 +668,21 @@ def test_generation_resume_and_post_publication_mutations_are_guarded(
         )
         == generation_id
     )
-    with pytest.raises(ValueError, match="provenance does not match"):
-        start_embedding_generation(
-            database,
-            model_signature=model.model_signature,
-            processing_signature="resumable",
-            provenance={"run": 2},
-            started_ns=102,
-        )
+    restarted = start_embedding_generation(
+        database,
+        model_signature=model.model_signature,
+        processing_signature="resumable",
+        provenance={"run": 2},
+        started_ns=102,
+    )
+    assert restarted != generation_id
+    assert generation_summary(database, generation_id).status == "failed"
 
-    finalize_embedding_generation(database, generation_id, completed_ns=103)
+    finalize_embedding_generation(database, restarted, completed_ns=103)
     with pytest.raises(SemanticStateError, match="no longer building"):
-        update_embedding_generation_cursor(database, generation_id, {"after": 20})
+        update_embedding_generation_cursor(database, restarted, {"after": 20})
     with pytest.raises(SemanticStateError, match="is not building"):
-        enqueue_text_chunk_jobs(database, generation_id, ("missing-chunk",))
+        enqueue_text_chunk_jobs(database, restarted, ("missing-chunk",))
 
 
 def test_wrong_modality_and_lease_owner_cannot_advance_generation(

@@ -404,6 +404,7 @@ def index_text_embeddings(
             database,
             model_signature=selected_model.model_signature,
             required_source_head_ledger={replay_scope: replay_entry},
+            writer_coordinated=True,
         )
         if published is not None:
             confirmed_heads = semantic_source_heads(state_directory, selected_sources)
@@ -444,6 +445,7 @@ def index_text_embeddings(
         published_source_head_ledger(
             database,
             model_signature=selected_model.model_signature,
+            writer_coordinated=True,
         ),
         scope_key=replay_scope,
         entry=replay_entry,
@@ -485,22 +487,32 @@ def index_text_embeddings(
             "tokenizer_signature": token_guard.tokenizer_signature,
             "model_token_limit": token_guard.token_limit,
         },
-        materialize_base=False,
-    )
-    completed_sources: list[str] = []
-    update_embedding_generation_cursor(
-        database,
-        generation_id,
         cursor={
             "protocol": SEMANTIC_TEXT_ENUMERATION_PROTOCOL,
             "enumeration_complete": False,
             "selected_sources": list(selected_sources),
-            "completed_sources": completed_sources,
+            "completed_sources": [],
         },
+        materialize_base=False,
     )
+    resume_cursor = generation_summary(
+        database,
+        generation_id,
+        writer_coordinated=True,
+    ).cursor
+    raw_completed_sources = resume_cursor.get("completed_sources", [])
+    completed_sources = list(
+        dict.fromkeys(
+            source
+            for source in raw_completed_sources
+            if isinstance(source, str) and source in selected_sources
+        )
+    ) if isinstance(raw_completed_sources, list) else []
     items_staged = chunks_staged = queued = 0
-    enumeration_complete = True
+    enumeration_complete = resume_cursor.get("enumeration_complete") is True
     for source_kind in selected_sources:
+        if source_kind in completed_sources:
+            continue
         refresh_token = f"generation:{generation_id}:source:{source_kind}"
         source_items, source_chunks, source_jobs, source_complete = _stage_source(
             database,
@@ -576,7 +588,7 @@ def index_text_embeddings(
         )
     except SemanticIndexDeadlineExceeded:
         result = GenerationWorkResult(
-            generation_summary(database, generation_id),
+            generation_summary(database, generation_id, writer_coordinated=True),
             queued,
             0,
             0,

@@ -205,6 +205,36 @@ def _complete_text_job(
     return generation
 
 
+def test_building_generation_with_changed_provenance_is_rebased_without_orphaning_resume(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "semantic.sqlite3"
+    model = _text_model()
+    _initialize(database, model)
+
+    first = start_embedding_generation(
+        database,
+        model_signature=model.model_signature,
+        processing_signature="processing-v1",
+        provenance={"source_heads": [{"digest": "old"}]},
+        started_ns=20,
+    )
+    second = start_embedding_generation(
+        database,
+        model_signature=model.model_signature,
+        processing_signature="processing-v1",
+        provenance={"source_heads": [{"digest": "new"}]},
+        started_ns=21,
+    )
+
+    assert second != first
+    assert generation_summary(database, first).status == "failed"
+    assert generation_summary(database, first).cursor["failure_reason"] == (
+        "provenance_changed"
+    )
+    assert generation_summary(database, second).status == "building"
+
+
 def test_text_embedding_scopes_separate_title_from_content_and_validate_empty_head(
     tmp_path: Path,
 ) -> None:

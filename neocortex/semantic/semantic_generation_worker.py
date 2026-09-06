@@ -400,7 +400,7 @@ def _reuse_generation_jobs(
 ) -> tuple[GenerationSummary, int]:
     while count := reuse_cached_jobs(database, generation_id):
         reused += count
-        summary = generation_summary(database, generation_id)
+        summary = generation_summary(database, generation_id, writer_coordinated=True)
         _emit_generation_progress(
             progress,
             summary,
@@ -411,7 +411,7 @@ def _reuse_generation_jobs(
         )
         if budget.deadline_expired():
             break
-    return generation_summary(database, generation_id), reused
+    return generation_summary(database, generation_id, writer_coordinated=True), reused
 
 
 def _run_generation_batch(
@@ -482,7 +482,7 @@ def _finish_generation(
     budget: SemanticWorkBudget,
     publish_if_complete: bool,
 ) -> tuple[GenerationSummary, bool]:
-    summary = generation_summary(database, generation_id)
+    summary = generation_summary(database, generation_id, writer_coordinated=True)
     deadline_expired = budget.deadline_expired()
     if (
         not summary.unfinished
@@ -514,7 +514,7 @@ def run_generation(
     embedded = failed = 0
     worker_id = f"semantic-worker:{os.getpid()}:{generation_id}"
     while True:
-        summary = generation_summary(database, generation_id)
+        summary = generation_summary(database, generation_id, writer_coordinated=True)
         _emit_generation_progress(
             progress,
             summary,

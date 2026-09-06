@@ -564,7 +564,7 @@ def _run_image_generation(
         )
     except SemanticIndexDeadlineExceeded:
         return GenerationWorkResult(
-            generation_summary(setup.database, generation_id),
+            generation_summary(setup.database, generation_id, writer_coordinated=True),
             queued,
             0,
             0,
@@ -731,6 +731,7 @@ def index_image_embeddings(
         published_source_head_ledger(
             database,
             model_signature=image_model.model_signature,
+            writer_coordinated=True,
         ),
         scope_key=image_scope,
         entry=image_entry,
@@ -739,6 +740,7 @@ def index_image_embeddings(
         published_source_head_ledger(
             database,
             model_signature=text_model.model_signature,
+            writer_coordinated=True,
         ),
         scope_key=ocr_scope,
         entry=ocr_entry,
