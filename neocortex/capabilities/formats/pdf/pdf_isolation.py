@@ -12,7 +12,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterator, Literal
+from typing import Any, Iterator, Literal, Sequence
 
 from neocortex.deduplication import FileSnapshot, stat_matches_snapshot
 
@@ -42,7 +42,6 @@ from neocortex.safety.ocr_profiles import (
     route_ocr_languages,
     should_use_ocr_fallback,
 )
-from neocortex.persistence.sqlite_immutable import immutable_sqlite_database
 
 
 # region [01] Process protocol
@@ -981,7 +980,16 @@ def _extract_child(snapshot, config, channel, ocr_control) -> None:
         session.close_document()
 
 
-def _profile_child(path: str, state_path: str, file_key: str, channel) -> None:
+def _profile_child(path: str, page_numbers: Sequence[int], channel) -> None:
+    """Profile a PDF using a parent-materialized page list.
+
+    The derived phase owns ``pdf.sqlite3`` and publishes page profiles while
+    these isolated workers are running.  Opening that owner from a child with
+    an immutable URI races the parent writer and turns an otherwise valid PDF
+    into ``ImmutableSQLiteUnavailable``.  The parent therefore materializes
+    the immutable page-number input before spawning this worker; the child only
+    reads the original PDF and streams bounded profile messages back.
+    """
     warning_count = 0
     warning_samples: list[str] = []
 
@@ -1009,24 +1017,10 @@ def _profile_child(path: str, state_path: str, file_key: str, channel) -> None:
         fitz.TOOLS.mupdf_display_warnings(False)
         fitz.TOOLS.reset_mupdf_warnings()
 
-        from .pdf_layout import LAYOUT_VERSION
         from .pdf_profile import profile_page
 
-        with (
-            fitz.open(path) as document,
-            immutable_sqlite_database(Path(state_path), timeout_seconds=60.0) as connection,
-        ):
-            if int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
-                raise RuntimeError("PDF profile reader could not enable foreign keys")
-            rows = connection.execute(
-                """SELECT p.page_number FROM pages p
-                LEFT JOIN page_layouts l ON l.file_key=p.file_key
-                    AND l.page_number=p.page_number AND l.algorithm_version=?
-                WHERE p.file_key=? AND (p.profile_json IS NULL OR l.file_key IS NULL)
-                ORDER BY p.page_number""",
-                (LAYOUT_VERSION, file_key),
-            )
-            for (page_number,) in rows:
+        with fitz.open(path) as document:
+            for page_number in page_numbers:
                 number = int(page_number)
                 try:
                     profile = profile_page(document.load_page(number))
@@ -1262,8 +1256,7 @@ def stream_isolated_extraction(
 
 def stream_isolated_profiles(
     path: str,
-    state_path: str,
-    file_key: str,
+    page_numbers: Sequence[int],
     *,
     timeout_seconds: float,
     cancellation: CancellationToken | None = None,
@@ -1275,7 +1268,7 @@ def stream_isolated_profiles(
     channel = context.Queue(maxsize=2)
     process = isolated_spawn_process(
         target=_profile_child,
-        args=(path, state_path, file_key, channel),
+        args=(path, tuple(int(page) for page in page_numbers), channel),
         daemon=False,
         memory_limit_bytes=memory_limit_bytes,
     )

@@ -28,10 +28,13 @@ def semantic_status(
     database = state_directory / SEMANTIC_DATABASE_NAME
     if not database.is_file():
         return SemanticStatus(False)
-    with semantic_database(database, readonly=True, read_mode="snapshot_temp") as connection:
+    with semantic_database(database, readonly=True) as connection:
         # Keep counts, selected generation identifiers, and their summaries on
-        # one WAL read snapshot.  Reopening per generation both produced N+1
-        # connections and allowed a concurrent publication/prune to mix views.
+        # one fenced read view.  A quiescent owner uses the zero-copy immutable
+        # path, while a live WAL still falls back to one bounded temporary
+        # snapshot; forcing the latter made a large, healthy semantic owner
+        # impossible to inspect once its vector payload exceeded the default
+        # scratch budget.
         connection.execute("BEGIN")
         version_row = connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"

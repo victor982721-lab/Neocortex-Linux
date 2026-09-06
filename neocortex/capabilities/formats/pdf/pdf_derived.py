@@ -570,10 +570,27 @@ class PdfDerivedIndexer:
                     )
                 return stored
 
+            # Materialize the read-only page input in the parent before
+            # spawning an isolated profiler.  The parent owns the PDF SQLite
+            # writer during this phase, so a child immutable read would race
+            # profile/layout writes and fail closed with an owner-drift error.
+            with _database(self.state_path) as connection:
+                page_numbers = tuple(
+                    int(row[0])
+                    for row in connection.execute(
+                        """SELECT p.page_number FROM pages p
+                        LEFT JOIN page_layouts l ON l.file_key=p.file_key
+                            AND l.page_number=p.page_number
+                            AND l.algorithm_version=?
+                        WHERE p.file_key=?
+                          AND (p.profile_json IS NULL OR l.file_key IS NULL)
+                        ORDER BY p.page_number""",
+                        (LAYOUT_VERSION, file_key),
+                    )
+                )
             messages = stream_isolated_profiles(
                 path,
-                str(self.state_path),
-                file_key,
+                page_numbers,
                 timeout_seconds=self.profile_timeout_seconds,
                 cancellation=self.cancellation,
                 memory_limit_bytes=self.profile_memory_bytes,

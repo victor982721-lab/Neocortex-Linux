@@ -365,8 +365,7 @@ class BlockingCancellationTests(unittest.TestCase):
                 list(
                     stream_isolated_profiles(
                         "document.pdf",
-                        "state.sqlite3",
-                        "key",
+                        (),
                         timeout_seconds=10,
                         cancellation=token,
                     )

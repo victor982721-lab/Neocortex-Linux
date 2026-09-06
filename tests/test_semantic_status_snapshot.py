@@ -124,21 +124,23 @@ def test_semantic_status_generation_rows_share_the_count_snapshot(
     writer_completed = threading.Event()
     writer_errors: list[BaseException] = []
 
-    class _PausingConnection(sqlite3.Connection):
-        def execute(
-            self,
-            sql: str,
-            parameters: object = (),
-        ) -> sqlite3.Cursor:
-            cursor = super().execute(sql, parameters)  # type: ignore[arg-type]
-            if "SELECT generation_id FROM embedding_generations" in sql:
-                generation_ids_selected.set()
-                if not writer_completed.wait(10):
-                    raise TimeoutError("concurrent status writer did not complete")
-            return cursor
-
     def observed_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
-        return real_connect(*args, factory=_PausingConnection, **kwargs)
+        base_factory = kwargs.pop("factory", sqlite3.Connection)
+
+        class _ObservedConnection(base_factory):  # type: ignore[misc,valid-type]
+            def execute(
+                self,
+                sql: str,
+                parameters: object = (),
+            ) -> sqlite3.Cursor:
+                cursor = super().execute(sql, parameters)  # type: ignore[arg-type]
+                if "SELECT generation_id FROM embedding_generations" in sql:
+                    generation_ids_selected.set()
+                    if not writer_completed.wait(10):
+                        raise TimeoutError("concurrent status writer did not complete")
+                return cursor
+
+        return real_connect(*args, factory=_ObservedConnection, **kwargs)
 
     def writer() -> None:
         try:
@@ -153,6 +155,13 @@ def test_semantic_status_generation_rows_share_the_count_snapshot(
 
     thread = threading.Thread(target=writer, name="semantic-status-fixture-writer")
     thread.start()
+    from neocortex.persistence import sqlite_immutable
+
+    monkeypatch.setattr(
+        sqlite_immutable,
+        "preferred_sqlite_read_mode",
+        lambda _path: sqlite_immutable.SQLiteReadMode.SNAPSHOT_TEMP,
+    )
     monkeypatch.setattr(sqlite3, "connect", observed_connect)
     try:
         status = semantic_status_service.semantic_status(tmp_path, generation_limit=2)

@@ -359,7 +359,7 @@ def test_isolated_pdf_reader_rejects_writes(tmp_path: Path) -> None:
             connection.execute("CREATE TABLE forbidden_write(value INTEGER)")
 
 
-def test_profile_child_opens_pdf_state_read_only(
+def test_profile_child_does_not_open_pdf_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -414,12 +414,7 @@ def test_profile_child_opens_pdf_state_read_only(
 
     monkeypatch.setitem(sys.modules, "fitz", _FakeFitz())
 
-    pdf_isolation._profile_child(
-        "unused-by-fake-fitz.pdf",
-        str(database),
-        "missing-file-key",
-        _Channel(),
-    )
+    pdf_isolation._profile_child("unused-by-fake-fitz.pdf", (), _Channel())
 
     assert messages == [("done",)]
     assert database.read_bytes() == before_bytes
