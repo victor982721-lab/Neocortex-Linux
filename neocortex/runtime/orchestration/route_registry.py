@@ -11,6 +11,9 @@ from neocortex.runtime.orchestration.route_selection import (
 from neocortex.runtime.orchestration.route_selection import (
     normalize_route_selection as normalize_route_selection,
 )
+from neocortex.runtime.orchestration.replay_metrics import (
+    normalize_route_replay_metrics,
+)
 
 if TYPE_CHECKING:
     from neocortex.progress import ProgressCallback
@@ -74,11 +77,17 @@ class RouteAdapter:
 
     def summary_mapping(self, summary: object) -> Mapping[str, Any]:
         if is_dataclass(summary) and not isinstance(summary, type):
-            return asdict(summary)
-        if isinstance(summary, Mapping):
-            return dict(summary)
-        raise TypeError(
-            f"route {self.name} returned a non-serializable summary: {type(summary).__name__}"
+            mapping = asdict(summary)
+        elif isinstance(summary, Mapping):
+            mapping = dict(summary)
+        else:
+            raise TypeError(
+                f"route {self.name} returned a non-serializable summary: {type(summary).__name__}"
+            )
+        return normalize_route_replay_metrics(
+            self.name,
+            mapping,
+            replayability=self.lifecycle_capability,
         )
 
 

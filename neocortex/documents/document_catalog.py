@@ -1462,9 +1462,23 @@ def _source_snapshot_is_current(document: SourceDocument) -> bool:
     except OSError:
         return False
     birthtime_ns = stat_birthtime_ns(stat)
+    # Code's owner identity is normally persisted as the hexadecimal
+    # representation emitted by ``code_state._identity``.  The other
+    # filesystem-backed owners expose decimal components through
+    # ``_split_file_key``.  Accept the legacy decimal Code form as well so a
+    # catalog built by an older fixture or release remains verifiable.
+    if document.source_kind == "code":
+        identity_matches = (document.volume_id, document.file_id) in {
+            (format(stat.st_dev, "x"), format(stat.st_ino, "x")),
+            (str(stat.st_dev), str(stat.st_ino)),
+        }
+    else:
+        identity_matches = (
+            document.volume_id == str(stat.st_dev)
+            and document.file_id == str(stat.st_ino)
+        )
     return (
-        str(stat.st_dev) == document.volume_id
-        and str(stat.st_ino) == document.file_id
+        identity_matches
         and int(stat.st_size) == document.size
         and int(stat.st_mtime_ns) == document.mtime_ns
         and int(birthtime_ns) == document.birthtime_ns

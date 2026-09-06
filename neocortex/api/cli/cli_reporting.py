@@ -6,6 +6,8 @@ import json
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
+from neocortex.runtime.orchestration.replay_metrics import route_replay_metrics
+
 if TYPE_CHECKING:
     from neocortex.runtime.control.watcher import (
         WatcherEvent,
@@ -599,10 +601,20 @@ def print_professional_summary(
     routes.add_column("Incidencias", justify="right")
     routes.add_column("Revisión", justify="right")
     for label, summary in route_rows:
-        candidates = int(getattr(summary, "candidates", 0) or 0)
-        cache_hits = int(getattr(summary, "cache_hits", 0) or 0)
-        processed = int(getattr(summary, "processed", 0) or 0)
-        work = max(processed - cache_hits, 0)
+        route_name = {
+            "PDF": "pdf",
+            "DOCX": "docx",
+            "Office": "office",
+            "ZIP": "archive",
+            "Audio": "audio",
+            "Video": "video",
+            "Imágenes": "image",
+            "Código": "code",
+        }.get(label, label.casefold())
+        metrics = route_replay_metrics(route_name, summary)
+        candidates = int(metrics["candidates"])
+        cache_hits = int(metrics["cache_hits"])
+        work = int(metrics["new_work"])
         issues = _route_issue_count(summary)
         review = _route_review_count(summary)
         routes.add_row(

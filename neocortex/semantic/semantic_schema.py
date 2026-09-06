@@ -310,8 +310,6 @@ _MIGRATION_1 = (
     )""",
     """CREATE INDEX embedding_jobs_claim_idx
         ON embedding_jobs(generation_id,status,available_ns,lease_until_ns,job_id)""",
-    """CREATE INDEX embedding_jobs_claim_order_idx
-        ON embedding_jobs(generation_id,status,job_id,available_ns)""",
     """CREATE INDEX embedding_jobs_cache_idx
         ON embedding_jobs(model_signature,content_xxh3_128,content_bytes,
                           content_xxh3_64_guard,status)""",
@@ -497,8 +495,6 @@ _MIGRATION_6 = (
             generation_id,model_signature,entity_kind,member_id)""",
     """CREATE INDEX embedding_generation_members_clone_idx
         ON embedding_generation_members(generation_id,base_member_id)""",
-    """CREATE INDEX embedding_generation_members_claim_idx
-        ON embedding_generation_members(chunk_revision_id,entity_kind,generation_id)""",
     """CREATE TABLE published_embedding_heads(
         model_signature TEXT PRIMARY KEY,
         generation_id INTEGER NOT NULL UNIQUE,
@@ -635,9 +631,6 @@ _MIGRATION_7 = (
     """CREATE INDEX semantic_chunk_derivations_refresh_idx
         ON semantic_chunk_derivations(refresh_token,publication_receipt_id,
                                       derivation_id)""",
-    """CREATE INDEX semantic_chunk_derivations_claim_idx
-        ON semantic_chunk_derivations(
-            chunk_revision_id,refresh_token,publication_receipt_id,derivation_id)""",
     """CREATE TRIGGER semantic_chunk_derivations_publication_once
         BEFORE UPDATE ON semantic_chunk_derivations
         WHEN NOT (
@@ -992,7 +985,6 @@ _NAMED_INDEXES_BY_VERSION = {
         "text_embeddings_search_idx": "text_embeddings",
         "image_embeddings_search_idx": "image_embeddings",
         "embedding_jobs_claim_idx": "embedding_jobs",
-        "embedding_jobs_claim_order_idx": "embedding_jobs",
         "embedding_jobs_cache_idx": "embedding_jobs",
     },
     2: {
@@ -1009,7 +1001,6 @@ _NAMED_INDEXES_BY_VERSION = {
         "semantic_chunk_revisions_item_idx": "semantic_chunk_revisions",
         "embedding_generation_members_search_idx": "embedding_generation_members",
         "embedding_generation_members_clone_idx": "embedding_generation_members",
-        "embedding_generation_members_claim_idx": "embedding_generation_members",
     },
     7: {
         "semantic_item_revisions_source_revision_idx": "semantic_item_revisions",
@@ -1018,7 +1009,6 @@ _NAMED_INDEXES_BY_VERSION = {
         "semantic_work_receipts_embedding_lookup_idx": "semantic_work_receipts",
         "semantic_chunk_derivations_chunk_idx": "semantic_chunk_derivations",
         "semantic_chunk_derivations_refresh_idx": "semantic_chunk_derivations",
-        "semantic_chunk_derivations_claim_idx": "semantic_chunk_derivations",
         "semantic_derivation_outbox_scan_idx": "semantic_derivation_outbox",
     },
 }
@@ -1334,6 +1324,9 @@ def _validate_version_contract(
                 _exact_current_contract(),
                 label="semantic",
                 exact=True,
+                allowed_extra_indexes=tuple(
+                    name for name, _statement in _SEMANTIC_PERFORMANCE_INDEXES
+                ),
             )
         except SQLiteSchemaContractError as exc:
             raise SemanticStateError(str(exc)) from exc

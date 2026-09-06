@@ -914,6 +914,7 @@ def _table_errors(
     expected: TableContract,
     *,
     exact: bool,
+    allowed_extra_indexes: frozenset[str],
 ) -> list[str]:
     errors: list[str] = []
     if (
@@ -946,7 +947,15 @@ def _table_errors(
         actual_only_indexes = {
             index for index in actual_only_indexes if index.name not in incompatible_names
         }
-    extra_indexes = actual_only_indexes if exact else set()
+    extra_indexes = (
+        {
+            index
+            for index in actual_only_indexes
+            if index.name not in allowed_extra_indexes
+        }
+        if exact
+        else set()
+    )
     if missing_indexes:
         names = sorted(index.name or "<automatic>" for index in missing_indexes)
         errors.append(f"table {expected.name!r} lacks indexes {', '.join(names)}")
@@ -963,11 +972,13 @@ def validate_sqlite_schema_contract(
     label: str,
     exact: bool = False,
     allowed_extra_tables: Collection[str] = (),
+    allowed_extra_indexes: Collection[str] = (),
     allowed_extra_objects: Collection[str] = (),
 ) -> None:
     """Reject incompatible required objects without changing persisted state."""
 
     allowed_tables = frozenset(allowed_extra_tables)
+    allowed_indexes = frozenset(allowed_extra_indexes)
     allowed_objects = frozenset(allowed_extra_objects)
 
     # Detect missing tables before introspecting virtual tables.  A damaged FTS
@@ -1013,7 +1024,14 @@ def validate_sqlite_schema_contract(
         if actual_table is None:
             errors.append(f"missing table {name!r}")
             continue
-        errors.extend(_table_errors(actual_table, expected_table, exact=exact))
+        errors.extend(
+            _table_errors(
+                actual_table,
+                expected_table,
+                exact=exact,
+                allowed_extra_indexes=allowed_indexes,
+            )
+        )
     if exact:
         errors.extend(
             f"unexpected table {name!r}"

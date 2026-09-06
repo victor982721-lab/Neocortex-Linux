@@ -19,6 +19,9 @@ from neocortex.runtime.orchestration.run_manifest import (
     lifecycle_envelope,
     verify_event_payload,
 )
+from neocortex.runtime.orchestration.replay_metrics import (
+    normalize_route_replay_metrics,
+)
 # region [01] Status models
 
 
@@ -43,6 +46,12 @@ class RouteStatus:
     error_type: str | None
     phases: tuple[PhaseStatus, ...]
     resume_capability: str = "not_resumable"
+    candidates: int = 0
+    processed: int = 0
+    cache_hits: int = 0
+    new_work: int = 0
+    cached_errors: int = 0
+    replay_status: str = "unobserved"
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,15 +154,20 @@ def _run_status(
     stages = _run_stages(connection, run_id)
     route_capabilities = _route_capabilities(manifest)
     routes = _route_statuses(connection, run_id, route_capabilities)
+    # A completed route was executed; it is not a skipped route merely because
+    # its owner reused cached work.  Keep lifecycle replay (resume/recovery)
+    # separate from per-route cache replay, which is exposed by
+    # ``RouteStatus.replay_status`` and its counters below.
     skipped_routes = tuple(
-        route.route_name for route in routes if route.status == "completed"
+        route.route_name for route in routes if route.status == "skipped"
     )
     non_replayable_routes = _non_replayable_routes(routes, recovery)
     # An interrupted source is recoverable, but it was not itself resumed.
-    # ``resume`` identifies a new execution linked to that source, while
-    # completed routes identify work that can be replayed without rerunning it.
+    # ``resume`` identifies a new execution linked to that source.  Initial
+    # runs can still report route-level cache replay without being lifecycle
+    # replays.
     resumed = str(row["run_kind"] or "initial") == "resume"
-    replayed = resumed or bool(skipped_routes)
+    replayed = resumed
     current_phase = None if row["current_phase"] is None else str(row["current_phase"])
     if current_phase is None:
         current_phase = next(
@@ -446,9 +460,10 @@ def _route_statuses(
     }
     current = "current_phase" if "current_phase" in columns else "NULL AS current_phase"
     heartbeat = "heartbeat_ns" if "heartbeat_ns" in columns else "NULL AS heartbeat_ns"
+    summary = "summary_json" if "summary_json" in columns else "NULL AS summary_json"
     rows = connection.execute(
         f"""SELECT route_name,status,started_ns,completed_ns,error_type,
-        {current},{heartbeat} FROM route_runs WHERE run_id=? ORDER BY route_name""",
+        {current},{heartbeat},{summary} FROM route_runs WHERE run_id=? ORDER BY route_name""",
         (run_id,),
     ).fetchall()
     phase_table = connection.execute(
@@ -509,6 +524,26 @@ def _route_statuses(
     for route in rows:
         route_name = str(route["route_name"])
         route_phases = tuple(phases.get(route_name, ()))
+        raw_summary = route["summary_json"]
+        if raw_summary is None:
+            summary_payload: dict[str, object] = {}
+        else:
+            try:
+                decoded_summary = json.loads(str(raw_summary))
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise sqlite3.DatabaseError(
+                    f"route {run_id}/{route_name} summary is invalid"
+                ) from exc
+            if not isinstance(decoded_summary, dict):
+                raise sqlite3.DatabaseError(
+                    f"route {run_id}/{route_name} summary is not an object"
+                )
+            summary_payload = decoded_summary
+        replay_metrics = normalize_route_replay_metrics(
+            route_name,
+            summary_payload,
+            replayability=route_capabilities.get(route_name, "not_resumable"),
+        )
         current_phase = (
             None if route["current_phase"] is None else str(route["current_phase"])
         )
@@ -543,6 +578,12 @@ def _route_statuses(
                 ),
                 phases=route_phases,
                 resume_capability=route_capabilities.get(route_name, "not_resumable"),
+                candidates=int(replay_metrics["candidates"]),
+                processed=int(replay_metrics["processed"]),
+                cache_hits=int(replay_metrics["cache_hits"]),
+                new_work=int(replay_metrics["new_work"]),
+                cached_errors=int(replay_metrics["cached_errors"]),
+                replay_status=str(replay_metrics["replay_status"]),
             )
         )
     return tuple(results)
@@ -590,6 +631,13 @@ def serialized_run_status(status: RunStatus) -> str:
                         "status": route.status,
                         "current_phase": route.current_phase,
                         "resume_capability": route.resume_capability,
+                        "replayability": route.resume_capability,
+                        "candidates": route.candidates,
+                        "processed": route.processed,
+                        "cache_hits": route.cache_hits,
+                        "new_work": route.new_work,
+                        "cached_errors": route.cached_errors,
+                        "replay_status": route.replay_status,
                     }
                     for route in status.routes
                 ),
@@ -621,6 +669,13 @@ def serialized_run_status(status: RunStatus) -> str:
                     "heartbeat_ns": route.heartbeat_ns,
                     "error_type": route.error_type,
                     "resume_capability": route.resume_capability,
+                    "replayability": route.resume_capability,
+                    "candidates": route.candidates,
+                    "processed": route.processed,
+                    "cache_hits": route.cache_hits,
+                    "new_work": route.new_work,
+                    "cached_errors": route.cached_errors,
+                    "replay_status": route.replay_status,
                     "phases": [
                         {
                             "phase_name": phase.phase_name,

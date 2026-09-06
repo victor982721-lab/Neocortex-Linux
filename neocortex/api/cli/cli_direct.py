@@ -78,7 +78,11 @@ def run_operational_status(args: argparse.Namespace) -> int:
             print(
                 f"ROUTE run={status.run_id} name={route.route_name} "
                 f"status={route.status} phase={route.current_phase or '-'} "
-                f"error={route.error_type or '-'}"
+                f"candidates={route.candidates} processed={route.processed} "
+                f"cache_hits={route.cache_hits} new_work={route.new_work} "
+                f"cached_errors={route.cached_errors} "
+                f"replayability={route.resume_capability} "
+                f"replay_status={route.replay_status} error={route.error_type or '-'}"
             )
             for phase in route.phases:
                 print(
