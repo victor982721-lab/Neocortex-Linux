@@ -11,6 +11,7 @@ import pytest
 
 from neocortex.semantic.semantic_config import (
     FastEmbedCacheContract,
+    default_semantic_parallel,
     fastembed_cache_contract,
     multilingual_text_model,
     production_models,
@@ -59,6 +60,19 @@ def test_quality_text_chunking_keeps_measured_jina_headroom() -> None:
         chunking.min_natural_break_chars,
     ) == (1_600, 280, 192, 40, 128)
     assert "jina-512-exact-token-guard-v2" in chunking.algorithm_version
+
+
+@pytest.mark.parametrize("threads,parallel", ((1, 1), (7, 1), (8, 1), (16, 2), (64, 2)))
+def test_semantic_parallelism_is_bounded_by_thread_pool(
+    threads: int,
+    parallel: int,
+) -> None:
+    assert default_semantic_parallel(threads) == parallel
+
+
+def test_semantic_parallelism_rejects_nonpositive_threads() -> None:
+    with pytest.raises(ValueError, match="semantic threads must be positive"):
+        default_semantic_parallel(0)
 
 
 @pytest.mark.parametrize("repository_id", (None, 42, True))

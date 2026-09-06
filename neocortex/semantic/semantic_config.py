@@ -391,4 +391,15 @@ def default_semantic_threads() -> int:
     return max(1, min(8, effective_cpu_count()))
 
 
+def default_semantic_parallel(threads: int) -> int:
+    """Choose bounded FastEmbed batch parallelism without oversubscription."""
+
+    if threads < 1:
+        raise ValueError("semantic threads must be positive")
+    # ``threads`` controls ONNX intra-model work; ``parallel`` overlaps
+    # independent FastEmbed batches. Two workers are useful on the supported
+    # hosts, while smaller thread pools stay single-worker to bound memory.
+    return max(1, min(2, threads // 8))
+
+
 # endregion [04]

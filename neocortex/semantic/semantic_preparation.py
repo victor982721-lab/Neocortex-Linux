@@ -23,6 +23,7 @@ from .semantic_config import (
     COMPACT_TEXT_MODEL_SIGNATURE,
     FASTEMBED_RUNTIME_VERSION,
     SemanticModelUnavailableError,
+    default_semantic_parallel,
     default_semantic_model_cache,
     default_semantic_threads,
     local_fastembed_snapshot,
@@ -209,12 +210,14 @@ def backend(
 ) -> EmbeddingBackend:
     if local_files_only:
         require_local_fastembed_model(model, cache_dir)
+    selected_threads = default_semantic_threads() if threads is None else threads
     try:
         embedding_backend = FastEmbedBackend(
             model,
             cache_dir=cache_dir,
             local_files_only=local_files_only,
-            threads=default_semantic_threads() if threads is None else threads,
+            threads=selected_threads,
+            parallel=default_semantic_parallel(selected_threads),
             providers=("CPUExecutionProvider",),
         )
     except Exception as exc:  # optional runtime types are dependency-defined
