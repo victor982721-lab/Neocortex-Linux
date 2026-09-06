@@ -84,7 +84,7 @@ def test_semantic_parallelism_disables_grandchildren_in_daemonic_workers(
         "current_process",
         lambda: type("Worker", (), {"daemon": True})(),
     )
-    assert default_semantic_parallel(16) == 1
+    assert default_semantic_parallel(16) is None
 
 
 def test_semantic_parallelism_disables_nested_spawn_workers(
@@ -95,7 +95,7 @@ def test_semantic_parallelism_disables_nested_spawn_workers(
         "current_process",
         lambda: type("SpawnWorker", (), {"daemon": False, "name": "SpawnProcess-1"})(),
     )
-    assert default_semantic_parallel(16) == 1
+    assert default_semantic_parallel(16) is None
 
 
 @pytest.mark.parametrize("repository_id", (None, 42, True))
