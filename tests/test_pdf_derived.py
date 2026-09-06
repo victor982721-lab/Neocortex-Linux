@@ -134,7 +134,14 @@ class PdfDerivedRepairTests(unittest.TestCase):
                             3000,
                             "PdfDocumentTimeout",
                         ),
+                        ("bad", "bad.pdf", 10, 1, 1, "done", 1, 1, None),
                     ),
+                )
+                connection.execute(
+                    """INSERT INTO document_warnings(
+                    file_key,processing_signature,stage,warning_count,
+                    samples_json,updated_ns)
+                    VALUES('bad','sig','profile-error',1,'[\"cached\"]',1)"""
                 )
                 connection.commit()
             finally:
@@ -151,6 +158,17 @@ class PdfDerivedRepairTests(unittest.TestCase):
                 [("small", "small.pdf", 10)],
             )
             self.assertEqual(indexer._profile_candidate_count(), 1)
+            retry_indexer = PdfDerivedIndexer(
+                database,
+                7,
+                workers=1,
+                similarity_threshold=0.8,
+                retry_profile_errors=True,
+            )
+            self.assertEqual(
+                {candidate[0] for candidate in retry_indexer._profile_candidates()},
+                {"small", "bad"},
+            )
 
     @unittest.skipUnless(
         sqlite_path_collation() == "BINARY",

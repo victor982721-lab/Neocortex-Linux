@@ -112,6 +112,7 @@ class PdfDerivedIndexer:
         workers: int,
         similarity_threshold: float,
         profile_timeout_seconds: float | None = None,
+        retry_profile_errors: bool = False,
         min_free_bytes: int = 0,
         resource_gate: PdfResourceGate | None = None,
         profile_memory_bytes: int = 512 * 1024 * 1024,
@@ -125,6 +126,7 @@ class PdfDerivedIndexer:
         self.workers = max(1, workers)
         self.threshold = similarity_threshold
         self.profile_timeout_seconds = profile_timeout_seconds
+        self.retry_profile_errors = bool(retry_profile_errors)
         self.min_free_bytes = min_free_bytes
         self.resource_gate = resource_gate
         self.profile_memory_bytes = profile_memory_bytes
@@ -466,8 +468,19 @@ class PdfDerivedIndexer:
                             AND l.page_number=p.page_number AND l.algorithm_version=?)))
                     OR NOT EXISTS(SELECT 1 FROM document_layouts dl
                         WHERE dl.file_key=documents.file_key
-                        AND dl.algorithm_version=?))""",
-                    (self.run_id, PROFILE_VERSION, LAYOUT_VERSION, LAYOUT_VERSION),
+                        AND dl.algorithm_version=?))
+                    AND (?=1 OR NOT EXISTS(
+                        SELECT 1 FROM document_warnings warning
+                        WHERE warning.file_key=documents.file_key
+                          AND warning.processing_signature=documents.processing_signature
+                          AND warning.stage='profile-error'))""",
+                    (
+                        self.run_id,
+                        PROFILE_VERSION,
+                        LAYOUT_VERSION,
+                        LAYOUT_VERSION,
+                        int(self.retry_profile_errors),
+                    ),
                 ).fetchone()[0]
             )
 
@@ -492,6 +505,11 @@ class PdfDerivedIndexer:
                     OR NOT EXISTS(SELECT 1 FROM document_layouts dl
                         WHERE dl.file_key=documents.file_key
                         AND dl.algorithm_version=?))
+                    AND (?=1 OR NOT EXISTS(
+                        SELECT 1 FROM document_warnings warning
+                        WHERE warning.file_key=documents.file_key
+                          AND warning.processing_signature=documents.processing_signature
+                          AND warning.stage='profile-error'))
                     AND (size>? OR (size=? AND path COLLATE {_PATH_COLLATION}>?))
                     ORDER BY size,path COLLATE {_PATH_COLLATION} LIMIT 1000""",
                     (
@@ -499,6 +517,7 @@ class PdfDerivedIndexer:
                         PROFILE_VERSION,
                         LAYOUT_VERSION,
                         LAYOUT_VERSION,
+                        int(self.retry_profile_errors),
                         last_size,
                         last_size,
                         last_path,

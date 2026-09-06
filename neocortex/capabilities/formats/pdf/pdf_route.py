@@ -1222,6 +1222,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
                 workers=self.config.workers,
                 similarity_threshold=self.config.similarity_threshold,
                 profile_timeout_seconds=self.config.document_timeout_seconds,
+                retry_profile_errors=self.config.retry_errors,
                 min_free_bytes=self.config.min_free_bytes,
                 resource_gate=self._resource_gate,
                 profile_memory_bytes=self._worker_memory_reservation,
