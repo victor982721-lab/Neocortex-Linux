@@ -28,6 +28,26 @@ class RoleAssessment:
     outside_evidence: tuple[str, ...] = ()
 
 
+def _textual_log_source(signals: DocumentSignals) -> bool:
+    """Use the Archive producer's MIME, not a member suffix or OCR text.
+
+    Catalog metadata is flattened key/value evidence. Ambiguous duplicate MIME
+    keys abstain rather than choosing a declaration embedded in a member name.
+    """
+
+    if signals.source_kind == "text":
+        return True
+    if signals.source_kind != "archive":
+        return False
+    media_types = re.findall(r"(?:^|\s)media_type=([^\s]+)", signals.metadata)
+    content_kinds = re.findall(r"(?:^|\s)content_kind=([^\s]+)", signals.metadata)
+    return (
+        len(media_types) == 1
+        and media_types[0] in {"text/plain", "application/json"}
+        and not any(kind in {"image", "pdf"} for kind in content_kinds)
+    )
+
+
 def document_role_assessment(
     signals: DocumentSignals,
     scopes: Mapping[str, str],
@@ -39,11 +59,6 @@ def document_role_assessment(
     path = scopes.get("path", "")
     header = f"{scopes.get('title', '')} {scopes.get('opening', '')[:400]}"
     headings = (scopes.get("title", "").strip(), scopes.get("opening", "")[:400].strip())
-    explicit_report_heading = any(
-        re.match(r"(?:REPORTE|INFORME|CERTIFICADO|BITACORA|REPORT)\b", heading)
-        for heading in headings
-        if heading
-    )
     # A mentioned report, standard, or incident does not change the role of a
     # timestamped command transcript. Filename alone is deliberately insufficient.
     timestamp_lines = re.findall(
@@ -56,13 +71,45 @@ def document_role_assessment(
         opening,
     )
     log_hint = bool(re.search(r"\b(?:LOG|TRANSCRIPT|CODEX|SYNAPTA)\b", path + " " + header))
+    strong_log_structure = len(timestamp_lines) >= 2 and len(log_fields) >= 2
+    # A named record may quote diagnostic output. Preserve its existing kind
+    # when a real heading identifies a bitacora, never from its filename alone.
+    basename = signals.path.replace("\\", "/").rsplit("/", 1)[-1]
+    filename_titles = {fold_signal(basename), fold_signal(basename.rsplit(".", 1)[0])}
+    declared_title = "" if scopes.get("title", "") in filename_titles else headings[0]
+    explicit_role_heading = next(
+        (
+            heading
+            for heading in (declared_title, headings[1])
+            if re.match(r"(?:REPORTE|INFORME|CERTIFICADO|BITACORA|REPORT)\b", heading)
+        ),
+        "",
+    )
     if (
-        signals.source_kind == "text"
-        and not explicit_report_heading
-        and (
-            (len(timestamp_lines) >= 2 and len(log_fields) >= 2)
-            or (log_hint and len(log_fields) >= 3)
-        )
+        _textual_log_source(signals)
+        and strong_log_structure
+        and re.match(r"BITACORA\b", explicit_role_heading)
+    ):
+        bitacora = next((item for item in kinds if item.label == "registro_bitacora"), None)
+        if bitacora is not None:
+            return RoleAssessment(
+                kinds=(
+                    ScoredLabel(
+                        bitacora.label,
+                        bitacora.score,
+                        (*bitacora.evidence, "heading:explicit_bitacora_over_quoted_log"),
+                    ),
+                ),
+                contradictions=tuple(
+                    f"role_vs_mention:{item.label}"
+                    for item in kinds
+                    if item.label != bitacora.label
+                ),
+            )
+    if (
+        _textual_log_source(signals)
+        and not explicit_role_heading
+        and (strong_log_structure or (log_hint and len(log_fields) >= 3))
     ):
         role = ScoredLabel(
             "registro_log",

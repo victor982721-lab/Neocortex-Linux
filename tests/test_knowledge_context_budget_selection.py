@@ -94,11 +94,12 @@ def test_large_budget_preserves_candidates_stable_ties_and_original_rank_positio
     assert repeated == payload
 
 
-def test_missing_negation_never_demotes_a_literal_counter_witness():
+def test_missing_negation_never_demotes_a_verified_literal_counter_witness():
     entries = _entries()
     counter = "El manual describe el procedimiento; no es un registro del incidente ocurrido."
     entries[0]["result"]["hits"][0]["evidence"]["snippet"] = counter
     entries[0]["result"]["hits"][0]["signals"][0]["evidence"]["snippet"] = counter
+    entries[0]["result"]["hits"][0]["evidence_hydration"]["status"] = "owner_verified"
     payload = build_context_response_v2(entries, query="Qué ocurrió durante el incidente",
         scope="personal", request_id="fixture", max_characters=100000)
     first = payload["citations"][0]
@@ -129,4 +130,3 @@ def test_v1_keeps_the_original_retrieval_order():
         rows_scanned=5, vectors_scanned=0, elapsed_milliseconds=1)
     bundle = build_context_bundle(result, character_limit=100000, max_hits=5)
     assert [hit.rank for hit in bundle.selected_hits] == [1, 2, 3, 4, 5]
-

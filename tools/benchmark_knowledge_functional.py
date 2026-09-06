@@ -674,7 +674,7 @@ def main() -> int:
         / "tests"
         / "fixtures"
         / "knowledge_functional_v1"
-        / "operationalization-v2.json",
+        / "operationalization-v2.1.json",
     )
     parser.add_argument("--label", choices=("baseline", "candidate"), required=True)
     parser.add_argument("--workspace", type=Path, required=True)

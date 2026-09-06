@@ -18,7 +18,11 @@ from typing import Any
 import unicodedata
 
 
-METRIC_SCHEMA = "neocortex.functional-context-operationalization/v2"
+METRIC_SCHEMA = "neocortex.functional-context-operationalization/v2.1"
+PREVIOUS_ADAPTER_SHA256 = "c6acac048f9ed649c8a678ed9ca8608c7fbaaae0442bcf6bce9c18fa2501e25d"
+PREVIOUS_OPERATIONALIZATION_SHA256 = (
+    "6898c112bf670eec1d29b03881e3275407a6d5fa011d79618700cae7c34f4969"
+)
 CHECKS_POLICY = "query-necessary-evidence-checks-v1"
 ROLE_POLICY = "query-role-counterevidence-v1"
 DISPOSITIONS = {"related_only", "contradictory", "evidence_candidate"}
@@ -59,6 +63,57 @@ _NOT_ACTORS = {
     "los",
     "las",
 }
+_IDENTIFIER = re.compile(r"[a-z]+\d+\Z")
+_NON_NOMINAL_WORDS = frozenset(
+    {
+        "a",
+        "al",
+        "de",
+        "del",
+        "para",
+        "por",
+        "con",
+        "sin",
+        "en",
+        "entre",
+        "sobre",
+        "hacia",
+        "desde",
+        "hasta",
+        "segun",
+        "contra",
+        "el",
+        "la",
+        "los",
+        "las",
+        "un",
+        "una",
+        "unos",
+        "unas",
+        "y",
+        "o",
+        "pero",
+        "sino",
+        "excepto",
+        "que",
+        "quien",
+        "cual",
+        "como",
+        "cuando",
+        "donde",
+        "si",
+        "no",
+        "es",
+        "era",
+        "fue",
+        "se",
+    }
+)
+_NONASSERTED_EXCLUSION = re.compile(
+    r"\b(?:si|podria|pudiera|puede|pueda|deberia|supongamos|supuesto|hipotesis|"
+    r"posible|posiblemente|quizas?|tal vez|en caso|cuando|a menos|salvo que|niega|nego|negado|refuta|refuto|"
+    r"desmiente|desmintio)\b"
+)
 
 
 def verify_operationalization(path: Path, *, frozen_dataset_sha256: str) -> str:
@@ -73,6 +128,9 @@ def verify_operationalization(path: Path, *, frozen_dataset_sha256: str) -> str:
         "legacy_baseline_reclassified": False,
         "frozen_queries_or_judgments_changed": False,
         "recorded_before_candidate_sha_freeze": True,
+        "previous_adapter_sha256": PREVIOUS_ADAPTER_SHA256,
+        "previous_operationalization_sha256": PREVIOUS_OPERATIONALIZATION_SHA256,
+        "change_kind": "literal_verifier_coverage_correction_not_new_judgments",
     }
     if not isinstance(contract, dict) or any(
         contract.get(key) != value for key, value in expected.items()
@@ -180,6 +238,72 @@ def expected_necessary_checks(query: str, excerpt: str) -> tuple[set[str], set[s
     return required, missing
 
 
+def _witness_sentence(excerpt: str, start: int, end: int) -> str | None:
+    """Return only the final-text sentence containing the exact witness.
+
+    Newlines can be PDF soft wraps, so they are not sentence boundaries here.
+    A witness spanning substantive text on both sides of sentence punctuation
+    is deliberately unverified instead of collecting unrelated context.
+    """
+    left = 0
+    for boundary in re.finditer(r"[!?]+|(?<!\d)\.|\.(?!\d)", excerpt):
+        if boundary.end() <= start:
+            left = boundary.end()
+            continue
+        if boundary.start() < end and excerpt[boundary.end() : end].strip():
+            return None
+        return excerpt[left : boundary.end()]
+    return excerpt[left:]
+
+
+def _requested_subject_excluded(folded_query: str, folded_span: str, folded_sentence: str) -> bool:
+    """Recognize a literal exclusion of the same explicitly named subject.
+
+    A bare requested ID remains supported. A qualified ID additionally needs
+    one to three adjacent nominal words appearing verbatim with that ID in
+    the query. Prepositions, a different first ID, clause boundaries, multiple
+    negations or hypothetical/denied statements remain unverified. This does
+    not infer anything about the asset's condition or the reported event.
+    """
+    query_terms = _TERM.findall(folded_query)
+    query_ids = {term for term in query_terms if _IDENTIFIER.fullmatch(term)}
+    if not query_ids or len(_NEGATION.findall(folded_sentence)) != 1:
+        return False
+    if _NONASSERTED_EXCLUSION.search(folded_sentence):
+        return False
+    matches = list(
+        re.finditer(r"\bno corresponde (?:al|a(?:\s+(?:el|la|los|las))?)\s+", folded_span)
+    )
+    if len(matches) != 1:
+        return False
+    tail = folded_span[matches[0].end() :]
+    terms = list(_TERM.finditer(tail))
+    for index, term in enumerate(terms[:4]):
+        if not _IDENTIFIER.fullmatch(term.group()):
+            continue
+        identifier = term.group()
+        if identifier not in query_ids:
+            return False
+        qualifiers = [item.group() for item in terms[:index]]
+        if any(
+            not value.isalpha() or len(value) < 2 or value in _NON_NOMINAL_WORDS
+            for value in qualifiers
+        ):
+            return False
+        nominal = tail[: term.end()]
+        if not re.fullmatch(r"[^\W_]+(?:\s+[^\W_]+){0,3}", nominal):
+            return False
+        if not qualifiers:
+            return True
+        requested_nominal = [*qualifiers, identifier]
+        width = len(requested_nominal)
+        return any(
+            query_terms[start : start + width] == requested_nominal
+            for start in range(len(query_terms) - width + 1)
+        )
+    return False
+
+
 def _role_errors(query: str, excerpt: str, witness: object) -> list[str]:
     if not isinstance(witness, dict):
         return ["counterevidence_not_an_object"]
@@ -227,9 +351,10 @@ def _role_errors(query: str, excerpt: str, witness: object) -> list[str]:
                 )
             )
         elif reason == "requested_named_subject_is_explicitly_excluded":
-            identifiers = set(re.findall(r"\b[a-z]+\d+\b", query_folded))
-            matches = re.findall(r"\bno corresponde (?:a|al)\s+([a-z]+\d+)\b", folded)
-            valid = bool(identifiers & set(matches))
+            sentence = _witness_sentence(excerpt, start, end)
+            valid = sentence is not None and _requested_subject_excluded(
+                query_folded, folded, _fold(sentence)
+            )
         elif reason == "literal_requested_event_occurrence_is_negated":
             matches = re.findall(
                 r"\bno (?:se (?:presento|produjo|registro)|ocurrio|hubo|aparecio)\s+(?:(?:un|una|ningun|ninguna|el|la|los|las|ninguno|algun|alguna)\s+)*([^\W_]+)",

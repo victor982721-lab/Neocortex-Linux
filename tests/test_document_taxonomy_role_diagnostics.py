@@ -2,6 +2,8 @@
 
 from dataclasses import asdict
 
+import pytest
+
 from neocortex.documents.document_taxonomy import DocumentSignals, classify_document
 
 
@@ -26,6 +28,108 @@ def test_timestamped_log_mentions_do_not_make_it_an_incident_report() -> None:
     assert any(
         item.entity == "ANDRITZ" and item.role == "mentioned" for item in result.entity_roles
     )
+
+
+@pytest.mark.parametrize("media_type", ("text/plain", "application/json"))
+def test_same_structured_log_in_archive_uses_observed_text_mime(media_type: str) -> None:
+    result = classify_document(
+        DocumentSignals(
+            "archive",
+            "/fixture/container.zip!/audit.dat",
+            "indexed",
+            metadata=f"content_kind=txt media_type={media_type}",
+            leading_text=(
+                "2026-08-27 09:38:49 INFO command: audit\n"
+                "2026-08-27 09:38:50 INFO stdout: reporte de anomalías Malpaso\nexit_code=0"
+            ),
+        )
+    )
+    assert result.primary_kind == result.document_role == "registro_log"
+    assert result.taxonomy_status == "outside_taxonomy"
+
+
+@pytest.mark.parametrize(
+    "source_kind,metadata",
+    (
+        ("image", "media_type=text/plain"),
+        ("archive", "content_kind=image media_type=image/png"),
+        ("archive", "content_kind=image media_type=text/plain"),
+        ("archive", "content_kind=pdf media_type=application/pdf"),
+        ("archive", ""),
+        ("archive", "media_type=text/plain media_type=image/png"),
+        ("archive", "media_type=text/plain media_type=text/plain"),
+    ),
+)
+def test_archive_log_rule_does_not_promote_ocr_or_ambiguous_mime(
+    source_kind: str, metadata: str
+) -> None:
+    result = classify_document(
+        DocumentSignals(
+            source_kind,
+            "/fixture/container.zip!/audit.txt",
+            "indexed",
+            metadata=metadata,
+            leading_text=(
+                "2026-08-27 09:38:49 INFO command: audit\n"
+                "2026-08-27 09:38:50 INFO stdout: reporte de anomalías\nexit_code=0"
+            ),
+        )
+    )
+    assert result.document_role != "registro_log"
+
+
+@pytest.mark.parametrize(
+    "heading,expected_role",
+    (
+        ("Reporte de anomalías", "reporte_anomalias"),
+        ("Bitácora de actividades", "registro_bitacora"),
+    ),
+)
+def test_archive_explicit_document_heading_is_not_overridden_by_quoted_logs(
+    heading: str,
+    expected_role: str,
+) -> None:
+    result = classify_document(
+        DocumentSignals(
+            "archive",
+            "/fixture/container.zip!/entry.txt",
+            "indexed",
+            title=heading,
+            metadata="content_kind=txt media_type=text/plain",
+            leading_text=(
+                "2026-08-27 09:38:49 INFO command: audit\n"
+                "2026-08-27 09:38:50 INFO stdout: reporte de anomalías\nexit_code=0"
+            ),
+        )
+    )
+    assert result.document_role == expected_role
+
+
+@pytest.mark.parametrize("source_kind", ("text", "archive"))
+@pytest.mark.parametrize("filename_stem", ("Bitácora de actividades", "Reporte de anomalías"))
+@pytest.mark.parametrize("title_is_stem", (False, True))
+def test_filename_title_does_not_block_structured_log_role(
+    source_kind: str,
+    filename_stem: str,
+    title_is_stem: bool,
+) -> None:
+    basename = f"{filename_stem}.log"
+    prefix = "/fixture/archive.zip!/" if source_kind == "archive" else "/fixture/"
+    result = classify_document(
+        DocumentSignals(
+            source_kind,
+            f"{prefix}{basename}",
+            "indexed",
+            title=filename_stem if title_is_stem else basename,
+            metadata="content_kind=log media_type=text/plain",
+            leading_text=(
+                "2026-08-27 09:38:49 INFO command: audit\n"
+                "2026-08-27 09:38:50 INFO stdout: cache revisada\nexit_code=0"
+            ),
+        )
+    )
+    assert result.primary_kind == result.document_role == "registro_log"
+    assert "heading:explicit_bitacora_over_quoted_log" not in result.role_evidence
 
 
 def test_log_filename_or_word_alone_is_not_a_log_role() -> None:

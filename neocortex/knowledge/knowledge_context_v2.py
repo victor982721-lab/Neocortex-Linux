@@ -251,9 +251,10 @@ def _budget_candidate_priority(
     """Prefer usable evidence for packing, not a new retrieval score.
 
     Verification binds an owner excerpt, not the truth of a claim. Literal
-    support is necessary evidence, not answerability. Counter-witnesses remain
-    eligible at the highest tier even when their polarity differs from query
-    terms; the ordinary final-excerpt checks still decide their disposition.
+    support is necessary evidence, not answerability. Among verified excerpts,
+    the retrieval order remains authoritative: partial literal overlap may be
+    a relevant paraphrase. Counter-witnesses retain that same tier rather than
+    displacing every ordinary witness; final checks still decide disposition.
     """
     from neocortex.semantic.semantic_query_evidence import (
         query_role_counterevidence, requested_evidence_checks,
@@ -265,13 +266,11 @@ def _budget_candidate_priority(
     support = citation.get("retrieval_support", {})
     verified = citation.get("hydration", {}).get("status") == "owner_verified"
     missing_negation = bool(support.get("missing_negation_terms"))
-    if (verified and support.get("support") == "full_terms" and not missing_negation):
+    if verified and not missing_negation:
         return 0
     if (query_role_counterevidence(query, snippet)
             or requested_evidence_checks(query, snippet)["counterevidence"]):
-        return 0
-    if verified and not missing_negation:
-        return 1
+        return 0 if verified else 1
     return 2
 
 

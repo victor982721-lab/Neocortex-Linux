@@ -99,7 +99,7 @@ __all__ = (  # noqa: RUF022
 
 # region [01] Stable public classification contract
 
-CLASSIFIER_VERSION = "technical-document-classifier-v15"
+CLASSIFIER_VERSION = "technical-document-classifier-v16"
 
 
 def document_classifier_signature(taxonomy: TechnicalTaxonomy) -> str:

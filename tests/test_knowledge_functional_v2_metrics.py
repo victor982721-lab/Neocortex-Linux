@@ -11,6 +11,7 @@ import pytest
 
 from tools.knowledge_functional_v2_metrics import (
     CHECKS_POLICY,
+    METRIC_SCHEMA,
     aggregate_context_v2,
     acceptance_v2,
     expected_necessary_checks,
@@ -289,7 +290,7 @@ def test_v2_gate_never_claims_legacy_zero_or_passes_all_abstention():
         "queries": 10,
     }
     typed = {
-        "schema": "neocortex.functional-context-operationalization/v2",
+        "schema": METRIC_SCHEMA,
         "queries": 10,
         "positive_queries": 8,
         "positive_sufficient_proven_queries": 8,
@@ -312,7 +313,7 @@ def test_v2_gate_never_claims_legacy_zero_or_passes_all_abstention():
 
 def test_supplement_is_explicit_pinned_and_does_not_replace_frozen_judgments(tmp_path):
     root = Path(__file__).parent / "fixtures" / "knowledge_functional_v1"
-    path = root / "operationalization-v2.json"
+    path = root / "operationalization-v2.1.json"
     freeze_sha = hashlib.sha256((root / "freeze.json").read_bytes()).hexdigest()
     assert (
         verify_operationalization(path, frozen_dataset_sha256=freeze_sha)
@@ -323,10 +324,150 @@ def test_supplement_is_explicit_pinned_and_does_not_replace_frozen_judgments(tmp
     assert contract["legacy_baseline_reclassified"] is False
     assert (
         contract["documentation_sha256"]
-        == hashlib.sha256((root / "OPERATIONALIZATION_V2.md").read_bytes()).hexdigest()
+        == hashlib.sha256((root / "OPERATIONALIZATION_V2_1.md").read_bytes()).hexdigest()
     )
     contract["adapter_sha256"] = "0" * 64
     altered = tmp_path / "altered-supplement.json"
     altered.write_text(json.dumps(contract))
     with pytest.raises(ValueError, match="differs from its recorded supplement"):
         verify_operationalization(altered, frozen_dataset_sha256=freeze_sha)
+
+
+def test_original_v2_contract_remains_immutable_and_explicitly_superseded():
+    root = Path(__file__).parent / "fixtures" / "knowledge_functional_v1"
+    path = root / "operationalization-v2.json"
+    assert (
+        hashlib.sha256(path.read_bytes()).hexdigest()
+        == "6898c112bf670eec1d29b03881e3275407a6d5fa011d79618700cae7c34f4969"
+    )
+    contract = json.loads(path.read_text())
+    assert (
+        contract["adapter_sha256"]
+        == "c6acac048f9ed649c8a678ed9ca8608c7fbaaae0442bcf6bce9c18fa2501e25d"
+    )
+    assert contract["schema"] == "neocortex.functional-context-operationalization/v2"
+
+
+def _subject_exclusion_case(tmp_path, question, body):
+    case = _case(tmp_path, question=question, body=body)
+    citation = case[1]["citations"][0]
+    citation["evidence_disposition"] = "contradictory"
+    citation["role_counterevidence"] = [
+        {
+            "policy_signature": "query-role-counterevidence-v1",
+            "basis": "input_text",
+            "interpretation": "literal_counterevidence_not_entailment_or_authority",
+            "start_char": 0,
+            "end_char": len(body),
+            "text": body,
+            "reasons": ["requested_named_subject_is_explicitly_excluded"],
+            "evaluation_truncated": False,
+            "query_truncated": False,
+        }
+    ]
+    return case
+
+
+@pytest.mark.parametrize(
+    "question,body",
+    [
+        ("¿Qué ocurrió con el depósito L4?", "El registro no corresponde a L4."),
+        ("¿Qué ocurrió con el depósito L4?", "El registro no corresponde al depósito L4."),
+        (
+            "¿Qué ocurrió con la válvula auxiliar V42?",
+            "El registro no corresponde a la válvula auxiliar V42.",
+        ),
+        (
+            "¿Qué ocurrió con el motor principal M77?",
+            "El informe no corresponde al motor principal M77.",
+        ),
+        (
+            "¿Qué ocurrió en la unidad experimental X91?",
+            "El registro no corresponde a la unidad experimental X91.",
+        ),
+    ],
+)
+def test_v2_1_recognizes_only_the_same_explicitly_named_nominal_subject(tmp_path, question, body):
+    result = score_context_v2(*_subject_exclusion_case(tmp_path, question, body))
+    assert result["unknown_disposition_citations"] == 0
+    assert result["verified_related_material"] == 1
+    assert result["legacy_negative_context_selections"] == 1
+    assert result["unsupported_sufficient_evidence"] == 0
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "El registro no corresponde al depósito L8.",
+        "El registro no corresponde al proveedor de L4.",
+        "El registro no corresponde al motor L4.",
+        "El registro no corresponde al depósito L8 sino al depósito L4.",
+        "Si el registro no corresponde al depósito L4, se preparará otro.",
+        "El registro no corresponde al depósito L4 si cambia la numeración.",
+        "Cuando cambie la numeración, el registro no corresponde al depósito L4.",
+        "Es posible que el registro no corresponde al depósito L4.",
+        "No es cierto que el registro no corresponde al depósito L4.",
+        "Nunca se afirmó que el registro no corresponde al depósito L4.",
+        "Se negó que el registro no corresponde al depósito L4.",
+        "El registro no corresponde al depósito. L4 aparece en otra frase.",
+    ],
+)
+def test_v2_1_keeps_other_entities_conditionals_and_negation_unverified(tmp_path, body):
+    result = score_context_v2(
+        *_subject_exclusion_case(tmp_path, "¿Qué ocurrió con el depósito L4?", body)
+    )
+    assert result["unknown_disposition_citations"] == 1
+    assert result["unsupported_sufficient_evidence"] == 1
+    assert "counterevidence_reason_not_verified_in_final_text" in result["citations"][0]["errors"]
+
+
+def test_v2_1_never_removes_nominal_words_to_make_a_forged_span_match(tmp_path):
+    case = _subject_exclusion_case(
+        tmp_path, "¿Qué ocurrió con el depósito L4?", "El registro no corresponde al depósito L4."
+    )
+    witness = case[1]["citations"][0]["role_counterevidence"][0]
+    witness["text"] = "El registro no corresponde al L4."
+    result = score_context_v2(*case)
+    assert result["unknown_disposition_citations"] == 1
+    assert "counterevidence_text_not_exact_final_span" in result["citations"][0]["errors"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "No es cierto que el registro no corresponde al depósito L4.",
+        "Si el registro no corresponde al depósito L4, se preparará otro.",
+        "El registro no corresponde al depósito L4 si cambia la numeración.",
+        "No es cierto que\nel registro no corresponde al depósito L4.",
+        "Es posible que el registro no corresponde al depósito L4.",
+    ],
+)
+def test_v2_1_internal_span_cannot_hide_same_sentence_negation_or_condition(tmp_path, body):
+    phrase = "el registro no corresponde al depósito L4"
+    case = _subject_exclusion_case(tmp_path, "¿Qué ocurrió con el depósito L4?", body)
+    witness = case[1]["citations"][0]["role_counterevidence"][0]
+    start = body.casefold().index(phrase.casefold())
+    end = start + len(phrase)
+    witness.update(start_char=start, end_char=end, text=body[start:end])
+    result = score_context_v2(*case)
+    assert result["unknown_disposition_citations"] == 1
+    assert result["unsupported_sufficient_evidence"] == 1
+    assert "counterevidence_reason_not_verified_in_final_text" in result["citations"][0]["errors"]
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "No se emitió una autorización. ",
+        "Si falta un dato, se revisa el informe. ",
+    ],
+)
+def test_v2_1_does_not_borrow_negation_from_another_sentence(tmp_path, prefix):
+    phrase = "El registro no corresponde al depósito L4"
+    body = prefix + phrase + "."
+    case = _subject_exclusion_case(tmp_path, "¿Qué ocurrió con el depósito L4?", body)
+    witness = case[1]["citations"][0]["role_counterevidence"][0]
+    witness.update(start_char=len(prefix), end_char=len(prefix) + len(phrase), text=phrase)
+    result = score_context_v2(*case)
+    assert result["unknown_disposition_citations"] == 0
+    assert result["verified_related_material"] == 1
