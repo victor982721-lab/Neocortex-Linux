@@ -87,6 +87,17 @@ def test_semantic_parallelism_disables_grandchildren_in_daemonic_workers(
     assert default_semantic_parallel(16) == 1
 
 
+def test_semantic_parallelism_disables_nested_spawn_workers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        multiprocessing,
+        "current_process",
+        lambda: type("SpawnWorker", (), {"daemon": False, "name": "SpawnProcess-1"})(),
+    )
+    assert default_semantic_parallel(16) == 1
+
+
 @pytest.mark.parametrize("repository_id", (None, 42, True))
 def test_repository_id_rejects_non_string_values(repository_id: object) -> None:
     with pytest.raises(ValueError, match=r"^repository_id must be a string$"):

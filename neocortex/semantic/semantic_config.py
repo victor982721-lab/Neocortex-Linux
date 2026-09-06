@@ -398,11 +398,12 @@ def default_semantic_parallel(threads: int) -> int:
         raise ValueError("semantic threads must be positive")
     # The production generation runner is itself a multiprocessing child.
     # FastEmbed's ``parallel>1`` tries to create grandchildren there, which
-    # Python correctly rejects for daemonic workers. Keep the safe single
-    # batch path inside that process and reserve overlap for direct callers.
+    # Python rejects for nested/daemonic workers. Keep the safe single-batch
+    # path inside that process and reserve overlap for direct callers.
     import multiprocessing
 
-    if multiprocessing.current_process().daemon:
+    process = multiprocessing.current_process()
+    if process.daemon or process.name != "MainProcess":
         return 1
     # ``threads`` controls ONNX intra-model work; ``parallel`` overlaps
     # independent FastEmbed batches. Two workers are useful on the supported
