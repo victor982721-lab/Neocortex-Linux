@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import itertools
+import json
 import sqlite3
 import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -58,6 +59,7 @@ from .semantic_sources import (
     TextSourceRecord,
     iter_text_sections_with_metadata,
     semantic_source_heads,
+    _source_head_query,
     semantic_text_processing_signature,
     require_readable_source_heads,
 )
@@ -81,6 +83,103 @@ from neocortex.persistence.sqlite_cancellation import (
 
 TextRecordIterator = Callable[[Path, str], Iterator[TextSourceRecord]]
 SEMANTIC_PROGRESS_ITEM_INTERVAL = 25
+
+
+def _content_compatible_text_replay(
+    state_directory: Path,
+    connection: sqlite3.Connection,
+    generation_id: int,
+    provenance: dict[str, object],
+    *,
+    selected_sources: tuple[str, ...],
+    current_heads: Sequence[object],
+    replay_scope: str,
+) -> bool:
+    """Allow replay after route-signature churn only when text content is stable.
+
+    Text route cache hits can refresh an extractor signature without changing
+    the durable text representation.  Published Semantic item revisions retain
+    the exact materialization fingerprint and physical revision, so compare
+    those facts directly before accepting the existing vector head.  Other
+    source heads still require exact equality.
+    """
+
+    if "text" not in selected_sources:
+        return False
+    ledger = provenance.get("source_head_ledger")
+    if not isinstance(ledger, dict):
+        return False
+    entry = ledger.get(replay_scope)
+    if not isinstance(entry, dict):
+        return False
+    old_heads = entry.get("source_heads")
+    if not isinstance(old_heads, list):
+        return False
+    current_payloads = [head.as_payload() for head in current_heads]
+    old_by_kind = {
+        str(value.get("source_kind")): value
+        for value in old_heads
+        if isinstance(value, dict) and isinstance(value.get("source_kind"), str)
+    }
+    current_by_kind = {
+        str(value.get("source_kind")): value
+        for value in current_payloads
+        if isinstance(value, dict) and isinstance(value.get("source_kind"), str)
+    }
+    if set(old_by_kind) != set(current_by_kind):
+        return False
+    for source_kind, old_head in old_by_kind.items():
+        if source_kind != "text" and old_head != current_by_kind[source_kind]:
+            return False
+
+    from neocortex.persistence.sqlite_immutable import immutable_sqlite_database
+    from .semantic_sources import semantic_source_database
+
+    owner = semantic_source_database(state_directory, "text")
+    try:
+        with immutable_sqlite_database(owner, timeout_seconds=30) as owner_connection:
+            query, parameters = _source_head_query(owner_connection, "text")
+            current_rows = owner_connection.execute(query, parameters).fetchall()
+    except (OSError, sqlite3.DatabaseError):
+        return False
+    current_by_identity = {str(row["file_key"]): row for row in current_rows}
+    if not current_by_identity:
+        return False
+    published_rows = connection.execute(
+        """SELECT DISTINCT revision.source_identity,revision.path,
+            revision.source_revision_json,revision.provenance_json
+        FROM embedding_generation_members member
+        JOIN semantic_item_revisions revision
+          ON revision.item_revision_id=member.item_revision_id
+        WHERE member.generation_id=? AND member.entity_kind='text_chunk'
+        ORDER BY revision.source_identity""",
+        (generation_id,),
+    ).fetchall()
+    if len(published_rows) != len(current_by_identity):
+        return False
+    for revision in published_rows:
+        identity = str(revision["source_identity"])
+        current = current_by_identity.get(identity)
+        if current is None or str(revision["path"]) != str(current["path"]):
+            return False
+        try:
+            source_revision = json.loads(str(revision["source_revision_json"]))
+            source_provenance = json.loads(str(revision["provenance_json"]))
+            materialization = source_revision["consumed_materialization"]
+            materialization_fingerprint = str(materialization["fingerprint"])
+            if (
+                int(source_revision["size"]) != int(current["size"])
+                or int(source_revision["mtime_ns"]) != int(current["mtime_ns"])
+                or int(source_revision["birthtime_ns"]) != int(current["birthtime_ns"])
+                or materialization_fingerprint != str(current["text_xxh3_128"])
+            ):
+                return False
+            for provenance_key, current_key in (("source_title", "title"), ("source_author", "author")):
+                if provenance_key in source_provenance and source_provenance[provenance_key] != current[current_key]:
+                    return False
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return False
+    return True
 
 
 # region [01] Source grouping and staging
@@ -405,6 +504,21 @@ def index_text_embeddings(
             model_signature=selected_model.model_signature,
             required_source_head_ledger={replay_scope: replay_entry},
             writer_coordinated=True,
+            source_head_compatibility=(
+                (
+                    lambda connection, generation_id, provenance: _content_compatible_text_replay(
+                        state_directory,
+                        connection,
+                        generation_id,
+                        dict(provenance),
+                        selected_sources=selected_sources,
+                        current_heads=source_heads,
+                        replay_scope=replay_scope,
+                    )
+                )
+                if "text" in selected_sources
+                else None
+            ),
         )
         if published is not None:
             confirmed_heads = semantic_source_heads(state_directory, selected_sources)

@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -2875,6 +2875,8 @@ def find_exact_published_generation(
     required_provenance: Mapping[str, object] | None = None,
     required_source_head_ledger: Mapping[str, object] | None = None,
     writer_coordinated: bool = False,
+    source_head_compatibility: Callable[[sqlite3.Connection, int, Mapping[str, object]], bool]
+    | None = None,
 ) -> GenerationSummary | None:
     """Read an exact head, reusing the owner writer during an active index."""
 
@@ -2895,14 +2897,29 @@ def find_exact_published_generation(
             required = required_provenance or {}
             ledger_required = required_source_head_ledger or {}
             ledger = provenance.get("source_head_ledger") if isinstance(provenance, dict) else None
+            ledger_matches = (
+                isinstance(provenance, dict)
+                and not any(provenance.get(key) != value for key, value in required.items())
+                and (
+                    not ledger_required
+                    or (
+                        isinstance(ledger, dict)
+                        and all(ledger.get(key) == value for key, value in ledger_required.items())
+                    )
+                )
+            )
             if (
                 not isinstance(provenance, dict)
                 or any(provenance.get(key) != value for key, value in required.items())
                 or (
-                    ledger_required
+                    not ledger_matches
                     and (
-                        not isinstance(ledger, dict)
-                        or any(ledger.get(key) != value for key, value in ledger_required.items())
+                        source_head_compatibility is None
+                        or not source_head_compatibility(
+                            connection,
+                            int(row["generation_id"]),
+                            provenance,
+                        )
                     )
                 )
             ):
