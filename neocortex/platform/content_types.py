@@ -90,7 +90,6 @@ _TEXT_EXTENSIONS = frozenset(
         ".yml",
     }
 )
-_OLE_SIGNATURE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 _RFC5322_HEADER = re.compile(
     rb"(?im)^(?:from|to|date|subject|message-id|mime-version):[^\r\n]+\r?$"
 )
@@ -384,58 +383,6 @@ def _detect_database_or_executable(
     return None
 
 
-def _detect_legacy_office(path: str, header: bytes) -> DetectedType | None:
-    if not header.startswith(_OLE_SIGNATURE):
-        return None
-    suffix = Path(path).suffix.casefold()
-    legacy = {
-        ".doc": (
-            "application/msword",
-            ".doc",
-            (".doc", ".dot"),
-            "cfb:word-extension",
-        ),
-        ".dot": (
-            "application/msword",
-            ".doc",
-            (".doc", ".dot"),
-            "cfb:word-extension",
-        ),
-        ".xls": (
-            "application/vnd.ms-excel",
-            ".xls",
-            (".xls", ".xlt"),
-            "cfb:excel-extension",
-        ),
-        ".xlt": (
-            "application/vnd.ms-excel",
-            ".xls",
-            (".xls", ".xlt"),
-            "cfb:excel-extension",
-        ),
-        ".ppt": (
-            "application/vnd.ms-powerpoint",
-            ".ppt",
-            (".ppt", ".pot", ".pps"),
-            "cfb:powerpoint-extension",
-        ),
-        ".pot": (
-            "application/vnd.ms-powerpoint",
-            ".ppt",
-            (".ppt", ".pot", ".pps"),
-            "cfb:powerpoint-extension",
-        ),
-        ".pps": (
-            "application/vnd.ms-powerpoint",
-            ".ppt",
-            (".ppt", ".pot", ".pps"),
-            "cfb:powerpoint-extension",
-        ),
-    }
-    value = legacy.get(suffix)
-    return None if value is None else _type(*value)
-
-
 def _text_decoding(header: bytes) -> tuple[str, str] | None:
     encodings = (
         ("utf-32",)
@@ -517,9 +464,6 @@ def detect_content_type(path: str | Path) -> DetectedType | None:
     archive = _detect_archive(native, header)
     if archive is not None:
         return archive
-    legacy_office = _detect_legacy_office(native, header)
-    if legacy_office is not None:
-        return legacy_office
     database_or_executable = _detect_database_or_executable(native, header)
     if database_or_executable is not None:
         return database_or_executable

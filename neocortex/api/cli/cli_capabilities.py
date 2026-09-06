@@ -116,15 +116,6 @@ _TEXT_LOCAL_POLICY = CapabilityPolicy(
     allowed_privacy=(CapabilityPrivacy.LOCAL_ONLY,),
     gpu_available=False,
 )
-_NON_REPLAYABLE_TEXT_MIMES = frozenset(
-    {
-        "application/msword",
-        "application/vnd.ms-excel",
-        "application/vnd.ms-powerpoint",
-    }
-)
-
-
 def _text_selection(args: argparse.Namespace) -> CapabilitySelection:
     request = CapabilityRequest(
         capability_id=args.doctor_capabilities_select,
@@ -135,8 +126,8 @@ def _text_selection(args: argparse.Namespace) -> CapabilitySelection:
         language="unknown",
         input_bytes=args.doctor_capabilities_input_bytes,
         platform=_runtime_platform(),
-        acceptable_reproducibility=("environment_bound", "non_replayable"),
-        require_incremental=(args.doctor_capabilities_mime_type not in _NON_REPLAYABLE_TEXT_MIMES),
+        acceptable_reproducibility=("environment_bound",),
+        require_incremental=True,
     )
     broker = build_runtime_capability_broker(request)
     return broker.select(request, _TEXT_LOCAL_POLICY)

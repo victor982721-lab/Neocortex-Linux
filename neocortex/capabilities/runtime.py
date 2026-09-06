@@ -407,15 +407,7 @@ CAPABILITY_SPECS: Mapping[str, RuntimeCapabilitySpec] = MappingProxyType(
         ),
         "text": RuntimeCapabilitySpec(
             "text",
-            _with_base(
-                _executable(
-                    "soffice",
-                    "soffice",
-                    required=False,
-                    missing_reason="text_legacy_office_extractor_unavailable",
-                    extra="documents",
-                ),
-            ),
+            _with_base(),
             extra="documents",
         ),
         "audio": RuntimeCapabilitySpec(
@@ -557,7 +549,6 @@ TEXT_EXTRACT_CAPABILITY_ID = "text.extract"
 TEXT_RAW_INPUT_SCHEMA = "neocortex.raw-bytes/v1"
 TEXT_REPRESENTATION_OUTPUT_SCHEMA = "neocortex.text-representation/v1"
 TEXT_BUILTIN_IMPLEMENTATION_ID = "neocortex.text.builtin"
-TEXT_LEGACY_OFFICE_IMPLEMENTATION_ID = "neocortex.text.legacy-office-worker"
 
 _TEXT_BUILTIN_MIMES = (
     "text/plain",
@@ -569,12 +560,6 @@ _TEXT_BUILTIN_MIMES = (
     "application/json",
     "message/rfc822",
 )
-_TEXT_LEGACY_OFFICE_MIMES = (
-    "application/msword",
-    "application/vnd.ms-excel",
-    "application/vnd.ms-powerpoint",
-)
-
 CAPABILITY_MANIFESTS: tuple[CapabilityManifest, ...] = (
     CapabilityManifest(
         capability_id=TEXT_EXTRACT_CAPABILITY_ID,
@@ -608,58 +593,6 @@ CAPABILITY_MANIFESTS: tuple[CapabilityManifest, ...] = (
         mime_binary_alternatives=(),
         required_models=(),
         compatibility=("text-route-v2", "text-state-v2"),
-        quality_metrics=(),
-        estimated_cost=None,
-        estimated_latency_ms=None,
-    ),
-    CapabilityManifest(
-        capability_id=TEXT_EXTRACT_CAPABILITY_ID,
-        capability_version="2",
-        implementation_id=TEXT_LEGACY_OFFICE_IMPLEMENTATION_ID,
-        provider="neocortex-legacy-office-worker",
-        provider_version="legacy-office-worker-v2",
-        lifecycle=CapabilityLifecycle.PRODUCTION,
-        supported_platforms=("linux", "windows"),
-        modalities=("document",),
-        input_schemas=(TEXT_RAW_INPUT_SCHEMA,),
-        output_schemas=(TEXT_REPRESENTATION_OUTPUT_SCHEMA,),
-        mime_types=_TEXT_LEGACY_OFFICE_MIMES,
-        language_mode=CapabilityLanguageMode.AGNOSTIC,
-        languages=(),
-        deterministic=None,
-        reproducibility_classes=("best_effort", "non_replayable"),
-        incremental=False,
-        cancellation=False,
-        checkpointing=False,
-        max_input_bytes=None,
-        default_timeout_seconds=60.0,
-        cpu_threads=1,
-        ram_bytes=None,
-        gpu_required=False,
-        network_required=False,
-        privacy=CapabilityPrivacy.LOCAL_ONLY,
-        optional_extra="documents",
-        required_components=("xxhash",),
-        required_binaries=(),
-        mime_binary_alternatives=(
-            CapabilityMimeBinaryAlternatives(
-                "application/msword",
-                ("soffice", "libreoffice", "catdoc"),
-                "legacy_office_extractor_unavailable",
-            ),
-            CapabilityMimeBinaryAlternatives(
-                "application/vnd.ms-excel",
-                ("xls2csv", "soffice", "libreoffice"),
-                "legacy_office_extractor_unavailable",
-            ),
-            CapabilityMimeBinaryAlternatives(
-                "application/vnd.ms-powerpoint",
-                ("catppt", "soffice", "libreoffice"),
-                "legacy_office_extractor_unavailable",
-            ),
-        ),
-        required_models=(),
-        compatibility=("text-route-v2", "legacy-office-worker-v2"),
         quality_metrics=(),
         estimated_cost=None,
         estimated_latency_ms=None,
@@ -1287,7 +1220,6 @@ __all__ = (
     "RUNTIME_CAPABILITY_SCHEMA_VERSION",
     "TEXT_BUILTIN_IMPLEMENTATION_ID",
     "TEXT_EXTRACT_CAPABILITY_ID",
-    "TEXT_LEGACY_OFFICE_IMPLEMENTATION_ID",
     "TEXT_RAW_INPUT_SCHEMA",
     "TEXT_REPRESENTATION_OUTPUT_SCHEMA",
     "CapabilityAvailability",

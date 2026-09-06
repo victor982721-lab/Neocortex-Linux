@@ -45,8 +45,7 @@ Registra ruta, versión, exit, tiempo, elementos elegibles/procesados, errores,
 cache hits y throughput. Corrige el primer bloqueo antes de ampliar rutas.
 
 Ejecuta el mismo comando por segunda vez. El replay debe mostrar qué se reutilizó
-y qué provider es `non_replayable`; no llames incremental a una reejecución
-oculta.
+y qué trabajo nuevo quedó, sin ocultar una reejecución como incremental.
 
 ## Ampliación controlada
 
@@ -123,7 +122,7 @@ Neocortex models prepare
 ```
 
 `status` es local. `prepare` puede usar red y requiere autorización. Tesseract,
-FFmpeg/FFprobe, LibreOffice y otros binarios se detectan antes de iniciar la ruta;
+FFmpeg/FFprobe y otros binarios se detectan antes de iniciar la ruta;
 una ausencia se reporta como cobertura o bloqueo, no como éxito vacío.
 
 ## Curación

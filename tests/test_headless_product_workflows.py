@@ -260,7 +260,7 @@ def test_real_text_code_inventory_duplicate_and_incremental_workflow(
     lab = product_lab
     originals = lab.copy_group("base")
     assert len(originals) == 20
-    lab.hide_system_tools()  # qpdf/catdoc/Qt/FFmpeg are not prerequisites here.
+    lab.hide_system_tools()  # Optional document/OCR tools are not prerequisites here.
     options = (
         "--text-max-count",
         "25",
@@ -382,7 +382,7 @@ print(json.dumps({'partial_files':partial.files_seen,'files':final.files_seen,
 
 
 @pytest.mark.capability("documents")
-def test_real_pdf_docx_odt_extraction_does_not_require_qpdf_or_catdoc(
+def test_real_pdf_docx_odt_extraction_does_not_require_optional_tools(
     product_lab: _ProductLab,
 ) -> None:
     lab = product_lab
@@ -538,44 +538,6 @@ def test_real_ffmpeg_video_without_audio_or_models_is_headless(product_lab: _Pro
     assert _summary(replay, "route=video ")["cache_hits"] == "1"
     assert _summary(replay, "route=video ")["cache_hits"] == "1"
     assert not (lab.state / "audio.sqlite3").exists()
-    assert _hashes(lab.corpus) == originals
-
-
-@pytest.mark.capability("platform")
-def test_real_legacy_doc_uses_libreoffice_headless_without_catdoc(product_lab: _ProductLab) -> None:
-    lab = product_lab
-    executable = shutil.which("libreoffice")
-    if executable is None:
-        pytest.skip("real LibreOffice executable is required by legacy DOC extraction")
-    originals = lab.copy_group("legacy")
-    # Explicit converter routing excludes catdoc without breaking the shell
-    # utilities used by LibreOffice's own distribution launcher.
-    first = lab.process("text", "--text-max-count", "25", "--libreoffice-path", executable)
-    summary = _summary(first, "route=text ")
-    assert summary["legacy_office"] == "1" and summary["errors"] == "0"
-    assert lab.query(
-        "text.sqlite3",
-        "SELECT COUNT(*) FROM document_fts WHERE document_fts MATCH 'NEOCORTEX_DOCX'",
-    ) == [[1]]
-    _terminal_status(lab, {"text"})
-    provenance = lab.query(
-        "text.sqlite3", "SELECT detail,processing_signature,text_xxh3_128 FROM documents"
-    )
-    assert provenance[0][0].startswith("backend=libreoffice;")
-    assert provenance[0][1] and len(provenance[0][2]) == 32
-    replay = lab.process("text", "--text-max-count", "25", "--libreoffice-path", executable)
-    # The real capability explicitly marks external Office conversion non-replayable.
-    # Re-execution must remain visible, not relabelled as a deterministic cache hit.
-    assert _summary(replay, "route=text ")["processed"] == "1"
-    assert _summary(replay, "route=text ")["cache_hits"] == "0"
-    assert (
-        lab.query(
-            "text.sqlite3",
-            "SELECT status,execution_mode,reproducibility_class "
-            "FROM text_derivation_attempts ORDER BY recorded_ns",
-        )
-        == [["succeeded", "executed", "non_replayable"]] * 2
-    )
     assert _hashes(lab.corpus) == originals
 
 

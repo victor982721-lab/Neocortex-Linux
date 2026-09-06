@@ -141,7 +141,6 @@ class FrameworkConfig:
     text_worker_timeout_seconds: float = 60.0
     text_worker_memory_bytes: int = 1024 * 1024 * 1024
     text_retry_errors: bool = False
-    text_libreoffice_cmd: str | None = None
     audio_model_name: str = "small"
     audio_device: Literal["auto", "cpu", "cuda"] = field(default_factory=default_whisper_device)
     audio_compute_type: str = field(default_factory=default_whisper_compute_type)

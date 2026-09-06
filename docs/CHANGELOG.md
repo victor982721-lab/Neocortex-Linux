@@ -6,6 +6,11 @@ fuera de `docs/`.
 
 ## Cambios posteriores a 0.12.0
 
+- La extracción activa de texto queda limitada a formatos actuales, y se retiran
+  del runtime los lectores CFB de DOC/XLS/PPT, sus convertidores externos y sus
+  contadores de ejecución no reutilizable; DOCX/XLSX/PPTX/ODT conservan sus rutas
+  nativas y caché verificable, mientras las migraciones históricas de estado se
+  mantienen sólo para lectura.
 - Snapshots SQLite con WAL o rollback journal se materializan sólo en temporales
   autocontenidos antes de una lectura inmutable, y el cierre conserva la causa
   primaria con diagnósticos secundarios acotados.

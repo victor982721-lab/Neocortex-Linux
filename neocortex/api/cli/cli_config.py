@@ -136,7 +136,6 @@ def framework_config_from_args(args: argparse.Namespace) -> FrameworkConfig:
         text_worker_timeout_seconds=args.text_worker_timeout,
         text_worker_memory_bytes=args.text_worker_memory_mb * 1024 * 1024,
         text_retry_errors=args.retry_text_errors,
-        text_libreoffice_cmd=args.libreoffice_path,
         audio_model_name=args.whisper_model,
         audio_device=args.whisper_device,
         audio_compute_type=args.whisper_compute_type,

@@ -41,7 +41,7 @@ No instales pip ni dependencias Python globalmente. El host puede requerir:
 
 ~~~bash
 sudo apt install python3.14-venv qpdf tesseract-ocr \
-  tesseract-ocr-spa tesseract-ocr-eng ffmpeg libreoffice catdoc rsync \
+  tesseract-ocr-spa tesseract-ocr-eng ffmpeg rsync \
   desktop-file-utils
 ~~~
 
@@ -123,9 +123,10 @@ archivo, reanudación acotada, documentos, OCR, video y ausencia de modelos.
 
 Los wheels nativos son cp313 o `abi3` aplicable, no cp314 ni free-threaded, y
 declaran su mínimo manylinux/glibc. El intérprete y los ejecutables de sistema
-se provisionan por separado: FFmpeg/ffprobe para multimedia, Tesseract con el
-idioma solicitado para OCR y LibreOffice para conversiones que lo requieran.
-`qpdf` y `catdoc` no son requisitos globales, ni la ausencia de Qt impide CLI.
+se provisionan por separado: FFmpeg/ffprobe para multimedia y Tesseract con el
+idioma solicitado para OCR. Los formatos Office indexables son DOCX/XLSX/PPTX/ODT
+y se procesan con lectores nativos, sin convertidores externos. `qpdf` no es
+requisito global, ni la ausencia de Qt impide CLI.
 La UI necesita PySide6 y sus bibliotecas; `QT_QPA_PLATFORM=offscreen` o un
 display Xvfb permiten ejecución headless, pero no acreditan KDE/Wayland ni KIO.
 

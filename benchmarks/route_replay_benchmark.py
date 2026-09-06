@@ -6,8 +6,8 @@ canonical per-route replay counters from ``--status-json``.  It deliberately
 does not import the product from the checkout, inspect a user SQLite owner, or
 write a receipt inside the repository.
 
-The default profile contains 29 heterogeneous files (text, code, PDF, DOCX,
-ODT, image, video, legacy Office, audio, and ZIP).  Audio is present in the
+The default profile contains 28 heterogeneous files (text, code, PDF, DOCX,
+ODT, image, video, audio, and ZIP).  Audio is present in the
 fixture but is not selected by default because it needs an existing local
 Whisper model; add ``audio`` explicitly only when that model is provisioned.
 """
@@ -23,7 +23,6 @@ import resource
 import shlex
 import shutil
 import subprocess
-import tempfile
 import time
 import zipfile
 from collections.abc import Mapping, Sequence
@@ -51,7 +50,6 @@ FIXTURE_GROUPS = (
     "documents",
     "image",
     "video",
-    "legacy",
     "video_low_fps",
     "audio",
 )

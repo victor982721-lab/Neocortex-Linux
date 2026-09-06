@@ -168,7 +168,7 @@ def _print_text_report(result) -> None:
         f"processed={text.processed} cache_hits={text.cache_hits} "
         f"cached_errors={text.cached_errors} extracted={text.extracted} "
         f"plain_text={text.plain_text} emails={text.emails} "
-        f"legacy_office={text.legacy_office} text_chars={text.text_chars} "
+        f"text_chars={text.text_chars} "
         f"truncated={text.truncated} errors={text.errors} "
         f"retryable_errors={text.retryable_errors} "
         f"cache_documents_pruned={text.cache_documents_pruned} "

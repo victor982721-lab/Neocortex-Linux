@@ -40,7 +40,6 @@ from neocortex.capabilities.runtime import (
     RuntimeRequirement,
     TEXT_BUILTIN_IMPLEMENTATION_ID,
     TEXT_EXTRACT_CAPABILITY_ID,
-    TEXT_LEGACY_OFFICE_IMPLEMENTATION_ID,
     TEXT_RAW_INPUT_SCHEMA,
     TEXT_REPRESENTATION_OUTPUT_SCHEMA,
     build_runtime_capability_broker,
@@ -215,7 +214,7 @@ def test_set_like_contract_fields_have_order_independent_fingerprints() -> None:
             {
                 "mime_binary_alternatives": (
                     CapabilityMimeBinaryAlternatives(
-                        "application/msword",
+                            "application/x-fixture",
                         ("catdoc",),
                         "fixture_binary_unavailable",
                     ),
@@ -509,10 +508,10 @@ def test_missing_runtime_observation_is_fail_closed() -> None:
 def test_runtime_readiness_cannot_be_reused_for_a_different_request() -> None:
     manifest = _manifest(
         "fixture.bound-readiness",
-        mime_types=("application/msword", "application/vnd.ms-excel"),
+        mime_types=("text/plain", "text/csv"),
     )
-    doc_request = _request(mime_type="application/msword")
-    excel_request = _request(mime_type="application/vnd.ms-excel")
+    doc_request = _request(mime_type="text/plain")
+    excel_request = _request(mime_type="text/csv")
     broker = CapabilityBroker(
         (manifest,),
         _availability(manifest, request=doc_request),
@@ -736,7 +735,7 @@ def test_policy_payload_and_readiness_work_are_bounded_before_selection() -> Non
 
     with pytest.raises(ValueError, match="alternatives cannot contain more than 4"):
         CapabilityMimeBinaryAlternatives(
-            "application/msword",
+            "application/x-fixture",
             tuple(f"backend-{index}" for index in range(5)),
             "fixture_backend_unavailable",
         )
@@ -936,13 +935,8 @@ def _text_request(mime_type: str) -> CapabilityRequest:
         language="unknown",
         input_bytes=64,
         workspace_id="workspace:fixture",
-        acceptable_reproducibility=("environment_bound", "non_replayable"),
-        require_incremental=mime_type
-        not in {
-            "application/msword",
-            "application/vnd.ms-excel",
-            "application/vnd.ms-powerpoint",
-        },
+        acceptable_reproducibility=("environment_bound",),
+        require_incremental=True,
     )
 
 
@@ -950,24 +944,10 @@ def test_builtin_text_manifests_are_additive_to_runtime_schema_v1() -> None:
     assert RUNTIME_CAPABILITY_SCHEMA_VERSION == 1
     assert tuple(item.implementation_id for item in CAPABILITY_MANIFESTS) == (
         TEXT_BUILTIN_IMPLEMENTATION_ID,
-        TEXT_LEGACY_OFFICE_IMPLEMENTATION_ID,
     )
     assert {item.capability_id for item in CAPABILITY_MANIFESTS} == {TEXT_EXTRACT_CAPABILITY_ID}
     by_id = {item.implementation_id: item for item in CAPABILITY_MANIFESTS}
     assert by_id[TEXT_BUILTIN_IMPLEMENTATION_ID].incremental is True
-    assert by_id[TEXT_LEGACY_OFFICE_IMPLEMENTATION_ID].incremental is False
-    assert by_id[TEXT_LEGACY_OFFICE_IMPLEMENTATION_ID].reproducibility_classes == (
-        "best_effort",
-        "non_replayable",
-    )
-    assert {
-        item.mime_type: item.alternatives
-        for item in by_id[TEXT_LEGACY_OFFICE_IMPLEMENTATION_ID].mime_binary_alternatives
-    } == {
-        "application/msword": ("soffice", "libreoffice", "catdoc"),
-        "application/vnd.ms-excel": ("xls2csv", "soffice", "libreoffice"),
-        "application/vnd.ms-powerpoint": ("catppt", "soffice", "libreoffice"),
-    }
     for name in (
         "CapabilityBroker",
         "CapabilityManifest",
@@ -1015,146 +995,6 @@ def test_explicitly_disabled_capability_cannot_be_selected_from_present_packages
 
     assert selection.selected is None
     assert selection.candidates[0].rejection_reasons == ("capability_disabled",)
-
-
-def test_legacy_text_abstains_without_a_matching_backend_and_pins_exact_fallback(
-    tmp_path: Path,
-) -> None:
-    request = _text_request("application/msword")
-    backend = tmp_path / "catdoc"
-    backend.write_bytes(b"#!/bin/sh\nprintf 'fixture text\\n'\n")
-    backend.chmod(0o755)
-    missing = build_runtime_capability_broker(
-        request,
-        module_finder=lambda name: object() if name == "xxhash" else None,
-        distribution_version=_runtime_version,
-        executable_finder=lambda _name: None,
-    ).select(request)
-    fallback = build_runtime_capability_broker(
-        request,
-        module_finder=lambda name: object() if name == "xxhash" else None,
-        distribution_version=_runtime_version,
-        executable_finder=(lambda name: str(backend) if name == "catdoc" else None),
-    ).select(request)
-    primary = tmp_path / "soffice"
-    primary.write_bytes(b"#!/bin/sh\nprintf 'primary text\\n'\n")
-    primary.chmod(0o755)
-    both = build_runtime_capability_broker(
-        request,
-        module_finder=lambda name: object() if name == "xxhash" else None,
-        distribution_version=_runtime_version,
-        executable_finder=(
-            lambda name: (
-                str(primary) if name == "soffice" else str(backend) if name == "catdoc" else None
-            )
-        ),
-    ).select(request)
-
-    assert missing.selected is None
-    missing_legacy = next(
-        item
-        for item in missing.candidates
-        if item.implementation_id == TEXT_LEGACY_OFFICE_IMPLEMENTATION_ID
-    )
-    assert missing_legacy.rejection_reasons == ("legacy_office_extractor_unavailable",)
-    assert fallback.selected is not None
-    assert fallback.selected.implementation_id == TEXT_LEGACY_OFFICE_IMPLEMENTATION_ID
-    evaluation = next(item for item in fallback.candidates if item.eligible)
-    assert evaluation.availability is not None
-    assert len(evaluation.availability.binary_identities) == 1
-    identity = evaluation.availability.binary_identities[0]
-    assert identity.name == "catdoc"
-    assert identity.command == str(backend.resolve())
-    assert identity.to_dict()["command_sha256"] != identity.to_dict()["artifact_sha256"]
-    assert str(backend) not in str(fallback.to_dict())
-    both_evaluation = next(item for item in both.candidates if item.eligible)
-    assert both_evaluation.availability is not None
-    assert tuple(item.name for item in both_evaluation.availability.binary_identities) == (
-        "soffice",
-    )
-
-
-@pytest.mark.parametrize(
-    ("mime_type", "specific_backend"),
-    (
-        ("application/vnd.ms-excel", "xls2csv"),
-        ("application/vnd.ms-powerpoint", "catppt"),
-    ),
-)
-def test_legacy_text_prefers_format_specific_backend_when_soffice_is_also_present(
-    mime_type: str,
-    specific_backend: str,
-) -> None:
-    request = _text_request(mime_type)
-    command = os.fspath(Path(sys.executable).resolve())
-    selection = build_runtime_capability_broker(
-        request,
-        module_finder=lambda name: object() if name == "xxhash" else None,
-        distribution_version=_runtime_version,
-        executable_finder=(lambda name: command if name in {specific_backend, "soffice"} else None),
-    ).select(request)
-
-    assert selection.selected is not None
-    assert selection.selected.implementation_id == TEXT_LEGACY_OFFICE_IMPLEMENTATION_ID
-    evaluation = next(item for item in selection.candidates if item.eligible)
-    assert evaluation.availability is not None
-    assert tuple(item.name for item in evaluation.availability.binary_identities) == (
-        specific_backend,
-    )
-
-
-@pytest.mark.parametrize(
-    "mime_type",
-    ("application/vnd.ms-excel", "application/vnd.ms-powerpoint"),
-)
-def test_legacy_text_uses_soffice_when_format_specific_backend_is_absent(
-    mime_type: str,
-) -> None:
-    request = _text_request(mime_type)
-    command = os.fspath(Path(sys.executable).resolve())
-    selection = build_runtime_capability_broker(
-        request,
-        module_finder=lambda name: object() if name == "xxhash" else None,
-        distribution_version=_runtime_version,
-        executable_finder=lambda name: command if name == "soffice" else None,
-    ).select(request)
-
-    evaluation = next(item for item in selection.candidates if item.eligible)
-    assert evaluation.availability is not None
-    assert tuple(item.name for item in evaluation.availability.binary_identities) == ("soffice",)
-
-
-def test_binary_artifact_and_location_change_execution_fingerprint(
-    tmp_path: Path,
-) -> None:
-    request = _text_request("application/msword")
-    first_backend = tmp_path / "first" / "catdoc"
-    second_backend = tmp_path / "second" / "catdoc"
-    first_backend.parent.mkdir()
-    second_backend.parent.mkdir()
-    first_backend.write_bytes(b"#!/bin/sh\nprintf A\n")
-    second_backend.write_bytes(b"#!/bin/sh\nprintf A\n")
-    first_backend.chmod(0o755)
-    second_backend.chmod(0o755)
-
-    def selection(path: Path):
-        return build_runtime_capability_broker(
-            request,
-            module_finder=lambda name: object() if name == "xxhash" else None,
-            distribution_version=_runtime_version,
-            executable_finder=(lambda name: str(path) if name == "catdoc" else None),
-        ).select(request)
-
-    first = selection(first_backend)
-    second = selection(second_backend)
-    second_backend.write_bytes(b"#!/bin/sh\nprintf B\n")
-    second_backend.chmod(0o755)
-    changed_artifact = selection(second_backend)
-
-    assert first.selected is not None
-    assert second.selected is not None
-    assert first.execution_fingerprint != second.execution_fingerprint
-    assert second.execution_fingerprint != changed_artifact.execution_fingerprint
 
 
 def test_binary_identity_contract_rejects_invalid_hashes() -> None:

@@ -114,7 +114,7 @@ def archive_route_config_from_application(
 def text_route_config_from_application(
     config: _application_contracts.FrameworkConfig,
 ) -> _text_contracts.TextRouteConfig:
-    """Project generic text and legacy Office extraction limits."""
+    """Project generic text and Office conversion limits."""
 
     from neocortex.capabilities.formats.text.text_route import TextRouteConfig
 
@@ -126,7 +126,6 @@ def text_route_config_from_application(
         worker_timeout_seconds=config.text_worker_timeout_seconds,
         worker_memory_bytes=config.text_worker_memory_bytes,
         retry_errors=config.text_retry_errors,
-        libreoffice_cmd=config.text_libreoffice_cmd,
         selection=config.selection,
     )
 

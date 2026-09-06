@@ -23,7 +23,6 @@ from neocortex.capabilities.formats.text.text_route import TextRoute, TextRouteC
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _EXTRACTOR_ROOTS = {
     "neocortex/capabilities/formats/text/text_route.py": ("_extract", "_extractor_selector"),
-    "neocortex/capabilities/formats/office/legacy_worker.py": ("main",),
 }
 
 

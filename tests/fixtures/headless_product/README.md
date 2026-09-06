@@ -16,11 +16,9 @@ fixture hashes and content invariants, not hashes of generated databases.
   sampling regression rather than masking a partial result as complete
 - `audio/`: a one-second 16 kHz PCM synthetic tone for an explicit missing-backend
   `--all` run; no transcript or inference result is simulated
-- `legacy/`: the DOCX fixture converted once with LibreOffice's MS Word 97
-  exporter to exercise the real headless legacy Office integration
 
 All fixture bytes are included directly in the repository and excluded from the
-installed package. The tests copy at most 21 files into a private temporary
+installed package. The tests copy only authored current-format fixtures into a private temporary
 corpus, invoke an installed Neocortex through `-I -m neocortex` and its console
 entry point from an unrelated directory, then inspect terminal state through
 `SQLiteReadSession`. Replay compares semantic counters, content and publication
@@ -32,8 +30,8 @@ Run `tests/test_headless_product_workflows.py` using an isolated installed venv
 and the documented pytest capability selector. `NEOCORTEX_TEST_PYTHON` optionally
 selects a different installed venv; an explicit but invalid installation fails,
 while source-only pytest runs skip these installed workflows with a reason.
-LibreOffice conversion retains its existing `non_replayable` contract: a second
-run executes again and records that fact, unlike reusable text/image caches.
+Binary Office formats from the older CFB family are intentionally outside the
+current-format fixture set; use DOCX/XLSX/PPTX/ODT for current indexed content.
 The negative `--all` workflow requires an installation without inference engines,
 retains all registered routes in the failed run, and checks that completed text
 and Code owners remain queryable. Its Python network audit is process-local and

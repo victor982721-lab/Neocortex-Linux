@@ -48,7 +48,7 @@ from neocortex.capabilities.formats.text.text_route import TextRouteConfig
 def test_application_config_preserves_the_product_dataclass() -> None:
     assert ApplicationConfig is FrameworkConfig
     application_fields = fields(ApplicationConfig)
-    assert len(application_fields) == 175
+    assert len(application_fields) == 174
     field_names = {item.name for item in application_fields}
     assert {
         "code_candidate_scope",
@@ -60,7 +60,6 @@ def test_application_config_preserves_the_product_dataclass() -> None:
         "archive_ocr_max_pages",
         "text_max_file_bytes",
         "text_max_text_chars",
-        "text_libreoffice_cmd",
         "video_max_frames",
         "video_interval_seconds",
         "video_worker_memory_bytes",
@@ -140,7 +139,6 @@ def test_text_projection_preserves_all_limits_and_selection() -> None:
         text_worker_timeout_seconds=12.5,
         text_worker_memory_bytes=678_000_000,
         text_retry_errors=True,
-        text_libreoffice_cmd=r"C:\Program Files\LibreOffice\program\soffice.exe",
     )
     expected = TextRouteConfig(
         state_path=Path("text-state") / "text.sqlite3",
@@ -150,7 +148,6 @@ def test_text_projection_preserves_all_limits_and_selection() -> None:
         worker_timeout_seconds=12.5,
         worker_memory_bytes=678_000_000,
         retry_errors=True,
-        libreoffice_cmd=r"C:\Program Files\LibreOffice\program\soffice.exe",
         selection=selection,
     )
 

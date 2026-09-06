@@ -12,7 +12,7 @@ def register_text_arguments(
     *,
     megabyte_type: Callable[[str], int],
 ) -> None:
-    text = parser.add_argument_group("Generic text, email, and legacy Office route")
+    text = parser.add_argument_group("Generic text, email, and Office conversion route")
     text.add_argument(
         "--text-max-mb",
         dest="text_max_file_bytes",
@@ -40,10 +40,6 @@ def register_text_arguments(
         type=int,
         default=1024,
         metavar="MiB",
-    )
-    text.add_argument(
-        "--libreoffice-path",
-        help="optional explicit LibreOffice executable for legacy DOC/XLS/PPT",
     )
     text.add_argument(
         "--retry-text-errors",

@@ -18,7 +18,7 @@ def test_default_fixture_profile_is_heterogeneous_bounded_and_deterministic(
 
     assert first == second
     assert 20 <= first.files <= 50
-    assert first.files == 29
+    assert first.files == 28
     assert first.groups["base"] == 20
     assert first.groups["documents"] == 3
     assert first.groups["archive"] == 1
@@ -70,13 +70,13 @@ def test_route_metrics_rejects_a_status_payload_without_the_selected_route() -> 
 
 @pytest.mark.skipif(
     os.environ.get("NEOCORTEX_RUN_ROUTE_REPLAY_BENCHMARK") != "1",
-    reason="opt-in: executes the installed product over the 29-file temporary profile",
+    reason="opt-in: executes the installed product over the 28-file temporary profile",
 )
 def test_opt_in_route_replay_benchmark_is_two_pass_and_isolated() -> None:
     report = benchmark.run_benchmark(timeout_seconds=180)
 
     assert report["schema"] == benchmark.BENCHMARK_SCHEMA
-    assert report["fixture"]["files"] == 29
+    assert report["fixture"]["files"] == 28
     assert report["fixture"]["temporary"] is True
     assert report["state_is_temporary"] is True
     assert len(report["executions"]) == 2 * len(benchmark.DEFAULT_ROUTES)

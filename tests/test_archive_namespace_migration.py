@@ -95,7 +95,6 @@ HISTORICAL_SYMBOLS = {
         "_detect_media",
         "_detect_archive",
         "_detect_database_or_executable",
-        "_detect_legacy_office",
         "_text_decoding",
         "_detect_text",
         "detect_content_type",

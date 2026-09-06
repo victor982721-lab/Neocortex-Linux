@@ -31,7 +31,6 @@ from neocortex.capabilities.runtime import (
     RuntimeComponentStatus,
     RuntimeRequirement,
     TEXT_BUILTIN_IMPLEMENTATION_ID,
-    TEXT_LEGACY_OFFICE_IMPLEMENTATION_ID,
 )
 from neocortex.interface.entrypoint import entrypoint
 from neocortex.api.cli.cli_app import main
@@ -248,7 +247,7 @@ def _selection_request(
         mime_type="text/plain",
         language="unknown",
         input_bytes=input_bytes,
-        acceptable_reproducibility=("environment_bound", "non_replayable"),
+        acceptable_reproducibility=("environment_bound",),
         require_incremental=True,
     )
 
@@ -269,13 +268,6 @@ def _text_broker(
                 reasons=() if builtin_available else ("fixture_builtin_unavailable",),
                 observed_components=("xxhash",) if builtin_available else (),
             ),
-            CapabilityAvailability(
-                TEXT_LEGACY_OFFICE_IMPLEMENTATION_ID,
-                CAPABILITY_MANIFESTS[1].contract_fingerprint,
-                request.execution_contract_fingerprint,
-                available=False,
-                reasons=("fixture_legacy_unavailable",),
-            ),
         ),
     )
 
@@ -290,10 +282,7 @@ def test_text_selection_emits_explainable_canonical_json_and_exit_zero(
         assert request.input_bytes == 42
         assert request.language == "unknown"
         assert request.platform == EXPECTED_PLATFORM
-        assert request.acceptable_reproducibility == (
-            "environment_bound",
-            "non_replayable",
-        )
+        assert request.acceptable_reproducibility == ("environment_bound",)
         assert request.require_incremental is True
         return _text_broker(request)
 
@@ -379,16 +368,12 @@ def test_text_selection_abstains_with_candidate_reasons_and_exit_two(
     assert payload["selected"] is None
     assert payload["explanation"] == [
         "unavailable:text.extract",
-        "rejected_candidates:2",
+        "rejected_candidates:1",
     ]
     candidates = {item["implementation_id"]: item for item in payload["candidates"]}
     assert candidates[TEXT_BUILTIN_IMPLEMENTATION_ID]["rejection_reasons"] == [
         "fixture_builtin_unavailable"
     ]
-    assert (
-        "mime_type_unsupported"
-        in candidates[TEXT_LEGACY_OFFICE_IMPLEMENTATION_ID]["rejection_reasons"]
-    )
 
 
 def test_text_selection_human_output_names_provider_and_policy(

@@ -461,12 +461,6 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
                 "warning_policy": "silent",
             },
             {
-                "role": "legacy_worker",
-                "canonical_module_id": "neocortex.capabilities.formats.office.legacy_worker",
-                "public_symbols": ["main"],
-                "warning_policy": "silent",
-            },
-            {
                 "role": "models",
                 "canonical_module_id": "neocortex.capabilities.formats.office.models",
                 "public_symbols": [
@@ -558,7 +552,7 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
             "tests/test_text_derivation_route.py",
             "tests/test_text_implementation_identity.py",
         ],
-        "executable_module_ids": ["neocortex.capabilities.formats.office.legacy_worker"],
+        "executable_module_ids": [],
     },
     {
         "capability_id": "video",

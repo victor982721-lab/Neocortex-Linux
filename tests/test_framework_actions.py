@@ -113,24 +113,16 @@ class ContentTypeTests(unittest.TestCase):
             assert detected is not None
             self.assertEqual(detected.mime, "message/rfc822")
 
-    def test_detects_legacy_office_only_with_cfb_signature_and_known_suffix(self) -> None:
+    def test_unsupported_binary_office_is_not_indexed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             signature = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\0" * 504
-            expectations = {
-                "legacy.doc": "application/msword",
-                "legacy.xls": "application/vnd.ms-excel",
-                "legacy.ppt": "application/vnd.ms-powerpoint",
-            }
-            for name, expected_mime in expectations.items():
+            for name in ("binary.doc", "binary.xls", "binary.ppt"):
                 with self.subTest(name=name):
                     path = Path(directory) / name
                     path.write_bytes(signature)
-                    detected = detect_content_type(path)
-                    self.assertIsNotNone(detected)
-                    assert detected is not None
-                    self.assertEqual(detected.mime, expected_mime)
+                    self.assertIsNone(detect_content_type(path))
 
-            unknown = Path(directory) / "legacy.bin"
+            unknown = Path(directory) / "binary.bin"
             unknown.write_bytes(signature)
             self.assertIsNone(detect_content_type(unknown))
 

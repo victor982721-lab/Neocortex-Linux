@@ -1,10 +1,9 @@
-"""Incremental extraction for physical text, email, and legacy Office files."""
+"""Incremental extraction for physical text, email, and Office documents."""
 
 from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 import sqlite3
 import stat
 import sys
@@ -25,7 +24,6 @@ import xxhash
 
 from neocortex import __version__ as _NEOCORTEX_DISTRIBUTION_VERSION
 from neocortex.capabilities.broker import (
-    CapabilityBinaryIdentity,
     CapabilityBroker,
     CapabilityPolicy,
     CapabilityPrivacy,
@@ -35,7 +33,6 @@ from neocortex.capabilities.broker import (
 from neocortex.capabilities.runtime import (
     TEXT_BUILTIN_IMPLEMENTATION_ID,
     TEXT_EXTRACT_CAPABILITY_ID,
-    TEXT_LEGACY_OFFICE_IMPLEMENTATION_ID,
     TEXT_RAW_INPUT_SCHEMA,
     TEXT_REPRESENTATION_OUTPUT_SCHEMA,
     build_runtime_capability_broker,
@@ -48,7 +45,7 @@ from neocortex.deduplication.fingerprinting import snapshot_path, stat_matches_s
 from neocortex.deduplication.io import native_io_path
 from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
 
-from neocortex.runtime.control.bounded_subprocess import SubprocessOutputLimitError, run_bounded_capture
+from neocortex.runtime.control.bounded_subprocess import SubprocessOutputLimitError
 from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
 from neocortex.semantic.derivation_contracts import (
     CapabilityFailure,
@@ -94,7 +91,7 @@ from .text_derivation_repository import (
 from .text_state import TEXT_SCHEMA_VERSION, initialize_text_state, text_database
 
 
-TEXT_ROUTE_VERSION = "text-route-v2"
+TEXT_ROUTE_VERSION = "text-route-v3"
 _TEXT_EXTRACT_STAGE_ID = "text.extract"
 _TEXT_EXTRACT_STAGE_VERSION = "2"
 # Checked-in digest of the normalized Text-owned extractor contract.  It is
@@ -102,7 +99,7 @@ _TEXT_EXTRACT_STAGE_VERSION = "2"
 # hash; the source characterization requires updating it when those symbols
 # change, which in turn changes every affected processing signature.
 _TEXT_EXTRACTOR_CONTRACT_SHA256 = (
-    "sha256:e36d917002d78b31263ce6120cc40378676e92531655c28d07536e4da2d7a305"
+    "sha256:a00193e4f0dc0d59c67b7f29bda7405068dbb4cf152c189c01ac56fb4d61ed66"
 )
 _TEXT_IMPLEMENTATION_SCHEMA = "neocortex.text-implementation-contract/v1"
 _TEXT_DISTRIBUTION_NAME = "neocortex-framework"
@@ -127,16 +124,6 @@ TEXT_ROUTE_MIMES = (
     "application/xml",
     "application/json",
     "message/rfc822",
-    "application/msword",
-    "application/vnd.ms-excel",
-    "application/vnd.ms-powerpoint",
-)
-_TEXT_LEGACY_MIMES = frozenset(
-    {
-        "application/msword",
-        "application/vnd.ms-excel",
-        "application/vnd.ms-powerpoint",
-    }
 )
 _TEXT_CAPABILITY_POLICY = CapabilityPolicy(
     policy_id="neocortex-text-local-v1",
@@ -202,7 +189,6 @@ class TextRouteConfig:
     worker_timeout_seconds: float = 60.0
     worker_memory_bytes: int = 1024 * 1024 * 1024
     retry_errors: bool = False
-    libreoffice_cmd: str | None = None
     selection: CandidateSelection = field(default_factory=CandidateSelection)
 
     @property
@@ -239,7 +225,6 @@ class TextRouteSummary:
     extracted: int = 0
     plain_text: int = 0
     emails: int = 0
-    legacy_office: int = 0
     text_chars: int = 0
     truncated: int = 0
     errors: int = 0
@@ -458,15 +443,8 @@ def _derivation_runtime(provenance: ProcessingProvenance) -> tuple[tuple[str, st
 
 def _extractor_selector(mime: str, path: str) -> tuple[str, str]:
     suffix = Path(path).suffix.casefold().removeprefix(".")
-    legacy_kind = {
-        "application/msword": "doc",
-        "application/vnd.ms-excel": "xls",
-        "application/vnd.ms-powerpoint": "ppt",
-    }.get(mime)
     if mime == "message/rfc822":
         return "stdlib_email_visible_text", "email"
-    if legacy_kind is not None:
-        return f"legacy_office_worker:{legacy_kind}", legacy_kind
     if mime == "text/html":
         return "strict_text_decode+html_visible_text", "html"
     if mime == "application/xml":
@@ -484,29 +462,6 @@ def _runtime_platform() -> str:
     return {"win32": "windows", "linux": "linux"}.get(sys.platform, sys.platform)
 
 
-def _text_executable_finder(config: TextRouteConfig):
-    explicit = config.libreoffice_cmd
-    cache: dict[str, str | None] = {}
-    explicit_resolved = None if explicit is None else shutil.which(explicit)
-
-    def find(executable: str) -> str | None:
-        if executable in cache:
-            return cache[executable]
-        if explicit is not None:
-            if explicit_resolved is None:
-                result = None
-            elif executable == "libreoffice":
-                result = explicit_resolved
-            else:
-                result = None
-        else:
-            result = shutil.which(executable)
-        cache[executable] = result
-        return result
-
-    return find
-
-
 def _text_capability_request(mime: str, input_bytes: int) -> CapabilityRequest:
     return CapabilityRequest(
         capability_id=TEXT_EXTRACT_CAPABILITY_ID,
@@ -520,9 +475,8 @@ def _text_capability_request(mime: str, input_bytes: int) -> CapabilityRequest:
         workspace_id="text-owner",
         acceptable_reproducibility=(
             ReproducibilityClass.ENVIRONMENT_BOUND.value,
-            ReproducibilityClass.NON_REPLAYABLE.value,
         ),
-        require_incremental=mime not in _TEXT_LEGACY_MIMES,
+        require_incremental=True,
     )
 
 
@@ -569,8 +523,6 @@ def _record_extracted_counters(
     counters["truncated"] += int(extracted.truncated)
     if extracted.content_kind == "email":
         counters["emails"] += 1
-    elif extracted.content_kind in {"doc", "xls", "ppt"}:
-        counters["legacy_office"] += 1
     else:
         counters["plain_text"] += 1
 
@@ -582,35 +534,6 @@ def _work_reproducibility(selection: CapabilitySelection) -> ReproducibilityClas
         and ReproducibilityClass.NON_REPLAYABLE.value in selection.selected.reproducibility_classes
         else ReproducibilityClass.ENVIRONMENT_BOUND
     )
-
-
-def _selected_binary_identity(
-    selection: CapabilitySelection,
-    mime: str,
-) -> CapabilityBinaryIdentity | None:
-    selected = selection.selected
-    if selected is None:
-        return None
-    requirement = next(
-        (item for item in selected.mime_binary_alternatives if item.mime_type == mime),
-        None,
-    )
-    if requirement is None:
-        return None
-    evaluation = next(
-        item
-        for item in selection.candidates
-        if item.implementation_id == selected.implementation_id
-    )
-    availability = evaluation.availability
-    if availability is None:
-        raise RuntimeError("selected Text capability has no runtime observation")
-    matching = tuple(
-        item for item in availability.binary_identities if item.name in requirement.alternatives
-    )
-    if len(matching) != 1:
-        raise RuntimeError("selected Text capability has no unique pinned backend")
-    return matching[0]
 
 
 def _capability_rejections(selection: CapabilitySelection) -> str:
@@ -635,14 +558,8 @@ def _candidate_processing_provenance(
         raise ValueError("Text base provenance is malformed")
     adapter, content_kind = _extractor_selector(mime, path)
     selected = selection.selected
-    selected_binary = _selected_binary_identity(selection, mime)
     if selected is not None:
-        expected_implementation = (
-            TEXT_LEGACY_OFFICE_IMPLEMENTATION_ID
-            if adapter.startswith("legacy_office_worker:")
-            else TEXT_BUILTIN_IMPLEMENTATION_ID
-        )
-        if selected.implementation_id != expected_implementation:
+        if selected.implementation_id != TEXT_BUILTIN_IMPLEMENTATION_ID:
             raise ValueError("Text capability selection conflicts with extractor adapter")
     effective_configuration: dict[str, object] = {
         "capability_id": TEXT_EXTRACT_CAPABILITY_ID,
@@ -665,43 +582,14 @@ def _candidate_processing_provenance(
     effective_configuration.update(
         {key: configuration[key] for key in _TEXT_IMPLEMENTATION_CONFIGURATION_KEYS}
     )
-    if selected_binary is not None:
-        effective_configuration.update(
-            {
-                "capability_binary_backend": selected_binary.name,
-                "capability_binary_artifact_sha256": (selected_binary.artifact_sha256),
-                "capability_binary_command_sha256": selected_binary.command_sha256,
-                "capability_binary_size_bytes": selected_binary.size_bytes,
-            }
-        )
-    legacy_office = adapter.startswith("legacy_office_worker:")
-    if legacy_office:
-        effective_configuration.update(
-            {
-                "worker_timeout_seconds": configuration["worker_timeout_seconds"],
-                "worker_memory_bytes": configuration["worker_memory_bytes"],
-            }
-        )
-    else:
-        effective_configuration["plain_text_decoder"] = configuration["plain_text_decoder"]
-        if mime == "message/rfc822":
-            effective_configuration["email_policy"] = configuration["email_policy"]
+    effective_configuration["plain_text_decoder"] = configuration["plain_text_decoder"]
+    if mime == "message/rfc822":
+        effective_configuration["email_policy"] = configuration["email_policy"]
     effective_components: list[dict[str, object]] = [
         component
         for component in components
         if not isinstance(component, dict) or component.get("name") != "soffice"
     ]
-    if selected_binary is not None:
-        effective_components.append(
-            {
-                "name": "capability-selected-backend",
-                "kind": "executable",
-                "backend": selected_binary.name,
-                "artifact_sha256": selected_binary.artifact_sha256,
-                "command_sha256": selected_binary.command_sha256,
-                "size_bytes": selected_binary.size_bytes,
-            }
-        )
     return build_processing_provenance(
         "text-route",
         f"{TEXT_ROUTE_VERSION}:text.extract/{_TEXT_EXTRACT_STAGE_VERSION}",
@@ -863,74 +751,6 @@ def _email_text(payload: bytes, limit: int) -> _ExtractedText:
     )
 
 
-def _legacy_office_text(
-    payload: bytes,
-    kind: str,
-    config: TextRouteConfig,
-    backend: CapabilityBinaryIdentity,
-) -> _ExtractedText:
-    command = (
-        sys.executable,
-        "-m",
-        "neocortex.capabilities.formats.office.legacy_worker",
-        "--kind",
-        kind,
-        "--max-input-bytes",
-        str(config.max_file_bytes or len(payload)),
-        "--max-chars",
-        str(config.max_text_chars),
-        "--timeout",
-        str(config.worker_timeout_seconds),
-        "--backend",
-        backend.name,
-        "--backend-command",
-        backend.command,
-        "--backend-sha256",
-        backend.artifact_sha256,
-        "--backend-size",
-        str(backend.size_bytes),
-    )
-    completed = run_bounded_capture(
-        command,
-        input_bytes=payload,
-        timeout_seconds=config.worker_timeout_seconds,
-        stdout_limit_bytes=max(64 * 1024, config.max_text_chars * 6 + 64 * 1024),
-        stderr_limit_bytes=256 * 1024,
-        environment={
-            **os.environ,
-            "OPENBLAS_NUM_THREADS": "1",
-            "OMP_NUM_THREADS": "1",
-            "MKL_NUM_THREADS": "1",
-            "NUMEXPR_NUM_THREADS": "1",
-        },
-        memory_limit_bytes=config.worker_memory_bytes,
-    )
-    try:
-        result = json.loads(completed.stdout.decode("utf-8", "strict"))
-    except (UnicodeError, json.JSONDecodeError) as exc:
-        raise ValueError("legacy Office worker returned invalid output") from exc
-    if completed.returncode != 0 or not isinstance(result, dict) or not result.get("ok"):
-        reason = result.get("reason") if isinstance(result, dict) else None
-        raise ValueError(str(reason or f"legacy_office_worker_exit_{completed.returncode}"))
-    text = result.get("text")
-    if not isinstance(text, str) or not text.strip():
-        raise ValueError("legacy Office worker did not return visible text")
-    return _ExtractedText(
-        text=text,
-        content_kind=kind,
-        media_type={
-            "doc": "application/msword",
-            "xls": "application/vnd.ms-excel",
-            "ppt": "application/vnd.ms-powerpoint",
-        }[kind],
-        truncated=bool(result.get("truncated")),
-        detail=(
-            f"backend={result.get('backend', 'unknown')};"
-            f"conversion={result.get('conversion', 'unknown')}"
-        ),
-    )
-
-
 def _extract(
     payload: bytes,
     mime: str,
@@ -941,31 +761,11 @@ def _extract(
     selected = selection.selected
     if selected is None:
         raise TextCapabilityUnavailableError(selection)
-    expected_implementation = (
-        TEXT_LEGACY_OFFICE_IMPLEMENTATION_ID
-        if mime
-        in {
-            "application/msword",
-            "application/vnd.ms-excel",
-            "application/vnd.ms-powerpoint",
-        }
-        else TEXT_BUILTIN_IMPLEMENTATION_ID
-    )
-    if selected.implementation_id != expected_implementation:
+    if selected.implementation_id != TEXT_BUILTIN_IMPLEMENTATION_ID:
         raise RuntimeError("Text capability selection changed before execution")
     suffix = Path(path).suffix.casefold()
     if mime == "message/rfc822":
         return _email_text(payload, config.max_text_chars)
-    legacy_kind = {
-        "application/msword": "doc",
-        "application/vnd.ms-excel": "xls",
-        "application/vnd.ms-powerpoint": "ppt",
-    }.get(mime)
-    if legacy_kind is not None:
-        backend = _selected_binary_identity(selection, mime)
-        if backend is None:
-            raise RuntimeError("selected legacy Text capability has no pinned backend")
-        return _legacy_office_text(payload, legacy_kind, config, backend)
     value, encoding = _decode_text(payload)
     if mime == "text/html":
         value = _visible_html(value)
@@ -1054,11 +854,6 @@ class TextRoute:
             raise ValueError("text max_text_chars must be positive")
         if self.config.worker_timeout_seconds <= 0 or self.config.worker_memory_bytes < 1:
             raise ValueError("text worker limits must be positive")
-        if self.config.libreoffice_cmd is not None and (
-            not isinstance(self.config.libreoffice_cmd, str)
-            or not self.config.libreoffice_cmd.strip()
-        ):
-            raise ValueError("text libreoffice_cmd must be a non-blank string")
 
     def _counts(self) -> tuple[int, int, int]:
         pool = eligible = 0
@@ -1682,11 +1477,7 @@ class TextRoute:
             terminal_ns=abandoned_ns,
         ):
             pass
-        executable_finder = _text_executable_finder(self.config)
-        text_runtime_status = inspect_runtime_capability(
-            "text",
-            executable_finder=executable_finder,
-        )
+        text_runtime_status = inspect_runtime_capability("text")
         provenance = self.config.processing_provenance
         signature = provenance.signature
         pool, eligible, selected = self._counts()
@@ -1697,7 +1488,6 @@ class TextRoute:
             "extracted": 0,
             "plain_text": 0,
             "emails": 0,
-            "legacy_office": 0,
             "text_chars": 0,
             "truncated": 0,
             "errors": 0,
@@ -1724,7 +1514,6 @@ class TextRoute:
                     capability_broker = build_runtime_capability_broker(
                         capability_request,
                         statuses=(text_runtime_status,),
-                        executable_finder=executable_finder,
                     )
                     capability_brokers[broker_key] = capability_broker
                 capability_selection = capability_broker.select(
@@ -1917,7 +1706,6 @@ class TextRoute:
             extracted=counters["extracted"],
             plain_text=counters["plain_text"],
             emails=counters["emails"],
-            legacy_office=counters["legacy_office"],
             text_chars=counters["text_chars"],
             truncated=counters["truncated"],
             errors=counters["errors"],

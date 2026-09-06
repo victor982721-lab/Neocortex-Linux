@@ -4,14 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
-import neocortex.capabilities.formats.text.text_route as text_route_module
 from neocortex.capabilities.formats.text.text_route import TextRoute, TextRouteConfig
 from neocortex.deduplication import FileSnapshot, snapshot_path
 from neocortex.runtime.control.cancellation import CancellationToken
 from neocortex.safety.route_filters import CandidateSelection
-from neocortex.semantic.derivation_contracts import ReproducibilityClass
 
 
 class _Candidates:
@@ -46,7 +42,6 @@ class _Candidates:
 
 def test_text_cache_hit_replays_all_extraction_metrics(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     corpus = tmp_path / "corpus"
     corpus.mkdir()
@@ -62,31 +57,10 @@ def test_text_cache_hit_replays_all_extraction_metrics(
         "mail\n",
         encoding="utf-8",
     )
-    legacy = corpus / "legacy.doc"
-    legacy.write_bytes(b"legacy fixture")
-    backend = tmp_path / "catdoc"
-    backend.write_text("#!/bin/sh\nprintf 'legacy'\n", encoding="utf-8")
-    backend.chmod(0o755)
-
-    monkeypatch.setattr(
-        text_route_module.shutil,
-        "which",
-        lambda name: str(backend) if name == "catdoc" else None,
-    )
-    # The production legacy worker is non-replayable by policy.  Keep this
-    # focal test on the cache-summary accounting after a valid reusable state.
-    monkeypatch.setattr(text_route_module, "_selection_allows_reuse", lambda _selection: True)
-    monkeypatch.setattr(
-        text_route_module,
-        "_work_reproducibility",
-        lambda _selection: ReproducibilityClass.ENVIRONMENT_BOUND,
-    )
-
     candidates = _Candidates(
         {
             "text/plain": (snapshot_path(plain),),
             "message/rfc822": (snapshot_path(email),),
-            "application/msword": (snapshot_path(legacy),),
         }
     )
     state = tmp_path / "text.sqlite3"
@@ -105,17 +79,15 @@ def test_text_cache_hit_replays_all_extraction_metrics(
     assert (
         first.plain_text,
         first.emails,
-        first.legacy_office,
         first.text_chars,
         first.truncated,
-    ) == (1, 1, 1, 19, 1)
+    ) == (1, 1, 13, 1)
     assert (
         replay.processed,
         replay.extracted,
         replay.cache_hits,
         replay.plain_text,
         replay.emails,
-        replay.legacy_office,
         replay.text_chars,
         replay.truncated,
-    ) == (0, 0, 3, 1, 1, 1, 19, 1)
+    ) == (0, 0, 2, 1, 1, 13, 1)

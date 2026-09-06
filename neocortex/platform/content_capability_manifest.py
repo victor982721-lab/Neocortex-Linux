@@ -349,9 +349,6 @@ CONTENT_CAPABILITIES: Final[tuple[ContentCapability, ...]] = (
         input_source="route_candidates",
         mime_types=(
             "application/json",
-            "application/msword",
-            "application/vnd.ms-excel",
-            "application/vnd.ms-powerpoint",
             "application/xml",
             "message/rfc822",
             "text/csv",

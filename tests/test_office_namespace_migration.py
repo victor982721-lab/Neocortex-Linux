@@ -20,14 +20,12 @@ PRODUCT_ROOT = "neocortex.capabilities.formats.office"
 MODULE_NAMES = (
     "extraction",
     "extraction_support",
-    "legacy_worker",
     "models",
     "route",
     "state",
     "xlsx",
 )
 HISTORICAL_SYMBOLS = {
-    "legacy_worker": ("main",),
     "route": ("OfficeRoute", "OfficeRouteConfig", "OfficeRouteSummary"),
     "state": ("office_database", "initialize_office_state", "search_office_state"),
 }
@@ -59,7 +57,7 @@ def test_office_implementation_lives_under_the_product_namespace() -> None:
         assert PRODUCT_ROOT in source
 
 
-@pytest.mark.parametrize("name", ("legacy_worker", "route", "state"))
+@pytest.mark.parametrize("name", ("route", "state"))
 def test_office_symbols_are_owned_by_canonical_modules(name: str) -> None:
     module = _canonical_module(name)
 
