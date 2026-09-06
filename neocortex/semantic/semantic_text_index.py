@@ -152,6 +152,7 @@ def _content_compatible_text_replay(
         JOIN semantic_item_revisions revision
           ON revision.item_revision_id=member.item_revision_id
         WHERE member.generation_id=? AND member.entity_kind='text_chunk'
+          AND revision.source_kind='text'
         ORDER BY revision.source_identity""",
         (generation_id,),
     ).fetchall()
@@ -165,13 +166,13 @@ def _content_compatible_text_replay(
         try:
             source_revision = json.loads(str(revision["source_revision_json"]))
             source_provenance = json.loads(str(revision["provenance_json"]))
-            materialization = source_revision["consumed_materialization"]
-            materialization_fingerprint = str(materialization["fingerprint"])
+            owner_revision = source_revision["owner_revision"]
+            owner_fingerprint = str(owner_revision["fingerprint"])
             if (
                 int(source_revision["size"]) != int(current["size"])
                 or int(source_revision["mtime_ns"]) != int(current["mtime_ns"])
                 or int(source_revision["birthtime_ns"]) != int(current["birthtime_ns"])
-                or materialization_fingerprint != str(current["text_xxh3_128"])
+                or owner_fingerprint != str(current["text_xxh3_128"])
             ):
                 return False
             for provenance_key, current_key in (("source_title", "title"), ("source_author", "author")):
