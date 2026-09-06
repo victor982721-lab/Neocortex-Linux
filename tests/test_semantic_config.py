@@ -5,6 +5,7 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+import multiprocessing
 from typing import Any
 
 import pytest
@@ -73,6 +74,17 @@ def test_semantic_parallelism_is_bounded_by_thread_pool(
 def test_semantic_parallelism_rejects_nonpositive_threads() -> None:
     with pytest.raises(ValueError, match="semantic threads must be positive"):
         default_semantic_parallel(0)
+
+
+def test_semantic_parallelism_disables_grandchildren_in_daemonic_workers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        multiprocessing,
+        "current_process",
+        lambda: type("Worker", (), {"daemon": True})(),
+    )
+    assert default_semantic_parallel(16) == 1
 
 
 @pytest.mark.parametrize("repository_id", (None, 42, True))
