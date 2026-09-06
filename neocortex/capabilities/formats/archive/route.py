@@ -1393,27 +1393,34 @@ def _refresh_cached_container(
     ).fetchone()
     if conflict is not None:
         _delete_container(connection, str(conflict[0]))
-    rows = connection.execute(
-        "SELECT file_key,member_chain FROM documents WHERE container_key=?",
-        (container_key,),
-    ).fetchall()
     now = time.time_ns()
     connection.execute(
         "UPDATE containers SET path=?,last_seen_run_id=?,updated_ns=? WHERE container_key=?",
         (snapshot.path, run_id, now, container_key),
     )
-    for row in rows:
-        file_key = str(row["file_key"])
-        path = _virtual_path(snapshot.path, str(row["member_chain"]))
-        connection.execute(
-            "UPDATE documents SET path=?,container_path=?,last_seen_run_id=?,updated_ns=? "
-            "WHERE file_key=?",
-            (path, snapshot.path, run_id, now, file_key),
-        )
-        connection.execute(
-            "UPDATE document_fts SET path=?,container_path=?,container_name=? WHERE file_key=?",
-            (path, snapshot.path, Path(snapshot.path).name, file_key),
-        )
+    # A cache hit only changes the physical container path and run marker.  A
+    # per-member Python loop used to issue two SQL statements for every member
+    # (1,808 members on the current corpus), turning a no-work replay into the
+    # dominant Archive route cost.  Keep the same path/FTS contract but let
+    # SQLite update the whole container in two bounded set-based statements.
+    connection.execute(
+        """UPDATE documents SET
+            path=? || '!/' || member_chain,
+            container_path=?,last_seen_run_id=?,updated_ns=?
+        WHERE container_key=?""",
+        (snapshot.path, snapshot.path, run_id, now, container_key),
+    )
+    connection.execute(
+        """UPDATE document_fts SET
+            path=? || '!/' || (
+                SELECT member_chain FROM documents
+                WHERE documents.file_key=document_fts.file_key),
+            container_path=?,container_name=?
+        WHERE file_key IN (
+            SELECT file_key FROM documents WHERE container_key=?
+        )""",
+        (snapshot.path, snapshot.path, Path(snapshot.path).name, container_key),
+    )
 
 
 def _prune_stale_containers(
