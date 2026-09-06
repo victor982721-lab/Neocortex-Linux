@@ -983,7 +983,14 @@ def _validate_embedding_payload_producer_receipt(
         ),
         stage_id=SEMANTIC_EMBEDDING_STAGE,
     )
-    expected_causation: str | None = None
+    # A chunk revision can be observed by more than one refresh/generation.
+    # The embedding receipt records the materialization that was current at
+    # its own execution time, while a later refresh may append another
+    # derivation for the same physical chunk revision.  Validate against the
+    # complete immutable set of materialization receipts rather than only the
+    # latest row, otherwise a later staging pass invalidates an older,
+    # otherwise canonical producer receipt and blocks recovery/replay.
+    expected_causations: frozenset[str] = frozenset()
     if chunk_revision_id is not None and item_revision_id is not None:
         cause = connection.execute(
             """SELECT receipt.receipt_key
@@ -991,11 +998,10 @@ def _validate_embedding_payload_producer_receipt(
             JOIN semantic_work_receipts receipt
               ON receipt.receipt_id=derivation.materialization_receipt_id
             WHERE derivation.chunk_revision_id=? AND derivation.item_revision_id=?
-            ORDER BY derivation.derivation_id DESC LIMIT 1""",
+            ORDER BY derivation.derivation_id""",
             (chunk_revision_id, item_revision_id),
-        ).fetchone()
-        if cause is not None:
-            expected_causation = str(cause["receipt_key"])
+        ).fetchall()
+        expected_causations = frozenset(str(row["receipt_key"]) for row in cause)
     if (
         receipt.stage.stage_id != SEMANTIC_EMBEDDING_STAGE
         or receipt.stage.stage_version != "semantic-embedding-v1"
@@ -1009,7 +1015,11 @@ def _validate_embedding_payload_producer_receipt(
         or int(receipt_row["payload_id"]) != payload_id
         or receipt.inputs != expected_inputs
         or receipt.effective_configuration != expected_config
-        or receipt.causation_id != expected_causation
+        or (
+            receipt.causation_id is not None
+            and receipt.causation_id not in expected_causations
+        )
+        or (receipt.causation_id is None and bool(expected_causations))
         or expected_payload not in receipt.outputs
     ):
         raise SemanticStateError("semantic reused vector payload producer is not canonical")
