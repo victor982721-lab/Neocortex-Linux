@@ -42,6 +42,7 @@ class RouteResourceSummary:
     wait_seconds: float
     peak_reserved_bytes: int
     peak_cpu_slots: int
+    wait_ns: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +67,7 @@ class _MutableRouteMetrics:
     admissions: int = 0
     waits: int = 0
     wait_seconds: float = 0.0
+    wait_ns: int = 0
     reserved_bytes: int = 0
     cpu_slots: int = 0
     active_requests: int = 0
@@ -79,6 +81,7 @@ class _Request:
     memory_bytes: int
     cpu_slots: int
     enqueued_at: float
+    enqueued_at_ns: int
     waited: bool = False
     queued: bool = False
     admitted: bool = False
@@ -276,9 +279,10 @@ class GlobalResourceCoordinator:
         """Account a request's queue time exactly once while holding the lock."""
 
         if request.waited and not request.wait_accounted:
-            self._metrics[request.route_name].wait_seconds += max(
-                0.0, now - request.enqueued_at
-            )
+            elapsed_ns = max(0, time.monotonic_ns() - request.enqueued_at_ns)
+            metrics = self._metrics[request.route_name]
+            metrics.wait_ns += elapsed_ns
+            metrics.wait_seconds += elapsed_ns / 1_000_000_000
             request.wait_accounted = True
 
     def _discard_queued_request_locked(self, request: _Request) -> None:
@@ -316,6 +320,7 @@ class GlobalResourceCoordinator:
             self._peak_cpu_slots,
             self._peak_active_requests,
             metrics.wait_seconds,
+            metrics.wait_ns,
             request.wait_accounted,
         )
         queue = self._queues[request.route_name]
@@ -361,6 +366,7 @@ class GlobalResourceCoordinator:
                 self._peak_cpu_slots,
                 self._peak_active_requests,
                 metrics.wait_seconds,
+                metrics.wait_ns,
                 request.wait_accounted,
             ) = previous
             request.queued = False
@@ -445,7 +451,13 @@ class GlobalResourceCoordinator:
             )
 
         started = time.monotonic()
-        request = _Request(route_name, requested_memory, requested_cpu, started)
+        request = _Request(
+            route_name,
+            requested_memory,
+            requested_cpu,
+            started,
+            time.monotonic_ns(),
+        )
         route_index = self.route_order.index(route_name)
         headroom_blocked_since: float | None = None
         try:
@@ -524,6 +536,10 @@ class GlobalResourceCoordinator:
         with self._condition:
             return self._metrics[route_name].waits
 
+    def route_wait_ns(self, route_name: str) -> int:
+        with self._condition:
+            return self._metrics[route_name].wait_ns
+
     def route_active_request_count(self, route_name: str) -> int:
         """Return currently admitted jobs, excluding queued requests."""
 
@@ -539,6 +555,7 @@ class GlobalResourceCoordinator:
                     wait_seconds=round(metrics.wait_seconds, 6),
                     peak_reserved_bytes=metrics.peak_reserved_bytes,
                     peak_cpu_slots=metrics.peak_cpu_slots,
+                    wait_ns=metrics.wait_ns,
                 )
                 for name, metrics in self._metrics.items()
             }
@@ -579,6 +596,10 @@ class CoordinatedMemoryGate:
     @property
     def wait_count(self) -> int:
         return self.coordinator.route_wait_count(self.route_name)
+
+    @property
+    def wait_ns(self) -> int:
+        return self.coordinator.route_wait_ns(self.route_name)
 
     @contextmanager
     def admit(self, estimated_bytes: int):

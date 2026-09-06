@@ -292,6 +292,7 @@ def _print_global_resource_report(result) -> None:
         print(
             f"coordinator_route={route_name} admissions={route.admissions} "
             f"waits={route.waits} wait_seconds={route.wait_seconds:.6f} "
+            f"wait_ns={route.wait_ns} "
             f"peak_reserved_bytes={route.peak_reserved_bytes} "
             f"peak_cpu_slots={route.peak_cpu_slots}"
         )

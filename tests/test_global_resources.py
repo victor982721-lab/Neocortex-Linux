@@ -359,6 +359,7 @@ class GlobalResourceCoordinatorTests(unittest.TestCase):
             self.assertTrue(admitted.is_set())
             summary = coordinator.summary()
             self.assertEqual(summary.routes["image"].waits, 1)
+            self.assertGreater(summary.routes["image"].wait_ns, 0)
             self.assertEqual(summary.min_observed_available_memory_bytes, 120)
 
     def test_live_headroom_timeout_is_explicit(self):
@@ -440,6 +441,7 @@ class GlobalResourceCoordinatorTests(unittest.TestCase):
             self.assertEqual(summary.min_effective_cpu_slots, 1)
             self.assertEqual(summary.max_observed_cpu_load_percent, 95.0)
             self.assertEqual(summary.routes["image"].waits, 1)
+            self.assertGreater(summary.routes["image"].wait_ns, 0)
 
     def test_baseexception_from_probe_removes_queued_request(self):
         snapshot = MemorySnapshot(10_000, 10_000, 20_000, 20_000)
