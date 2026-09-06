@@ -214,7 +214,13 @@ def _candidates(entries: Sequence[Mapping[str, Any]], limit: int) -> tuple[list[
                     "fragment_state": "full" if snippet else "unavailable_from_owner",
                     "excerpt": snippet,
                     "supplied_excerpt_characters": len(snippet),
+                    # Ordinal before presentation-only ordering. The common
+                    # retrieval rank and evidence identity remain unchanged.
+                    "candidate_position": len(candidates) + 1,
                 }
+                rank = hit.get("rank")
+                if isinstance(rank, int) and not isinstance(rank, bool) and rank > 0:
+                    citation["retrieval_rank"] = rank
                 if evidence.get("generation") is not None:
                     citation["generation"] = evidence["generation"]
                 metadata = signal if signal is not None else hit
@@ -237,6 +243,36 @@ def _candidates(entries: Sequence[Mapping[str, Any]], limit: int) -> tuple[list[
                 if len(candidates) >= _MAX_CANDIDATES:
                     return sorted(candidates, key=lambda item: not bool(item[2])), True
     return sorted(candidates, key=lambda item: not bool(item[2])), False
+
+
+def _budget_candidate_priority(
+    candidate: tuple[dict[str, Any], dict[str, Any], str], query: str,
+) -> int:
+    """Prefer usable evidence for packing, not a new retrieval score.
+
+    Verification binds an owner excerpt, not the truth of a claim. Literal
+    support is necessary evidence, not answerability. Counter-witnesses remain
+    eligible at the highest tier even when their polarity differs from query
+    terms; the ordinary final-excerpt checks still decide their disposition.
+    """
+    from neocortex.semantic.semantic_query_evidence import (
+        query_role_counterevidence, requested_evidence_checks,
+    )
+
+    _source_ref, citation, snippet = candidate
+    if not snippet:
+        return 3
+    support = citation.get("retrieval_support", {})
+    verified = citation.get("hydration", {}).get("status") == "owner_verified"
+    missing_negation = bool(support.get("missing_negation_terms"))
+    if (verified and support.get("support") == "full_terms" and not missing_negation):
+        return 0
+    if (query_role_counterevidence(query, snippet)
+            or requested_evidence_checks(query, snippet)["counterevidence"]):
+        return 0
+    if verified and not missing_negation:
+        return 1
+    return 2
 
 
 def _assess_witnesses(
@@ -361,6 +397,7 @@ def build_context_response_v2(
     }
     assessment_cache: dict[tuple[str, str], tuple[dict[str, Any], list[dict[str, Any]]]] = {}
     candidates, projection_capped = _candidates(entries, limit) if valid_limit and valid_budget and valid_metadata else ([], False)
+    candidates.sort(key=lambda item: _budget_candidate_priority(item, payload["query"]))
     if projection_capped:
         payload["budget"]["input_candidates_capped"] = True
     _set_status(payload, len(candidates), assessment_cache)

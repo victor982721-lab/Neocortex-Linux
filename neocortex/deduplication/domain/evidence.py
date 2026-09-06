@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from typing import Literal
-import unicodedata
-
-from .errors import InventoryError
+from unicodedata import category
 
 
 DedupPolicy = Literal["legacy_unknown", "fast", "exact"]
@@ -65,7 +63,7 @@ class KeeperPolicy:
             for evidence_id in evidence_ids:
                 if (
                     not isinstance(evidence_id, str) or not evidence_id.strip() or len(evidence_id) > 512
-                    or any(unicodedata.category(character) in {"Cc", "Cf", "Cs"} for character in evidence_id)
+                    or any(category(character) in {"Cc", "Cf", "Cs"} for character in evidence_id)
                 ):
                     raise ValueError("reference evidence IDs must contain 1-512 characters without controls")
 
@@ -106,35 +104,6 @@ class DuplicateGroupProof:
         return asdict(self)
 
 
-class KeeperConflictError(InventoryError):
-    """Equal content does not resolve conflicting explicit keeper decisions."""
-
-    code = "conflicting_explicit_keepers"
-
-    def __init__(
-        self, *, policy: KeeperPolicy, identities: tuple[tuple[int, int], ...],
-        full_fingerprint: str, exact_compare: bool,
-    ) -> None:
-        self.policy = policy
-        self.identities = tuple(sorted(set(identities)))
-        self.full_fingerprint = full_fingerprint
-        missing = (
-            "keeper_decision_conflict", "path_disposability_not_verified",
-            "authorization_not_granted", "physical_reclamation_not_verified",
-        )
-        self.proof = DuplicateGroupProof(
-            proof_version=PROOF_VERSION, requested_policy="exact" if exact_compare else "fast",
-            comparison_method="byte_for_byte" if exact_compare else "full_xxh3",
-            comparison_result="equal" if exact_compare else "fingerprint_match",
-            missing_checks=missing if exact_compare else ("byte_for_byte_comparison", *missing),
-            keeper_policy_version=KEEPER_POLICY_VERSION, keeper_reason=self.code,
-        )
-        super().__init__(
-            f"{self.code}: {len(self.identities)} physical identities in the same content class "
-            "were explicitly selected as keeper; no complete duplicate plan was published"
-        )
-
-
 __all__ = [
     "KEEPER_POLICY_VERSION",
     "PROOF_VERSION",
@@ -143,7 +112,6 @@ __all__ = [
     "DedupPolicy",
     "DuplicateGroupProof",
     "DuplicateMemberProof",
-    "KeeperConflictError",
     "KeeperPolicy",
     "PlanCoverage",
 ]

@@ -9,10 +9,10 @@ from dataclasses import dataclass
 from itertools import islice
 from typing import Protocol
 
-from ..domain.errors import FileChangedError
+from ..domain.errors import FileChangedError, KeeperConflictError
 from ..domain.evidence import (
     KEEPER_POLICY_VERSION, PROOF_VERSION, DedupPolicy, DuplicateGroupProof,
-    DuplicateMemberProof, KeeperConflictError, KeeperPolicy, PlanCoverage,
+    DuplicateMemberProof, KeeperPolicy, PlanCoverage,
 )
 from ..domain.models import (
     DedupPlan,

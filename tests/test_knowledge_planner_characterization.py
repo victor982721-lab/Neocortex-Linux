@@ -449,6 +449,7 @@ def test_cold_evidence_dependency_has_exact_stdlib_imports_and_pure_initializati
         ("__future__", ("annotations",)),
         ("dataclasses", ("asdict", "dataclass")),
         ("typing", ("Literal",)),
+        ("unicodedata", ("category",)),
     ]
     assert all(not node.bases and not node.keywords for node in tree.body if isinstance(node, ast.ClassDef))
 

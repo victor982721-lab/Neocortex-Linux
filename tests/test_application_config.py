@@ -7,6 +7,8 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+import hashlib
+import inspect
 from dataclasses import fields, replace
 from pathlib import Path
 from unittest.mock import patch
@@ -48,7 +50,11 @@ from neocortex.capabilities.formats.text.text_route import TextRouteConfig
 def test_application_config_preserves_the_product_dataclass() -> None:
     assert ApplicationConfig is FrameworkConfig
     application_fields = fields(ApplicationConfig)
-    assert len(application_fields) == 174
+    assert len(application_fields) == 176
+    assert {item.name for item in application_fields if item.kw_only} == {
+        "dedup_keep_paths",
+        "dedup_prefer_roots",
+    }
     field_names = {item.name for item in application_fields}
     assert {
         "code_candidate_scope",
@@ -103,6 +109,54 @@ def test_application_config_preserves_the_product_dataclass() -> None:
     assert canonical.archive_database == base / "canonical-state" / "archive.sqlite3"
     assert canonical.text_database == base / "canonical-state" / "text.sqlite3"
     assert canonical.video_database == base / "canonical-state" / "video.sqlite3"
+
+
+def test_application_config_preserves_all_174_legacy_positional_slots() -> None:
+    assert ApplicationConfig is FrameworkConfig
+    parameters = inspect.signature(ApplicationConfig).parameters
+    positional = tuple(
+        name
+        for name, parameter in parameters.items()
+        if parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    )
+    assert len(positional) == 174
+    # Baseline 0f18 runtime/models.py, all 174 field names in declaration order.
+    # The independent digest detects a renamed/reordered old slot anywhere,
+    # rather than merely checking the first six arguments.
+    assert hashlib.sha256("\n".join(positional).encode()).hexdigest() == (
+        "4a6cc7d9fa4d9dbae2d7f30ec48396e0886bf866b5271f6e80c6b77545fefe73"
+    )
+    values = tuple(object() for _ in positional)
+    config = ApplicationConfig(*values)
+    assert all(
+        getattr(config, name) is value for name, value in zip(positional, values, strict=True)
+    )
+    for name in ("dedup_keep_paths", "dedup_prefer_roots"):
+        assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
+        assert getattr(config, name) == ()
+
+
+def test_application_config_sixth_positional_argument_remains_route() -> None:
+    corpus, state = Path("synthetic-corpus"), Path("synthetic-state")
+    config = FrameworkConfig(corpus, state, False, 2, "exact", "text")
+    assert config.root == corpus
+    assert config.state_directory == state
+    assert config.route == "text"
+    assert config.dedup_keep_paths == config.dedup_prefer_roots == ()
+    selected = ApplicationConfig(
+        corpus,
+        state,
+        False,
+        2,
+        "exact",
+        "text",
+        dedup_keep_paths=(corpus / "keep.txt",),
+        dedup_prefer_roots=(corpus / "preferred",),
+    )
+    assert type(selected) is FrameworkConfig
+    assert selected.route == "text"
+    assert selected.dedup_keep_paths == (corpus / "keep.txt",)
+    assert selected.dedup_prefer_roots == (corpus / "preferred",)
 
 
 def test_application_facade_reexports_the_runtime_projections() -> None:
@@ -529,7 +583,9 @@ def test_orchestrator_consumes_the_domain_projection() -> None:
             "neocortex.runtime.orchestration.orchestrator.global_resource_limits_from_application",
             return_value=projected,
         ) as projection,
-        patch("neocortex.runtime.orchestration.orchestrator.GlobalResourceCoordinator") as coordinator,
+        patch(
+            "neocortex.runtime.orchestration.orchestrator.GlobalResourceCoordinator"
+        ) as coordinator,
     ):
         result = orchestrator._resource_coordinator()
 

@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from neocortex.deduplication import DedupIndex, DedupPlanner, KeeperPolicy, snapshot_path
-from neocortex.deduplication.domain.evidence import KeeperConflictError
+from neocortex.deduplication.domain.errors import KeeperConflictError
 
 
 def _files(root: Path, values: dict[str, bytes]) -> dict[str, Path]:
