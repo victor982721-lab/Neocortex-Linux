@@ -558,6 +558,9 @@ def index_text_embeddings(
             },
         )
 
+    if not enumeration_complete and set(completed_sources) == set(selected_sources):
+        enumeration_complete = True
+
     if enumeration_complete:
         confirmed_heads = semantic_source_heads(state_directory, selected_sources)
         if confirmed_heads != source_heads:

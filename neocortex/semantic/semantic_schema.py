@@ -19,6 +19,24 @@ from neocortex.persistence.sqlite_schema_contract import (
 
 
 SEMANTIC_SCHEMA_VERSION = 7
+_SEMANTIC_PERFORMANCE_INDEXES = (
+    (
+        "embedding_jobs_claim_order_idx",
+        """CREATE INDEX IF NOT EXISTS embedding_jobs_claim_order_idx
+        ON embedding_jobs(generation_id,status,job_id,available_ns)""",
+    ),
+    (
+        "embedding_generation_members_claim_idx",
+        """CREATE INDEX IF NOT EXISTS embedding_generation_members_claim_idx
+        ON embedding_generation_members(chunk_revision_id,entity_kind,generation_id)""",
+    ),
+    (
+        "semantic_chunk_derivations_claim_idx",
+        """CREATE INDEX IF NOT EXISTS semantic_chunk_derivations_claim_idx
+        ON semantic_chunk_derivations(
+            chunk_revision_id,refresh_token,publication_receipt_id,derivation_id)""",
+    ),
+)
 _RETIRED_IMAGE_KEYS = frozenset(
     {
         "adult_classification",
@@ -292,6 +310,8 @@ _MIGRATION_1 = (
     )""",
     """CREATE INDEX embedding_jobs_claim_idx
         ON embedding_jobs(generation_id,status,available_ns,lease_until_ns,job_id)""",
+    """CREATE INDEX embedding_jobs_claim_order_idx
+        ON embedding_jobs(generation_id,status,job_id,available_ns)""",
     """CREATE INDEX embedding_jobs_cache_idx
         ON embedding_jobs(model_signature,content_xxh3_128,content_bytes,
                           content_xxh3_64_guard,status)""",
@@ -477,6 +497,8 @@ _MIGRATION_6 = (
             generation_id,model_signature,entity_kind,member_id)""",
     """CREATE INDEX embedding_generation_members_clone_idx
         ON embedding_generation_members(generation_id,base_member_id)""",
+    """CREATE INDEX embedding_generation_members_claim_idx
+        ON embedding_generation_members(chunk_revision_id,entity_kind,generation_id)""",
     """CREATE TABLE published_embedding_heads(
         model_signature TEXT PRIMARY KEY,
         generation_id INTEGER NOT NULL UNIQUE,
@@ -613,6 +635,9 @@ _MIGRATION_7 = (
     """CREATE INDEX semantic_chunk_derivations_refresh_idx
         ON semantic_chunk_derivations(refresh_token,publication_receipt_id,
                                       derivation_id)""",
+    """CREATE INDEX semantic_chunk_derivations_claim_idx
+        ON semantic_chunk_derivations(
+            chunk_revision_id,refresh_token,publication_receipt_id,derivation_id)""",
     """CREATE TRIGGER semantic_chunk_derivations_publication_once
         BEFORE UPDATE ON semantic_chunk_derivations
         WHEN NOT (
@@ -967,6 +992,7 @@ _NAMED_INDEXES_BY_VERSION = {
         "text_embeddings_search_idx": "text_embeddings",
         "image_embeddings_search_idx": "image_embeddings",
         "embedding_jobs_claim_idx": "embedding_jobs",
+        "embedding_jobs_claim_order_idx": "embedding_jobs",
         "embedding_jobs_cache_idx": "embedding_jobs",
     },
     2: {
@@ -983,6 +1009,7 @@ _NAMED_INDEXES_BY_VERSION = {
         "semantic_chunk_revisions_item_idx": "semantic_chunk_revisions",
         "embedding_generation_members_search_idx": "embedding_generation_members",
         "embedding_generation_members_clone_idx": "embedding_generation_members",
+        "embedding_generation_members_claim_idx": "embedding_generation_members",
     },
     7: {
         "semantic_item_revisions_source_revision_idx": "semantic_item_revisions",
@@ -991,6 +1018,7 @@ _NAMED_INDEXES_BY_VERSION = {
         "semantic_work_receipts_embedding_lookup_idx": "semantic_work_receipts",
         "semantic_chunk_derivations_chunk_idx": "semantic_chunk_derivations",
         "semantic_chunk_derivations_refresh_idx": "semantic_chunk_derivations",
+        "semantic_chunk_derivations_claim_idx": "semantic_chunk_derivations",
         "semantic_derivation_outbox_scan_idx": "semantic_derivation_outbox",
     },
 }
@@ -1346,14 +1374,24 @@ def _inspect_existing_schema(path: Path) -> int | None:
     stale WAL after an interrupted embedding slice.  A read-only snapshot of
     the multi-gigabyte vector owner would either copy the whole database or
     fail its bounded temporary-byte budget before the writer can recover it.
-    The coordinated writer connection performs only schema reads here and
-    commits no data, while allowing SQLite to recover its own sidecars.
+    Use the fenced immutable path when the owner is quiescent, and fall back
+    to the coordinated writer only when sidecars prove that recovery is
+    required; this keeps repeated initialization byte-stable.
     """
 
     if not path.is_file() or path.stat().st_size == 0:
         return None
     try:
-        with semantic_database(path) as connection:
+        use_writer = False
+        try:
+            from neocortex.persistence.sqlite_immutable import (
+                capture_sqlite_immutable_fence,
+            )
+
+            capture_sqlite_immutable_fence(path)
+        except Exception:
+            use_writer = True
+        with semantic_database(path, readonly=not use_writer) as connection:
             version = _read_schema_version(connection)
             if version is not None:
                 _validate_version_contract(connection, version)
@@ -1367,6 +1405,7 @@ def initialize_semantic_state(path: Path) -> None:
 
     initial_version = _inspect_existing_schema(path)
     if initial_version == SEMANTIC_SCHEMA_VERSION:
+        _ensure_semantic_performance_indexes(path)
         return
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1389,6 +1428,38 @@ def initialize_semantic_state(path: Path) -> None:
         raise SemanticStateError(
             f"semantic schema initialization from version {source} failed"
         ) from exc
+    except BaseException:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+    _ensure_semantic_performance_indexes(path)
+
+
+def _ensure_semantic_performance_indexes(path: Path) -> None:
+    """Install bounded claim indexes without changing the schema contract."""
+
+    if not path.is_file():
+        return
+    connection = sqlite3.connect(path, timeout=60.0)
+    try:
+        _configure_common_connection(connection)
+        _configure_write_connection(connection)
+        existing = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            )
+        }
+        missing = tuple(
+            statement for name, statement in _SEMANTIC_PERFORMANCE_INDEXES if name not in existing
+        )
+        if not missing:
+            return
+        connection.execute("BEGIN IMMEDIATE")
+        for statement in missing:
+            connection.execute(statement)
+        connection.commit()
     except BaseException:
         connection.rollback()
         raise

@@ -1,6 +1,7 @@
 """Incremental PDF cache policy, touch, resumption and bounded pruning."""
 
 from __future__ import annotations
+import os
 import sqlite3
 import time
 
@@ -29,6 +30,7 @@ from neocortex.runtime.control.retry_policy import (
 PDF_CACHE_PRUNE_BATCH = 256
 PDF_CACHE_TOUCH_BATCH = 256
 MAX_RETRY_PAGE_SET = 10_000
+PDF_CACHE_SCOPE_SAMPLE = 512
 _PATH_COLLATION = sqlite_path_collation()
 # Compatibility name retained for the storage mixin and older integrations.
 RETRYABLE_PAGE_ERROR_SQL = PDF_RETRYABLE_PAGE_ERROR_SQL
@@ -165,27 +167,103 @@ class PdfRouteCacheMixin:
                 partial += 1
         return completed, partial
 
+    @staticmethod
+    def _normalized_cache_path(path: object) -> str:
+        return os.path.normcase(os.path.abspath(os.fspath(str(path))))
+
+    @classmethod
+    def _path_is_in_cache_scope(cls, path: object, scope: str) -> bool:
+        normalized = cls._normalized_cache_path(path)
+        try:
+            return os.path.commonpath((normalized, scope)) == scope
+        except ValueError:
+            return False
+
+    @classmethod
+    def _cache_scope_for_inventory(
+        cls,
+        connection: sqlite3.Connection,
+        run_id: int,
+    ) -> str | None:
+        """Infer one conservative source-root scope from the live inventory.
+
+        PDF state can be reused by isolated smoke roots and the user's corpus.
+        ``file_key`` prevents identity collisions, but a global prune still
+        used to mistake every document outside the current inventory for a
+        deleted source.  A one-file inventory is scoped to its parent; a
+        multi-file inventory uses a bounded common path.  Ambiguous roots are
+        deliberately not prunable.
+        """
+
+        rows = connection.execute(
+            """SELECT path FROM pdf_inventory WHERE last_seen_run_id=?
+            ORDER BY path LIMIT ?""",
+            (run_id, PDF_CACHE_SCOPE_SAMPLE),
+        ).fetchall()
+        paths = tuple(cls._normalized_cache_path(row[0]) for row in rows)
+        if not paths:
+            return None
+        if len(paths) == 1:
+            scope = os.path.dirname(paths[0])
+        else:
+            try:
+                scope = os.path.commonpath(paths)
+            except ValueError:
+                return None
+        if not scope or scope == os.path.sep:
+            return None
+        if scope == cls._normalized_cache_path(os.path.expanduser("~")):
+            return None
+        return scope
+
+    @classmethod
+    def _cache_scope_is_complete(
+        cls,
+        connection: sqlite3.Connection,
+        scope: str,
+    ) -> bool:
+        """Return whether all cached paths belong to this one source root."""
+
+        rows = connection.execute(
+            """SELECT path FROM documents
+            UNION ALL SELECT path FROM pdf_inventory"""
+        ).fetchall()
+        return all(cls._path_is_in_cache_scope(row[0], scope) for row in rows)
+
     def _prune_pdf_cache(self) -> tuple[int, int]:
         """Remove only stale cache rows after all selected PDF work succeeds."""
 
         self.cancellation.checkpoint()
         documents_pruned = rows_pruned = 0
         with serialized_pdf_write(), pdf_database(self.config.state_path) as connection:
+            cache_scope = self._cache_scope_for_inventory(connection, self.run_id)
+            scope_is_complete = bool(
+                cache_scope is not None
+                and self._cache_scope_is_complete(connection, cache_scope)
+            )
             connection.execute(
                 """CREATE TEMP TABLE IF NOT EXISTS stale_pdf_keys(
                 file_key TEXT PRIMARY KEY) WITHOUT ROWID"""
             )
             connection.execute("DELETE FROM stale_pdf_keys")
-            connection.execute(
-                """INSERT OR IGNORE INTO stale_pdf_keys(file_key)
-                SELECT d.file_key FROM documents d
-                LEFT JOIN pdf_inventory i ON i.file_key=d.file_key
-                AND i.last_seen_run_id=? AND i.size=d.size AND i.mtime_ns=d.mtime_ns
-                AND (i.birthtime_ns=d.birthtime_ns
-                    OR d.birthtime_ns=-1)
-                WHERE i.file_key IS NULL""",
-                (self.run_id,),
-            )
+            if cache_scope is not None:
+                stale_rows = connection.execute(
+                    """SELECT d.file_key,d.path FROM documents d
+                    LEFT JOIN pdf_inventory i ON i.file_key=d.file_key
+                    AND i.last_seen_run_id=? AND i.size=d.size AND i.mtime_ns=d.mtime_ns
+                    AND (i.birthtime_ns=d.birthtime_ns
+                        OR d.birthtime_ns=-1)
+                    WHERE i.file_key IS NULL""",
+                    (self.run_id,),
+                ).fetchall()
+                connection.executemany(
+                    "INSERT OR IGNORE INTO stale_pdf_keys(file_key) VALUES(?)",
+                    (
+                        (row[0],)
+                        for row in stale_rows
+                        if self._path_is_in_cache_scope(row[1], cache_scope)
+                    ),
+                )
             rows_pruned += self._prune_stale_fts_rows(connection)
             while True:
                 self.cancellation.checkpoint()
@@ -231,26 +309,36 @@ class PdfRouteCacheMixin:
                 SELECT 1 FROM documents d WHERE d.file_key=page_fts.file_key
                 AND d.path<>page_fts.path COLLATE {_PATH_COLLATION})"""
             )
-            while True:
-                self.cancellation.checkpoint()
+            if scope_is_complete:
                 old_inventory = connection.execute(
-                    "SELECT file_key FROM pdf_inventory WHERE last_seen_run_id<>? LIMIT 1000",
+                    "SELECT file_key,path FROM pdf_inventory WHERE last_seen_run_id<>?",
                     (self.run_id,),
                 ).fetchall()
-                if not old_inventory:
-                    break
-                rows_pruned += int(
-                    connection.executemany(
-                        "DELETE FROM pdf_inventory WHERE file_key=?", old_inventory
-                    ).rowcount
+                scoped_inventory = tuple(
+                    (row[0],)
+                    for row in old_inventory
+                    if cache_scope is not None
+                    and self._path_is_in_cache_scope(row[1], cache_scope)
                 )
-                connection.commit()
-            keep_runs = {
-                int(row[0])
-                for row in connection.execute(
-                    "SELECT DISTINCT relation_run_id FROM similarity_state"
-                )
-            }
+                for offset in range(0, len(scoped_inventory), 1000):
+                    self.cancellation.checkpoint()
+                    batch = scoped_inventory[offset : offset + 1000]
+                    rows_pruned += int(
+                        connection.executemany(
+                            "DELETE FROM pdf_inventory WHERE file_key=?", batch
+                        ).rowcount
+                    )
+                    connection.commit()
+            keep_runs = (
+                {
+                    int(row[0])
+                    for row in connection.execute(
+                        "SELECT DISTINCT relation_run_id FROM similarity_state"
+                    )
+                }
+                if scope_is_complete
+                else set()
+            )
             history_specs = (
                 (
                     "similarity_relations",
@@ -269,7 +357,13 @@ class PdfRouteCacheMixin:
                     ("relation_run_id", "group_key"),
                 ),
             )
-            if keep_runs:
+            if not scope_is_complete:
+                # A shared state database contains at least one foreign source
+                # root.  History rows have no root column, so pruning them here
+                # would be indistinguishable from deleting another corpus's
+                # derived evidence; leave that evidence intact.
+                pass
+            elif keep_runs:
                 placeholders = ",".join("?" for _ in keep_runs)
                 for table, columns in history_specs:
                     while True:
