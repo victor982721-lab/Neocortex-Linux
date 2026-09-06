@@ -179,14 +179,18 @@ def _semantic_fragment(
 
 def _lexical_extent(row: sqlite3.Row, owner: str, snippet: str, page: int | None) -> dict[str, object]:
     total = row["evidence_total_chars"]
-    if not isinstance(total, int) or total < len(snippet):
+    if not isinstance(total, int) or len(snippet) != min(total, 4096):
         raise EvidenceLookupError("owner_evidence_extent_unavailable")
     extent: dict[str, object] = {
         "units": "characters",
-        "returned_range": {"start_char": 0, "end_char": len(snippet), "basis": "owner_text_prefix"},
+        # The lexical body is the raw, locatable owner section (the document
+        # fulltext or one PDF page), not a whitespace-normalized model chunk.
+        # SQL reads this prefix and its total length from the same row.
+        "exact_reference_range": {"start_char": 0, "end_char": total, "basis": "source_section"},
+        "returned_range": {"start_char": 0, "end_char": len(snippet), "basis": "source_section"},
         "source_total_chars": total,
         "bounded": total > len(snippet),
-        "document_scope": "document" if owner == "text" else "pdf_page",
+        "document_scope": "pdf_page" if owner == "pdf" else "document",
     }
     if owner == "pdf":
         extent["pdf_page_index"] = page
@@ -290,7 +294,7 @@ def lookup_owner_evidence(
     section = str(page) if owner == "pdf" else "fulltext"
     lexical_entity_id = (
         f"lexical:pdf:{file_key}:page:{section}" if owner == "pdf"
-        else f"lexical:text:{file_key}:fulltext" if owner == "text" else None
+        else f"lexical:{owner}:{file_key}:fulltext" if owner in {"text", "docx"} else None
     )
     entity_id = citation.get("retrieval_entity_id")
     if not isinstance(entity_id, str) or not entity_id or len(entity_id) > 4096:
@@ -324,11 +328,12 @@ def lookup_owner_evidence(
             )
             _validate_owner_locator(connection, owner, row, resolved)
             owners.append(semantic_observation)
-        elif owner == "text":
+        elif owner in {"text", "docx"}:
             rows = connection.execute(
                 """SELECT d.*,substr(f.body,1,4096) AS evidence_text,length(f.body) AS evidence_total_chars
                    FROM documents d JOIN document_fts f ON f.file_key=d.file_key
-                   WHERE d.file_key=? AND d.status='complete' LIMIT 2""", (file_key,),
+                   WHERE d.file_key=? AND d.status IN (?,?) LIMIT 2""",
+                (file_key, "complete", "partial" if owner == "docx" else "complete"),
             ).fetchall()
         else:
             rows = connection.execute(

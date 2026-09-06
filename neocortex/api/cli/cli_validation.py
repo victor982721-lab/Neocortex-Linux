@@ -18,6 +18,7 @@ from .cli_capabilities_surface import validate_capabilities_arguments
 from .cli_code_surface import validate_code_arguments
 from .cli_content_diagnostics import validate_content_diagnostics_arguments
 from .cli_docx_surface import validate_docx_arguments, validate_docx_direct_operation
+from .cli_dedup_keeper import validate_dedup_keeper_arguments
 from .cli_knowledge_surface import validate_knowledge_arguments
 from .cli_models_surface import validate_models_arguments
 from .cli_office_surface import (
@@ -700,6 +701,7 @@ def _validate_route_only(args: argparse.Namespace) -> None:
 
 def validate_arguments(args: argparse.Namespace) -> None:
     apply_all_preset(args)
+    validate_dedup_keeper_arguments(args)
     if args.show_groups < 0:
         raise SystemExit("--show-groups cannot be negative")
     try:

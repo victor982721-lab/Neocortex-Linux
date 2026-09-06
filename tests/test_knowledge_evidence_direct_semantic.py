@@ -399,16 +399,18 @@ def test_route_specific_locator_and_parent_bindings_are_revalidated(semantic_ref
     assert _hashes(state) == before
 
 
-@pytest.mark.parametrize("owner", ("text", "pdf"))
+@pytest.mark.parametrize("owner", ("text", "pdf", "docx"))
 @pytest.mark.parametrize("characters", (64, 4096, 4097))
 def test_lexical_extent_measures_the_same_owner_row_not_the_prefix_length(tmp_path, monkeypatch, owner, characters):
     state = tmp_path / "lexical"
     state.mkdir()
     path = state / f"{owner}.sqlite3"
     source_path = f"/fixture/report.{owner}"
-    text = "ó" * characters
+    pattern = "Incidente observado.\nLa carga rozó el soporte; no hubo daño.\tΔó\n"
+    text = (pattern * (characters // len(pattern) + 1))[:characters]
     payload = text.encode()
-    (initialize_text_state if owner == "text" else initialize_pdf_state)(path)
+    {"text": initialize_text_state, "pdf": initialize_pdf_state,
+     "docx": initialize_docx_state}[owner](path)
     with closing(sqlite3.connect(path)) as connection, connection:
         if owner == "text":
             connection.execute(
@@ -422,6 +424,16 @@ def test_lexical_extent_measures_the_same_owner_row_not_the_prefix_length(tmp_pa
                 "INSERT INTO document_fts(file_key,path,content_kind,body) VALUES(?,?,'plain',?)",
                 (_KEY, source_path, text),
             )
+        elif owner == "docx":
+            connection.execute(
+                """INSERT INTO documents(file_key,path,size,mtime_ns,birthtime_ns,
+                processing_signature,status,text_zlib,text_chars,text_xxh3_128,last_seen_run_id,updated_ns)
+                VALUES(?,?,?,1,-1,'fixture:lexical','complete',?,?,?,1,1)""",
+                (_KEY, source_path, len(payload), zlib.compress(payload), characters,
+                 fingerprint_text(text).xxh3_128),
+            )
+            connection.execute("INSERT INTO document_fts(file_key,path,body) VALUES(?,?,?)",
+                               (_KEY, source_path, text))
         else:
             connection.execute(
                 """INSERT INTO documents(file_key,path,size,mtime_ns,birthtime_ns,
@@ -438,7 +450,7 @@ def test_lexical_extent_measures_the_same_owner_row_not_the_prefix_length(tmp_pa
                 "INSERT INTO page_fts(file_key,path,page_number,text) VALUES(?,?,0,?)",
                 (_KEY, source_path, text),
             )
-    entity = f"lexical:text:{_KEY}:fulltext" if owner == "text" else f"lexical:pdf:{_KEY}:page:0"
+    entity = f"lexical:pdf:{_KEY}:page:0" if owner == "pdf" else f"lexical:{owner}:{_KEY}:fulltext"
     revision = {"size": len(payload), "mtime_ns": 1, "birthtime_ns": -1,
                 "processing_signature": "fixture:lexical", "last_seen_run_id": 1}
     if owner == "pdf":
@@ -448,9 +460,9 @@ def test_lexical_extent_measures_the_same_owner_row_not_the_prefix_length(tmp_pa
                       indexed_model_signature="fixture", vector_space="owner:evidence:text:v1",
                       modality=EmbeddingModality.TEXT, score=0.0, generation_id=0),
         path=source_path, source_kind=owner, source_identity=_KEY,
-        section_kind="document" if owner == "text" else "pdf_page",
-        section_id="fulltext" if owner == "text" else "0", start_char=None, end_char=None,
-        snippet=text[:64], source_revision=revision, source_status="complete" if owner == "text" else "done",
+        section_kind="pdf_page" if owner == "pdf" else "document",
+        section_id="0" if owner == "pdf" else "fulltext", start_char=None, end_char=None,
+        snippet=text[:64], source_revision=revision, source_status="done" if owner == "pdf" else "complete",
     )
     candidate = _candidate_from_resolved(resolved, ranking_name=f"fts_{owner}", source_rank=1, producer="fixture")
     snapshot = collect_knowledge_snapshot(KnowledgeStatePaths.from_directory(state), source_version="fixture")
@@ -476,8 +488,12 @@ def test_lexical_extent_measures_the_same_owner_row_not_the_prefix_length(tmp_pa
         assert extent["source_total_chars"] == characters
         assert extent["bounded"] is (characters > 4096)
         assert extent["returned_range"] == {"start_char": 0, "end_char": min(characters, 4096),
-                                            "basis": "owner_text_prefix"}
-        assert extent["document_scope"] == ("document" if owner == "text" else "pdf_page")
+                                            "basis": "source_section"}
+        assert extent["exact_reference_range"] == {"start_char": 0, "end_char": characters,
+                                                   "basis": "source_section"}
+        assert first["hits"][0]["evidence"]["snippet"] == text[:4096]
+        assert "\n" in first["hits"][0]["evidence"]["snippet"]
+        assert extent["document_scope"] == ("pdf_page" if owner == "pdf" else "document")
         if owner == "pdf":
             assert extent["pdf_page_index"] == 0
         response = read_api.evidence_payload(source_ref=source, evidence_ref=citation, scope="personal")
@@ -485,6 +501,15 @@ def test_lexical_extent_measures_the_same_owner_row_not_the_prefix_length(tmp_pa
         context.verify_owner_fences()
     assert _hashes(state) == before
     assert not (state / "semantic.sqlite3").exists()
+    if owner == "docx" and characters == 64:
+        context = read_api.context_payload("incidente", scope="personal", response_version=2)
+        assert context["citations"], (context["coverage"], context["error"])
+        for item in context["citations"]:
+            assert item["hydration"]["status"] == "owner_verified"
+            assert item["excerpt"] == text
+            assert item["evidence_disposition"] == "evidence_candidate"
+            assert item["witness_checks"]["missing_necessary_witnesses"] == []
+        assert _hashes(state) == before
 
 
 def _fixture_hydration_service(semantic_reference, *, after_search=None):

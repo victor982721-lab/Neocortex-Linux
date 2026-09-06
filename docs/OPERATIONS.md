@@ -170,6 +170,27 @@ Neocortex curate reconcile --actor ACTOR --confirm-reconcile --json
 
 ## Mantenimiento de estado
 
+### Preferencias para conservar duplicados
+
+Sobre una muestra autorizada, las preferencias se aplican a las identidades
+físicas del inventario seleccionado, no a nombres sin revalidación:
+
+```bash
+Neocortex --root /ruta/muestra --dedup-keep /ruta/muestra/original.pdf --show-groups
+Neocortex --root /ruta/muestra --dedup-prefer-root /ruta/muestra/preferidos --show-groups
+```
+
+Ambas opciones son repetibles y activan inventario y planificación, incluso sin
+una ruta de extracción. Escriben estado interno, no modifican el corpus ni
+autorizan efectos; no son consultas read-only. Una decisión explícita prevalece
+sobre las ubicaciones preferidas, cuyo orden expresa prioridad. Una selección
+fuera de la raíz, una identidad cambiada o dos conservaciones incompatibles en
+un grupo producen un error, no una elección silenciosa. Las referencias sólo
+influyen cuando están verificadas contra su propietario y la publicación
+vigente; su ausencia o una comprobación incompleta no prueban prescindibilidad.
+
+### Salud y cobertura
+
 Las comprobaciones tienen alcance explícito y no convierten lo omitido en sano:
 
 ```bash

@@ -54,6 +54,8 @@ class FrameworkConfig:
     apply_actions: bool = False
     preview_group_limit: int = 0
     dedup_policy: Literal["fast", "exact"] = "fast"
+    dedup_keep_paths: tuple[Path, ...] = ()
+    dedup_prefer_roots: tuple[Path, ...] = ()
     route: str = "none"
     route_only: bool = False
     candidate_run_id: int | None = None

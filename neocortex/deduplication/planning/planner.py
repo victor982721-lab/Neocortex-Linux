@@ -7,6 +7,8 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from ..domain.models import DedupPlan, FileSnapshot
 from ..domain.evidence import KeeperPolicy
 from ..fingerprinting import (
@@ -41,12 +43,16 @@ class DedupPlanner:
         *,
         partial_threshold: int = DEFAULT_PARTIAL_THRESHOLD,
         keeper_policy: KeeperPolicy | None = None,
+        keeper_validation: Callable[[], None] | None = None,
     ):
         if partial_threshold < 0:
             raise ValueError("partial_threshold cannot be negative")
         self._index = index
         self._partial_threshold = partial_threshold
         self._keeper_policy = keeper_policy or KeeperPolicy()
+        if keeper_validation is not None and not callable(keeper_validation):
+            raise TypeError("keeper_validation must be callable")
+        self._keeper_validation = keeper_validation
 
     def _fingerprint(self, snapshot: FileSnapshot, *, partial: bool) -> tuple[bytes, bool]:
         algorithm = PARTIAL_ALGORITHM if partial else FULL_ALGORITHM
@@ -78,6 +84,7 @@ class DedupPlanner:
             capture_snapshot=snapshot_path,
             exact_matcher=files_equal_exact,
             keeper_policy=self._keeper_policy,
+            keeper_validation=self._keeper_validation,
         ).run()
 
 

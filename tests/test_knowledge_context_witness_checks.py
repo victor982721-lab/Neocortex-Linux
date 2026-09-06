@@ -270,6 +270,30 @@ def test_fragment_expansion_refreshes_previously_missing_witnesses():
     assert payload["coverage"]["witness_checks"]["status"] == "necessary_checks_not_failed"
 
 
+@pytest.mark.parametrize("transport", ("text", "json", "mcp"))
+def test_budget_cannot_turn_a_known_counter_witness_into_an_unqualified_candidate(transport):
+    query = "¿Por qué se detuvo el izaje del depósito X8?"
+    opening = "Plan de izaje. Se revisarían las distancias antes de elevar la carga. "
+    counter = "Este documento fue preparado antes de la maniobra y no demuestra su ejecución."
+    snippet = opening * 4 + counter
+    assert query_role_counterevidence(query, snippet)
+    assert not query_role_counterevidence(query, snippet[:240] + " …[truncated]")
+    # The old cheaper prefix hid the very clause that qualified this evidence.
+    cheap = _build(query, snippet[:240] + " …[truncated]", transport=transport)
+    tight = _build(query, snippet, max_characters=cheap["budget"]["characters_used"],
+                   transport=transport)
+    for citation in tight["citations"]:
+        assert counter.rstrip(".") in citation["excerpt"]
+        assert citation["role_counterevidence"]
+        assert citation["evidence_disposition"] == "contradictory"
+        assert citation["role_counterevidence"] == query_role_counterevidence(query, citation["excerpt"])
+    assert emitted_response_characters(tight, transport) <= tight["budget"]["character_limit"]
+    full = _build(query, snippet, transport=transport)
+    citation = _assert_emitted_checks(full)
+    assert citation["excerpt"] == snippet
+    assert citation["evidence_disposition"] == "contradictory"
+
+
 def test_reported_authorization_stays_untrusted_read_only_content():
     snippet = "María escribió: La supervisora Lucía autorizó el retiro del aislador."
     payload = _build(AUTHORIZATION_QUERY, snippet)

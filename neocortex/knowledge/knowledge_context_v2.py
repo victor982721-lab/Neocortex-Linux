@@ -401,9 +401,17 @@ def build_context_response_v2(
         proposal["citations"].append(citation)
         _set_status(proposal, len(candidates), assessment_cache)
         cost = _measure(proposal)
-        if len(snippet) > _MIN_EXCERPT:
+        # A cheap prefix must not erase counter-witnesses already observed in
+        # the supplied owner unit. Keep their exact source spans, or the whole
+        # unit when a necessary-check counter-witness has no locatable span.
+        protected_end = max([_MIN_EXCERPT, *(
+            witness["end_char"] for witness in citation["role_counterevidence"]
+        )])
+        if citation["witness_checks"]["counterevidence"]:
+            protected_end = len(snippet)
+        if len(snippet) > protected_end:
             shortened = copy.deepcopy(proposal)
-            shortened["citations"][-1].update(excerpt=snippet[:_MIN_EXCERPT] + _TRUNCATED,
+            shortened["citations"][-1].update(excerpt=snippet[:protected_end] + _TRUNCATED,
                                                fragment_state="truncated")
             _set_status(shortened, len(candidates), assessment_cache)
             short_cost = _measure(shortened)

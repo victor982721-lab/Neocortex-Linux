@@ -941,6 +941,14 @@ def _append_semantic_missing_reports(
         )
 
 
+def image_query_intent(plan: KnowledgePlan) -> str:
+    """Resolve intent from the original request, never from isolated channel flags."""
+    intent = classify_image_query_intent(plan.normalized_query, image_only=False)
+    if image_only_source_filters(plan.source_kinds, plan.formats) and intent == "ambiguous":
+        return "explicit_visual"
+    return intent
+
+
 def _search_semantic_step(
     context: _SemanticRankingContext,
     step: RetrievalStep,
@@ -951,14 +959,7 @@ def _search_semantic_step(
     expected_name = step.ranking_name
     # Channel isolation is an implementation detail, not a user request to see
     # images.  Derive modality once from the original query and explicit filters.
-    original_image_only = image_only_source_filters(
-        context.plan.source_kinds, context.plan.formats,
-    )
-    image_intent = classify_image_query_intent(
-        context.plan.normalized_query, image_only=False,
-    )
-    if original_image_only and image_intent == "ambiguous":
-        image_intent = "explicit_visual"
+    image_intent = image_query_intent(context.plan)
     return context.semantic_search(
         context.paths.semantic.parent,
         context.plan.normalized_query,

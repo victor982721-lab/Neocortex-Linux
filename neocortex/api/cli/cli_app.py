@@ -306,6 +306,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         or args.route_only
         or args.resume_run is not None
         or args.candidate_run is not None
+        or bool(getattr(args, "dedup_keep", ()))
+        or bool(getattr(args, "dedup_prefer_root", ()))
     ):
         # Options such as --root or --state-directory alone do not select an
         # operation.  Never turn them into an implicit inventory write.

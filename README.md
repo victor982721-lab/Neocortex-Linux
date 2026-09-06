@@ -114,6 +114,13 @@ o ZIP de curación; `--json` sólo devuelve la respuesta.
 `--curation-preview 50 --curation-json` permanece como compatibilidad plana. El contrato completo está en
 [File Intelligence & Curation](docs/FILE_INTELLIGENCE_AND_CURATION.md).
 
+La planificación de duplicados acepta decisiones explícitas con
+`--dedup-keep FILE` y ubicaciones preferidas con
+`--dedup-prefer-root DIRECTORY`, ambas repetibles dentro de la raíz de entrada.
+Estas opciones ejecutan inventario y plan, escriben estado interno y nunca
+autorizan borrar archivos. `--show-groups` explica la elección; dos decisiones
+de conservación incompatibles en un mismo grupo impiden publicar el plan.
+
 El tramo físico controlado se consulta así:
 
 ```bash

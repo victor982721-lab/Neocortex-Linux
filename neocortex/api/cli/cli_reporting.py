@@ -419,7 +419,16 @@ def _print_duplicate_groups(
 ) -> None:
     """Use the same bounded evidence detail for terminals and pipes."""
     plan = getattr(result, "dedup_plan", None)
-    if plan is None or limit <= 0:
+    if plan is None:
+        return
+    if hasattr(plan, "keeper_reference_status"):
+        status = plan.keeper_reference_status
+        emit(
+            f"KEEPER_REFERENCES status={'available' if status == 'available' else 'refs_unverified'} "
+            f"evaluation={status} evidence_count={plan.keeper_reference_count} "
+            f"reason={plan.keeper_reference_reason or '-'}"
+        )
+    if limit <= 0:
         return
     groups = tuple(getattr(plan, "groups", ()))[:limit]
     total = int(plan.group_count)
@@ -429,10 +438,12 @@ def _print_duplicate_groups(
         "scope=physical_files physical_reclaimable_bytes=not_verified"
     )
     for ordinal, group in enumerate(groups, 1):
+        proof = getattr(group, "proof", None)
         emit(
             f"GROUP position={ordinal} "
             f"verification_mode={getattr(group, 'verification_mode', 'legacy_unknown')} "
-            f"evidence={'available' if getattr(group, 'proof', None) is not None else 'legacy_unknown'}"
+            f"evidence={'available' if proof is not None else 'legacy_unknown'} "
+            f"keeper_reason={getattr(proof, 'keeper_reason', 'not_recorded')}"
         )
         emit(f"KEEP {group.keep.path}")
         for redundant in group.redundant:

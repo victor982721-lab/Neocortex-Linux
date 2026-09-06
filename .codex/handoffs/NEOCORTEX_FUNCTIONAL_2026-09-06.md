@@ -1,4 +1,4 @@
-# Mejora funcional — implementación en curso
+# Mejora funcional — implementación y aceptación
 
 ## Objetivo y autoridad
 
@@ -66,11 +66,19 @@ este handoff conserva únicamente el avance mínimo necesario para reanudar.
   desarrollo: usar `NEOCORTEX_TEST_PYTHON` apuntando al artefacto candidato.
   No retirar ese guard ni presentar el setup fallido como prueba aprobada.
 - Ambas consultas reales sitúan el PDF en top-3 del flujo fusionado sin
-  reindexar. Con todos los owners originales figura segundo en ambas;
-  los owners legacy requieren migración en copia antes del gate instalado.
+  reindexar. Con los trece owners disponibles en la copia migrada figura
+  tercero en ambas, con la condición y la página verificadas.
   El semántico puro consolidado conserva puestos 4 y 10, no top-3.
 - El baseline completo inmutable conserva 87 archivos y 13 owners. Migraciones
   y pruebas posteriores usan otra copia, nunca hardlinks a esa evidencia.
-- Permanecen abiertos: suite conjunta con artefacto instalado, reserva ciega,
-  replay final con todos los owners, publicación y promoción productiva.
-  Los hashes del candidato y sus receipts se registran fuera de este archivo.
+- El primer candidato instalado pasó 6,247 pruebas, con 59 omitidas y 42
+  subtests, pero DEV v2 detectó cuatro citas sin comprobación suficiente.
+  El siguiente cambio corrige coordenadas de evidencia, lookup directo DOCX
+  y omisiones intencionales del canal visual, sin cambiar modelos o métricas.
+- El cierre independiente detectó preferencias keeper sólo disponibles en
+  Python; la CLI normal debe llevar decisiones y ubicaciones preferidas al
+  mismo planificador, con referencias verificadas desde su owner existente.
+- La aceptación requiere el nuevo artefacto, suite conjunta, DEV y reserva
+  ciega, replay final con todos los owners, publicación y promoción productiva.
+  El estado vigente de esas barreras, los hashes y sus receipts se registran
+  en `NEO-FUN-001` y su historial, no se infieren desde este handoff de fuente.

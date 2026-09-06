@@ -1225,6 +1225,7 @@ def _required_ranking_gaps(
     unavailable, incomplete = _named_ranking_gaps(
         required_named,
         execution.reports,
+        intentional_omissions=_intentional_ranking_omissions(execution.plan),
     )
     if not duplicate_report.complete:
         incomplete.add(duplicate_report.name)
@@ -1243,15 +1244,35 @@ def _required_ranking_gaps(
     )
 
 
+def _intentional_ranking_omissions(plan: KnowledgePlan) -> dict[str, str]:
+    from .knowledge_search_content import image_query_intent
+
+    intent = image_query_intent(plan)
+    reasons = {
+        "explicit_textual": "textual_query_routed_away_from_clip",
+        "ambiguous": "ambiguous_query_requires_text_evidence",
+    }
+    reason = reasons.get(intent)
+    return {"semantic_image": reason} if reason is not None else {}
+
+
 def _named_ranking_gaps(
     required_names: frozenset[str],
     reports: Sequence[RankingExecution],
+    *,
+    intentional_omissions: Mapping[str, str] | None = None,
 ) -> tuple[set[str], set[str]]:
     unavailable: set[str] = set()
     incomplete: set[str] = set()
     reports_by_name = {report.name: report for report in reports}
     for name in required_names:
         report = reports_by_name.get(name)
+        if (
+            report is not None and report.intentional_omission
+            and intentional_omissions is not None
+            and intentional_omissions.get(name) == report.reason
+        ):
+            continue
         if report is None or not report.executed or not report.available:
             unavailable.add(name)
         elif not report.complete:

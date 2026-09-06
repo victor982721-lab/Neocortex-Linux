@@ -28,6 +28,8 @@ def framework_config_from_args(args: argparse.Namespace) -> FrameworkConfig:
         apply_actions=args.apply,
         preview_group_limit=args.show_groups,
         dedup_policy=args.dedup_policy,
+        dedup_keep_paths=tuple(getattr(args, "dedup_keep", ()) or ()),
+        dedup_prefer_roots=tuple(getattr(args, "dedup_prefer_root", ()) or ()),
         route=args.route,
         route_only=bool(args.route_only or args.resume_run is not None),
         candidate_run_id=args.candidate_run,

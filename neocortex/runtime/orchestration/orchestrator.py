@@ -159,6 +159,18 @@ class FrameworkOrchestrator:
         self.config = config or FrameworkConfig()
         if self.config.dedup_policy not in {"fast", "exact"}:
             raise ValueError("dedup_policy must be 'fast' or 'exact'")
+        from .dedup_keeper import preflight_keeper_inputs, validate_keeper_configuration
+
+        validate_keeper_configuration(self.config.dedup_keep_paths, self.config.dedup_prefer_roots)
+        preflight_keeper_inputs(
+            self.config.root,
+            keep_paths=self.config.dedup_keep_paths,
+            preferred_roots=self.config.dedup_prefer_roots,
+        )
+        if (self.config.dedup_keep_paths or self.config.dedup_prefer_roots) and (
+            self.config.route_only or self.config.candidate_run_id is not None or self.config.resume_run_id is not None
+        ):
+            raise ValueError("keeper preferences require an initial inventory and duplicate-plan run")
         self.route_registry = dict(route_registry or builtin_route_registry())
         self.selected_routes = normalize_route_selection(
             self.config.route, tuple(self.route_registry)
@@ -776,6 +788,8 @@ class FrameworkOrchestrator:
                 self.config.global_resource_wait_timeout_seconds
             ),
             "dedup_policy": self.config.dedup_policy,
+            "dedup_keep_paths": [os.path.abspath(path.expanduser()) for path in self.config.dedup_keep_paths],
+            "dedup_prefer_roots": [os.path.abspath(path.expanduser()) for path in self.config.dedup_prefer_roots],
             "code_max_file_bytes": self.config.code_max_file_bytes,
             "code_max_documents": self.config.code_max_documents,
             "code_cache_validation": self.config.code_cache_validation,
@@ -982,11 +996,56 @@ class FrameworkOrchestrator:
     ) -> DedupPlan:
         state.set_run_phase(run_id, "dedup_plan")
         started = time.perf_counter_ns()
-        plan = DedupPlanner(dedup_index).plan(
-            scan_id,
-            progress=self.progress,
-            preview_limit=self.config.preview_group_limit,
-            exact_compare=self.config.dedup_policy == "exact",
+        from .dedup_keeper import resolve_keeper_inputs
+        from neocortex.deduplication.planning.keeper_references import (
+            KeeperReferenceChanged,
+            KeeperReferenceResolution,
+            resolve_keeper_references,
+        )
+
+        selection = resolve_keeper_inputs(
+            dedup_index, scan_id,
+            keep_paths=self.config.dedup_keep_paths,
+            preferred_roots=self.config.dedup_prefer_roots,
+        )
+        references = resolve_keeper_references(
+            dedup_index, scan_id, self.config.code_database,
+        )
+
+        def build_plan() -> DedupPlan:
+            policy = replace(
+                references.policy,
+                explicit_keep_identities=selection.policy.explicit_keep_identities,
+                preferred_roots=selection.policy.preferred_roots,
+            )
+
+            def verify_keeper_inputs() -> None:
+                selection.verify()
+                references.verify()
+
+            return DedupPlanner(
+                dedup_index, keeper_policy=policy, keeper_validation=verify_keeper_inputs,
+            ).plan(
+                scan_id,
+                progress=self.progress,
+                preview_limit=self.config.preview_group_limit,
+                exact_compare=self.config.dedup_policy == "exact",
+            )
+
+        try:
+            plan = build_plan()
+        except KeeperReferenceChanged:
+            # Refuse to publish the stale-reference choice, then retry once
+            # with unchanged explicit preferences and no unproved reference.
+            references = KeeperReferenceResolution(
+                selection.policy, "stale", "reference_changed_before_plan_publication", 0,
+            )
+            plan = build_plan()
+        plan = replace(
+            plan,
+            keeper_reference_status=references.status,
+            keeper_reference_reason=references.reason,
+            keeper_reference_count=references.evidence_count,
         )
         state.record_event(
             run_id,
@@ -997,6 +1056,9 @@ class FrameworkOrchestrator:
                 "elapsed_ns": time.perf_counter_ns() - started,
                 "groups": plan.group_count,
                 "reclaimable_bytes": plan.reclaimable_bytes,
+                "keeper_explicit_identities": len(selection.policy.explicit_keep_identities),
+                "keeper_preferred_roots": len(selection.policy.preferred_roots),
+                "keeper_references": references.to_dict(),
             },
         )
         return plan

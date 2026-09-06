@@ -12,7 +12,7 @@ from typing import Protocol
 from ..domain.errors import FileChangedError
 from ..domain.evidence import (
     KEEPER_POLICY_VERSION, PROOF_VERSION, DedupPolicy, DuplicateGroupProof,
-    DuplicateMemberProof, KeeperPolicy, PlanCoverage,
+    DuplicateMemberProof, KeeperConflictError, KeeperPolicy, PlanCoverage,
 )
 from ..domain.models import (
     DedupPlan,
@@ -150,6 +150,15 @@ class _PlanAccumulator:
     def store(self, digest: bytes, keep: FileSnapshot, redundant: list[FileSnapshot]) -> None:
         if not redundant:
             return
+        explicit = frozenset(self._keeper_policy.explicit_keep_identities)
+        selected = tuple(
+            member.identity for member in (keep, *redundant) if member.identity in explicit
+        )
+        if len(set(selected)) > 1:
+            raise KeeperConflictError(
+                policy=self._keeper_policy, identities=selected,
+                full_fingerprint=digest.hex(), exact_compare=self._exact_compare,
+            )
         ranks = tuple(keeper_rank(member, self._keeper_policy) for member in (keep, *redundant))
         missing = ("path_disposability_not_verified", "authorization_not_granted", "physical_reclamation_not_verified")
         if not self._exact_compare:
@@ -306,6 +315,7 @@ class PlanningSession:
         capture_snapshot: SnapshotCapture,
         exact_matcher: ExactMatcher,
         keeper_policy: KeeperPolicy | None = None,
+        keeper_validation: Callable[[], None] | None = None,
     ) -> None:
         self._index = index
         self._scan_id = scan_id
@@ -316,6 +326,9 @@ class PlanningSession:
         self._capture_snapshot = capture_snapshot
         self._exact_matcher = exact_matcher
         self._keeper_policy = keeper_policy or KeeperPolicy()
+        if keeper_validation is not None and not callable(keeper_validation):
+            raise TypeError("keeper_validation must be callable")
+        self._keeper_validation = keeper_validation
         self._counters = _PlanCounters()
         self._work = _PlanningProgress(progress, index.size_candidate_file_count(scan_id))
         self._groups = _PlanAccumulator(
@@ -328,6 +341,8 @@ class PlanningSession:
         for size, _raw_count in self._index.size_collision_sizes(self._scan_id):
             self._plan_size(size)
         self._groups.flush()
+        if self._keeper_validation is not None:
+            self._keeper_validation()
         self._index.complete_duplicate_plan(
             self._scan_id,
             group_count=self._groups.group_count,

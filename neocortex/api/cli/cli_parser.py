@@ -28,6 +28,7 @@ from .cli_office_surface import register_office_arguments
 from .cli_platform_surface import register_platform_arguments
 from .cli_semantic_surface import register_semantic_arguments
 from .cli_text_surface import register_text_arguments
+from .cli_dedup_keeper import register_dedup_keeper_arguments
 from .cli_video_surface import register_video_arguments
 from neocortex.safety.ocr_profiles import OCR_PROFILE_CHOICES
 
@@ -764,6 +765,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    register_dedup_keeper_arguments(parser)
     pdf = parser.add_argument_group("PDF route")
 
     pdf.add_argument(

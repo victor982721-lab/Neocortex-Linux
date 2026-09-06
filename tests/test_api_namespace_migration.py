@@ -14,8 +14,9 @@ CLI_MODULES = tuple(sorted(path.stem for path in CLI_ROOT.glob("cli_*.py")))
 
 
 def test_canonical_cli_modules_are_owned_by_the_api_tree() -> None:
-    assert len(CLI_MODULES) == 34
+    assert len(CLI_MODULES) == 35
     assert "cli_content_diagnostics" in CLI_MODULES
+    assert "cli_dedup_keeper" in CLI_MODULES
     for name in CLI_MODULES:
         module = __import__(f"neocortex.api.cli.{name}", fromlist=[name])
         assert Path(module.__file__).resolve().is_relative_to(CLI_ROOT)

@@ -47,7 +47,7 @@ def keeper_reason(ranks: tuple[KeeperRank, ...]) -> str:
 
 def keeper_factors(snapshot: FileSnapshot, policy: KeeperPolicy) -> tuple[str, ...]:
     rank = keeper_rank(snapshot, policy)
-    return tuple(
+    factors = tuple(
         label for enabled, label in (
             (rank[0] == 0, "explicit_user_decision"),
             (rank[1] < len(policy.preferred_roots), "preferred_location"),
@@ -55,6 +55,14 @@ def keeper_factors(snapshot: FileSnapshot, policy: KeeperPolicy) -> tuple[str, .
             (rank[3] == 0, "clean_name"),
         ) if enabled
     )
+    if snapshot.identity not in policy.verified_reference_identities:
+        return factors
+    evidence_ids = tuple(dict.fromkeys(
+        evidence_id
+        for identity, values in policy.verified_reference_evidence if identity == snapshot.identity
+        for evidence_id in values
+    ))
+    return factors + tuple(f"verified_reference_evidence:{evidence_id}" for evidence_id in evidence_ids)
 
 
 __all__ = ["KeeperRank", "keeper_factors", "keeper_rank", "keeper_reason"]

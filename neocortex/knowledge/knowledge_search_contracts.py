@@ -106,6 +106,26 @@ class RankingExecution:
     next_cursor: int | None = None
     cutoff_score: float | None = None
 
+    @property
+    def intentional_omission(self) -> bool:
+        """A complete routing no-op, not evidence that a required owner failed.
+
+        The aggregator must additionally verify this reason against the original
+        plan intent.  Unknown reasons, activity or incomplete views never qualify.
+        """
+        return (
+            self.name == "semantic_image" and self.channel == "semantic"
+            and self.owner == "semantic" and self.executed is False
+            and self.available is True and self.complete is True
+            and self.returned == self.rows_scanned == self.vectors_scanned == 0
+            and not self.result_window_full and self.next_cursor is None
+            and self.cutoff_score is None
+            and self.reason in {
+                "textual_query_routed_away_from_clip",
+                "ambiguous_query_requires_text_evidence",
+            }
+        )
+
     def __post_init__(self) -> None:
         if not self.name.strip() or not self.channel.strip():
             raise ValueError("ranking execution name and channel cannot be blank")

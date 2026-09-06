@@ -111,6 +111,9 @@ class DedupPlan:
     verification_mode: VerificationMode = "legacy_unknown"
     requested_policy: DedupPolicy = "legacy_unknown"
     coverage: PlanCoverage = "legacy_unknown"
+    keeper_reference_status: str = "unverified"
+    keeper_reference_reason: str | None = None
+    keeper_reference_count: int = 0
 
     @property
     def group_count(self) -> int:
