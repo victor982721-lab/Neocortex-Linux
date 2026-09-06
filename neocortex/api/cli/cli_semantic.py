@@ -645,16 +645,36 @@ def _print_semantic_code_link_statuses(
 def _publication_observation(state_directory: Path) -> dict[str, object]:
     """Observe the cross-owner gate without opening any owner database."""
 
-    from neocortex.persistence.state_publication import read_state_publication_state
+    from neocortex.persistence.state_publication import (
+        read_state_publication_state,
+        read_state_publications,
+    )
 
     try:
         view = read_state_publication_state(state_directory)
+        publications = read_state_publications(state_directory)
     except BaseException as exc:
         return {
             "status": "unavailable",
             "reason": f"{type(exc).__name__}: {str(exc)[:512]}",
         }
     epoch = view.epoch
+    publication = view.publication
+    prepared = None
+    duration_ns = None
+    if publication is not None:
+        prepared = next(
+            (
+                item
+                for item in reversed(publications)
+                if item.status == "partial"
+                and item.idempotency_key == publication.idempotency_key
+                and item.created_ns <= publication.created_ns
+            ),
+            None,
+        )
+        if prepared is not None:
+            duration_ns = max(0, publication.created_ns - prepared.created_ns)
     return {
         "status": view.status,
         "reason": view.reason,
@@ -663,6 +683,10 @@ def _publication_observation(state_directory: Path) -> dict[str, object]:
         "operation": epoch.operation,
         "owners": list(epoch.owners),
         "manifest_sha256": epoch.manifest_sha256,
+        "prepared_ns": None if prepared is None else prepared.created_ns,
+        "completed_ns": None if publication is None else publication.created_ns,
+        "duration_ns": duration_ns,
+        "timing_complete": duration_ns is not None,
     }
 
 
