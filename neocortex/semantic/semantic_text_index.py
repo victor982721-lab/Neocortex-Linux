@@ -195,18 +195,48 @@ def _published_text_source_delta(
             provenance = json.loads(str(row["provenance_json"]))
             if not isinstance(provenance, dict):
                 return None
-            if not _text_replay_contract_matches(
-                provenance,
-                replay_scope=replay_scope,
-                current_entry=replay_entry,
-                selected_sources=selected_sources,
-            ):
-                return None
             ledger = provenance.get("source_head_ledger")
-            assert isinstance(ledger, Mapping)  # guarded by the helper above
-            entry = ledger.get(replay_scope)
-            if not isinstance(entry, Mapping):
+            if not isinstance(ledger, Mapping):
                 return None
+            selected = set(selected_sources)
+            candidates: list[tuple[bool, int, str, Mapping[str, object]]] = []
+            for scope, raw_entry in ledger.items():
+                if not isinstance(scope, str) or not isinstance(raw_entry, Mapping):
+                    continue
+                if raw_entry.get("channel") != "text":
+                    continue
+                raw_sources = raw_entry.get("source_kinds")
+                if not isinstance(raw_sources, list) or not all(
+                    isinstance(source, str) for source in raw_sources
+                ):
+                    continue
+                if not selected.issubset(set(raw_sources)):
+                    continue
+                if any(
+                    raw_entry.get(key) != replay_entry.get(key)
+                    for key in _TEXT_REPLAY_CONTRACT_KEYS
+                    if key not in {"source_kinds"}
+                ):
+                    continue
+                provenance_sources = provenance.get("sources")
+                if not isinstance(provenance_sources, list) or not selected.issubset(
+                    {value for value in provenance_sources if isinstance(value, str)}
+                ):
+                    continue
+                candidates.append(
+                    (
+                        scope == replay_scope,
+                        len(raw_sources),
+                        scope,
+                        raw_entry,
+                    )
+                )
+            if not candidates:
+                return None
+            _exact_scope, _scope_size, _scope_name, entry = sorted(
+                candidates,
+                key=lambda value: (not value[0], value[1], value[2]),
+            )[0]
             old_raw_heads = entry.get("source_heads")
             old_by_kind = _source_head_map(old_raw_heads)
             current_by_kind = _source_head_map(
@@ -214,9 +244,8 @@ def _published_text_source_delta(
             )
             if old_by_kind is None or current_by_kind is None:
                 return None
-            selected = set(selected_sources)
             if (
-                set(old_by_kind) != selected
+                not selected.issubset(set(old_by_kind))
                 or set(current_by_kind) != selected
                 or provenance.get("source_heads") != old_raw_heads
             ):

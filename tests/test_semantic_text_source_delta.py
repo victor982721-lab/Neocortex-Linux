@@ -286,3 +286,43 @@ def test_unchanged_source_skips_enumeration_and_remains_active(
             WHERE item_id=?""",
             (docx_record.item.item_id,),
         ).fetchone()[0] == 1
+
+
+def test_subset_scope_reuses_published_superset_without_pdf_enumeration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Integrated ``--all`` scopes may reuse a broader ready text generation."""
+
+    _patch_backend(monkeypatch)
+    _declare_source_state(tmp_path, "pdf")
+    _declare_empty_docx_state(tmp_path)
+    records = {"pdf": (_text_records(1)[0],), "docx": (_docx_record(),)}
+    heads = {"pdf": _head("pdf", "a" * 64), "docx": _head("docx", "c" * 64)}
+    monkeypatch.setattr(
+        service._text_index,
+        "semantic_source_heads",
+        lambda _state, source_kinds: tuple(heads[source] for source in source_kinds),
+    )
+    calls: list[str] = []
+
+    def source_records(_state: Path, source_kind: str):
+        calls.append(source_kind)
+        return iter(records[source_kind])
+
+    monkeypatch.setattr(service, "iter_text_source_records", source_records)
+    baseline = service.index_text_embeddings(
+        tmp_path,
+        source_kinds=("pdf", "docx"),
+    )
+    assert baseline.complete
+
+    # The integrated scope selects only PDF while the published baseline also
+    # covers DOCX; no PDF owner changed, so source delta must clone the base.
+    replay = service.index_text_embeddings(tmp_path, source_kinds=("pdf",))
+
+    assert replay.complete
+    assert replay.execution_mode == "enumerated"
+    assert replay.sources_reused == 1
+    assert replay.sources_enumerated == 0
+    assert calls == ["pdf", "docx"]
