@@ -1211,11 +1211,7 @@ def _source_head_query(
             else ""
         )
         return (
-            # Route cache hits may refresh only the extractor signature while
-            # preserving the materialized text and metadata.  Semantic source
-            # identity is content-based here, so exclude that operational
-            # cache field and retain the text/content/revision bindings below.
-            f"""SELECT d.file_key,d.path,d.status,d.size,
+            f"""SELECT d.file_key,d.path,d.processing_signature,d.status,d.size,
             d.mtime_ns,d.birthtime_ns,d.text_xxh3_128,d.text_chars,d.content_kind,
             d.media_type,d.title,d.author,d.metadata_json,d.text_truncated,d.detail,
             {revision_projection} FROM documents d {joins}
