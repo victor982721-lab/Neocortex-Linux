@@ -58,6 +58,7 @@ FIXTURE_GROUPS = (
 MIN_FIXTURES = 20
 MAX_FIXTURES = 50
 PROCESS_TIMEOUT_SECONDS = 180.0
+SYSTEM_TEMP_ROOT = Path("/tmp").resolve()
 
 
 class BenchmarkConfigurationError(ValueError):
@@ -161,9 +162,8 @@ def build_fixture(root: Path) -> FixtureManifest:
         raise BenchmarkConfigurationError("fixture root must be absolute")
     if root.exists() or root.is_symlink():
         raise BenchmarkConfigurationError("fixture root must not already exist")
-    temporary_root = Path(os.path.realpath(tempfile.gettempdir()))
     try:
-        Path(os.path.realpath(root.parent)).relative_to(temporary_root)
+        Path(os.path.realpath(root.parent)).relative_to(SYSTEM_TEMP_ROOT)
     except ValueError as exc:
         raise BenchmarkConfigurationError(
             "fixture root must be below the system temporary directory"
@@ -460,7 +460,7 @@ def run_benchmark(
     timeout = _positive_timeout(timeout_seconds)
     direct_launcher = _resolve_launcher(launcher)
     started = time.perf_counter()
-    with TemporaryDirectory(prefix="neocortex-route-replay-") as temporary:
+    with TemporaryDirectory(prefix="neocortex-route-replay-", dir=SYSTEM_TEMP_ROOT) as temporary:
         root = Path(temporary)
         corpus = root / "corpus"
         state = root / "state"
