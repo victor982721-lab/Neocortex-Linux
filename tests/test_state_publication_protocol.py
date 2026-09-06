@@ -14,6 +14,7 @@ from neocortex.persistence.state_publication import (
     StatePublicationConflictError,
     StatePublicationError,
     abort_state_publication,
+    abort_unbound_state_publication,
     begin_state_publication,
     publication_idempotency_key,
     read_state_publication_state,
@@ -148,6 +149,32 @@ def test_abort_requires_verified_rollback_to_prepare_heads(tmp_path: Path) -> No
     assert failed.status == "failed"
     assert read_state_publication_state(state).status == "absent"
     assert len(read_state_publications(state)) == 2
+
+
+def test_unbound_prepare_can_only_be_invalidated_at_epoch_zero(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    transaction = begin_state_publication(
+        state,
+        operation="legacy-integrated-all",
+        owners=("semantic",),
+        idempotency_key="legacy-unbound",
+    )
+
+    failed = abort_unbound_state_publication(
+        state,
+        event_id=transaction.prepared.event_id,
+        expected_epoch=0,
+    )
+    assert failed.status == "failed"
+    assert read_state_publication_state(state).status == "absent"
+
+    with pytest.raises(StatePublicationConflictError, match="already resolved"):
+        abort_unbound_state_publication(
+            state,
+            event_id=transaction.prepared.event_id,
+            expected_epoch=0,
+        )
 
 
 def test_concurrent_different_publications_use_epoch_cas(tmp_path: Path) -> None:

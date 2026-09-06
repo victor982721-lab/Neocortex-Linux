@@ -1189,6 +1189,73 @@ def abort_state_publication(
         return failed
 
 
+def abort_unbound_state_publication(
+    state_directory: str | Path,
+    *,
+    event_id: str,
+    expected_epoch: int | None = None,
+    detail: str = "unbound publication prepare invalidated without an owner baseline",
+) -> StatePublication:
+    """Invalidate a prepare that captured no owner baseline at all.
+
+    A normal abort must prove rollback to ``owner_heads``.  Older integrated
+    ``--all`` runs could create a partial marker before capturing those heads,
+    leaving a permanently blocked epoch that has no rollback contract to check.
+    This narrow recovery path only accepts that malformed shape while the
+    publication epoch is still zero and no complete publication exists; it
+    records a failed event and never claims that owner files were rolled back.
+    """
+
+    selected = _required_state_directory(state_directory)
+    event_id = _required_text(event_id, label="event_id", maximum=256)
+    detail = _required_text(detail, label="detail", maximum=4096)
+    with _publication_lock(selected):
+        current = read_state_epoch(selected)
+        if expected_epoch is not None and current.epoch != expected_epoch:
+            raise StatePublicationConflictError(
+                f"publication epoch changed: expected {expected_epoch}, observed {current.epoch}"
+            )
+        if current.epoch != 0:
+            raise StatePublicationConflictError(
+                "unbound publication recovery requires the initial publication epoch"
+            )
+        journal = _read_journal(selected)
+        pending = next(
+            (item for item in reversed(journal) if item.event_id == event_id),
+            None,
+        )
+        if pending is None or pending.status != "partial":
+            raise StatePublicationConflictError("publication prepare event is not pending")
+        if pending.owner_heads:
+            raise StatePublicationConflictError(
+                "publication prepare has an owner baseline; use verified abort"
+            )
+        if any(item.status == "complete" for item in journal):
+            raise StatePublicationConflictError(
+                "unbound publication recovery cannot follow a complete publication"
+            )
+        latest_for_key = next(
+            (item for item in reversed(journal) if item.idempotency_key == pending.idempotency_key),
+            None,
+        )
+        if latest_for_key is None or latest_for_key.event_id != pending.event_id:
+            raise StatePublicationConflictError("publication prepare event was already resolved")
+        failed = StatePublication(
+            event_id=f"epoch:{current.epoch}:recovery:{time.time_ns()}",
+            epoch=current.epoch,
+            operation=pending.operation,
+            owners=pending.owners,
+            status="failed",
+            created_ns=time.time_ns(),
+            idempotency_key=pending.idempotency_key,
+            manifest_sha256=pending.manifest_sha256,
+            detail=detail,
+            owner_heads=(),
+        )
+        _append_journal(_journal_path(selected), failed)
+        return failed
+
+
 def publication_idempotency_key(*parts: object) -> str:
     """Build a deterministic bounded key for one cross-owner operation."""
 
@@ -1220,6 +1287,7 @@ __all__ = [
     "StatePublicationTransaction",
     "StatePublicationView",
     "abort_state_publication",
+    "abort_unbound_state_publication",
     "begin_state_publication",
     "publication_idempotency_key",
     "read_state_epoch",
