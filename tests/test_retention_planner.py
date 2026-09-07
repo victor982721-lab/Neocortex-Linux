@@ -643,14 +643,64 @@ def test_semantic_policy_protects_heads_builders_leases_and_base_chain(
     items = _by_key(plan, "semantic")
     assert "current_published_generation" in items[5].reasons
     assert "previous_published_generation" in items[4].reasons
-    assert items[3].disposition == "blocked"
-    assert "referenced_as_generation_base" in items[3].reasons
+    # Completed generations, including failed/retired descendants, no longer
+    # need their source generation to resume a base clone.  A stale lineage
+    # pointer alone must not retain the whole ancestor chain.
+    assert items[3].disposition == "eligible"
+    assert "referenced_as_generation_base" not in items[3].reasons
     assert items[6].disposition == "protected"
     assert "live_worker_lease" in items[6].reasons
     assert items[7].disposition == "protected"
     assert "resumable_builder_no_durable_owner" in items[7].reasons
     assert items[8].disposition == "eligible"
     assert items[8].estimated_rows >= 1
+
+
+def test_semantic_retention_releases_base_after_builder_is_terminal(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "semantic.sqlite3"
+    model = _semantic_model()
+    initialize_semantic_state(database)
+    register_embedding_model(database, model, allow_test_provider=True)
+    with semantic_database(database) as connection:
+        connection.executemany(
+            """INSERT INTO embedding_generations(
+            generation_id,model_signature,processing_signature,status,
+            provenance_json,cursor_json,started_ns,completed_ns,
+            base_generation_id,base_clone_complete)
+            VALUES(?,?,'fixture',?,'{}','{}',1,?,?,?)""",
+            (
+                (1, model.model_signature, "failed", 2, None, 1),
+                (2, model.model_signature, "building", None, 1, 0),
+            ),
+        )
+
+    active = plan_retention(
+        tmp_path,
+        stores=("semantic",),
+        now_ns=NOW_NS,
+        policy=RetentionPolicy(minimum_age_ns=0),
+    )
+    active_items = _by_key(active, "semantic")
+    assert active_items[1].disposition == "blocked"
+    assert "referenced_as_generation_base" in active_items[1].reasons
+
+    with semantic_database(database) as connection:
+        connection.execute(
+            "UPDATE embedding_generations SET status='failed',completed_ns=3 "
+            "WHERE generation_id=2"
+        )
+
+    terminal = plan_retention(
+        tmp_path,
+        stores=("semantic",),
+        now_ns=NOW_NS,
+        policy=RetentionPolicy(minimum_age_ns=0),
+    )
+    terminal_items = _by_key(terminal, "semantic")
+    assert terminal_items[1].disposition == "eligible"
+    assert "referenced_as_generation_base" not in terminal_items[1].reasons
 
 
 def test_catalog_protects_publications_builders_and_uncertain_actions(

@@ -427,6 +427,15 @@ def _retrieval_stage_provenance(
             target["above_score_floor"] = (
                 raw_score >= floor if isinstance(raw_score, (int, float)) and floor is not None else None
             )
+            # A targeted hit may be observed by the exhaustive diagnostic scan
+            # but omitted from the bounded candidate window.  Calibration is
+            # applied only to candidates, so retain that distinction instead
+            # of implying that the floor rejected an unexamined hit.
+            if isinstance(ref_id := target.get("ref_id"), int) and ref_id not in before:
+                target["threshold_evaluation"] = (
+                    "not_reached_candidate_window" if floor is not None
+                    else "not_calibrated"
+                )
         elif stage == "image_calibration":
             raw_score = target.get("raw_score")
             target["source_score_floor"] = image_score_floor

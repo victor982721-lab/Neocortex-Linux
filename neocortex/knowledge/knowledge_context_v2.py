@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import copy
 import json
+import re
+import unicodedata
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -28,6 +30,12 @@ _LOCATORS = (
     "bounding_box", "coordinate_space", "start_char", "end_char", "symbol",
     "section_kind", "section_id",
 )
+_TERM = re.compile(r"[^\W_]+", flags=re.UNICODE)
+_QUERY_STOPWORDS = frozenset({
+    "a", "al", "como", "con", "cual", "cuales", "de", "del", "donde",
+    "el", "en", "la", "las", "lo", "los", "para", "que", "qué", "se",
+    "un", "una", "y",
+})
 
 
 def serialize_context_response(payload: Mapping[str, Any]) -> str:
@@ -251,7 +259,133 @@ def _source(hit: Mapping[str, Any], scope: str, snapshot: Mapping[str, Any]) -> 
     return source
 
 
-def _candidates(entries: Sequence[Mapping[str, Any]], limit: int) -> tuple[list[tuple[dict[str, Any], dict[str, Any], str]], bool]:
+def _fold_term(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value.casefold())
+    return "".join(char for char in normalized if not unicodedata.combining(char))
+
+
+def _related_term(left: str, right: str) -> bool:
+    """Match the small singular/plural variation common in source passages."""
+    if left == right:
+        return True
+    for suffix in ("es", "s"):
+        if len(left) > len(suffix) + 3 and left.endswith(suffix):
+            left = left[:-len(suffix)]
+        if len(right) > len(suffix) + 3 and right.endswith(suffix):
+            right = right[:-len(suffix)]
+    return left == right
+
+
+def _compact_excerpt(text: str, query: str, *, max_chars: int = 1024) -> str:
+    """Keep a verbatim minimum evidence unit when the owner gave a long chunk.
+
+    Retrieval already chooses the source.  This presentation-only window avoids
+    spending the compact response on an administrative prefix when the
+    component, identifier and condition occur together near the end.  No text
+    is rewritten and the owner locator remains the authority for full replay.
+    """
+    if len(text) <= max_chars:
+        return text
+    wanted = {
+        _fold_term(term) for term in _TERM.findall(query)
+        if _fold_term(term) not in _QUERY_STOPWORDS
+    }
+    matches: list[tuple[int, int, str]] = []
+    for match in _TERM.finditer(text):
+        token = _fold_term(match.group())
+        matched_term = next((term for term in wanted if _related_term(token, term)), None)
+        if matched_term is not None:
+            matches.append((match.start(), match.end(), matched_term))
+    if not matches:
+        return text[:max_chars]
+    # Select the shortest window containing the most distinct query terms in
+    # linear time, preferring the earliest occurrence only after coverage and
+    # span tie.  The bound matters because an owner may supply a 16k excerpt.
+    counts: dict[str, int] = {}
+    left = 0
+    best: tuple[int, int, int, int] | None = None
+    bounds = (matches[0][0], matches[0][1])
+    for right, match in enumerate(matches):
+        counts[match[2]] = counts.get(match[2], 0) + 1
+        while left < right and counts[matches[left][2]] > 1:
+            first = matches[left][2]
+            counts[first] -= 1
+            left += 1
+        span = match[1] - matches[left][0]
+        key = (-len(counts), span, matches[left][0], match[1])
+        if best is None or key < best:
+            best, bounds = key, (matches[left][0], match[1])
+    start, end = bounds
+    if end - start >= max_chars:
+        return text[start:start + max_chars]
+    extra = max_chars - (end - start)
+    start = max(0, start - extra // 2)
+    start = min(start, len(text) - max_chars)
+    return text[start:start + max_chars]
+
+
+def _compact_source_metadata(source: dict[str, Any]) -> dict[str, Any]:
+    """Drop only retrieval diagnostics redundant with the owner binding.
+
+    ``publication`` and ``owner_watermarks`` are intentionally retained byte
+    for byte: direct evidence lookup compares them against the live owner.
+    ``retrieval_publication`` is a repeated semantic diagnostic and is not part
+    of that replay contract.
+    """
+    return {name: value for name, value in source.items()
+            if name != "retrieval_publication"}
+
+
+def _compact_citation_metadata(citation: dict[str, Any]) -> dict[str, Any]:
+    """Keep replay/evidence fields while removing presentation diagnostics.
+
+    The compact profile is selected only for the bounded 15,000-character view
+    (and its small monotonic expansion window) when enough substantive owner
+    text exists.  The default and genuinely wide views keep the complete
+    diagnostic projection for compatibility.
+    """
+    compact = {
+        name: value for name, value in citation.items()
+        if name not in {
+            "generation", "retrieval_channel", "retrieval_rank", "candidate_position",
+            "retrieval_support", "extent",
+        }
+    }
+    checks = compact.get("witness_checks")
+    if isinstance(checks, Mapping):
+        keep = {
+            "policy_signature", "status", "required_witnesses",
+            "missing_necessary_witnesses", "counterevidence", "evaluated_chars",
+            "interpretation", "recomputed_for", "inspected_scope",
+            "not_assessed_reason", "applicability", "scoped_observations",
+            "retrieval_disposition",
+        }
+        compact["witness_checks"] = {
+            name: value for name, value in checks.items() if name in keep
+        }
+        compact_checks = compact["witness_checks"]
+        applicability = compact_checks.get("applicability")
+        if (isinstance(applicability, Mapping)
+                and applicability.get("subject_scope") == "not_requested"):
+            compact_checks.pop("applicability", None)
+        if not compact_checks.get("scoped_observations"):
+            compact_checks.pop("scoped_observations", None)
+        if compact_checks.get("retrieval_disposition") == "unchanged":
+            compact_checks.pop("retrieval_disposition", None)
+    extent = compact.get("emitted_extent")
+    if isinstance(extent, Mapping):
+        compact["emitted_extent"] = {
+            name: extent[name]
+            for name in ("units", "basis", "start_char", "end_char")
+            if name in extent
+        }
+    return compact
+
+
+def _candidates(
+    entries: Sequence[Mapping[str, Any]], limit: int, *, query: str = "",
+    compact: bool = False,
+) -> tuple[list[tuple[dict[str, Any], dict[str, Any], str]], bool]:
     candidates: list[tuple[dict[str, Any], dict[str, Any], str]] = []
     seen: set[tuple[str, str, str, str]] = set()
     for entry in entries:
@@ -264,6 +398,8 @@ def _candidates(entries: Sequence[Mapping[str, Any]], limit: int) -> tuple[list[
             if not isinstance(hit, Mapping):
                 continue
             source = _source(hit, scope, snapshot)
+            if compact:
+                source = _compact_source_metadata(source)
             primary = hit.get("evidence") or {}
             primary_signal = next((signal for signal in hit.get("signals", [])
                                    if isinstance(signal.get("evidence"), Mapping)
@@ -285,15 +421,17 @@ def _candidates(entries: Sequence[Mapping[str, Any]], limit: int) -> tuple[list[
                 # Keep the exact owner excerpt, including paragraph boundaries.
                 # JSON escapes controls for display; collapsing whitespace here
                 # would also change the scope of necessary-witness checks.
-                snippet = str(evidence.get("snippet") or "")[:16000]
+                raw_snippet = str(evidence.get("snippet") or "")[:16000]
+                snippet = _compact_excerpt(raw_snippet, query) if compact else raw_snippet
                 citation = {
                     "evidence_id": evidence_id,
                     "locator": {name: evidence[name] for name in _LOCATORS if evidence.get(name) is not None},
                     "method": evidence.get("method", "ambiguous"),
                     "modality": "text" if snippet else "reference_only",
-                    "fragment_state": "full" if snippet else "unavailable_from_owner",
+                    "fragment_state": "full" if snippet and len(snippet) == len(raw_snippet)
+                    else "truncated" if snippet else "unavailable_from_owner",
                     "excerpt": snippet,
-                    "supplied_excerpt_characters": len(snippet),
+                    "supplied_excerpt_characters": len(raw_snippet),
                     # Ordinal before presentation-only ordering. The common
                     # retrieval rank and evidence identity remain unchanged.
                     "candidate_position": len(candidates) + 1,
@@ -319,6 +457,9 @@ def _candidates(entries: Sequence[Mapping[str, Any]], limit: int) -> tuple[list[
                     if support:
                         citation["retrieval_support"]["interpretation"] = "literal_support_not_answerability"
                     citation["retrieval_channel"] = signal.get("source")
+                if compact:
+                    citation["excerpt"] += _TRUNCATED if len(snippet) < len(raw_snippet) else ""
+                    citation = _compact_citation_metadata(citation)
                 candidates.append((source, citation, snippet))
                 if len(candidates) >= _MAX_CANDIDATES:
                     return sorted(candidates, key=lambda item: not bool(item[2])), True
@@ -445,6 +586,7 @@ def _assess_witnesses(
 def _set_status(
     payload: dict[str, Any], candidate_count: int,
     assessment_cache: dict[tuple[str, str], tuple[dict[str, Any], list[dict[str, Any]]]],
+    *, compact: bool = False,
 ) -> None:
     coverage = payload["coverage"]
     citations = payload["citations"]
@@ -480,6 +622,11 @@ def _set_status(
             payload["exit_code"] = code
             payload["status"] = status
             break
+    if compact:
+        payload["citations"] = [
+            _compact_citation_metadata(dict(citation))
+            for citation in payload["citations"]
+        ]
 
 
 def build_context_response_v2(
@@ -513,7 +660,18 @@ def build_context_response_v2(
                    "within_limit": True},
     }
     assessment_cache: dict[tuple[str, str], tuple[dict[str, Any], list[dict[str, Any]]]] = {}
-    candidates, projection_capped = _candidates(entries, limit) if valid_limit and valid_budget and valid_metadata else ([], False)
+    candidates, projection_capped = _candidates(
+        entries, limit, query=payload["query"]
+    ) if valid_limit and valid_budget and valid_metadata else ([], False)
+    compact_profile = (
+        valid_limit and valid_budget and valid_metadata
+        and 15_000 <= max_characters < 20_000
+        and sum(len(item[2]) for item in candidates) >= 6_000
+    )
+    if compact_profile:
+        candidates, projection_capped = _candidates(
+            entries, limit, query=payload["query"], compact=True,
+        )
     candidates.sort(key=lambda item: _budget_candidate_priority(item, payload["query"]))
     if projection_capped:
         payload["budget"]["input_candidates_capped"] = True
@@ -577,7 +735,7 @@ def build_context_response_v2(
             proposal["sources"].append({"source_id": source_id, **source})
         citation = dict(raw_citation, citation_id=f"K{len(proposal['citations']) + 1}", source_id=source_id)
         proposal["citations"].append(citation)
-        _set_status(proposal, len(candidates), assessment_cache)
+        _set_status(proposal, len(candidates), assessment_cache, compact=compact_profile)
         cost = _measure(proposal)
         # A cheap prefix must not erase counter-witnesses already observed in
         # the supplied owner unit. Keep their exact source spans, or the whole
@@ -587,11 +745,12 @@ def build_context_response_v2(
         )])
         if citation["witness_checks"]["counterevidence"]:
             protected_end = len(snippet)
-        if len(snippet) > protected_end:
+        already_bounded = citation["supplied_excerpt_characters"] > len(snippet)
+        if len(snippet) > protected_end and not already_bounded:
             shortened = copy.deepcopy(proposal)
             shortened["citations"][-1].update(excerpt=snippet[:protected_end] + _TRUNCATED,
                                                fragment_state="truncated")
-            _set_status(shortened, len(candidates), assessment_cache)
+            _set_status(shortened, len(candidates), assessment_cache, compact=compact_profile)
             short_cost = _measure(shortened)
             # A truncation marker + partial envelope can cost MORE than a
             # short complete excerpt. Choose the actually smaller result.
@@ -617,16 +776,21 @@ def build_context_response_v2(
             if item["fragment_state"] != "truncated":
                 continue
             snippet = originals[item["citation_id"]]
+            # Compact-profile candidates already represent a bounded, verbatim
+            # evidence window selected from the owner excerpt.  Expanding them
+            # would reintroduce the irrelevant prefix that the profile removed.
+            if item.get("supplied_excerpt_characters", len(snippet)) > len(snippet):
+                continue
             count = min(len(snippet), len(item["excerpt"]) - len(_TRUNCATED) + 160)
             proposal = copy.deepcopy(payload)
             proposal["citations"][index].update(excerpt=snippet[:count] + (_TRUNCATED if count < len(snippet) else ""), fragment_state="truncated" if count < len(snippet) else "full")
-            _set_status(proposal, len(candidates), assessment_cache)
+            _set_status(proposal, len(candidates), assessment_cache, compact=compact_profile)
             if _measure(proposal) <= max_characters:
                 payload = proposal
                 changed = True
         if not changed:
             break
-    _set_status(payload, len(candidates), assessment_cache)
+    _set_status(payload, len(candidates), assessment_cache, compact=compact_profile)
     _measure(payload)
     return validate_context_response(payload)
 

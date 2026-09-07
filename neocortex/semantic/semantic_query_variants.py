@@ -21,9 +21,18 @@ QUERY_EXPANSION_INTERPRETATION = (
 
 _TERM = re.compile(r"[^\W_]+", re.UNICODE)
 _COOLING_ES = re.compile(
-    r"\b(?:(?:equipos?|sistemas?)\s+de\s+enfriamiento|radiad(?:or|ores)|enfriad(?:or|ores))\b"
+    r"\b(?:(?:equipos?|sistemas?)\s+de\s+enfriamiento|enfriamiento|"
+    r"radiad(?:or|ores)|enfriad(?:or|ores))\b"
 )
-_COOLING_EN = re.compile(r"\b(?:cooling\s+(?:equipment|systems?|units?)|radiators?|coolers?)\b")
+_COOLING_EN = re.compile(r"\b(?:cooling(?:\s+(?:equipment|systems?|units?))?|radiators?|coolers?)\b")
+_COOLING_ISSUE_ES = re.compile(
+    r"\b(?:problema[s]?|incidente[s]?|anomalia[s]?|dan(?:o|os)?|golpe[s]?|"
+    r"fuga[s]?|hallazgo[s]?|condicion(?:es)?\s+anormal(?:es)?)\b"
+)
+_COOLING_ISSUE_EN = re.compile(
+    r"\b(?:problem[s]?|issue[s]?|incident[s]?|anomal(?:y|ies)|damage|"
+    r"leak[s]?|finding[s]?|abnormal\s+condition[s]?)\b"
+)
 _ABSENCE_ES = re.compile(r"\b(?:despresurizad[oa]s?|sin\s+presion|ausencia\s+de\s+presion)\b")
 _ABSENCE_EN = re.compile(r"\b(?:(?:un|de)pressuri[sz]ed|without\s+pressure|no\s+pressure)\b")
 _NEGATIONS = frozenset({
@@ -79,10 +88,61 @@ def cooling_pressure_concepts(query: str) -> bool:
     return _expansion_language(query) is not None
 
 
+def _cooling_issue_language(query: str) -> str | None:
+    """Recognize a generic cooling-equipment issue without inventing its cause."""
+
+    if not isinstance(query, str):
+        raise ValueError("text query expansion requires a string query")
+    if not query.strip() or len(query) > MAX_EXPANSION_QUERY_CHARS:
+        return None
+    if any(unicodedata.category(character) in {"Cc", "Cf", "Cs"} for character in query):
+        return None
+    folded = _fold(query)
+    terms = tuple(_TERM.finditer(folded))
+    if len(terms) > MAX_EXPANSION_QUERY_TERMS:
+        return None
+    cooling_es = _COOLING_ES.search(folded)
+    cooling_en = _COOLING_EN.search(folded)
+    issue_es = _COOLING_ISSUE_ES.search(folded)
+    issue_en = _COOLING_ISSUE_EN.search(folded)
+    if not (cooling_es or cooling_en) or not (issue_es or issue_en):
+        return None
+    if any(term.group() in _NEGATIONS for term in terms) or _CONTRACTED_NEGATION.search(folded):
+        return None
+    return "es" if cooling_es or issue_es else "en"
+
+
+def _cooling_issue_expansions(query: str, language: str) -> tuple[dict[str, object], ...]:
+    prefix, aliases = (
+        ("reporte sobre", "radiadores o enfriadores")
+        if language == "es"
+        else ("report about", "radiators or coolers")
+    )
+    report_query = f"{prefix} {query}"
+    return tuple({
+        "variant_id": variant_id,
+        "profile": "semantic-cooling-issue-query-v1",
+        "policy_signature": "semantic-cooling-issue-query-v1",
+        "language": language,
+        "effective_query": effective_query,
+        "original_query": query,
+        "preserved_constraints": "original_verbatim",
+        "interpretation": "retrieval_aliases_not_equipment_equivalence_or_pressure_state_or_cause",
+        "alias_concepts": alias_concepts,
+    } for variant_id, effective_query, alias_concepts in (
+        ("report_context", report_query, ["documentary_report_context"]),
+        ("cooling_component_aliases", f"{report_query} ({aliases})",
+         ["documentary_report_context", "cooling_components"]),
+    ))
+
+
 def text_query_expansions(query: str) -> tuple[dict[str, object], ...]:
     """Return at most two additional queries; the original belongs to the caller."""
     language = _expansion_language(query)
     if language is None:
+        issue_language = _cooling_issue_language(query)
+        if issue_language is not None:
+            return _cooling_issue_expansions(query, issue_language)
         return _thermal_query_expansions(query)
     prefix, aliases = (
         ("reporte sobre", "radiadores o enfriadores sin presión")

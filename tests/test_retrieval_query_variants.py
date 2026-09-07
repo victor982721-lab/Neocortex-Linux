@@ -93,6 +93,46 @@ def test_negation_within_the_recognized_absence_condition_is_retained_not_reject
     assert all(query in variant["effective_query"] for variant in variants)
 
 
+@pytest.mark.parametrize(
+    ("query", "language", "alias"),
+    (
+        ("¿Qué problemas tuvieron los radiadores?", "es", "radiadores o enfriadores"),
+        ("¿Qué incidentes hubo en los equipos de enfriamiento?", "es", "radiadores o enfriadores"),
+        ("¿Qué problemas hubo en el enfriamiento?", "es", "radiadores o enfriadores"),
+        ("What issues affected the cooling equipment?", "en", "radiators or coolers"),
+        ("What problems affected cooling?", "en", "radiators or coolers"),
+    ),
+)
+def test_generic_cooling_issue_queries_gain_only_component_aliases(
+    query: str, language: str, alias: str,
+) -> None:
+    variants = text_query_expansions(query)
+
+    assert cooling_pressure_concepts(query) is False
+    assert [variant["variant_id"] for variant in variants] == [
+        "report_context", "cooling_component_aliases",
+    ]
+    assert all(variant["language"] == language for variant in variants)
+    assert variants[1]["effective_query"].endswith(f"({alias})")
+    assert variants[1]["alias_concepts"] == ["documentary_report_context", "cooling_components"]
+    assert all("pressure_absence" not in variant["alias_concepts"] for variant in variants)
+    assert all(variant["interpretation"] ==
+               "retrieval_aliases_not_equipment_equivalence_or_pressure_state_or_cause"
+               for variant in variants)
+
+
+@pytest.mark.parametrize(
+    "query",
+    (
+        "¿Qué problemas no tuvieron los radiadores?",
+        "radiadores sin problemas",
+        "What issues did the cooling equipment never have?",
+    ),
+)
+def test_generic_cooling_issue_aliases_preserve_explicit_negation(query: str) -> None:
+    assert text_query_expansions(query) == ()
+
+
 @pytest.mark.parametrize("query", (
     "RAM agotada y presión de memoria",
     "presión ausente en el registro del kernel",

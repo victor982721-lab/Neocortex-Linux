@@ -379,3 +379,32 @@ def test_existing_text_floor_updates_only_target_stage_without_changing_scores()
     assert final_targets[high.item_id]["stage"] == "retained"
     assert final_targets[low.item_id]["stage"] == "rejected_by_text_floor"
     assert final.hits == (high,) and final.hits[0].score == 0.421
+
+
+def test_outside_candidate_target_reports_threshold_as_not_reached() -> None:
+    low, low_resolved = _calibrated_ranking_hit(1, source_kind="pdf", score=0.419)
+    target = {
+        "item_id": "item:outside",
+        "raw_score": 0.419,
+        "model_signature": low.indexed_model_signature,
+        "source_kind": "pdf",
+        "pipeline": low_resolved.hit.provenance["pipeline"],
+        "backend": "fastembed",
+        "calibration_contract_conflict": False,
+        "ref_id": 99,
+        "stage": "outside_candidate_window",
+    }
+    ranking = SemanticRanking(
+        "semantic_text", (low,), (low_resolved,), 3, True,
+        provenance={"target_diagnostics": [target]},
+    )
+
+    result = semantic_search_service.apply_text_retrieval_calibration(
+        ranking, selected_model=semantic_service.multilingual_text_model()
+    )
+
+    entry = _entries(result.provenance)["item:outside"]
+    assert entry["stage"] == "outside_candidate_window"
+    assert entry["source_score_floor"] == 0.42
+    assert entry["above_score_floor"] is False
+    assert entry["threshold_evaluation"] == "not_reached_candidate_window"

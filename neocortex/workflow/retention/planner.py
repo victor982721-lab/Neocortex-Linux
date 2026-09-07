@@ -32,11 +32,13 @@ from neocortex.workflow.review.review_task_repository import (
     audit_latest_review_task_source_publications_from_connection,
 )
 from neocortex.persistence.sqlite_immutable import (
+    DEFAULT_SQLITE_SNAPSHOT_MAX_TEMPORARY_BYTES,
     SQLiteReadMode,
     SQLiteReadSession,
     SQLiteSnapshotBudget,
     SQLiteSnapshotBudgetExceeded,
     SQLiteSnapshotReuseCache,
+    preferred_sqlite_read_mode,
 )
 from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
 from neocortex.persistence.sqlite_schema_contract import validate_sqlite_schema_contract
@@ -281,13 +283,30 @@ def _readonly_snapshot(
                 finally:
                     connection.close()
         return
-    # Retention is a diagnostic reader and may be interleaved with a writer;
-    # always detach a bounded snapshot so a later commit cannot invalidate the
-    # plan or make its close fence look like a reader failure.
-    mode = SQLiteReadMode.SNAPSHOT_TEMP
     selected_budget = budget or SQLiteSnapshotBudget(
         prepare_timeout_seconds=5.0, cancellation_check=cancelled,
     )
+    # Retention is a diagnostic reader and may be interleaved with a writer.
+    # Keep the detached-copy path for ordinary owners so a later commit cannot
+    # invalidate a page, but do not make a healthy, quiescent multi-gigabyte
+    # owner pay a full temporary copy merely to inspect one bounded page.  The
+    # immutable path is selected only above the canonical default copy budget;
+    # it still requires an empty sidecar set and verifies the source fence on
+    # close.  Active owners therefore remain on ``snapshot_temp`` and fail
+    # closed when their bounded copy cannot fit.
+    mode = SQLiteReadMode.SNAPSHOT_TEMP
+    try:
+        owner_bytes = database.stat().st_size
+        for suffix in ("-journal", "-wal", "-shm"):
+            try:
+                owner_bytes += Path(f"{database}{suffix}").stat().st_size
+            except FileNotFoundError:
+                continue
+        oversized_owner = owner_bytes > DEFAULT_SQLITE_SNAPSHOT_MAX_TEMPORARY_BYTES
+    except OSError:
+        oversized_owner = False
+    if oversized_owner:
+        mode = preferred_sqlite_read_mode(database)
     read = (
         SQLiteReadSession(
             database, mode=mode,
@@ -555,7 +574,9 @@ def _plan_semantic(
                    AND previous.status='ready'
                    AND previous.generation_id<h.generation_id)) AS previous_head,
         EXISTS(SELECT 1 FROM embedding_generations child
-               WHERE child.base_generation_id=g.generation_id) AS incoming_base,
+               WHERE child.base_generation_id=g.generation_id
+                 AND child.status='building'
+                 AND child.base_clone_complete=0) AS incoming_base,
         EXISTS(SELECT 1 FROM semantic_evidence evidence
                WHERE evidence.generation_id=g.generation_id) AS evidence_reference,
         EXISTS(SELECT 1 FROM embedding_jobs live

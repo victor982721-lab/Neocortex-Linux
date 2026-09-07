@@ -226,6 +226,72 @@ def test_wider_budget_keeps_the_first_substantive_evidence_monotonic():
     assert wide["budget"]["characters_used"] >= narrow["budget"]["characters_used"]
 
 
+def test_15000_character_compact_view_keeps_tail_minimum_evidence_units():
+    hits = []
+    for position in range(1, 8):
+        resource_id = f"resource:radiator:{position}"
+        revision_id = f"revision:radiator:{position}"
+        evidence_id = f"evidence:radiator:{position}"
+        body = (
+            "Administrative planning text without the observed condition. " * 200
+            + f"\nIdentificador: radiador R{position:02d}. Condición: radiador R{position:02d} "
+            "se recibió sin presión."
+        )
+        hit = _hit(evidence_id, snippet=body, owner="text", resource=resource_id)
+        hit["revision"]["revision_id"] = revision_id
+        hit["evidence"]["resource_id"] = resource_id
+        hit["evidence"]["revision_id"] = revision_id
+        hits.append(hit)
+    payload = build_context_response_v2(
+        [_entry(*hits)], query="radiadores sin presión", scope="personal",
+        request_id="tail-units", max_characters=15_000,
+    )
+    excerpts = [item["excerpt"] for item in payload["citations"]]
+    assert sum(map(len, excerpts)) >= 6_000
+    assert len(excerpts) >= 6
+    for position, excerpt in enumerate(excerpts, 1):
+        assert f"R{position:02d}" in excerpt
+        assert "sin presión" in excerpt
+    assert all("retrieval_support" not in item for item in payload["citations"])
+    assert all("publication" in source and "owner_watermarks" in source
+               for source in payload["sources"])
+    assert payload["budget"]["characters_used"] <= 15_000
+
+
+def test_compact_view_is_monotonic_when_budget_expands():
+    hits = []
+    for position in range(1, 8):
+        resource_id = f"resource:monotonic:{position}"
+        revision_id = f"revision:monotonic:{position}"
+        body = (
+            "Unrelated administrative prefix. " * 200
+            + f" Identificador R{position:02d}. Condición: radiador R{position:02d} "
+            "se recibió sin presión."
+        )
+        hit = _hit(f"evidence:monotonic:{position}", snippet=body,
+                   owner="text", resource=resource_id)
+        hit["revision"]["revision_id"] = revision_id
+        hit["evidence"]["resource_id"] = resource_id
+        hit["evidence"]["revision_id"] = revision_id
+        hits.append(hit)
+    entries = [_entry(*hits)]
+    narrow = build_context_response_v2(
+        entries, query="radiadores sin presión", scope="personal",
+        request_id="monotonic", max_characters=15_000,
+    )
+    wide = build_context_response_v2(
+        entries, query="radiadores sin presión", scope="personal",
+        request_id="monotonic", max_characters=16_000,
+    )
+    assert len(wide["citations"]) >= len(narrow["citations"])
+    assert [item["evidence_id"] for item in wide["citations"][:len(narrow["citations"])] ] == [
+        item["evidence_id"] for item in narrow["citations"]
+    ]
+    assert [item["excerpt"] for item in wide["citations"][:len(narrow["citations"])] ] == [
+        item["excerpt"] for item in narrow["citations"]
+    ]
+
+
 def test_missing_witness_makes_global_context_partial_not_ok():
     query = "¿Qué factura demuestra el reemplazo de los rodamientos de Q7?"
     body = "Factura FA-27. Venta de rodamientos para Q7, material entregado al almacén."

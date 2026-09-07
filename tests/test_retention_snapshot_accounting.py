@@ -31,6 +31,35 @@ def test_retention_rejects_oversized_snapshot_without_writing_temporary_bytes(tm
     assert path.read_bytes() == before
 
 
+def test_retention_uses_fenced_zero_copy_for_oversized_quiescent_semantic_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A large quiescent owner must not need a full detached page snapshot."""
+
+    path = tmp_path / "semantic.sqlite3"
+    _populate_semantic(path)
+    before = path.read_bytes()
+    # Lower the canonical optimization threshold in this small fixture rather
+    # than allocating a multi-gigabyte test database.  The per-operation
+    # temporary budget remains one byte, so a detached copy would be blocked.
+    monkeypatch.setattr(retention_module, "DEFAULT_SQLITE_SNAPSHOT_MAX_TEMPORARY_BYTES", 1)
+
+    plan = plan_retention(
+        tmp_path,
+        stores=("semantic",),
+        now_ns=NOW_NS,
+        policy=RetentionPolicy(snapshot_max_temporary_bytes=1),
+    )
+
+    assert plan.stores[0].status == "ready"
+    assert plan.snapshot_metrics is not None
+    assert plan.snapshot_metrics["prepared_views"] == 1
+    assert plan.snapshot_metrics["peak_temporary_bytes"] == 0
+    assert plan.snapshot_metrics["retained_temporary_bytes"] == 0
+    assert path.read_bytes() == before
+
+
 def test_retention_exposes_allocated_pages_without_claiming_physical_recovery(tmp_path: Path) -> None:
     path = tmp_path / "semantic.sqlite3"
     _populate_semantic(path)
