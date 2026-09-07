@@ -411,3 +411,23 @@ def test_federated_continuation_keeps_an_exhausted_owner_cursor_empty(
     assert dict(second_cursor.owner_cursors)["archive"] is None
     assert second.coverage["owners"]["archive"]["next_cursor"] == "archive-fresh-cursor"
     assert all(not fact.code.startswith("archive_error") for fact in second.facts)
+
+
+def test_empty_owner_page_with_continuation_is_not_reported_as_empty_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def owner_result(self, request, intent, owner):
+        return OperationalQueryResult(
+            request.query, intent, OperationalOwner(owner), "empty", (),
+            f"{owner}-snapshot", "archive-next" if owner == "archive" else None,
+            {"status": "observed"},
+        )
+
+    monkeypatch.setattr(KnowledgeOperationalQueryService, "_owner_result", owner_result)
+    result = KnowledgeOperationalQueryService().query(
+        _request(tmp_path, "¿Qué errores tienen mis archivos?")
+    )
+    assert result.status == "ok"
+    assert result.facts == ()
+    assert result.next_cursor is not None
+    assert result.coverage["query_page_complete"] is False

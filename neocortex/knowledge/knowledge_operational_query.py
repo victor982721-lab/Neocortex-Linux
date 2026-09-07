@@ -439,9 +439,11 @@ class KnowledgeOperationalQueryService:
             and bool((item.get("error_type") or item.get("reason_code")))
         )
         next_cursor = payload.get("next_cursor")
+        next_cursor_value = next_cursor if isinstance(next_cursor, str) else None
         return OperationalQueryResult(
-            request.query.strip(), intent, OperationalOwner(owner), "ok" if facts else "empty", facts,
-            str(payload.get("snapshot_id")), next_cursor if isinstance(next_cursor, str) else None,
+            request.query.strip(), intent, OperationalOwner(owner),
+            "ok" if facts or next_cursor_value is not None else "empty", facts,
+            str(payload.get("snapshot_id")), next_cursor_value,
             {
                 "status": "observed",
                 "persisted_only": True,
@@ -487,7 +489,7 @@ class KnowledgeOperationalQueryService:
         )
         next_cursor = page.next_cursor.to_token() if page.next_cursor is not None else None
         return OperationalQueryResult(
-            request.query.strip(), intent, owner, "ok" if facts else "empty", facts,
+            request.query.strip(), intent, owner, "ok" if facts or next_cursor is not None else "empty", facts,
             str(page.snapshot_id), next_cursor,
             {
                 "status": "observed",
@@ -533,7 +535,7 @@ class KnowledgeOperationalQueryService:
             path = record.get("path") if isinstance(record, Mapping) else None
             if isinstance(path, str) and path.casefold().endswith((".ppt", ".pptx")):
                 selected.append(fact)
-        status: OperationalStatus = "ok" if selected else "empty"
+        status: OperationalStatus = "ok" if selected or result.next_cursor is not None else "empty"
         return replace(result, facts=tuple(selected), status=status)
 
     def _federated_query(
@@ -652,7 +654,7 @@ class KnowledgeOperationalQueryService:
                 intent, binding.limit, tuple((owner, next_cursors[owner]) for owner in owners),
                 tuple((owner, current_snapshots[owner]) for owner in owners),
             ).to_token()
-        status: OperationalStatus = "partial" if failed else ("ok" if facts else "empty")
+        status: OperationalStatus = "partial" if failed else ("ok" if facts or next_token is not None else "empty")
         return OperationalQueryResult(
             request.query.strip(), intent, OperationalOwner.FEDERATED, status, tuple(facts),
             _digest(current_snapshots), next_token,
