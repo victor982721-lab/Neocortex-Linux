@@ -121,6 +121,14 @@ class _ReferenceBudgetExceeded(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
+class _EndpointResolution:
+    """Resolved endpoint plus whether its owner-observed path is stale."""
+
+    snapshot: FileSnapshot
+    owner_path_stale: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class KeeperReferenceResolution:
     policy: KeeperPolicy
     status: str
@@ -220,6 +228,53 @@ def _matched_member(
         raise _StaleReference("published_relation_or_version_changed")
 
 
+def _inventory_snapshot_for_identity(
+    index: DedupIndex,
+    scan_id: int,
+    identity: FileIdentity,
+    *,
+    path: str | None = None,
+) -> FileSnapshot | None:
+    """Resolve an inventory path from physical identity, not a Code path."""
+
+    volume_id = identity.volume_id.to_bytes(16, "little")
+    file_id = identity.file_id.to_bytes(16, "little")
+    if path is None:
+        row = index._connection.execute(
+            "SELECT path,volume_id,file_id,size,mtime_ns,birthtime_ns FROM files "
+            "WHERE scan_id=? AND volume_id=? AND file_id=? "
+            "ORDER BY path COLLATE BINARY LIMIT 1",
+            (scan_id, volume_id, file_id),
+        ).fetchone()
+    else:
+        row = index._connection.execute(
+            "SELECT path,volume_id,file_id,size,mtime_ns,birthtime_ns FROM files "
+            "WHERE scan_id=? AND path=?",
+            (scan_id, path),
+        ).fetchone()
+    if row is None:
+        return None
+    if (
+        not isinstance(row[0], str)
+        or not isinstance(row[1], bytes)
+        or not isinstance(row[2], bytes)
+        or len(row[1]) != 16
+        or len(row[2]) != 16
+        or any(type(value) is not int for value in row[3:])
+        or row[5] < -1
+    ):
+        raise _StaleReference("reference_endpoint_inventory_snapshot_invalid")
+    observed_identity = FileIdentity(
+        int.from_bytes(row[1], "little"), int.from_bytes(row[2], "little")
+    )
+    if path is None and observed_identity != identity:
+        raise _StaleReference("reference_endpoint_inventory_identity_changed")
+    return FileSnapshot(
+        str(row[0]), observed_identity.volume_id, observed_identity.file_id,
+        row[3], row[4], row[5],
+    )
+
+
 def _endpoint(
     connection: sqlite3.Connection,
     members: Mapping[str, GraphMembership],
@@ -227,7 +282,7 @@ def _endpoint(
     scan_id: int,
     root: Path,
     version_id: int,
-) -> FileSnapshot | None:
+) -> _EndpointResolution | None:
     row = connection.execute(
         "SELECT f.volume_id,f.physical_file_id,f.current_path,f.current_version_id,f.status,v.invalidated_ns,"
         "v.size,v.mtime_ns,v.birthtime_ns FROM file_versions v JOIN files f ON f.file_id=v.file_id "
@@ -236,9 +291,6 @@ def _endpoint(
     ).fetchone()
     if row is None:
         raise _StaleReference("published_reference_endpoint_missing")
-    path = Path(str(row[2]))
-    if not path.is_absolute() or not path.is_relative_to(root):
-        return None
     if row[3] != version_id or row[4] != "current" or row[5] is not None:
         raise _StaleReference("reference_endpoint_version_is_not_current")
     components = row[:2]
@@ -248,14 +300,12 @@ def _endpoint(
         ":".join(value.zfill(32) for value in components),
         encoding=FileIdentityEncoding.PACKED_HEX_V1,
     )
-    if not index.contains_identity(scan_id, identity.volume_id, identity.file_id):
-        return None
     version = connection.execute(
         f"SELECT {','.join(_VERSION_COLUMNS)} FROM file_versions WHERE version_id=?",
         (version_id,),
     ).fetchone()
-    if version is None or version[2] != str(path):
-        raise _StaleReference("reference_endpoint_observed_path_changed")
+    if version is None:
+        raise _StaleReference("published_reference_endpoint_version_missing")
     _matched_member(members, f"version:{version_id}", "file_versions", tuple(version), version_id)
     if (
         any(type(value) is not int or value < 0 for value in row[6:8])
@@ -263,9 +313,24 @@ def _endpoint(
         or row[8] < -1
     ):
         raise _StaleReference("reference_endpoint_snapshot_invalid")
-    snapshot = FileSnapshot(str(path), identity.volume_id, identity.file_id, row[6], row[7], row[8])
+    owner_path = str(row[2])
+    snapshot = _inventory_snapshot_for_identity(index, scan_id, identity)
+    owner_path_snapshot = _inventory_snapshot_for_identity(
+        index, scan_id, identity, path=owner_path,
+    )
+    if owner_path_snapshot is not None and owner_path_snapshot.identity != (
+        identity.volume_id, identity.file_id
+    ):
+        raise _StaleReference("reference_endpoint_identity_changed")
+    if snapshot is None:
+        # A path disappearing from the selected inventory is not itself an
+        # identity change. If the same path now belongs to another object,
+        # however, the published Code identity is demonstrably stale.
+        return None
+    if (snapshot.size, snapshot.mtime_ns, snapshot.birthtime_ns) != (row[6], row[7], row[8]):
+        raise _StaleReference("reference_endpoint_revision_changed")
     _verify_snapshot(index, scan_id, snapshot, root)
-    return snapshot
+    return _EndpointResolution(snapshot, owner_path_snapshot is None or owner_path_snapshot.path != owner_path)
 
 
 def resolve_keeper_references(
@@ -341,7 +406,7 @@ def resolve_keeper_references(
             if len(relations) > max_relations:
                 return _unavailable("truncated", "published_reference_relation_budget_exceeded")
             evidence: dict[tuple[int, int], set[str]] = {}
-            endpoints: dict[int, FileSnapshot | None] = {}
+            endpoints: dict[int, _EndpointResolution | None] = {}
             proof_count = 0
             head_evidence = f"code:head:{head.head_name}:generation:{head.generation_id}:digest:{head.generation_digest}:revision:{head.revision}"
             for membership in relations:
@@ -392,18 +457,29 @@ def resolve_keeper_references(
                             connection, members, index, scan_id, root, version
                         )
                 origin, target = endpoints[source_version], endpoints[target_version]
-                if origin is None or target is None or origin.identity == target.identity:
+                if (
+                    origin is None
+                    or target is None
+                    or origin.snapshot.identity == target.snapshot.identity
+                ):
                     continue
-                ids = evidence.setdefault(target.identity, set())
+                ids = evidence.setdefault(target.snapshot.identity, set())
                 ids.add(head_evidence)
                 ids.add(
                     f"code:{prefix}:{relation_id}:source_version:{source_version}:target_version:{target_version}"
                 )
+                for endpoint, endpoint_version in (
+                    (origin, source_version), (target, target_version)
+                ):
+                    if endpoint.owner_path_stale:
+                        ids.add(f"code:owner_path_stale:version:{endpoint_version}")
                 proof_count += 1
             check()
             if capture_sqlite_read_fence(source) != owner_fence:
                 raise _StaleReference("code_owner_changed_during_reference_resolution")
-        snapshots = tuple(snapshot for snapshot in endpoints.values() if snapshot is not None)
+        snapshots = tuple(
+            endpoint.snapshot for endpoint in endpoints.values() if endpoint is not None
+        )
         policy = KeeperPolicy(
             verified_reference_identities=tuple(sorted(evidence)),
             verified_reference_evidence=tuple(

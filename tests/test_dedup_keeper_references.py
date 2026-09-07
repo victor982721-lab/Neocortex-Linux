@@ -135,6 +135,44 @@ def test_published_reference_selects_keeper_with_provenance_and_replays(
     assert _owner_hashes(code.parent) == before
 
 
+def test_published_reference_resolves_after_representative_move_by_identity(
+    tmp_path: Path,
+) -> None:
+    corpus, code, preferred, _clean = _fixture(tmp_path)
+    old_identity = (preferred.stat().st_dev, preferred.stat().st_ino)
+    moved = corpus / "renamed" / "target.py"
+    moved.parent.mkdir()
+    preferred.rename(moved)
+
+    with DedupIndex(tmp_path / "dedup.sqlite3") as index:
+        scan = index.scan(corpus)
+        result = resolve_keeper_references(index, scan.scan_id, code)
+
+    assert result.status == "available" and result.evidence_count == 1
+    assert result.policy.verified_reference_identities == (old_identity,)
+    evidence = result.policy.verified_reference_evidence[0][1]
+    assert "code:owner_path_stale:version:2" in evidence
+
+
+def test_representative_identity_change_is_not_mistaken_for_a_stale_path(
+    tmp_path: Path,
+) -> None:
+    corpus, code, preferred, _clean = _fixture(tmp_path)
+    old_identity = (preferred.stat().st_dev, preferred.stat().st_ino)
+    replacement = preferred.with_name("replacement.tmp")
+    replacement.write_text("replacement representative with a new identity\n")
+    replacement.replace(preferred)
+    assert (preferred.stat().st_dev, preferred.stat().st_ino) != old_identity
+
+    with DedupIndex(tmp_path / "dedup.sqlite3") as index:
+        scan = index.scan(corpus)
+        result = resolve_keeper_references(index, scan.scan_id, code)
+
+    assert result.status == "stale"
+    assert result.reason == "reference_endpoint_identity_changed"
+    assert result.policy.verified_reference_identities == ()
+
+
 @pytest.mark.parametrize(
     "edges",
     [
