@@ -370,3 +370,44 @@ def test_federated_continuation_abstains_without_mixing_when_owner_snapshot_chan
     assert second.facts == ()
     assert second.error and second.error["code"] == "snapshot_changed"
     assert second.coverage["changed_owners"] == ["archive"]
+
+
+def test_federated_continuation_keeps_an_exhausted_owner_cursor_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: dict[str, int] = {}
+
+    def owner_result(self, request, intent, owner):
+        calls[owner] = calls.get(owner, 0) + 1
+        if owner == "archive" and calls[owner] > 1:
+            # A fresh first-page read can naturally expose a cursor again;
+            # the federated continuation must not resurrect it.
+            next_cursor = "archive-fresh-cursor"
+        elif owner == "archive":
+            next_cursor = None
+        elif owner == "pdf":
+            next_cursor = "pdf-cursor" if request.cursor is None else "pdf-next-2"
+        else:
+            next_cursor = f"{owner}-cursor" if request.cursor is None else None
+        return OperationalQueryResult(
+            request.query, intent, OperationalOwner(owner), "ok",
+            (OperationalFact(
+                AssetProblemScope.PROCESSING, f"{owner}_error_{calls[owner]}",
+                AssetDiagnosticCertainty.OBSERVED, owner, f"{owner}:{calls[owner]}",
+                f"{owner}-snapshot", {"record": {"path": f"/corpus/{owner}"}},
+            ),), f"{owner}-snapshot", next_cursor, {"status": "observed"},
+        )
+
+    monkeypatch.setattr(KnowledgeOperationalQueryService, "_owner_result", owner_result)
+    service = KnowledgeOperationalQueryService()
+    first = service.query(_request(tmp_path, "¿Qué errores tienen mis archivos?"))
+    assert first.next_cursor
+    first_cursor = OperationalFederatedCursor.from_token(first.next_cursor)
+    assert dict(first_cursor.owner_cursors)["archive"] is None
+
+    second = service.query(_request(tmp_path, "¿Qué errores tienen mis archivos?", cursor=first.next_cursor))
+    assert second.next_cursor
+    second_cursor = OperationalFederatedCursor.from_token(second.next_cursor)
+    assert dict(second_cursor.owner_cursors)["archive"] is None
+    assert second.coverage["owners"]["archive"]["next_cursor"] == "archive-fresh-cursor"
+    assert all(not fact.code.startswith("archive_error") for fact in second.facts)

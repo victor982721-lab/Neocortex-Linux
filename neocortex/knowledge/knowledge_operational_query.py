@@ -609,7 +609,14 @@ class KnowledgeOperationalQueryService:
             owner_request = replace(request, cursor=prior_cursors[owner])
             result = self._owner_result(owner_request, intent, owner)
             current_snapshots[owner] = result.snapshot_id
-            next_cursors[owner] = result.next_cursor
+            # Exhausted owners are still read once to validate their snapshot,
+            # but their first page must never be reintroduced as a continuation
+            # cursor when the owner reader naturally returns a fresh cursor.
+            next_cursors[owner] = (
+                None
+                if request.cursor is not None and prior_cursors[owner] is None
+                else result.next_cursor
+            )
             owner_coverage[owner] = {
                 "status": result.status,
                 "snapshot_id": result.snapshot_id,
