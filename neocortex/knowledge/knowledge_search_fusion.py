@@ -254,6 +254,17 @@ def overlaps_or_too_close(
     ):
         return False
     if selected.start_char is None or candidate.start_char is None:
+        # A document-level owner ranking may identify only the fulltext item,
+        # while Semantic evidence can identify several distant passages in
+        # that same item.  Without offsets, the document witness cannot prove
+        # overlap with every passage; keep those passage candidates separate
+        # so evidence-mode ranking does not collapse the document to one hit.
+        document_without_offsets = (
+            (selected.section_kind == "document" and selected.section_id == "fulltext")
+            or (candidate.section_kind == "document" and candidate.section_id == "fulltext")
+        )
+        if document_without_offsets and (selected.start_char is not None or candidate.start_char is not None):
+            return False
         return True
     assert selected.end_char is not None
     assert candidate.end_char is not None

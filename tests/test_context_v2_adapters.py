@@ -402,6 +402,40 @@ def test_mcp_evidence_resolves_context_references_without_search_replay(
 
 
 @pytest.mark.capability("agent")
+def test_mcp_evidence_query_path_defaults_to_v2_and_keeps_v1_opt_in(
+    published_text_state: Path,
+) -> None:
+    from mcp.types import CallToolResult
+
+    from neocortex.api.agent_server import create_server
+
+    server = create_server()
+    metadata = next(tool for tool in asyncio.run(server.list_tools()) if tool.name == "evidence")
+    properties = metadata.inputSchema["properties"]
+    assert properties["response_version"]["default"] == 2
+    assert properties["response_version"]["enum"] == [1, 2]
+
+    v2 = asyncio.run(server.call_tool(
+        "evidence", {"query": "protección", "citation_id": "K1", "scope": "personal"},
+    ))
+    assert isinstance(v2, CallToolResult)
+    assert v2.isError is False
+    payload = v2.structuredContent
+    assert isinstance(payload, dict)
+    assert payload["schema"] == "neocortex.evidence-response/v2"
+    assert payload["operation"] == "evidence"
+    assert payload["response_version"] == 2
+    assert payload["citations"]
+
+    v1 = asyncio.run(server.call_tool(
+        "evidence", {"query": "protección", "citation_id": "K1",
+                      "scope": "personal", "response_version": 1},
+    ))
+    assert isinstance(v1, tuple)
+    assert v1[1]["schema"] == "neocortex.read-api/v1"
+
+
+@pytest.mark.capability("agent")
 def test_mcp_evidence_invalid_references_stay_structured_and_do_not_search(
     published_text_state: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -430,7 +464,7 @@ def test_mcp_evidence_invalid_references_stay_structured_and_do_not_search(
     assert payload["budget"]["characters_used"] == len(
         result.model_dump_json(by_alias=True, exclude_none=True)
     )
-    legacy = asyncio.run(server.call_tool("evidence", {}))
+    legacy = asyncio.run(server.call_tool("evidence", {"response_version": 1}))
     assert isinstance(legacy, tuple)
     assert legacy[1]["schema"] == "neocortex.read-api/v1"
     assert legacy[1]["exit_code"] == 2

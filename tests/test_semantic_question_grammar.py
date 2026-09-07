@@ -25,3 +25,21 @@ def test_unprefixed_literal_se_is_not_silently_removed():
     assert plan.primary_query == '"SE" AND "terminal"'
     assert plan.primary_strategy == "strict_all_terms"
     assert "se" in _query_support_terms("SE terminal")
+
+
+def test_polite_question_prefixes_are_grammar_not_required_content():
+    for query in (
+        "¿Me puedes mostrar el reporte de presión interna?",
+        "Could you find information about internal pressure?",
+        "Bitte zeigen Sie den Bericht über den Transformator",
+    ):
+        plan = _compile_natural_fts_query_plan(query)
+        assert plan.primary_strategy == "question_content_terms_all"
+        assert all(
+            token.casefold() not in plan.primary_query.casefold()
+            for token in ("me", "puedes", "could", "you", "find", "information", "bitte", "sie")
+        )
+        assert any(
+            token in plan.primary_query.casefold()
+            for token in ("reporte", "presión", "internal", "pressure", "bericht", "transformator")
+        )

@@ -5,6 +5,7 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+import argparse
 import sqlite3
 import threading
 from pathlib import Path
@@ -12,12 +13,14 @@ from pathlib import Path
 import pytest
 
 from neocortex.semantic import semantic_status_service
+from neocortex.api.cli.cli_semantic import run_semantic_status
 from neocortex.semantic.semantic_models import (
     EmbeddingModality,
     EmbeddingModelSpec,
     EmbeddingRole,
 )
 from neocortex.semantic.semantic_state import (
+    SemanticStateError,
     initialize_semantic_state,
     register_embedding_model,
     semantic_database,
@@ -81,8 +84,11 @@ def test_semantic_status_uses_one_bounded_read_snapshot(
     status = semantic_status_service.semantic_status(tmp_path, generation_limit=5)
 
     assert len(status.generations) == 5
+    assert set(status.generation_timings) == {
+        summary.generation_id for summary in status.generations
+    }
     assert connections == 1
-    assert len(statements) <= 30
+    assert len(statements) <= 60
 
 
 def test_semantic_status_batches_a_large_generation_page(
@@ -110,7 +116,7 @@ def test_semantic_status_batches_a_large_generation_page(
     assert len(status.generations) == 250
     assert status.generations[0].generation_id == 250
     assert status.generations[-1].generation_id == 1
-    assert len(statements) <= 30
+    assert len(statements) <= 60
 
 
 def test_semantic_status_generation_rows_share_the_count_snapshot(
@@ -171,4 +177,45 @@ def test_semantic_status_generation_rows_share_the_count_snapshot(
     assert not thread.is_alive()
     assert writer_errors == []
     assert tuple(summary.generation_id for summary in status.generations) == (2, 1)
+
+
+def test_semantic_status_rejects_future_schema_without_reporting_success(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "semantic.sqlite3"
+    _populate_generations(database, 0)
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE metadata SET value='999' WHERE key='schema_version'")
+        connection.execute("PRAGMA user_version=999")
+
+    with pytest.raises(SemanticStateError, match="unsupported"):
+        semantic_status_service.semantic_status(tmp_path, generation_limit=1)
+
+
+def test_semantic_status_cli_is_blocked_for_future_schema(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    database = tmp_path / "semantic.sqlite3"
+    _populate_generations(database, 0)
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE metadata SET value='999' WHERE key='schema_version'")
+        connection.execute("PRAGMA user_version=999")
+
+    result = run_semantic_status(argparse.Namespace(state_directory=tmp_path))
+
+    assert result == 2
+    assert "ERROR semantic-status SemanticStateError" in capsys.readouterr().out
+
+
+def test_semantic_status_rejects_current_schema_drift_without_reporting_success(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "semantic.sqlite3"
+    _populate_generations(database, 0)
+    with sqlite3.connect(database) as connection:
+        connection.execute("ALTER TABLE embedding_generations ADD COLUMN unexpected TEXT")
+
+    with pytest.raises(SemanticStateError, match="incompatible columns"):
+        semantic_status_service.semantic_status(tmp_path, generation_limit=1)
 # endregion [02]

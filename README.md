@@ -58,6 +58,13 @@ Neocortex --text-errors 20 --diagnostics-json
 Neocortex --archive-issues 20 --diagnostics-json
 ```
 
+Las preguntas explícitas sobre estado del corpus, por ejemplo
+`Neocortex ask "¿Qué PDFs están protegidos?"`, consultan los diagnósticos
+publicados por sus owners en lugar de tratar una conversación que menciona un
+error como si fuera el archivo afectado. El MCP equivalente es
+`operational_query`; ambos conservan snapshot, cursor y el límite advisory
+read-only.
+
 `ask`, `ask --json`, `--knowledge-context` y la herramienta MCP `context` usan
 el contexto compacto v2: fuentes sin repetición, fragmentos citables y cobertura
 explícita, con presupuesto para la respuesta completa. `ask --response-version 1`
@@ -169,6 +176,7 @@ Los wheels de desarrollo incluidos no forman parte del paquete instalado.
 - [Persistencia](docs/PERSISTENCE.md)
 - [Seguridad](docs/SECURITY.md)
 - [Knowledge](docs/KNOWLEDGE.md)
+- [Consultas operacionales de Knowledge](docs/KNOWLEDGE_OPERATIONAL_QUERY.md)
 - [Recuperación](docs/RECOVERY.md)
 - [Kubuntu/Linux](docs/LINUX_KUBUNTU.md)
 - [Roadmap](docs/ROADMAP_90_DAYS.md)

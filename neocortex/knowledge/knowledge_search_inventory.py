@@ -6,6 +6,7 @@
 # endregion [00]
 # region [01] Dependencias del módulo
 from __future__ import annotations
+import json
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -14,6 +15,8 @@ from typing import Any, cast
 
 from neocortex.platform import policy as platform_policy
 from neocortex.persistence.sqlite_paths import readonly_sqlite_uri as _CANONICAL_READONLY_SQLITE_URI
+from neocortex.deduplication.inventory.plan_evidence import decode_group_proof, decode_member_proof
+from neocortex.deduplication.domain.errors import InventoryError
 
 from .knowledge_contracts import KnowledgeSnapshot, ResourceRef
 from .knowledge_search_contracts import KnowledgeCandidate, RankingExecution
@@ -23,7 +26,55 @@ from .knowledge_snapshot import KnowledgeStatePaths
 
 
 InventoryIdentity = tuple[int, int, int]
-InventoryHead = tuple[int, int, int, int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class InventoryHead:
+    """One inventory publication, retaining its owner scope and identity."""
+
+    scan_id: int
+    completed_ns: int
+    group_count: int
+    redundant_files: int
+    reclaimable_bytes: int
+    scope: str | None = None
+    publication_id: str | None = None
+
+    @property
+    def sql_values(self) -> tuple[int, int, int, int, int]:
+        return (
+            self.scan_id,
+            self.completed_ns,
+            self.group_count,
+            self.redundant_files,
+            self.reclaimable_bytes,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class InventoryPlanIssue:
+    """A malformed publication kept local to one inventory scan/scope."""
+
+    scan_id: int
+    scope: str | None
+    publication_id: str | None
+    reason: str
+    signature: str | None = None
+
+
+def _head_sql_values(head: InventoryHead | Sequence[int]) -> tuple[int, int, int, int, int]:
+    if isinstance(head, InventoryHead):
+        return head.sql_values
+    values = tuple(int(value) for value in head)
+    if len(values) != 5:
+        raise ValueError("inventory plan head has an invalid shape")
+    return values  # type: ignore[return-value]
+
+
+def _issue_sql_values(issue: InventoryPlanIssue) -> tuple[int, str | None]:
+    return issue.scan_id, issue.scope
+
+
 InventoryChoice = tuple[str, InventoryIdentity]
 InventoryRow = sqlite3.Row
 _Connection = Any
@@ -224,21 +275,31 @@ def inventory_plan_heads(
     snapshot: KnowledgeSnapshot,
     *,
     available_state: object,
-) -> tuple[tuple[InventoryHead, ...], bool]:
-    heads: set[InventoryHead] = set()
-    malformed = False
+) -> tuple[tuple[InventoryHead, ...], tuple[InventoryPlanIssue, ...]]:
+    heads: dict[tuple[int, str | None], InventoryHead] = {}
+    issues: list[InventoryPlanIssue] = []
     for owner in snapshot.owners:
         if owner.owner != "inventory" or owner.state is not available_state:
             continue
         for head in owner.publications:
             signature = head.model_signature
             if signature is None:
+                # A publication with no duplicate plan is a valid inventory
+                # head, but it cannot participate in relation joins.
                 continue
             parts = signature.split(":")
             try:
                 values = tuple(int(value, 10) for value in parts[1:])
             except ValueError:
-                malformed = True
+                issues.append(
+                    InventoryPlanIssue(
+                        head.generation,
+                        head.scope,
+                        head.publication_id,
+                        "invalid_inventory_plan_watermark",
+                        signature,
+                    )
+                )
                 continue
             if (
                 len(parts) != 5
@@ -247,19 +308,42 @@ def inventory_plan_heads(
                 or any(value < 0 for value in values)
                 or any(part != str(value) for part, value in zip(parts[1:], values, strict=True))
             ):
-                malformed = True
+                issues.append(
+                    InventoryPlanIssue(
+                        head.generation,
+                        head.scope,
+                        head.publication_id,
+                        "invalid_inventory_plan_watermark",
+                        signature,
+                    )
+                )
                 continue
             completed_ns, group_count, redundant_files, reclaimable_bytes = values
-            heads.add(
-                (
-                    head.generation,
-                    completed_ns,
-                    group_count,
-                    redundant_files,
-                    reclaimable_bytes,
-                )
+            key = (head.generation, head.scope)
+            current = InventoryHead(
+                head.generation,
+                completed_ns,
+                group_count,
+                redundant_files,
+                reclaimable_bytes,
+                head.scope,
+                head.publication_id,
             )
-    return tuple(sorted(heads)), malformed
+            prior = heads.get(key)
+            if prior is not None and prior.sql_values != current.sql_values:
+                issues.append(
+                    InventoryPlanIssue(
+                        head.generation,
+                        head.scope,
+                        head.publication_id,
+                        "conflicting_inventory_plan_watermark",
+                        signature,
+                    )
+                )
+                heads.pop(key, None)
+            elif prior is None:
+                heads[key] = current
+    return tuple(sorted(heads.values(), key=lambda item: (item.scan_id, item.scope or ""))), tuple(issues)
 
 
 def inventory_identity_blob(value: int) -> bytes:
@@ -373,6 +457,66 @@ def _relation_metrics_are_valid(values: _RelationValues) -> bool:
     )
 
 
+def _proof_contract_is_valid(row: InventoryRow) -> bool:
+    """Validate the persisted policy/proof contract when this owner exposes it.
+
+    Older fixtures and migrated owners do not expose these columns; those rows
+    remain advisory.  A current owner must not let a structurally plausible
+    relation masquerade as exact evidence when its policy or proof is broken.
+    """
+    keys = set(row.keys()) if hasattr(row, "keys") else set()
+    if "plan_contract_present" not in keys or int(row["plan_contract_present"]) != 1:
+        return True
+    try:
+        policy = str(row["plan_requested_policy"])
+        coverage = str(row["plan_coverage"])
+        verification_mode = str(row["plan_verification_mode"])
+        comparisons = row["plan_exact_comparisons"]
+        failures = row["plan_changed_or_unreadable_files"]
+        group_mode = str(row["group_verification_mode"])
+        group_proof = decode_group_proof(str(row["group_proof_json"]))
+        member_proof = decode_member_proof(str(row["member_proof_json"]))
+    except (AttributeError, KeyError, TypeError, ValueError, json.JSONDecodeError, InventoryError):
+        return False
+    if policy == "legacy_unknown":
+        return verification_mode == "legacy_unknown" and coverage == "legacy_unknown"
+    if policy not in {"fast", "exact"} or coverage not in {"complete", "partial"}:
+        return False
+    if type(comparisons) is not int or comparisons < 0:
+        return False
+    if type(failures) is not int or failures < 0:
+        return False
+    expected_mode = "partial" if failures else "full_hash" if policy == "exact" else "fast"
+    expected_group_mode = "full_hash" if policy == "exact" else "fast"
+    if verification_mode != expected_mode or group_mode != expected_group_mode:
+        return False
+    if coverage != ("partial" if failures else "complete"):
+        return False
+    if policy == "fast" and comparisons != 0:
+        return False
+    if policy == "exact" and comparisons < int(row["redundant_count"]):
+        return False
+    if group_proof is None or member_proof.proof_version == "legacy_unknown":
+        return False
+    if group_proof.requested_policy != policy:
+        return False
+    expected_result = "reference" if row["member_role"] == "keep" else (
+        "equal" if policy == "exact" else "fingerprint_match"
+    )
+    expected_identity = None if expected_result == "reference" else (
+        int.from_bytes(bytes(row["keeper_volume_id"]), "little"),
+        int.from_bytes(bytes(row["keeper_file_id"]), "little"),
+    )
+    if (
+        member_proof.comparison_result != expected_result
+        or member_proof.compared_to_identity != expected_identity
+        or str(row["member_path"]) not in member_proof.aliases
+        or (expected_result == "equal" and member_proof.comparison_bytes != int(row["member_size"]))
+    ):
+        return False
+    return True
+
+
 def _relation_role_is_valid(values: _RelationValues) -> bool:
     if values.role == "keep":
         return values.member_order == 0 and values.matched == values.keeper
@@ -395,7 +539,9 @@ def inventory_relation_row(
     )
     if values is None or values.matched != values.member:
         return None
-    if values.matched[2] < 0 or values.keeper[2] < 0:
+    # Linux legitimately uses -1 when the filesystem exposes no birth time;
+    # only values below that sentinel are malformed.
+    if values.matched[2] < -1 or values.keeper[2] < -1:
         return None
     if not _paths_match(row, "member_path", "file_path"):
         return None
@@ -407,28 +553,94 @@ def inventory_relation_row(
         return None
     if not valid_full_fingerprint(row["full_fingerprint"]):
         return None
+    if not _proof_contract_is_valid(row):
+        return None
     if not _relation_role_is_valid(values):
         return None
     return values.matched, values.role, values.keeper
 
 
+def _supports_persisted_proof_contract(connection: _Connection) -> bool:
+    """Return whether the concrete owner exposes v12 policy/proof columns."""
+    if not isinstance(connection, sqlite3.Connection):
+        return False
+    try:
+        summary = {str(row[1]) for row in connection.execute(
+            "PRAGMA table_info(duplicate_plan_summaries)"
+        )}
+        groups = {str(row[1]) for row in connection.execute(
+            "PRAGMA table_info(planned_duplicate_groups)"
+        )}
+        members = {str(row[1]) for row in connection.execute(
+            "PRAGMA table_info(planned_duplicate_members)"
+        )}
+    except sqlite3.Error:
+        return False
+    return (
+        {"requested_policy", "coverage", "exact_comparisons", "changed_or_unreadable_files", "verification_mode"}
+        <= summary
+        and {"verification_mode", "proof_json"} <= groups
+        and "proof_json" in members
+    )
+
+
 def _inventory_rows(
     connection: _Connection,
     identity_batch: Sequence[InventoryIdentity],
-    head_batch: Sequence[InventoryHead],
+    head_batch: Sequence[InventoryHead | Sequence[int]],
     remaining: int,
     identity_blob: _IdentityBlob,
+    plan_issues: Sequence[InventoryPlanIssue] = (),
 ) -> list[InventoryRow]:
     wanted_values = ",".join("(?,?,?)" for _ in identity_batch)
-    head_values = ",".join("(?,?,?,?,?)" for _ in head_batch)
+    issue_values = tuple(plan_issues)
+    extended_heads = bool(issue_values)
+    head_values = ",".join(
+        "(?,?,?,?,?,?)" if extended_heads else "(?,?,?,?,?)" for _ in head_batch
+    )
     parameters: list[object] = []
     for volume_id, file_id, birthtime_ns in identity_batch:
         parameters.extend((identity_blob(volume_id), identity_blob(file_id), birthtime_ns))
     for head in head_batch:
-        parameters.extend(head)
+        parameters.extend(_head_sql_values(head))
+        if extended_heads:
+            parameters.append(1)
+    if extended_heads:
+        issue_sql = ",".join("(?,?,?,?,?,?)" for _ in issue_values)
+        head_values = ",".join(value for value in (head_values, issue_sql) if value)
+        for issue in issue_values:
+            parameters.extend((issue.scan_id, None, None, None, None, 0))
+    contract = _supports_persisted_proof_contract(connection)
+    proof_projection = (
+        ",summary.requested_policy AS plan_requested_policy,summary.coverage AS plan_coverage,"
+        "summary.exact_comparisons AS plan_exact_comparisons,"
+        "summary.changed_or_unreadable_files AS plan_changed_or_unreadable_files,"
+        "summary.verification_mode AS plan_verification_mode,"
+        "g.verification_mode AS group_verification_mode,g.proof_json AS group_proof_json,"
+        "member.proof_json AS member_proof_json,1 AS plan_contract_present"
+        if contract else ",0 AS plan_contract_present"
+    )
+    valid_projection = ",h.plan_valid AS inventory_plan_valid" if extended_heads else ",1 AS inventory_plan_valid"
+    head_cte = (
+        "heads(scan_id,completed_ns,group_count,redundant_files,reclaimable_bytes,plan_valid)"
+        if extended_heads else
+        "heads(scan_id,completed_ns,group_count,redundant_files,reclaimable_bytes)"
+    )
+    summary_join = (
+        "LEFT JOIN duplicate_plan_summaries summary ON summary.scan_id=h.scan_id "
+        "AND h.plan_valid=1 AND summary.completed_ns=h.completed_ns "
+        "AND summary.group_count=h.group_count AND summary.redundant_files=h.redundant_files "
+        "AND summary.reclaimable_bytes=h.reclaimable_bytes"
+        if extended_heads else
+        "JOIN duplicate_plan_summaries summary ON summary.scan_id=h.scan_id "
+        "AND summary.completed_ns=h.completed_ns AND summary.group_count=h.group_count "
+        "AND summary.redundant_files=h.redundant_files AND summary.reclaimable_bytes=h.reclaimable_bytes"
+    )
+    validity_where = " WHERE h.plan_valid=0 OR summary.scan_id IS NOT NULL" if extended_heads else ""
+    valid_join_guard = "h.plan_valid=1 AND " if extended_heads else ""
     result = connection.execute(
         f"""WITH wanted(volume_id,file_id,birthtime_ns) AS (VALUES {wanted_values}),
-        heads(scan_id,completed_ns,group_count,redundant_files,reclaimable_bytes) AS (VALUES {head_values})
+        {head_cte} AS (VALUES {head_values})
         SELECT f.volume_id AS file_volume_id,f.file_id AS file_id,f.birthtime_ns AS file_birthtime_ns,
         f.path AS file_path,f.size AS file_size,member.volume_id AS member_volume_id,
         member.file_id AS member_file_id,member.birthtime_ns AS member_birthtime_ns,member.member_order,CASE WHEN member.path IS NULL THEN 0 ELSE 1 END AS member_present,
@@ -441,19 +653,21 @@ def _inventory_rows(
         (SELECT COUNT(*) FROM planned_duplicate_members counted WHERE counted.group_id=g.group_id AND counted.role='keep') AS keep_count,
         (SELECT COUNT(*) FROM planned_duplicate_members counted WHERE counted.group_id=g.group_id AND counted.role='redundant') AS redundant_role_count,
         (SELECT COUNT(*) FROM planned_duplicate_members counted WHERE counted.group_id=g.group_id AND NOT ((counted.role='keep' AND counted.member_order=0) OR (counted.role='redundant' AND counted.member_order BETWEEN 1 AND g.redundant_count))) AS invalid_role_order_count
+        {proof_projection}{valid_projection}
         FROM wanted w CROSS JOIN files f ON f.volume_id=w.volume_id AND f.file_id=w.file_id AND f.birthtime_ns=w.birthtime_ns
-        JOIN heads h ON h.scan_id=f.scan_id JOIN duplicate_plan_summaries summary ON summary.scan_id=h.scan_id AND summary.completed_ns=h.completed_ns AND summary.group_count=h.group_count AND summary.redundant_files=h.redundant_files AND summary.reclaimable_bytes=h.reclaimable_bytes
+        JOIN heads h ON h.scan_id=f.scan_id {summary_join}
         LEFT JOIN planned_duplicate_members member
-        ON member.path=f.path COLLATE {_PATH_COLLATION} AND member.volume_id=f.volume_id
+        ON {valid_join_guard}member.path=f.path COLLATE {_PATH_COLLATION} AND member.volume_id=f.volume_id
         AND member.file_id=f.file_id AND member.birthtime_ns=f.birthtime_ns
-        LEFT JOIN planned_duplicate_groups g ON g.group_id=member.group_id
+        LEFT JOIN planned_duplicate_groups g ON {valid_join_guard}g.group_id=member.group_id
         AND g.scan_id=f.scan_id LEFT JOIN planned_duplicate_members keeper
-        ON keeper.group_id=g.group_id AND keeper.member_order=0
+        ON {valid_join_guard}keeper.group_id=g.group_id AND keeper.member_order=0
         LEFT JOIN files keeper_file ON keeper_file.scan_id=g.scan_id
         AND keeper_file.path=keeper.path COLLATE {_PATH_COLLATION}
         AND keeper_file.volume_id=keeper.volume_id
         AND keeper_file.file_id=keeper.file_id
         AND keeper_file.birthtime_ns=keeper.birthtime_ns
+        {validity_where}
         ORDER BY f.volume_id,f.file_id,f.birthtime_ns, g.scan_id,g.group_id LIMIT ?""",
         (*parameters, remaining + 1),
     )
@@ -474,6 +688,13 @@ def _record_inventory_row(
     except (IndexError, KeyError, TypeError, ValueError):
         return
     state.covered_identities.add(matched_identity)
+    try:
+        if int(row["inventory_plan_valid"]) != 1:
+            state.invalid_identities.add(matched_identity)
+            return
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        # Legacy injected rows predate per-head validity and remain compatible.
+        pass
     try:
         row_keys = set(row.keys())
         member_evidence = any(
@@ -508,6 +729,7 @@ def _scan_inventory_batches(
     state: _InventoryReadState,
     cancellation: _CancellationCapture,
     dependencies: _ReadDependencies,
+    plan_issues: Sequence[InventoryPlanIssue] = (),
 ) -> bool:
     for identity_start in range(
         0,
@@ -518,9 +740,13 @@ def _scan_inventory_batches(
         identity_batch = identities[
             identity_start : identity_start + dependencies.identity_batch_size
         ]
-        for head_start in range(0, len(plan_heads), dependencies.head_batch_size):
+        head_batches = (
+            [plan_heads[start : start + dependencies.head_batch_size]
+             for start in range(0, len(plan_heads), dependencies.head_batch_size)]
+            or [()]
+        )
+        for head_batch in head_batches:
             cancellation.checkpoint()
-            head_batch = plan_heads[head_start : head_start + dependencies.head_batch_size]
             remaining = dependencies.max_relations - state.rows_scanned
             rows = _inventory_rows(
                 connection,
@@ -528,6 +754,7 @@ def _scan_inventory_batches(
                 head_batch,
                 remaining,
                 dependencies.identity_blob,
+                plan_issues=plan_issues,
             )
             if len(rows) > remaining:
                 connection.execute("ROLLBACK")
@@ -586,6 +813,7 @@ def _read_inventory_relations(
     plan_heads: Sequence[InventoryHead],
     cancellation: _CancellationCapture,
     dependencies: _ReadDependencies,
+    plan_issues: Sequence[InventoryPlanIssue] = (),
 ) -> tuple[_InventoryReadState | None, RankingExecution | None]:
     try:
         connection = dependencies.open_sqlite(paths.inventory)
@@ -612,6 +840,7 @@ def _read_inventory_relations(
                 state,
                 cancellation,
                 dependencies,
+                plan_issues,
             )
             if not limit_exceeded:
                 connection.execute("COMMIT")
@@ -801,7 +1030,7 @@ def apply_inventory_dispositions(
     owner_available: Callable[[KnowledgeSnapshot, str], bool],
     inventory_plan_heads: Callable[
         [KnowledgeSnapshot],
-        tuple[tuple[InventoryHead, ...], bool],
+        tuple[tuple[InventoryHead, ...], tuple[InventoryPlanIssue, ...]],
     ],
     physical_identity_tuple: _PhysicalIdentity,
     open_direct_readonly_sqlite: Callable[[Path], _Connection],
@@ -828,15 +1057,7 @@ def apply_inventory_dispositions(
             reason="inventory_owner_unavailable",
         )
     plan_heads, malformed_heads = inventory_plan_heads(snapshot)
-    if malformed_heads:
-        return unchanged, _report(
-            ranking_execution_type,
-            True,
-            True,
-            False,
-            reason="invalid_inventory_plan_watermark",
-        )
-    if not plan_heads:
+    if not plan_heads and not malformed_heads:
         return unchanged, _report(
             ranking_execution_type,
             False,
@@ -880,6 +1101,7 @@ def apply_inventory_dispositions(
         plan_heads,
         _CancellationCapture(cancellation_check),
         dependencies,
+        malformed_heads,
     )
     if read_report is not None:
         return unchanged, read_report

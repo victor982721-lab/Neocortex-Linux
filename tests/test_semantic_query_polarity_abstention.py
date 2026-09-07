@@ -68,3 +68,23 @@ def test_polarity_abstention_keeps_existing_input_and_evaluation_bounds():
     assert result["query_truncated"] is False
     assert result["basis"] == "input_text"
     assert result["status"] == "not_assessed"
+
+
+@pytest.mark.parametrize(
+    "query",
+    (
+        "¿Qué factura demuestra que ningún rodamiento se reemplazó en M9?",
+        "Which invoice shows none of the bearings were replaced in M9?",
+        "Which invoice shows neither bearing was replaced in M9?",
+        "Welche Rechnung zeigt, dass keine Lager in M9 ersetzt wurden?",
+    ),
+)
+def test_supported_multilingual_negative_determiners_remain_unassessed(query):
+    result = requested_evidence_checks(
+        query,
+        "Factura FC-62. Se reemplazaron los rodamientos de M9.",
+    )
+    assert result["status"] == "not_assessed"
+    assert result["not_assessed_reason"] == "query_polarity_scope_not_supported"
+    assert result["retrieval_disposition"] == "unchanged"
+    assert result["required_witnesses"] == result["counterevidence"] == []

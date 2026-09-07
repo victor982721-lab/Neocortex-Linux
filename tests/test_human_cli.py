@@ -189,6 +189,44 @@ def test_human_ask_labels_citations_without_fabricating_an_answer(
     assert "no inventa una respuesta" in output
 
 
+def test_human_ask_routes_explicit_operational_questions_to_owner_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[tuple[str, str, int]] = []
+
+    def fake_operational(query: str, scope: str, *, limit: int) -> dict[str, object]:
+        calls.append((query, scope, limit))
+        return {
+            "query": query,
+            "exit_code": 0,
+            "scopes": [{
+                "scope": "personal",
+                "status": "ok",
+                "exit_code": 0,
+                "operational": {
+                    "status": "ok",
+                    "snapshot_id": "snap-1",
+                    "facts": [{
+                        "scope": "processing",
+                        "code": "pdf_password_required",
+                        "record_id": "review-candidate:pdf:1",
+                        "provenance": {"record": {"path": "/corpus/protected.pdf"}},
+                    }],
+                },
+            }],
+        }
+
+    monkeypatch.setattr(human_cli, "operational_query_payload", fake_operational)
+    assert human_cli.run_human_command(("ask", "¿Qué PDFs están protegidos?")) == 0
+    assert calls == [("¿Qué PDFs están protegidos?", "all", 10)]
+    output = capsys.readouterr().out
+    assert "Diagnóstico operacional" in output
+    assert "pdf_password_required" in output
+    assert "protected.pdf" in output
+    assert "no autoriza acciones" in output
+
+
 def test_human_status_json_is_one_machine_readable_document(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

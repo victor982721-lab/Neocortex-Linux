@@ -34,6 +34,26 @@ FROZEN_R2_DATASET_SHA256 = "50d8c735cd82db6b3032edc1beb09fdf54941230722ca2b24858
 SUPPORTED_FROZEN_DATASETS = frozenset({FROZEN_DATASET_SHA256, FROZEN_R2_DATASET_SHA256})
 
 
+def acceptance_composition(freeze_path: Path) -> dict[str, int]:
+    """Return the immutable query composition required by reserve acceptance."""
+
+    freeze = read_json(freeze_path)
+    reserve = freeze.get("reserve")
+    if not isinstance(reserve, dict):
+        raise ValueError("frozen evaluation is missing reserve composition")
+    expected: dict[str, int] = {}
+    for name in ("queries", "positive_queries", "negative_queries"):
+        value = reserve.get(name)
+        if type(value) is not int or value < 0:
+            raise ValueError(f"frozen reserve composition has invalid {name}")
+        expected[name] = value
+    if expected["queries"] != (
+        expected["positive_queries"] + expected["negative_queries"]
+    ):
+        raise ValueError("frozen reserve composition is internally inconsistent")
+    return expected
+
+
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -312,9 +332,24 @@ def score_predictions(
     return {"aggregate": aggregate, "queries": rows}
 
 
-def acceptance(candidate: dict[str, Any], baseline: dict[str, Any]) -> dict[str, bool]:
+def acceptance(
+    candidate: dict[str, Any],
+    baseline: dict[str, Any],
+    *,
+    expected_composition: dict[str, int] | None = None,
+) -> dict[str, bool]:
     """Do not substitute Success@5 for true Recall@5 or reclassify errors away."""
+    expected = expected_composition or {
+        "queries": 10,
+        "positive_queries": 8,
+        "negative_queries": 2,
+    }
+    composition = all(
+        type(candidate.get(name)) is int and candidate.get(name) == value
+        for name, value in expected.items()
+    )
     return {
+        "expected_query_composition": composition,
         "success_at_5": candidate["success_at_5"] >= 0.90,
         "all_eight_reserved_positives": (
             candidate["positive_queries"] == 8 and candidate["positive_successes_at_5"] == 8
@@ -732,6 +767,16 @@ def main() -> int:
     parser.add_argument("--model-cache", type=Path)
     parser.add_argument("--timeout-seconds", type=int, default=900)
     parser.add_argument("--reuse-isolated-index", action="store_true")
+    parser.add_argument(
+        "--accept",
+        action="store_true",
+        help="apply the reserve acceptance checks and return non-zero on failure",
+    )
+    parser.add_argument(
+        "--baseline-report",
+        type=Path,
+        help="JSON measurement report containing the frozen baseline aggregate for --accept",
+    )
     args = parser.parse_args()
     report = run(args)
     summary = {
@@ -741,6 +786,25 @@ def main() -> int:
     }
     if "context_v2" in report:
         summary["context_v2"] = report["context_v2"]["aggregate"]
+    if args.accept:
+        if args.label != "candidate" or report.get("split") != "reserve":
+            raise ValueError("--accept requires a candidate measurement on the reserve split")
+        if args.baseline_report is None:
+            raise ValueError("--accept requires --baseline-report")
+        baseline_payload = read_json(args.baseline_report.resolve(strict=True))
+        baseline = baseline_payload.get("aggregate", baseline_payload)
+        if not isinstance(baseline, dict):
+            raise ValueError("baseline report does not contain an aggregate object")
+        checks = acceptance(
+            report["aggregate"],
+            baseline,
+            expected_composition=acceptance_composition(args.freeze),
+        )
+        accepted = all(checks.values())
+        summary["status"] = "accepted" if accepted else "not_accepted"
+        summary["acceptance"] = checks
+        print(json.dumps(summary, sort_keys=True))
+        return 0 if accepted else 1
     print(json.dumps(summary, sort_keys=True))
     return 0
 

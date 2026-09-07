@@ -227,8 +227,16 @@ def content_diagnostics_payload(
         return _failed(payload, "owner_unsafe", str(exc), status="blocked")
     except ValueError as exc:
         message = str(exc)
-        kind = "invalid_cursor" if "cursor" in message.lower() else "state_changed" if "changed" in message.lower() else "invalid_request"
-        return _failed(payload, kind, message)
+        lowered = message.lower()
+        if "cursor" in lowered:
+            return _failed(payload, "invalid_cursor", message)
+        if "changed" in lowered:
+            return _failed(payload, "state_changed", message)
+        # The PDF reader reports an incompatible schema as ValueError, unlike
+        # Text and Archive. That is persisted-owner state, not bad caller input.
+        if owner == "pdf" and "pdf diagnostics require schema " in lowered:
+            return _failed(payload, "owner_state_unavailable", message, status="blocked")
+        return _failed(payload, "invalid_request", message)
     except (sqlite3.Error, OSError, RuntimeError) as exc:
         return _failed(payload, "owner_state_unavailable", str(exc), status="blocked")
     except (TypeError, AttributeError) as exc:

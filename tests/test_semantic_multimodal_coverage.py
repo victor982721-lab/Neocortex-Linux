@@ -86,6 +86,12 @@ def _source_head(
             coverage="complete",
             source_status="partial",
         ),
+        _source_head(
+            "video",
+            complete=False,
+            coverage="blocked",
+            source_status="blocked",
+        ),
     ),
 )
 def test_partial_video_or_image_coverage_never_publishes_ready(
@@ -136,4 +142,3 @@ def test_complete_multimodal_head_still_allows_ready_and_replay_metadata(
     summary = finalize_embedding_generation(database, generation)
 
     assert summary.status == "ready"
-

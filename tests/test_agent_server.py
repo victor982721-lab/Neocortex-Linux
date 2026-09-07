@@ -220,6 +220,7 @@ def test_agent_server_exposes_read_and_human_gated_curation_tools() -> None:
         "content_diagnostics",
         "search",
         "context",
+        "operational_query",
         "evidence",
         "inspect_code",
         "lineage",
@@ -367,6 +368,7 @@ def test_agent_evidence_forwards_stable_identity_and_expected_snapshot(
                 "max_characters": 4_000,
                 "evidence_id": "evidence:2",
                 "expected_snapshot_id": "snapshot-1",
+                "response_version": 1,
             },
         )
     )
@@ -682,6 +684,7 @@ def test_public_stdio_server_completes_a_real_read_only_protocol_exchange(
             "content_diagnostics",
             "search",
             "context",
+            "operational_query",
             "evidence",
             "inspect_code",
             "lineage",

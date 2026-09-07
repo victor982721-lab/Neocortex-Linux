@@ -173,6 +173,7 @@ Neocortex help
 Neocortex status --scope all
 Neocortex search "consulta" --scope personal --limit 20
 Neocortex ask "consulta" --scope personal --limit 12
+Neocortex ask "¿Qué PDFs están protegidos?" --scope all --json
 Neocortex inspect code "consulta" --scope personal
 Neocortex inspect lineage IDENTIFICADOR --scope personal
 Neocortex review value --scope personal --limit 50
@@ -185,9 +186,17 @@ La ayuda contextual reutiliza el contrato de cada subcomando, por ejemplo
 `Neocortex help inspect code`; las opciones se consultan en el propio comando
 con `--help`.
 
+El contrato de la consulta operativa está descrito en
+[KNOWLEDGE_OPERATIONAL_QUERY.md](KNOWLEDGE_OPERATIONAL_QUERY.md).
+
 `personal` consulta las publicaciones del usuario. `all` mantiene owners y
 scores separados y reporta cobertura. Ninguna consulta corrige, migra o crea una
 base ausente.
+
+Las preguntas explícitas sobre errores, protección, incidencias ZIP o posibles
+duplicados se enrutan a los owners diagnósticos mediante `ask`; el resultado
+conserva el snapshot, el cursor y la distinción entre archivo, procesamiento,
+índice, política y condición documental, sin autorizar acciones.
 
 `review value --refresh` es diferente: avanza una página durable de Review en
 Framework. No modifica corpus ni concede autorización.
@@ -344,7 +353,7 @@ Neocortex agent serve
 ```
 
 El servidor stdio expone consultas read-only como status, search, context,
-evidence, `curation_plan`, `curation_scan`, `curation_verify`, Code, lineage y
+evidence, `operational_query`, `curation_plan`, `curation_scan`, `curation_verify`, Code, lineage y
 salud de assets. También expone
 `curation_review` y `curation_decide`: escriben sólo ReviewTask advisory, están
 marcadas no destructivas y mantienen `actions_authorized=false`. `evidence`

@@ -712,8 +712,15 @@ def _duplicate_group_record(
     scan_id: int, row: Any, plan_verification_mode: VerificationMode,
 ) -> tuple[dict[str, object], DuplicateGroupProof | None]:
     group_id = int(row[0])
-    if int(row[3]) < 0:
-        raise CurationStateError(f"duplicate group {group_id} has an invalid member count")
+    size = int(row[1])
+    redundant_count = int(row[3])
+    reclaimable_bytes = int(row[4])
+    if (
+        size <= 0
+        or redundant_count < 1
+        or reclaimable_bytes != size * redundant_count
+    ):
+        raise CurationStateError(f"duplicate group {group_id} has inconsistent physical totals")
     raw_mode = str(row[6])
     try:
         proof = decode_group_proof(str(row[7]))
@@ -726,9 +733,9 @@ def _duplicate_group_record(
         raise _duplicate_proof_error(error, scan_id=scan_id, group_id=group_id) from error
     return {
         "full_fingerprint": str(row[5]), "group_id": group_id, "keep_path": str(row[2]),
-        "reclaimable_bytes": int(row[4]), "nominal_redundant_bytes": int(row[4]),
-        "physical_reclaimable_bytes": None, "redundant_count": int(row[3]),
-        "scan_id": scan_id, "size": int(row[1]), "verification_mode": raw_mode,
+        "reclaimable_bytes": reclaimable_bytes, "nominal_redundant_bytes": reclaimable_bytes,
+        "physical_reclaimable_bytes": None, "redundant_count": redundant_count,
+        "scan_id": scan_id, "size": size, "verification_mode": raw_mode,
         "verification_scope": "group", "plan_verification_mode": plan_verification_mode,
         "requested_policy": "legacy_unknown" if proof is None else proof.requested_policy,
         "group_proof": None if proof is None else proof.as_dict(),
@@ -773,6 +780,24 @@ def _duplicate_member_record(
     }, physical_identity
 
 
+def _register_duplicate_member(
+    group_id: int,
+    record: dict[str, object],
+    physical_identity: tuple[int, int],
+    seen_paths: set[str],
+    seen_identities: set[tuple[int, int]],
+) -> None:
+    """Reject duplicate physical members before publishing preview evidence."""
+
+    path = str(record["path"])
+    if path in seen_paths or physical_identity in seen_identities:
+        raise CurationStateError(
+            f"duplicate group {group_id} member physical identity is duplicated"
+        )
+    seen_paths.add(path)
+    seen_identities.add(physical_identity)
+
+
 def _duplicate_member_projection(*, has_proof: bool, alias: str = "") -> str:
     prefix = f"{alias}." if alias else ""
     fields = ",".join(prefix + name for name in (
@@ -804,10 +829,15 @@ def _duplicate_item(
     payload: list[dict[str, object]] = []
     member_count = sampled_count = 0
     keeper_identity = None
+    seen_paths: set[str] = set()
+    seen_identities: set[tuple[int, int]] = set()
     for member in members:
         member_count = int(member[9])
         record, physical_identity = _duplicate_member_record(
             scan_id, group_id, member, group_proof, keeper_identity,
+        )
+        _register_duplicate_member(
+            group_id, record, physical_identity, seen_paths, seen_identities,
         )
         if keeper_identity is None:
             if record["role"] == "keep":
@@ -852,9 +882,14 @@ def _digest_duplicate_group(
         ))
     member_count = keeper_count = 0
     keeper_identity = None
+    seen_paths: set[str] = set()
+    seen_identities: set[tuple[int, int]] = set()
     for member in members:
         record, physical_identity = _duplicate_member_record(
             scan_id, group_id, member, group_proof, keeper_identity,
+        )
+        _register_duplicate_member(
+            group_id, record, physical_identity, seen_paths, seen_identities,
         )
         if keeper_identity is None:
             # A legacy presentation may order the keeper after the bounded

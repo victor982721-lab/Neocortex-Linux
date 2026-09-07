@@ -190,7 +190,8 @@ def run_semantic_status(args: argparse.Namespace) -> int:
             f"pending={summary.pending} leased={summary.leased} done={summary.done} "
             f"errors={summary.errors} stale={summary.stale} cursor={cursor}"
         )
-        for timing in _semantic_generation_timings(database, summary.generation_id):
+        timing = status.generation_timings.get(summary.generation_id)
+        if timing is not None:
             print(
                 f"SEMANTIC_TIMING generation={summary.generation_id} "
                 f"duration_ns={timing['generation_duration_ns']} "
@@ -200,60 +201,6 @@ def run_semantic_status(args: argparse.Namespace) -> int:
                 f"receipts={timing['receipts']} basis=owner_receipt"
             )
     return 0
-
-
-def _semantic_generation_timings(
-    database: Path,
-    generation_id: int,
-) -> tuple[dict[str, int], ...]:
-    """Aggregate durable receipt timing for one generation read-only.
-
-    Receipt durations are the only timing source that distinguishes executed
-    embedding work from cache-hit/replay work; route wall time alone cannot
-    make that attribution safely.
-    """
-
-    from neocortex.semantic.semantic_schema import semantic_database
-
-    with semantic_database(database, readonly=True) as connection:
-        generation = connection.execute(
-            "SELECT started_ns,completed_ns FROM embedding_generations "
-            "WHERE generation_id=?",
-            (generation_id,),
-        ).fetchone()
-        if generation is None:
-            return ()
-        rows = connection.execute(
-            """SELECT execution_mode,COUNT(*) AS receipts,
-                COALESCE(SUM(duration_ns),0) AS duration_ns
-            FROM semantic_work_receipts
-            WHERE generation_id=? AND stage_id='semantic.embedding'
-              AND status='succeeded'
-            GROUP BY execution_mode""",
-            (generation_id,),
-        ).fetchall()
-    totals = {"executed": 0, "cache_hit": 0, "replay": 0, "receipts": 0}
-    for row in rows:
-        mode = str(row["execution_mode"])
-        value = int(row["duration_ns"])
-        count = int(row["receipts"])
-        if mode in totals and mode != "receipts":
-            totals[mode] += value
-        totals["receipts"] += count
-    started_ns = int(generation["started_ns"])
-    completed_ns = generation["completed_ns"]
-    generation_duration = (
-        0 if completed_ns is None else max(0, int(completed_ns) - started_ns)
-    )
-    return (
-        {
-            "generation_duration_ns": generation_duration,
-            "executed_ns": totals["executed"],
-            "cache_hit_ns": totals["cache_hit"],
-            "replay_ns": totals["replay"],
-            "receipts": totals["receipts"],
-        },
-    )
 
 
 def run_semantic_plan(args: argparse.Namespace) -> int:

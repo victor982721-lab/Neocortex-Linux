@@ -115,6 +115,48 @@ def test_cross_revision_witness_is_never_assigned_to_the_primary_source():
         build_context_response_v2([_entry(hit)], query="condition", scope="personal", request_id="r")
 
 
+def test_stale_source_revision_is_explicit_without_owner_verification():
+    hit = _hit("e:stale", snippet="historical condition")
+    hit["revision"].update({
+        "state": "historical",
+        "current_revision_id": "revision:current",
+    })
+    hit["evidence_hydration"] = {
+        "status": "unavailable",
+        "reason": "historical_reference_not_hydrated",
+    }
+    payload = build_context_response_v2(
+        [_entry(hit)], query="condition", scope="personal", request_id="r",
+    )
+    source = payload["sources"][0]
+    assert source["revision_binding"] == {
+        "requested_revision_id": "revision:one",
+        "available_revision_id": "revision:current",
+        "source_revision_is_current": False,
+        "reason": "historical_reference_not_hydrated",
+    }
+    assert payload["citations"][0]["hydration"]["status"] != "owner_verified"
+
+
+def test_discovery_title_signal_never_becomes_body_evidence():
+    hit = _hit("e:discovery", snippet="body evidence")
+    hit["signals"] = [{
+        "source": "semantic_text",
+        "evidence": dict(hit["evidence"]),
+    }, {
+        "source": "semantic_title",
+        "query_support": {"support": "title_only"},
+    }]
+    payload = build_context_response_v2(
+        [_entry(hit)], query="body", scope="personal", request_id="r",
+        mode="discovery",
+    )
+    assert payload["mode"] == "discovery"
+    assert payload["citations"]
+    assert all(item.get("retrieval_channel") != "semantic_title" for item in payload["citations"])
+    assert not any("semantic_title" in item for item in payload["citations"])
+
+
 @pytest.fixture
 def pdf_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     state = tmp_path / "pdf-state"
@@ -155,3 +197,22 @@ def test_pdf_zero_based_direct_lookup_revalidates_owner_without_query(pdf_state,
     drift = read_api.evidence_payload(source_ref=source, evidence_ref=citation, scope="personal")
     assert drift["error"]["code"] == "owner_publication_changed"
     assert not drift["citations"]
+
+
+def test_query_evidence_v2_is_explicitly_selectable_without_legacy_wrapper(pdf_state):
+    context = read_api.context_payload(
+        "radiador", scope="personal", response_version=2, request_id="context-fixed",
+    )
+    citation = context["citations"][0]
+    evidence = read_api.evidence_payload(
+        "radiador", citation["citation_id"], "personal",
+        evidence_id=citation["evidence_id"],
+        expected_snapshot_id=context["coverage"]["scopes"][0]["snapshot_id"],
+        response_version=2,
+        request_id="evidence-fixed",
+    )
+    assert evidence["schema"] == "neocortex.evidence-response/v2"
+    assert evidence["operation"] == "evidence"
+    assert evidence["response_version"] == 2
+    assert len(evidence["sources"]) == len(evidence["citations"]) == 1
+    assert evidence["citations"][0]["evidence_id"] == citation["evidence_id"]

@@ -285,7 +285,14 @@ _ACTION_RESTORE = re.compile(r"\b(?:restaur\w*|restor\w*)\b")
 _ACTION_COMPARE = re.compile(r"\b(?:compar\w*|cotej\w*|verific\w*|verif\w*)\b")
 _PENDING_ACTION = re.compile(r"\b(?:pendiente|programad\w*|planificad\w*|previst\w*|debera|debe|deben|"
                              r"se requiere|se propone|futuro|probar|probado|planned|pending|scheduled|will)\b")
-_ACTION_NEGATION = re.compile(r"\b(?:no|sin|ni|nadie|nunca|jamas|tampoco|not|without|never)\b")
+# Keep query polarity conservative across the languages already supported by
+# lexical retrieval.  A negated request is left unassessed rather than having
+# its requested absence silently interpreted as a completed positive action.
+_ACTION_NEGATION = re.compile(
+    r"\b(?:no|sin|ni|nadie|nunca|jamas|tampoco|ningun(?:o|a|os|as)?|"
+    r"not|without|never|none|nobody|nothing|neither|nor|"
+    r"nicht|ohne|kein(?:e|en|em|er|es)?)\b"
+)
 _COMPLETED_ACTION = re.compile(r"\b(?:reemplazo|reemplazaron|reemplazad[oa]s?|sustituyo|sustituyeron|sustituid[oa]s?|"
                                r"cambio|cambiaron|cambiad[oa]s?|restauro|restauraron|restaurad[oa]s?|"
                                r"comparo|compararon|comparad[oa]s?|cotejo|cotejaron|cotejad[oa]s?|"

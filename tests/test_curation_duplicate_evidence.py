@@ -181,6 +181,29 @@ def test_bad_member_proof_reports_owner_group_and_member(tmp_path: Path) -> None
     assert caught.value.context["record_id"] == {"group_id": 1, "member_order": 1}
 
 
+def test_preview_rejects_duplicate_physical_member_identity(tmp_path: Path) -> None:
+    state = _state(tmp_path, groups=1)
+    database = state / "dedup.sqlite3"
+    with sqlite3.connect(database) as connection:
+        group_id = connection.execute(
+            "SELECT group_id FROM planned_duplicate_groups LIMIT 1"
+        ).fetchone()[0]
+        keeper = connection.execute(
+            "SELECT volume_id,file_id FROM planned_duplicate_members "
+            "WHERE group_id=? AND member_order=0",
+            (group_id,),
+        ).fetchone()
+        connection.execute(
+            "UPDATE planned_duplicate_members SET volume_id=?,file_id=? "
+            "WHERE group_id=? AND member_order=1",
+            (*keeper, group_id),
+        )
+        connection.commit()
+
+    with pytest.raises(CurationStateError, match="physical identity is duplicated"):
+        build_curation_plan_page(state, 20)
+
+
 def test_preview_exposes_hardlink_aliases_without_physical_savings(tmp_path: Path) -> None:
     state = _state(tmp_path, groups=1)
     corpus = tmp_path / "corpus"

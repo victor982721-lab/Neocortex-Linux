@@ -121,41 +121,56 @@ def _detect_zip(path: str | Path) -> DetectedType:
     try:
         inspect_zip_structure(path, max_members=ZIP_STRUCTURE_MEMBER_LIMIT)
         with zipfile.ZipFile(path) as archive:
-            names: set[str] = set()
+            name_counts: dict[str, int] = {}
             for index, info in enumerate(archive.infolist()):
                 if index >= ZIP_MEMBER_LIMIT:
                     break
-                names.add(info.filename.replace("\\", "/").casefold())
+                name_counts[info.filename] = name_counts.get(info.filename, 0) + 1
 
-            if "[content_types].xml" in names:
-                if any(name.startswith("word/") for name in names):
-                    return _type(
-                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                        ".docx",
-                        (".docx", ".dotx", ".docm", ".dotm"),
-                        "zip:ooxml-word",
-                    )
-                if any(name.startswith("xl/") for name in names):
-                    return _type(
-                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        ".xlsx",
-                        (".xlsx", ".xltx", ".xlsm", ".xltm"),
-                        "zip:ooxml-excel",
-                    )
-                if any(name.startswith("ppt/") for name in names):
-                    return _type(
-                        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                        ".pptx",
-                        (".pptx", ".potx", ".ppsx", ".pptm", ".potm", ".ppsm"),
-                        "zip:ooxml-powerpoint",
-                    )
+            # Package signatures are exact member names, not directory hints.
+            # A normal ZIP can contain a ``word/`` directory or a copied XML
+            # fragment without being an OOXML document.  Duplicate or competing
+            # package markers remain a conventional/ambiguous ZIP so a caller
+            # cannot select a route from an arbitrary path-looking member.
+            content_types_count = name_counts.get("[Content_Types].xml", 0)
+            ooxml_markers = {
+                "word/document.xml": (
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ".docx",
+                    (".docx", ".dotx", ".docm", ".dotm"),
+                    "zip:ooxml-word",
+                ),
+                "xl/workbook.xml": (
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    ".xlsx",
+                    (".xlsx", ".xltx", ".xlsm", ".xltm"),
+                    "zip:ooxml-excel",
+                ),
+                "ppt/presentation.xml": (
+                    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    ".pptx",
+                    (".pptx", ".potx", ".ppsx", ".pptm", ".potm", ".ppsm"),
+                    "zip:ooxml-powerpoint",
+                ),
+            }
+            present_ooxml = tuple(name for name in ooxml_markers if name_counts.get(name, 0))
 
-            if "mimetype" in names:
+            mimetype_present = "mimetype" in name_counts
+            mimetype_read = False
+            value = ""
+            if mimetype_present and name_counts["mimetype"] == 1:
                 try:
                     with archive.open("mimetype") as member:
                         value = member.read(ZIP_MIMETYPE_LIMIT).decode("ascii", "strict")
+                    mimetype_read = True
                 except (KeyError, OSError, UnicodeError, RuntimeError):
-                    value = ""
+                    pass
+
+            if mimetype_present:
+                # A declared/duplicate/unreadable MIME must not be overridden
+                # by a second, inferred package signature.
+                if present_ooxml:
+                    return _type("application/zip", ".zip", (".zip",), "zip:ambiguous-package")
                 open_formats = {
                     "application/vnd.oasis.opendocument.text": (
                         ".odt",
@@ -169,20 +184,48 @@ def _detect_zip(path: str | Path) -> DetectedType:
                         ".odp",
                         (".odp", ".otp"),
                     ),
+                    # OTT has no dedicated runtime route; retain the archive
+                    # owner while exposing its canonical logical extension so
+                    # validation never proposes a misleading ``.zip``.
+                    "application/vnd.oasis.opendocument.text-template": (
+                        ".ott",
+                        (".ott",),
+                    ),
                     "application/epub+zip": (".epub", (".epub",)),
                 }
-                if value in open_formats:
+                if mimetype_read and value in open_formats:
                     canonical, accepted = open_formats[value]
-                    return _type(value, canonical, accepted, "zip:mimetype")
+                    mime = (
+                        "application/zip"
+                        if value == "application/vnd.oasis.opendocument.text-template"
+                        else value
+                    )
+                    evidence = (
+                        "zip:odf-template" if value.endswith("text-template") else "zip:mimetype"
+                    )
+                    return _type(mime, canonical, accepted, evidence)
 
-            if "androidmanifest.xml" in names:
+                if present_ooxml or content_types_count > 1:
+                    return _type("application/zip", ".zip", (".zip",), "zip:ambiguous-package")
+
+            if content_types_count == 1 and len(present_ooxml) == 1:
+                marker = present_ooxml[0]
+                if name_counts[marker] == 1:
+                    mime, canonical, accepted, evidence = ooxml_markers[marker]
+                    return _type(mime, canonical, accepted, evidence)
+
+            if content_types_count and present_ooxml:
+                return _type("application/zip", ".zip", (".zip",), "zip:ambiguous-package")
+
+            folded_names = {name.replace("\\", "/").casefold() for name in name_counts}
+            if "androidmanifest.xml" in folded_names:
                 return _type(
                     "application/vnd.android.package-archive",
                     ".apk",
                     (".apk",),
                     "zip:android-manifest",
                 )
-            if "meta-inf/manifest.mf" in names:
+            if "meta-inf/manifest.mf" in folded_names:
                 return _type("application/java-archive", ".jar", (".jar",), "zip:java-manifest")
     except (
         OSError,

@@ -24,6 +24,7 @@ from ..read_api import (
     code_search_payload,
     context_payload,
     lineage_payload,
+    operational_query_payload,
     search_payload,
     status_payload,
 )
@@ -846,6 +847,71 @@ def _run_search(args: argparse.Namespace) -> int:
 
 def _run_ask(args: argparse.Namespace) -> int:
     response_version = getattr(args, "response_version", 2)
+    # Operational questions must consult the diagnostic owners directly; a
+    # semantic context search would otherwise return documents that merely
+    # discuss an error.  The specialized read keeps the same fixed scope and
+    # advisory/read-only boundary as the ordinary ask command.
+    try:
+        from neocortex.knowledge.knowledge_operational_query import (
+            OperationalIntent,
+            detect_operational_intent,
+        )
+    except ImportError:  # pragma: no cover - product package always includes the seam
+        operational_intent = None
+    else:
+        try:
+            operational_intent = detect_operational_intent(args.query)
+        except (TypeError, ValueError):
+            operational_intent = OperationalIntent.UNKNOWN
+    if operational_intent is not None and operational_intent is not OperationalIntent.UNKNOWN:
+        try:
+            payload = operational_query_payload(
+                args.query,
+                args.scope,
+                limit=args.limit,
+            )
+        except ValueError as exc:
+            return _run_usage_error(
+                "ask",
+                ReadOperation.OPERATIONAL_QUERY,
+                args,
+                exc,
+                query=args.query,
+                limit=args.limit,
+            )
+        if args.json:
+            _json(payload)
+            return _exit_code(payload)
+        _print(f"Diagnóstico operacional: {payload.get('query', args.query)}")
+        for entry in _entries(payload):
+            operational = _mapping(entry.get("operational"))
+            if operational is None:
+                _render_scope_error(entry)
+                continue
+            facts = operational.get("facts")
+            rows = facts if isinstance(facts, list) else []
+            _print(
+                f"\n{_scope_label(entry.get('scope'))}: {len(rows)} hechos · "
+                f"estado {operational.get('status', 'unknown')} · "
+                f"snapshot {operational.get('snapshot_id') or '-'}"
+            )
+            for fact in rows:
+                if not isinstance(fact, dict):
+                    continue
+                provenance = _mapping(fact.get("provenance")) or {}
+                record = _mapping(provenance.get("record")) or {}
+                affected = (
+                    record.get("path")
+                    or record.get("container_path")
+                    or record.get("file_key")
+                    or "-"
+                )
+                _print(
+                    f"  {fact.get('scope', 'unknown')}:{fact.get('code', 'unknown')} "
+                    f"recurso={affected} evidencia={fact.get('record_id', '-')}"
+                )
+        _print("\nEl diagnóstico es evidencia de estado publicada; no autoriza acciones ni cambios.")
+        return _exit_code(payload)
     try:
         payload = context_payload(
             args.query,

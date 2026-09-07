@@ -72,6 +72,7 @@ class ReadOperation(StrEnum):
     REVIEW = "review"
     LINEAGE = "lineage"
     ASSET_HEALTH = "asset_health"
+    OPERATIONAL_QUERY = "operational_query"
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +142,13 @@ READ_OPERATION_DESCRIPTORS: dict[ReadOperation, ReadOperationDescriptor] = {
         READ_CONTRACT_SCHEMA,
         "neocortex_scoped_asset_health",
     ),
+    ReadOperation.OPERATIONAL_QUERY: ReadOperationDescriptor(
+        ReadOperation.OPERATIONAL_QUERY,
+        READ_CONTRACT_SCHEMA,
+        "neocortex_scoped_operational_query",
+        query=True,
+        limit=True,
+    ),
 }
 
 
@@ -165,6 +173,7 @@ class ReadScopePayload(TypedDict, total=False):
     lineage: NotRequired[dict[str, Any]]
     hits: NotRequired[list[dict[str, Any]]]
     report: NotRequired[dict[str, Any]]
+    operational: NotRequired[dict[str, Any]]
     refresh: NotRequired[dict[str, Any]]
     source: NotRequired[str]
 
@@ -189,6 +198,7 @@ class ReadEnvelopePayload(TypedDict, total=False):
     include_history: NotRequired[bool]
     limit_per_scope: NotRequired[int]
     max_characters_per_scope: NotRequired[int]
+    cursor: NotRequired[str | None]
     citation_id: NotRequired[str]
     found: NotRequired[bool]
     resource_id: NotRequired[str]

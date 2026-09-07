@@ -10,6 +10,7 @@ from neocortex.workflow.retention.planner import (
     plan_retention,
     retention_plan_payload,
 )
+from neocortex.workflow.retention import planner as retention_module
 from tests.test_retention_planner import NOW_NS, _populate_catalog, _populate_semantic
 
 
@@ -64,6 +65,70 @@ def test_retention_cancellation_reaches_snapshot_preparation(tmp_path: Path) -> 
         plan_retention(tmp_path, stores=("semantic",), now_ns=NOW_NS, cancelled=cancelled)
     assert checks[0] >= 3
     assert path.read_bytes() == before
+
+
+def test_retention_sql_deadline_marks_semantic_eligibility_unknown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "semantic.sqlite3"
+    _populate_semantic(database)
+    before = database.read_bytes()
+    monkeypatch.setattr(retention_module, "DEFAULT_RETENTION_SQL_TIMEOUT_SECONDS", 0.01)
+
+    def expensive_holds(connection):
+        connection.execute(
+            "WITH RECURSIVE n(value) AS (VALUES(0) UNION ALL "
+            "SELECT value+1 FROM n WHERE value < 50000000) SELECT sum(value) FROM n"
+        ).fetchone()
+        raise AssertionError("the bounded SQL query should have been interrupted")
+
+    monkeypatch.setattr(retention_module, "_semantic_holds", expensive_holds)
+    plan = plan_retention(
+        tmp_path,
+        stores=("semantic",),
+        policy=RetentionPolicy(minimum_age_ns=0),
+        now_ns=NOW_NS,
+    )
+
+    store = plan.stores[0]
+    assert store.status == "blocked"
+    assert store.items == ()
+    assert "eligibility unknown" in (store.detail or "")
+    assert database.read_bytes() == before
+
+
+def test_retention_sql_cancellation_interrupts_semantic_page(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "semantic.sqlite3"
+    _populate_semantic(database)
+    before = database.read_bytes()
+    cancellation = {"requested": False}
+
+    def cancelled() -> bool:
+        return cancellation["requested"]
+
+    def expensive_holds(connection):
+        cancellation["requested"] = True
+        connection.execute(
+            "WITH RECURSIVE n(value) AS (VALUES(0) UNION ALL "
+            "SELECT value+1 FROM n WHERE value < 50000000) SELECT sum(value) FROM n"
+        ).fetchone()
+        raise AssertionError("the cancelled SQL query should have been interrupted")
+
+    monkeypatch.setattr(retention_module, "_semantic_holds", expensive_holds)
+    with pytest.raises(RetentionPlanningCancelled):
+        plan_retention(
+            tmp_path,
+            stores=("semantic",),
+            policy=RetentionPolicy(minimum_age_ns=0),
+            now_ns=NOW_NS,
+            cancelled=cancelled,
+        )
+
+    assert database.read_bytes() == before
 
 
 def test_retention_holds_all_owner_views_under_one_aggregate_limit(tmp_path: Path) -> None:

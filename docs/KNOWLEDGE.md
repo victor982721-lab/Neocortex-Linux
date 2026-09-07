@@ -16,7 +16,8 @@ owners publicados → snapshot lógico → rankings independientes
 
 ## Frontera read-only
 
-`status`, `search`, `context`, `evidence`, `health` e inspección de linaje:
+`status`, `search`, `context`, `evidence`, `operational_query`, `health` e
+inspección de linaje:
 
 - abren sólo owners existentes mediante lectores compatibles;
 - no crean, migran, reparan ni hacen checkpoint;
@@ -102,6 +103,12 @@ API Python y MCP proyectan los mismos contratos; `curation_plan` añade la vista
 read-only paginada de propuestas sin conceder autoridad y la evidencia acepta
 IDs estables con snapshot esperado. No deben parsear la salida humana. Los
 detalles de argumentos están en [CLI.md](CLI.md).
+
+`operational_query` y las preguntas operacionales de `ask` consultan directamente
+los diagnósticos publicados por sus owners, conservan snapshot y cursor, y
+clasifican el resultado como evidencia de archivo, procesamiento, índice,
+política o condición documental. La recomendación de curación permanece
+advisory y nunca crea autorización ni efectos físicos.
 
 ## Criterio de utilidad
 

@@ -6,13 +6,16 @@ import copy
 import hashlib
 import json
 from pathlib import Path
+import sys
 
 import pytest
 
+from tools import benchmark_knowledge_functional as benchmark
 from tools.benchmark_knowledge_functional import (
     FROZEN_DATASET_SHA256,
     InstalledMeasurement,
     acceptance,
+    acceptance_composition,
     citation_errors,
     load_fixtures,
     locator_errors,
@@ -185,7 +188,9 @@ def test_negative_evidence_and_missing_requests_cannot_disappear_from_denominato
 def test_reserved_acceptance_requires_all_eight_positives_and_real_model_execution() -> None:
     aggregate = {
         "success_at_5": 1.0,
+        "queries": 10,
         "positive_queries": 8,
+        "negative_queries": 2,
         "positive_successes_at_5": 8,
         "ndcg_at_10": 0.95,
         "negative_unsupported_evidence": 0,
@@ -194,7 +199,6 @@ def test_reserved_acceptance_requires_all_eight_positives_and_real_model_executi
         "citation_checks": 8,
         "execution_invalid_queries": 0,
         "real_vector_queries": 10,
-        "queries": 10,
     }
     assert all(acceptance(aggregate, aggregate).values())
     seven = {**aggregate, "success_at_5": 7 / 8, "positive_successes_at_5": 7}
@@ -203,6 +207,81 @@ def test_reserved_acceptance_requires_all_eight_positives_and_real_model_executi
     injected = {**aggregate, "real_vector_queries": 0}
     assert not acceptance(injected, aggregate)["real_model_used"]
     assert not acceptance({**aggregate, "ndcg_at_10": 0.94}, aggregate)["ndcg_not_below_baseline"]
+
+
+def test_reserved_acceptance_rejects_missing_negative_query_composition() -> None:
+    aggregate = {
+        "success_at_5": 1.0,
+        "queries": 8,
+        "positive_queries": 8,
+        "negative_queries": 0,
+        "positive_successes_at_5": 8,
+        "ndcg_at_10": 1.0,
+        "negative_unsupported_evidence": 0,
+        "locator_integrity": 1.0,
+        "citation_invalid_queries": 0,
+        "citation_checks": 8,
+        "execution_invalid_queries": 0,
+        "real_vector_queries": 8,
+    }
+    checks = acceptance(aggregate, aggregate)
+    assert not checks["expected_query_composition"]
+    assert not all(checks.values())
+
+
+def test_acceptance_composition_is_pinned_to_the_frozen_reserve() -> None:
+    assert acceptance_composition(FIXTURES / "freeze.json") == {
+        "queries": 10,
+        "positive_queries": 8,
+        "negative_queries": 2,
+    }
+
+
+def test_acceptance_cli_returns_nonzero_for_adversarial_composition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    aggregate = {
+        "success_at_5": 1.0,
+        "queries": 8,
+        "positive_queries": 8,
+        "negative_queries": 0,
+        "positive_successes_at_5": 8,
+        "ndcg_at_10": 1.0,
+        "negative_unsupported_evidence": 0,
+        "locator_integrity": 1.0,
+        "citation_invalid_queries": 0,
+        "citation_checks": 8,
+        "execution_invalid_queries": 0,
+        "real_vector_queries": 8,
+    }
+    monkeypatch.setattr(
+        benchmark,
+        "run",
+        lambda _args: {"split": "reserve", "aggregate": aggregate},
+    )
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(json.dumps({"aggregate": aggregate}), encoding="utf-8")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "benchmark_knowledge_functional.py",
+            "--fixtures",
+            str(FIXTURES / "dev"),
+            "--label",
+            "candidate",
+            "--workspace",
+            str(tmp_path / "workspace"),
+            "--accept",
+            "--baseline-report",
+            str(baseline),
+        ],
+    )
+
+    assert benchmark.main() == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "not_accepted"
+    assert payload["acceptance"]["expected_query_composition"] is False
 
 
 def test_declared_partial_coverage_is_preserved_not_fabricated_as_complete(tmp_path: Path) -> None:

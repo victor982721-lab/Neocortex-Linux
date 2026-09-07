@@ -3469,12 +3469,12 @@ def _source_coverage_failure(provenance: Mapping[str, object]) -> str | None:
             coverage = "complete" if complete is True else "partial"
         if coverage not in {"complete", "partial", "blocked"}:
             return f"source_head_{index}_coverage_invalid"
-        # A blocked owner cannot be enumerated in the first place and is
-        # surfaced by the route/planner before generation finalization.  The
-        # publication guard below is specifically for an enumerated but
-        # incomplete multimodal projection, represented by ``partial``.
+        # A blocked owner is itself a failed coverage observation.  Preserve
+        # that fact at the generation boundary even when a caller explicitly
+        # requests a partial finalization; it must never become a normal ready
+        # publication through an upstream guard being bypassed.
         if coverage == "blocked":
-            continue
+            return f"source_coverage_blocked:{source_kind}"
         raw_truncated = raw_head.get("truncated", False)
         if not isinstance(raw_truncated, bool):
             return f"source_head_{index}_truncation_invalid"

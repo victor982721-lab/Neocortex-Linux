@@ -15,6 +15,7 @@ must define resumable batches and rollback independently of this diagnostic.
 from __future__ import annotations
 
 import sqlite3
+import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass, field, replace
@@ -48,6 +49,8 @@ RetentionStore = Literal["semantic", "catalog", "inventory", "framework"]
 Disposition = Literal["eligible", "protected", "blocked"]
 StoreStatus = Literal["ready", "absent", "blocked"]
 RetentionObserver = Callable[[RetentionStore, str], None]
+
+DEFAULT_RETENTION_SQL_TIMEOUT_SECONDS = 30.0
 
 STORE_ORDER: tuple[RetentionStore, ...] = (
     "semantic",
@@ -110,6 +113,37 @@ class RetentionPolicy:
             or not 1 <= self.batch_size <= 1_000
         ):
             raise ValueError("retention batch_size must be between 1 and 1000")
+
+
+class _RetentionInspectionBudget:
+    """Shared cooperative deadline for SQL planning over detached snapshots."""
+
+    def __init__(self, timeout_seconds: float, cancelled: Callable[[], bool] | None) -> None:
+        self.deadline = time.monotonic() + timeout_seconds
+        self.cancelled_callback = cancelled
+        self.exhausted = False
+        self.cancelled = False
+
+    def progress(self) -> int:
+        if self.cancelled_callback is not None and self.cancelled_callback():
+            self.cancelled = True
+            return 1
+        if time.monotonic() >= self.deadline:
+            self.exhausted = True
+            return 1
+        return 0
+
+    def checkpoint(self) -> None:
+        if self.progress():
+            if self.cancelled:
+                raise RetentionPlanningCancelled("retention planning was cancelled")
+            raise _RetentionInspectionBudgetExceeded(
+                "retention inspection SQL time budget exhausted"
+            )
+
+
+class _RetentionInspectionBudgetExceeded(RuntimeError):
+    """Internal marker used when a planning query cannot finish in budget."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,6 +248,7 @@ def _readonly_snapshot(
     cache: SQLiteSnapshotReuseCache | None = None,
     budget: SQLiteSnapshotBudget | None = None,
     generation: object | None = None,
+    inspection_budget: _RetentionInspectionBudget | None = None,
 ) -> Iterator[sqlite3.Connection]:
     if sqlite3 is not _CANONICAL_SQLITE_MODULE:
         connection = sqlite3.connect(
@@ -232,6 +267,8 @@ def _readonly_snapshot(
                 raise RuntimeError("retention snapshot could not enforce query_only")
             if cancelled is not None:
                 connection.set_progress_handler(lambda: int(cancelled()), 1_000)
+            if inspection_budget is not None:
+                connection.set_progress_handler(inspection_budget.progress, 1_000)
             connection.execute("BEGIN")
             yield connection
         finally:
@@ -274,6 +311,8 @@ def _readonly_snapshot(
             raise RuntimeError("retention snapshot could not enforce query_only")
         if cancelled is not None:
             connection.set_progress_handler(lambda: int(cancelled()), 1_000)
+        if inspection_budget is not None:
+            connection.set_progress_handler(inspection_budget.progress, 1_000)
         try:
             connection.execute("BEGIN")
             yield connection
@@ -1203,13 +1242,27 @@ def _validated_snapshot(
     cache: SQLiteSnapshotReuseCache | None = None,
     budget: SQLiteSnapshotBudget | None = None,
     generation: object | None = None,
+    inspection_budget: _RetentionInspectionBudget | None = None,
 ) -> _StoreSnapshot:
     database = state_directory / STORE_DATABASES[store]
     if not database.is_file():
         return _StoreSnapshot(store, database, "absent", None, None, None)
+    if inspection_budget is not None:
+        try:
+            inspection_budget.checkpoint()
+        except _RetentionInspectionBudgetExceeded as exc:
+            return _StoreSnapshot(
+                store,
+                database,
+                "blocked",
+                None,
+                None,
+                f"eligibility unknown: {exc}",
+            )
     try:
         connection = stack.enter_context(_readonly_snapshot(
             database, cancelled, cache=cache, budget=budget, generation=generation,
+            inspection_budget=inspection_budget,
         ))
         version = _validate_snapshot(store, connection)
         page_size, page_count, freelist_count = (
@@ -1224,14 +1277,36 @@ def _validated_snapshot(
             "freelist_page_bytes": page_size * freelist_count,
             "physically_recoverable_bytes": None,
         }
+        if inspection_budget is not None:
+            inspection_budget.checkpoint()
         if observer is not None:
             observer(store, "snapshot_opened")
         return _StoreSnapshot(store, database, "ready", version, connection, None, storage)
+    except RetentionPlanningCancelled:
+        raise
+    except _RetentionInspectionBudgetExceeded as exc:
+        return _StoreSnapshot(
+            store,
+            database,
+            "blocked",
+            None,
+            None,
+            f"eligibility unknown: {exc}",
+        )
     except SQLiteSnapshotBudgetExceeded as exc:
         if exc.reason == "cancelled":
             raise RetentionPlanningCancelled("retention planning was cancelled") from exc
         return _StoreSnapshot(store, database, "blocked", None, None, str(exc))
     except sqlite3.OperationalError as exc:
+        if inspection_budget is not None and inspection_budget.exhausted:
+            return _StoreSnapshot(
+                store,
+                database,
+                "blocked",
+                None,
+                None,
+                "eligibility unknown: retention inspection SQL time budget exhausted",
+            )
         if cancelled is not None and cancelled() and "interrupt" in str(exc).lower():
             raise RetentionPlanningCancelled("retention planning was cancelled") from exc
         return _StoreSnapshot(store, database, "blocked", None, None, str(exc)[:1000])
@@ -1283,6 +1358,7 @@ def _open_retention_snapshots(
     cache: SQLiteSnapshotReuseCache | None = None,
     budget: SQLiteSnapshotBudget | None = None,
     generation: object | None = None,
+    inspection_budget: _RetentionInspectionBudget | None = None,
 ) -> dict[RetentionStore, _StoreSnapshot]:
     return {
         store: _validated_snapshot(
@@ -1294,6 +1370,7 @@ def _open_retention_snapshots(
             cache=cache,
             budget=budget,
             generation=generation,
+            inspection_budget=inspection_budget,
         )
         for store in STORE_ORDER
         if store in required
@@ -1351,8 +1428,11 @@ def _plan_retention_store_with_cancellation(
     after: int,
     now_ns: int,
     cancelled: Callable[[], bool] | None,
+    inspection_budget: _RetentionInspectionBudget | None,
 ) -> RetentionStorePlan:
     try:
+        if inspection_budget is not None:
+            inspection_budget.checkpoint()
         return _plan_retention_store(
             store,
             snapshot,
@@ -1361,7 +1441,22 @@ def _plan_retention_store_with_cancellation(
             after=after,
             now_ns=now_ns,
         )
+    except _RetentionInspectionBudgetExceeded as exc:
+        return replace(
+            _empty_store_plan(snapshot, after=after),
+            status="blocked",
+            detail=f"eligibility unknown: {exc}",
+        )
     except sqlite3.OperationalError as exc:
+        if inspection_budget is not None:
+            if inspection_budget.cancelled:
+                raise RetentionPlanningCancelled("retention planning was cancelled") from exc
+            if inspection_budget.exhausted:
+                return replace(
+                    _empty_store_plan(snapshot, after=after),
+                    status="blocked",
+                    detail="eligibility unknown: retention inspection SQL time budget exhausted",
+                )
         if cancelled is not None and cancelled() and "interrupt" in str(exc).lower():
             raise RetentionPlanningCancelled("retention planning was cancelled") from exc
         raise
@@ -1376,6 +1471,7 @@ def _plan_selected_retention_stores(
     now_ns: int,
     cancelled: Callable[[], bool] | None,
     observer: RetentionObserver | None,
+    inspection_budget: _RetentionInspectionBudget | None,
 ) -> tuple[RetentionStorePlan, ...]:
     plans: list[RetentionStorePlan] = []
     for store in selected:
@@ -1389,6 +1485,7 @@ def _plan_selected_retention_stores(
                 after=cursors.get(store, 0),
                 now_ns=now_ns,
                 cancelled=cancelled,
+                inspection_budget=inspection_budget,
             ), storage=snapshots[store].storage)
         )
         if observer is not None:
@@ -1423,6 +1520,10 @@ def plan_retention(
         prepare_timeout_seconds=selected_policy.snapshot_prepare_timeout_seconds,
         cancellation_check=cancelled,
     )
+    inspection_budget = _RetentionInspectionBudget(
+        DEFAULT_RETENTION_SQL_TIMEOUT_SECONDS,
+        cancelled,
+    )
     with ExitStack() as stack:
         stack.enter_context(cache)
         snapshots = _open_retention_snapshots(
@@ -1434,6 +1535,7 @@ def plan_retention(
             cache=cache,
             budget=budget,
             generation=now_ns,
+            inspection_budget=inspection_budget,
         )
         plans = _plan_selected_retention_stores(
             selected,
@@ -1443,6 +1545,7 @@ def plan_retention(
             now_ns=now_ns,
             cancelled=cancelled,
             observer=observer,
+            inspection_budget=inspection_budget,
         )
         _check_cancelled(cancelled)
     return RetentionPlan(

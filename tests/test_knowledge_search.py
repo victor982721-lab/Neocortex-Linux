@@ -606,6 +606,71 @@ def test_pdf_fts_and_semantic_locators_normalize_into_one_cluster() -> None:
     assert omitted == 0
 
 
+def test_unlocated_text_document_evidence_does_not_absorb_distant_passages() -> None:
+    base = _candidate(
+        evidence_id="document",
+        section_id="1",
+        start_char=0,
+        end_char=80,
+        ranking="fts_text",
+        source_rank=1,
+    )
+    resource = replace(
+        base.resource,
+        source_kind="text",
+        owner="text",
+        current_path="/tmp/fixture.txt",
+    )
+    document = replace(
+        base,
+        resource=resource,
+        evidence=replace(
+            base.evidence,
+            page=None,
+            section_kind="document",
+            section_id="fulltext",
+            start_char=None,
+            end_char=None,
+        ),
+        signal=replace(base.signal, source="fts_text"),
+    )
+    def passage(evidence_id: str, start: int, rank: int) -> KnowledgeCandidate:
+        candidate = _candidate(
+            evidence_id=evidence_id,
+            section_id="1",
+            start_char=start,
+            end_char=start + 80,
+            ranking="semantic_text",
+            source_rank=rank,
+        )
+        return replace(
+            candidate,
+            resource=resource,
+            evidence=replace(
+                candidate.evidence,
+                page=None,
+                section_kind="document",
+                section_id="fulltext",
+            ),
+        )
+
+    passages = (passage("passage-1", 0, 2), passage("passage-2", 500, 3))
+
+    hits, omitted = fuse_evidence_rankings(
+        {"fts_text": (document,), "semantic_text": passages},
+        limit=10,
+        max_per_resource=10,
+        min_section_distance=0,
+    )
+
+    assert [hit.evidence.evidence_id for hit in hits] == [
+        "document",
+        "passage-1",
+        "passage-2",
+    ]
+    assert omitted == 0
+
+
 def test_default_fusion_filters_duplicate_and_superseded_evidence() -> None:
     current = _candidate(
         evidence_id="current",

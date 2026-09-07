@@ -85,8 +85,17 @@ def decode_member_proof(raw: str) -> DuplicateMemberProof:
             raise InventoryError(f"duplicate proof {field} is invalid")
     aliases = value["aliases"]
     count = value["alias_count"]
-    if not isinstance(count, int) or count < len(aliases):  # type: ignore[arg-type]
-        raise InventoryError("duplicate proof alias coverage is inconsistent")
+    observed_links = value["observed_link_count"]
+    if (
+        not isinstance(count, int)
+        or count < 1
+        or count < len(aliases)  # type: ignore[arg-type]
+        or any(not alias.strip() for alias in aliases)  # type: ignore[union-attr]
+        or len(set(aliases)) != len(aliases)  # type: ignore[arg-type]
+        or type(observed_links) is not int
+        or observed_links < count
+    ):
+        raise InventoryError("duplicate proof alias topology is inconsistent")
     if type(value["aliases_truncated"]) is not bool or value["aliases_truncated"] != (
         count > len(aliases)  # type: ignore[arg-type]
     ):

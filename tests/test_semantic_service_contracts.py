@@ -254,7 +254,9 @@ EXPECTED_FIELDS = {
         "dimensions",
         "elapsed_seconds",
     ),
-    "SemanticStatus": ("exists", "schema_version", "counts", "generations"),
+    "SemanticStatus": (
+        "exists", "schema_version", "counts", "generations", "generation_timings"
+    ),
     "SemanticEvidencePassResult": (
         "indexed_model_signature",
         "query_model_signature",
@@ -382,7 +384,8 @@ EXPECTED_SIGNATURES = {
     "SemanticStatus": (
         "(exists: 'bool', schema_version: 'int | None' = None, "
         "counts: 'Mapping[str, int]' = <factory>, "
-        "generations: 'tuple[GenerationSummary, ...]' = ()) -> None"
+        "generations: 'tuple[GenerationSummary, ...]' = (), "
+        "generation_timings: 'Mapping[int, Mapping[str, int]]' = <factory>) -> None"
     ),
     "SemanticEvidencePassResult": (
         "(indexed_model_signature: 'str', query_model_signature: 'str', "

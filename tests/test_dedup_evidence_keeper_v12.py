@@ -238,6 +238,21 @@ def test_member_receipt_rejects_configured_method_without_comparison(tmp_path: P
         decode_member_proof(json.dumps(payload))
 
 
+def test_member_proof_rejects_impossible_alias_topology(tmp_path: Path) -> None:
+    root = tmp_path / "corpus"
+    _files(root, ("a.bin", "b.bin"))
+    with DedupIndex(tmp_path / "inventory.sqlite3") as index:
+        scan = index.scan(root, excluded_paths=())
+        group = DedupPlanner(index).plan(scan.scan_id, preview_limit=20).groups[0]
+
+    payload = group.member_proofs[1].as_dict()
+    payload["alias_count"] = 2
+    payload["aliases_truncated"] = True
+    payload["observed_link_count"] = 1
+    with pytest.raises(InventoryError, match="alias topology is inconsistent"):
+        decode_member_proof(json.dumps(payload))
+
+
 def test_partial_inventory_cannot_replace_complete_duplicate_plan(tmp_path: Path) -> None:
     root = tmp_path / "corpus"
     _files(root, ("a.bin", "b.bin"))

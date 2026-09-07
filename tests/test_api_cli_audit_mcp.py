@@ -19,11 +19,54 @@ _READ_TOOLS = [
     ("status", "status_payload", {}),
     ("search", "search_payload", {"query": "fixture"}),
     ("context", "context_payload", {"query": "fixture", "response_version": 1}),
-    ("evidence", "evidence_payload", {"query": "fixture", "citation_id": "C1"}),
+    ("operational_query", "operational_query_payload", {"query": "pdf error"}),
+    ("evidence", "evidence_payload", {"query": "fixture", "citation_id": "C1", "response_version": 1}),
     ("inspect_code", "code_search_payload", {"query": "fixture"}),
     ("lineage", "lineage_payload", {"identifier": "fixture"}),
     ("asset_health", "asset_health_payload", {"resource_id": "resource:file:1:2:-1"}),
 ]
+
+
+def test_mcp_operational_query_uses_the_shared_read_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    producer_payload = {
+        "schema": "neocortex.read-api/v1",
+        "kind": "neocortex_scoped_operational_query",
+        "operation": "operational_query",
+        "request_id": "operational-test",
+        "scope": "personal",
+        "scope_requested": "personal",
+        "read_only": True,
+        "advisory_only": True,
+        "mutation_authorized": False,
+        "coverage": "complete",
+        "status": "ok",
+        "exit_code": 0,
+        "error": None,
+        "query": "pdf error",
+        "limit_per_scope": 2,
+        "scopes": [],
+        "result": {"scopes": []},
+    }
+    calls: list[tuple[str, str, int, str | None]] = []
+
+    def fake(query: str, scope: str, *, limit: int, cursor: str | None = None):
+        calls.append((query, scope, limit, cursor))
+        return producer_payload
+
+    monkeypatch.setattr(agent_server, "operational_query_payload", fake)
+    server = agent_server.create_server()
+    _content, payload = asyncio.run(
+        server.call_tool(
+            "operational_query",
+            {"query": "pdf error", "scope": "personal", "limit": 2, "cursor": "c1"},
+        )
+    )
+    validate_read_payload(payload, ReadOperation.OPERATIONAL_QUERY, scope="personal", query="pdf error", limit=2)
+    assert calls == [("pdf error", "personal", 2, "c1")]
+    assert payload["advisory_only"] is True
+    assert payload["mutation_authorized"] is False
 
 
 @pytest.mark.parametrize(("tool", "producer", "arguments"), _READ_TOOLS)

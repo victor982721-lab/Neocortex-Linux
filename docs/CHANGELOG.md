@@ -21,6 +21,14 @@ fuera de `docs/`.
   sin convertir scores en decisiones o autorizaciones.
 - Duración terminal estable, scopes de salud, snapshots con presupuesto/reuso
   y eliminación de agregaciones globales repetidas durante clonación semántica.
+- Las referencias lexicales ahora exigen localizadores de sección y rangos
+  respaldados por el owner, el estado Semantic rechaza schemas futuros y sus
+  timings se leen en el mismo snapshot; la retención aplica un límite SQL
+  cooperativo sin convertir un timeout en elegibilidad.
+- `ask` y el MCP incorporan `operational_query` para consultar diagnósticos
+  persistidos de PDF, Text, Archive y Review sin confundir documentos que
+  mencionan un error con el recurso afectado; las recomendaciones siguen siendo
+  advisory y no autorizan efectos físicos.
 
 - La extracción activa de texto queda limitada a formatos actuales, y se retiran
   del runtime los lectores CFB de DOC/XLS/PPT, sus convertidores externos y sus

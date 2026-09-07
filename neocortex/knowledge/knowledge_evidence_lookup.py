@@ -177,19 +177,69 @@ def _semantic_fragment(
     return replace(resolved, start_char=requested_start, end_char=requested_end, snippet=snippet), extent
 
 
-def _lexical_extent(row: sqlite3.Row, owner: str, snippet: str, page: int | None) -> dict[str, object]:
+def _lexical_range(
+    owner: str,
+    locator: Mapping[str, Any],
+    *,
+    page: int | None,
+    total: int,
+) -> tuple[int, int]:
+    """Return a source-backed lexical range, never an arbitrary prefix."""
+    expected_kind = "pdf_page" if owner == "pdf" else "document"
+    expected_id = str(page) if owner == "pdf" else "fulltext"
+    if locator.get("section_kind") != expected_kind or locator.get("section_id") != expected_id:
+        raise EvidenceLookupError("evidence_locator_changed")
+    if owner == "pdf":
+        if locator.get("page") != page:
+            raise EvidenceLookupError("evidence_locator_changed")
+    elif locator.get("page") is not None:
+        raise EvidenceLookupError("evidence_locator_changed")
+    if any(name in locator and locator.get(name) is not None for name in (
+        "start_line", "end_line", "sheet", "cell_range", "start_ms", "end_ms",
+        "bounding_box", "coordinate_space", "symbol",
+    )):
+        raise EvidenceLookupError("evidence_locator_changed")
+    present = [name for name in ("start_char", "end_char") if name in locator]
+    if present and len(present) != 2:
+        raise EvidenceLookupError("invalid_evidence_reference")
+    if not present or (
+        locator.get("start_char") is None and locator.get("end_char") is None
+    ):
+        if total <= 0 or total > 4096:
+            raise EvidenceLookupError("evidence_range_unavailable")
+        return 0, total
+    start, end = locator.get("start_char"), locator.get("end_char")
+    if any(isinstance(value, bool) or not isinstance(value, int) for value in (start, end)):
+        raise EvidenceLookupError("invalid_evidence_reference")
+    assert isinstance(start, int) and isinstance(end, int)
+    if not 0 <= start < end <= total:
+        raise EvidenceLookupError("evidence_range_unavailable")
+    if end - start > 4096:
+        raise EvidenceLookupError("evidence_range_unavailable")
+    return start, end
+
+
+def _lexical_extent(
+    row: sqlite3.Row,
+    owner: str,
+    snippet: str,
+    page: int | None,
+    *,
+    start_char: int,
+    end_char: int,
+) -> dict[str, object]:
     total = row["evidence_total_chars"]
-    if not isinstance(total, int) or len(snippet) != min(total, 4096):
+    if not isinstance(total, int) or len(snippet) != end_char - start_char:
         raise EvidenceLookupError("owner_evidence_extent_unavailable")
     extent: dict[str, object] = {
         "units": "characters",
         # The lexical body is the raw, locatable owner section (the document
         # fulltext or one PDF page), not a whitespace-normalized model chunk.
-        # SQL reads this prefix and its total length from the same row.
-        "exact_reference_range": {"start_char": 0, "end_char": total, "basis": "source_section"},
-        "returned_range": {"start_char": 0, "end_char": len(snippet), "basis": "source_section"},
+        # SQL reads the exact requested range and its total length from the same row.
+        "exact_reference_range": {"start_char": start_char, "end_char": end_char, "basis": "source_section"},
+        "returned_range": {"start_char": start_char, "end_char": end_char, "basis": "source_section"},
         "source_total_chars": total,
-        "bounded": total > len(snippet),
+        "bounded": False,
         "document_scope": "pdf_page" if owner == "pdf" else "document",
     }
     if owner == "pdf":
@@ -330,17 +380,41 @@ def lookup_owner_evidence(
             owners.append(semantic_observation)
         elif owner in {"text", "docx"}:
             rows = connection.execute(
-                """SELECT d.*,substr(f.body,1,4096) AS evidence_text,length(f.body) AS evidence_total_chars
+                """SELECT d.*,length(f.body) AS evidence_total_chars
                    FROM documents d JOIN document_fts f ON f.file_key=d.file_key
                    WHERE d.file_key=? AND d.status IN (?,?) LIMIT 2""",
                 (file_key, "complete", "partial" if owner == "docx" else "complete"),
             ).fetchall()
+            if len(rows) != 1:
+                raise EvidenceLookupError("published_evidence_absent_or_ambiguous")
+            start_char, end_char = _lexical_range(
+                owner, locator, page=page, total=int(rows[0]["evidence_total_chars"]),
+            )
+            rows = connection.execute(
+                """SELECT d.*,substr(f.body,?+1,?) AS evidence_text,length(f.body) AS evidence_total_chars
+                   FROM documents d JOIN document_fts f ON f.file_key=d.file_key
+                   WHERE d.file_key=? AND d.status IN (?,?) LIMIT 2""",
+                (start_char, end_char - start_char, file_key,
+                 "complete", "partial" if owner == "docx" else "complete"),
+            ).fetchall()
         else:
             rows = connection.execute(
-                """SELECT d.*,substr(f.text,1,4096) AS evidence_text,length(f.text) AS evidence_total_chars
+                """SELECT d.*,length(f.text) AS evidence_total_chars
                    FROM documents d JOIN page_fts f ON f.file_key=d.file_key
                    WHERE d.file_key=? AND CAST(f.page_number AS INTEGER)=?
                      AND d.status IN ('done','partial') LIMIT 2""", (file_key, page),
+            ).fetchall()
+            if len(rows) != 1:
+                raise EvidenceLookupError("published_evidence_absent_or_ambiguous")
+            start_char, end_char = _lexical_range(
+                owner, locator, page=page, total=int(rows[0]["evidence_total_chars"]),
+            )
+            rows = connection.execute(
+                """SELECT d.*,substr(f.text,?+1,?) AS evidence_text,length(f.text) AS evidence_total_chars
+                   FROM documents d JOIN page_fts f ON f.file_key=d.file_key
+                   WHERE d.file_key=? AND CAST(f.page_number AS INTEGER)=?
+                     AND d.status IN ('done','partial') LIMIT 2""",
+                (start_char, end_char - start_char, file_key, page),
             ).fetchall()
         if lexical:
             if len(rows) != 1:
@@ -352,11 +426,14 @@ def lookup_owner_evidence(
                               vector_space="owner:evidence:text:v1", modality=EmbeddingModality.TEXT,
                               score=0.0, generation_id=0),
                 path=str(row["path"]), source_kind=owner, source_identity=file_key,
-                section_kind="page" if owner == "pdf" else "document", section_id=section,
-                start_char=None, end_char=None, snippet=str(row["evidence_text"] or "")[:4096],
+                section_kind="pdf_page" if owner == "pdf" else "document", section_id=section,
+                start_char=start_char, end_char=end_char, snippet=str(row["evidence_text"] or ""),
                 source_revision=_owner_revision(row, owner), source_status=str(row["status"]),
             )
-            extent = _lexical_extent(row, owner, resolved.snippet or "", page)
+            extent = _lexical_extent(
+                row, owner, resolved.snippet or "", page,
+                start_char=start_char, end_char=end_char,
+            )
         candidate = _candidate_from_resolved(resolved, ranking_name=f"fts_{owner}" if lexical else "semantic_text",
                                              source_rank=1, producer="owner-evidence-direct-v1")
         for key, actual in (

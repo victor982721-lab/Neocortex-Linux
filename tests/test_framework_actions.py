@@ -81,6 +81,62 @@ class ContentTypeTests(unittest.TestCase):
             assert detected is not None
             self.assertEqual(detected.canonical_extension, ".docx")
 
+    def test_recognizes_ott_with_a_canonical_extension_without_promoting_its_mime(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "template.ott"
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr(
+                    "mimetype", "application/vnd.oasis.opendocument.text-template"
+                )
+                archive.writestr("content.xml", "<document />")
+                archive.writestr("META-INF/manifest.xml", "<manifest />")
+            detected = detect_content_type(path)
+            self.assertIsNotNone(detected)
+            assert detected is not None
+            self.assertEqual(detected.mime, "application/zip")
+            self.assertEqual(detected.canonical_extension, ".ott")
+            self.assertTrue(detected.accepts(path))
+            self.assertEqual(detected.evidence, "zip:odf-template")
+
+    def test_does_not_classify_a_loose_word_path_as_ooxml(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "ordinary.zip"
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr("[Content_Types].xml", "<Types />")
+                archive.writestr("word/header1.xml", "<header />")
+            detected = detect_content_type(path)
+            self.assertIsNotNone(detected)
+            assert detected is not None
+            self.assertEqual(detected.mime, "application/zip")
+            self.assertEqual(detected.evidence, "magic:zip")
+
+    def test_ambiguous_ooxml_markers_remain_a_conventional_zip(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "ambiguous.zip"
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr("[Content_Types].xml", "<Types />")
+                archive.writestr("word/document.xml", "<document />")
+                archive.writestr("xl/workbook.xml", "<workbook />")
+            detected = detect_content_type(path)
+            self.assertIsNotNone(detected)
+            assert detected is not None
+            self.assertEqual(detected.mime, "application/zip")
+            self.assertEqual(detected.evidence, "zip:ambiguous-package")
+
+    def test_duplicate_ooxml_marker_remains_a_conventional_zip(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "duplicate.zip"
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr("[Content_Types].xml", "<Types />")
+                archive.writestr("word/document.xml", "<document />")
+                with self.assertWarns(UserWarning):
+                    archive.writestr("word/document.xml", "<document duplicate />")
+            detected = detect_content_type(path)
+            self.assertIsNotNone(detected)
+            assert detected is not None
+            self.assertEqual(detected.mime, "application/zip")
+            self.assertEqual(detected.evidence, "zip:ambiguous-package")
+
     def test_detects_bounded_printable_text_without_trusting_extension(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             paths = {

@@ -22,6 +22,7 @@ from types import SimpleNamespace
 import pytest
 
 from neocortex.knowledge import knowledge_search
+from neocortex.knowledge import knowledge_search_inventory
 from neocortex.knowledge.knowledge_contracts import (
     EvidenceMethod,
     EvidenceRef,
@@ -38,6 +39,8 @@ from neocortex.knowledge.knowledge_contracts import (
 from neocortex.knowledge.knowledge_search import (
     KnowledgeCandidate,
 )
+from neocortex.foundation.file_identity import FileIdentity
+from neocortex.deduplication import DedupIndex, DedupPlanner, snapshot_path
 from neocortex.knowledge.knowledge_planner import (
     KnowledgeQuery,
     plan_knowledge_query,
@@ -295,7 +298,10 @@ def test_inventory_extraction_module_exists_without_a_facade_cycle() -> None:
     source = module_path.read_text(encoding="utf-8")
     # The canonical read path now includes an explicit injected-provider seam
     # so tests can remain hermetic while production uses the immutable kernel.
-    assert len(source.splitlines()) <= 940
+    # CA-04 keeps the owner-scope and proof validation in this extracted
+    # module; the bound remains below the facade and leaves room for the
+    # explicit per-head diagnostics.
+    assert len(source.splitlines()) <= 1140
     tree = ast.parse(source)
     imported_modules = {
         node.module
@@ -783,11 +789,108 @@ def test_inventory_plan_heads_are_sorted_deduplicated_and_strict() -> None:
 
     heads, malformed = knowledge_search._inventory_plan_heads(snapshot)
 
-    assert heads == (
+    assert tuple(head.sql_values for head in heads) == (
         (1, 10, 1, 1, 50),
         (2, 20, 2, 1, 100),
+        (2, 20, 2, 1, 100),
     )
-    assert malformed
+    assert all(head.scope for head in heads)
+    assert len(malformed) == 1
+    assert malformed[0].scan_id == 3
+    assert malformed[0].reason == "invalid_inventory_plan_watermark"
+
+
+def test_malformed_head_only_degrades_identities_in_its_scan(tmp_path: Path, monkeypatch) -> None:
+    database = tmp_path / "inventory.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE files(scan_id,path,volume_id,file_id,birthtime_ns,size);
+            CREATE TABLE duplicate_plan_summaries(scan_id,completed_ns,group_count,redundant_files,reclaimable_bytes);
+            CREATE TABLE planned_duplicate_groups(group_id,scan_id,size,keep_path,redundant_count,reclaimable_bytes,full_fingerprint);
+            CREATE TABLE planned_duplicate_members(group_id,member_order,role,path,volume_id,file_id,size,birthtime_ns);
+            INSERT INTO duplicate_plan_summaries VALUES(2,20,1,1,100);
+            INSERT INTO planned_duplicate_groups VALUES(1,2,100,'C:/keeper.pdf',1,100,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+            """
+        )
+        connection.executemany(
+            "INSERT INTO files VALUES(?,?,?,?,?,?)",
+            ((1, "C:/bad.pdf", _blob(1), _blob(2), 3, 100),
+             (2, "C:/good.pdf", _blob(9), _blob(10), 11, 100),
+             (2, "C:/keeper.pdf", _blob(11), _blob(12), 12, 100)),
+        )
+        connection.executemany(
+            "INSERT INTO planned_duplicate_members VALUES(?,?,?,?,?,?,?,?)",
+            ((1, 0, "keep", "C:/keeper.pdf", _blob(11), _blob(12), 100, 12),
+             (1, 1, "redundant", "C:/good.pdf", _blob(9), _blob(10), 100, 11)),
+        )
+    connection = sqlite3.connect(database)
+    connection.row_factory = sqlite3.Row
+    monkeypatch.setattr(knowledge_search, "_open_direct_readonly_sqlite", lambda _path: connection)
+    snapshot = _snapshot(
+        _publication(1, "duplicate-plan-v1:02:0:0:0"),
+        _publication(2, "duplicate-plan-v1:20:1:1:100"),
+    )
+    updated, report = knowledge_search._apply_inventory_dispositions(
+        KnowledgeStatePaths.from_directory(tmp_path / "state"),
+        snapshot,
+        {"fts_pdf": (_candidate((1, 2, 3), marker="bad"), _candidate((9, 10, 11), marker="good"))},
+    )
+    connection.close()
+    assert "inventory_duplicate_plan_ambiguous" in updated["fts_pdf"][0].warnings
+    assert "inventory_duplicate_plan_ambiguous" not in updated["fts_pdf"][1].warnings
+    assert report.reason == "invalid_or_conflicting_duplicate_plan"
+
+
+def test_current_plan_without_member_proof_is_not_a_valid_relation(tmp_path: Path) -> None:
+    root = tmp_path / "corpus"
+    root.mkdir()
+    first, second = root / "first.bin", root / "second.bin"
+    first.write_bytes(b"same")
+    second.write_bytes(b"same")
+    database = tmp_path / "inventory.sqlite3"
+    with DedupIndex(database) as index:
+        scan = index.scan(root, excluded_paths=())
+        plan = DedupPlanner(index).plan(scan.scan_id, exact_compare=True, preview_limit=10)
+        summary = index._connection.execute(
+            "SELECT completed_ns,group_count,redundant_files,reclaimable_bytes FROM duplicate_plan_summaries WHERE scan_id=?",
+            (scan.scan_id,),
+        ).fetchone()
+        assert summary is not None and plan.group_count == 1
+        identity = snapshot_path(Path(plan.groups[0].redundant[0].path))
+        index._connection.row_factory = sqlite3.Row
+        rows_valid = knowledge_search_inventory._inventory_rows(
+            index._connection,
+            [(*identity.identity, identity.birthtime_ns)],
+            [(scan.scan_id, *map(int, summary))],
+            10,
+            knowledge_search._inventory_identity_blob,
+        )
+        assert rows_valid and knowledge_search_inventory.inventory_relation_row(
+            rows_valid[0],
+            validated_inventory_blob=knowledge_search._validated_inventory_blob,
+            file_identity_type=FileIdentity,
+            valid_full_fingerprint=knowledge_search._valid_full_fingerprint,
+        ) is not None
+        index._connection.execute(
+            "UPDATE planned_duplicate_members SET proof_json='{}' WHERE group_id=(SELECT group_id FROM planned_duplicate_groups WHERE scan_id=?) AND member_order=1",
+            (scan.scan_id,),
+        )
+        index._connection.commit()
+        rows = knowledge_search_inventory._inventory_rows(
+            index._connection,
+            [(*identity.identity, identity.birthtime_ns)],
+            [(scan.scan_id, *map(int, summary))],
+            10,
+            knowledge_search._inventory_identity_blob,
+        )
+        assert rows
+        assert knowledge_search_inventory.inventory_relation_row(
+            rows[0],
+            validated_inventory_blob=knowledge_search._validated_inventory_blob,
+            file_identity_type=FileIdentity,
+            valid_full_fingerprint=knowledge_search._valid_full_fingerprint,
+        ) is None
 
 
 def test_inventory_relation_validation_preserves_roles_and_rejects_conflicts() -> None:
@@ -803,6 +906,14 @@ def test_inventory_relation_validation_preserves_roles_and_rejects_conflicts() -
         (9, 10, 11),
         "keep",
         (9, 10, 11),
+    )
+
+    linux = _relation_row((1, 2, -1), keeper=(9, 10, -1))
+    linux["file_birthtime_ns"] = -1
+    linux["member_birthtime_ns"] = -1
+    linux["keeper_birthtime_ns"] = -1
+    assert knowledge_search._inventory_relation_row(linux) == (
+        (1, 2, -1), "redundant", (9, 10, -1)
     )
 
     invalid_rows: list[Mapping[str, object]] = []
@@ -1273,14 +1384,14 @@ def test_inventory_early_returns_are_complete_and_never_open_sqlite(
             {
                 "name": "inventory_duplicate_plan",
                 "channel": "relationship",
-                "executed": True,
+                "executed": False,
                 "available": True,
-                "complete": False,
+                "complete": True,
                 "returned": 0,
                 "rows_scanned": 0,
                 "row_count_semantics": "materialized_lower_bound",
                 "vectors_scanned": 0,
-                "reason": "invalid_inventory_plan_watermark",
+                "reason": "no_physical_candidates",
             },
         ),
         (

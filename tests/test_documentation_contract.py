@@ -21,6 +21,7 @@ _ACTIVE_DOCUMENTS = frozenset(
         "docs/CLI.md",
         "docs/FILE_INTELLIGENCE_AND_CURATION.md",
         "docs/KNOWLEDGE.md",
+        "docs/KNOWLEDGE_OPERATIONAL_QUERY.md",
         "docs/LINUX_KUBUNTU.md",
         "docs/OPERATIONS.md",
         "docs/PERSISTENCE.md",

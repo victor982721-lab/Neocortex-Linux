@@ -480,18 +480,24 @@ def test_lexical_extent_measures_the_same_owner_row_not_the_prefix_length(tmp_pa
     monkeypatch.setattr(read_api, "default_state_directory", lambda: state)
     before = _hashes(state)
     with semantic_read_context() as context:
+        if characters > 4096:
+            with pytest.raises(lookup.EvidenceLookupError, match=r"^evidence_range_unavailable$"):
+                lookup.lookup_owner_evidence(state, source, citation)
+            citation["locator"]["start_char"] = 64
+            citation["locator"]["end_char"] = 128
         first = lookup.lookup_owner_evidence(state, source, citation)
         second = lookup.lookup_owner_evidence(state, source, citation)
         assert first == second
-        assert context.metrics["prepared_views"] == 1
+        assert context.metrics["prepared_views"] == (2 if characters > 4096 else 1)
         extent = first["hits"][0]["evidence_extent"]
         assert extent["source_total_chars"] == characters
-        assert extent["bounded"] is (characters > 4096)
-        assert extent["returned_range"] == {"start_char": 0, "end_char": min(characters, 4096),
+        assert extent["bounded"] is False
+        expected_start, expected_end = (64, 128) if characters > 4096 else (0, characters)
+        assert extent["returned_range"] == {"start_char": expected_start, "end_char": expected_end,
                                             "basis": "source_section"}
-        assert extent["exact_reference_range"] == {"start_char": 0, "end_char": characters,
+        assert extent["exact_reference_range"] == {"start_char": expected_start, "end_char": expected_end,
                                                    "basis": "source_section"}
-        assert first["hits"][0]["evidence"]["snippet"] == text[:4096]
+        assert first["hits"][0]["evidence"]["snippet"] == text[expected_start:expected_end]
         assert "\n" in first["hits"][0]["evidence"]["snippet"]
         assert extent["document_scope"] == ("pdf_page" if owner == "pdf" else "document")
         if owner == "pdf":
@@ -510,6 +516,24 @@ def test_lexical_extent_measures_the_same_owner_row_not_the_prefix_length(tmp_pa
             assert item["evidence_disposition"] == "evidence_candidate"
             assert item["witness_checks"]["missing_necessary_witnesses"] == []
         assert _hashes(state) == before
+
+
+@pytest.mark.parametrize("owner", ("text", "pdf", "docx"))
+def test_lexical_locator_mutation_abstains_and_explicit_range_is_preserved(owner):
+    locator = {"section_kind": "pdf_page" if owner == "pdf" else "document",
+               "section_id": "0" if owner == "pdf" else "fulltext"}
+    if owner == "pdf":
+        locator["page"] = 0
+    assert lookup._lexical_range(owner, locator, page=0 if owner == "pdf" else None, total=500) == (0, 500)
+    ranged = {**locator, "start_char": 240, "end_char": 320}
+    assert lookup._lexical_range(owner, ranged, page=0 if owner == "pdf" else None, total=500) == (240, 320)
+    for field in ("section_kind", "section_id"):
+        mutated = {**locator, field: "forged"}
+        with pytest.raises(lookup.EvidenceLookupError, match=r"^evidence_locator_changed$"):
+            lookup._lexical_range(owner, mutated, page=0 if owner == "pdf" else None, total=500)
+    mutated = {**locator, "start_char": 240}
+    with pytest.raises(lookup.EvidenceLookupError, match=r"^invalid_evidence_reference$"):
+        lookup._lexical_range(owner, mutated, page=0 if owner == "pdf" else None, total=500)
 
 
 def _fixture_hydration_service(semantic_reference, *, after_search=None):

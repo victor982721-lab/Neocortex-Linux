@@ -154,6 +154,59 @@ def _coverage(entries: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _stale_revision_details(
+    hit: Mapping[str, Any], revision: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Expose a stale source binding without upgrading its evidence status.
+
+    Search contracts normally expose only the requested ``RevisionRef``.  A
+    few owner adapters additionally carry the owner revision pair in the
+    mapping, so retain it when present and make the missing side explicit
+    otherwise.  This is descriptive metadata; hydration remains the authority
+    for ``owner_verified``.
+    """
+
+    current = revision.get("source_revision_is_current")
+    if not isinstance(current, bool):
+        current = hit.get("source_revision_is_current")
+    if not isinstance(current, bool):
+        state = revision.get("state")
+        current = False if state in {"historical", "superseded"} else None
+    if current is not False:
+        return None
+    hydration = hit.get("evidence_hydration")
+    hydration_mapping = hydration if isinstance(hydration, Mapping) else {}
+    available = next(
+        (
+            mapping.get(name)
+            for mapping in (revision, hit)
+            for name in ("available_revision_id", "current_revision_id", "owner_revision_id")
+            if isinstance(mapping.get(name), str) and mapping[name].strip()
+        ),
+        None,
+    )
+    reason = next(
+        (
+            _text(value, 256)
+            for value in (
+                revision.get("source_revision_reason"),
+                revision.get("reason"),
+                hit.get("source_revision_reason"),
+                hydration_mapping.get("reason"),
+            )
+            if isinstance(value, str) and value.strip()
+        ),
+        "published_revision_is_not_current",
+    )
+    details: dict[str, Any] = {
+        "requested_revision_id": revision.get("revision_id"),
+        "available_revision_id": available,
+        "source_revision_is_current": False,
+        "reason": reason,
+    }
+    return details
+
+
 def _source(hit: Mapping[str, Any], scope: str, snapshot: Mapping[str, Any]) -> dict[str, Any]:
     resource = hit.get("resource") or {}
     revision = hit.get("revision") or {}
@@ -169,6 +222,9 @@ def _source(hit: Mapping[str, Any], scope: str, snapshot: Mapping[str, Any]) -> 
         "snapshot_id": snapshot.get("snapshot_id"),
         "path": _text(resource.get("current_path") or "", 4096),
     }
+    stale_revision = _stale_revision_details(hit, revision)
+    if stale_revision is not None:
+        source["revision_binding"] = stale_revision
     semantic = next((item for item in snapshot.get("owners", []) if item.get("owner") == "semantic"), {})
     if semantic.get("publications"):
         source["retrieval_publication"] = semantic["publications"]
@@ -590,3 +646,59 @@ def validate_context_response(value: object) -> dict[str, Any]:
     if code != 2 and not budget["within_limit"]:
         raise ValueError("context response exceeds its emitted budget")
     return payload
+
+
+def select_evidence_response_v2(
+    context_payload: Mapping[str, Any], *, citation_id: str,
+    evidence_id: str | None = None, expected_snapshot_id: str | None = None,
+) -> dict[str, Any]:
+    """Project one v2 context citation into the v2 evidence envelope.
+
+    Query/citation-id lookup already performs the bounded context read.  This
+    helper avoids a second search and keeps the selected source/citation pair
+    together while preserving the original coverage and exit state.
+    """
+
+    context = validate_context_response(context_payload)
+    if not isinstance(citation_id, str) or not citation_id.strip():
+        raise ValueError("citation_id cannot be blank")
+    snapshot_mismatch = False
+    if expected_snapshot_id is not None:
+        snapshots = {
+            scope.get("snapshot_id")
+            for scope in context["coverage"].get("scopes", [])
+            if isinstance(scope, Mapping)
+        }
+        snapshot_mismatch = expected_snapshot_id not in snapshots
+    selected = [] if snapshot_mismatch else [
+        citation for citation in context["citations"]
+        if (
+            citation.get("evidence_id") == evidence_id
+            if evidence_id is not None
+            else citation.get("citation_id") == citation_id.strip()
+        )
+    ]
+    source_ids = {citation.get("source_id") for citation in selected}
+    payload = copy.deepcopy(context)
+    payload["schema"] = EVIDENCE_RESPONSE_SCHEMA
+    payload["operation"] = "evidence"
+    payload["citations"] = selected
+    payload["sources"] = [
+        source for source in context["sources"] if source.get("source_id") in source_ids
+    ]
+    if snapshot_mismatch:
+        payload["status"] = "snapshot_changed"
+        payload["exit_code"] = 5
+        payload["error"] = {
+            "code": "snapshot_changed",
+            "message": "expected evidence snapshot is not the current context snapshot",
+            "retryable": True,
+        }
+    elif not selected and context["exit_code"] in {0, 3}:
+        payload["status"] = "empty"
+        payload["exit_code"] = 3
+        payload["error"] = None
+    budget = payload["budget"]
+    payload["budget"] = dict(budget)
+    _measure(payload)
+    return validate_context_response(payload)

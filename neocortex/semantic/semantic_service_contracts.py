@@ -390,6 +390,10 @@ class SemanticStatus:
     schema_version: int | None = None
     counts: Mapping[str, int] = field(default_factory=dict)
     generations: tuple[GenerationSummary, ...] = ()
+    # Receipt timings are captured on the same fenced read view as counts and
+    # generation summaries, so a status response cannot mix generations from
+    # one snapshot with timing rows from a later owner read.
+    generation_timings: Mapping[int, Mapping[str, int]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

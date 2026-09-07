@@ -114,6 +114,23 @@ def test_missing_owner_is_unknown_not_zero_complete(tmp_path: Path, owner: str) 
     assert not missing.exists()
 
 
+def test_incompatible_pdf_schema_is_owner_state_failure_not_invalid_request(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    pdf = state / "pdf.sqlite3"
+    initialize_pdf_state(pdf)
+    with pdf_database(pdf) as connection:
+        connection.execute("UPDATE metadata SET value='999' WHERE key='schema_version'")
+    result = content_diagnostics_payload("pdf", state, ROOT)
+    assert result["status"] == "blocked"
+    assert result["error"] == {
+        "kind": "owner_state_unavailable",
+        "message": "PDF diagnostics require schema 13; found 999",
+    }
+    assert result["items"] == []
+    assert result["matched_count"] is None
+
+
 @pytest.mark.parametrize("options", [
     {"owner": "other"}, {"limit": 0}, {"limit": True}, {"source_root": "relative"},
     {"source_root": ""}, {"cursor": " "}, {"reason": "x" * 257}, {"file_key": "x\x00y"},

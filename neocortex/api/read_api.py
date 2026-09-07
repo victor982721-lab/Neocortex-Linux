@@ -441,6 +441,112 @@ def asset_health_payload(
     )
 
 
+def operational_query_payload(
+    query: str,
+    scope: str | ReadScope = ReadScope.ALL,
+    *,
+    limit: int = 20,
+    cursor: str | None = None,
+    request_id: str | None = None,
+) -> dict[str, object]:
+    """Answer an explicit operational question from published owner facts.
+
+    This is deliberately a separate read operation from document context:
+    an operational question is dispatched to the existing diagnostic/review
+    owners and never asks semantic retrieval to reconstruct a corpus state.
+    The returned ``operational`` records remain advisory and read-only.
+    """
+
+    from neocortex.knowledge.knowledge_operational_query import (
+        KnowledgeOperationalQueryService,
+        OperationalQueryRequest,
+    )
+    from neocortex.platform.policy import default_corpus_root
+
+    normalized = _validate_query(query)
+    selected = _scope(scope)
+    bindings = scope_bindings(selected)
+    bounded_limit = _validate_limit(limit)
+    if cursor is not None and (
+        not isinstance(cursor, str)
+        or not cursor.strip()
+        or len(cursor) > 8_192
+        or any(ord(char) < 32 or ord(char) == 127 for char in cursor)
+    ):
+        raise ValueError("cursor must be a bounded non-empty string")
+    normalized_cursor = cursor.strip() if cursor is not None else None
+
+    def result_code(status: object) -> int:
+        if status == "ok":
+            return int(KnowledgeExitCode.SUCCESS)
+        if status == "empty":
+            return int(KnowledgeExitCode.NO_RESULTS)
+        if status == "partial":
+            return int(KnowledgeExitCode.PARTIAL)
+        # Operational owner failures are state outcomes, not empty answers.
+        return int(KnowledgeExitCode.FATAL)
+
+    try:
+        source_root = default_corpus_root()
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        source_root = None
+        root_error = sanitize_untrusted_text(str(exc), limit=800)
+
+    entries: list[dict[str, object]] = []
+    service = KnowledgeOperationalQueryService()
+    for binding in bindings:
+        if source_root is None:
+            entries.append({
+                "scope": binding.scope.value,
+                "state_directory": str(binding.state_directory),
+                "status": "error",
+                "exit_code": int(KnowledgeExitCode.FATAL),
+                "reason": root_error,
+            })
+            continue
+        try:
+            result = service.query(OperationalQueryRequest(
+                normalized,
+                binding.state_directory,
+                source_root,
+                limit=bounded_limit,
+                cursor=normalized_cursor,
+            ))
+            code = result_code(result.status)
+            entries.append({
+                "scope": binding.scope.value,
+                "state_directory": str(binding.state_directory),
+                "status": _status_for_exit_code(code),
+                "exit_code": code,
+                "operational": result.to_dict(),
+            })
+        except (ModuleNotFoundError, OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
+            entries.append(_error_entry(binding, exc))
+    code = federated_exit_code(entries)
+    return _finalize_read_payload(
+        {
+            "schema": READ_API_SCHEMA,
+            "kind": "neocortex_scoped_operational_query",
+            "read_only": True,
+            "scope_requested": selected.value,
+            "federation_policy": FEDERATION_POLICY,
+            "query": normalized,
+            "limit_per_scope": bounded_limit,
+            "cursor": normalized_cursor,
+            "advisory_only": True,
+            "mutation_authorized": False,
+            "exit_code": code,
+            "scopes": entries,
+        },
+        ReadOperation.OPERATIONAL_QUERY,
+        selected,
+        bindings,
+        request_id=request_id,
+        query=normalized,
+        limit=bounded_limit,
+    )
+
+
 def search_payload(
     query: str,
     scope: str | ReadScope = ReadScope.ALL,
@@ -822,13 +928,48 @@ def evidence_payload(
     source_ref: Mapping[str, object] | None = None,
     evidence_ref: Mapping[str, object] | None = None,
     response_transport: str = "json",
+    response_version: int = 1,
 ) -> dict[str, object]:
     """Resolve stable evidence from one fresh context without arbitrary file reads."""
+
+    if isinstance(response_version, bool) or response_version not in {1, 2}:
+        raise ValueError("response_version must be 1 or 2")
 
     if source_ref is not None or evidence_ref is not None:
         return _direct_evidence_payload(
             source_ref, evidence_ref, scope=scope, max_characters=max_characters,
             request_id=request_id, response_transport=response_transport,
+        )
+
+    if response_version == 2:
+        from neocortex.knowledge.knowledge_context_v2 import (
+            select_evidence_response_v2,
+        )
+
+        normalized_query = _validate_query(query)
+        normalized_citation_id = _evidence_identifier(
+            "citation_id", citation_id, required=True,
+        )
+        assert normalized_citation_id is not None
+        normalized_evidence_id = _evidence_identifier("evidence_id", evidence_id)
+        normalized_snapshot_id = _evidence_identifier(
+            "expected_snapshot_id", expected_snapshot_id,
+        )
+        bounded_limit = _validate_limit(limit)
+        context = context_payload(
+            normalized_query,
+            scope,
+            limit=bounded_limit,
+            max_characters=max_characters,
+            request_id=request_id,
+            response_version=2,
+            response_transport=response_transport,
+        )
+        return select_evidence_response_v2(
+            context,
+            citation_id=normalized_citation_id,
+            evidence_id=normalized_evidence_id,
+            expected_snapshot_id=normalized_snapshot_id,
         )
 
     normalized_query = _validate_query(query)
@@ -1101,6 +1242,7 @@ __all__ = (
     "evidence_payload",
     "federated_exit_code",
     "lineage_payload",
+    "operational_query_payload",
     "scope_bindings",
     "search_payload",
     "status_payload",

@@ -203,6 +203,17 @@ _NATURAL_STOPWORDS = frozenset(
         "información",
         "lo",
         "los",
+        "dame",
+        "favor",
+        "me",
+        "necesito",
+        "podria",
+        "podrías",
+        "podrias",
+        "puede",
+        "puedes",
+        "quiero",
+        "saber",
         "muestra",
         "mostrar",
         "o",
@@ -222,6 +233,11 @@ _NATURAL_STOPWORDS = frozenset(
         "at",
         "about",
         "by",
+        "can",
+        "could",
+        "do",
+        "does",
+        "did",
         "evidence",
         "find",
         "for",
@@ -236,10 +252,12 @@ _NATURAL_STOPWORDS = frozenset(
         "the",
         "there",
         "to",
+        "please",
         "what",
         "where",
         "which",
         "with",
+        "you",
         # German
         "auf",
         "das",
@@ -263,6 +281,12 @@ _NATURAL_STOPWORDS = frozenset(
         "im",
         "mit",
         "nachweis",
+        "bitte",
+        "kann",
+        "können",
+        "konnte",
+        "könnte",
+        "mir",
         "oder",
         "uber",
         "und",
@@ -275,6 +299,7 @@ _NATURAL_STOPWORDS = frozenset(
         "wo",
         "zeige",
         "zeigen",
+        "sie",
         "zu",
     }
 )
@@ -304,7 +329,7 @@ def _query_support_terms(query: str) -> tuple[str, ...]:
     # Semantic accepts longer queries than the FTS adapter.  Diagnostics are
     # bounded independently and must not narrow that existing query contract.
     raw_terms = _NATURAL_TERM.findall(query[:MAX_QUERY_CHARS])
-    question = bool(raw_terms and raw_terms[0].casefold() in _QUESTION_OPENERS)
+    question = bool(raw_terms and raw_terms[0].casefold() in _QUESTION_PREFIX_TERMS)
     terms = dict.fromkeys(
         _fold_retrieval_term(term) for term in raw_terms
         if term.casefold() not in _NATURAL_STOPWORDS
@@ -469,6 +494,17 @@ _QUESTION_OPENERS = frozenset(
         "zeige",
     }
 )
+# A natural request may begin with a polite auxiliary or imperative instead of
+# an interrogative word.  These are grammar prefixes, not per-query exceptions;
+# their content is still determined by the same stopword-filtered terms.
+_QUESTION_PREFIX_TERMS = _QUESTION_OPENERS | frozenset(
+    {
+        "can", "could", "dame", "did", "do", "does", "favor", "kann",
+        "konnte", "könnte", "können", "me", "mir", "necesito", "please",
+        "bitte",
+        "podria", "podrías", "podrias", "puede", "puedes", "quiero",
+    }
+)
 _QUESTION_AUXILIARIES = frozenset({"se"})
 
 
@@ -586,7 +622,7 @@ def _cjk_substring_terms(query: str) -> tuple[tuple[str, ...], bool]:
 def _compile_natural_fts_query_plan(query: str) -> _NaturalFTSQueryPlan:
     terms = _natural_query_terms(query)
     normalized = _all_terms_query(terms)
-    is_question_request = terms[0].casefold() in _QUESTION_OPENERS
+    is_question_request = terms[0].casefold() in _QUESTION_PREFIX_TERMS
     content_terms = tuple(term for term in terms if term.casefold() not in _NATURAL_STOPWORDS
                           and not (is_question_request and term.casefold() in _QUESTION_AUXILIARIES))
     if is_question_request and content_terms:
