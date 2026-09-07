@@ -368,10 +368,14 @@ def _validated_diagnostic_item_id(item_id: object) -> str:
     return item_id.strip()
 
 
-def _trace_target(target: Mapping[str, Any] | None) -> dict[str, Any]:
+def _trace_target(
+    target: Mapping[str, Any] | None,
+    *,
+    fields: tuple[str, ...] | None = None,
+) -> dict[str, Any]:
     if target is None:
         return {"status": "not_observed", "reason": "target_diagnostics_absent"}
-    fields = (
+    selected_fields = fields or (
         "item_id", "stage", "observed_in_published_scope", "source_kind", "source_status",
         "published_revision_id", "current_revision_id", "source_revision_is_current",
         "source_processing_signature", "generation_id", "model_signature", "ref_id", "entity_id",
@@ -381,9 +385,13 @@ def _trace_target(target: Mapping[str, Any] | None) -> dict[str, Any]:
         "end_char", "published_chunk_fingerprint_verified", "backend", "pipeline",
         "calibration_contract_conflict", "snippet",
     )
-    result = {name: _bounded_projection(target[name]) for name in fields if name in target}
+    result = {name: _bounded_projection(target[name]) for name in selected_fields if name in target}
     result["status"] = "observed"
-    for name in ("query_variant_diagnostics",):
+    if fields is None:
+        variant_fields = ("query_variant_diagnostics",)
+    else:
+        variant_fields = ()
+    for name in variant_fields:
         if name in target:
             result[name] = _bounded_projection(target[name])
     return result
@@ -469,6 +477,53 @@ def semantic_item_diagnostic(result: object, item_id: str) -> dict[str, Any]:
         break
 
     status = "observed" if target is not None or presentation["status"] == "present" else "not_observed"
+    eligibility_target = _trace_target(
+        target,
+        fields=(
+            "item_id", "stage", "observed_in_published_scope", "source_kind", "source_status",
+            "published_revision_id", "current_revision_id", "source_revision_is_current",
+            "generation_id", "model_signature", "ref_id", "entity_id", "backend", "pipeline",
+        ),
+    )
+    publication_target = _trace_target(
+        target,
+        fields=(
+            "item_id", "stage", "source_kind", "source_status", "published_revision_id",
+            "current_revision_id", "source_revision_is_current", "source_processing_signature",
+            "generation_id", "model_signature", "ref_id", "entity_id",
+            "published_chunk_fingerprint_verified", "backend", "pipeline",
+        ),
+    )
+    window_target = _trace_target(
+        target,
+        fields=(
+            "item_id", "stage", "raw_score", "candidate_rank", "within_candidate_window",
+            "observed_rank", "raw_rank", "rank_is_global", "rank_granularity",
+            "rank_budget_exhausted", "raw_rank_basis", "fused_result_rank",
+            "present_in_fused_results", "ref_id", "entity_id",
+        ),
+    )
+    resolution_target = _trace_target(
+        target,
+        fields=(
+            "item_id", "stage", "source_kind", "source_status", "published_revision_id",
+            "current_revision_id", "source_revision_is_current", "ref_id", "entity_id",
+            "section_kind", "section_id", "start_char", "end_char", "snippet",
+        ),
+    )
+    threshold_target = _trace_target(
+        target,
+        fields=(
+            "item_id", "stage", "raw_score", "source_score_floor",
+            "above_score_floor", "threshold_evaluation", "calibration_contract_conflict",
+            "raw_rank", "candidate_rank", "within_candidate_window", "raw_rank_basis",
+            "ref_id", "entity_id", "source_kind",
+        ),
+    )
+    if target is not None and "query_variant_diagnostics" in target:
+        threshold_target["query_variant_diagnostics"] = _bounded_projection(
+            target["query_variant_diagnostics"]
+        )
     resolved = bool(
         target is not None
         and (
@@ -489,23 +544,24 @@ def semantic_item_diagnostic(result: object, item_id: str) -> dict[str, Any]:
         "advisory_only": True,
         "mutation_authorized": False,
         "stages": {
-            "eligibility": _trace_target(target),
-            "publication": _trace_target(target),
-            "window": _trace_target(target),
+            "eligibility": eligibility_target,
+            "publication": publication_target,
+            "window": window_target,
             "threshold": {
                 "status": "observed" if target is not None else "not_observed",
                 "rankings": ranking_names,
                 "candidate_selection": target.get("candidate_selection", {}) if target is not None else {},
                 "stage": target.get("stage") if target is not None else None,
+                "target": threshold_target,
             },
             "fusion": {
                 "status": "present" if contributions else "not_present",
                 "contributions": contributions[:20],
-                "target": target,
+                "target": window_target,
             },
             "resolution": {
                 "status": "resolved" if resolved else "not_observed",
-                "target": target,
+                "target": resolution_target,
             },
             "presentation": presentation,
         },
