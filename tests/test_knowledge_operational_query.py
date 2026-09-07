@@ -112,6 +112,62 @@ def test_archive_issue_maps_reason_code_to_processing_fact(tmp_path: Path, monke
     assert result.coverage["query_page_complete"] is True
 
 
+def test_archive_issue_record_ids_distinguish_rows_sharing_container_and_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import neocortex.api.content_diagnostics_api as diagnostics
+
+    monkeypatch.setattr(
+        diagnostics,
+        "content_diagnostics_payload",
+        lambda *args, **kwargs: {
+            "status": "ok", "owner": "archive", "operation": "archive-issues",
+            "snapshot_id": "archive-revision-1", "requested_root": str(tmp_path),
+            "reason_field": "reason_code", "items": [
+                {"issue_id": 3, "container_key": "same", "member_chain": "inner.zip!/a",
+                 "reason_code": "archive_pdf_extraction_error"},
+                {"issue_id": 4, "container_key": "same", "member_chain": "inner.zip!/a",
+                 "reason_code": "archive_pdf_extraction_error"},
+            ], "matched_count": None, "next_cursor": None,
+            "coverage": {"snapshot_consistent": True},
+        },
+    )
+    result = KnowledgeOperationalQueryService().query(
+        _request(tmp_path, "¿Qué problemas hay dentro de los ZIP?")
+    )
+    assert len(result.facts) == 2
+    assert len({fact.record_id for fact in result.facts}) == 2
+    assert {fact.record_id for fact in result.facts} == {
+        "archive:same:issue:3", "archive:same:issue:4"
+    }
+
+
+def test_pdf_multi_error_records_keep_distinct_ids_for_one_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import neocortex.api.content_diagnostics_api as diagnostics
+
+    monkeypatch.setattr(
+        diagnostics,
+        "content_diagnostics_payload",
+        lambda *args, **kwargs: {
+            "status": "ok", "owner": "pdf", "operation": "pdf-diagnostics",
+            "snapshot_id": "pdf-revision-1", "requested_root": str(tmp_path),
+            "reason_field": "error_type", "items": [
+                {"file_key": "same", "path": "/corpus/a.pdf", "error_type": "DecodeError"},
+                {"file_key": "same", "path": "/corpus/a.pdf", "error_type": "PdfDocumentTimeout"},
+            ], "matched_count": 2, "next_cursor": None,
+            "coverage": {"snapshot_consistent": True},
+        },
+    )
+    result = KnowledgeOperationalQueryService().query(
+        _request(tmp_path, "¿Qué error tiene este PDF?")
+    )
+    assert {fact.record_id for fact in result.facts} == {
+        "pdf:same:DecodeError", "pdf:same:PdfDocumentTimeout"
+    }
+
+
 def test_protected_pdf_and_disposal_use_advisory_framework_owner_page(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

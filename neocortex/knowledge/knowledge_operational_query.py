@@ -322,6 +322,33 @@ def _bounded_projection(value: object, *, depth: int = 0) -> object:
     return str(value)[:2048]
 
 
+def _record_component(value: object, *, maximum: int = 512) -> str:
+    text = str(value)
+    if len(text) <= maximum:
+        return text
+    return _digest(text)
+
+
+def _diagnostic_record_id(owner: str, item: Mapping[str, Any], code: str) -> str:
+    """Build a stable bounded identity for one persisted diagnostic row."""
+
+    key = item.get("file_key") or item.get("container_key") or item.get("path") or "record"
+    prefix = f"{owner}:{_record_component(key)}"
+    issue_id = item.get("issue_id")
+    if issue_id is not None:
+        # Archive issue_id is the owner key; it distinguishes rows sharing a
+        # container, reason and member chain.
+        return _record_component(f"{prefix}:issue:{issue_id}", maximum=2048)
+    page_number = item.get("page_number")
+    member_chain = item.get("member_chain") or item.get("member_path")
+    suffix = f":{_record_component(code)}"
+    if page_number is not None:
+        suffix += f":page:{_record_component(page_number)}"
+    if member_chain:
+        suffix += f":member:{_record_component(member_chain)}"
+    return _record_component(prefix + suffix, maximum=2048)
+
+
 def _error_result(request: OperationalQueryRequest, intent: OperationalIntent, owner: OperationalOwner,
                   status: OperationalStatus, code: str, message: str) -> OperationalQueryResult:
     return OperationalQueryResult(
@@ -396,7 +423,7 @@ class KnowledgeOperationalQueryService:
                 code=str(item.get("error_type") or item.get("reason_code") or "diagnostic_record"),
                 certainty=AssetDiagnosticCertainty.OBSERVED,
                 owner=owner,
-                record_id=str(item.get("file_key") or item.get("container_key") or "diagnostic-record"),
+                record_id=_diagnostic_record_id(owner, item, str(item.get("error_type") or item.get("reason_code"))),
                 snapshot_id=str(payload.get("snapshot_id")),
                 provenance={
                     "operation": payload.get("operation"),
