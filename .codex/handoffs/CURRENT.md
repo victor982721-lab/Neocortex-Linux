@@ -2,8 +2,8 @@
 
 **Última verificación:** 2026-09-07, `America/Mexico_City`  
 **Checkout:** `/home/winterboss/Neocortex/Repository`  
-**Fuente viva capturada antes de la integración del turno:** `main` = `origin/main` =
-`1d4a32b0c98c54cd977837cc1f902a0f5d1fc81b`
+**Fuente viva tras la integración del turno:** `main` = `origin/main` =
+`c0e2b72` (release aún pendiente de reconstrucción desde este SHA)
 
 ## Alcance actual
 
@@ -33,16 +33,14 @@ sus destinos canónicos fuera de este archivo.
 
 - NeoCortex sigue siendo Linux/Kubuntu-only, sin GitHub Actions, proveedores
   remotos, KIO real ni mutación del corpus en esta línea.
-- El agente raíz debe integrar los cambios de código concurrentes, ejecutar las
-  validaciones proporcionales desde la interfaz pública y actualizar este
-  handoff con el SHA final, la instalación o el límite real antes de cerrar.
-- En este subalcance sólo se modifican documentación y handoff; no se actualiza
-  el `PENDIENTES.md` externo ni se alteran código, fixtures o pruebas.
+- El agente raíz integró los cambios de código concurrentes y debe completar la
+  reconstrucción de release, el smoke/replay público y la actualización del
+  `PENDIENTES.md` externo antes de cerrar.
+- El código publicado conserva fail-closed para KIO real, MCP escrito y corpus.
 
 ## Marcador para el cierre de integración
 
-- **SHA final publicado:** pendiente de actualizar por el agente raíz después de
-  integrar los cambios concurrentes
+- **SHA final publicado:** `c0e2b72` (pendiente de comprobación contra `origin/main`)
 - **Release, manifest, launcher y smoke público:** pendiente de actualizar con
   sus receipts canónicos, si el alcance cruza instalación
 - **Árbol de trabajo final:** pendiente de comprobar después de la integración
