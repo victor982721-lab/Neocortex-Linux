@@ -24,6 +24,13 @@ __all__ = ["dispatch_direct", "main", "run_framework"]
 def dispatch_direct(args: argparse.Namespace) -> int | None:
     """Run a selected direct operation, or return ``None`` for a full run."""
 
+    # Configuration doctor is a parser-owned leaf rather than a product
+    # direct-operation registry entry, preserving the established registry
+    # contract for content and state operations.
+    if getattr(args, "doctor_config", False):
+        from .cli_config_doctor import run_doctor_config
+
+        return run_doctor_config(args)
     return dispatch_direct_operation(args)
 
 
@@ -139,6 +146,8 @@ _LEAF_FLAG_OPTIONS = frozenset(
         "--doctor-capabilities-json",
         "--doctor-platform",
         "--doctor-platform-json",
+        "--doctor-config",
+        "--doctor-config-json",
     }
 )
 _CAPABILITIES_LEAF_OPTIONS = frozenset(
@@ -151,6 +160,7 @@ _CAPABILITIES_LEAF_OPTIONS = frozenset(
     }
 )
 _PLATFORM_LEAF_OPTIONS = frozenset({"--doctor-platform", "--doctor-platform-json"})
+_CONFIG_LEAF_OPTIONS = frozenset({"--doctor-config", "--doctor-config-json"})
 
 
 def _leaf_arguments_supported(arguments: Sequence[str]) -> bool:
@@ -194,7 +204,9 @@ def _build_doctor_leaf_parser() -> argparse.ArgumentParser:
     parser.add_argument("--doctor-capabilities-input-bytes", type=int)
     parser.add_argument("--doctor-platform", action="store_true")
     parser.add_argument("--doctor-platform-json", action="store_true")
-    # Both doctors deliberately ignore these full-parser options and must not
+    parser.add_argument("--doctor-config", action="store_true")
+    parser.add_argument("--doctor-config-json", action="store_true")
+    # Doctors deliberately ignore these full-parser options and must not
     # resolve or create state merely to accept them.
     parser.add_argument("--root", type=Path)
     parser.add_argument("--state-directory", type=Path)
@@ -216,10 +228,16 @@ def _run_doctor_leaf(arguments: Sequence[str]) -> int | None:
         return None
     capabilities = "--doctor-capabilities" in arguments
     platform = "--doctor-platform" in arguments
-    if capabilities == platform:
+    config = "--doctor-config" in arguments
+    if sum((capabilities, platform, config)) != 1:
         return None
     supplied_options = {token.partition("=")[0] for token in arguments if token.startswith("--")}
-    unrelated_options = _PLATFORM_LEAF_OPTIONS if capabilities else _CAPABILITIES_LEAF_OPTIONS
+    if capabilities:
+        unrelated_options = _PLATFORM_LEAF_OPTIONS | _CONFIG_LEAF_OPTIONS
+    elif platform:
+        unrelated_options = _CAPABILITIES_LEAF_OPTIONS | _CONFIG_LEAF_OPTIONS
+    else:
+        unrelated_options = _CAPABILITIES_LEAF_OPTIONS | _PLATFORM_LEAF_OPTIONS
     if supplied_options.intersection(unrelated_options):
         return None
 
@@ -242,6 +260,16 @@ def _run_doctor_leaf(arguments: Sequence[str]) -> int | None:
         except SystemExit:
             return None
         return run_doctor_capabilities(args)
+
+    if config:
+        from .cli_config_doctor import run_doctor_config
+        from .cli_config_doctor_surface import validate_config_doctor_arguments
+
+        try:
+            validate_config_doctor_arguments(args)
+        except SystemExit:
+            return None
+        return run_doctor_config(args)
 
     from .cli_platform import run_doctor_platform
     from .cli_platform_surface import validate_platform_arguments

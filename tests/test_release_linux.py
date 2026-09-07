@@ -139,6 +139,28 @@ def _wheelhouse_fixture(tmp_path: Path, *specs: tuple[str, str]) -> Path:
     return wheelhouse
 
 
+def _minimal_release_wheelhouse(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    """Return a complete synthetic wheelhouse for preflight-only tests."""
+
+    wheelhouse = _wheelhouse_fixture(
+        tmp_path,
+        ("pip", release_linux.PIP_BOOTSTRAP_VERSION),
+        ("build", "1.5.0"),
+        ("setuptools", "83.0.0"),
+        ("wheel", "0.48.0"),
+    )
+    pip_wheel = next(wheelhouse.glob("pip-*.whl"))
+    monkeypatch.setattr(
+        release_linux,
+        "PIP_BOOTSTRAP_SHA256",
+        hashlib.sha256(pip_wheel.read_bytes()).hexdigest(),
+    )
+    return wheelhouse
+
+
 def test_release_identifier_is_version_sha_python_and_platform_bound() -> None:
     assert release_linux.release_id("a" * 40) == (
         f"{release_linux.__version__}-{'a' * 12}-cp314-linux-x86_64"
@@ -839,6 +861,8 @@ def test_new_virtual_environment_is_created_in_staging_then_published(
         assert runtime_lock.read_text(encoding="utf-8") == f"pip=={release_linux.PIP_BOOTSTRAP_VERSION}\n"
         installed_at.append(release_root)
         (release_root / "bin").mkdir(parents=True)
+        (release_root / "bin" / "python3.14").symlink_to("/usr/bin/python3.14")
+        (release_root / "bin" / "python").symlink_to("python3.14")
         command = release_root / "bin" / "Neocortex"
         command.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         command.chmod(0o755)
@@ -865,8 +889,7 @@ def test_new_virtual_environment_is_created_in_staging_then_published(
 
     monkeypatch.setattr(release_linux, "_publish_public_access", publish_access)
 
-    wheelhouse = tmp_path / "wheelhouse"
-    wheelhouse.mkdir()
+    wheelhouse = _minimal_release_wheelhouse(tmp_path, monkeypatch)
     report = release_linux.install_release(
         layout,
         corpus_root=corpus_root if explicit_corpus else None,
@@ -1347,6 +1370,7 @@ def test_failed_install_receipt_restores_current_launcher_and_alias(
     source = tmp_path / "source"
     (source / "neocortex" / "interface" / "presentation" / "assets").mkdir(parents=True)
     _write_runtime_lock(source)
+    (source / "constraints.txt").write_text("pip==26.2.1\n", encoding="utf-8")
     layout = LinuxReleaseLayout(source, _policy(tmp_path))
     old = _release(layout, release_linux.release_id("a" * 40))
     sha = "b" * 40
@@ -1386,13 +1410,14 @@ def test_failed_install_receipt_restores_current_launcher_and_alias(
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("synthetic receipt failure")),
     )
 
+    wheelhouse = _minimal_release_wheelhouse(tmp_path, monkeypatch)
     with pytest.raises(OSError, match="synthetic receipt failure"):
         release_linux.install_release(
             layout,
             corpus_root=tmp_path / "corpus",
             prepare_models=False,
             desktop=False,
-            wheelhouse=tmp_path,
+            wheelhouse=wheelhouse,
         )
 
     assert release_linux._current_target(layout) == old.resolve()
@@ -1411,6 +1436,7 @@ def test_install_preserves_active_release_when_its_manifest_is_unusable(
     source = tmp_path / "source"
     source.mkdir()
     _write_runtime_lock(source)
+    (source / "constraints.txt").write_text("pip==26.2.1\n", encoding="utf-8")
     layout = LinuxReleaseLayout(source, _policy(tmp_path))
     sha = "a" * 40
     current = _release(layout, release_linux.release_id(sha))
@@ -1430,12 +1456,13 @@ def test_install_preserves_active_release_when_its_manifest_is_unusable(
         lambda *_args, **_kwargs: pytest.fail("unsafe rebuild of the current release"),
     )
 
+    wheelhouse = _minimal_release_wheelhouse(tmp_path, monkeypatch)
     with pytest.raises(release_linux.LinuxReleaseError, match=r"manifest|identity"):
         release_linux.install_release(
             layout,
             prepare_models=False,
             desktop=False,
-            wheelhouse=tmp_path,
+            wheelhouse=wheelhouse,
         )
 
     assert current.is_dir()
@@ -1454,6 +1481,7 @@ def test_install_preserves_noncurrent_manifestless_release_used_by_a_process(
     source = tmp_path / "source"
     source.mkdir()
     _write_runtime_lock(source)
+    (source / "constraints.txt").write_text("pip==26.2.1\n", encoding="utf-8")
     layout = LinuxReleaseLayout(source, _policy(tmp_path))
     sha = "b" * 40
     candidate = _release(layout, release_linux.release_id(sha))
@@ -1464,9 +1492,10 @@ def test_install_preserves_noncurrent_manifestless_release_used_by_a_process(
     monkeypatch.setattr(release_linux, "_require_reference_platform", lambda: None)
     monkeypatch.setattr(release_linux, "_release_in_use", lambda root: (4242,) if root == candidate else ())
 
+    wheelhouse = _minimal_release_wheelhouse(tmp_path, monkeypatch)
     with pytest.raises(release_linux.LinuxReleaseError, match="in use by host processes"):
         release_linux.install_release(
-            layout, prepare_models=False, desktop=False, wheelhouse=tmp_path,
+            layout, prepare_models=False, desktop=False, wheelhouse=wheelhouse,
         )
 
     assert candidate.is_dir() and (candidate / "bin" / "Neocortex").is_file()
@@ -1480,6 +1509,7 @@ def test_failed_model_preparation_never_promotes_or_publishes_access(
     source = tmp_path / "source"
     source.mkdir()
     _write_runtime_lock(source)
+    (source / "constraints.txt").write_text("pip==26.2.1\n", encoding="utf-8")
     layout = LinuxReleaseLayout(source, _policy(tmp_path))
     old = _release(layout, release_linux.release_id("a" * 40))
     sha = "c" * 40
@@ -1512,13 +1542,14 @@ def test_failed_model_preparation_never_promotes_or_publishes_access(
         smoke_roots.append(smoke_root)
         raise release_linux.LinuxReleaseError("synthetic incomplete model cache")
 
+    wheelhouse = _minimal_release_wheelhouse(tmp_path, monkeypatch)
     with pytest.raises(release_linux.LinuxReleaseError, match="incomplete model cache"):
         release_linux.install_release(
             layout,
             corpus_root=tmp_path / "corpus",
             prepare_models=True,
             desktop=True,
-            wheelhouse=tmp_path,
+            wheelhouse=wheelhouse,
             runner=fail_prepare,
         )
 
@@ -1536,6 +1567,7 @@ def test_repromote_recovers_recorded_rollback_and_prunes_stale_releases(
     source = tmp_path / "source"
     source.mkdir()
     _write_runtime_lock(source)
+    (source / "constraints.txt").write_text("pip==26.2.1\n", encoding="utf-8")
     layout = LinuxReleaseLayout(source, _policy(tmp_path))
     rollback = _release(layout, release_linux.release_id("a" * 40))
     current = _release(layout, release_linux.release_id("b" * 40))
@@ -1572,12 +1604,13 @@ def test_repromote_recovers_recorded_rollback_and_prunes_stale_releases(
         },
     )
 
+    wheelhouse = _minimal_release_wheelhouse(tmp_path, monkeypatch)
     report = release_linux.install_release(
         layout,
         corpus_root=tmp_path / "corpus",
         prepare_models=False,
         desktop=False,
-        wheelhouse=tmp_path,
+        wheelhouse=wheelhouse,
     )
 
     assert report["operation"] == "repromote"

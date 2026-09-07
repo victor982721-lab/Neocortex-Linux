@@ -21,6 +21,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from neocortex.deduplication import FileSnapshot, full_fingerprint, snapshot_path, stat_matches_snapshot
+from neocortex.platform.policy import stat_birthtime_ns
 from neocortex.workflow.actions.action_policy import validate_mutation_path
 
 
@@ -57,6 +58,7 @@ class KioTrashPreflight:
 
     client: Path
     config_home: Path
+    client_snapshot: FileSnapshot | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,6 +240,103 @@ def _absolute_path(path: str | os.PathLike[str], *, label: str) -> Path:
     return Path(os.path.normpath(candidate))
 
 
+def _snapshot_kio_client(path: Path) -> FileSnapshot:
+    """Capture one executable identity without following a final symlink."""
+
+    try:
+        metadata = os.lstat(path)
+    except OSError as exc:
+        raise KioTrashUnavailable(
+            "kio_client_unavailable",
+            "KIO client cannot be inspected",
+        ) from exc
+    if stat.S_ISLNK(metadata.st_mode):
+        raise KioTrashUnavailable(
+            "kio_client_symlink",
+            "KIO client must be a regular executable rather than a symbolic link",
+        )
+    if not stat.S_ISREG(metadata.st_mode) or not os.access(path, os.X_OK):
+        raise KioTrashUnavailable(
+            "kio_client_not_executable",
+            "KIO client is not a regular executable",
+        )
+    return FileSnapshot(
+        path=os.fspath(path),
+        volume_id=metadata.st_dev,
+        file_id=metadata.st_ino,
+        size=metadata.st_size,
+        mtime_ns=metadata.st_mtime_ns,
+        birthtime_ns=stat_birthtime_ns(metadata),
+    )
+
+
+def _validate_kio_client_identity(path: Path, expected: FileSnapshot) -> None:
+    """Reject a client path that changed after preflight admission."""
+
+    try:
+        current = _snapshot_kio_client(path)
+    except KioTrashUnavailable as exc:
+        raise KioTrashUnavailable(
+            "kio_client_changed",
+            "KIO client is no longer the preflighted executable",
+        ) from exc
+    if current != expected:
+        raise KioTrashUnavailable(
+            "kio_client_changed",
+            "KIO client identity changed after preflight",
+        )
+
+
+def _open_kio_client(path: Path, expected: FileSnapshot) -> int:
+    """Open the preflighted client so the real subprocess cannot follow a swapped dentry."""
+
+    flags = getattr(os, "O_PATH", os.O_RDONLY)
+    flags |= os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise KioTrashUnavailable(
+            "kio_client_changed",
+            "KIO client could not be opened as the preflighted executable",
+        ) from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise KioTrashUnavailable(
+                "kio_client_changed",
+                "KIO client is no longer a regular executable",
+            )
+        current = FileSnapshot(
+            path=os.fspath(path),
+            volume_id=metadata.st_dev,
+            file_id=metadata.st_ino,
+            size=metadata.st_size,
+            mtime_ns=metadata.st_mtime_ns,
+            birthtime_ns=stat_birthtime_ns(metadata),
+        )
+        if current != expected or not os.access(path, os.X_OK):
+            raise KioTrashUnavailable(
+                "kio_client_changed",
+                "KIO client identity or executable permission changed",
+            )
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _fsync_directory(path: Path) -> None:
+    """Flush one real directory entry before classifying an effect as applied."""
+
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | os.O_NOFOLLOW
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def discover_kio_client(*, which: ClientResolver = shutil.which) -> Path:
     """Resolve the first safe executable path without starting a process."""
 
@@ -247,10 +346,8 @@ def discover_kio_client(*, which: ClientResolver = shutil.which) -> Path:
             continue
         try:
             candidate = _absolute_path(discovered, label="client")
-            metadata = os.stat(candidate, follow_symlinks=True)
+            _snapshot_kio_client(candidate)
         except (KioTrashUnavailable, OSError):
-            continue
-        if not stat.S_ISREG(metadata.st_mode) or not os.access(candidate, os.X_OK):
             continue
         return candidate
     raise KioTrashUnavailable(
@@ -352,9 +449,14 @@ def preflight_kio_trash(
 
     effective_environment = os.environ if environment is None else environment
     client = discover_kio_client(which=which)
+    client_snapshot = _snapshot_kio_client(client)
     config_home = _config_home(effective_environment, home_directory=home_directory)
     _validate_config_home(config_home, client=client)
-    return KioTrashPreflight(client=client, config_home=config_home)
+    return KioTrashPreflight(
+        client=client,
+        client_snapshot=client_snapshot,
+        config_home=config_home,
+    )
 
 
 def _validate_source(source: Path, expected: FileSnapshot) -> None:
@@ -451,23 +553,44 @@ def move_to_trash(
             which=which,
         )
         # This is intentionally adjacent to subprocess creation.  KIO remains
-        # path-bound, so the residual dentry race is reflected in the receipt's
-        # guarantee rather than hidden behind an identity-bound claim.
+        # path-bound, and the executable itself is revalidated at the same
+        # boundary so a replaced dentry cannot silently select another client.
         _validate_source(source_path, expected)
+        client_snapshot = preflight.client_snapshot
+        if client_snapshot is None:
+            client_snapshot = _snapshot_kio_client(preflight.client)
+        _validate_kio_client_identity(preflight.client, client_snapshot)
     except KioTrashUnavailable as exc:
         return _blocked(source_path, exc)
 
     command = [os.fspath(preflight.client), "move", os.fspath(source_path), KIO_TRASH_URL]
     effective_runner = subprocess.run if runner is None else runner
+    client_descriptor: int | None = None
+    try:
+        # Keep the descriptor open through the real exec.  Injected runners keep
+        # the historical test seam and still receive the human-readable path.
+        client_descriptor = _open_kio_client(preflight.client, client_snapshot)
+    except KioTrashUnavailable as exc:
+        return _blocked(source_path, exc)
+    runner_kwargs: dict[str, object] = {
+        "check": False,
+        "shell": False,
+        "capture_output": True,
+        "text": True,
+        "timeout": timeout,
+        "env": effective_environment,
+    }
+    if runner is None:
+        runner_kwargs.update(
+            {
+                "executable": f"/proc/self/fd/{client_descriptor}",
+                "pass_fds": (client_descriptor,),
+            }
+        )
     try:
         completed = effective_runner(
             command,
-            check=False,
-            shell=False,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=effective_environment,
+            **runner_kwargs,
         )
     except subprocess.TimeoutExpired as exc:
         timeout_diagnostic = exc.stderr if exc.stderr is not None else exc.stdout
@@ -506,6 +629,12 @@ def move_to_trash(
             command=command,
             returncode=None,
         )
+    finally:
+        if client_descriptor is not None:
+            try:
+                os.close(client_descriptor)
+            except OSError:
+                pass
 
     try:
         returncode = completed.returncode
@@ -576,6 +705,17 @@ def move_to_trash(
             source_path,
             reason="kio_effect_unverified",
             detail=verification.detail or "source absence and trash evidence were not both confirmed",
+            client=preflight.client,
+            command=command,
+            returncode=returncode,
+        )
+    try:
+        _fsync_directory(source_path.parent)
+    except OSError as exc:
+        return _recovery_required(
+            source_path,
+            reason="kio_directory_fsync_failed",
+            detail=exc,
             client=preflight.client,
             command=command,
             returncode=returncode,

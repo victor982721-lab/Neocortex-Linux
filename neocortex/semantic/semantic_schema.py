@@ -17,6 +17,12 @@ from neocortex.persistence.sqlite_schema_contract import (
     schema_contract_from_builder,
     validate_sqlite_schema_contract,
 )
+from neocortex.persistence.sqlite_connection import (
+    ensure_private_sqlite_owner,
+    ensure_private_sqlite_sidecars,
+    ensure_private_state_directory,
+    private_state_creation,
+)
 
 
 SEMANTIC_SCHEMA_VERSION = 7
@@ -228,11 +234,18 @@ def semantic_database(
             _configure_read_connection(connection)
             yield connection
         return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path, timeout=60.0)
+    with private_state_creation():
+        ensure_private_state_directory(path)
+        ensure_private_sqlite_owner(path)
+        ensure_private_sqlite_sidecars(path)
+        connection = sqlite3.connect(path, timeout=60.0)
+        try:
+            _configure_common_connection(connection)
+            _configure_write_connection(connection)
+        except BaseException:
+            connection.close()
+            raise
     try:
-        _configure_common_connection(connection)
-        _configure_write_connection(connection)
         yield connection
         if not readonly:
             connection.commit()
@@ -1520,31 +1533,34 @@ def initialize_semantic_state(path: Path) -> None:
         _ensure_semantic_performance_indexes(path)
         return
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path, timeout=60.0)
-    try:
-        _configure_common_connection(connection)
-        _configure_write_connection(connection)
-        connection.execute("BEGIN IMMEDIATE")
-        locked_version = _read_schema_version(connection)
-        if locked_version != initial_version:
-            raise SemanticStateError("semantic schema changed during initialization")
-        if locked_version is not None:
-            _validate_version_contract(connection, locked_version)
-        _migrate_from(connection, locked_version)
-        _validate_version_contract(connection, SEMANTIC_SCHEMA_VERSION)
-        connection.commit()
-    except sqlite3.DatabaseError as exc:
-        connection.rollback()
-        source = "new" if initial_version is None else str(initial_version)
-        raise SemanticStateError(
-            f"semantic schema initialization from version {source} failed"
-        ) from exc
-    except BaseException:
-        connection.rollback()
-        raise
-    finally:
-        connection.close()
+    with private_state_creation():
+        ensure_private_state_directory(path)
+        ensure_private_sqlite_owner(path)
+        ensure_private_sqlite_sidecars(path)
+        connection = sqlite3.connect(path, timeout=60.0)
+        try:
+            _configure_common_connection(connection)
+            _configure_write_connection(connection)
+            connection.execute("BEGIN IMMEDIATE")
+            locked_version = _read_schema_version(connection)
+            if locked_version != initial_version:
+                raise SemanticStateError("semantic schema changed during initialization")
+            if locked_version is not None:
+                _validate_version_contract(connection, locked_version)
+            _migrate_from(connection, locked_version)
+            _validate_version_contract(connection, SEMANTIC_SCHEMA_VERSION)
+            connection.commit()
+        except sqlite3.DatabaseError as exc:
+            connection.rollback()
+            source = "new" if initial_version is None else str(initial_version)
+            raise SemanticStateError(
+                f"semantic schema initialization from version {source} failed"
+            ) from exc
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
     _ensure_semantic_performance_indexes(path)
 
 
@@ -1553,30 +1569,36 @@ def _ensure_semantic_performance_indexes(path: Path) -> None:
 
     if not path.is_file():
         return
-    connection = sqlite3.connect(path, timeout=60.0)
-    try:
-        _configure_common_connection(connection)
-        _configure_write_connection(connection)
-        existing = {
-            str(row[0])
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='index'"
+    with private_state_creation():
+        ensure_private_state_directory(path)
+        ensure_private_sqlite_owner(path)
+        ensure_private_sqlite_sidecars(path)
+        connection = sqlite3.connect(path, timeout=60.0)
+        try:
+            _configure_common_connection(connection)
+            _configure_write_connection(connection)
+            existing = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index'"
+                )
+            }
+            missing = tuple(
+                statement
+                for name, statement in _SEMANTIC_PERFORMANCE_INDEXES
+                if name not in existing
             )
-        }
-        missing = tuple(
-            statement for name, statement in _SEMANTIC_PERFORMANCE_INDEXES if name not in existing
-        )
-        if not missing:
-            return
-        connection.execute("BEGIN IMMEDIATE")
-        for statement in missing:
-            connection.execute(statement)
-        connection.commit()
-    except BaseException:
-        connection.rollback()
-        raise
-    finally:
-        connection.close()
+            if not missing:
+                return
+            connection.execute("BEGIN IMMEDIATE")
+            for statement in missing:
+                connection.execute(statement)
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
 
 def _scrub_retired_image_value(value: object) -> tuple[object, bool]:

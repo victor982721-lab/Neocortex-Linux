@@ -45,6 +45,7 @@ from neocortex.safety.kio_trash import (
     KioTrashStatus,
     KioTrashVerification,
     _curation_trash_paths,
+    _fsync_directory,
     _verify_curation_trash_evidence,
     move_to_trash,
 )
@@ -673,6 +674,7 @@ class PosixRenameBackend:
         root_fd: int | None = None
         source_parent_fd: int | None = None
         target_parent_fd: int | None = None
+        effect_crossed = False
         try:
             _validate_effect_paths(candidate.root, effect)
             if os.path.lexists(target):
@@ -699,6 +701,7 @@ class PosixRenameBackend:
                 ctypes.c_uint,
             ]
             renameat2.restype = ctypes.c_int
+            effect_crossed = True
             if renameat2(
                 source_parent_fd,
                 os.fsencode(source_name),
@@ -706,6 +709,7 @@ class PosixRenameBackend:
                 os.fsencode(target_name),
                 1,
             ) != 0:
+                effect_crossed = False
                 error_number = ctypes.get_errno()
                 if error_number == errno.EEXIST:
                     return BackendOutcome("blocked", "destination_exists")
@@ -716,15 +720,29 @@ class PosixRenameBackend:
                     "rename_syscall_failed",
                     os.strerror(error_number),
                 )
+            for descriptor in dict.fromkeys(
+                descriptor
+                for descriptor in (source_parent_fd, target_parent_fd)
+                if descriptor is not None
+            ):
+                os.fsync(descriptor)
         except CurationApplicationError as exc:
+            if effect_crossed:
+                return BackendOutcome("recovery_required", "rename_effect_ambiguous", str(exc))
             return BackendOutcome("blocked", "rename_preflight_failed", str(exc))
         except FileExistsError:
+            if effect_crossed:
+                return BackendOutcome("recovery_required", "rename_effect_ambiguous")
             return BackendOutcome("blocked", "destination_exists")
         except OSError as exc:
+            if effect_crossed:
+                return BackendOutcome("recovery_required", "rename_effect_ambiguous", str(exc))
             if exc.errno == errno.EXDEV:
                 return BackendOutcome("blocked", "exdev_same_filesystem_required")
             return BackendOutcome("blocked", "rename_preflight_failed", f"{type(exc).__name__}: {exc}")
         except BaseException as exc:
+            if effect_crossed:
+                return BackendOutcome("recovery_required", "rename_effect_ambiguous", type(exc).__name__)
             return BackendOutcome("blocked", "rename_interrupted_before_effect", type(exc).__name__)
         finally:
             for descriptor in (source_parent_fd, target_parent_fd, root_fd):
@@ -844,6 +862,17 @@ class KioTrashBackend:
             _verify_curation_trash_evidence(evidence, effect.source, effect.source_digest)
         except BaseException as exc:
             return BackendOutcome("recovery_required", "kio_trash_evidence_mismatch", str(exc))
+        try:
+            _fsync_directory(Path(effect.source.path).parent)
+            _root, trash_path, info_path = _curation_trash_paths(
+                evidence, effect.source, effect.source_digest
+            )
+            _fsync_directory(_root)
+            _fsync_directory(trash_path.parent)
+            if info_path.parent != trash_path.parent:
+                _fsync_directory(info_path.parent)
+        except (OSError, ValueError) as exc:
+            return BackendOutcome("recovery_required", "kio_directory_fsync_failed", str(exc))
         receipt = effect_receipt_json(
             operation="trash",
             source_path=effect.source.path,

@@ -104,6 +104,14 @@ if TYPE_CHECKING:
         RunStatus as RunStatus,
         read_run_status as read_run_status,
         read_run_status_json as read_run_status_json,
+        asset_health_payload as asset_health_payload,
+        code_search_payload as code_search_payload,
+        context_payload as context_payload,
+        evidence_payload as evidence_payload,
+        lineage_payload as lineage_payload,
+        operational_query_payload as operational_query_payload,
+        search_payload as search_payload,
+        status_payload as status_payload,
     )
     from neocortex.curation.preview import CurationPlanPage as CurationPlanPage
     from neocortex.curation.preview import CurationSourceHead as CurationSourceHead
@@ -180,6 +188,14 @@ __all__ = (  # noqa: RUF022
     "curation_checkpoint_create_payload",
     "curation_checkpoint_resume_payload",
     "curation_checkpoint_status_payload",
+    "status_payload",
+    "search_payload",
+    "context_payload",
+    "evidence_payload",
+    "operational_query_payload",
+    "asset_health_payload",
+    "code_search_payload",
+    "lineage_payload",
     "plan_knowledge_query",
     "RunManifest",
     "RunStatus",
@@ -321,6 +337,20 @@ _CURATION_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     ),
 }
 
+_READ_EXPORTS: Final[dict[str, tuple[str, str]]] = {
+    "status_payload": ("neocortex.api.read_api", "status_payload"),
+    "search_payload": ("neocortex.api.read_api", "search_payload"),
+    "context_payload": ("neocortex.api.read_api", "context_payload"),
+    "evidence_payload": ("neocortex.api.read_api", "evidence_payload"),
+    "operational_query_payload": (
+        "neocortex.api.read_api",
+        "operational_query_payload",
+    ),
+    "asset_health_payload": ("neocortex.api.read_api", "asset_health_payload"),
+    "code_search_payload": ("neocortex.api.read_api", "code_search_payload"),
+    "lineage_payload": ("neocortex.api.read_api", "lineage_payload"),
+}
+
 # endregion [01]
 
 
@@ -332,7 +362,7 @@ def __getattr__(name: str) -> Any:
 
     if name not in _PUBLIC_NAMES:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    target = _CURATION_EXPORTS.get(name)
+    target = _CURATION_EXPORTS.get(name) or _READ_EXPORTS.get(name)
     if target is None:
         target = (_PUBLIC_FACADE, name)
     module_name, attribute_name = target

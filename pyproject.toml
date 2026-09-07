@@ -115,6 +115,10 @@ extend-exclude = [
     "node_modules",
 ]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
 [tool.ruff.lint]
 # Trusted analysis adds bug-prone and maintainability checks without turning
 # import order, formatting, pytest style or modernization churn into findings.

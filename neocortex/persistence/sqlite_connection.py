@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import math
+import os
 import sqlite3
+import stat
+import threading
+from contextlib import contextmanager, nullcontext
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Iterator
 
 from neocortex.persistence.sqlite_paths import existing_sqlite_uri, readonly_sqlite_uri
 
@@ -37,6 +41,123 @@ _SYNCHRONOUS_MODES = frozenset({"OFF", "NORMAL", "FULL", "EXTRA"})
 # embedders.  The production branch below never enters it because the module
 # function remains the original sqlite3.connect object.
 _CANONICAL_SQLITE_CONNECT = sqlite3.connect
+
+# SQLite opens its rollback journal, WAL and SHM files with the process
+# umask.  Keep the creation window serialized and use a known private umask so
+# a caller's (possibly permissive, or even owner-bit-masking) umask cannot
+# expose a newly-created state owner.  Existing owners are deliberately not
+# chmod'ed: a connection must not rewrite the permissions of durable state it
+# did not create.
+_PRIVATE_STATE_UMASK = 0o077
+STATE_DIRECTORY_MODE: Final = 0o700
+STATE_FILE_MODE: Final = 0o600
+_STATE_CREATION_LOCK = threading.RLock()
+
+
+@contextmanager
+def private_state_creation() -> Iterator[None]:
+    """Create state and SQLite sidecars with owner-only permissions.
+
+    The context is intentionally limited to the connection/setup window.  It
+    restores the caller's umask exactly and never changes permissions on
+    existing paths.
+    """
+
+    with _STATE_CREATION_LOCK:
+        previous_umask = os.umask(_PRIVATE_STATE_UMASK)
+        try:
+            yield
+        finally:
+            os.umask(previous_umask)
+
+
+def ensure_private_state_directory(path: str | Path) -> Path:
+    """Create missing state parents as ``0700`` without changing existing ones."""
+
+    selected = Path(path)
+    if os.fspath(path) == ":memory:":
+        return selected
+    with private_state_creation():
+        selected.parent.mkdir(parents=True, exist_ok=True, mode=STATE_DIRECTORY_MODE)
+    return selected
+
+
+def ensure_private_sqlite_owner(path: str | Path) -> bool:
+    """Exclusively create a SQLite owner as ``0600`` when it is absent.
+
+    ``True`` means this call created the owner.  An existing regular file is
+    left byte- and mode-identical; symlinks and non-regular endpoints are
+    rejected instead of being followed as a second state owner.
+    """
+
+    selected = Path(path)
+    if os.fspath(path) == ":memory:":
+        return False
+    with private_state_creation():
+        ensure_private_state_directory(selected)
+        flags = (
+            os.O_RDWR
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            descriptor = os.open(selected, flags, STATE_FILE_MODE)
+        except FileExistsError:
+            metadata = selected.lstat()
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+                raise sqlite3.OperationalError(
+                    f"SQLite state owner is not a regular file: {selected}"
+                )
+            return False
+        try:
+            return True
+        finally:
+            os.close(descriptor)
+
+
+def _require_regular_sqlite_owner(path: Path) -> None:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise sqlite3.OperationalError(f"SQLite state owner is not a regular file: {path}")
+
+
+def ensure_private_sqlite_sidecars(path: str | Path) -> None:
+    """Materialize missing WAL/SHM sidecars as owner-only files.
+
+    SQLite may create these files after a connection is returned to its caller,
+    when the caller performs its first write.  Creating absent sidecars before
+    that hand-off makes their mode independent of the caller's later umask;
+    existing sidecars are only inspected and never chmod'ed.
+    """
+
+    selected = Path(path)
+    if os.fspath(path) == ":memory:":
+        return
+    with private_state_creation():
+        for suffix in ("-wal", "-shm"):
+            candidate = Path(f"{selected}{suffix}")
+            flags = (
+                os.O_RDWR
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+            )
+            try:
+                descriptor = os.open(candidate, flags, STATE_FILE_MODE)
+            except FileExistsError:
+                metadata = candidate.lstat()
+                if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+                    raise sqlite3.OperationalError(
+                        f"SQLite state sidecar is not a regular file: {candidate}"
+                    )
+                continue
+            os.close(descriptor)
 
 
 def _require_positive_integer(value: int | None, *, name: str) -> None:
@@ -155,12 +276,14 @@ def _open_sqlite(
         except FileNotFoundError as exc:
             raise sqlite3.OperationalError(f"unable to open database file: {path}") from exc
     if mode is READWRITE_EXISTING:
+        _require_regular_sqlite_owner(path)
         return sqlite3.connect(
             existing_sqlite_uri(path),
             uri=True,
             timeout=timeout_seconds,
         )
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_state_directory(path)
+    ensure_private_sqlite_owner(path)
     return sqlite3.connect(path, timeout=timeout_seconds)
 
 
@@ -212,42 +335,47 @@ def connect_sqlite(
 
     if not isinstance(mode, SQLiteOpenMode):
         raise TypeError("mode must be a SQLiteOpenMode")
-    connection = _open_sqlite(
-        Path(path),
-        mode=mode,
-        timeout_seconds=policy.timeout_seconds,
-    )
-    try:
-        if mode is READONLY_EXISTING:
-            _disable_checkpoint_on_readonly_close(
+    path = Path(path)
+    creation = private_state_creation() if mode is not READONLY_EXISTING else nullcontext()
+    with creation:
+        connection = _open_sqlite(
+            path,
+            mode=mode,
+            timeout_seconds=policy.timeout_seconds,
+        )
+        try:
+            if mode is READONLY_EXISTING:
+                _disable_checkpoint_on_readonly_close(
+                    connection,
+                    label=policy.label,
+                )
+            if policy.row_factory is not None:
+                connection.row_factory = policy.row_factory
+            busy_timeout_ms = max(1, round(policy.timeout_seconds * 1000))
+            connection.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
+            if policy.enable_foreign_keys:
+                connection.execute("PRAGMA foreign_keys=ON")
+            if policy.verify_foreign_keys and not _pragma_is_enabled(
                 connection,
-                label=policy.label,
-            )
-        if policy.row_factory is not None:
-            connection.row_factory = policy.row_factory
-        busy_timeout_ms = max(1, round(policy.timeout_seconds * 1000))
-        connection.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
-        if policy.enable_foreign_keys:
-            connection.execute("PRAGMA foreign_keys=ON")
-        if policy.verify_foreign_keys and not _pragma_is_enabled(
-            connection,
-            "foreign_keys",
-        ):
-            raise RuntimeError(f"{policy.label} could not enable foreign keys")
-        if mode is READONLY_EXISTING:
-            if policy.enforce_query_only:
-                connection.execute("PRAGMA query_only=ON")
-            if policy.verify_query_only and not _pragma_is_enabled(
-                connection,
-                "query_only",
+                "foreign_keys",
             ):
-                raise RuntimeError(f"{policy.label} could not enforce query-only mode")
-        elif policy.writer_pragmas is not None:
-            _configure_writer(connection, policy.writer_pragmas)
-    except BaseException:
-        connection.close()
-        raise
-    return connection
+                raise RuntimeError(f"{policy.label} could not enable foreign keys")
+            if mode is READONLY_EXISTING:
+                if policy.enforce_query_only:
+                    connection.execute("PRAGMA query_only=ON")
+                if policy.verify_query_only and not _pragma_is_enabled(
+                    connection,
+                    "query_only",
+                ):
+                    raise RuntimeError(f"{policy.label} could not enforce query-only mode")
+            elif policy.writer_pragmas is not None:
+                if policy.writer_pragmas.journal_mode == "WAL":
+                    ensure_private_sqlite_sidecars(path)
+                _configure_writer(connection, policy.writer_pragmas)
+        except BaseException:
+            connection.close()
+            raise
+        return connection
 
 
 __all__ = [
@@ -259,6 +387,12 @@ __all__ = [
     "SQLiteRowFactory",
     "SQLiteWriterPragmas",
     "connect_sqlite",
+    "ensure_private_sqlite_owner",
+    "ensure_private_sqlite_sidecars",
+    "ensure_private_state_directory",
+    "private_state_creation",
+    "STATE_DIRECTORY_MODE",
+    "STATE_FILE_MODE",
 ]
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import math
 import os
+import stat
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -21,8 +22,12 @@ from .sqlite_connection import (
 from .sqlite_integrity import (
     SQLiteIntegrityPolicy,
     SQLiteIntegrityReport,
+    _absolute_sqlite_path,
+    _assert_sqlite_owner_fence,
+    _capture_sqlite_owner_fence,
     check_sqlite_integrity,
 )
+from .sqlite_immutable import SQLiteImmutableFence
 
 
 MAX_BACKUP_PAGES_PER_STEP = 65_536
@@ -136,30 +141,99 @@ class SQLiteBackupPublishedCleanupError(SQLiteBackupError):
 # region [03] Staging, online copy and atomic no-replace publication
 
 
-def _path_exists_including_dangling_links(path: Path) -> bool:
-    return os.path.lexists(os.fspath(path))
+def _close_descriptor(descriptor: int | None) -> None:
+    if descriptor is None:
+        return
+    try:
+        os.close(descriptor)
+    except OSError:
+        pass
+
+
+def _require_real_directory(parent: Path) -> None:
+    """Verify every parent component without following a symlink."""
+
+    try:
+        metadata = parent.lstat()
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(
+            errno.ENOENT,
+            "SQLite backup destination parent does not exist",
+            parent,
+        ) from exc
+    except OSError as exc:
+        raise SQLiteBackupPublicationError(
+            f"SQLite backup destination parent cannot be inspected: {parent}"
+        ) from exc
+    if stat.S_ISLNK(metadata.st_mode):
+        raise SQLiteBackupPublicationError(
+            f"SQLite backup destination parent is a symlink: {parent}"
+        )
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise NotADirectoryError(
+            errno.ENOTDIR,
+            "SQLite backup destination parent is not a directory",
+            parent,
+        )
+
+    nofollow = int(getattr(os, "O_NOFOLLOW", 0))
+    common_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | nofollow
+    )
+    directory_flags = common_flags | getattr(os, "O_DIRECTORY", 0)
+    directory_descriptor: int | None = None
+    try:
+        parts = parent.parts
+        if not parent.is_absolute() or not parts or parts[0] != os.sep:
+            raise SQLiteBackupPublicationError(
+                f"SQLite backup destination parent is not absolute: {parent}"
+            )
+        directory_descriptor = os.open(os.sep, directory_flags)
+        for component in parts[1:]:
+            try:
+                next_descriptor = os.open(
+                    component,
+                    directory_flags,
+                    dir_fd=directory_descriptor,
+                )
+            except OSError as exc:
+                if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+                    raise SQLiteBackupPublicationError(
+                        "SQLite backup destination parent contains a symlink "
+                        "or non-directory"
+                    ) from exc
+                raise
+            _close_descriptor(directory_descriptor)
+            directory_descriptor = next_descriptor
+        opened = os.fstat(directory_descriptor)
+        if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+            raise SQLiteBackupPublicationError(
+                "SQLite backup destination parent identity changed during preflight"
+            )
+    finally:
+        _close_descriptor(directory_descriptor)
 
 
 def _require_destination_available(destination: Path) -> None:
-    if _path_exists_including_dangling_links(destination):
+    try:
+        destination.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise SQLiteBackupPublicationError(
+            f"SQLite backup destination cannot be inspected: {destination}"
+        ) from exc
+    else:
         raise FileExistsError(
             errno.EEXIST,
             "SQLite backup destination already exists",
             destination,
         )
     parent = destination.parent
-    if not parent.exists():
-        raise FileNotFoundError(
-            errno.ENOENT,
-            "SQLite backup destination parent does not exist",
-            parent,
-        )
-    if not parent.is_dir():
-        raise NotADirectoryError(
-            errno.ENOTDIR,
-            "SQLite backup destination parent is not a directory",
-            parent,
-        )
+    _require_real_directory(parent)
 
 
 def _create_staging_file(parent: Path) -> Path:
@@ -198,9 +272,21 @@ def _cleanup_staging(staging_path: Path) -> None:
 
 
 def _require_standalone_database(staging_path: Path) -> None:
-    for suffix in ("-wal", "-journal"):
+    for suffix in ("-wal", "-journal", "-shm"):
         sidecar = Path(f"{staging_path}{suffix}")
-        if sidecar.exists() and sidecar.stat().st_size > 0:
+        try:
+            metadata = sidecar.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise SQLiteBackupPublicationError(
+                f"staged SQLite sidecar cannot be inspected: {sidecar.name}"
+            ) from exc
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise SQLiteBackupPublicationError(
+                f"staged SQLite sidecar is not a regular file: {sidecar.name}"
+            )
+        if suffix in {"-wal", "-journal"} and metadata.st_size > 0:
             raise SQLiteBackupPublicationError(
                 f"staged database still depends on non-empty {suffix} state"
             )
@@ -270,7 +356,20 @@ def _copy_online(
     return invocations, page_count, page_size
 
 
-def _publish_no_replace(staging_path: Path, destination_path: Path) -> None:
+def _publish_no_replace(
+    staging_path: Path,
+    destination_path: Path,
+    *,
+    expected_fence: SQLiteImmutableFence,
+) -> None:
+    observed = _capture_sqlite_owner_fence(
+        staging_path,
+        label="SQLite backup staging",
+    )
+    if observed is None or observed != expected_fence:
+        raise SQLiteBackupPublicationError(
+            "staged SQLite database identity changed before publication"
+        )
     try:
         os.link(staging_path, destination_path, follow_symlinks=False)
     except FileExistsError:
@@ -302,9 +401,13 @@ def backup_sqlite_online(
         raise TypeError("policy must be a SQLiteBackupPolicy")
     if progress_callback is not None and not callable(progress_callback):
         raise TypeError("progress_callback must be callable or None")
-    source = Path(source_path).resolve(strict=False)
-    destination = Path(os.path.abspath(os.fspath(destination_path)))
+    source = _absolute_sqlite_path(source_path)
+    destination = _absolute_sqlite_path(destination_path)
     _require_destination_available(destination)
+    source_fence = _capture_sqlite_owner_fence(
+        source,
+        label="SQLite backup source",
+    )
     cancellation = SQLiteCancellationBridge(cancellation_check)
     cancellation.checkpoint()
 
@@ -319,6 +422,12 @@ def backup_sqlite_online(
             cancellation=cancellation,
             progress_callback=progress_callback,
         )
+        if source_fence is not None:
+            _assert_sqlite_owner_fence(
+                source,
+                source_fence,
+                label="SQLite backup source",
+            )
         integrity = check_sqlite_integrity(
             staging,
             policy=policy.integrity,
@@ -328,8 +437,20 @@ def backup_sqlite_online(
             raise SQLiteBackupVerificationError(integrity)
         _require_standalone_database(staging)
         cancellation.checkpoint()
-        destination_size = staging.stat().st_size
-        _publish_no_replace(staging, destination)
+        staging_fence = _capture_sqlite_owner_fence(
+            staging,
+            label="SQLite backup staging",
+        )
+        if staging_fence is None:
+            raise SQLiteBackupPublicationError(
+                "staged SQLite database disappeared before publication"
+            )
+        destination_size = staging_fence.main.size
+        _publish_no_replace(
+            staging,
+            destination,
+            expected_fence=staging_fence,
+        )
         published = True
         try:
             _cleanup_staging(staging)

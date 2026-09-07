@@ -304,6 +304,10 @@ def _run_knowledge_context_v2(args: argparse.Namespace) -> int:
     )
 
     entries: list[dict[str, object]]
+    scope = getattr(args, "knowledge_scope", "personal")
+    # ``all`` is a request scope; the current published topology exposes one
+    # personal binding, matching the read API's federated binding semantics.
+    binding_scope = "personal" if scope == "all" else scope
     try:
         query = _query(args, args.knowledge_context)
         from neocortex.knowledge.knowledge_context_hydration import search_context_evidence
@@ -312,17 +316,17 @@ def _run_knowledge_context_v2(args: argparse.Namespace) -> int:
             lambda checkpoint: search_context_evidence(
                 _service(args),
                 query,
-                scope="personal",
+                scope=binding_scope,
                 cancellation_check=checkpoint,
             )
         )
-        entries = [{"scope": "personal", "result": evidence_projection,
+        entries = [{"scope": binding_scope, "result": evidence_projection,
                     "exit_code": int(knowledge_search_exit_code(result))}]
     except (ModuleNotFoundError, OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
         invalid_request = isinstance(exc, (TypeError, ValueError))
         entries = [
             {
-                "scope": "personal",
+                "scope": binding_scope,
                 "error": {
                     "code": "invalid_request" if invalid_request else "owner_unavailable",
                     "message": f"{type(exc).__name__}: {exc}",
@@ -335,7 +339,7 @@ def _run_knowledge_context_v2(args: argparse.Namespace) -> int:
     payload = build_context_response_v2(
         entries,
         query=args.knowledge_context,
-        scope="personal",
+        scope=scope,
         request_id=f"read-{uuid4().hex}",
         mode=args.knowledge_mode,
         include_history=args.knowledge_history,

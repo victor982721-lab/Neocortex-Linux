@@ -5,6 +5,6 @@ approvals_reviewer = "user"
 sandbox_mode = "workspace-write"
 
 [sandbox_workspace_write]
-network_access = true
+network_access = false
 # Machine-specific writable roots and elevation policy belong in the local user
 # configuration, not in this portable repository.

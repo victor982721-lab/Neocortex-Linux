@@ -49,6 +49,12 @@ from neocortex.persistence.framework_state_common import (
     mark_file_actions_applying,
 )
 from neocortex.persistence.sqlite_paths import existing_sqlite_uri
+from neocortex.persistence.sqlite_connection import (
+    STATE_FILE_MODE,
+    ensure_private_sqlite_sidecars,
+    ensure_private_state_directory,
+    private_state_creation,
+)
 from neocortex.persistence.framework_connection import connect_existing_framework
 from neocortex.runtime.orchestration.run_manifest import (
     RUN_BUDGET_SCHEMA,
@@ -235,7 +241,11 @@ def _acquire_framework_writer(
         except FileNotFoundError:
             if existing_only:
                 raise
-            descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o666)
+            descriptor = os.open(
+                path,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                STATE_FILE_MODE,
+            )
     except OSError as exc:
         raise sqlite3.OperationalError(f"unable to open database file: {path}") from exc
     connection: sqlite3.Connection | None = None
@@ -273,25 +283,30 @@ class FrameworkState:
         existing_only: bool = False,
     ):
         self.path = Path(database)
-        self._connection, self._connection_owner_identity = _acquire_framework_writer(
-            self.path, existing_only=existing_only
-        )
-        try:
-            self._connection.execute("PRAGMA busy_timeout=60000")
-            self._connection.execute("PRAGMA foreign_keys=ON")
-            if int(self._connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
-                raise RuntimeError("framework state could not enable foreign keys")
-            self._initialize()
-            if self._connection_owner_identity is not None:
-                owner = self.path.lstat()
-                if (
-                    not stat.S_ISREG(owner.st_mode)
-                    or (owner.st_dev, owner.st_ino) != self._connection_owner_identity
-                ):
-                    raise ImmutableSQLiteUnavailable("framework SQLite owner changed during initialization")
-        except BaseException:
-            self._connection.close()
-            raise
+        with private_state_creation():
+            if not existing_only and str(self.path) != ":memory:":
+                ensure_private_state_directory(self.path)
+            self._connection, self._connection_owner_identity = _acquire_framework_writer(
+                self.path, existing_only=existing_only
+            )
+            try:
+                if str(self.path) != ":memory:":
+                    ensure_private_sqlite_sidecars(self.path)
+                self._connection.execute("PRAGMA busy_timeout=60000")
+                self._connection.execute("PRAGMA foreign_keys=ON")
+                if int(self._connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
+                    raise RuntimeError("framework state could not enable foreign keys")
+                self._initialize()
+                if self._connection_owner_identity is not None:
+                    owner = self.path.lstat()
+                    if (
+                        not stat.S_ISREG(owner.st_mode)
+                        or (owner.st_dev, owner.st_ino) != self._connection_owner_identity
+                    ):
+                        raise ImmutableSQLiteUnavailable("framework SQLite owner changed during initialization")
+            except BaseException:
+                self._connection.close()
+                raise
 
     def _initialize(self) -> None:
         initialize_framework_schema(self._connection, self._backfill_route_phases)

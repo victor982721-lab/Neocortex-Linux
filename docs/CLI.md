@@ -156,11 +156,11 @@ renombra los originales ni sustituye caracteres para inventar otra ruta.
 
 | Clase | Ejemplos | Efecto |
 |---|---|---|
-| Consulta | `help`, `status`, `search`, `ask`, `inspect`, `models status`, `databases status`, `curate scan` | Lee publicaciones existentes; no recorre corpus ni crea estado |
+| Consulta | `help`, `status`, `search`, `ask`, `inspect`, `--models-status`, `databases status`, `curate scan` | Lee publicaciones existentes; no recorre corpus ni crea estado |
 | Verificación advisory | `curate verify` | Lee archivos regulares y estado publicado; no crea `file_actions` ni modifica el corpus |
 | Producción de estado | rutas, Semantic, catálogo, Review refresh, `curate review/decide` | Escribe owners; no modifica originales ni autoriza efectos |
 | Grant de autorización | `curate authorize` | Escribe un grant acotado; no aplica ni verifica un efecto físico |
-| Descarga | `models prepare` | Adquiere modelos de forma explícita |
+| Descarga | `--models-prepare` | Adquiere modelos de forma explícita |
 | Estado destructivo | `databases restore`, `databases purge` con `--apply` | Requiere confirmación, manifest/plan y locks |
 | Aplicación grant-bound | `curate apply` | Requiere confirmación exacta y backend/run inyectados; la CLI ordinaria falla cerrada sin ellos |
 | Conciliación | `curate reconcile` | Registra evidencia bounded; no reintenta ni modifica corpus |
@@ -178,7 +178,7 @@ Neocortex ask "¿Qué errores tienen mis archivos?" --scope personal --cursor TO
 Neocortex inspect code "consulta" --scope personal
 Neocortex inspect lineage IDENTIFICADOR --scope personal
 Neocortex review value --scope personal --limit 50
-Neocortex models status --json
+Neocortex --models-status --models-json
 Neocortex databases status --json
 ```
 
@@ -233,12 +233,15 @@ Neocortex --doctor-platform --doctor-platform-json
 Neocortex --status --status-json
 Neocortex --state-health --state-health-json
 Neocortex --knowledge-status --knowledge-json
-Neocortex --semantic-status --semantic-json
+Neocortex --semantic-status
 Neocortex --code-status --code-json
 ```
 
 Los comandos distinguen `complete`, `partial`, `unavailable`, `blocked`, schemas
 futuros y corrupción. Ausencia de resultados no se presenta como éxito.
+
+`--semantic-status` no tiene un flag JSON paralelo; `--semantic-plan-json` sólo
+acompaña a `--semantic-plan`.
 
 El doctor de plataforma separa `paths` canónicos de `effective_paths`, que
 incluyen `--root`, `--state-directory` y overrides de entorno. No crea los
@@ -314,12 +317,12 @@ su backup verificable. Consulta [RECOVERY.md](RECOVERY.md).
 ## Modelos y GUI
 
 ```bash
-Neocortex models status --json
-Neocortex models prepare
+Neocortex --models-status --models-json
+Neocortex --models-prepare --models-json
 Neocortex --ui
 ```
 
-`models status` es local; `prepare` puede descargar. La GUI consume los mismos
+`--models-status` es local; `--models-prepare` puede descargar. La GUI consume los mismos
 contratos y mantiene deshabilitados los efectos de corpus en Linux.
 
 La inspección o preparación puede limitarse al modelo solicitado, sin exigir
@@ -329,7 +332,7 @@ todos los modelos productivos:
 Neocortex --models-status --models-json --models-root /tmp/models \
   --models-model-id jinaai/jina-embeddings-v2-base-es
 Neocortex --root /tmp/corpus --state-directory /tmp/state --route audio \
-  --audio-model small --audio-model-cache /tmp/models/whisper
+  --whisper-model small --audio-model-cache /tmp/models/whisper
 ```
 
 `--models-model-id` es repetible; omitirlo conserva la selección completa. La
@@ -353,15 +356,16 @@ Qt; iniciar la UI sí requiere el extra `ui` y bibliotecas de plataforma.
 Neocortex agent serve
 ```
 
-El servidor stdio expone consultas read-only como status, search, context,
-evidence, `operational_query`, `curation_plan`, `curation_scan`, `curation_verify`, Code, lineage y
-salud de assets. También expone
-`curation_review` y `curation_decide`: escriben sólo ReviewTask advisory, están
-marcadas no destructivas y mantienen `actions_authorized=false`. `evidence`
-puede recibir `evidence_id` y `expected_snapshot_id`; ningún tool aplica acciones
-de corpus. MCP no expone `curation_authorize`: el actor autenticado que podría
-emitir un grant no está resuelto y no se acepta un nombre aportado por el agente
-como sustituto.
+El servidor stdio expone 15 herramientas: consultas read-only como status, search, context,
+`lifecycle_status`, `content_diagnostics`, `operational_query`, `evidence`,
+`inspect_code`, `lineage`, `asset_health`, `curation_plan`, `curation_scan` y
+`curation_verify`. También expone `curation_review` y `curation_decide`: pueden
+escribir únicamente eventos advisory de ReviewTask, están marcadas como no
+destructivas y mantienen `actions_authorized=false`. `evidence` puede recibir
+`evidence_id` y `expected_snapshot_id`; ningún tool aplica acciones de corpus.
+MCP no expone `curation_authorize`, `curation_apply`, `curation_reconcile` ni
+`curation_restore`: el actor autenticado que podría emitir un grant no está
+resuelto y no se acepta un nombre aportado por el agente como sustituto.
 
 ## Salida estructurada y códigos
 

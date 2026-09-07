@@ -17,6 +17,12 @@ from neocortex.foundation.file_identity import file_key_from_snapshot as file_ke
 from .policy import DOCUMENT_OCR_TEXT_MAX_UTF8_BYTES
 from neocortex.safety.route_filters import CandidateSelection
 from neocortex.persistence.sqlite_immutable import open_sidecar_safe_sqlite_connection
+from neocortex.persistence.sqlite_connection import (
+    ensure_private_sqlite_owner,
+    ensure_private_sqlite_sidecars,
+    ensure_private_state_directory,
+    private_state_creation,
+)
 from neocortex.persistence.sqlite_schema_contract import (
     SQLiteSchemaContract,
     read_metadata_schema_version,
@@ -214,8 +220,23 @@ def connect_image_state(
         except FileNotFoundError as exc:
             raise sqlite3.OperationalError(f"unable to open database file: {path}") from exc
     else:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(path, timeout=30.0)
+        with private_state_creation():
+            ensure_private_state_directory(path)
+            ensure_private_sqlite_owner(path)
+            ensure_private_sqlite_sidecars(path)
+            connection = sqlite3.connect(path, timeout=30.0)
+            try:
+                connection.row_factory = sqlite3.Row
+                connection.execute("PRAGMA foreign_keys=ON")
+                if int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
+                    raise RuntimeError("image state could not enable foreign keys")
+                connection.execute("PRAGMA busy_timeout=30000")
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("PRAGMA synchronous=NORMAL")
+            except BaseException:
+                connection.close()
+                raise
+            return connection
     try:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")

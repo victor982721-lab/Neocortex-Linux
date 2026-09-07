@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import os
-import shutil
 import subprocess
 import urllib.request
 import venv
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import urlparse
 
 
 PIP_BOOTSTRAP_VERSION = "26.2.1"
@@ -33,6 +33,8 @@ PIP_WHEEL_RUNNER = (
     "runpy.run_module('pip',run_name='__main__')"
 )
 PIP_VERIFY_SCRIPT = "import pip; print(pip.__version__)"
+PIP_BOOTSTRAP_MAX_BYTES = 64 * 1024 * 1024
+PIP_BOOTSTRAP_DOWNLOAD_TIMEOUT = 120
 
 
 class PipBootstrapError(RuntimeError):
@@ -55,12 +57,33 @@ def _run(
     *,
     timeout: float,
 ) -> subprocess.CompletedProcess[str]:
+    # The bootstrap is the first package-management operation in a release.
+    # Do not let a caller's shell silently turn it into an indexed/networked
+    # pip invocation, even when a test or embedding caller supplies a runner
+    # that eventually delegates to subprocess.
+    environment = dict(os.environ)
+    for name in tuple(environment):
+        if name.upper().startswith("PIP_") or name in {
+            "PYTHONHOME",
+            "PYTHONPATH",
+            "PYTHONUSERBASE",
+        }:
+            environment.pop(name, None)
+    environment.update(
+        {
+            "PIP_CONFIG_FILE": os.devnull,
+            "PIP_NO_INDEX": "1",
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            "PYTHONNOUSERSITE": "1",
+        }
+    )
     result = subprocess.run(
         [os.fspath(argument) for argument in arguments],
         check=False,
         capture_output=True,
         text=True,
         timeout=timeout,
+        env=environment,
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()[-4000:]
@@ -81,13 +104,46 @@ def sha256_file(path: Path) -> str:
 
 
 def download_pip_bootstrap(url: str, destination: Path) -> None:
-    """Download one artifact with urllib into a caller-owned workspace."""
+    """Download one bounded artifact when the caller explicitly opts in.
+
+    Release installation never calls this function: it consumes a local,
+    hash-manifested wheelhouse.  Keeping the downloader available is useful
+    for a deliberate provisioning step, but it must remain bounded and HTTPS
+    only so a malformed endpoint cannot turn bootstrap into an unbounded
+    network or disk operation.
+    """
+
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname != "files.pythonhosted.org":
+        raise PipBootstrapError("pip bootstrap download requires the canonical HTTPS host")
+    if destination.exists():
+        raise PipBootstrapError("pip bootstrap destination already exists")
 
     request = urllib.request.Request(url, headers={"User-Agent": "NeoCortex-pip-bootstrap/1"})
-    with urllib.request.urlopen(request, timeout=120) as response, destination.open("xb") as output:
-        shutil.copyfileobj(response, output, length=1024 * 1024)
-        output.flush()
-        os.fsync(output.fileno())
+    try:
+        with urllib.request.urlopen(request, timeout=PIP_BOOTSTRAP_DOWNLOAD_TIMEOUT) as response:
+            declared_length = response.headers.get("Content-Length")
+            if declared_length is not None:
+                try:
+                    if int(declared_length) > PIP_BOOTSTRAP_MAX_BYTES:
+                        raise PipBootstrapError("pip bootstrap download exceeds its byte bound")
+                except ValueError as exc:
+                    raise PipBootstrapError("pip bootstrap Content-Length is invalid") from exc
+            total = 0
+            with destination.open("xb") as output:
+                while True:
+                    chunk = response.read(min(1024 * 1024, PIP_BOOTSTRAP_MAX_BYTES - total + 1))
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > PIP_BOOTSTRAP_MAX_BYTES:
+                        raise PipBootstrapError("pip bootstrap download exceeds its byte bound")
+                    output.write(chunk)
+                output.flush()
+                os.fsync(output.fileno())
+    except BaseException:
+        destination.unlink(missing_ok=True)
+        raise
 
 
 def require_pip_bootstrap(
@@ -109,13 +165,23 @@ def require_pip_bootstrap(
 def prepare_pip_bootstrap(
     workspace: Path,
     *,
-    downloader: Downloader = download_pip_bootstrap,
+    downloader: Downloader | None = None,
     filename: str = PIP_BOOTSTRAP_FILENAME,
     url: str = PIP_BOOTSTRAP_URL,
     sha256: str = PIP_BOOTSTRAP_SHA256,
 ) -> Path:
-    """Download and authenticate the pinned wheel without importing pip."""
+    """Prepare and authenticate the pinned wheel without importing pip.
 
+    Network download is deliberately not the default.  A caller that really
+    owns the provisioning decision may pass an explicit downloader; release
+    installation instead stages the wheel from its authenticated wheelhouse.
+    """
+
+    if downloader is None:
+        raise PipBootstrapError(
+            "implicit network bootstrap is disabled; provide a verified local wheel "
+            "or an explicit downloader"
+        )
     wheel = workspace / filename
     downloader(url, wheel)
     require_pip_bootstrap(wheel, filename=filename, sha256=sha256)
@@ -224,9 +290,15 @@ def bootstrap_python(
     workspace: Path,
     *,
     runner: CommandRunner = _run,
-    downloader: Downloader = download_pip_bootstrap,
+    downloader: Downloader | None = None,
 ) -> str:
-    """Download, authenticate, seed, and verify one target interpreter."""
+    """Seed and verify one target interpreter using an explicit source.
+
+    With no downloader this fails closed before any network request.  The
+    low-level function remains injectable for a caller that has explicitly
+    authorized and bounded a provisioning source, while normal release code
+    supplies a local wheel directly through :func:`seed_pip`.
+    """
 
     wheel = prepare_pip_bootstrap(workspace, downloader=downloader)
     return seed_pip(python, wheel, runner=runner)
@@ -236,6 +308,8 @@ __all__ = [
     "PIP_BOOTSTRAP_FILENAME",
     "PIP_BOOTSTRAP_SHA256",
     "PIP_BOOTSTRAP_URL",
+    "PIP_BOOTSTRAP_DOWNLOAD_TIMEOUT",
+    "PIP_BOOTSTRAP_MAX_BYTES",
     "PIP_BOOTSTRAP_VERSION",
     "PIP_VERIFY_SCRIPT",
     "PIP_WHEEL_RUNNER",

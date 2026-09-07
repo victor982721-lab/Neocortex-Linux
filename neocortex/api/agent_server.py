@@ -260,6 +260,181 @@ if BaseModel is not None:
     class MCPOperationalQueryOutput(_MCPReadOutput):
         kind: Literal["neocortex_scoped_operational_query"]
 
+    class _MCPLifecycleError(BaseModel):
+        model_config = ConfigDict(extra="forbid", strict=True)
+
+        code: str
+        message: str
+        retryable: bool | None = None
+
+    class _MCPLifecyclePhase(BaseModel):
+        model_config = ConfigDict(extra="forbid", strict=True)
+
+        phase_name: str
+        status: str
+        started_ns: int
+        completed_ns: int | None
+        elapsed_ns: int
+        error_type: str | None
+
+    class _MCPLifecycleRoute(BaseModel):
+        model_config = ConfigDict(extra="forbid", strict=True)
+
+        route_name: str
+        status: str
+        current_phase: str | None
+        started_ns: int
+        completed_ns: int | None
+        elapsed_ns: int
+        heartbeat_ns: int | None
+        error_type: str | None
+        resume_capability: str
+        replayability: str
+        candidates: int
+        processed: int
+        cache_hits: int
+        new_work: int
+        cached_errors: int
+        replay_status: str
+        phases: list[_MCPLifecyclePhase]
+
+    class _MCPLifecycleStage(BaseModel):
+        model_config = ConfigDict(extra="forbid", strict=True)
+
+        schema_: Literal["neocortex.lifecycle-stage/v1"] = _pydantic_field(alias="schema")
+        run_id: int
+        manifest_digest: str | None
+        stage: str
+        status: str
+        details: dict[str, object]
+        idempotency_key: str
+        event_id: int | None
+
+    class _MCPLifecycleBudget(BaseModel):
+        model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True)
+
+        schema_: Literal["neocortex.run-budget/v1"] = _pydantic_field(alias="schema")
+        manifest_digest: str | None = None
+        max_items: int | None = None
+        max_bytes: int | None = None
+        max_duration_seconds: int | float | None = None
+        started_ns: int | None = None
+        deadline_ns: int | None = None
+        consumed_items: int | None = None
+        consumed_bytes: int | None = None
+        consumed_bytes_kind: str | None = None
+        remaining_items: int | None = None
+        remaining_bytes: int | None = None
+        elapsed_ns: int | None = None
+        elapsed_seconds: int | float | None = None
+        elapsed_until_ns: int | None = None
+        elapsed_scope: str | None = None
+        expired: bool | None = None
+        cancel_requested: bool | None = None
+        cancel_reason: str | None = None
+        reservation_count: int | None = None
+        last_event_id: int | None = None
+
+    class _MCPLifecycleManifest(BaseModel):
+        model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True)
+
+        schema_: Literal["neocortex.run-manifest/v1"] = _pydantic_field(alias="schema")
+        run_id: int
+        run_kind: str
+        source_run_id: int | None
+        root: str
+        root_identity: list[int]
+        selected_routes: list[str]
+        route_capabilities: dict[str, str]
+        configuration: dict[str, object]
+        budget: dict[str, object]
+        input_snapshot: dict[str, object]
+        digest: str
+
+    class _MCPLifecycleRun(BaseModel):
+        model_config = ConfigDict(extra="forbid", strict=True)
+
+        run_id: int
+        run_kind: str
+        status: str
+        root: str
+        source_run_id: int | None
+        current_phase: str | None
+        owner_pid: int | None
+        owner_alive: bool | None
+        heartbeat_ns: int | None
+        heartbeat_stale: bool | None
+        started_ns: int
+        completed_ns: int | None
+        elapsed_ns: int
+        recovery_required_actions: int
+        manifest: _MCPLifecycleManifest | None
+        budget: _MCPLifecycleBudget | None
+        recovery: dict[str, object] | None
+        resumed: bool
+        replayed: bool
+        skipped_routes: list[str]
+        non_replayable_routes: list[str]
+        stages: list[_MCPLifecycleStage]
+        route_capabilities: dict[str, str] | None
+        lifecycle: "_MCPLifecycleEnvelope"
+        routes: list[_MCPLifecycleRoute]
+
+    class _MCPLifecycleRouteError(BaseModel):
+        model_config = ConfigDict(extra="forbid", strict=True)
+
+        route_name: str
+        error_type: str
+
+    class _MCPLifecycleEnvelope(BaseModel):
+        model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True)
+
+        schema_: Literal["neocortex.lifecycle-envelope/v1"] = _pydantic_field(alias="schema")
+        status: str
+        run_id: int | None
+        source_run_id: int | None
+        manifest_digest: str | None
+        resumed_from: int | None
+        resumed: bool
+        replayed: bool
+        skipped: list[str]
+        non_replayable: list[str]
+        budget: _MCPLifecycleBudget | None
+        recovery: dict[str, object] | None
+        stages: list[_MCPLifecycleStage]
+        route_capabilities: dict[str, str] | None
+        routes: list[_MCPLifecycleRoute]
+        errors: list[_MCPLifecycleRouteError]
+
+    class _MCPLifecycleResult(BaseModel):
+        model_config = ConfigDict(extra="forbid", strict=True)
+
+        count: int
+        run_ids: list[int]
+
+    class MCPLifecycleStatusOutput(BaseModel):
+        """Strict v1 lifecycle response; metadata is bounded upstream."""
+
+        model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True)
+
+        schema_: Literal["neocortex.lifecycle-envelope/v1"] = _pydantic_field(alias="schema")
+        kind: Literal["neocortex_lifecycle_status"]
+        operation: Literal["lifecycle_status"]
+        request_id: str
+        read_only: Literal[True]
+        coverage: Literal["complete", "unavailable"]
+        status: Literal["ok", "unavailable", "schema_incompatible", "corrupt"]
+        exit_code: Literal[0, 1, 6, 7]
+        error: _MCPLifecycleError | None
+        state_directory: str
+        limit: int
+        run_id: int | None
+        runs: list[_MCPLifecycleRun]
+        result: _MCPLifecycleResult
+        lifecycle: _MCPLifecycleEnvelope
+
+    _MCPLifecycleRun.model_rebuild()
+
     class _MCPContentDiagnosticFilters(BaseModel):
         model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -642,6 +817,7 @@ else:  # pragma: no cover - minimal install fallback
     MCPCodeSearchOutput = CodeSearchOutput  # type: ignore[misc]
     MCPLineageOutput = LineageOutput  # type: ignore[misc]
     MCPAssetHealthOutput = AssetHealthOutput  # type: ignore[misc]
+    MCPLifecycleStatusOutput = dict[str, object]  # type: ignore[misc,assignment]
     MCPContentDiagnosticsOutput = dict[str, object]  # type: ignore[misc,assignment]
     MCPCurationPlanOutput = CurationPlanOutput  # type: ignore[misc]
     MCPCurationReviewOutput = dict[str, object]  # type: ignore[misc,assignment]
@@ -1014,8 +1190,11 @@ def create_server() -> Any:
     def lifecycle_status(
         limit: Annotated[int, _pydantic_field(ge=1, le=20)] = 5,
         run_id: Annotated[int | None, _pydantic_field(ge=1)] = None,
-    ) -> dict[str, Any]:
-        return lifecycle_status_payload(limit=limit, run_id=run_id)
+    ) -> MCPLifecycleStatusOutput:
+        payload = lifecycle_status_payload(limit=limit, run_id=run_id)
+        if BaseModel is not None:
+            MCPLifecycleStatusOutput.model_validate(payload)
+        return cast(MCPLifecycleStatusOutput, payload)
 
     @server.tool(
         name="content_diagnostics",

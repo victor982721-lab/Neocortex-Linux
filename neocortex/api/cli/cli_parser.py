@@ -19,6 +19,7 @@ from neocortex.runtime.config.app_paths import default_state_directory
 from .cli_audio_surface import register_audio_arguments
 from .cli_archive_surface import register_archive_arguments
 from .cli_capabilities_surface import register_capabilities_arguments
+from .cli_config_doctor_surface import register_config_doctor_arguments
 from .cli_code_surface import register_code_arguments
 from .cli_content_diagnostics import register_content_diagnostics_arguments
 from .cli_docx_surface import register_docx_arguments
@@ -127,6 +128,7 @@ def build_parser() -> argparse.ArgumentParser:
         allow_abbrev=False,
     )
     register_platform_arguments(parser)
+    register_config_doctor_arguments(parser)
     register_models_arguments(parser)
     parser.add_argument(
         "--version",

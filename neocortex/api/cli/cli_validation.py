@@ -15,6 +15,7 @@ from .cli_archive_surface import (
     validate_archive_direct_operation,
 )
 from .cli_capabilities_surface import validate_capabilities_arguments
+from .cli_config_doctor_surface import validate_config_doctor_arguments
 from .cli_code_surface import validate_code_arguments
 from .cli_content_diagnostics import validate_content_diagnostics_arguments
 from .cli_docx_surface import validate_docx_arguments, validate_docx_direct_operation
@@ -627,6 +628,7 @@ def _validate_direct_operations(args: argparse.Namespace) -> None:
     validate_knowledge_arguments(args)
     _validate_direct_operation_selection(args)
     validate_capabilities_arguments(args)
+    validate_config_doctor_arguments(args)
     _validate_status_operation(args)
     _validate_state_health_operation(args)
     _validate_action_recovery_operation(args)

@@ -183,5 +183,5 @@ Los wheels de desarrollo incluidos no forman parte del paquete instalado.
 - [Registro de cambios](docs/CHANGELOG.md)
 
 Las reglas para contribuir mediante Codex están en [AGENTS.md](AGENTS.md). El
-estado reanudable de una campaña activa vive en el único handoff vigente, no en
-los contratos estables del producto.
+estado reanudable de una campaña activa vive en el [handoff operativo vigente](.codex/handoffs/CURRENT.md),
+no en los contratos estables del producto.

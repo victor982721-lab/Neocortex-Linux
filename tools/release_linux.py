@@ -75,8 +75,12 @@ _RELEASE_ID = re.compile(
     r")"
     r"-(?P<source_sha>[0-9a-f]{12}(?:[0-9a-f]{28})?)-cp314-linux-x86_64\Z"
 )
-_LOCKED_REQUIREMENT = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*)==([^\s;]+)$")
+_LOCKED_REQUIREMENT = re.compile(
+    r"^([A-Za-z0-9][A-Za-z0-9_.-]*)==([^\s;]+)"
+    r"(?:\s+--hash=sha256:([0-9a-f]{64}))?$"
+)
 _MAX_RUNTIME_DEPENDENCIES = 512
+_BUILD_DEPENDENCIES = {"build": "1.5.0", "setuptools": "83.0.0", "wheel": None}
 _STAGING_STALE_SECONDS = 24 * 60 * 60
 _STAGING_MARKER = ".installing.json"
 _GC_MARKER = ".gc.json"
@@ -102,6 +106,18 @@ class _WheelhouseArtifact:
     filename: str
     sha256: str
     path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class _InstallPreflight:
+    """Read-only inputs captured before creating or replacing any product path."""
+
+    corpus_root: Path
+    wheelhouse: Path
+    source_sha: str
+    source_runtime_lock: Path
+    wheelhouse_artifacts: dict[str, _WheelhouseArtifact]
+    wheelhouse_provenance: dict[str, object]
 
 
 class LinuxReleaseError(RuntimeError):
@@ -414,6 +430,129 @@ def _validate_wheelhouse(
     return artifacts
 
 
+def _wheelhouse_artifact_set_sha256(artifacts: Mapping[str, _WheelhouseArtifact]) -> str:
+    """Hash the sorted wheel identities used by a release receipt."""
+
+    rows = [
+        {
+            "name": artifact.name,
+            "version": artifact.version,
+            "filename": artifact.filename,
+            "sha256": artifact.sha256,
+        }
+        for artifact in sorted(artifacts.values(), key=lambda item: item.name)
+    ]
+    return hashlib.sha256(_canonical_json({"artifacts": rows})).hexdigest()
+
+
+def _wheelhouse_provenance(
+    path: Path,
+    artifacts: Mapping[str, _WheelhouseArtifact],
+) -> dict[str, object]:
+    """Capture the immutable wheelhouse identity for a manifest and receipt."""
+
+    root = _absolute_real_directory(path, label="offline wheelhouse")
+    manifest = root / WHEELHOUSE_MANIFEST_NAME
+    try:
+        metadata = manifest.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise LinuxReleaseError("wheelhouse manifest must be a regular file")
+        manifest_sha256 = _sha256_file(manifest)
+    except LinuxReleaseError:
+        raise
+    except OSError as exc:
+        raise LinuxReleaseError("wheelhouse manifest cannot be hashed") from exc
+    rows = [
+        {
+            "name": artifact.name,
+            "version": artifact.version,
+            "filename": artifact.filename,
+            "sha256": artifact.sha256,
+        }
+        for artifact in sorted(artifacts.values(), key=lambda item: item.name)
+    ]
+    return {
+        "schema_version": WHEELHOUSE_SCHEMA_VERSION,
+        "kind": "neocortex_wheelhouse_provenance",
+        "path": str(root),
+        "manifest_filename": WHEELHOUSE_MANIFEST_NAME,
+        "manifest_sha256": manifest_sha256,
+        "artifact_count": len(rows),
+        "artifact_set_sha256": _wheelhouse_artifact_set_sha256(artifacts),
+        "artifacts": rows,
+    }
+
+
+def _validate_wheelhouse_provenance(
+    payload: object,
+    *,
+    label: str = "wheelhouse provenance",
+) -> dict[str, object]:
+    """Validate receipt/manifest provenance without touching the wheelhouse."""
+
+    if not isinstance(payload, dict):
+        raise LinuxReleaseError(f"{label} is malformed")
+    if (
+        payload.get("schema_version") != WHEELHOUSE_SCHEMA_VERSION
+        or payload.get("kind") != "neocortex_wheelhouse_provenance"
+    ):
+        raise LinuxReleaseError(f"{label} identity is unsupported")
+    path = payload.get("path")
+    manifest_filename = payload.get("manifest_filename")
+    manifest_sha256 = payload.get("manifest_sha256")
+    artifact_count = payload.get("artifact_count")
+    artifact_set_sha256 = payload.get("artifact_set_sha256")
+    rows = payload.get("artifacts")
+    if (
+        not isinstance(path, str)
+        or not Path(path).is_absolute()
+        or ".." in Path(path).parts
+        or manifest_filename != WHEELHOUSE_MANIFEST_NAME
+        or not isinstance(manifest_sha256, str)
+        or _SHA256.fullmatch(manifest_sha256) is None
+        or isinstance(artifact_count, bool)
+        or not isinstance(artifact_count, int)
+        or artifact_count <= 0
+        or not isinstance(artifact_set_sha256, str)
+        or _SHA256.fullmatch(artifact_set_sha256) is None
+        or not isinstance(rows, list)
+        or len(rows) != artifact_count
+    ):
+        raise LinuxReleaseError(f"{label} identity is invalid")
+    seen: set[str] = set()
+    canonical_rows: list[dict[str, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise LinuxReleaseError(f"{label} artifact is malformed")
+        name = row.get("name")
+        version = row.get("version")
+        filename = row.get("filename")
+        digest = row.get("sha256")
+        if (
+            not isinstance(name, str)
+            or name != _normalized_distribution_name(name)
+            or not isinstance(version, str)
+            or not version
+            or not isinstance(filename, str)
+            or Path(filename).name != filename
+            or not filename.endswith(".whl")
+            or not isinstance(digest, str)
+            or _SHA256.fullmatch(digest) is None
+            or name in seen
+        ):
+            raise LinuxReleaseError(f"{label} artifact identity is invalid")
+        seen.add(name)
+        canonical_rows.append(
+            {"name": name, "version": version, "filename": filename, "sha256": digest}
+        )
+    if canonical_rows != sorted(canonical_rows, key=lambda item: item["name"]):
+        raise LinuxReleaseError(f"{label} artifacts are not canonically ordered")
+    digest = hashlib.sha256(_canonical_json({"artifacts": canonical_rows})).hexdigest()
+    if digest != artifact_set_sha256:
+        raise LinuxReleaseError(f"{label} artifact set hash differs")
+    return payload
+
+
 def _hashed_requirements(
     path: Path,
     artifacts: Sequence[_WheelhouseArtifact],
@@ -453,8 +592,10 @@ def _resolve_wheelhouse(path: Path | None) -> Path:
     return _absolute_real_directory(path, label="offline wheelhouse")
 
 
-def _runtime_dependency_lock(path: Path) -> dict[str, str]:
-    """Read one exact, bounded Linux CPython runtime lock."""
+def _runtime_dependency_lock_details(
+    path: Path,
+) -> tuple[dict[str, str], dict[str, str | None]]:
+    """Read one exact, bounded Linux CPython runtime lock and its hashes."""
 
     try:
         metadata = path.lstat()
@@ -466,6 +607,7 @@ def _runtime_dependency_lock(path: Path) -> dict[str, str]:
     if len(raw.encode("utf-8")) > 128 * 1024:
         raise LinuxReleaseError("runtime dependency lock exceeds its byte bound")
     entries: dict[str, str] = {}
+    hashes: dict[str, str | None] = {}
     for line_number, raw_line in enumerate(raw.splitlines(), 1):
         line = raw_line.strip()
         if not line or line.startswith("#"):
@@ -477,16 +619,32 @@ def _runtime_dependency_lock(path: Path) -> dict[str, str]:
             )
         name = _normalized_distribution_name(match.group(1))
         version = match.group(2)
+        artifact_hash = match.group(3)
         if name == "neocortex-framework":
             raise LinuxReleaseError("runtime dependency lock must exclude the project wheel")
         if name in entries:
             raise LinuxReleaseError(f"runtime dependency lock duplicates {name}")
         entries[name] = version
+        hashes[name] = artifact_hash
     if not entries or len(entries) > _MAX_RUNTIME_DEPENDENCIES:
         raise LinuxReleaseError("runtime dependency lock count is outside its bound")
     if entries.get("pip") != PIP_BOOTSTRAP_VERSION:
         raise LinuxReleaseError("runtime dependency lock disagrees with pinned pip")
+    return entries, hashes
+
+
+def _runtime_dependency_lock(path: Path) -> dict[str, str]:
+    """Return exact dependency versions from the Linux CPython runtime lock."""
+
+    entries, _hashes = _runtime_dependency_lock_details(path)
     return entries
+
+
+def _runtime_dependency_hashes(path: Path) -> dict[str, str | None]:
+    """Return optional artifact hashes declared by the runtime lock."""
+
+    _entries, hashes = _runtime_dependency_lock_details(path)
+    return hashes
 
 
 _RUNTIME_INVENTORY_SCRIPT = r"""
@@ -940,6 +1098,38 @@ def _build_wheel(
     if len(wheels) != 1:
         raise LinuxReleaseError("wheel build did not produce exactly one artifact")
     return wheels[0]
+
+
+def compare_reproducible_builds(first: Path, second: Path) -> str:
+    """Require two distinct wheel outputs to be byte-identical.
+
+    The release installer normally builds once from the immutable Git stage;
+    this helper gives the release gate a deterministic double-build check
+    without coupling that check to a second activation or to product state.
+    """
+
+    try:
+        first_metadata = first.lstat()
+        second_metadata = second.lstat()
+    except OSError as exc:
+        raise LinuxReleaseError("reproducibility candidate is unavailable") from exc
+    if (
+        stat.S_ISLNK(first_metadata.st_mode)
+        or stat.S_ISLNK(second_metadata.st_mode)
+        or not stat.S_ISREG(first_metadata.st_mode)
+        or not stat.S_ISREG(second_metadata.st_mode)
+    ):
+        raise LinuxReleaseError("reproducibility candidates must be regular files")
+    try:
+        if first.resolve(strict=True) == second.resolve(strict=True):
+            raise LinuxReleaseError("reproducibility requires two distinct build outputs")
+        first_digest = _sha256_file(first)
+        second_digest = _sha256_file(second)
+    except OSError as exc:
+        raise LinuxReleaseError("reproducibility candidate cannot be hashed") from exc
+    if first_digest != second_digest:
+        raise LinuxReleaseError("independent wheel builds are not byte-identical")
+    return first_digest
 
 
 def _install_wheel(
@@ -2044,6 +2234,58 @@ def _repromotion_rollback(
     return None
 
 
+def _interpreter_attestation() -> dict[str, str]:
+    """Return the reference interpreter identity embedded in a release."""
+
+    cache_tag = sys.implementation.cache_tag
+    if not isinstance(cache_tag, str) or not cache_tag:
+        raise LinuxReleaseError("release interpreter cache tag is unavailable")
+    return {
+        "implementation": sys.implementation.name,
+        "version": platform.python_version(),
+        "cache_tag": cache_tag,
+        "executable": "bin/python",
+    }
+
+
+def _validate_release_interpreter(
+    release_root: Path,
+    *,
+    expected: Mapping[str, object] | None = None,
+) -> dict[str, str] | None:
+    """Validate the release-local interpreter path and optional attestation."""
+
+    python = _venv_python(release_root)
+    try:
+        metadata = python.lstat()
+    except OSError as exc:
+        raise LinuxReleaseError("release interpreter is unavailable") from exc
+    if stat.S_ISLNK(metadata.st_mode):
+        target = os.readlink(python)
+        if not _allowed_release_symlink("bin/python", target):
+            raise LinuxReleaseError("release interpreter symlink is unsafe")
+    elif not stat.S_ISREG(metadata.st_mode):
+        raise LinuxReleaseError("release interpreter is not a regular executable")
+    if not os.access(python, os.X_OK):
+        raise LinuxReleaseError("release interpreter is not executable")
+    if expected is None:
+        return None
+    if (
+        expected.get("implementation") != "cpython"
+        or not isinstance(expected.get("version"), str)
+        or not re.fullmatch(r"3\.14\.[0-9]+", str(expected["version"]))
+        or expected.get("cache_tag") != "cpython-314"
+        or expected.get("executable") != "bin/python"
+    ):
+        raise LinuxReleaseError("release interpreter attestation is invalid")
+    return {
+        "implementation": str(expected["implementation"]),
+        "version": str(expected["version"]),
+        "cache_tag": str(expected["cache_tag"]),
+        "executable": str(expected["executable"]),
+    }
+
+
 def _release_manifest(
     *,
     release_name: str,
@@ -2052,9 +2294,19 @@ def _release_manifest(
     wheel_sha: str,
     runtime_dependency_lock: Path,
     versions: dict[str, str],
+    wheelhouse_provenance: Mapping[str, object] | None = None,
+    interpreter: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     locked_dependencies = _runtime_dependency_lock(runtime_dependency_lock)
-    return {
+    attestation = _interpreter_attestation() if interpreter is None else dict(interpreter)
+    interpreter_path = _venv_python(runtime_dependency_lock.parent)
+    has_interpreter = interpreter is not None or os.path.lexists(interpreter_path)
+    if has_interpreter:
+        _validate_release_interpreter(
+            runtime_dependency_lock.parent,
+            expected=attestation,
+        )
+    manifest: dict[str, object] = {
         "schema_version": RECEIPT_SCHEMA_VERSION,
         "kind": "linux_release_manifest",
         "runtime_profile": RUNTIME_PROFILE,
@@ -2070,6 +2322,14 @@ def _release_manifest(
         "runtime_dependency_count": len(locked_dependencies),
         **versions,
     }
+    if has_interpreter:
+        manifest["interpreter"] = attestation
+    if wheelhouse_provenance is not None:
+        manifest["wheelhouse_provenance"] = _validate_wheelhouse_provenance(
+            dict(wheelhouse_provenance),
+            label="release wheelhouse provenance",
+        )
+    return manifest
 
 
 def _read_release_manifest(
@@ -2107,6 +2367,15 @@ def _read_release_manifest(
         )
     ):
         raise LinuxReleaseError("product-only release contains development-tool metadata")
+    interpreter = payload.get("interpreter")
+    if interpreter is not None:
+        _validate_release_interpreter(release_root, expected=interpreter)
+    wheelhouse_provenance = payload.get("wheelhouse_provenance")
+    if wheelhouse_provenance is not None:
+        _validate_wheelhouse_provenance(
+            wheelhouse_provenance,
+            label="existing release wheelhouse provenance",
+        )
     release_version, _ = _require_release_id(release_name)
     wheel_filename = payload.get("wheel_filename")
     expected_wheel = f"neocortex_framework-{release_version}-py3-none-any.whl"
@@ -2203,6 +2472,90 @@ def _prepare_corpus_root(corpus_root: Path) -> bool:
     return True
 
 
+def _validate_corpus_destination(corpus_root: Path) -> None:
+    """Validate a not-yet-created corpus path without creating any component."""
+
+    if not corpus_root.is_absolute() or ".." in corpus_root.parts:
+        raise LinuxReleaseError("corpus root must be an unambiguous absolute path")
+    cursor = corpus_root
+    while cursor != cursor.parent:
+        if os.path.lexists(cursor):
+            metadata = os.lstat(cursor)
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                raise LinuxReleaseError(f"corpus path component is not a real directory: {cursor}")
+        cursor = cursor.parent
+
+
+def _preflight_install(
+    layout: LinuxReleaseLayout,
+    *,
+    corpus_root: Path,
+    wheelhouse: Path | None,
+    runner: CommandRunner,
+) -> _InstallPreflight:
+    """Capture and authenticate all install inputs before product effects."""
+
+    _validate_layout(layout)
+    _validate_corpus_destination(corpus_root)
+    resolved_wheelhouse = _resolve_wheelhouse(wheelhouse)
+    source_sha = _source_sha(layout.source_root, runner)
+    source_runtime_lock = layout.source_root / RUNTIME_DEPENDENCY_LOCK_NAME
+    locked_dependencies, lock_hashes = _runtime_dependency_lock_details(source_runtime_lock)
+    constraints = layout.source_root / "constraints.txt"
+    try:
+        constraints_metadata = constraints.lstat()
+    except OSError as exc:
+        raise LinuxReleaseError("release constraints are unavailable") from exc
+    if stat.S_ISLNK(constraints_metadata.st_mode) or not stat.S_ISREG(constraints_metadata.st_mode):
+        raise LinuxReleaseError("release constraints must be a regular file")
+    required = {**locked_dependencies, **_BUILD_DEPENDENCIES}
+    wheelhouse_artifacts = _validate_wheelhouse(resolved_wheelhouse, required=required)
+    pip_artifact = wheelhouse_artifacts["pip"]
+    if pip_artifact.sha256 != PIP_BOOTSTRAP_SHA256:
+        raise LinuxReleaseError("wheelhouse pip artifact differs from the pinned bootstrap hash")
+    for name, expected_hash in lock_hashes.items():
+        if expected_hash is None:
+            continue
+        observed = wheelhouse_artifacts[name].sha256
+        if observed != expected_hash:
+            raise LinuxReleaseError(f"runtime lock hash differs for wheelhouse artifact: {name}")
+    return _InstallPreflight(
+        corpus_root=corpus_root,
+        wheelhouse=resolved_wheelhouse,
+        source_sha=source_sha,
+        source_runtime_lock=source_runtime_lock,
+        wheelhouse_artifacts=wheelhouse_artifacts,
+        wheelhouse_provenance=_wheelhouse_provenance(
+            resolved_wheelhouse,
+            wheelhouse_artifacts,
+        ),
+    )
+
+
+def _revalidate_wheelhouse(
+    path: Path,
+    expected: Mapping[str, object],
+) -> dict[str, object]:
+    """Re-hash the wheelhouse at the effect boundary and reject TOCTOU drift."""
+
+    rows = expected.get("artifacts")
+    if not isinstance(rows, list):
+        raise LinuxReleaseError("preflight wheelhouse provenance is malformed")
+    required: dict[str, str] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise LinuxReleaseError("preflight wheelhouse artifact provenance is malformed")
+        name, version = row.get("name"), row.get("version")
+        if not isinstance(name, str) or not isinstance(version, str):
+            raise LinuxReleaseError("preflight wheelhouse artifact provenance is malformed")
+        required[name] = version
+    artifacts = _validate_wheelhouse(path, required=required)
+    observed = _wheelhouse_provenance(path, artifacts)
+    if observed != dict(expected):
+        raise LinuxReleaseError("wheelhouse changed after install preflight")
+    return observed
+
+
 def _validate_layout(layout: LinuxReleaseLayout) -> None:
     """Validate all writable release roots before any operation begins."""
 
@@ -2241,22 +2594,37 @@ def install_release(
     runner: CommandRunner = _run,
 ) -> dict[str, object]:
     _require_reference_platform()
-    wheelhouse = _resolve_wheelhouse(wheelhouse)
     _validate_layout(layout)
     corpus_root_source = "platform_default" if corpus_root is None else "explicit_install"
     corpus_root = (layout.policy.corpus_root if corpus_root is None else corpus_root).expanduser()
-    if not corpus_root.is_absolute() or ".." in corpus_root.parts:
-        raise LinuxReleaseError("corpus root must be an unambiguous absolute path")
+    preflight = _preflight_install(
+        layout,
+        corpus_root=corpus_root,
+        wheelhouse=wheelhouse,
+        runner=runner,
+    )
     with (
         _release_lock(layout),
         tempfile.TemporaryDirectory(prefix="neocortex-release-smoke-") as smoke_directory,
     ):
         smoke_corpus_root = Path(smoke_directory)
+        locked_preflight = _preflight_install(
+            layout,
+            corpus_root=corpus_root,
+            wheelhouse=wheelhouse,
+            runner=runner,
+        )
+        if (
+            locked_preflight.source_sha != preflight.source_sha
+            or locked_preflight.wheelhouse_provenance != preflight.wheelhouse_provenance
+        ):
+            raise LinuxReleaseError("release inputs changed between preflight and activation lock")
+        preflight = locked_preflight
+        wheelhouse = preflight.wheelhouse
+        source_sha = preflight.source_sha
+        source_runtime_lock = preflight.source_runtime_lock
         _reap_staging(layout)
         corpus_root_created = _prepare_corpus_root(corpus_root)
-        source_sha = _source_sha(layout.source_root, runner)
-        source_runtime_lock = layout.source_root / RUNTIME_DEPENDENCY_LOCK_NAME
-        _runtime_dependency_lock(source_runtime_lock)
         name = release_id(source_sha)
         final_release = layout.releases / name
         _ensure_directory(layout.releases)
@@ -2305,6 +2673,7 @@ def install_release(
             with tempfile.TemporaryDirectory(prefix=f"{name}-", dir=layout.staging) as temporary:
                 workspace = Path(temporary)
                 _write_staging_marker(workspace, release_name=name)
+                _revalidate_wheelhouse(wheelhouse, preflight.wheelhouse_provenance)
                 pip_wheel = _prepare_pip_bootstrap(workspace, wheelhouse=wheelhouse)
                 wheel = _build_wheel(
                     layout,
@@ -2331,6 +2700,10 @@ def install_release(
                     wheelhouse=wheelhouse,
                     runner=runner,
                 )
+                final_wheelhouse_provenance = _revalidate_wheelhouse(
+                    wheelhouse,
+                    preflight.wheelhouse_provenance,
+                )
                 runtime_lock = candidate_root / RUNTIME_DEPENDENCY_LOCK_NAME
                 shutil.copyfile(staged_runtime_lock, runtime_lock)
                 _remove_bytecode(candidate_root)
@@ -2351,6 +2724,7 @@ def install_release(
                     wheel_sha=wheel_sha,
                     runtime_dependency_lock=runtime_lock,
                     versions=candidate_versions,
+                    wheelhouse_provenance=final_wheelhouse_provenance,
                 )
                 release_artifacts["release_tree_sha256"] = tree_digest
                 _atomic_write(
@@ -2377,6 +2751,17 @@ def install_release(
             **release_artifacts,
             "release_manifest_sha256": _sha256_file(final_release / RELEASE_MANIFEST_NAME),
         }
+        receipt_wheelhouse_provenance = release_artifacts.get(
+            "wheelhouse_provenance",
+            preflight.wheelhouse_provenance,
+        )
+        receipt_wheelhouse_provenance = _validate_wheelhouse_provenance(
+            receipt_wheelhouse_provenance,
+            label="installation wheelhouse provenance",
+        )
+        receipt_interpreter = release_artifacts.get("interpreter")
+        if receipt_interpreter is not None:
+            _validate_release_interpreter(final_release, expected=receipt_interpreter)
 
         environment = _candidate_environment(layout, smoke_corpus_root)
         if prepare_models:
@@ -2434,12 +2819,27 @@ def install_release(
                 "corpus_root": str(corpus_root),
                 "corpus_root_source": corpus_root_source,
                 "corpus_root_created": corpus_root_created,
+                "wheelhouse_provenance": receipt_wheelhouse_provenance,
+                "wheelhouse_path": receipt_wheelhouse_provenance["path"],
+                "wheelhouse_manifest_sha256": receipt_wheelhouse_provenance[
+                    "manifest_sha256"
+                ],
+                "wheelhouse_artifact_set_sha256": receipt_wheelhouse_provenance[
+                    "artifact_set_sha256"
+                ],
                 "models_prepared": prepare_models,
                 "desktop_published": desktop,
                 "retention_policy": "current_and_immediate_rollback_v1",
                 "retained_releases": retained_releases,
+                **({"interpreter": receipt_interpreter} if receipt_interpreter is not None else {}),
                 "artifacts": {
                     **release_artifacts,
+                    "wheelhouse_manifest_sha256": receipt_wheelhouse_provenance[
+                        "manifest_sha256"
+                    ],
+                    "wheelhouse_artifact_set_sha256": receipt_wheelhouse_provenance[
+                        "artifact_set_sha256"
+                    ],
                     **public_hashes,
                 },
                 "result": "success",
@@ -2506,6 +2906,64 @@ def _receipt_artifact_hash(receipt: dict[str, object], name: str) -> str | None:
     return value
 
 
+def _validate_receipt_binding(
+    layout: LinuxReleaseLayout,
+    *,
+    current: Path,
+    receipt: Mapping[str, object],
+    manifest: Mapping[str, object],
+) -> None:
+    """Validate optional hardening attestations before any runtime probe."""
+
+    if receipt.get("schema_version") != RECEIPT_SCHEMA_VERSION:
+        raise LinuxReleaseError("installation receipt schema is unsupported")
+    result = receipt.get("result")
+    if receipt.get("kind") != "linux_release_receipt" or (
+        result is not None and result != "success"
+    ):
+        raise LinuxReleaseError("installation receipt identity is invalid")
+    current_link = receipt.get("current_link")
+    if current_link is not None and current_link != str(layout.current):
+        raise LinuxReleaseError("installation receipt current link is inconsistent")
+    interpreter = receipt.get("interpreter")
+    manifest_interpreter = manifest.get("interpreter")
+    if interpreter is not None or manifest_interpreter is not None:
+        if not isinstance(interpreter, dict) or not isinstance(manifest_interpreter, dict):
+            raise LinuxReleaseError("installation receipt interpreter attestation is incomplete")
+        if interpreter != manifest_interpreter:
+            raise LinuxReleaseError("installation receipt interpreter differs from its manifest")
+        _validate_release_interpreter(current, expected=interpreter)
+    provenance = receipt.get("wheelhouse_provenance")
+    manifest_provenance = manifest.get("wheelhouse_provenance")
+    if provenance is not None or manifest_provenance is not None:
+        if provenance is None or manifest_provenance is None:
+            raise LinuxReleaseError("installation receipt wheelhouse provenance is incomplete")
+        _validate_wheelhouse_provenance(provenance, label="installation receipt wheelhouse provenance")
+        _validate_wheelhouse_provenance(
+            manifest_provenance,
+            label="release manifest wheelhouse provenance",
+        )
+        if provenance != manifest_provenance:
+            raise LinuxReleaseError("installation receipt wheelhouse differs from its manifest")
+        for key, expected in (
+            ("wheelhouse_path", provenance["path"]),
+            ("wheelhouse_manifest_sha256", provenance["manifest_sha256"]),
+            ("wheelhouse_artifact_set_sha256", provenance["artifact_set_sha256"]),
+        ):
+            observed = receipt.get(key)
+            if observed is not None and observed != expected:
+                raise LinuxReleaseError(f"installation receipt provenance differs: {key}")
+        artifacts = receipt.get("artifacts")
+        if isinstance(artifacts, dict):
+            for key, expected in (
+                ("wheelhouse_manifest_sha256", provenance["manifest_sha256"]),
+                ("wheelhouse_artifact_set_sha256", provenance["artifact_set_sha256"]),
+            ):
+                observed = artifacts.get(key)
+                if observed is not None and observed != expected:
+                    raise LinuxReleaseError(f"installation receipt artifact differs: {key}")
+
+
 def _verify_release_unlocked(
     layout: LinuxReleaseLayout,
     *,
@@ -2550,6 +3008,12 @@ def _verify_release_unlocked(
         current,
         release_name=current.name,
         source_sha=source_sha,
+    )
+    _validate_receipt_binding(
+        layout,
+        current=current,
+        receipt=receipt,
+        manifest=manifest,
     )
     # Check the wrapper before executing it.  A receipt hash alone can bless an
     # obsolete wrapper that hard-codes a smoke fixture and discards overrides.
@@ -2791,6 +3255,32 @@ def rollback_release(
                 },
                 "result": "success",
             }
+            target_provenance = manifest.get("wheelhouse_provenance")
+            if target_provenance is not None:
+                target_provenance = _validate_wheelhouse_provenance(
+                    target_provenance,
+                    label="rollback wheelhouse provenance",
+                )
+                receipt["wheelhouse_provenance"] = target_provenance
+                receipt["wheelhouse_path"] = target_provenance["path"]
+                receipt["wheelhouse_manifest_sha256"] = target_provenance["manifest_sha256"]
+                receipt["wheelhouse_artifact_set_sha256"] = target_provenance[
+                    "artifact_set_sha256"
+                ]
+                receipt_artifacts = receipt["artifacts"]
+                assert isinstance(receipt_artifacts, dict)
+                receipt_artifacts.update(
+                    {
+                        "wheelhouse_manifest_sha256": target_provenance["manifest_sha256"],
+                        "wheelhouse_artifact_set_sha256": target_provenance[
+                            "artifact_set_sha256"
+                        ],
+                    }
+                )
+            target_interpreter = manifest.get("interpreter")
+            if target_interpreter is not None:
+                _validate_release_interpreter(target, expected=target_interpreter)
+                receipt["interpreter"] = target_interpreter
             try:
                 receipt_path = _write_receipt(layout, receipt)
             except BaseException:
@@ -2888,6 +3378,7 @@ __all__ = [
     "LinuxReleaseError",
     "LinuxReleaseLayout",
     "build_parser",
+    "compare_reproducible_builds",
     "install_release",
     "main",
     "parse_release_id",

@@ -239,6 +239,72 @@ class FrameworkOrchestrator:
             return RunBudget.from_mapping(configured)
         return self._run_budget
 
+    def _route_only_budget(
+        self,
+        state: FrameworkState,
+        source_run_id: int,
+    ) -> tuple[RunBudget, Mapping[str, object] | None]:
+        """Carry the source ledger's remaining budget into a resume.
+
+        A resumed route run is a continuation of the same --all work
+        boundary, not a fresh budget window.  The writer exposes the source
+        snapshot through its owner connection, so derive a conservative
+        remaining budget here instead of opening the SQLite owner separately.
+        Explicit limits supplied for the new invocation can only tighten the
+        source remainder; they must not reset work already reserved.
+        """
+
+        requested = self._durable_run_budget()
+        if self.config.resume_run_id is None:
+            return requested, None
+        read_budget = getattr(state, "read_run_budget", None)
+        if not callable(read_budget):
+            # Legacy state doubles and pre-manifest runs do not have a source
+            # ledger.  Preserve their existing compatibility behavior.
+            return requested, None
+        source = read_budget(source_run_id)
+        if source is None:
+            return requested, None
+        if not isinstance(source, Mapping):
+            raise RuntimeError(f"run {source_run_id} lifecycle budget is invalid")
+
+        def capped_integer(name: str, configured: int | None) -> int | None:
+            remaining = source.get(name)
+            if remaining is None:
+                return configured
+            if type(remaining) is not int or remaining < 0:
+                raise RuntimeError(
+                    f"run {source_run_id} lifecycle budget has invalid {name}"
+                )
+            return remaining if configured is None else min(configured, remaining)
+
+        source_duration: float | None = None
+        if source.get("max_duration_seconds") is not None:
+            deadline = source.get("deadline_ns")
+            if type(deadline) is not int:
+                raise RuntimeError(
+                    f"run {source_run_id} lifecycle budget has no valid deadline"
+                )
+            remaining_ns = deadline - time.time_ns()
+            if remaining_ns <= 0:
+                raise RunBudgetExceeded("time", source)
+            source_duration = remaining_ns / 1_000_000_000
+        duration = requested.max_duration_seconds
+        if source_duration is not None:
+            duration = (
+                source_duration
+                if duration is None
+                else min(float(duration), source_duration)
+            )
+        return (
+            RunBudget(
+                max_items=capped_integer("remaining_items", requested.max_items),
+                max_bytes=capped_integer("remaining_bytes", requested.max_bytes),
+                max_duration_seconds=duration,
+            ),
+            source,
+        )
+
     def request_cancellation(self) -> None:
         """Signal every route and wake any coordinator wait immediately."""
 
@@ -1700,7 +1766,7 @@ class FrameworkOrchestrator:
         source: _RouteOnlySource,
     ) -> tuple[int, RunHeartbeat]:
         run_kind = "resume" if self.config.resume_run_id is not None else "route_only"
-        durable_budget = self._durable_run_budget()
+        durable_budget, source_budget = self._route_only_budget(state, source.run_id)
         boundary.verify()
         run_id = state.begin_operational_run(
             boundary.access_policy.root,
@@ -1725,6 +1791,18 @@ class FrameworkOrchestrator:
             self._route_only_start_payload(boundary, source, copied),
         )
         route_payload = self._route_only_start_payload(boundary, source, copied)
+        input_snapshot: dict[str, object] = {
+            "source_candidate_rows": source.candidate_rows,
+            "copied_candidates": copied,
+            "route_input_sources": source.route_input_sources,
+        }
+        if source_budget is not None:
+            input_snapshot["source_budget"] = {
+                "manifest_digest": source_budget.get("manifest_digest"),
+                "remaining_items": source_budget.get("remaining_items"),
+                "remaining_bytes": source_budget.get("remaining_bytes"),
+                "deadline_ns": source_budget.get("deadline_ns"),
+            }
         publish_manifest = getattr(state, "publish_run_manifest", None)
         if callable(publish_manifest):
             publish_manifest(
@@ -1753,11 +1831,7 @@ class FrameworkOrchestrator:
                             self.config.global_resource_wait_timeout_seconds
                         ),
                     },
-                    input_snapshot={
-                        "source_candidate_rows": source.candidate_rows,
-                        "copied_candidates": copied,
-                        "route_input_sources": source.route_input_sources,
-                    },
+                    input_snapshot=input_snapshot,
                 ).event_payload(),
             )
             self._active_run = (self.config.framework_database, run_id)

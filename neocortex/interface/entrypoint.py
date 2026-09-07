@@ -9,6 +9,7 @@ from collections.abc import Sequence
 _CANONICAL_COMMANDS = {
     ("doctor", "capabilities"): ("--doctor-capabilities", "--doctor-capabilities-json"),
     ("doctor", "platform"): ("--doctor-platform", "--doctor-platform-json"),
+    ("doctor", "config"): ("--doctor-config", "--doctor-config-json"),
     ("models", "prepare"): ("--models-prepare", "--models-json"),
     ("models", "status"): ("--models-status", "--models-json"),
 }
@@ -95,6 +96,8 @@ def _print_canonical_help(command: tuple[str, str]) -> None:
         parser.description = "Inspect configured local model caches."
     elif command == ("doctor", "capabilities"):
         parser.description = "Inspect runtime capabilities without creating state."
+    elif command == ("doctor", "config"):
+        parser.description = "Inspect effective configuration without creating state."
     else:
         parser.description = "Inspect Linux platform paths and capabilities."
     parser.print_help()

@@ -14,6 +14,23 @@ __all__ = ["register_knowledge_arguments", "validate_knowledge_arguments"]
 # endregion [01]
 
 
+class _KnowledgeScopeAction(argparse.Action):
+    """Keep the CLI-owned scope available under its natural and namespaced names."""
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: object,
+        option_string: str | None = None,
+    ) -> None:
+        del parser, option_string
+        setattr(namespace, self.dest, values)
+        # ``scope`` is convenient for direct CLI callers; the namespaced
+        # destination is what the Knowledge surface owns internally.
+        setattr(namespace, "scope", values)
+
+
 # region [02] Stable flat argument registration
 
 
@@ -40,6 +57,19 @@ def register_knowledge_arguments(parser: argparse.ArgumentParser) -> None:
         "--knowledge-context",
         metavar="QUERY",
         help="build a bounded cited context from one read-only Knowledge search",
+    )
+    # This option is intentionally owned by the flat CLI. The public Python
+    # and MCP read contracts keep their existing scope boundary; the CLI only
+    # selects the fixed scope used by its context projection.
+    parser.set_defaults(scope="personal")
+    parser.add_argument(
+        "--scope",
+        "--knowledge-scope",
+        dest="knowledge_scope",
+        action=_KnowledgeScopeAction,
+        choices=("personal", "framework", "all"),
+        default="personal",
+        help=argparse.SUPPRESS,
     )
     knowledge.add_argument("--knowledge-json", action="store_true")
     knowledge.add_argument(
@@ -109,9 +139,12 @@ def validate_knowledge_arguments(args: argparse.Namespace) -> None:
         raise SystemExit("--knowledge-context-characters requires --knowledge-context")
     if "knowledge_response_version" in explicit and args.knowledge_context is None:
         raise SystemExit("--knowledge-response-version requires --knowledge-context")
+    if "knowledge_scope" in explicit and args.knowledge_context is None:
+        raise SystemExit("--scope requires --knowledge-context")
     optional = {
         "knowledge_context_characters",
         "knowledge_response_version",
+        "knowledge_scope",
         "knowledge_json",
         "knowledge_limit",
         "knowledge_history",

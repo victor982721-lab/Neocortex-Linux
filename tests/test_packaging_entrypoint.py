@@ -74,7 +74,7 @@ def test_linux_release_direct_pins_satisfy_current_product_metadata() -> None:
         for line in (root / filename).read_text(encoding="utf-8").splitlines():
             if not line.strip() or line.startswith("#"):
                 continue
-            requirement = Requirement(line)
+            requirement = Requirement(line.split(" --hash=", 1)[0])
             pin = tuple(requirement.specifier)
             assert len(pin) == 1 and pin[0].operator == "=="
             name = canonicalize_name(requirement.name)

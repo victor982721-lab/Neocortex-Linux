@@ -93,6 +93,17 @@ CURATION_EXPORTS = (
     "curation_checkpoint_status_payload",
 )
 
+READ_EXPORTS = (
+    "status_payload",
+    "search_payload",
+    "context_payload",
+    "evidence_payload",
+    "operational_query_payload",
+    "asset_health_payload",
+    "code_search_payload",
+    "lineage_payload",
+)
+
 EXPECTED_EXPORTS = (
     "CURATION_APPLY_API_SCHEMA",
     "CURATION_APPLY_SCHEMA",
@@ -132,6 +143,7 @@ EXPECTED_EXPORTS = (
     "curation_checkpoint_create_payload",
     "curation_checkpoint_resume_payload",
     "curation_checkpoint_status_payload",
+    *READ_EXPORTS,
     LEGACY_EXPORTS[-1],
     "RunManifest",
     "RunStatus",

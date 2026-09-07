@@ -57,6 +57,30 @@ def _supports_inventory_path(path: str) -> bool:
     return True
 
 
+def _inventory_root_text(root: str | Path) -> str:
+    """Accept only text path-like roots used by the UTF-8-backed inventory."""
+
+    try:
+        value = os.fspath(root)
+    except (TypeError, ValueError) as exc:
+        raise InventoryError("inventory root must be a text path") from exc
+    if not isinstance(value, str):
+        raise InventoryError("inventory root must be a text path")
+    if not value or "\x00" in value:
+        raise InventoryError("inventory root must be a non-empty path without NUL")
+    return value
+
+
+def _is_reparse_root(path: str, metadata: os.stat_result) -> bool:
+    is_junction = getattr(os.path, "isjunction", lambda _path: False)
+    attributes = int(getattr(metadata, "st_file_attributes", 0))
+    return bool(
+        stat_module.S_ISLNK(metadata.st_mode)
+        or is_junction(path)
+        or attributes & FILE_ATTRIBUTE_REPARSE_POINT
+    )
+
+
 def _directory_version(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
     return (
         metadata.st_dev,
@@ -102,7 +126,7 @@ class InventoryRowSink(Protocol):
 def validate_inventory_root(root: str | Path) -> Path:
     """Reject a reparse root and return its stable canonical path."""
 
-    absolute = os.path.abspath(os.fspath(root))
+    absolute = os.path.abspath(_inventory_root_text(root))
     if not _supports_inventory_path(absolute):
         raise InventoryUnsupportedPathEncoding((absolute,), path_count=1)
     try:
@@ -110,13 +134,7 @@ def validate_inventory_root(root: str | Path) -> Path:
     except OSError as exc:
         raise InventoryError(f"cannot inspect inventory root: {absolute}: {exc}") from exc
 
-    is_junction = getattr(os.path, "isjunction", lambda _path: False)
-    attributes = int(getattr(root_stat, "st_file_attributes", 0))
-    if (
-        stat_module.S_ISLNK(root_stat.st_mode)
-        or is_junction(absolute)
-        or attributes & FILE_ATTRIBUTE_REPARSE_POINT
-    ):
+    if _is_reparse_root(absolute, root_stat):
         raise InventoryError(
             f"inventory root cannot be a symlink, junction, or reparse point: {absolute}"
         )
@@ -124,7 +142,11 @@ def validate_inventory_root(root: str | Path) -> Path:
         raise InventoryError(f"inventory root is not a directory: {absolute}")
 
     canonical = os.path.realpath(absolute)
-    if not os.path.isdir(canonical):
+    try:
+        canonical_stat = os.lstat(canonical)
+    except OSError as exc:
+        raise InventoryError(f"cannot inspect canonical inventory root: {canonical}: {exc}") from exc
+    if _is_reparse_root(canonical, canonical_stat) or not stat_module.S_ISDIR(canonical_stat.st_mode):
         raise InventoryError(f"inventory root is not a directory: {canonical}")
     return Path(canonical)
 
@@ -141,7 +163,9 @@ class RootIdentity:
     @classmethod
     def capture(cls, root: str | Path) -> "RootIdentity":
         path = os.fspath(validate_inventory_root(root))
-        root_stat = os.stat(path, follow_symlinks=False)
+        root_stat = os.lstat(path)
+        if _is_reparse_root(path, root_stat) or not stat_module.S_ISDIR(root_stat.st_mode):
+            raise InventoryError(f"inventory root is not a real directory: {path}")
         return cls(
             path=path,
             volume_id=root_stat.st_dev,
@@ -151,11 +175,13 @@ class RootIdentity:
 
     def verify_unchanged(self) -> None:
         try:
-            current = os.stat(self.path, follow_symlinks=False)
+            current = os.lstat(self.path)
         except OSError as exc:
             raise InventoryError(
                 f"inventory root disappeared while scanning: {self.path}: {exc}"
             ) from exc
+        if _is_reparse_root(self.path, current) or not stat_module.S_ISDIR(current.st_mode):
+            raise InventoryError(f"inventory root is no longer a real directory: {self.path}")
         current_birthtime_ns = stat_birthtime_ns(current)
         if (
             current.st_dev != self.volume_id
