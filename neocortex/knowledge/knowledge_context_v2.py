@@ -669,21 +669,22 @@ def build_context_response_v2(
     # substantive coverage merely because it crosses the byte threshold.
     from neocortex.semantic.semantic_lexical import query_term_support
 
-    substantive_chars = 0
-    for _source_ref, _citation_ref, snippet in candidates:
-        if not snippet:
-            continue
-        support = query_term_support(
-            payload["query"], snippet, basis="compact_profile_activation",
-        )
-        matched_terms = support.get("matched_terms")
-        if isinstance(matched_terms, list) and matched_terms:
-            substantive_chars += len(snippet)
-    compact_profile = (
+    compact_candidate_window = (
         valid_limit and valid_budget and valid_metadata
         and 15_000 <= max_characters < 20_000
-        and substantive_chars >= 6_000
     )
+    substantive_chars = 0
+    if compact_candidate_window:
+        for _source_ref, _citation_ref, snippet in candidates:
+            if not snippet:
+                continue
+            support = query_term_support(
+                payload["query"], snippet, basis="compact_profile_activation",
+            )
+            matched_terms = support.get("matched_terms")
+            if isinstance(matched_terms, list) and matched_terms:
+                substantive_chars += len(snippet)
+    compact_profile = compact_candidate_window and substantive_chars >= 6_000
     if compact_profile:
         candidates, projection_capped = _candidates(
             entries, limit, query=payload["query"], compact=True,
