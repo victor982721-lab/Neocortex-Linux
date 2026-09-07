@@ -1,0 +1,45 @@
+{
+  "baseline_release": {
+    "source_sha": "d1e06b9519fe2de3a159cd3522a5ea63546ff0d1"
+  },
+  "comparison_scope": "Independent R3 proposal disjoint by family and basename from DEV/R1/R2; R2 remains encrypted and was not opened.",
+  "created_utc": "2026-09-07T00:00:00Z",
+  "dataset_id": "FUNCTIONAL_R3_CA12",
+  "family_disjoint_from_dev_r1_r2": true,
+  "family_disjoint_from_original_dev_and_retired_r1": true,
+  "original_v1_freeze_sha256": "02c43c7100db4493785b3bd69ae43358115e800050eac8ac1d0fff4817921ce9",
+  "r2_disjointness": "declared by new R3 namespace and families; R2 remains sealed and was not opened for byte comparison",
+  "reserve": {
+    "files": 16,
+    "logical_resources": 16,
+    "manifest_sha256": "740a0abbfcd458e3e89fe2e1024456940810834fde0b8f6a86b8dcd455aea8b6",
+    "negative_queries": 2,
+    "positive_queries": 8,
+    "queries": 10,
+    "queries_sha256": "ec8a53061021d52094943164ce60fc4da37ba61810301e52d0fc15f897e70c8c"
+  },
+  "reserve_archive_sha256": "e7da48d7f27e7d49a6b34e86a54d91f4c9d863ba10e5d1ed07e217452953a3dc",
+  "reserve_plaintext_archive_sha256": "ce72290d64742268bbcf2240598d412cc734f5d6901b47759096b27e76f2763a",
+  "reserve_visibility": "steward-only; no candidate execution until explicit root GO",
+  "retired_r1_status": "RETIRED_HOLDOUT_R1_NOW_DEVELOPMENT",
+  "schema": "neocortex.functional-freeze/v2",
+  "selection_note": "Synthetic R3 families were authored before this freeze and before candidate ablation execution; no query or judgment is changed after freeze.",
+  "status": "FROZEN_BEFORE_CANDIDATE_ABLATION",
+  "synthetic_only": true,
+  "thresholds": {
+    "ca12_variants": [
+      "full",
+      "no_expansion",
+      "no_semantic",
+      "no_catalog"
+    ],
+    "citation_integrity": "1.0",
+    "locator_integrity": "1.0",
+    "ndcg_at_10": "not below frozen baseline",
+    "negative_unsupported_evidence": "0",
+    "recall_at_5": "reported",
+    "success_at_5": ">=0.90"
+  },
+  "total_fixture_files": 16,
+  "total_queries": 10
+}
