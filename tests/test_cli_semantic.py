@@ -1194,6 +1194,44 @@ def test_semantic_search_reports_rank_availability_fusion_and_completeness(
     assert not (tmp_path / "framework.lock").exists()
 
 
+def test_semantic_search_emits_bounded_item_diagnostic_trace(
+    tmp_path, capsys,
+) -> None:
+    args = build_parser().parse_args(
+        [
+            "--state-directory", str(tmp_path),
+            "--semantic-search", "transformador",
+            "--semantic-diagnostic-item", "item:pdf:1",
+        ]
+    )
+    validate_arguments(args)
+    result = _search_result()
+    ranking = replace(
+        result.rankings[0],
+        provenance={
+            "target_diagnostics": [{
+                "item_id": "item:pdf:1", "stage": "candidate_selected",
+                "observed_in_published_scope": True, "within_candidate_window": True,
+                "raw_score": 0.81, "candidate_rank": 1, "ref_id": 1,
+                "source_kind": "pdf", "source_status": "done", "snippet": "transformador",
+            }],
+            "candidate_selection": {"cutoff_reason": "top_k"},
+        },
+    )
+    with patch(
+        "neocortex.semantic.semantic_service.search_semantic_index",
+        return_value=replace(result, rankings=(ranking,)),
+    ):
+        assert dispatch_direct(args) == 0
+    output = capsys.readouterr().out
+    trace_lines = [line for line in output.splitlines() if line.startswith("SEMANTIC_ITEM_DIAGNOSTIC ")]
+    assert len(trace_lines) == 1
+    assert 'item="item:pdf:1"' in trace_lines[0]
+    trace = json.loads(trace_lines[0].split(" trace=", 1)[1])
+    assert trace["stages"]["threshold"]["candidate_selection"]["cutoff_reason"] == "top_k"
+    assert trace["stages"]["presentation"]["status"] == "present"
+
+
 def test_semantic_search_incomplete_exact_scan_returns_two(tmp_path, capsys) -> None:
     args = build_parser().parse_args(
         ["--state-directory", str(tmp_path), "--semantic-search", "breaker"]

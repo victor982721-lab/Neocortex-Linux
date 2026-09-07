@@ -493,6 +493,22 @@ def test_semantic_item_diagnostic_is_explicitly_unobserved_without_target_eviden
     assert trace["stages"]["presentation"]["status"] == "not_present"
 
 
+def test_semantic_item_diagnostic_marks_reference_only_image_as_resolved() -> None:
+    ranking = SimpleNamespace(name="semantic_image", provenance={})
+    fused = SimpleNamespace(
+        fused=SimpleNamespace(item_id="image:target", evidence=()),
+        path="/corpus/photo.jpg", source_kind="image", source_identity="image:target",
+        snippet=None,
+    )
+    result = SimpleNamespace(
+        query="radiador", rankings=(ranking,), lexical_rankings=(), fused=(fused,),
+    )
+    trace = semantic_item_diagnostic(result, "image:target")
+    assert trace["status"] == "observed"
+    assert trace["stages"]["resolution"]["status"] == "resolved"
+    assert trace["stages"]["presentation"]["status"] == "present"
+
+
 @pytest.mark.parametrize("value", ("", " ", "x" * 513, "bad\nitem"))
 def test_semantic_item_diagnostic_rejects_unbounded_item_ids(value: str) -> None:
     result = SimpleNamespace(query="q", rankings=(), lexical_rankings=(), fused=())

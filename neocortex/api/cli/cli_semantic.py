@@ -1081,6 +1081,20 @@ def run_semantic_search(args: argparse.Namespace) -> int:
         f"calibrated_abstentions={calibrated_abstentions} "
         f"fused_hits={len(result.fused)}"
     )
+    if diagnostic_options:
+        # The search service already collected these bounded target
+        # diagnostics while traversing the funnel.  Project them into one
+        # ordered trace without rerunning retrieval or opening another owner.
+        from neocortex.knowledge.knowledge_operational_query import semantic_item_diagnostic
+
+        for item_id in diagnostic_options["diagnostic_item_ids"]:
+            trace = semantic_item_diagnostic(result, item_id)
+            _print_console_line(
+                "SEMANTIC_ITEM_DIAGNOSTIC "
+                f"item={json.dumps(item_id, ensure_ascii=False)} "
+                "trace="
+                f"{json.dumps(trace, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}"
+            )
     for rank, hit in enumerate(result.fused, start=1):
         evidence = ",".join(
             f"{value.ranking}:{value.rank}:{value.raw_score:.6f}:{value.contribution:.6f}"

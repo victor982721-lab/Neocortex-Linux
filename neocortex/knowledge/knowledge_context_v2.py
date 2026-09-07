@@ -276,7 +276,7 @@ def _related_term(left: str, right: str) -> bool:
     return left == right
 
 
-def _compact_excerpt(text: str, query: str, *, max_chars: int = 1024) -> str:
+def _compact_excerpt(text: str, query: str, *, max_chars: int = 1536) -> str:
     """Keep a verbatim minimum evidence unit when the owner gave a long chunk.
 
     Retrieval already chooses the source.  This presentation-only window avoids
@@ -663,10 +663,26 @@ def build_context_response_v2(
     candidates, projection_capped = _candidates(
         entries, limit, query=payload["query"]
     ) if valid_limit and valid_budget and valid_metadata else ([], False)
+    # Activate the compact profile only when the candidate material contains
+    # observable query support.  Raw character volume alone is not evidence:
+    # a set of long administrative prefixes must not be advertised as
+    # substantive coverage merely because it crosses the byte threshold.
+    from neocortex.semantic.semantic_lexical import query_term_support
+
+    substantive_chars = 0
+    for _source_ref, _citation_ref, snippet in candidates:
+        if not snippet:
+            continue
+        support = query_term_support(
+            payload["query"], snippet, basis="compact_profile_activation",
+        )
+        matched_terms = support.get("matched_terms")
+        if isinstance(matched_terms, list) and matched_terms:
+            substantive_chars += len(snippet)
     compact_profile = (
         valid_limit and valid_budget and valid_metadata
         and 15_000 <= max_characters < 20_000
-        and sum(len(item[2]) for item in candidates) >= 6_000
+        and substantive_chars >= 6_000
     )
     if compact_profile:
         candidates, projection_capped = _candidates(

@@ -323,6 +323,27 @@ def test_compact_profile_does_not_shrink_complete_units_to_240_chars():
     assert payload["budget"]["characters_used"] <= 15_000
 
 
+def test_compact_profile_requires_observable_query_support_not_raw_volume():
+    hits = [
+        _hit(
+            f"evidence:administrative:{position}",
+            snippet="Administrative prefix. " * 120,
+            owner="text",
+            resource=f"resource:administrative:{position}",
+        )
+        for position in range(1, 8)
+    ]
+    payload = build_context_response_v2(
+        [_entry(*hits)], query="radiadores sin presión", scope="personal",
+        request_id="administrative-volume", max_characters=15_000,
+    )
+    assert payload["budget"]["character_limit"] == 15_000
+    assert sum(len(item["excerpt"]) for item in payload["citations"]) > 0
+    assert all("radiador" not in item["excerpt"].casefold() for item in payload["citations"])
+    assert all("retrieval_rank" in item for item in payload["citations"])
+    assert payload["budget"]["within_limit"] is True
+
+
 def test_missing_witness_makes_global_context_partial_not_ok():
     query = "¿Qué factura demuestra el reemplazo de los rodamientos de Q7?"
     body = "Factura FA-27. Venta de rodamientos para Q7, material entregado al almacén."

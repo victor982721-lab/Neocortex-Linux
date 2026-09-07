@@ -422,6 +422,25 @@ def semantic_item_diagnostic(result: object, item_id: str) -> dict[str, Any]:
     # A target can be absent from semantic rankings when it was only retained
     # by a lexical channel; preserve that fact instead of fabricating stages.
     target = targets[0] if targets else None
+    lexical_observed = False
+    for lexical_ranking in lexical_rankings:
+        for value in getattr(lexical_ranking, "hits", ()):
+            lexical_hit = getattr(value, "hit", value)
+            if getattr(lexical_hit, "item_id", None) == selected_id:
+                lexical_observed = True
+                break
+        if lexical_observed:
+            break
+    if target is None and lexical_observed:
+        # Lexical-only results do not expose the semantic funnel stages. Keep
+        # that limitation explicit rather than manufacturing publication or
+        # threshold facts from a different ranking contract.
+        target = {
+            "item_id": selected_id,
+            "stage": "lexical_only",
+            "observed_in_published_scope": None,
+            "ranking": "lexical",
+        }
     contributions: list[dict[str, Any]] = []
     presentation: dict[str, Any] = {"status": "not_present", "reason": "item_not_in_fused_results"}
     for rank, value in enumerate(fused, 1):
@@ -450,6 +469,17 @@ def semantic_item_diagnostic(result: object, item_id: str) -> dict[str, Any]:
         break
 
     status = "observed" if target is not None or presentation["status"] == "present" else "not_observed"
+    resolved = bool(
+        target is not None
+        and (
+            target.get("snippet") is not None
+            or target.get("entity_id") is not None
+            or target.get("ref_id") is not None
+        )
+    ) or bool(
+        presentation["status"] == "present"
+        and (presentation.get("path") or presentation.get("source_identity"))
+    )
     return {
         "schema": SEMANTIC_ITEM_DIAGNOSTIC_SCHEMA,
         "query": query,
@@ -474,7 +504,7 @@ def semantic_item_diagnostic(result: object, item_id: str) -> dict[str, Any]:
                 "target": target,
             },
             "resolution": {
-                "status": "resolved" if target is not None and target.get("snippet") is not None else "not_observed",
+                "status": "resolved" if resolved else "not_observed",
                 "target": target,
             },
             "presentation": presentation,
