@@ -13,6 +13,9 @@ fuera de `docs/`.
 - Contexto v2 como flujo CLI/MCP, con presupuesto global, fuentes únicas,
   referencias directas y compatibilidad explícita con v1; diagnósticos de
   contenido y páginas vacías con cobertura y causas visibles.
+- Las citas v2 separan verificación de referencia y suficiencia de respuesta,
+  que queda explícitamente a cargo del LLM; una negación de consulta cuyo
+  alcance no puede interpretar el helper no se etiqueta como contradicción.
 - Documentos compuestos OTT/ZIP, papel documental separado de menciones,
   cobertura final PDF separada de intentos históricos y revisión informativa
   sin convertir scores en decisiones o autorizaciones.

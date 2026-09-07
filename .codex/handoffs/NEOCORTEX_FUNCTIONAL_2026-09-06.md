@@ -27,6 +27,14 @@ con 16/4 y 8/2 positivas/negativas), separadas por familias y congeladas antes
 del ajuste. La reserva no se usa para tuning. Success@5, Recall@5 real y nDCG@10
 se miden por recurso documental lógico, no por fragmentos repetidos.
 
+Víctor acotó expresamente este corte a pasajes verificables y dejó al LLM
+la evaluación de suficiencia, priorizando cerrar sin ampliar el motor.
+R1 y R2 conservan sus resultados fallidos y la recuperación de 7/8 como
+limitación, no como cumplimiento de la meta original de 8/8. La aceptación
+acotada exige fuentes, citas, localizadores, cobertura y fragmentos útiles
+desde las interfaces instaladas, sin atribuir al motor una decisión de
+suficiencia ni iniciar otra campaña de ajuste o reserva.
+
 Publicación exige HEAD == main == origin/main y árbol limpio. La aceptación
 operativa exige instalación final, manifest/launcher y smoke/replay/llamada MCP
 real; v2 debe ser el default de los callers de agente y v1 seguir seleccionable.
@@ -78,7 +86,8 @@ este handoff conserva únicamente el avance mínimo necesario para reanudar.
 - El cierre independiente detectó preferencias keeper sólo disponibles en
   Python; la CLI normal debe llevar decisiones y ubicaciones preferidas al
   mismo planificador, con referencias verificadas desde su owner existente.
-- La aceptación requiere el nuevo artefacto, suite conjunta, DEV y reserva
-  ciega, replay final con todos los owners, publicación y promoción productiva.
+- La aceptación acotada requiere el nuevo artefacto, pruebas aplicables,
+  pasajes verificables, incidentes reales y replay final con todos los owners,
+  publicación y promoción productiva; no recalifica las reservas fallidas.
   El estado vigente de esas barreras, los hashes y sus receipts se registran
   en `NEO-FUN-001` y su historial, no se infieren desde este handoff de fuente.

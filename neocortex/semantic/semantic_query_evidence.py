@@ -74,6 +74,12 @@ def _prepare(query: str, text: str) -> tuple[str, str]:
     return _fold(query[:MAX_EVIDENCE_QUERY_CHARS]), text[:MAX_EVIDENCE_CHECK_CHARS]
 
 
+def _query_polarity_unassessed(folded_query: str) -> bool:
+    """The literal helper does not resolve the scope of a negated request."""
+    return bool(_ACTION_NEGATION.search(folded_query)
+                or re.search(r"\bcannot\b|\b\w+n['\u2019]t\b", folded_query))
+
+
 def _split(text: str, boundary_pattern: re.Pattern[str]) -> Iterator[tuple[int, str]]:
     start = 0
     for boundary in boundary_pattern.finditer(text):
@@ -144,6 +150,8 @@ def query_role_counterevidence(query: str, text: str) -> list[dict[str, object]]
     action; an empty result is not proof of a positive occurrence.
     """
     folded_query, bounded = _prepare(query, text)
+    if _query_polarity_unassessed(folded_query):
+        return []  # A negated fact may be precisely the requested evidence.
     past = bool(_PAST_EVENT.search(folded_query))
     if (_INSTRUCTION.search(folded_query) and not past) or not (
         past or re.search(r"\b(?:incidente|accidente)\b", folded_query)
@@ -440,6 +448,15 @@ def requested_evidence_checks(query: str, text: str) -> dict[str, object]:
     """
     folded_query, bounded = _prepare(query, text)
     legacy = _legacy_requested_evidence_checks(query, text)
+    if _query_polarity_unassessed(folded_query):
+        # Preserve the retrieved passage without asserting either execution or
+        # contradiction when the request's polarity/scope is not interpreted.
+        return {**legacy, "status": "not_assessed",
+                "not_assessed_reason": "query_polarity_scope_not_supported",
+                "required_witnesses": [], "missing_necessary_witnesses": [],
+                "counterevidence": [], "retrieval_disposition": "unchanged",
+                "applicability": {"families": [], "requested_subjects": [], "subject_scope": "not_requested"},
+                "scoped_observations": []}
     required = list(legacy["required_witnesses"])
     missing = list(legacy["missing_necessary_witnesses"])
     counter = list(legacy["counterevidence"])

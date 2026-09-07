@@ -99,6 +99,11 @@ Los planes legacy sin ámbito probado permanecen advisory y no ejecutables.
 
 Knowledge v2 proyecta fuentes únicas y citas con localizadores, manteniendo
 recuperación, relaciones, evidencia y presentación como coberturas separadas.
+Cada cita distingue referencia verificada, relación recuperada y suficiencia
+de respuesta: `answer_sufficiency=not_assessed` deja esta última al LLM.
+Ni `owner_verified`, ni `evidence_candidate`, ni cobertura completa afirman
+que el fragmento responda la pregunta; las comprobaciones heurísticas son
+orientativas y conservan sus límites junto al pasaje original.
 El lookup por referencia valida owner, revisión y publicación sin repetir la
 búsqueda; un rango o propietario no soportado se declara explícitamente. Salud
 del pipeline, condición del archivo, contenido documentado y preferencia
