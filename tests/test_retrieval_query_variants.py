@@ -94,6 +94,58 @@ def test_negation_within_the_recognized_absence_condition_is_retained_not_reject
 
 
 @pytest.mark.parametrize(
+    ("query", "language", "expected_alias"),
+    (
+        (
+            "equipos de enfriamiento llegaron despresurizados",
+            "es",
+            "radiadores o enfriadores sin presión; incidente documentado",
+        ),
+        (
+            "cooling equipment arrived depressurized",
+            "en",
+            "radiators or coolers without pressure; documented incident",
+        ),
+    ),
+)
+def test_arrival_condition_uses_a_documentary_context_alias_without_rewriting_the_relation(
+    query: str, language: str, expected_alias: str,
+) -> None:
+    variants = text_query_expansions(query)
+
+    assert len(variants) == 2
+    assert [variant["variant_id"] for variant in variants] == [
+        "report_context", "cooling_pressure_arrival_aliases",
+    ]
+    assert variants[0]["profile"] == variants[0]["policy_signature"] == (
+        "semantic-cooling-pressure-query-v1"
+    )
+    assert variants[1]["profile"] == variants[1]["policy_signature"] == (
+        "semantic-cooling-pressure-arrival-query-v1"
+    )
+    assert variants[1]["language"] == language
+    assert variants[1]["effective_query"].endswith(f"({expected_alias})")
+    assert query in variants[1]["effective_query"]
+    assert variants[1]["alias_concepts"] == [
+        "documentary_report_context",
+        "cooling_components",
+        "pressure_absence",
+        "arrival_condition",
+    ]
+    assert variants[1]["interpretation"] == (
+        "retrieval_aliases_not_equipment_equivalence_or_arrival_or_pressure_state_or_cause"
+    )
+
+
+@pytest.mark.parametrize("query", (
+    "radiadores no llegaron despresurizados",
+    "radiators didn't arrive depressurized",
+))
+def test_negated_arrival_conditions_do_not_gain_the_arrival_context_alias(query: str) -> None:
+    assert text_query_expansions(query) == ()
+
+
+@pytest.mark.parametrize(
     ("query", "language", "alias"),
     (
         ("¿Qué problemas tuvieron los radiadores?", "es", "radiadores o enfriadores"),
@@ -165,8 +217,20 @@ def test_original_unicode_identifiers_dates_temporal_and_negative_constraints_re
         assert variant["original_query"].encode("utf-8") == original_bytes
         assert query in variant["effective_query"]
         assert variant["preserved_constraints"] == "original_verbatim"
-        assert variant["profile"] == variant["policy_signature"] == "semantic-cooling-pressure-query-v1"
-        assert variant["interpretation"] == "retrieval_aliases_not_equipment_equivalence_or_arrival_or_cause"
+        if variant["variant_id"] == "cooling_pressure_arrival_aliases":
+            assert variant["profile"] == variant["policy_signature"] == (
+                "semantic-cooling-pressure-arrival-query-v1"
+            )
+            assert variant["interpretation"] == (
+                "retrieval_aliases_not_equipment_equivalence_or_arrival_or_pressure_state_or_cause"
+            )
+        else:
+            assert variant["profile"] == variant["policy_signature"] == (
+                "semantic-cooling-pressure-query-v1"
+            )
+            assert variant["interpretation"] == (
+                "retrieval_aliases_not_equipment_equivalence_or_arrival_or_cause"
+            )
         assert "probability" not in variant and "score" not in variant
         json.dumps(variant, ensure_ascii=False, allow_nan=False).encode("utf-8")
     assert query.encode("utf-8") == original_bytes

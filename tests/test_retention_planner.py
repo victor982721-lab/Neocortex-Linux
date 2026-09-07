@@ -754,7 +754,11 @@ def test_catalog_protects_publications_builders_and_uncertain_actions(
     items = _by_key(plan, "catalog")
     assert "current_published_generation" in items[3].reasons
     assert "previous_published_generation" in items[2].reasons
-    assert items[1].disposition == "blocked"
+    # A terminal child preserves its own lineage receipt, but it no longer
+    # needs the ancestor as a live clone source.  Only an active catalog build
+    # should keep that base generation blocked.
+    assert items[1].disposition == "eligible"
+    assert "referenced_as_generation_base" not in items[1].reasons
     assert items[4].disposition == "protected"
     assert "builder_liveness_unverifiable" in items[4].reasons
     assert items[5].disposition == "protected"
@@ -765,6 +769,60 @@ def test_catalog_protects_publications_builders_and_uncertain_actions(
         next(hold for hold in store.holds if hold.name == "uncertain_organization_actions").rows
         == 1
     )
+
+
+def test_catalog_releases_terminal_base_chain_but_holds_active_builder(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "document_catalog.sqlite3"
+    initialize_document_catalog(database)
+    with document_catalog_database(database) as connection:
+        connection.executemany(
+            """INSERT INTO catalog_runs(
+            catalog_run_id,framework_run_id,source_kind,mode,status,started_ns,
+            completed_ns)
+            VALUES(?,NULL,'pdf','classify',?,1,?)""",
+            ((1, "completed", 2), (2, "running", None)),
+        )
+        connection.executemany(
+            """INSERT INTO catalog_generations(
+            generation_id,catalog_run_id,source_kind,base_generation_id,status,
+            started_ns,completed_ns,published_ns)
+            VALUES(?,?,'pdf',?,?,1,?,NULL)""",
+            ((1, 1, None, "failed", 2), (2, 2, 1, "building", None)),
+        )
+        connection.commit()
+
+    active = plan_retention(
+        tmp_path,
+        stores=("catalog",),
+        now_ns=NOW_NS,
+        policy=RetentionPolicy(minimum_age_ns=0),
+    )
+    active_item = _by_key(active, "catalog")[1]
+    assert active_item.disposition == "blocked"
+    assert "referenced_as_generation_base" in active_item.reasons
+
+    with document_catalog_database(database) as connection:
+        connection.execute(
+            "UPDATE catalog_generations SET status='failed',completed_ns=3 "
+            "WHERE generation_id=2"
+        )
+        connection.execute(
+            "UPDATE catalog_runs SET status='failed',completed_ns=3 "
+            "WHERE catalog_run_id=2"
+        )
+        connection.commit()
+
+    terminal = plan_retention(
+        tmp_path,
+        stores=("catalog",),
+        now_ns=NOW_NS,
+        policy=RetentionPolicy(minimum_age_ns=0),
+    )
+    terminal_item = _by_key(terminal, "catalog")[1]
+    assert terminal_item.disposition == "eligible"
+    assert "referenced_as_generation_base" not in terminal_item.reasons
 
 
 def test_inventory_protects_current_previous_builder_candidate_and_framework_use(

@@ -806,7 +806,8 @@ def _plan_catalog(
                    AND previous.status='published'
                    AND previous.generation_id<p.generation_id)) AS previous_head,
         EXISTS(SELECT 1 FROM catalog_generations child
-               WHERE child.base_generation_id=g.generation_id) AS incoming_base,
+               WHERE child.base_generation_id=g.generation_id
+                 AND child.status='building') AS incoming_base,
         EXISTS(SELECT 1 FROM organization_plans plan
                WHERE plan.catalog_run_id=g.catalog_run_id AND plan.status IN
                ('applying','moved_cache_pending','recovery_required')) AS uncertain_action,

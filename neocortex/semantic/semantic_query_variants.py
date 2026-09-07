@@ -18,6 +18,10 @@ QUERY_EXPANSION_POLICY = "semantic-cooling-pressure-query-v1"
 QUERY_EXPANSION_INTERPRETATION = (
     "retrieval_aliases_not_equipment_equivalence_or_arrival_or_cause"
 )
+COOLING_PRESSURE_ARRIVAL_QUERY_POLICY = "semantic-cooling-pressure-arrival-query-v1"
+COOLING_PRESSURE_ARRIVAL_INTERPRETATION = (
+    "retrieval_aliases_not_equipment_equivalence_or_arrival_or_pressure_state_or_cause"
+)
 
 _TERM = re.compile(r"[^\W_]+", re.UNICODE)
 _COOLING_ES = re.compile(
@@ -35,6 +39,14 @@ _COOLING_ISSUE_EN = re.compile(
 )
 _ABSENCE_ES = re.compile(r"\b(?:despresurizad[oa]s?|sin\s+presion|ausencia\s+de\s+presion)\b")
 _ABSENCE_EN = re.compile(r"\b(?:(?:un|de)pressuri[sz]ed|without\s+pressure|no\s+pressure)\b")
+_ARRIVAL_ES = re.compile(
+    r"\b(?:lleg(?:o|aron|an|ar|ado|ada|ados|adas)|"
+    r"recib(?:io|ieron|en|ir|ido|ida|idos|idas)|"
+    r"entreg(?:o|aron|an|ar|ado|ada|ados|adas))\b"
+)
+_ARRIVAL_EN = re.compile(
+    r"\b(?:arriv(?:e|ed|es|ing|al)|receiv(?:e|ed|es|ing)|deliver(?:y|ed|s|ing))\b"
+)
 _NEGATIONS = frozenset({
     "no", "sin", "nunca", "jamas", "ni", "tampoco", "nadie", "ningun", "ninguno",
     "ninguna", "ningunos", "ningunas", "ausencia", "ausente", "ausentes",
@@ -86,6 +98,13 @@ def _expansion_language(query: str) -> str | None:
 def cooling_pressure_concepts(query: str) -> bool:
     """Share the same bounded, negation-preserving eligibility across readers."""
     return _expansion_language(query) is not None
+
+
+def _has_arrival_context(query: str, language: str) -> bool:
+    """Recognize an explicit arrival/receipt relation without resolving its fact."""
+
+    folded = _fold(query)
+    return bool((_ARRIVAL_ES if language == "es" else _ARRIVAL_EN).search(folded))
 
 
 def _cooling_issue_language(query: str) -> str | None:
@@ -150,6 +169,41 @@ def text_query_expansions(query: str) -> tuple[dict[str, object], ...]:
         else ("report about", "radiators or coolers without pressure")
     )
     report_query = f"{prefix} {query}"
+    if _has_arrival_context(query, language):
+        arrival_aliases = (
+            "radiadores o enfriadores sin presión; incidente documentado"
+            if language == "es"
+            else "radiators or coolers without pressure; documented incident"
+        )
+        return (
+            {
+                "variant_id": "report_context",
+                "profile": QUERY_EXPANSION_POLICY,
+                "policy_signature": QUERY_EXPANSION_POLICY,
+                "language": language,
+                "effective_query": report_query,
+                "original_query": query,
+                "preserved_constraints": "original_verbatim",
+                "interpretation": QUERY_EXPANSION_INTERPRETATION,
+                "alias_concepts": ["documentary_report_context"],
+            },
+            {
+                "variant_id": "cooling_pressure_arrival_aliases",
+                "profile": COOLING_PRESSURE_ARRIVAL_QUERY_POLICY,
+                "policy_signature": COOLING_PRESSURE_ARRIVAL_QUERY_POLICY,
+                "language": language,
+                "effective_query": f"{report_query} ({arrival_aliases})",
+                "original_query": query,
+                "preserved_constraints": "original_verbatim",
+                "interpretation": COOLING_PRESSURE_ARRIVAL_INTERPRETATION,
+                "alias_concepts": [
+                    "documentary_report_context",
+                    "cooling_components",
+                    "pressure_absence",
+                    "arrival_condition",
+                ],
+            },
+        )
     additional = (
         ("report_context", report_query, ["documentary_report_context"]),
         ("cooling_pressure_aliases", f"{report_query} ({aliases})",

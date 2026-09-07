@@ -24,6 +24,7 @@ _EVIDENCE_NOTICE = (
 )
 _MAX_CANDIDATES = 200
 _MIN_EXCERPT = 240
+_COMPACT_EVIDENCE_TARGET = 6_000
 _TRUNCATED = " …[truncated]"
 _LOCATORS = (
     "page", "start_line", "end_line", "sheet", "cell_range", "start_ms", "end_ms",
@@ -342,7 +343,11 @@ def _compact_citation_metadata(citation: dict[str, Any]) -> dict[str, Any]:
     The compact profile is selected only for the bounded 15,000-character view
     (and its small monotonic expansion window) when enough substantive owner
     text exists.  The default and genuinely wide views keep the complete
-    diagnostic projection for compatibility.
+    diagnostic projection for compatibility.  Fields describing how a witness
+    check was computed are useful in the expanded diagnostic view but repeat
+    the same policy and emitted-excerpt binding for every citation.  Keep the
+    decision-bearing fields here; the source/revision/localizer and hydration
+    status remain available for replay.
     """
     compact = {
         name: value for name, value in citation.items()
@@ -354,10 +359,8 @@ def _compact_citation_metadata(citation: dict[str, Any]) -> dict[str, Any]:
     checks = compact.get("witness_checks")
     if isinstance(checks, Mapping):
         keep = {
-            "policy_signature", "status", "required_witnesses",
-            "missing_necessary_witnesses", "counterevidence", "evaluated_chars",
-            "interpretation", "recomputed_for", "inspected_scope",
-            "not_assessed_reason", "applicability", "scoped_observations",
+            "status", "required_witnesses", "missing_necessary_witnesses",
+            "counterevidence", "applicability", "scoped_observations",
             "retrieval_disposition",
         }
         compact["witness_checks"] = {
@@ -372,12 +375,25 @@ def _compact_citation_metadata(citation: dict[str, Any]) -> dict[str, Any]:
             compact_checks.pop("scoped_observations", None)
         if compact_checks.get("retrieval_disposition") == "unchanged":
             compact_checks.pop("retrieval_disposition", None)
+    # ``inspected_scope`` is a diagnostic distinction for the expanded view;
+    # the compact status/reason pair still distinguishes a verified owner unit
+    # from an unavailable or retrieved-only excerpt without repeating the
+    # fixed scope label for every citation.
+    hydration = compact.get("hydration")
+    if isinstance(hydration, Mapping):
+        compact["hydration"] = {
+            name: value for name, value in hydration.items()
+            if name != "inspected_scope"
+        }
+    if not compact.get("role_counterevidence"):
+        compact.pop("role_counterevidence", None)
     extent = compact.get("emitted_extent")
     if isinstance(extent, Mapping):
+        # Compact citations always measure the emitted excerpt from offset
+        # zero in character units; retain the length while leaving the fixed
+        # basis/start diagnostics to the expanded view.
         compact["emitted_extent"] = {
-            name: extent[name]
-            for name in ("units", "basis", "start_char", "end_char")
-            if name in extent
+            name: extent[name] for name in ("units", "end_char") if name in extent
         }
     return compact
 
@@ -458,8 +474,10 @@ def _candidates(
                         citation["retrieval_support"]["interpretation"] = "literal_support_not_answerability"
                     citation["retrieval_channel"] = signal.get("source")
                 if compact:
+                    # Keep ranking/support metadata available to the packing
+                    # policy.  It is presentation-only and is removed when
+                    # the candidate is committed to the compact response.
                     citation["excerpt"] += _TRUNCATED if len(snippet) < len(raw_snippet) else ""
-                    citation = _compact_citation_metadata(citation)
                 candidates.append((source, citation, snippet))
                 if len(candidates) >= _MAX_CANDIDATES:
                     return sorted(candidates, key=lambda item: not bool(item[2])), True
@@ -730,7 +748,15 @@ def build_context_response_v2(
     priorities = [_budget_candidate_priority(item, payload["query"]) for item in candidates]
     remaining = list(range(len(candidates)))
     represented_terms: set[str] = set()
+    compact_evidence_characters = 0
     while remaining:
+        if compact_profile and compact_evidence_characters >= _COMPACT_EVIDENCE_TARGET:
+            # Once the compact view has its minimum useful evidence volume,
+            # lower-value tails only dilute the response share.  The full
+            # candidate set remains available through the expanded view and
+            # stable identifiers, while omitted material is reported by the
+            # presentation coverage facet.
+            break
         # Keep the first witness of the best tier in retrieval order. Later
         # witnesses can add literal query coverage rather than repeating it;
         # different embedding variants never define this comparison's terms.
@@ -791,6 +817,8 @@ def build_context_response_v2(
             if accepted["fragment_state"] == "truncated":
                 represented_excerpt = represented_excerpt.removesuffix(_TRUNCATED)
             represented_terms.update(original_query_terms(represented_excerpt))
+            if compact_profile and original_query_terms(represented_excerpt):
+                compact_evidence_characters += len(represented_excerpt)
 
     # Fair round-robin expansion prevents the first long hit starving all other
     # substantive excerpts. Full source evidence stays resolvable by reference.

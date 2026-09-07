@@ -319,8 +319,72 @@ def test_compact_profile_does_not_shrink_complete_units_to_240_chars():
                   if item["evidence_id"] != "evidence:bounded:short"]
     assert len(long_units) >= 5
     assert all(len(item["excerpt"]) > 500 for item in long_units)
-    assert sum(len(item["excerpt"]) for item in payload["citations"]) >= 6_000
+    evidence_chars = sum(
+        len(item["excerpt"].removesuffix(" …[truncated]"))
+        for item in payload["citations"]
+    )
+    assert evidence_chars >= 6_000
+    assert evidence_chars / payload["budget"]["characters_used"] >= 0.5
+    assert "evidence:bounded:short" not in {
+        item["evidence_id"] for item in payload["citations"]
+    }
     assert payload["budget"]["characters_used"] <= 15_000
+
+
+def test_compact_profile_keeps_resolution_and_hydration_status_with_reduced_diagnostics():
+    hits = []
+    for position in range(1, 8):
+        resource_id = f"resource:hydrated:{position}"
+        revision_id = f"revision:hydrated:{position}"
+        body = (
+            "Administrative prefix. " * 90
+            + f" Identificador: radiador R{position:02d}. Condición: radiador R{position:02d} "
+            "se recibió sin presión."
+        )
+        hit = _hit(
+            f"evidence:hydrated:{position}", snippet=body, owner="text",
+            resource=resource_id,
+        )
+        hit["revision"]["revision_id"] = revision_id
+        hit["evidence"]["resource_id"] = resource_id
+        hit["evidence"]["revision_id"] = revision_id
+        hit["evidence_hydration"] = {
+            "status": "owner_verified",
+            "inspected_scope": "published_evidence_reference",
+        }
+        hits.append(hit)
+
+    entries = [_entry(*hits)]
+    compact = build_context_response_v2(
+        entries, query="radiadores sin presión", scope="personal",
+        request_id="hydrated-compact", max_characters=15_000,
+    )
+    replay = build_context_response_v2(
+        entries, query="radiadores sin presión", scope="personal",
+        request_id="hydrated-compact", max_characters=15_000,
+    )
+    evidence_chars = sum(
+        len(item["excerpt"].removesuffix(" …[truncated]"))
+        for item in compact["citations"]
+    )
+    assert evidence_chars / compact["budget"]["characters_used"] >= 0.5
+    assert compact == replay
+    assert all(item["hydration"]["status"] == "owner_verified"
+               for item in compact["citations"])
+    assert all("inspected_scope" not in item["hydration"]
+               for item in compact["citations"])
+    assert all(item["locator"]["page"] == 0 for item in compact["citations"])
+    assert all(item["resource_id"] == item["revision_id"].replace("revision:", "resource:")
+               for item in compact["sources"])
+    assert all("policy_signature" not in item["witness_checks"]
+               for item in compact["citations"])
+
+    expanded = build_context_response_v2(
+        entries, query="radiadores sin presión", scope="personal",
+        request_id="hydrated-expanded", max_characters=30_000,
+    )
+    assert all("policy_signature" in item["witness_checks"]
+               for item in expanded["citations"])
 
 
 def test_compact_profile_requires_observable_query_support_not_raw_volume():
