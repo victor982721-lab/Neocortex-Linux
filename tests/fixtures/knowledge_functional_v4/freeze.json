@@ -1,0 +1,59 @@
+{
+  "ca12_variants": [
+    "full",
+    "no_expansion",
+    "no_semantic",
+    "no_catalog"
+  ],
+  "comparison_scope": "Independent R4 disjoint by declared namespace, family, basename, logical ID and authored content from DEV/R1/R2/R3; sealed raw reserves were not opened.",
+  "dataset_id": "FUNCTIONAL_R4_CA12",
+  "r4_disjointness": {
+    "against": [
+      "DEV",
+      "R1",
+      "R2",
+      "R3"
+    ],
+    "basename_prefix": "r4_ca12_",
+    "content_sentinel_prefix": "CA12-R4-SYNTHETIC-",
+    "declared": true,
+    "family_prefix": "R4-CA12-",
+    "logical_id_prefix": "R4-CA12-",
+    "namespace": "CA12-R4-SYNTHETIC",
+    "raw_comparison": "not_performed_for_R2_R3"
+  },
+  "reserve": {
+    "files": 16,
+    "logical_resources": 16,
+    "manifest_sha256": "035b0fd552961daa49b075c4dc027192b11280b4318120439b0cab00bbf0f3ef",
+    "negative_queries": 2,
+    "positive_queries": 8,
+    "queries": 10,
+    "queries_sha256": "a551d4533c6fa79f6a0e508ace17b9d36c93a564a5b89ec53e5a9f2325249e59"
+  },
+  "reserve_archive_sha256": "ee71bfd08189fe12be90e03a37a8ec7c7605362e4a0c14e1a1bd7321e092af2b",
+  "reserve_plaintext_archive_sha256": "eea272a5be4154a7c1b91d5a58a5f946e542e4d98268e9dce4d820b5c61602cd",
+  "reserve_visibility": "steward-only; no candidate execution until explicit root GO",
+  "schema": "neocortex.functional-freeze/v2",
+  "selection_note": "Synthetic R4 families, observed/manual pairs, queries and grades were authored before candidate execution; no selection or difficulty changes use R2 or R3 results.",
+  "status": "FROZEN_BEFORE_CANDIDATE_ABLATION",
+  "synthetic_only": true,
+  "thresholds": {
+    "ca12_variants": [
+      "full",
+      "no_expansion",
+      "no_semantic",
+      "no_catalog"
+    ],
+    "citation_integrity": "1.0",
+    "locator_integrity": "1.0",
+    "negative_unsupported_evidence": "0",
+    "success_at_5": ">=0.90"
+  },
+  "variants_predeclared": [
+    "full",
+    "no_expansion",
+    "no_semantic",
+    "no_catalog"
+  ]
+}

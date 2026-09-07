@@ -1,0 +1,4 @@
+reserve-r4.tar.aes binary
+*.json text eol=lf
+README.md text eol=lf
+SHA256SUMS.tsv text eol=lf
