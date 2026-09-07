@@ -64,3 +64,37 @@ def test_operational_query_payload_is_scope_bound_and_advisory(
     assert payload["request_id"] == "req-1"
     assert payload["scopes"][0]["operational"]["next_cursor"] == "next"
     assert payload["scopes"][0]["operational"]["mutation_authorized"] is False
+
+
+def test_operational_snapshot_drift_uses_snapshot_changed_exit_code(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    state = tmp_path / "state"
+    corpus = tmp_path / "corpus"
+    state.mkdir()
+    corpus.mkdir()
+    monkeypatch.setattr(read_api, "default_state_directory", lambda: state)
+    from neocortex.platform import policy
+
+    monkeypatch.setattr(policy, "default_corpus_root", lambda: corpus)
+    from neocortex.knowledge import knowledge_operational_query
+
+    def changed(self, request):
+        return OperationalQueryResult(
+            query=request.query,
+            intent=OperationalIntent.CORPUS_ERROR,
+            owner=OperationalOwner.FEDERATED,
+            status="snapshot_changed",
+            facts=(),
+            snapshot_id="sha256:" + "c" * 64,
+            next_cursor=None,
+            coverage={"status": "snapshot_changed", "owner_snapshot_consistent": False},
+            error={"code": "snapshot_changed", "message": "owner drift"},
+        )
+
+    monkeypatch.setattr(knowledge_operational_query.KnowledgeOperationalQueryService, "query", changed)
+    payload = read_api.operational_query_payload(
+        "¿Qué errores tienen mis archivos?", "personal", limit=2,
+    )
+    assert payload["exit_code"] == 5
+    assert payload["scopes"][0]["exit_code"] == 5

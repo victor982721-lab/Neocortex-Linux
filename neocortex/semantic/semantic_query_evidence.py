@@ -26,7 +26,7 @@ _NEGATION = re.compile(r"\b(?:no|nadie|nunca|jamas|tampoco)\b")
 _PAST_EVENT = re.compile(
     r"\b(?:que paso|ocurrio|ocurrieron|sucedio|cayo|murio|reanudaron|termino|"
     r"recupero|corto|comprobo|pararon|detuvo|quedo|tenia|sustituyeron|indico|"
-    r"bajo|acordo|confirmo|autorizo|causo|recibieron)\b"
+    r"bajo|acordo|confirmo|autorizo|causo|recibieron|hubo|existio)\b"
 )
 _INSTRUCTION = re.compile(r"\b(?:paso a paso|manual|guia|instrucciones|procedimiento)\b")
 _NONRECORD = re.compile(
@@ -37,6 +37,20 @@ _NONRECORD = re.compile(
 _NONOCCURRENCE = re.compile(
     r"\bno (?:se (?:presento|produjo|registro)|ocurrio|hubo|aparecio)\b"
 )
+_HYPOTHETICAL_WARNING = re.compile(
+    r"\b(?:puede[n]?|podria[n]?|es posible que|can|could|may|might)\s+"
+    r"(?:ocurrir|suceder|presentarse|aparecer|occur|happen|arise)\b|"
+    r"\b(?:en caso de|in case of)\b"
+)
+_OBSERVED_EVENT = re.compile(
+    r"\b(?:hubo|existio|ocurrio|ocurrieron|sucedio|se produjo|se presento|"
+    r"aparecio|estallo|occurred|happened|there was|was observed|was reported)\b"
+)
+_EVENT_QUERY_GRAMMAR = frozenset({
+    "a", "al", "an", "de", "del", "durante", "el", "en", "la", "las",
+    "los", "que", "the", "una", "un", "when", "what", "where", "with",
+    "hubo", "existio", "ocurrio", "ocurrieron", "sucedio", "paso",
+})
 _EXCLUDED_SUBJECT = re.compile(r"\bno corresponde (?:a|al)\b")
 _DETERMINERS = frozenset({"un", "una", "ningun", "ninguna", "el", "la", "los", "las", "ninguno", "algun", "alguna"})
 _AUTHORIZATION = re.compile(r"\b(?:autorizo|autorizaron|fue autorizado|fue autorizada)\b")
@@ -158,6 +172,13 @@ def query_role_counterevidence(query: str, text: str) -> list[dict[str, object]]
     ):
         return []
     terms = set(_TERM.findall(folded_query))
+    requested_event_terms = terms.difference(_EVENT_QUERY_GRAMMAR)
+    instructional_source = bool(_INSTRUCTION.search(_fold(bounded)))
+    observed_event = any(
+        _OBSERVED_EVENT.search(_fold(sentence))
+        and requested_event_terms.intersection(_TERM.findall(_fold(sentence)))
+        for _, _, sentence in _sentences(bounded)
+    )
     identifiers = tuple(dict.fromkeys(re.findall(r"\b[a-z]+\d+\b", folded_query)))[:16]
     witnesses: list[dict[str, object]] = []
     for sentence_start, sentence_end, sentence in _sentences(bounded):
@@ -180,6 +201,17 @@ def query_role_counterevidence(query: str, text: str) -> list[dict[str, object]]
                 if excluded is not None:
                     reasons.append("requested_named_subject_is_explicitly_excluded")
                     focuses.append((clause_start + match.start(), clause_start + excluded.end()))
+        if (
+            instructional_source
+            and not observed_event
+            and requested_event_terms.intersection(_TERM.findall(folded))
+            and (warning := _HYPOTHETICAL_WARNING.search(folded)) is not None
+        ):
+            # A manual's conditional warning is related material, not a record
+            # that the requested incident occurred.  Reuse the established
+            # non-record reason so the v2 projection keeps it ``related_only``.
+            reasons.append("source_explicitly_limits_observed_event_evidence")
+            focuses.append(warning.span())
         if focuses:
             focus_start, focus_end = _original_span(sentence, *min(focuses))
             witnesses.append(_role_witness(

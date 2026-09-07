@@ -243,6 +243,11 @@ def build_human_parser() -> argparse.ArgumentParser:
         metavar="{1,2}",
         help="contrato de respuesta: 2 compacto (default), 1 heredado",
     )
+    ask.add_argument(
+        "--cursor",
+        metavar="TOKEN",
+        help="continúa una página de diagnóstico operacional del mismo snapshot",
+    )
 
     curate = commands.add_parser(
         "curate",
@@ -869,6 +874,7 @@ def _run_ask(args: argparse.Namespace) -> int:
                 args.query,
                 args.scope,
                 limit=args.limit,
+                cursor=getattr(args, "cursor", None),
             )
         except ValueError as exc:
             return _run_usage_error(
@@ -912,6 +918,18 @@ def _run_ask(args: argparse.Namespace) -> int:
                 )
         _print("\nEl diagnóstico es evidencia de estado publicada; no autoriza acciones ni cambios.")
         return _exit_code(payload)
+    if getattr(args, "cursor", None) is not None:
+        return _run_usage_error(
+            "ask",
+            ReadOperation.CONTEXT,
+            args,
+            ValueError("--cursor sólo está disponible para preguntas operacionales"),
+            query=args.query,
+            mode=args.mode,
+            include_history=args.history,
+            limit=args.limit,
+            max_characters=args.characters,
+        )
     try:
         payload = context_payload(
             args.query,

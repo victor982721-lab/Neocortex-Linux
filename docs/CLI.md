@@ -174,6 +174,7 @@ Neocortex status --scope all
 Neocortex search "consulta" --scope personal --limit 20
 Neocortex ask "consulta" --scope personal --limit 12
 Neocortex ask "¿Qué PDFs están protegidos?" --scope all --json
+Neocortex ask "¿Qué errores tienen mis archivos?" --scope personal --cursor TOKEN --json
 Neocortex inspect code "consulta" --scope personal
 Neocortex inspect lineage IDENTIFICADOR --scope personal
 Neocortex review value --scope personal --limit 50

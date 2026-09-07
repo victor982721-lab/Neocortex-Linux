@@ -13,11 +13,13 @@ question spans formats.
 
 from __future__ import annotations
 
+import binascii
 import hashlib
 import json
+import base64
 import unicodedata
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
@@ -29,7 +31,9 @@ from .knowledge_asset_diagnosis_contracts import (
 
 
 OPERATIONAL_QUERY_SCHEMA = "neocortex.knowledge-operational-query/v1"
-OperationalStatus = Literal["ok", "empty", "partial", "unavailable", "blocked", "error"]
+OperationalStatus = Literal[
+    "ok", "empty", "partial", "unavailable", "blocked", "error", "snapshot_changed"
+]
 
 
 class OperationalIntent(StrEnum):
@@ -63,6 +67,7 @@ class OperationalQueryRequest:
     source_root: Path
     limit: int = 20
     cursor: str | None = None
+    scope: str = "personal"
 
     def __post_init__(self) -> None:
         if not isinstance(self.query, str) or not self.query.strip() or len(self.query) > 4096:
@@ -81,10 +86,101 @@ class OperationalQueryRequest:
         if self.cursor is not None and (
             not isinstance(self.cursor, str)
             or not self.cursor.strip()
-            or len(self.cursor) > 8192
+            or len(self.cursor) > 65536
             or any(ord(char) < 32 or ord(char) == 127 for char in self.cursor)
         ):
             raise ValueError("cursor must be bounded, non-empty text")
+        if self.scope not in {"personal", "framework", "all"}:
+            raise ValueError("scope must be personal, framework or all")
+
+
+@dataclass(frozen=True, slots=True)
+class OperationalFederatedCursor:
+    """Canonical continuation token for a multi-owner operational page."""
+
+    query: str
+    scope: str
+    state_directory: str
+    source_root: str
+    intent: OperationalIntent
+    limit: int
+    owner_cursors: tuple[tuple[str, str | None], ...]
+    owner_snapshots: tuple[tuple[str, str | None], ...]
+
+    def _payload(self) -> dict[str, Any]:
+        return {
+            "v": 1,
+            "query": self.query,
+            "scope": self.scope,
+            "state_directory": self.state_directory,
+            "source_root": self.source_root,
+            "intent": self.intent.value,
+            "limit": self.limit,
+            "owner_cursors": {key: value for key, value in self.owner_cursors},
+            "owner_snapshots": {key: value for key, value in self.owner_snapshots},
+        }
+
+    def to_token(self) -> str:
+        payload = self._payload()
+        envelope = {"payload": payload, "digest": _digest(payload)}
+        raw = json.dumps(envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii").rstrip("=")
+
+    @classmethod
+    def from_token(cls, token: str) -> "OperationalFederatedCursor":
+        if not isinstance(token, str) or not 1 <= len(token) <= 65536:
+            raise ValueError("federated cursor token must be bounded non-empty text")
+        try:
+            raw = base64.b64decode(token + "=" * (-len(token) % 4), altchars=b"-_", validate=True)
+            envelope = json.loads(raw)
+            if not isinstance(envelope, dict) or set(envelope) != {"payload", "digest"}:
+                raise ValueError("federated cursor envelope is invalid")
+            payload = envelope["payload"]
+            if not isinstance(payload, dict) or envelope["digest"] != _digest(payload):
+                raise ValueError("federated cursor digest mismatch")
+            if payload.get("v") != 1:
+                raise ValueError("federated cursor version is unsupported")
+            if (
+                not isinstance(payload.get("query"), str)
+                or not payload["query"].strip()
+                or len(payload["query"]) > 4096
+                or payload.get("scope") not in {"personal", "framework", "all"}
+                or not isinstance(payload.get("state_directory"), str)
+                or not isinstance(payload.get("source_root"), str)
+                or type(payload.get("limit")) is not int
+                or not 1 <= payload["limit"] <= 1000
+            ):
+                raise ValueError("federated cursor binding fields are invalid")
+            cursors = payload.get("owner_cursors")
+            snapshots = payload.get("owner_snapshots")
+            if not isinstance(cursors, dict) or not isinstance(snapshots, dict):
+                raise ValueError("federated cursor owner maps are invalid")
+            if set(cursors) != set(snapshots) or not cursors:
+                raise ValueError("federated cursor owner maps do not match")
+            if any(not isinstance(key, str) or not key for key in cursors):
+                raise ValueError("federated cursor owner names are invalid")
+            if any(value is not None and (not isinstance(value, str) or not value) for value in cursors.values()):
+                raise ValueError("federated cursor owner continuation is invalid")
+            if any(value is not None and (not isinstance(value, str) or not value) for value in snapshots.values()):
+                raise ValueError("federated cursor owner snapshot is invalid")
+            result = cls(
+                query=payload["query"], scope=payload["scope"],
+                state_directory=payload["state_directory"], source_root=payload["source_root"],
+                intent=OperationalIntent(payload["intent"]), limit=payload["limit"],
+                owner_cursors=tuple(sorted(cursors.items())), owner_snapshots=tuple(sorted(snapshots.items())),
+            )
+            if result.to_token() != token:
+                raise ValueError("federated cursor token is not canonical")
+            return result
+        except (
+            binascii.Error,
+            ValueError,
+            TypeError,
+            KeyError,
+            json.JSONDecodeError,
+            UnicodeDecodeError,
+        ) as exc:
+            raise ValueError("invalid federated cursor token") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,25 +349,45 @@ class KnowledgeOperationalQueryService:
             if intent is OperationalIntent.PDF_PROTECTED:
                 return self._review_candidates(request, intent, route_name="pdf", recommendation="keep_protected")
             if intent is OperationalIntent.OFFICE_ERROR:
-                return self._review_candidates(request, intent, route_name="office", recommendation="manual_review")
+                return self._federated_query(
+                    request,
+                    intent,
+                    ("office", "text"),
+                )
             if intent is OperationalIntent.CORPUS_ERROR:
-                return self._corpus_errors(request, intent)
+                return self._federated_query(
+                    request,
+                    intent,
+                    ("pdf", "text", "archive", "office"),
+                )
             return self._review_candidates(request, intent, recommendation="deletion_candidate")
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             return _error_result(request, intent, OperationalOwner.FRAMEWORK, "blocked", "owner_read_failed", str(exc))
 
-    def _format_diagnostics(self, request: OperationalQueryRequest, intent: OperationalIntent, owner: str) -> OperationalQueryResult:
+    def _format_diagnostics(
+        self,
+        request: OperationalQueryRequest,
+        intent: OperationalIntent,
+        owner: str,
+        *,
+        path_fragment: str | None = None,
+    ) -> OperationalQueryResult:
         from neocortex.api.content_diagnostics_api import content_diagnostics_payload
 
+        options: dict[str, object] = {"cursor": request.cursor}
+        if path_fragment is not None:
+            options["path_fragment"] = path_fragment
         payload = content_diagnostics_payload(
-            owner, request.state_directory, request.source_root, request.limit, cursor=request.cursor,
+            owner, request.state_directory, request.source_root, request.limit, **options,
         )
         status = str(payload.get("status", "error"))
         if status != "ok":
+            error = payload.get("error")
+            error_map = error if isinstance(error, Mapping) else {}
             return _error_result(
                 request, intent, OperationalOwner(owner), "unavailable" if status == "unavailable" else "blocked",
-                str((payload.get("error") or {}).get("kind", "owner_state_unavailable")),
-                str((payload.get("error") or {}).get("message", "owner state unavailable")),
+                str(error_map.get("kind", "owner_state_unavailable")),
+                str(error_map.get("message", "owner state unavailable")),
             )
         scope = AssetProblemScope.PROCESSING
         facts = tuple(
@@ -290,7 +406,10 @@ class KnowledgeOperationalQueryService:
                     "projection_digest": _digest(item),
                 },
             )
-            for item in payload.get("items", []) if isinstance(item, Mapping)
+            for item in payload.get("items", [])
+            if isinstance(item, Mapping)
+            and isinstance(item.get("error_type") or item.get("reason_code"), str)
+            and bool((item.get("error_type") or item.get("reason_code")))
         )
         next_cursor = payload.get("next_cursor")
         return OperationalQueryResult(
@@ -301,6 +420,7 @@ class KnowledgeOperationalQueryService:
                 "persisted_only": True,
                 "owner_snapshot_consistent": bool((payload.get("coverage") or {}).get("snapshot_consistent")),
                 "requested_root": payload.get("requested_root"),
+                "path_fragment": path_fragment,
                 "matched_count": payload.get("matched_count"),
                 "query_page_complete": next_cursor is None,
             },
@@ -352,74 +472,179 @@ class KnowledgeOperationalQueryService:
             },
         )
 
-    def _corpus_errors(
-        self, request: OperationalQueryRequest, intent: OperationalIntent,
+    def _owner_result(
+        self,
+        request: OperationalQueryRequest,
+        intent: OperationalIntent,
+        owner: str,
     ) -> OperationalQueryResult:
-        """Combine bounded diagnostic owner pages without mixing cursors."""
+        if owner == "pdf":
+            return self._format_diagnostics(request, OperationalIntent.PDF_ERROR, owner)
+        if owner == "text":
+            if intent is OperationalIntent.OFFICE_ERROR:
+                result = self._format_diagnostics(
+                    request, OperationalIntent.PDF_ERROR, owner, path_fragment="ppt"
+                )
+            else:
+                result = self._format_diagnostics(request, OperationalIntent.PDF_ERROR, owner)
+            if intent is OperationalIntent.OFFICE_ERROR:
+                result = self._presentation_text_result(result)
+            return result
+        if owner == "archive":
+            return self._format_diagnostics(request, OperationalIntent.ARCHIVE_ISSUE, owner)
+        if owner == "office":
+            return self._review_candidates(request, OperationalIntent.OFFICE_ERROR, route_name="office", recommendation="manual_review")
+        raise ValueError(f"unsupported operational owner: {owner}")
 
-        # A cursor is owned by one diagnostic page. Refuse to pretend a token
-        # for one owner can continue a federated page from another owner.
-        if request.cursor is not None:
-            return _error_result(
-                request,
-                intent,
-                OperationalOwner.FEDERATED,
-                "blocked",
-                "federated_cursor_requires_owner_scope",
-                "continue each diagnostic owner with its own cursor",
-            )
+    @staticmethod
+    def _presentation_text_result(result: OperationalQueryResult) -> OperationalQueryResult:
+        if result.status not in {"ok", "empty"}:
+            return result
+        selected: list[OperationalFact] = []
+        for fact in result.facts:
+            record = fact.provenance.get("record")
+            path = record.get("path") if isinstance(record, Mapping) else None
+            if isinstance(path, str) and path.casefold().endswith((".ppt", ".pptx")):
+                selected.append(fact)
+        status: OperationalStatus = "ok" if selected else "empty"
+        return replace(result, facts=tuple(selected), status=status)
 
-        owner_results = (
-            ("pdf", self._format_diagnostics(request, OperationalIntent.PDF_ERROR, "pdf")),
-            ("text", self._format_diagnostics(request, OperationalIntent.PDF_ERROR, "text")),
-            ("archive", self._format_diagnostics(request, OperationalIntent.ARCHIVE_ISSUE, "archive")),
-            ("office", self._review_candidates(request, OperationalIntent.OFFICE_ERROR, recommendation="manual_review")),
+    def _federated_query(
+        self,
+        request: OperationalQueryRequest,
+        intent: OperationalIntent,
+        owners: tuple[str, ...],
+    ) -> OperationalQueryResult:
+        """Read one page per owner and continue it with one cursor per owner."""
+
+        binding = OperationalFederatedCursor(
+            request.query.strip(), request.scope, str(request.state_directory), str(request.source_root),
+            intent, request.limit,
+            tuple((owner, None) for owner in owners),
+            tuple((owner, None) for owner in owners),
         )
+        if request.cursor is not None:
+            try:
+                cursor = OperationalFederatedCursor.from_token(request.cursor)
+            except ValueError as exc:
+                # Preserve the pre-federation diagnostic contract for a raw
+                # owner cursor, while rejecting a token that looks federated
+                # but fails its envelope/digest validation.
+                try:
+                    raw_cursor = base64.b64decode(
+                        request.cursor + "=" * (-len(request.cursor) % 4),
+                        altchars=b"-_", validate=True,
+                    )
+                    json.loads(raw_cursor)
+                    cursor_code = "invalid_federated_cursor"
+                except (
+                    binascii.Error,
+                    ValueError,
+                    TypeError,
+                    json.JSONDecodeError,
+                    UnicodeDecodeError,
+                ):
+                    cursor_code = (
+                        "invalid_federated_cursor"
+                        if request.cursor.startswith("eyJkaWdlc3Qi")
+                        else "federated_cursor_requires_owner_scope"
+                    )
+                return _error_result(
+                    request, intent, OperationalOwner.FEDERATED, "blocked", cursor_code,
+                    str(exc) if cursor_code == "invalid_federated_cursor" else
+                    "continue with the federated cursor returned by the first page",
+                )
+            if (
+                cursor.query != binding.query
+                or cursor.scope != binding.scope
+                or cursor.state_directory != binding.state_directory
+                or cursor.source_root != binding.source_root
+                or cursor.intent is not intent
+                or cursor.limit != binding.limit
+                or set(owner for owner, _ in cursor.owner_cursors) != set(owners)
+                or set(owner for owner, _ in cursor.owner_snapshots) != set(owners)
+            ):
+                return _error_result(
+                    request, intent, OperationalOwner.FEDERATED, "blocked", "federated_cursor_binding_mismatch",
+                    "federated cursor does not belong to this query, scope, roots, limit or intent",
+                )
+            binding = cursor
+
+        prior_cursors = dict(binding.owner_cursors)
+        prior_snapshots = dict(binding.owner_snapshots)
         facts: list[OperationalFact] = []
         owner_coverage: dict[str, Any] = {}
-        snapshots: dict[str, str | None] = {}
-        incomplete: list[str] = []
-        for owner, result in owner_results:
-            facts.extend(result.facts)
-            snapshots[owner] = result.snapshot_id
+        current_snapshots: dict[str, str | None] = {}
+        next_cursors: dict[str, str | None] = {}
+        failed: list[str] = []
+        changed: list[str] = []
+        for owner in owners:
+            owner_request = replace(request, cursor=prior_cursors[owner])
+            result = self._owner_result(owner_request, intent, owner)
+            current_snapshots[owner] = result.snapshot_id
+            next_cursors[owner] = result.next_cursor
             owner_coverage[owner] = {
                 "status": result.status,
                 "snapshot_id": result.snapshot_id,
+                "cursor_before": prior_cursors[owner],
                 "next_cursor": result.next_cursor,
                 "fact_count": len(result.facts),
             }
-            if result.status not in {"ok", "empty"} or result.next_cursor is not None:
-                incomplete.append(owner)
-        status = "partial" if incomplete else "ok" if facts else "empty"
-        snapshot_id = _digest(snapshots) if snapshots else None
-        error = (
-            {
-                "code": "owner_pages_incomplete",
-                "message": "some diagnostic owner pages require a separate continuation",
-            }
-            if incomplete else None
-        )
+            if request.cursor is not None and result.snapshot_id != prior_snapshots[owner]:
+                changed.append(owner)
+            if result.status not in {"ok", "empty"}:
+                failed.append(owner)
+            # An owner that was exhausted on the preceding page is still read
+            # for snapshot validation, but its first page must not be repeated.
+            if request.cursor is None or prior_cursors[owner] is not None:
+                facts.extend(result.facts)
+
+        if changed:
+            return OperationalQueryResult(
+                request.query.strip(), intent, OperationalOwner.FEDERATED, "snapshot_changed", (),
+                _digest(current_snapshots), None,
+                {
+                    "status": "snapshot_changed", "persisted_only": True,
+                    "owner_snapshot_consistent": False, "changed_owners": changed,
+                    "owners": owner_coverage,
+                },
+                {"code": "snapshot_changed", "message": "one or more owner snapshots changed before continuation"},
+            )
+
+        next_token = None
+        if not failed and any(value is not None for value in next_cursors.values()):
+            next_token = OperationalFederatedCursor(
+                binding.query, binding.scope, binding.state_directory, binding.source_root,
+                intent, binding.limit, tuple((owner, next_cursors[owner]) for owner in owners),
+                tuple((owner, current_snapshots[owner]) for owner in owners),
+            ).to_token()
+        status: OperationalStatus = "partial" if failed else ("ok" if facts else "empty")
         return OperationalQueryResult(
-            request.query.strip(), intent, OperationalOwner.FEDERATED, status,
-            tuple(facts[: request.limit * len(owner_results)]), snapshot_id, None,
+            request.query.strip(), intent, OperationalOwner.FEDERATED, status, tuple(facts),
+            _digest(current_snapshots), next_token,
             {
-                "status": "observed",
-                "persisted_only": True,
-                "owner_snapshot_consistent": all(
-                    value is not None for value in snapshots.values()
-                ),
-                "owners": owner_coverage,
-                "incomplete_owners": incomplete,
+                "status": "observed", "persisted_only": True,
+                "owner_snapshot_consistent": not failed, "owners": owner_coverage,
+                "incomplete_owners": failed,
+                "query_page_complete": next_token is None,
                 "recommendations_are_advisory": True,
             },
-            error,
+            {"code": "owner_pages_incomplete", "message": "one or more owner pages are unavailable"} if failed else None,
         )
+
+    def _corpus_errors(
+        self, request: OperationalQueryRequest, intent: OperationalIntent,
+    ) -> OperationalQueryResult:
+        """Compatibility wrapper retained for callers of the old seam."""
+
+        return self._federated_query(request, intent, ("pdf", "text", "archive", "office"))
 
 
 __all__ = [
     "KnowledgeOperationalQueryService",
     "OPERATIONAL_QUERY_SCHEMA",
     "OperationalFact",
+    "OperationalFederatedCursor",
     "OperationalIntent",
     "OperationalOwner",
     "OperationalQueryRequest",

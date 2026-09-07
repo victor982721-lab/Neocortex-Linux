@@ -157,6 +157,39 @@ def revision_identity(
     return revision_id, signature, RevisionState.AMBIGUOUS, ("revision_unavailable",)
 
 
+def revision_binding(
+    resolved: ResolvedSearchHit, *, revision_id: str,
+    revision_warnings: tuple[str, ...],
+) -> dict[str, object] | None:
+    """Carry owner revision currency through the ranking signal.
+
+    ``RevisionRef`` intentionally remains the stable Knowledge identity.  The
+    owner-local numeric pair is additional provenance needed by readers to
+    explain why a published semantic passage is historical or unavailable.
+    """
+
+    current = resolved.source_revision_is_current
+    if current is None:
+        return None
+    available: object = revision_id if current else resolved.current_revision_id
+    binding: dict[str, object] = {
+        "requested_revision_id": revision_id,
+        "available_revision_id": available,
+        "published_revision_id": resolved.published_revision_id,
+        "current_revision_id": resolved.current_revision_id,
+        "source_revision_is_current": current,
+    }
+    if not current:
+        binding["reason"] = (
+            "current_revision_unavailable"
+            if resolved.current_revision_id is None
+            else "published_source_revision_is_not_current"
+        )
+    elif revision_warnings:
+        binding["reason"] = revision_warnings[0]
+    return binding
+
+
 def int_provenance(
     provenance: Mapping[str, object],
     name: str,
@@ -444,6 +477,11 @@ def candidate_from_resolved(
         "query_support", resolved.hit.provenance.get("query_support"),
     )
     query_support = dict(support_value) if isinstance(support_value, Mapping) else {}
+    binding = revision_binding(
+        resolved, revision_id=revision_id, revision_warnings=revision_warnings,
+    )
+    if binding is not None:
+        query_support["revision_binding"] = binding
     support_warnings = (
         ("query_matches_partial_terms_only",)
         if query_support.get("support") == "partial_terms" else ()

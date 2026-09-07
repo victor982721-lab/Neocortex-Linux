@@ -483,6 +483,8 @@ def operational_query_payload(
             return int(KnowledgeExitCode.NO_RESULTS)
         if status == "partial":
             return int(KnowledgeExitCode.PARTIAL)
+        if status == "snapshot_changed":
+            return int(KnowledgeExitCode.SNAPSHOT_CHANGED)
         # Operational owner failures are state outcomes, not empty answers.
         return int(KnowledgeExitCode.FATAL)
 
@@ -511,6 +513,7 @@ def operational_query_payload(
                 source_root,
                 limit=bounded_limit,
                 cursor=normalized_cursor,
+                scope=selected.value,
             ))
             code = result_code(result.status)
             entries.append({

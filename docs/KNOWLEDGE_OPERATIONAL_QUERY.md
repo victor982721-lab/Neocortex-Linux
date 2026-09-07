@@ -16,10 +16,13 @@ respuesta `OperationalQueryResult` tiene el esquema
 `next_cursor`, cobertura y errores tipados, y declara siempre
 `read_only=true`, `advisory_only=true` y `mutation_authorized=false`.
 
-Una consulta selecciona un único owner para que snapshot y cursor no puedan
-mezclarse silenciosamente entre bases. Las preguntas que necesiten varios
-owners deben emitir consultas separadas y comparar sus snapshots fuera de esta
-superficie.
+Las intenciones específicas conservan el cursor nativo del owner. `office_error`
+y `corpus_error` usan un cursor federado canónico que contiene un cursor
+independiente para cada owner, además de snapshots, consulta, scope y raíces.
+El token incluye un digest del payload y se rechaza si fue adulterado, si se
+reutiliza con otra consulta, scope o raíz, o si un owner cambia de snapshot
+durante la continuación. La respuesta no mezcla la página nueva con hechos de
+una página anterior cuando detecta ese cambio.
 
 ## Intenciones y owners
 
@@ -29,7 +32,7 @@ superficie.
 | `pdf_error` | PDF diagnostics | `processing` |
 | `office_error` | Framework / review candidates | `processing` |
 | `archive_issue` | Archive diagnostics | `processing` |
-| `corpus_error` | PDF, Text, Archive y Review owners | `processing` |
+| `corpus_error` | PDF, Text, Archive y Office | `processing` |
 | `curation_disposal` | Framework / review candidates | `policy` |
 
 La clasificación es lexical y conservadora, con `unknown` como resultado
@@ -38,12 +41,10 @@ fail-closed. Los hechos usan las clases `file`, `processing`, `index`,
 o `unknown`. La presencia de una recomendación de eliminación nunca crea
 autoridad, un `file_action` ni un efecto físico.
 
-La superficie se consume mediante `ask` para preguntas operacionales y mediante
-la herramienta MCP `operational_query`; también está disponible en la API de
-lectura. Es un seam separado para no mezclar contexto citado con diagnósticos
-de owners.
+La superficie puede consumirse mediante `ask`, la herramienta MCP
+`operational_query` o la API de lectura, manteniéndose separada del contexto
+citado para no mezclar diagnósticos de owners.
 
-La intención `corpus_error` combina páginas acotadas de los owners sin mezclar
-sus cursores, conserva un digest de los snapshots observados y marca como
-parcial cualquier owner que requiera continuación; para continuar se consulta
-cada owner con su cursor propio.
+La intención `corpus_error` combina páginas acotadas de los owners, conserva un
+cursor federado con la posición independiente de cada owner y marca
+`snapshot_changed` sin publicar hechos cuando la continuación detecta deriva.

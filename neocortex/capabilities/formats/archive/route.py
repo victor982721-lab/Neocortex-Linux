@@ -1093,7 +1093,11 @@ def _store_member(
             time.time_ns(),
             document_role,
             logical_document_chain,
-            int(document_role == "logical_document"),
+            # A conventional archive member remains a separately identifiable
+            # logical candidate even though it is still a virtual resource and
+            # cannot be moved by the current backend.  Only parts of a known
+            # document package are inseparable components.
+            int(document_role != "document_component"),
         ),
     )
     connection.execute(

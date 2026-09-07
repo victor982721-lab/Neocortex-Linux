@@ -166,7 +166,19 @@ def _stale_revision_details(
     for ``owner_verified``.
     """
 
-    current = revision.get("source_revision_is_current")
+    binding: Mapping[str, Any] | None = None
+    direct_binding = hit.get("revision_binding")
+    if isinstance(direct_binding, Mapping):
+        binding = direct_binding
+    for signal in hit.get("signals", ()):
+        support = signal.get("query_support") if isinstance(signal, Mapping) else None
+        candidate_binding = support.get("revision_binding") if isinstance(support, Mapping) else None
+        if isinstance(candidate_binding, Mapping):
+            binding = candidate_binding
+            break
+    current = binding.get("source_revision_is_current") if binding is not None else None
+    if not isinstance(current, bool):
+        current = revision.get("source_revision_is_current")
     if not isinstance(current, bool):
         current = hit.get("source_revision_is_current")
     if not isinstance(current, bool):
@@ -179,9 +191,13 @@ def _stale_revision_details(
     available = next(
         (
             mapping.get(name)
-            for mapping in (revision, hit)
+            for mapping in (binding or {}, revision, hit)
             for name in ("available_revision_id", "current_revision_id", "owner_revision_id")
-            if isinstance(mapping.get(name), str) and mapping[name].strip()
+            if (
+                isinstance(mapping.get(name), int)
+                and not isinstance(mapping.get(name), bool)
+            )
+            or (isinstance(mapping.get(name), str) and mapping[name].strip())
         ),
         None,
     )
@@ -189,6 +205,7 @@ def _stale_revision_details(
         (
             _text(value, 256)
             for value in (
+                binding.get("reason") if binding is not None else None,
                 revision.get("source_revision_reason"),
                 revision.get("reason"),
                 hit.get("source_revision_reason"),
@@ -204,6 +221,9 @@ def _stale_revision_details(
         "source_revision_is_current": False,
         "reason": reason,
     }
+    for name in ("published_revision_id", "current_revision_id"):
+        if binding is not None and binding.get(name) is not None:
+            details[name] = binding[name]
     return details
 
 
@@ -364,9 +384,9 @@ def _assess_witnesses(
                     checks[flag] = True
             checks.update(recomputed_for="emitted_excerpt", inspected_scope="emitted_excerpt_only")
             cache[key] = (checks, query_role_counterevidence(*key))
-        checks, counterevidence = cache[key]
+        checks, role_counterevidence = cache[key]
         citation["witness_checks"] = checks
-        citation["role_counterevidence"] = counterevidence
+        citation["role_counterevidence"] = role_counterevidence
         # Reference verification and necessary witnesses never constitute an
         # answer assessment. The consuming LLM receives the evidence instead.
         citation["answer_sufficiency"] = "not_assessed"
@@ -390,9 +410,22 @@ def _assess_witnesses(
             # requested subject. Applicability is decided by the common owner.
             disposition = "related_only"
         elif common_v2 and declared_disposition == "contradictory_evidence":
-            disposition = "contradictory"
-            reasons.append(f"{citation['citation_id']}:scoped_counterevidence")
-        elif not common_v2 and (counterevidence or checks["counterevidence"]):
+            nonrecord_only = bool(role_counterevidence) and not checks["counterevidence"] and all(
+                "source_explicitly_limits_observed_event_evidence"
+                in witness.get("reasons", ())
+                for witness in role_counterevidence
+            )
+            folded_excerpt = excerpt.casefold()
+            general_instruction = any(
+                term in folded_excerpt
+                for term in ("manual general", "guía general", "guide general", "procedimiento general")
+            )
+            if nonrecord_only and general_instruction:
+                disposition = "related_only"
+            else:
+                disposition = "contradictory"
+                reasons.append(f"{citation['citation_id']}:scoped_counterevidence")
+        elif not common_v2 and (role_counterevidence or checks["counterevidence"]):
             disposition = "contradictory"
             reasons.append(f"{citation['citation_id']}:literal_counterevidence")
         elif (checks["missing_necessary_witnesses"] or not excerpt
@@ -429,7 +462,11 @@ def _set_status(
     if payload["budget"].get("input_candidates_capped"):
         reasons.append("candidate_projection_bound")
     coverage["presentation"] = _facet("partial" if reasons else "complete", reasons)
-    partial = any(coverage[name]["status"] == "partial" for name in ("retrieval", "relations", "evidence", "presentation"))
+    witness_missing = coverage["witness_checks"]["status"] == "missing"
+    partial = witness_missing or any(
+        coverage[name]["status"] == "partial"
+        for name in ("retrieval", "relations", "evidence", "presentation")
+    )
     payload["status"] = "partial" if partial else ("ok" if citations else "empty")
     payload["exit_code"] = 4 if partial else (0 if citations else 3)
     payload["error"] = {"code": "incomplete_context", "message": "See coverage reasons", "retryable": False} if partial else None

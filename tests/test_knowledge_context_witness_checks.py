@@ -245,6 +245,32 @@ def test_literal_evidence_is_preserved_with_scoped_disposition(snippet, reason, 
     assert payload["coverage"]["witness_checks"]["status"] == "missing"
 
 
+def test_hypothetical_manual_warning_is_related_only_not_an_observed_incident():
+    query = "¿Hubo una explosión?"
+    snippet = "Manual general de seguridad. Una explosión puede ocurrir si..."
+    payload = _build(query, snippet)
+    citation = _assert_emitted_checks(payload)
+
+    assert citation["role_counterevidence"]
+    assert citation["evidence_disposition"] == "related_only"
+    assert "source_explicitly_limits_observed_event_evidence" in serialize_context_response(
+        citation
+    )
+
+
+def test_actual_event_record_is_not_downgraded_by_an_unrelated_manual_warning():
+    query = "¿Hubo una explosión?"
+    snippet = (
+        "Manual general de seguridad. Una explosión puede ocurrir si... "
+        "La explosión ocurrió el 2 de enero."
+    )
+    payload = _build(query, snippet)
+    citation = _assert_emitted_checks(payload)
+
+    assert citation["role_counterevidence"] == []
+    assert citation["evidence_disposition"] == "evidence_candidate"
+
+
 @pytest.mark.parametrize("transport", ["text", "json", "mcp"])
 def test_budget_truncation_rechecks_only_the_exact_emitted_excerpt(transport):
     witness = "La supervisora Lucía autorizó el retiro del aislador."

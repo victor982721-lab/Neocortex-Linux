@@ -193,10 +193,12 @@ def test_human_ask_routes_explicit_operational_questions_to_owner_diagnostics(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    calls: list[tuple[str, str, int]] = []
+    calls: list[tuple[str, str, int, str | None]] = []
 
-    def fake_operational(query: str, scope: str, *, limit: int) -> dict[str, object]:
-        calls.append((query, scope, limit))
+    def fake_operational(
+        query: str, scope: str, *, limit: int, cursor: str | None = None
+    ) -> dict[str, object]:
+        calls.append((query, scope, limit, cursor))
         return {
             "query": query,
             "exit_code": 0,
@@ -219,7 +221,7 @@ def test_human_ask_routes_explicit_operational_questions_to_owner_diagnostics(
 
     monkeypatch.setattr(human_cli, "operational_query_payload", fake_operational)
     assert human_cli.run_human_command(("ask", "¿Qué PDFs están protegidos?")) == 0
-    assert calls == [("¿Qué PDFs están protegidos?", "all", 10)]
+    assert calls == [("¿Qué PDFs están protegidos?", "all", 10, None)]
     output = capsys.readouterr().out
     assert "Diagnóstico operacional" in output
     assert "pdf_password_required" in output

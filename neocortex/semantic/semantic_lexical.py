@@ -689,6 +689,7 @@ _SPECS = {
         cjk_content_expression="f.text",
         sql="""SELECT f.rowid AS fts_rowid,f.file_key,f.path,f.page_number,
         snippet(page_fts,3,'[',']',' ... ',24) AS snippet,
+        f.text AS source_text,
         bm25(page_fts) AS raw_bm25,d.size AS source_size,
         d.mtime_ns AS source_mtime_ns,d.birthtime_ns AS source_birthtime_ns,
         d.processing_signature AS source_processing_signature,
@@ -699,6 +700,7 @@ _SPECS = {
         ORDER BY raw_bm25,f.path COLLATE NOCASE,f.page_number LIMIT ?""",
         cjk_sql="""SELECT f.rowid AS fts_rowid,f.file_key,f.path,f.page_number,
         substr(f.text,max(1,instr(f.text,?)-80),240) AS snippet,
+        f.text AS source_text,
         CAST(length(f.text) AS REAL) AS raw_bm25,d.size AS source_size,
         d.mtime_ns AS source_mtime_ns,d.birthtime_ns AS source_birthtime_ns,
         d.processing_signature AS source_processing_signature,
@@ -863,6 +865,7 @@ _SPECS = {
         cjk_content_expression="f.body",
         sql="""SELECT f.rowid AS fts_rowid,f.file_key,f.path,
         snippet(document_fts,5,'[',']',' ... ',24) AS snippet,
+        f.body AS source_text,
         bm25(document_fts) AS raw_bm25,d.size AS source_size,
         d.mtime_ns AS source_mtime_ns,d.birthtime_ns AS source_birthtime_ns,
         d.processing_signature AS source_processing_signature,
@@ -873,6 +876,7 @@ _SPECS = {
         ORDER BY raw_bm25,f.path COLLATE NOCASE LIMIT ?""",
         cjk_sql="""SELECT f.rowid AS fts_rowid,f.file_key,f.path,
         substr(f.body,max(1,instr(f.body,?)-80),240) AS snippet,
+        f.body AS source_text,
         CAST(length(f.body) AS REAL) AS raw_bm25,d.size AS source_size,
         d.mtime_ns AS source_mtime_ns,d.birthtime_ns AS source_birthtime_ns,
         d.processing_signature AS source_processing_signature,
@@ -892,6 +896,41 @@ def _bounded_snippet(value: object) -> str | None:
     if len(snippet) <= MAX_SNIPPET_CHARS:
         return snippet
     return snippet[: MAX_SNIPPET_CHARS - 1] + "…"
+
+
+def _source_backed_excerpt(
+    spec: _SourceSpec,
+    row: sqlite3.Row,
+    query: str,
+) -> tuple[str | None, int | None, int | None, dict[str, object]]:
+    """Return an exact, source-relative excerpt for owner-hydratable hits.
+
+    FTS5's ``snippet()`` output is presentation text: it may contain markers,
+    ellipses, and no character coordinates.  Text and PDF owners expose their
+    indexed section in ``source_text`` so the same bounded window can be
+    selected verbatim and carried through evidence lookup.  Other lexical
+    owners retain their established FTS presentation until their owner lookup
+    contract supplies an equivalent source map.
+    """
+    if spec.source_kind not in {"text", "pdf"} or "source_text" not in row.keys():
+        return None, None, None, {}
+    source_text = row["source_text"]
+    if source_text is None:
+        return None, None, None, {}
+    snippet, extent = query_centered_snippet(
+        str(source_text), query, max_chars=MAX_SNIPPET_CHARS,
+    )
+    if snippet is None:
+        return None, None, None, {}
+    start = extent["start_in_chunk"]
+    end = extent["end_in_chunk"]
+    if (
+        isinstance(start, bool) or not isinstance(start, int)
+        or isinstance(end, bool) or not isinstance(end, int)
+        or end - start != len(snippet)
+    ):
+        raise sqlite3.DataError("lexical source excerpt has invalid character bounds")
+    return snippet, start, end, extent
 
 
 def _resolved_hit(
@@ -931,6 +970,14 @@ def _resolved_hit(
 
     is_cjk_substring = retrieval_backend == "sqlite_bounded_cjk_substring"
     snippet = _bounded_snippet(row["snippet"])
+    start_char: int | None = None
+    end_char: int | None = None
+    source_excerpt, source_start, source_end, source_extent = _source_backed_excerpt(
+        spec, row, applied_query,
+    )
+    if source_excerpt is not None:
+        snippet = source_excerpt
+        start_char, end_char = source_start, source_end
     support = query_term_support(query_plan.original_query, snippet or "", basis="fts_snippet")
     support.update(
         {
@@ -968,6 +1015,8 @@ def _resolved_hit(
         "state_path": str(state_path.resolve(strict=False)),
         "query_support": support,
     }
+    if source_extent:
+        provenance["snippet_extent"] = source_extent
     if is_cjk_substring:
         provenance.update(
             {
@@ -1047,8 +1096,8 @@ def _resolved_hit(
         section_provenance=section_provenance,
         section_kind=spec.section_kind,
         section_id=section_id,
-        start_char=None,
-        end_char=None,
+        start_char=start_char,
+        end_char=end_char,
         snippet=snippet,
     )
 

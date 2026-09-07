@@ -1949,7 +1949,14 @@ def _store_classification(
     # abstain without introducing a second status vocabulary in the schema.
     catalog_status = (
         "review"
-        if classification.uncertainty == "alta" or document.coverage != "complete"
+        if (
+            classification.uncertainty == "alta"
+            or document.coverage != "complete"
+            # Code is a distinct content role, not a document-taxonomy
+            # classification.  Keep the strong role evidence while retaining
+            # the catalog's review gate for organization decisions.
+            or classification.document_role == "codigo"
+        )
         else "classified"
     )
     connection.execute(

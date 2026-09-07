@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +14,7 @@ from neocortex.knowledge.knowledge_asset_diagnosis_contracts import (
 from neocortex.knowledge.knowledge_operational_query import (
     KnowledgeOperationalQueryService,
     OperationalFact,
+    OperationalFederatedCursor,
     OperationalIntent,
     OperationalOwner,
     OperationalQueryRequest,
@@ -218,3 +219,98 @@ def test_request_rejects_relative_or_traversal_roots(tmp_path: Path) -> None:
         OperationalQueryRequest("pdf error", Path("relative"), tmp_path.absolute())
     with pytest.raises(ValueError):
         OperationalQueryRequest("pdf error", tmp_path.absolute(), Path("/tmp/../corpus"))
+
+
+def test_federated_cursor_continues_each_owner_without_repeating_exhausted_pages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owners = ("pdf", "text", "archive", "office")
+
+    def fact(owner: str, number: int) -> OperationalFact:
+        return OperationalFact(
+            AssetProblemScope.PROCESSING, f"{owner}_error_{number}",
+            AssetDiagnosticCertainty.OBSERVED, owner, f"{owner}:{number}",
+            f"{owner}-snapshot", {"record": {"path": f"/corpus/{owner}-{number}"}},
+        )
+
+    def owner_result(self, request, intent, owner):
+        number = 2 if request.cursor is not None else 1
+        return OperationalQueryResult(
+            request.query, intent, OperationalOwner(owner), "ok", (fact(owner, number),),
+            f"{owner}-snapshot", f"{owner}-cursor" if request.cursor is None else None,
+            {"status": "observed"},
+        )
+
+    monkeypatch.setattr(KnowledgeOperationalQueryService, "_owner_result", owner_result)
+    service = KnowledgeOperationalQueryService()
+    first = service.query(_request(tmp_path, "¿Qué errores tienen mis archivos?"))
+    assert first.next_cursor is not None
+    token = OperationalFederatedCursor.from_token(first.next_cursor)
+    assert dict(token.owner_cursors) == {owner: f"{owner}-cursor" for owner in owners}
+    assert dict(token.owner_snapshots) == {owner: f"{owner}-snapshot" for owner in owners}
+
+    second = service.query(_request(tmp_path, "¿Qué errores tienen mis archivos?", cursor=first.next_cursor))
+    assert second.status == "ok"
+    assert {item.code for item in second.facts} == {f"{owner}_error_2" for owner in owners}
+    assert second.next_cursor is None
+
+
+def test_federated_cursor_rejects_adulteration_and_binding_reuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def owner_result(self, request, intent, owner):
+        return OperationalQueryResult(
+            request.query, intent, OperationalOwner(owner), "ok", (),
+            f"{owner}-snapshot", f"{owner}-cursor",
+            {"status": "observed"},
+        )
+
+    monkeypatch.setattr(KnowledgeOperationalQueryService, "_owner_result", owner_result)
+    service = KnowledgeOperationalQueryService()
+    first = service.query(_request(tmp_path, "¿Qué errores tienen mis archivos?"))
+    assert first.next_cursor
+    adulterated = first.next_cursor[:-1] + ("A" if first.next_cursor[-1] != "A" else "B")
+    invalid = service.query(_request(tmp_path, "¿Qué errores tienen mis archivos?", cursor=adulterated))
+    rebound = service.query(_request(tmp_path, "¿Qué otros errores tienen mis archivos?", cursor=first.next_cursor))
+    assert invalid.error and invalid.error["code"] == "invalid_federated_cursor"
+    assert rebound.error and rebound.error["code"] == "federated_cursor_binding_mismatch"
+
+
+@pytest.mark.parametrize("token", ("!", "%%%%", "eyJkaWdlc3Qi", "A" * 7))
+def test_federated_cursor_rejects_malformed_base64_without_leaking_decoder_errors(token: str) -> None:
+    with pytest.raises(ValueError, match="invalid federated cursor token"):
+        OperationalFederatedCursor.from_token(token)
+
+
+def test_federated_query_normalizes_non_utf8_cursor_payload(tmp_path: Path) -> None:
+    token = base64.urlsafe_b64encode(b'{"digest":\xff').decode("ascii").rstrip("=")
+    result = KnowledgeOperationalQueryService().query(
+        _request(tmp_path, "¿Qué errores tienen mis archivos?", cursor=token)
+    )
+    assert result.status == "blocked"
+    assert result.error and result.error["code"] == "invalid_federated_cursor"
+
+
+def test_federated_continuation_abstains_without_mixing_when_owner_snapshot_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def owner_result(self, request, intent, owner):
+        changed = owner == "archive" and request.cursor is not None
+        snapshot = f"{owner}-snapshot-changed" if changed else f"{owner}-snapshot"
+        return OperationalQueryResult(
+            request.query, intent, OperationalOwner(owner), "ok",
+            (OperationalFact(
+                AssetProblemScope.PROCESSING, f"{owner}_error", AssetDiagnosticCertainty.OBSERVED,
+                owner, f"{owner}:1", snapshot, {"record": {"path": f"/corpus/{owner}"}},
+            ),), snapshot, f"{owner}-cursor" if request.cursor is None else None,
+            {"status": "observed"},
+        )
+
+    monkeypatch.setattr(KnowledgeOperationalQueryService, "_owner_result", owner_result)
+    service = KnowledgeOperationalQueryService()
+    first = service.query(_request(tmp_path, "¿Qué errores tienen mis archivos?"))
+    second = service.query(_request(tmp_path, "¿Qué errores tienen mis archivos?", cursor=first.next_cursor))
+    assert second.status == "snapshot_changed"
+    assert second.facts == ()
+    assert second.error and second.error["code"] == "snapshot_changed"
+    assert second.coverage["changed_owners"] == ["archive"]

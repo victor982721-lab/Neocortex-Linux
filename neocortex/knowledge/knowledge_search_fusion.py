@@ -24,6 +24,7 @@ from .knowledge_search_contracts import KnowledgeCandidate, ResourceDiscoverySig
 
 
 _EvidenceKey = tuple[str, str, str]
+_EvidenceAliasKey = tuple[str, str, str, int | None, str]
 _OverlapCheck = Callable[[EvidenceRef, EvidenceRef, int], bool]
 
 
@@ -81,7 +82,7 @@ def _candidate_is_visible(
 
 def _canonical_evidence_key(
     candidate: KnowledgeCandidate,
-    snippet_aliases: dict[_EvidenceKey, _EvidenceKey],
+    snippet_aliases: dict[_EvidenceAliasKey, _EvidenceKey],
 ) -> _EvidenceKey:
     evidence = candidate.evidence
     key = candidate.evidence_key
@@ -111,6 +112,13 @@ def _canonical_evidence_key(
     alias_key = (
         candidate.resource.resource_id,
         candidate.revision.revision_id,
+        # A stable revision id identifies the content, but the same id may be
+        # surfaced by more than one derived owner projection.  Keep the
+        # lightweight alias coalescing limited to equivalent projections so a
+        # locator/snippet collision cannot trip the incompatible-record guard
+        # (or hide a materially different extraction generation).
+        candidate.revision.processing_signature,
+        candidate.revision.generation,
         f"{locator}|{normalized_snippet}",
     )
     return snippet_aliases.setdefault(alias_key, key)
@@ -166,7 +174,7 @@ def _collect_aggregates(
     rrf_k: float,
 ) -> dict[_EvidenceKey, _EvidenceAggregate]:
     aggregates: dict[_EvidenceKey, _EvidenceAggregate] = {}
-    snippet_aliases: dict[_EvidenceKey, _EvidenceKey] = {}
+    snippet_aliases: dict[_EvidenceAliasKey, _EvidenceKey] = {}
     for ranking_name in sorted(rankings):
         _checkpoint(cancellation_check)
         if not ranking_name.strip():

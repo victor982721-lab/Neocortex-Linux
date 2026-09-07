@@ -207,6 +207,69 @@ def test_logical_outer_document_not_its_components_is_organization_unit(tmp_path
     assert not view.executable
 
 
+def test_conventional_archive_member_keeps_virtual_blocker_separate_from_component(
+    tmp_path: Path,
+) -> None:
+    catalog = _catalog(tmp_path)
+    container = _file(tmp_path / "corpus", "ordinary.zip")
+    _seed(
+        catalog,
+        container,
+        kind="archive",
+        member="report.pdf",
+        representation_metadata={
+            "document_role": "archive_member",
+            "logical_document_chain": None,
+            "independently_organizable": True,
+            "independently_disposable": False,
+        },
+    )
+    summary = _plan(catalog, container.parent, tmp_path / "destination")
+    assert (summary.considered, summary.excluded_components) == (1, 0)
+    view = list_organization_plans(catalog, limit=1)[0]
+    assert view.reason == "virtual_resource_requires_logical_organization"
+    assert view.representation_kind == "archive_member"
+    assert "document_component_not_independently_organizable" not in view.blockers
+
+
+def test_decompressed_ooxml_directory_keeps_all_members_together(tmp_path: Path) -> None:
+    catalog = _catalog(tmp_path)
+    root = tmp_path / "unzipped"
+    names = ("[Content_Types].xml", "word/document.xml", "word/header1.xml", "_rels/.rels")
+    for name in names:
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("<package-part>technical evidence</package-part>")
+        _seed(catalog, path, kind="text")
+    summary = _plan(catalog, root, tmp_path / "destination")
+    assert (summary.considered, summary.planned, summary.excluded_components) == (0, 0, 4)
+    assert list_organization_plans(catalog, limit=10) == ()
+
+
+def test_partial_decompressed_ooxml_directory_is_review_only(tmp_path: Path) -> None:
+    catalog = _catalog(tmp_path)
+    root = tmp_path / "partial"
+    path = root / "word" / "document.xml"
+    path.parent.mkdir(parents=True)
+    path.write_text("<document>partial package</document>")
+    _seed(catalog, path, kind="text")
+    summary = _plan(catalog, root, tmp_path / "destination")
+    assert (summary.considered, summary.planned, summary.excluded_components) == (0, 0, 1)
+    assert list_organization_plans(catalog, limit=10) == ()
+
+
+def test_ooxml_content_types_only_is_a_partial_package_hypothesis(tmp_path: Path) -> None:
+    catalog = _catalog(tmp_path)
+    root = tmp_path / "partial-content-types"
+    path = root / "[Content_Types].xml"
+    path.parent.mkdir(parents=True)
+    path.write_text("<Types/>")
+    _seed(catalog, path, kind="text")
+    summary = _plan(catalog, root, tmp_path / "destination")
+    assert (summary.considered, summary.planned, summary.excluded_components) == (0, 0, 1)
+    assert list_organization_plans(catalog, limit=10) == ()
+
+
 def test_partial_high_confidence_keeps_suggestion_without_eligibility(tmp_path: Path) -> None:
     catalog = _catalog(tmp_path)
     source = _file(tmp_path / "corpus", "partial.pdf")

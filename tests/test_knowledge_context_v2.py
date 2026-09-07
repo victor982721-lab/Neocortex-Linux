@@ -14,6 +14,9 @@ from neocortex.capabilities.formats.pdf.pdf_state import initialize_pdf_state
 from neocortex.knowledge.knowledge_context_v2 import (
     build_context_response_v2, emitted_response_characters, serialize_context_response,
 )
+from neocortex.knowledge.knowledge_contracts import KnowledgeHit
+from neocortex.knowledge.knowledge_search import _candidate_from_resolved
+from neocortex.semantic.semantic_models import EmbeddingModality, ResolvedSearchHit, SearchHit
 
 
 def _hit(evidence, *, snippet, owner="pdf", resource="file:one"):
@@ -138,6 +141,51 @@ def test_stale_source_revision_is_explicit_without_owner_verification():
     assert payload["citations"][0]["hydration"]["status"] != "owner_verified"
 
 
+def test_stale_revision_binding_survives_real_resolved_hit_materialization():
+    key = "00000000000000000000000000000001:00000000000000000000000000000002"
+    body = "Historical source passage remains available for review."
+    resolved = ResolvedSearchHit(
+        hit=SearchHit(
+            ref_id=1, entity_id=f"lexical:text:{key}:fulltext",
+            item_id="item:text:fixture", indexed_model_signature="fixture-model",
+            vector_space="fixture-space", modality=EmbeddingModality.TEXT,
+            score=0.8, generation_id=1,
+        ),
+        path="/fixture/historical.txt", source_kind="text", source_identity=key,
+        section_kind="document", section_id="fulltext", start_char=0,
+        end_char=len(body), snippet=body,
+        source_revision={
+            "revision_id": "revision:text:published",
+            "processing_signature": "text:fixture",
+        },
+        source_status="complete", published_revision_id=7, current_revision_id=8,
+    )
+    candidate = _candidate_from_resolved(
+        resolved, ranking_name="fts_text", source_rank=1, producer="fixture",
+    )
+    hit = KnowledgeHit(
+        rank=1, resource=candidate.resource, revision=candidate.revision,
+        evidence=candidate.evidence, signals=(candidate.signal,), fused_score=0.8,
+        reasons=("fixture",), warnings=candidate.warnings,
+    )
+    payload = build_context_response_v2(
+        [{"scope": "personal", "result": {
+            "hits": [hit.to_dict()], "complete": True, "rankings": [],
+            "snapshot": {"snapshot_id": "snapshot:fixture", "consistency": "stable", "owners": []},
+        }}], query="historical", scope="personal", request_id="real-flow",
+    )
+    source = payload["sources"][0]
+    assert source["revision_binding"] == {
+        "requested_revision_id": "revision:text:published",
+        "available_revision_id": 8,
+        "published_revision_id": 7,
+        "current_revision_id": 8,
+        "source_revision_is_current": False,
+        "reason": "published_source_revision_is_not_current",
+    }
+    assert payload["citations"][0].get("hydration", {}).get("status") != "owner_verified"
+
+
 def test_discovery_title_signal_never_becomes_body_evidence():
     hit = _hit("e:discovery", snippet="body evidence")
     hit["signals"] = [{
@@ -155,6 +203,52 @@ def test_discovery_title_signal_never_becomes_body_evidence():
     assert payload["citations"]
     assert all(item.get("retrieval_channel") != "semantic_title" for item in payload["citations"])
     assert not any("semantic_title" in item for item in payload["citations"])
+
+
+def test_wider_budget_keeps_the_first_substantive_evidence_monotonic():
+    first = _hit("e:first", snippet=("First substantive condition. " * 28))
+    second = _hit("e:second", snippet=("Second substantive condition. " * 28))
+    narrow = build_context_response_v2(
+        [_entry(first, second)], query="condition", scope="personal", request_id="r",
+        max_characters=3_500,
+    )
+    wide = build_context_response_v2(
+        [_entry(first, second)], query="condition", scope="personal", request_id="r",
+        max_characters=12_000,
+    )
+    assert narrow["citations"]
+    assert wide["citations"]
+    assert wide["citations"][0]["evidence_id"] == narrow["citations"][0]["evidence_id"]
+    assert wide["citations"][0]["excerpt"].startswith(narrow["citations"][0]["excerpt"].removesuffix(" …[truncated]"))
+    assert narrow["coverage"]["presentation"]["status"] == "partial"
+    assert "omitted_citations:1" in narrow["coverage"]["presentation"]["reasons"]
+    assert wide["coverage"]["presentation"]["status"] == "complete"
+    assert wide["budget"]["characters_used"] >= narrow["budget"]["characters_used"]
+
+
+def test_missing_witness_makes_global_context_partial_not_ok():
+    query = "¿Qué factura demuestra el reemplazo de los rodamientos de Q7?"
+    body = "Factura FA-27. Venta de rodamientos para Q7, material entregado al almacén."
+    payload = build_context_response_v2(
+        [_entry(_hit("e:manual", snippet=body))], query=query,
+        scope="personal", request_id="r", max_characters=12_000,
+    )
+    assert payload["coverage"]["witness_checks"]["status"] == "missing"
+    assert payload["status"] == "partial"
+    assert payload["exit_code"] == 4
+    assert payload["error"]["code"] == "incomplete_context"
+
+
+def test_general_manual_about_incident_is_related_only():
+    query = "¿Qué ocurrió durante el incidente de izaje?"
+    body = "El manual general describe el procedimiento de izaje; no es un registro del incidente ocurrido."
+    payload = build_context_response_v2(
+        [_entry(_hit("e:manual", snippet=body))], query=query,
+        scope="personal", request_id="r", max_characters=12_000,
+    )
+    citation = payload["citations"][0]
+    assert citation["evidence_disposition"] == "related_only"
+    assert citation["answer_sufficiency"] == "not_assessed"
 
 
 @pytest.fixture

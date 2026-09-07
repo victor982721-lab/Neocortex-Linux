@@ -193,6 +193,26 @@ def test_nested_subtypes_are_individual_and_mismatches_do_not_rename(tmp_path: P
     assert _zip_document_kind(_zip({"mimetype": OTT_MIME})) == "archive"
 
 
+def test_conventional_pdf_member_is_not_marked_as_document_component(tmp_path: Path) -> None:
+    source = tmp_path / "ordinary.zip"
+    source.write_bytes(
+        _zip(
+            {
+                "report.pdf": b"%PDF-1.4\nnot a complete PDF",
+                "styles.xml": "<styles/>",
+            }
+        )
+    )
+    state = tmp_path / "archive.sqlite3"
+    _run(state, source)
+    members = {item.member_chain: item for item in list_archive_members(state)}
+    assert members["report.pdf"].document_role == "archive_member"
+    assert members["report.pdf"].independently_organizable
+    assert not members["report.pdf"].independently_disposable
+    assert members["styles.xml"].document_role == "archive_member"
+    assert members["styles.xml"].independently_organizable
+
+
 @pytest.mark.parametrize("mime", [OTT_MIME, "application/unknown+zip"])
 def test_declaration_without_structure_never_becomes_confirmed_document(
     tmp_path: Path, mime: str

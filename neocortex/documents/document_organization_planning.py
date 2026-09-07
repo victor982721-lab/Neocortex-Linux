@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sqlite3
+import stat
 import time
 import unicodedata
 from pathlib import Path
@@ -141,6 +142,63 @@ _REVIEW_ONLY_KINDS = frozenset(
     }
 )
 
+_OOXML_DIRECTORY_MARKERS = (
+    ("word/document.xml", "docx"),
+    ("xl/workbook.xml", "xlsx"),
+    ("ppt/presentation.xml", "pptx"),
+)
+
+
+def _canonical_regular_file(path: Path) -> bool:
+    """Accept only a real file at an exact package marker path."""
+
+    try:
+        observed = path.lstat()
+        return stat.S_ISREG(observed.st_mode) and path.resolve(strict=True) == path
+    except OSError:
+        return False
+
+
+def _decompressed_ooxml_package(
+    path: Path,
+    scope_root: Path,
+    cache: dict[str, tuple[Path, str] | None],
+) -> tuple[Path, str] | None:
+    """Find an exact OOXML directory package enclosing ``path``.
+
+    A directory tree is only treated as a package when it contains the same
+    exact marker names used by the ZIP detector.  A main part without
+    ``[Content_Types].xml`` is retained as a partial package hypothesis so
+    organization cannot move a member independently while the set is
+    incomplete.
+    """
+
+    key = str(path)
+    if key in cache:
+        return cache[key]
+    current = path.parent
+    result: tuple[Path, str] | None = None
+    while current.is_relative_to(scope_root):
+        marker_paths = tuple(
+            (current / relative, kind)
+            for relative, kind in _OOXML_DIRECTORY_MARKERS
+            if _canonical_regular_file(current / relative)
+        )
+        content_types = _canonical_regular_file(current / "[Content_Types].xml")
+        if marker_paths or content_types:
+            status = (
+                "ambiguous"
+                if len(marker_paths) > 1
+                else "identified" if content_types and marker_paths else "partial"
+            )
+            result = (current, status)
+            break
+        if current == scope_root:
+            break
+        current = current.parent
+    cache[key] = result
+    return result
+
 
 def plan_document_organization(
     catalog_path: Path,
@@ -178,6 +236,7 @@ def plan_document_organization(
             connection.execute("BEGIN IMMEDIATE")
             source_scope.verify(connection)
             rows: list[sqlite3.Row] = []
+            decompressed_package_cache: dict[str, tuple[Path, str] | None] = {}
             for candidate in connection.execute(
                 """SELECT * FROM documents WHERE active=1
                 ORDER BY path,source_kind,file_key"""
@@ -189,6 +248,20 @@ def plan_document_organization(
                         metadata.get("document_role") == "document_component"
                         and metadata.get("independently_organizable") is False
                     ):
+                        excluded_components += 1
+                    elif (
+                        (assessment.binding or {}).get("representation_kind") == "physical_file"
+                        and _decompressed_ooxml_package(
+                            Path(str(candidate["path"])),
+                            source_scope.root,
+                            decompressed_package_cache,
+                        )
+                        is not None
+                    ):
+                        # The directory itself is the logical owner.  Until a
+                        # directory-package representation exists, retaining
+                        # every member as a component is safer than proposing
+                        # independent XML moves that split the package.
                         excluded_components += 1
                     else:
                         rows.append(candidate)
@@ -347,7 +420,10 @@ def _plan_catalog_document(
         destination = None
         status, reason = "review", "virtual_resource_requires_logical_organization"
     metadata = binding.get("representation_metadata", {})
-    if metadata.get("independently_organizable") is False:
+    if (
+        metadata.get("document_role") == "document_component"
+        and metadata.get("independently_organizable") is False
+    ):
         destination = None
         status, reason = "review", "document_component_not_independently_organizable"
     if status == "planned" and destination is not None:
@@ -757,7 +833,11 @@ def _insert_plan(
     blockers = ["backend_unavailable", "authorization_required"]
     if virtual:
         blockers.append("virtual_resource_requires_materialization")
-    if binding.get("representation_metadata", {}).get("independently_organizable") is False:
+    representation_metadata = binding.get("representation_metadata", {})
+    if (
+        representation_metadata.get("document_role") == "document_component"
+        and representation_metadata.get("independently_organizable") is False
+    ):
         blockers.append("document_component_not_independently_organizable")
     if str(row["catalog_status"]) != "classified":
         blockers.append("source_classification_requires_review")

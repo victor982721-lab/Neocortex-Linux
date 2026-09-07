@@ -59,6 +59,24 @@ def document_role_assessment(
     path = scopes.get("path", "")
     header = f"{scopes.get('title', '')} {scopes.get('opening', '')[:400]}"
     headings = (scopes.get("title", "").strip(), scopes.get("opening", "")[:400].strip())
+    if signals.source_kind == "code":
+        metadata = signals.metadata
+        evidence = ["source_kind:code"]
+        for field in ("language", "artifact_kind"):
+            match = re.search(rf"(?:^|\s){field}=([^\s]+)", metadata)
+            if match is not None:
+                evidence.append(f"metadata:{field}={match.group(1)}")
+        role = ScoredLabel("codigo", 1.0, tuple(evidence))
+        return RoleAssessment(
+            kinds=(role,),
+            contradictions=tuple(
+                f"role_vs_mention:{item.label}"
+                for item in kinds
+                if item.label != role.label
+            ),
+            outside_role=role.label,
+            outside_evidence=role.evidence,
+        )
     # A mentioned report, standard, or incident does not change the role of a
     # timestamped command transcript. Filename alone is deliberately insufficient.
     timestamp_lines = re.findall(
@@ -154,6 +172,75 @@ def document_role_assessment(
                 *(item for item in kinds if item.label not in {"normativa", "informe_tecnico"}),
             ),
             contradictions=("cited_standard_not_document_role",),
+        )
+
+    incident_heading = next(
+        (
+            heading
+            for heading in headings
+            if re.match(
+                r"(?:REPORTE|INFORME)\s+(?:DE\s+)?INCIDENTES?\b|INCIDENT\s+REPORT\b",
+                fold_signal(heading),
+            )
+        ),
+        None,
+    )
+    if incident_heading is not None:
+        role = ScoredLabel(
+            "reporte_incidente",
+            0.96,
+            (f"heading:document_role={fold_signal(incident_heading).splitlines()[0]}",),
+        )
+        return RoleAssessment(
+            kinds=(role,),
+            contradictions=tuple(
+                f"role_vs_mention:{item.label}"
+                for item in kinds
+                if item.label != role.label
+            ),
+            outside_role=role.label,
+            outside_evidence=role.evidence,
+        )
+
+    template_heading = next(
+        (
+            heading
+            for heading in headings
+            if re.match(r"(?:PLANTILLA|TEMPLATE|FORMULARIO|FORM)\b", fold_signal(heading))
+        ),
+        None,
+    )
+    if template_heading is not None and kinds and kinds[0].label in {
+        "reporte_fat_sat",
+        "reporte_anomalias",
+        "informe_tecnico",
+        "formato_empresa",
+        "formato_inspeccion",
+        "lista_verificacion",
+    }:
+        template = next(
+            (
+                item
+                for item in kinds
+                if item.label in {"formato_empresa", "formato_inspeccion", "lista_verificacion"}
+            ),
+            None,
+        )
+        role = ScoredLabel(
+            template.label if template is not None else "formato_empresa",
+            max(0.90, template.score if template is not None else 0.90),
+            (
+                *(template.evidence if template is not None else ()),
+                f"heading:template={fold_signal(template_heading).splitlines()[0]}",
+            ),
+        )
+        return RoleAssessment(
+            kinds=(role,),
+            contradictions=tuple(
+                f"role_vs_mention:{item.label}"
+                for item in kinds
+                if item.label != role.label
+            ),
         )
 
     personal_role = re.match(
