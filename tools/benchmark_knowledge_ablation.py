@@ -154,7 +154,31 @@ def _load_reserve(root: Path, freeze: dict[str, Any]) -> tuple[dict[str, Any], l
             raise AblationError("reserve fixture bytes changed")
         if not isinstance(entry.get("logical_resource_id"), str):
             raise AblationError("reserve fixture has no logical resource id")
+        source_text = entry.get("source_text")
+        revision_pin = entry.get("revision_pin")
+        if not isinstance(source_text, str) or not isinstance(revision_pin, str):
+            raise AblationError("reserve fixture has no authored revision pin")
+        if hashlib.sha256(source_text.encode()).hexdigest() != revision_pin:
+            raise AblationError("reserve authored revision pin changed")
         logical.add(entry["logical_resource_id"])
+    if type(expected.get("logical_resources")) is not int or len(logical) != expected["logical_resources"]:
+        raise AblationError("reserve logical-resource composition changed")
+    query_ids: set[str] = set()
+    for query in queries:
+        if not isinstance(query, dict) or not isinstance(query.get("query_id"), str):
+            raise AblationError("reserve query is invalid")
+        query_id = query["query_id"]
+        if query_id in query_ids:
+            raise AblationError("reserve query ids are not unique")
+        query_ids.add(query_id)
+        kind = query.get("kind")
+        relevance = query.get("relevance")
+        if kind not in {"positive", "negative"} or not isinstance(relevance, dict):
+            raise AblationError("reserve query kind or relevance is invalid")
+        if (kind == "positive") != bool(relevance):
+            raise AblationError("reserve query kind conflicts with relevance")
+        if any(resource not in logical or type(grade) is not int or grade not in {1, 2, 3} for resource, grade in relevance.items()):
+            raise AblationError("reserve query references an unknown or invalid resource")
     if sum(query.get("kind") == "positive" for query in queries) != expected["positive_queries"]:
         raise AblationError("reserve positive-query composition changed")
     if sum(query.get("kind") == "negative" for query in queries) != expected["negative_queries"]:

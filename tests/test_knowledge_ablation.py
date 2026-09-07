@@ -103,6 +103,51 @@ def test_validate_spec_rejects_variant_substitution_before_any_run(tmp_path: Pat
         ablation.validate_spec(spec)
 
 
+def test_load_reserve_rejects_logical_or_query_binding_changes(tmp_path: Path) -> None:
+    root = tmp_path / "reserve"
+    (root / "corpus").mkdir(parents=True)
+    source = "Registro Alfa confirmó la recepción del lote 9.\n"
+    item = root / "corpus" / "A.txt"
+    item.write_text(source, encoding="utf-8")
+    digest = ablation.hashlib.sha256(source.encode()).hexdigest()
+    manifest = {
+        "schema": "neocortex.functional-fixtures/v1",
+        "split": "reserve",
+        "files": [
+            {
+                "bytes": item.stat().st_size,
+                "logical_resource_id": "alpha",
+                "path": "corpus/A.txt",
+                "revision_pin": digest,
+                "sha256": ablation.sha256(item),
+                "source_text": source,
+                "synthetic": True,
+            }
+        ],
+    }
+    (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    queries = {
+        "schema": "neocortex.functional-judgments/v1",
+        "queries": [
+            {"query_id": "Q1", "kind": "positive", "relevance": {"other": 3}, "text": "x"}
+        ],
+    }
+    (root / "queries.json").write_text(json.dumps(queries), encoding="utf-8")
+    freeze = {
+        "reserve": {
+            "files": 1,
+            "logical_resources": 1,
+            "queries": 1,
+            "positive_queries": 1,
+            "negative_queries": 0,
+            "manifest_sha256": ablation.sha256(root / "manifest.json"),
+            "queries_sha256": ablation.sha256(root / "queries.json"),
+        }
+    }
+    with pytest.raises(ablation.AblationError, match="unknown or invalid resource"):
+        ablation._load_reserve(root, freeze)
+
+
 def test_report_shape_is_aggregate_only() -> None:
     report = {
         "schema": ablation.SCHEMA,
