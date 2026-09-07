@@ -292,6 +292,37 @@ def test_compact_view_is_monotonic_when_budget_expands():
     ]
 
 
+def test_compact_profile_does_not_shrink_complete_units_to_240_chars():
+    hits = []
+    for position in range(1, 8):
+        resource_id = f"resource:bounded:{position}"
+        revision_id = f"revision:bounded:{position}"
+        body = (
+            "Administrative prefix. " * 90
+            + f" Identificador: radiador R{position:02d}. Condición: radiador R{position:02d} "
+            "se recibió sin presión."
+        )
+        hit = _hit(f"evidence:bounded:{position}", snippet=body,
+                   owner="text", resource=resource_id)
+        hit["revision"]["revision_id"] = revision_id
+        hit["evidence"]["resource_id"] = resource_id
+        hit["evidence"]["revision_id"] = revision_id
+        hits.append(hit)
+    short = _hit("evidence:bounded:short", snippet="Radiador R99 sin presión",
+                 owner="text", resource="resource:bounded:short")
+    hits.append(short)
+    payload = build_context_response_v2(
+        [_entry(*hits)], query="radiadores sin presión", scope="personal",
+        request_id="bounded-units", max_characters=15_000,
+    )
+    long_units = [item for item in payload["citations"]
+                  if item["evidence_id"] != "evidence:bounded:short"]
+    assert len(long_units) >= 5
+    assert all(len(item["excerpt"]) > 500 for item in long_units)
+    assert sum(len(item["excerpt"]) for item in payload["citations"]) >= 6_000
+    assert payload["budget"]["characters_used"] <= 15_000
+
+
 def test_missing_witness_makes_global_context_partial_not_ok():
     query = "¿Qué factura demuestra el reemplazo de los rodamientos de Q7?"
     body = "Factura FA-27. Venta de rodamientos para Q7, material entregado al almacén."

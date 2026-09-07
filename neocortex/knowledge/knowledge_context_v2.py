@@ -746,7 +746,14 @@ def build_context_response_v2(
         if citation["witness_checks"]["counterevidence"]:
             protected_end = len(snippet)
         already_bounded = citation["supplied_excerpt_characters"] > len(snippet)
-        if len(snippet) > protected_end and not already_bounded:
+        # In the compact profile, a candidate is already a bounded minimum
+        # evidence unit.  Reject the unit when its complete presentation does
+        # not fit rather than shrinking every accepted unit to a low-value
+        # prefix, which would defeat the substantive-evidence target.
+        if compact_profile:
+            if cost > max_characters:
+                continue
+        elif len(snippet) > protected_end and not already_bounded:
             shortened = copy.deepcopy(proposal)
             shortened["citations"][-1].update(excerpt=snippet[:protected_end] + _TRUNCATED,
                                                fragment_state="truncated")

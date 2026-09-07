@@ -31,6 +31,7 @@ from .knowledge_asset_diagnosis_contracts import (
 
 
 OPERATIONAL_QUERY_SCHEMA = "neocortex.knowledge-operational-query/v1"
+SEMANTIC_ITEM_DIAGNOSTIC_SCHEMA = "neocortex.semantic-item-diagnostic/v1"
 OperationalStatus = Literal[
     "ok", "empty", "partial", "unavailable", "blocked", "error", "snapshot_changed"
 ]
@@ -359,6 +360,128 @@ def _error_result(request: OperationalQueryRequest, intent: OperationalIntent, o
     )
 
 
+def _validated_diagnostic_item_id(item_id: object) -> str:
+    if not isinstance(item_id, str) or not item_id.strip() or len(item_id) > 512:
+        raise ValueError("item_id must be bounded non-empty text")
+    if any(ord(char) < 32 or ord(char) == 127 for char in item_id):
+        raise ValueError("item_id contains control characters")
+    return item_id.strip()
+
+
+def _trace_target(target: Mapping[str, Any] | None) -> dict[str, Any]:
+    if target is None:
+        return {"status": "not_observed", "reason": "target_diagnostics_absent"}
+    fields = (
+        "item_id", "stage", "observed_in_published_scope", "source_kind", "source_status",
+        "published_revision_id", "current_revision_id", "source_revision_is_current",
+        "source_processing_signature", "generation_id", "model_signature", "ref_id", "entity_id",
+        "raw_score", "candidate_rank", "within_candidate_window", "observed_rank", "raw_rank",
+        "rank_is_global", "rank_granularity", "rank_budget_exhausted", "fused_result_rank",
+        "present_in_fused_results", "raw_rank_basis", "section_kind", "section_id", "start_char",
+        "end_char", "published_chunk_fingerprint_verified", "backend", "pipeline",
+        "calibration_contract_conflict", "snippet",
+    )
+    result = {name: _bounded_projection(target[name]) for name in fields if name in target}
+    result["status"] = "observed"
+    for name in ("query_variant_diagnostics",):
+        if name in target:
+            result[name] = _bounded_projection(target[name])
+    return result
+
+
+def semantic_item_diagnostic(result: object, item_id: str) -> dict[str, Any]:
+    """Project existing semantic target diagnostics into one ordered item trace.
+
+    The semantic service already performs the scan, thresholding, fusion and
+    resolution.  This helper only joins its published in-memory projections;
+    it does not rerun search, open SQLite, call a model, or infer authority.
+    """
+
+    selected_id = _validated_diagnostic_item_id(item_id)
+    query = getattr(result, "query", None)
+    rankings = getattr(result, "rankings", None)
+    lexical_rankings = getattr(result, "lexical_rankings", None)
+    fused = getattr(result, "fused", None)
+    if not isinstance(query, str) or not isinstance(rankings, tuple) or not isinstance(lexical_rankings, tuple) or not isinstance(fused, tuple):
+        raise TypeError("result must be a SemanticSearchResult-compatible value")
+
+    targets: list[dict[str, Any]] = []
+    ranking_names: list[str] = []
+    for ranking in rankings:
+        name = str(getattr(ranking, "name", "semantic"))
+        ranking_names.append(name)
+        provenance = getattr(ranking, "provenance", {})
+        raw_targets = provenance.get("target_diagnostics") if isinstance(provenance, Mapping) else None
+        if not isinstance(raw_targets, list):
+            continue
+        for target in raw_targets:
+            if isinstance(target, Mapping) and target.get("item_id") == selected_id:
+                targets.append({"ranking": name, **_trace_target(target),
+                                "candidate_selection": _bounded_projection(provenance.get("candidate_selection", {}))})
+
+    # A target can be absent from semantic rankings when it was only retained
+    # by a lexical channel; preserve that fact instead of fabricating stages.
+    target = targets[0] if targets else None
+    contributions: list[dict[str, Any]] = []
+    presentation: dict[str, Any] = {"status": "not_present", "reason": "item_not_in_fused_results"}
+    for rank, value in enumerate(fused, 1):
+        fused_hit = getattr(value, "fused", None)
+        if getattr(fused_hit, "item_id", None) != selected_id:
+            continue
+        evidence_values = getattr(fused_hit, "evidence", ())
+        for evidence in evidence_values if isinstance(evidence_values, tuple) else ():
+            contributions.append({
+                "ranking": getattr(evidence, "ranking", None),
+                "rank": getattr(evidence, "rank", None),
+                "raw_score": getattr(evidence, "raw_score", None),
+                "contribution": getattr(evidence, "contribution", None),
+                "entity_id": getattr(evidence, "entity_id", None),
+                "ref_id": getattr(evidence, "ref_id", None),
+                "generation_id": getattr(evidence, "generation_id", None),
+            })
+        presentation = {
+            "status": "present",
+            "fused_rank": rank,
+            "path": _bounded_projection(getattr(value, "path", None)),
+            "source_kind": _bounded_projection(getattr(value, "source_kind", None)),
+            "source_identity": _bounded_projection(getattr(value, "source_identity", None)),
+            "snippet": _bounded_projection(getattr(value, "snippet", None)),
+        }
+        break
+
+    status = "observed" if target is not None or presentation["status"] == "present" else "not_observed"
+    return {
+        "schema": SEMANTIC_ITEM_DIAGNOSTIC_SCHEMA,
+        "query": query,
+        "item_id": selected_id,
+        "status": status,
+        "read_only": True,
+        "advisory_only": True,
+        "mutation_authorized": False,
+        "stages": {
+            "eligibility": _trace_target(target),
+            "publication": _trace_target(target),
+            "window": _trace_target(target),
+            "threshold": {
+                "status": "observed" if target is not None else "not_observed",
+                "rankings": ranking_names,
+                "candidate_selection": target.get("candidate_selection", {}) if target is not None else {},
+                "stage": target.get("stage") if target is not None else None,
+            },
+            "fusion": {
+                "status": "present" if contributions else "not_present",
+                "contributions": contributions[:20],
+                "target": target,
+            },
+            "resolution": {
+                "status": "resolved" if target is not None and target.get("snippet") is not None else "not_observed",
+                "target": target,
+            },
+            "presentation": presentation,
+        },
+    }
+
+
 class KnowledgeOperationalQueryService:
     """Dispatch operational questions to existing bounded owner readers."""
 
@@ -685,5 +808,7 @@ __all__ = [
     "OperationalOwner",
     "OperationalQueryRequest",
     "OperationalQueryResult",
+    "SEMANTIC_ITEM_DIAGNOSTIC_SCHEMA",
     "detect_operational_intent",
+    "semantic_item_diagnostic",
 ]

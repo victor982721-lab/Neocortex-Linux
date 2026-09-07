@@ -703,6 +703,43 @@ def test_semantic_retention_releases_base_after_builder_is_terminal(
     assert "referenced_as_generation_base" not in terminal_items[1].reasons
 
 
+def test_semantic_retention_accounts_for_append_only_lineage_and_outbox(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "semantic.sqlite3"
+    _populate_semantic(database)
+    with semantic_database(database) as connection:
+        cursor = connection.execute(
+            """INSERT INTO semantic_work_receipts(
+            receipt_key,contract_version,stage_id,stage_version,
+            processing_signature,status,execution_mode,reproducibility_class,
+            entity_kind,entity_id,generation_id,model_signature,receipt_json,
+            committed_ns)
+            VALUES('receipt-key','neocortex.work-receipt/v1','semantic.embedding',
+            'v1','fixture','succeeded','executed','exact','text_chunk',
+            'fixture-chunk',8,'retention-model-v1','{}',1)"""
+        )
+        connection.execute(
+            """INSERT INTO semantic_derivation_outbox(
+            receipt_id,event_kind,aggregate_kind,aggregate_id,payload_json,
+            committed_ns)
+            VALUES(1,'published','text_chunk','fixture-chunk','{}',1)"""
+        )
+        assert cursor.lastrowid == 1
+
+    plan = plan_retention(
+        tmp_path,
+        stores=("semantic",),
+        now_ns=NOW_NS,
+        policy=RetentionPolicy(minimum_age_ns=0),
+    )
+    hold = next(
+        item for item in plan.stores[0].holds if item.name == "semantic_lineage_and_outbox"
+    )
+    assert hold.rows == 2
+    assert hold.estimated_bytes > 0
+
+
 def test_catalog_protects_publications_builders_and_uncertain_actions(
     tmp_path: Path,
 ) -> None:

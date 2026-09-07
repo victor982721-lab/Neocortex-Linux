@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,6 +21,7 @@ from neocortex.knowledge.knowledge_operational_query import (
     OperationalQueryRequest,
     OperationalQueryResult,
     detect_operational_intent,
+    semantic_item_diagnostic,
 )
 
 
@@ -431,3 +433,68 @@ def test_empty_owner_page_with_continuation_is_not_reported_as_empty_scope(
     assert result.facts == ()
     assert result.next_cursor is not None
     assert result.coverage["query_page_complete"] is False
+
+
+def test_semantic_item_diagnostic_follows_existing_funnel_to_presentation() -> None:
+    target = {
+        "item_id": "item:target", "stage": "candidate_selected",
+        "observed_in_published_scope": True, "within_candidate_window": True,
+        "candidate_rank": 2, "observed_rank": 2, "raw_rank": 2,
+        "rank_is_global": True, "raw_score": 0.91, "ref_id": 7,
+        "entity_id": "chunk:target", "generation_id": 4,
+        "model_signature": "model-v1", "source_kind": "pdf", "source_status": "done",
+        "published_revision_id": 5, "current_revision_id": 5,
+        "source_revision_is_current": True, "snippet": "evidence text",
+        "section_kind": "pdf_page", "section_id": "page:3", "start_char": 0, "end_char": 13,
+        "fused_result_rank": 1, "present_in_fused_results": True,
+    }
+    ranking = SimpleNamespace(
+        name="semantic_text",
+        provenance={
+            "target_diagnostics": [target],
+            "candidate_selection": {
+                "policy_signature": "semantic-candidate-funnel-v1",
+                "cutoff_reason": "top_k", "cutoff_score": 0.8,
+            },
+        },
+    )
+    evidence = SimpleNamespace(
+        ranking="semantic_text", rank=2, raw_score=0.91, contribution=1.0,
+        entity_id="chunk:target", ref_id=7, generation_id=4,
+    )
+    fused = SimpleNamespace(
+        fused=SimpleNamespace(item_id="item:target", evidence=(evidence,)),
+        path="/corpus/report.pdf", source_kind="pdf", source_identity="resource:7",
+        snippet="evidence text",
+    )
+    result = SimpleNamespace(query="pressure", rankings=(ranking,), lexical_rankings=(), fused=(fused,))
+
+    trace = semantic_item_diagnostic(result, "item:target")
+    assert trace["schema"] == "neocortex.semantic-item-diagnostic/v1"
+    assert trace["read_only"] is True and trace["mutation_authorized"] is False
+    assert trace["status"] == "observed"
+    assert trace["stages"]["eligibility"]["observed_in_published_scope"] is True
+    assert trace["stages"]["publication"]["generation_id"] == 4
+    assert trace["stages"]["window"]["candidate_rank"] == 2
+    assert trace["stages"]["threshold"]["candidate_selection"]["cutoff_reason"] == "top_k"
+    assert trace["stages"]["fusion"]["contributions"][0]["ranking"] == "semantic_text"
+    assert trace["stages"]["resolution"]["status"] == "resolved"
+    assert trace["stages"]["presentation"]["fused_rank"] == 1
+
+
+def test_semantic_item_diagnostic_is_explicitly_unobserved_without_target_evidence() -> None:
+    result = SimpleNamespace(
+        query="pressure", rankings=(SimpleNamespace(name="semantic_text", provenance={}),),
+        lexical_rankings=(), fused=(),
+    )
+    trace = semantic_item_diagnostic(result, "item:missing")
+    assert trace["status"] == "not_observed"
+    assert trace["stages"]["eligibility"]["reason"] == "target_diagnostics_absent"
+    assert trace["stages"]["presentation"]["status"] == "not_present"
+
+
+@pytest.mark.parametrize("value", ("", " ", "x" * 513, "bad\nitem"))
+def test_semantic_item_diagnostic_rejects_unbounded_item_ids(value: str) -> None:
+    result = SimpleNamespace(query="q", rankings=(), lexical_rankings=(), fused=())
+    with pytest.raises(ValueError):
+        semantic_item_diagnostic(result, value)

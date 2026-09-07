@@ -528,7 +528,20 @@ def _semantic_holds(connection: sqlite3.Connection) -> tuple[RetentionHold, ...]
             length(prototype_id)+length(query_model_signature)+
             length(indexed_model_signature)+length(vector_space)+
             length(provenance_json)+length(refresh_token)),0)
-         FROM semantic_evidence)"""
+         FROM semantic_evidence),
+        (SELECT COUNT(*) FROM semantic_work_receipts)+
+        (SELECT COUNT(*) FROM semantic_chunk_derivations)+
+        (SELECT COUNT(*) FROM semantic_derivation_outbox),
+        (SELECT COALESCE(SUM(length(receipt_key)+length(contract_version)+
+            length(stage_id)+length(stage_version)+length(processing_signature)+
+            length(status)+length(execution_mode)+length(reproducibility_class)+
+            length(entity_kind)+length(entity_id)+length(receipt_json)),0)
+         FROM semantic_work_receipts)+
+        (SELECT COALESCE(SUM(length(refresh_token)),0)
+         FROM semantic_chunk_derivations)+
+        (SELECT COALESCE(SUM(length(event_kind)+length(aggregate_kind)+
+            length(aggregate_id)+length(payload_json)),0)
+         FROM semantic_derivation_outbox)"""
     ).fetchone()
     return (
         RetentionHold(
@@ -548,6 +561,12 @@ def _semantic_holds(connection: sqlite3.Connection) -> tuple[RetentionHold, ...]
             "shared_rows_require_reference_proof_before_pruning",
             int(evidence[0]),
             int(evidence[1]),
+        ),
+        RetentionHold(
+            "semantic_lineage_and_outbox",
+            "append_only_lineage_and_delivery_evidence_requires_retention",
+            int(evidence[2]),
+            int(evidence[3]),
         ),
     )
 
