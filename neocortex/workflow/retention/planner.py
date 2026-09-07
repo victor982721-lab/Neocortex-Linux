@@ -468,6 +468,38 @@ def _page_result(
     return items, next_after, truncated
 
 
+_APPEND_ONLY_EXACT_ACCOUNTING_MAX_ROWS = 50_000
+
+
+def _append_only_account(
+    connection: sqlite3.Connection,
+    *,
+    table: str,
+    byte_expression: str,
+    minimum_bytes_per_row: int,
+) -> tuple[int, int]:
+    """Return a bounded lower-bound account for an append-only table.
+
+    Counting rows is cheap on the owner index, while summing large JSON
+    payloads can consume the entire retention SQL budget.  Keep exact text
+    accounting for ordinary-sized tables and use a schema-derived minimum
+    lower bound for larger tables, never pretending that the latter is a
+    physical-reclaim estimate.
+    """
+
+    rows = int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+    if rows == 0:
+        return 0, 0
+    if rows > _APPEND_ONLY_EXACT_ACCOUNTING_MAX_ROWS:
+        return rows, rows * minimum_bytes_per_row
+    estimated = int(
+        connection.execute(
+            f"SELECT COALESCE(SUM({byte_expression}),0) FROM {table}"
+        ).fetchone()[0]
+    )
+    return rows, estimated
+
+
 def _semantic_holds(connection: sqlite3.Connection) -> tuple[RetentionHold, ...]:
     model_registry = connection.execute(
         """SELECT
@@ -528,21 +560,34 @@ def _semantic_holds(connection: sqlite3.Connection) -> tuple[RetentionHold, ...]
             length(prototype_id)+length(query_model_signature)+
             length(indexed_model_signature)+length(vector_space)+
             length(provenance_json)+length(refresh_token)),0)
-         FROM semantic_evidence),
-        (SELECT COUNT(*) FROM semantic_work_receipts)+
-        (SELECT COUNT(*) FROM semantic_chunk_derivations)+
-        (SELECT COUNT(*) FROM semantic_derivation_outbox),
-        (SELECT COALESCE(SUM(length(receipt_key)+length(contract_version)+
-            length(stage_id)+length(stage_version)+length(processing_signature)+
-            length(status)+length(execution_mode)+length(reproducibility_class)+
-            length(entity_kind)+length(entity_id)+length(receipt_json)),0)
-         FROM semantic_work_receipts)+
-        (SELECT COALESCE(SUM(length(refresh_token)),0)
-         FROM semantic_chunk_derivations)+
-        (SELECT COALESCE(SUM(length(event_kind)+length(aggregate_kind)+
-            length(aggregate_id)+length(payload_json)),0)
-         FROM semantic_derivation_outbox)"""
+         FROM semantic_evidence)"""
     ).fetchone()
+    lineage_rows, lineage_bytes = _append_only_account(
+        connection,
+        table="semantic_work_receipts",
+        byte_expression=(
+            "length(receipt_key)+length(contract_version)+length(stage_id)+"
+            "length(stage_version)+length(processing_signature)+length(status)+"
+            "length(execution_mode)+length(reproducibility_class)+length(entity_kind)+"
+            "length(entity_id)+length(receipt_json)"
+        ),
+        minimum_bytes_per_row=11,
+    )
+    derivation_rows, derivation_bytes = _append_only_account(
+        connection,
+        table="semantic_chunk_derivations",
+        byte_expression="length(refresh_token)",
+        minimum_bytes_per_row=1,
+    )
+    outbox_rows, outbox_bytes = _append_only_account(
+        connection,
+        table="semantic_derivation_outbox",
+        byte_expression=(
+            "length(event_kind)+length(aggregate_kind)+length(aggregate_id)+"
+            "length(payload_json)"
+        ),
+        minimum_bytes_per_row=4,
+    )
     return (
         RetentionHold(
             "semantic_model_registry",
@@ -565,8 +610,8 @@ def _semantic_holds(connection: sqlite3.Connection) -> tuple[RetentionHold, ...]
         RetentionHold(
             "semantic_lineage_and_outbox",
             "append_only_lineage_and_delivery_evidence_requires_retention",
-            int(evidence[2]),
-            int(evidence[3]),
+            lineage_rows + derivation_rows + outbox_rows,
+            lineage_bytes + derivation_bytes + outbox_bytes,
         ),
     )
 
