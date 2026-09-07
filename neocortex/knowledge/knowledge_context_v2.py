@@ -276,7 +276,7 @@ def _related_term(left: str, right: str) -> bool:
     return left == right
 
 
-def _compact_excerpt(text: str, query: str, *, max_chars: int = 1536) -> str:
+def _compact_excerpt(text: str, query: str, *, max_chars: int = 1024) -> str:
     """Keep a verbatim minimum evidence unit when the owner gave a long chunk.
 
     Retrieval already chooses the source.  This presentation-only window avoids
