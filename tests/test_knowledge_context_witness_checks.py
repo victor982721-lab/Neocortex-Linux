@@ -209,30 +209,39 @@ def test_authorizing_actor_in_filename_is_not_evidence_in_the_excerpt():
     assert "identified_authorizing_actor" in citation["witness_checks"]["missing_necessary_witnesses"]
 
 
-@pytest.mark.parametrize(("snippet", "reason"), [
+@pytest.mark.parametrize(("snippet", "reason", "disposition"), [
     pytest.param(
         "El golpe ocurrió al descargar el equipo, no durante el apriete.",
         "source_explicitly_places_incident_outside_tightening",
+        "contradictory",
         id="incident-outside-tightening",
     ),
     pytest.param(
         "El manual explica el procedimiento de torque; no es un registro del daño ocurrido.",
         "source_explicitly_limits_observed_event_evidence",
+        "related_only",
         id="explicit-nonrecord",
     ),
     pytest.param(
         "No hubo daño en el perno durante la inspección.",
         "literal_requested_event_occurrence_is_negated",
+        "related_only",
         id="literal-nonoccurrence",
     ),
 ])
-def test_counterevidence_is_preserved_as_cited_contradiction(snippet, reason):
+def test_literal_evidence_is_preserved_with_scoped_disposition(snippet, reason, disposition):
     payload = _build(TORQUE_QUERY, snippet)
     citation = _assert_emitted_checks(payload)
 
     assert citation["excerpt"] == snippet
-    assert citation["evidence_disposition"] == "contradictory"
+    assert citation["evidence_disposition"] == disposition
     assert reason in serialize_context_response(citation)
+    if disposition == "related_only":
+        # A non-record or a negation about inspection is not evidence that
+        # torque did not cause damage during tightening.
+        assert citation["witness_checks"]["missing_necessary_witnesses"] == [
+            "applied_torque_value_with_unit", "asserted_torque_to_damage_causal_link",
+        ]
     assert payload["coverage"]["witness_checks"]["status"] == "missing"
 
 

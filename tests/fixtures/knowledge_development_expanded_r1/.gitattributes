@@ -1,0 +1,5 @@
+# Preserve pinned corpus and provenance bytes; no newline normalization.
+/corpus/* -text whitespace=-blank-at-eol,-blank-at-eof
+/provenance/** -text
+/manifest.json -text
+/queries.json -text

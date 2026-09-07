@@ -1,0 +1,182 @@
+{
+  "files": [
+    {
+      "bytes": 1854,
+      "family": "seal",
+      "fixture_id": "H01",
+      "logical_resource_id": "seal-wear",
+      "path": "corpus/H01.pdf",
+      "revision_pin": "b1673d8d44be625b1a44dab52e710fe16e1630a8f6ba4a81ba19c3d12560d46a",
+      "sha256": "dcebe3b5ccbee0f13a8c473dd8065c14da48d53ae718baa1e7b6f1df4e46a07f",
+      "source_text": "Revisión del cierre mecánico\n\nLa bomba P44 dejó un charco bajo la carcasa después de veinte minutos de operación. Al abrir el cierre mecánico se observó una grieta radial en la cara cerámica y desgaste irregular, por lo que el líquido atravesaba el sello. La tubería de descarga permaneció seca.",
+      "synthetic": true
+    },
+    {
+      "bytes": 255,
+      "family": "seal",
+      "fixture_id": "H02",
+      "logical_resource_id": "seal-stock",
+      "path": "corpus/H02.txt",
+      "revision_pin": "c8bcfe3ed56822bff6f9a227fc854a8e60dbbfe9cb5387a0fb130944c53c3bfb",
+      "sha256": "0865c407601be77642093176d2d6408236633065f70e2a890379bd43e6f93471",
+      "source_text": "Catálogo de sellos\n\nEl catálogo enumera juntas y cierres mecánicos compatibles con P44. Contiene ilustraciones de grietas como ejemplos de desgaste, no como fotografías ni observaciones de esta bomba. No registra charcos ni intervenciones realizadas.",
+      "synthetic": true
+    },
+    {
+      "bytes": 36801,
+      "family": "fan",
+      "fixture_id": "H03",
+      "logical_resource_id": "fan-balance",
+      "path": "corpus/H03.docx",
+      "revision_pin": "2a980b8af2e1105a0ec668c94afec2b3c007a6ffeef09e2f4317408722ce88bc",
+      "sha256": "e282fd57defa78a7cb90258c36268baa0926be1b08164fd1087835de5afe5701",
+      "source_text": "Vibración del ventilador F3\n\nEl ventilador F3 vibró por encima de 9 milímetros por segundo al arrancar. La inspección halló una pala con acumulación de polvo y un contrapeso desprendido. Después de limpiar y balancear el rotor la vibración bajó a 2.1 milímetros por segundo sin cambiar los rodamientos.",
+      "synthetic": true
+    },
+    {
+      "bytes": 209,
+      "family": "fan",
+      "fixture_id": "H04",
+      "logical_resource_id": "fan-negation",
+      "path": "corpus/H04.md",
+      "revision_pin": "cfeb5b78b553052ddb4f2e022dc9ac00c6f9f79b39facabc3a04b5061709f726",
+      "sha256": "50f51f0592e0a6750bb98052e38f21d2f3468f1da1dc84092bfa428ef7f724cc",
+      "source_text": "Ventilador F4 sin anomalía\n\nEl ventilador F4 funcionó sin vibración anormal, con palas limpias y contrapesos en su sitio. No fue necesario balancear el rotor ni sustituir rodamientos. Este equipo no es F3.",
+      "synthetic": true
+    },
+    {
+      "bytes": 878,
+      "family": "insulation",
+      "fixture_id": "H05",
+      "logical_resource_id": "polarization-test",
+      "path": "corpus/H05.odt",
+      "revision_pin": "41d383ace8ac03b46723618d08c60b1ef1c7d308beb30b488fb0974631d8650e",
+      "sha256": "4e235f6d1e8ee409f4ece9343b1af8f3c948de3c80a896379e8030b46863da0a",
+      "source_text": "Prueba de aislamiento del motor N8\n\nEl motor N8 presentó 120 megaohmios al minuto y 150 megaohmios a los diez minutos. El índice de polarización resultante fue 1.25, inferior al mínimo establecido en el plan de pruebas. El bobinado se mantuvo fuera de servicio para secarlo antes de repetir el ensayo.",
+      "synthetic": true
+    },
+    {
+      "bytes": 450,
+      "family": "insulation",
+      "fixture_id": "H06",
+      "logical_resource_id": "polarization-reference",
+      "path": "corpus/H06.html",
+      "revision_pin": "ea4f905bb4916aea7a3059204bb3fe470d7d299455550778ac5063ae011f8126",
+      "sha256": "22da902c82fed024523f79e97925d206d591b96bf578302aa244283e1fba8e28",
+      "source_text": "Guía del ensayo de polarización\n\nLa guía explica que el índice de polarización se obtiene dividiendo la resistencia a diez minutos entre la lectura al minuto. Incluye como ejemplo un motor ficticio con valor de 1.25, pero no contiene resultados de la prueba de N8 ni acredita que su bobinado haya sido secado.",
+      "synthetic": true
+    },
+    {
+      "bytes": 320,
+      "family": "battery",
+      "fixture_id": "H07",
+      "logical_resource_id": "battery-capacity",
+      "path": "corpus/H07.txt",
+      "revision_pin": "e735bf0cb5a028a0483ad8a6818da018ba251bbb270c64ef5319c43e22bfe78d",
+      "sha256": "b0dbf48980a5bdd5f49d90e01763b211059f423029af0fda5519b4e6b968347c",
+      "source_text": "Descarga del banco B12\n\nDurante la descarga controlada del banco B12 la celda 17 cayó primero por debajo de 1.75 voltios. Al inspeccionarla se encontraron depósitos blancos sobre las placas y se atribuyó su baja capacidad a sulfatación. Las demás celdas mantuvieron la tensión esperada durante el mismo intervalo.",
+      "synthetic": true
+    },
+    {
+      "bytes": 248,
+      "family": "battery",
+      "fixture_id": "H08",
+      "logical_resource_id": "battery-purchase",
+      "path": "corpus/H08.csv",
+      "revision_pin": "5ecd2cb09c4575719b349d0c1ad1b9989f9960f12c377d8f22b88dce10ef1c42",
+      "sha256": "3be14e177ab48a3bcf47033211bc1c4a170939ecb22af9bbbdaf9eeff63b2a2d",
+      "source_text": "Pedido de celdas de repuesto\n\nSe cotizaron celdas para B12 como repuesto preventivo. La oferta menciona sulfatación entre exclusiones de garantía, pero no contiene lecturas de descarga ni resultados de inspección de placas.",
+      "synthetic": true
+    },
+    {
+      "bytes": 345,
+      "family": "restore",
+      "fixture_id": "H09",
+      "logical_resource_id": "restore-trial",
+      "path": "corpus/H09.md",
+      "revision_pin": "efb0db2e25e7b67193404f6c36a73e09ccf4f6c033ec42a28d4fdae8d9c7d583",
+      "sha256": "8776d2f6bb92cb19a282e0aaf48378ecb34fd577fc6ba1d91339ba3af4de6b71",
+      "source_text": "Ensayo de restauración del expediente Delta\n\nLa copia del expediente Delta se descargó a un directorio temporal y se restauraron los 318 archivos. La comparación SHA-256 confirmó coincidencia en todos los documentos y se abrieron tres PDF de muestra. El ensayo verificó recuperación de bytes, no solamente presencia de una carpeta remota.",
+      "synthetic": true
+    },
+    {
+      "bytes": 295,
+      "family": "restore",
+      "fixture_id": "H10",
+      "logical_resource_id": "restore-not-done",
+      "path": "corpus/H10.json",
+      "revision_pin": "f7b97d4204eb85b80caf4d7b97858d49e7c8f1ea9a88112dbe6139dca344873b",
+      "sha256": "fd2a9a4f8f13c39c0e25bcf9c57a12acc3bc57f3fbcd919027ed91fa2ffd1fcb",
+      "source_text": "Estado del respaldo Épsilon\n\nLa carpeta remota de Épsilon aparece sincronizada con 318 entradas. Todavía no se ha probado restaurar sus archivos ni se han comparado hashes. La interfaz muestra copia completada, pero no existe evidencia de recuperabilidad.",
+      "synthetic": true
+    },
+    {
+      "bytes": 1803,
+      "family": "weld",
+      "fixture_id": "H11",
+      "logical_resource_id": "weld-porosity",
+      "path": "corpus/H11.pdf",
+      "revision_pin": "d77fd493acada70cf14c7d2922fcd094844a3d965c7a1f1916da3991c58e2556",
+      "sha256": "d15c0d7cc377f212dc45836600c5468b1870380dc33bcef19a22c709860e71ce",
+      "source_text": "Inspección del cordón J9\n\nLa radiografía del cordón J9 mostró una agrupación de poros en el tercio central. La revisión del proceso detectó flujo de gas protector interrumpido durante ese tramo. Se retiró la porción afectada y el nuevo cordón no mostró poros agrupados en la segunda radiografía.",
+      "synthetic": true
+    },
+    {
+      "bytes": 244,
+      "family": "weld",
+      "fixture_id": "H12",
+      "logical_resource_id": "weld-guide",
+      "path": "corpus/H12.rst",
+      "revision_pin": "eeaa49a0aff4633d7d87c11949735459f33105c26d282b71c870dafa7ab182be",
+      "sha256": "2cecf0e5154ef22335eda0b7fa47c6b5152c5ce6117c26dfeaa497920bbabb5f",
+      "source_text": "Recomendaciones de protección de soldadura\n\nLa guía relaciona la falta de gas protector con porosidad y aconseja inspección radiográfica si hay dudas. No es el registro del cordón J9 ni prueba que se haya retirado o rehecho una soldadura.",
+      "synthetic": true
+    },
+    {
+      "bytes": 36833,
+      "family": "thermal",
+      "fixture_id": "H13",
+      "logical_resource_id": "thermal-terminal",
+      "path": "corpus/H13.docx",
+      "revision_pin": "8163add36d47a3d60aa88de776ba21b15036971784ef71afafde35afa496a159",
+      "sha256": "3725f2fbe9ed676bd322816ad13861449b90a86a5179033ea246e9cd35107494",
+      "source_text": "Inspección térmica del tablero Q6\n\nLa cámara térmica registró 86 grados Celsius en la terminación de la fase C del tablero Q6, mientras las otras fases permanecieron cerca de 39 grados bajo carga comparable. Al abrir el tablero se encontró la zapata floja y oscurecida, y después de ajustar la conexión la diferencia térmica dejó de observarse.",
+      "synthetic": true
+    },
+    {
+      "bytes": 233,
+      "family": "thermal",
+      "fixture_id": "H14",
+      "logical_resource_id": "thermal-calibration",
+      "path": "corpus/H14.txt",
+      "revision_pin": "366e51b46f4e0a00e00c59206a69eaf6a29f768ecf4487a46611da4671fec115",
+      "sha256": "860e4ab5bcadd617588e72ee21fec70489076a1355bcc363bf65c1bc0e3aebdd",
+      "source_text": "Certificado de cámara térmica\n\nEl certificado acredita la calibración de la cámara en puntos de 39 y 86 grados Celsius. No contiene imágenes del tablero Q6, resultados bajo carga ni observaciones de zapatas o conexiones flojas.",
+      "synthetic": true
+    },
+    {
+      "bytes": 873,
+      "family": "valve",
+      "fixture_id": "H15",
+      "logical_resource_id": "valve-position",
+      "path": "corpus/H15.odt",
+      "revision_pin": "1dfb8634cab652ce749100f0a4c904b827cdeba1f137d2923aca7581b154b7b0",
+      "sha256": "0070a9d3ff7e170a4f72fe4742be820bde9bb012e5b3948ad0c012c0e7d1d8af",
+      "source_text": "Falta de caudal en el enfriador V5\n\nEl enfriador V5 no recibió agua aunque la bomba estaba en marcha. Se encontró cerrada la válvula de retorno, se abrió por completo y el indicador mostró 26 litros por minuto. La bomba no se sustituyó porque la falta de caudal se debía a la posición de la válvula.",
+      "synthetic": true
+    },
+    {
+      "bytes": 275,
+      "family": "valve",
+      "fixture_id": "H16",
+      "logical_resource_id": "valve-unexecuted",
+      "path": "corpus/H16.txt",
+      "revision_pin": "aa0d04d1a8803b6f1028f07ea2a000fee04b7b61a130f17d72ec5ccce8773613",
+      "sha256": "8774c02bcab3463799470a6e2b041403d6df2dc74479cedb4d38d7c62201e04a",
+      "source_text": "Lista pendiente del enfriador V6\n\nPara V6 se propone revisar la posición de válvulas y medir el caudal después de arrancar la bomba. La actividad permanece pendiente, no hay mediciones y no se ha diagnosticado una causa de falta de agua. El documento no corresponde a V5.",
+      "synthetic": true
+    }
+  ],
+  "schema": "neocortex.functional-fixtures/v1",
+  "split": "reserve"
+}

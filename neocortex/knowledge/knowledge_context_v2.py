@@ -251,9 +251,9 @@ def _budget_candidate_priority(
     """Prefer usable evidence for packing, not a new retrieval score.
 
     Verification binds an owner excerpt, not the truth of a claim. Literal
-    support is necessary evidence, not answerability. Among verified excerpts,
-    the retrieval order remains authoritative: partial literal overlap may be
-    a relevant paraphrase. Counter-witnesses retain that same tier rather than
+    support is necessary evidence, not answerability. Verified excerpts share
+    a tier because partial literal overlap may be a relevant paraphrase.
+    Counter-witnesses retain that same tier rather than
     displacing every ordinary witness; final checks still decide disposition.
     """
     from neocortex.semantic.semantic_query_evidence import (
@@ -294,6 +294,9 @@ def _assess_witnesses(
                 "policy_signature", "status", "required_witnesses",
                 "missing_necessary_witnesses", "counterevidence", "evaluated_chars", "interpretation",
             )}
+            if raw_checks["policy_signature"] == "query-necessary-evidence-checks-v2":
+                for name in ("applicability", "scoped_observations", "retrieval_disposition"):
+                    checks[name] = raw_checks[name]
             for flag in ("query_truncated", "evaluation_truncated"):
                 if raw_checks[flag]:
                     checks[flag] = True
@@ -311,7 +314,20 @@ def _assess_witnesses(
         }
         any_required |= bool(checks["required_witnesses"])
         missing |= bool(checks["missing_necessary_witnesses"])
-        if counterevidence or checks["counterevidence"]:
+        declared_disposition = checks.get("retrieval_disposition")
+        common_v2 = checks["policy_signature"] == "query-necessary-evidence-checks-v2"
+        if common_v2 and declared_disposition not in {
+            "related_evidence_only", "contradictory_evidence", "unchanged",
+        }:
+            raise ValueError("common evidence policy returned an unsupported disposition")
+        if common_v2 and declared_disposition == "related_evidence_only":
+            # An excluded/different subject does not negate an event for the
+            # requested subject. Applicability is decided by the common owner.
+            disposition = "related_only"
+        elif common_v2 and declared_disposition == "contradictory_evidence":
+            disposition = "contradictory"
+            reasons.append(f"{citation['citation_id']}:scoped_counterevidence")
+        elif not common_v2 and (counterevidence or checks["counterevidence"]):
             disposition = "contradictory"
             reasons.append(f"{citation['citation_id']}:literal_counterevidence")
         elif (checks["missing_necessary_witnesses"] or not excerpt
@@ -423,7 +439,31 @@ def build_context_response_v2(
     originals: dict[str, str] = {}
     sources: dict[str, str] = {}
     text_available = any(snippet for _source_ref, _citation_ref, snippet in candidates)
-    for source, raw_citation, snippet in candidates:
+    from neocortex.semantic.semantic_lexical import query_term_support
+
+    term_cache: dict[str, frozenset[str]] = {}
+
+    def original_query_terms(text: str) -> frozenset[str]:
+        if text not in term_cache:
+            term_cache[text] = frozenset(query_term_support(
+                payload["query"], text, basis="context_excerpt_original_query",
+            )["matched_terms"])
+        return term_cache[text]
+
+    priorities = [_budget_candidate_priority(item, payload["query"]) for item in candidates]
+    remaining = list(range(len(candidates)))
+    represented_terms: set[str] = set()
+    while remaining:
+        # Keep the first witness of the best tier in retrieval order. Later
+        # witnesses can add literal query coverage rather than repeating it;
+        # different embedding variants never define this comparison's terms.
+        selected = min(remaining, key=lambda index: (
+            priorities[index],
+            -len(original_query_terms(candidates[index][2]) - represented_terms)
+            if payload["citations"] else 0,
+        ))
+        remaining.remove(selected)
+        source, raw_citation, snippet = candidates[selected]
         if not snippet and text_available and not any(item["excerpt"] for item in payload["citations"]):
             # Reference-only images cannot be a substitute for text that was
             # retrieved but did not fit the response's minimum proof envelope.
@@ -459,6 +499,13 @@ def build_context_response_v2(
             payload = proposal
             sources[source_key] = source_id
             originals[citation["citation_id"]] = snippet
+            # Rejected proposals and words beyond an accepted truncation do
+            # not consume coverage or suppress a later usable witness.
+            accepted = payload["citations"][-1]
+            represented_excerpt = accepted["excerpt"]
+            if accepted["fragment_state"] == "truncated":
+                represented_excerpt = represented_excerpt.removesuffix(_TRUNCATED)
+            represented_terms.update(original_query_terms(represented_excerpt))
 
     # Fair round-robin expansion prevents the first long hit starving all other
     # substantive excerpts. Full source evidence stays resolvable by reference.

@@ -83,7 +83,7 @@ def text_query_expansions(query: str) -> tuple[dict[str, object], ...]:
     """Return at most two additional queries; the original belongs to the caller."""
     language = _expansion_language(query)
     if language is None:
-        return ()
+        return _thermal_query_expansions(query)
     prefix, aliases = (
         ("reporte sobre", "radiadores o enfriadores sin presión")
         if language == "es"
@@ -106,3 +106,77 @@ def text_query_expansions(query: str) -> tuple[dict[str, object], ...]:
         "interpretation": QUERY_EXPANSION_INTERPRETATION,
         "alias_concepts": alias_concepts,
     } for variant_id, effective_query, alias_concepts in additional)
+
+
+THERMAL_QUERY_EXPANSION_POLICY = "semantic-thermal-comparison-query-v1"
+_THERMAL_ES = re.compile(
+    r"\b(?:calent(?:aba[n]?|amiento|ando|ar|o|aron)|calient(?:e[s]?|a[n]?)|temperaturas?)\b"
+)
+_THERMAL_EN = re.compile(r"\b(?:hotter|hottest|hot|heating|heated|heats?|temperatures?)\b")
+_THERMAL_COMPARISON = re.compile(
+    r"\b(?:mas|mayor(?:es)?|superior(?:es)?|hotter|hottest|higher|highest)\b"
+)
+_THERMAL_LOWER_OR_EQUAL = re.compile(
+    r"\b(?:menos|menor(?:es)?|inferior(?:es)?|colder|lower|less|igual(?:es)?|"
+    r"misma[s]?|mismo[s]?|same|equal)\b|\bcooler\s+than\b|\bmas\s+fri[oa]s?\b"
+)
+_THERMAL_CORRECTION_ES = re.compile(
+    r"\b(?:corrig(?:io|ieron)|corregir|correccion(?:es)?|correctiv[oa]s?|"
+    r"ajust(?:e[s]?|o|aron)|solucion(?:o|aron)|resolvio|repar(?:o|aron|acion))\b"
+)
+_THERMAL_CORRECTION_EN = re.compile(
+    r"\b(?:fix(?:ed)?|corrected|corrections?|corrective|adjusted|adjustments?|"
+    r"remed(?:y|ied)|repaired|resolved)\b"
+)
+
+
+def _thermal_query_expansions(query: str) -> tuple[dict[str, object], ...]:
+    """Normalize a positive comparative thermal question, not its explanation."""
+    if not query.strip() or len(query) > MAX_EXPANSION_QUERY_CHARS:
+        return ()
+    if any(unicodedata.category(character) in {"Cc", "Cf", "Cs"} for character in query):
+        return ()
+    folded = _fold(query)
+    terms = tuple(_TERM.findall(folded))
+    if len(terms) > MAX_EXPANSION_QUERY_TERMS:
+        return ()
+    thermal_es = _THERMAL_ES.search(folded)
+    thermal_en = _THERMAL_EN.search(folded)
+    if not (thermal_es or thermal_en) or not _THERMAL_COMPARISON.search(folded):
+        return ()
+    if (
+        set(terms).intersection(_NEGATIONS)
+        or _CONTRACTED_NEGATION.search(folded)
+        or _THERMAL_LOWER_OR_EQUAL.search(folded)
+    ):
+        return ()
+    language = "es" if thermal_es else "en"
+    correction = bool(_THERMAL_CORRECTION_ES.search(folded) or _THERMAL_CORRECTION_EN.search(folded))
+    connection = bool(re.search(r"\b(?:conexi(?:on|ones)|connections?)\b", folded))
+    if language == "es":
+        heating = "calentamiento de conexión" if connection else "calentamiento"
+        comparison = "comparación de temperatura" + (" y acciones de corrección" if correction else "")
+        report = "reporte sobre"
+        gloss = heating + " y diferencia térmica" + (", corrección y ajuste" if correction else "")
+    else:
+        heating = "connection heating" if connection else "heating"
+        comparison = "temperature comparison" + (" and corrective actions" if correction else "")
+        report = "report about"
+        gloss = heating + " and thermal difference" + (", correction and adjustment" if correction else "")
+    concepts = ["thermal_condition", "thermal_comparison"]
+    if correction:
+        concepts.append("requested_corrective_action")
+    return tuple({
+        "variant_id": variant_id,
+        "profile": THERMAL_QUERY_EXPANSION_POLICY,
+        "policy_signature": THERMAL_QUERY_EXPANSION_POLICY,
+        "language": language,
+        "effective_query": effective_query,
+        "original_query": query,
+        "preserved_constraints": "original_verbatim",
+        "interpretation": "retrieval_aliases_not_temperature_measurement_or_cause_or_corrective_efficacy",
+        "alias_concepts": list(concepts),
+    } for variant_id, effective_query in (
+        ("thermal_correction", f"{comparison}: {query} ({heating})"),
+        ("thermal_report", f"{report} {query} ({gloss})"),
+    ))

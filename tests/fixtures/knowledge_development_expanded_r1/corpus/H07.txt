@@ -1,0 +1,3 @@
+Descarga del banco B12
+
+Durante la descarga controlada del banco B12 la celda 17 cayó primero por debajo de 1.75 voltios. Al inspeccionarla se encontraron depósitos blancos sobre las placas y se atribuyó su baja capacidad a sulfatación. Las demás celdas mantuvieron la tensión esperada durante el mismo intervalo.

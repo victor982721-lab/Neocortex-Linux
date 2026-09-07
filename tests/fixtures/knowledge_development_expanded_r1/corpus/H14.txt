@@ -1,0 +1,3 @@
+Certificado de cámara térmica
+
+El certificado acredita la calibración de la cámara en puntos de 39 y 86 grados Celsius. No contiene imágenes del tablero Q6, resultados bajo carga ni observaciones de zapatas o conexiones flojas.

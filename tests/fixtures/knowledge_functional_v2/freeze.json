@@ -1,0 +1,49 @@
+{
+  "baseline_release": "0.12.0-d1e06b9519fe-cp314-linux-x86_64",
+  "comparison_scope": "original24DEV plus16R2; retiredR1 is diagnostic-only and excluded from this formal comparison corpus",
+  "composition": "16 reserve resources, eight positive families with one observed primary and one realistic distractor each, eight positive and two unsupported-fact queries; 2PDF/2DOCX/2ODT/10text-family files",
+  "created_utc": "2026-09-07T01:14:07.349759+00:00",
+  "dataset_id": "FUNCTIONAL_R2",
+  "dev": {
+    "files": 24,
+    "logical_resources": 23,
+    "manifest_sha256": "09a79131f8f0e3db229647c8ce7c42df351030c557a2c0b351919e258a48eed6",
+    "negative_queries": 4,
+    "positive_queries": 16,
+    "queries": 20,
+    "queries_sha256": "b6d57e50faa56cf72c63ca6acbb5134691fbac96004f015a8af6eaf0cfdbf106"
+  },
+  "dev_source": "../knowledge_functional_v1/dev",
+  "family_disjoint_from_original_dev_and_retired_r1": true,
+  "measurement_unit": "unique logical document with pinned content revision, not chunk",
+  "original_v1_freeze_sha256": "02c43c7100db4493785b3bd69ae43358115e800050eac8ac1d0fff4817921ce9",
+  "reserve": {
+    "files": 16,
+    "logical_resources": 16,
+    "manifest_sha256": "f555ffe8ca89651dc17006d8f4646494ba5bf3f2129e3a45cb243462ec6d5585",
+    "negative_queries": 2,
+    "positive_queries": 8,
+    "queries": 10,
+    "queries_sha256": "8ca8e52391d2f718d2b567ba8b00b16494a8e972fdc8807cc20fd6ecba2b273e"
+  },
+  "reserve_archive_sha256": "821a9a47024acf48d291be55aa8e567ab3eb518ba1271a052b1c20613378875f",
+  "reserve_plaintext_archive_sha256": "498d403682b34be0a4951bc33c87d691d552e00db99d5751d9714deb7f81e33e",
+  "reserve_visibility": "steward-only; no candidate execution until explicit root GO",
+  "retired_r1_status": "RETIRED_HOLDOUT_R1_NOW_DEVELOPMENT",
+  "schema": "neocortex.functional-freeze/v2",
+  "selection_note": "questions and grades fixed before baseline measurement; no selection or difficulty changes based on scores",
+  "status": "FROZEN_BEFORE_POST_R1_TUNING",
+  "synthetic_only": true,
+  "thresholds": {
+    "citation_integrity": 1.0,
+    "locator_integrity": 1.0,
+    "ndcg_at_10": "candidate >= baseline using frozen graded relevance",
+    "negative_unsupported_evidence": 0,
+    "recall_at_5": "mean(|R intersect top5 unique documents| / |R|) over positive queries",
+    "reserve_positive_hits_required": 8,
+    "reserve_positive_queries": 8,
+    "reserve_success_at_5": 0.9
+  },
+  "total_fixture_files": 40,
+  "total_queries": 30
+}

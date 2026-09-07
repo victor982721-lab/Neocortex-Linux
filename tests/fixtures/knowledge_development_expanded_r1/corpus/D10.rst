@@ -1,0 +1,3 @@
+Prueba sin interrupciones
+
+La prueba de conexión WebSocket completó treinta minutos sin desconexiones. No apareció código 1006, no se interrumpió la consulta ni se perdió un snapshot. La prueba menciona escenarios de desconexión únicamente como casos futuros todavía no ejecutados.

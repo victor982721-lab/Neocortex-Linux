@@ -1,0 +1,270 @@
+{
+  "files": [
+    {
+      "bytes": 36851,
+      "family": "radiator",
+      "fixture_id": "D01",
+      "logical_resource_id": "incident-radiator",
+      "path": "corpus/D01.docx",
+      "revision_pin": "4cf1a0d9e5226f75dcd0b49d68fe4216aa54d240230d86a97cb46c40332352ed",
+      "sha256": "67c2570a010604e8bd2df5244bf70665f803bbc58f3367a940d47009f0baa0b0",
+      "source_text": "Hallazgo durante colocación del radiador\n\nDurante la instalación del radiador R7 del transformador de ensayo T12, la eslinga rozó el panel y dejó una abolladura de 18 milímetros. La conexión inferior perdió aceite al presurizar. Se retiró el radiador para revisar la junta y se suspendió el montaje. El incidente ocurrió al colocar el conjunto, no durante el apriete de tornillos.",
+      "synthetic": true
+    },
+    {
+      "bytes": 1885,
+      "family": "radiator",
+      "fixture_id": "D02",
+      "logical_resource_id": "incident-radiator",
+      "path": "corpus/D02.pdf",
+      "revision_pin": "4cf1a0d9e5226f75dcd0b49d68fe4216aa54d240230d86a97cb46c40332352ed",
+      "sha256": "55a089024a720acd53be1b6d261a2c0ae7fce0ab1f9a0681eebf0ba33ea8bf72",
+      "source_text": "Hallazgo durante colocación del radiador\n\nDurante la instalación del radiador R7 del transformador de ensayo T12, la eslinga rozó el panel y dejó una abolladura de 18 milímetros. La conexión inferior perdió aceite al presurizar. Se retiró el radiador para revisar la junta y se suspendió el montaje. El incidente ocurrió al colocar el conjunto, no durante el apriete de tornillos.",
+      "synthetic": true
+    },
+    {
+      "bytes": 299,
+      "family": "radiator",
+      "fixture_id": "D03",
+      "logical_resource_id": "radiator-guide",
+      "path": "corpus/D03.txt",
+      "revision_pin": "ece3e4539329d735509932ed38d69a0f480cb209964974695c01bea08a95e7d7",
+      "sha256": "b5597cd956462c3c028d577ac43da4341f1d7d98213ab114bcc33b5972129032",
+      "source_text": "Manual de radiadores\n\nLa guía de instalación recomienda proteger las aletas y comprobar las juntas antes de montar un radiador. Describe como riesgos posibles las abolladuras y las fugas de aceite. Es un procedimiento genérico, no un registro de un incidente ni evidencia de daños en un equipo.",
+      "synthetic": true
+    },
+    {
+      "bytes": 286,
+      "family": "radiator",
+      "fixture_id": "D04",
+      "logical_resource_id": "radiator-normal",
+      "path": "corpus/D04.md",
+      "revision_pin": "17eecdd1025adda00c7387fc6dc2275b4eaf2853067930e202fa4cc396aad6d9",
+      "sha256": "6a48422447239b38935531d22d83df8703ac0e07b7b6065120f9fb648df8949c",
+      "source_text": "Radiador sin daños observados\n\nEl radiador R8 llegó sin golpes ni fugas, se colocó sin contacto con las eslingas y permaneció estanco. No se presentó incidente alguno durante su instalación. La palabra incidente pertenece al formulario de control y no describe un hecho ocurrido.",
+      "synthetic": true
+    },
+    {
+      "bytes": 349,
+      "family": "memory",
+      "fixture_id": "D05",
+      "logical_resource_id": "memory-oom",
+      "path": "corpus/D05.log",
+      "revision_pin": "a3fd364180aa25728ca94b4500fbb36a9419f0bd5f35a715bc7bbbe45de993f9",
+      "sha256": "bf6e1c4644c2e9238c1e9ae93fc2f1436ff8a00cb745c5dde3dd8332cd6a0613",
+      "source_text": "Terminación por presión de memoria\n\nEl proceso de renderizado del lote Atlas terminó con SIGKILL. El kernel registró Out of memory y seleccionó al worker de mayor RSS cuando la RAM disponible cayó a 90 MiB y swap estaba agotada. La caída se debió a presión de memoria, no a un archivo inexistente. Se conservaron los documentos originales.",
+      "synthetic": true
+    },
+    {
+      "bytes": 464,
+      "family": "memory",
+      "fixture_id": "D06",
+      "logical_resource_id": "memory-remedy",
+      "path": "corpus/D06.html",
+      "revision_pin": "eb3b7578181f1c51a54ca092f23da1b5df4268724c4bb82a1c785a960a28f4ff",
+      "sha256": "faed765370194731191068bf28d444beb64f1fc91a0866838932241ac62b3c6e",
+      "source_text": "Recuperación del lote Atlas\n\nEl registro de recuperación confirmó que la falta de RAM interrumpió Atlas. Se redujo la concurrencia de ocho procesos a dos, el consumo máximo bajó y el lote continuó desde su checkpoint sin volver a procesar páginas completas. No se amplió el límite de memoria ni se cambiaron los documentos.",
+      "synthetic": true
+    },
+    {
+      "bytes": 269,
+      "family": "memory",
+      "fixture_id": "D07",
+      "logical_resource_id": "pressure-fluid",
+      "path": "corpus/D07.json",
+      "revision_pin": "41df2d39f47579b0732bc6209d31c05e9e31e705669fee5fd98e7a3f4206dfef",
+      "sha256": "03faddcf4d294456f14331e61b841225adf7e0d52fbea5c1bd09d368a0521984",
+      "source_text": "Registro de presión hidráulica\n\nLa presión de la bomba hidráulica se mantuvo en 4 bar durante la prueba. El manómetro no tiene memoria interna. No hubo procesos informáticos, RAM agotada ni eventos del kernel en este registro.",
+      "synthetic": true
+    },
+    {
+      "bytes": 347,
+      "family": "websocket",
+      "fixture_id": "D08",
+      "logical_resource_id": "websocket-drop",
+      "path": "corpus/D08.md",
+      "revision_pin": "64305af852f9ba4f1e0c9fca3b96e436f15ec1d024440391c2c0c8f010375a6f",
+      "sha256": "7b69faeb943c69db9440ce5de0494974815e036606147b31b39ae581b306772a",
+      "source_text": "Sesión interrumpida durante consulta\n\nEl cliente perdió la conexión WebSocket con código 1006 antes de recibir el resultado de la consulta. El servidor siguió trabajando y guardó el resultado, pero al reconectar el cliente no solicitó el snapshot pendiente y mostró una pantalla vacía. No se perdió el archivo persistido en el servidor.",
+      "synthetic": true
+    },
+    {
+      "bytes": 344,
+      "family": "websocket",
+      "fixture_id": "D09",
+      "logical_resource_id": "websocket-resume",
+      "path": "corpus/D09.txt",
+      "revision_pin": "9de78be43ae97115ee77870f7aba4af2e38ec4b063a4ac5352d117b0a0f08455",
+      "sha256": "f5e3f9f507699fb974e8e65dee4dcdd3d1532a259d7de22d0147346db5890526",
+      "source_text": "Reanudación después de desconexión\n\nPara recuperar una consulta después del cierre inesperado del WebSocket se guardó el cursor de eventos y se solicitó el estado persistido al reconectar. El cliente fusionó el snapshot con los eventos posteriores, evitó mensajes duplicados y mostró el resultado previamente terminado en el servidor.",
+      "synthetic": true
+    },
+    {
+      "bytes": 291,
+      "family": "websocket",
+      "fixture_id": "D10",
+      "logical_resource_id": "websocket-normal",
+      "path": "corpus/D10.rst",
+      "revision_pin": "c96f79f8a2d669f72053c723f4ff55a7e490d5d955bb2b36f02b3a8f2c0f7ca4",
+      "sha256": "44fd5321674e91420e51e6199000772b7f494bf5a5b49e174bcbf3ec717d3546",
+      "source_text": "Prueba sin interrupciones\n\nLa prueba de conexión WebSocket completó treinta minutos sin desconexiones. No apareció código 1006, no se interrumpió la consulta ni se perdió un snapshot. La prueba menciona escenarios de desconexión únicamente como casos futuros todavía no ejecutados.",
+      "synthetic": true
+    },
+    {
+      "bytes": 295,
+      "family": "cable",
+      "fixture_id": "D11",
+      "logical_resource_id": "cable-open",
+      "path": "corpus/D11.csv",
+      "revision_pin": "f3b80483883751a605fd132b4f8e46f6668983927cc6019f2da153bec3bc966e",
+      "sha256": "9f4315f502dd2893784ac9d827e38feda2f1d9bc58e0c8122123ed9c5130dedd",
+      "source_text": "Medición de continuidad del circuito C31\n\nLa medición del conductor azul entre borneras X4 y X9 indicó circuito abierto. La inspección localizó un hilo cortado dentro de la canaleta junto a X9. El cable restante conservó continuidad y no presentó derivación a tierra.",
+      "synthetic": true
+    },
+    {
+      "bytes": 861,
+      "family": "cable",
+      "fixture_id": "D12",
+      "logical_resource_id": "cable-repair",
+      "path": "corpus/D12.odt",
+      "revision_pin": "a86179e9361b9b6d8e750763daf2f820aa253272f98aac0b98f92b4452e60841",
+      "sha256": "7db809f279c646d756671e310ce88fa2cbec7266a32cb271d8691e7b8b12510e",
+      "source_text": "Restablecimiento del circuito C31\n\nSe sustituyó el tramo del conductor azul que estaba cortado junto a la bornera X9 y se reapretó la terminación. La nueva medición entre X4 y X9 fue de 0.3 ohmios, por lo que quedó restablecida la continuidad del circuito C31.",
+      "synthetic": true
+    },
+    {
+      "bytes": 235,
+      "family": "cable",
+      "fixture_id": "D13",
+      "logical_resource_id": "cable-order",
+      "path": "corpus/D13.txt",
+      "revision_pin": "3569b1a63b2e0fcd57fa20244cc913a7960438b498a4dacdc2fad98db79d6ee7",
+      "sha256": "7a4faaa9c81c943d082363d7b372bedc9111b62d7427b2a67d654b1d118e53bc",
+      "source_text": "Solicitud de cable de reserva\n\nSe solicitó una bobina azul para mantener existencias. La solicitud no se originó en un circuito abierto ni acredita que se sustituyera cable alguno. X4 y X9 aparecen sólo en el catálogo de borneras.",
+      "synthetic": true
+    },
+    {
+      "bytes": 1870,
+      "family": "crane",
+      "fixture_id": "D14",
+      "logical_resource_id": "lift-clearance",
+      "path": "corpus/D14.pdf",
+      "revision_pin": "fd707b493f5bdf979b099a802db3919fae933bf08496bd5c5af5d1d4cbc0f3f3",
+      "sha256": "6f77e6e32018688ea56a09dae05ecb9ae260d9c9fa9ced602064c2171b04e6ea",
+      "source_text": "Interferencia durante izaje del depósito\n\nEl depósito L4 quedó a 12 centímetros de la viga durante el primer intento de izaje, por lo que la maniobra se detuvo antes del contacto. Se cambió el punto de apoyo del balancín y en el segundo intento se logró una separación libre de 46 centímetros, permitiendo colocar el depósito sin golpes.",
+      "synthetic": true
+    },
+    {
+      "bytes": 305,
+      "family": "crane",
+      "fixture_id": "D15",
+      "logical_resource_id": "lift-plan",
+      "path": "corpus/D15.md",
+      "revision_pin": "b76d612c6d00af340fa1c0dcbd1c08762a781fc0be63c55b1c6a83914a7cfe8f",
+      "sha256": "bff57a44e7ca572460f4e53d3b27033572236295cd9430a97d97069193806581",
+      "source_text": "Plan previo de izaje\n\nEl plan del depósito L4 recomendaba revisar la distancia a la viga antes de elevar la carga. Consideraba cambiar el balancín si la separación fuese insuficiente. Este documento fue preparado antes de la maniobra y no demuestra su ejecución ni la separación finalmente obtenida.",
+      "synthetic": true
+    },
+    {
+      "bytes": 218,
+      "family": "crane",
+      "fixture_id": "D16",
+      "logical_resource_id": "lift-weather",
+      "path": "corpus/D16.txt",
+      "revision_pin": "0cd7f3c43f4797809697c3d5be91c8054adb49bf8fa258cfae5e4eddc1108717",
+      "sha256": "0ddd1d58ffb010dbc3a7337e79681e207c28e1653736d706aa8cd778313e3ec3",
+      "source_text": "Actividad suspendida por viento\n\nEl izaje del tanque L8 no se inició porque el viento superó el límite operativo. La carga no se elevó y no hubo interferencia con vigas. El registro no corresponde al depósito L4.",
+      "synthetic": true
+    },
+    {
+      "bytes": 1774,
+      "family": "calibration",
+      "fixture_id": "D17",
+      "logical_resource_id": "calibration-expired",
+      "path": "corpus/D17.pdf",
+      "revision_pin": "44c8b8ed4ac9da201cd5bad94afacc0699fce5f1c29cb48ea3b3b2c9701b172d",
+      "sha256": "a93a2b745c6b9a8c7d83b87ae0118ff038505c6b4b7f266f498794c3bff21412",
+      "source_text": "Vigencia del manómetro M27\n\nEl certificado de calibración del manómetro M27 venció el 14 de mayo de 2026. La revisión del 20 de mayo detectó que el instrumento ya no contaba con calibración vigente y bloqueó su uso para aceptar la prueba de presión.",
+      "synthetic": true
+    },
+    {
+      "bytes": 36796,
+      "family": "calibration",
+      "fixture_id": "D18",
+      "logical_resource_id": "calibration-replacement",
+      "path": "corpus/D18.docx",
+      "revision_pin": "d2538a54e2d67da89eb83a5dcc222a8d31b33bbb9c094bb269b867260f4dad28",
+      "sha256": "3789148742be567f7b4da5ff57b139f46faaee520d5994ec0a8cf0b0f3ec999a",
+      "source_text": "Sustitución del instrumento M27\n\nEl manómetro M27 fue retirado de la prueba porque su certificado había vencido. Se instaló el M28, cuyo certificado cubría la fecha de ensayo, y se repitió la lectura con el instrumento vigente. No se extendió por escrito la vigencia del M27.",
+      "synthetic": true
+    },
+    {
+      "bytes": 268,
+      "family": "calibration",
+      "fixture_id": "D19",
+      "logical_resource_id": "calibration-inventory",
+      "path": "corpus/D19.csv",
+      "revision_pin": "874f2e2a34167fe7455b514a808dfe486fc932c9e8d844dac1422bc40b952a91",
+      "sha256": "44bc8c3bfc734121fcea38695d2f58f935d9a123920d465e22b364a253837c18",
+      "source_text": "Existencias de instrumentos\n\nEl inventario registra M27 y M28 como manómetros de 0 a 6 bar. No contiene fechas de certificados, resultados de calibración ni decisiones sobre aptitud. La presencia en esta lista no demuestra calibración vigente.",
+      "synthetic": true
+    },
+    {
+      "bytes": 36812,
+      "family": "oil",
+      "fixture_id": "D20",
+      "logical_resource_id": "oil-water",
+      "path": "corpus/D20.docx",
+      "revision_pin": "eb3885238959958a7c068ca631097bb105dd8795a491e3c44b2a8223767e6704",
+      "sha256": "6978b6ba08f456b851615c9ced58b635f28f3b1dc7d98f68bb133e56fabe1399",
+      "source_text": "Resultado de humedad del aceite\n\nLa muestra de aceite del equipo de ensayo E6 presentó 42 partes por millón de agua mediante Karl Fischer. El resultado superó el valor objetivo de 15 ppm y el laboratorio recomendó secado. No se diagnosticó una falla eléctrica a partir de esa única medición.",
+      "synthetic": true
+    },
+    {
+      "bytes": 863,
+      "family": "oil",
+      "fixture_id": "D21",
+      "logical_resource_id": "oil-resample",
+      "path": "corpus/D21.odt",
+      "revision_pin": "ecdf0ae25a36dcfdd7851d3b1a93ef3ae82ae8b00a40e5fffc909cb54207220b",
+      "sha256": "0c742f36a7facef8d10ff50795b44d3e5a550ec4483319a81ce17f579611030d",
+      "source_text": "Repetición de humedad después del secado\n\nDespués del secado del aceite del equipo E6 se tomó una segunda muestra en frasco sellado. El ensayo de Karl Fischer reportó 11 ppm de agua frente a las 42 ppm iniciales, confirmando una disminución de humedad en la muestra analizada.",
+      "synthetic": true
+    },
+    {
+      "bytes": 223,
+      "family": "oil",
+      "fixture_id": "D22",
+      "logical_resource_id": "oil-normal",
+      "path": "corpus/D22.txt",
+      "revision_pin": "60367138f7c6a96e5b213d2994f65d573754b7866ef133dd1184dea42f300cd7",
+      "sha256": "43c1b54079f8f49685b0f2699f1b8e33d3a9682cb0c999ad0f09e568edff771e",
+      "source_text": "Aceite de otro equipo\n\nEl equipo E9 presentó 8 ppm de agua y no requirió secado. El registro no corresponde a E6. No debe interpretarse una medición de humedad normal de otro equipo como evidencia del tratamiento de E6.",
+      "synthetic": true
+    },
+    {
+      "bytes": 296,
+      "family": "meeting",
+      "fixture_id": "D23",
+      "logical_resource_id": "drawing-due",
+      "path": "corpus/D23.txt",
+      "revision_pin": "fb8eade61250370b1183435816c32be4ec3aa8ed3dfa3cde8d5d6f14804c97e8",
+      "sha256": "b45dbb14bc5cf96a755ad6a8e102879ac9d3ca6615a2db129c0984e1d810a202",
+      "source_text": "Acuerdo de entrega de planos\n\nEn la reunión del proyecto Sierra se acordó entregar los planos del tablero el 22 de junio, no el día 20 propuesto inicialmente. El taller quedó a cargo de preparar el paquete y la supervisión de revisarlo al recibirlo. El acuerdo todavía no acredita entrega.",
+      "synthetic": true
+    },
+    {
+      "bytes": 286,
+      "family": "meeting",
+      "fixture_id": "D24",
+      "logical_resource_id": "drawing-delay",
+      "path": "corpus/D24.md",
+      "revision_pin": "ce84f33e4394c82f02cdc47b593a4a39117158fa2e12a4730d034e30bdb4f752",
+      "sha256": "c2b73ebc330e3cb380a13144e9da5cc280b9af8ddacbb27e20477f174406d1f2",
+      "source_text": "Seguimiento a entrega de planos\n\nEl taller informó que los planos del tablero del proyecto Sierra seguían pendientes el 22 de junio y trasladó la entrega al 25 de junio. El paquete no fue recibido en la fecha acordada originalmente, por lo que se registró un retraso de tres días.",
+      "synthetic": true
+    }
+  ],
+  "schema": "neocortex.functional-fixtures/v1",
+  "split": "dev"
+}

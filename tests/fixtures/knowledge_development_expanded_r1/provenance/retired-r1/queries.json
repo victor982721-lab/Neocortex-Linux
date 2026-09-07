@@ -1,0 +1,102 @@
+{
+  "queries": [
+    {
+      "family": "seal",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "positive",
+      "query_id": "R01",
+      "relevance": {
+        "seal-wear": 3
+      },
+      "text": "¿Qué encontraron al abrir la bomba P44 que explicaba el charco?"
+    },
+    {
+      "family": "fan",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "positive",
+      "query_id": "R02",
+      "relevance": {
+        "fan-balance": 3
+      },
+      "text": "Busca el registro de cómo quitaron la vibración de F3 sin cambiar rodamientos"
+    },
+    {
+      "family": "insulation",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "positive",
+      "query_id": "R03",
+      "relevance": {
+        "polarization-test": 3
+      },
+      "text": "¿Por qué dejaron fuera de servicio N8 para secar su bobinado?"
+    },
+    {
+      "family": "battery",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "positive",
+      "query_id": "R04",
+      "relevance": {
+        "battery-capacity": 3
+      },
+      "text": "¿Qué celda perdió tensión primero y qué condición de sus placas explicaba su baja capacidad?"
+    },
+    {
+      "family": "restore",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "positive",
+      "query_id": "R05",
+      "relevance": {
+        "restore-trial": 3
+      },
+      "text": "¿Dónde se demostró que Delta sí se puede recuperar y no sólo que existe una copia?"
+    },
+    {
+      "family": "weld",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "positive",
+      "query_id": "R06",
+      "relevance": {
+        "weld-porosity": 3
+      },
+      "text": "Localiza la evidencia de los poros de J9 y la comprobación después de rehacer ese tramo"
+    },
+    {
+      "family": "thermal",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "positive",
+      "query_id": "R07",
+      "relevance": {
+        "thermal-terminal": 3
+      },
+      "text": "¿Qué conexión se calentaba mucho más que las otras y cómo se corrigió?"
+    },
+    {
+      "family": "valve",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "positive",
+      "query_id": "R08",
+      "relevance": {
+        "valve-position": 3
+      },
+      "text": "La bomba funcionaba pero no llegaba agua al V5, ¿qué impedía circular y qué se hizo?"
+    },
+    {
+      "family": "absent-repair",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "negative",
+      "query_id": "R09",
+      "relevance": {},
+      "text": "¿Qué factura demuestra el reemplazo de los rodamientos de F3 para corregir la vibración?"
+    },
+    {
+      "family": "absent-resilience",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "negative",
+      "query_id": "R10",
+      "relevance": {},
+      "text": "¿En qué fecha se restauraron y compararon los hashes de Épsilon para certificar su respaldo?"
+    }
+  ],
+  "schema": "neocortex.functional-judgments/v1",
+  "split": "reserve"
+}

@@ -313,7 +313,7 @@ def test_v2_gate_never_claims_legacy_zero_or_passes_all_abstention():
 
 def test_supplement_is_explicit_pinned_and_does_not_replace_frozen_judgments(tmp_path):
     root = Path(__file__).parent / "fixtures" / "knowledge_functional_v1"
-    path = root / "operationalization-v2.1.json"
+    path = root / "operationalization-v2.2.json"
     freeze_sha = hashlib.sha256((root / "freeze.json").read_bytes()).hexdigest()
     assert (
         verify_operationalization(path, frozen_dataset_sha256=freeze_sha)
@@ -324,7 +324,7 @@ def test_supplement_is_explicit_pinned_and_does_not_replace_frozen_judgments(tmp
     assert contract["legacy_baseline_reclassified"] is False
     assert (
         contract["documentation_sha256"]
-        == hashlib.sha256((root / "OPERATIONALIZATION_V2_1.md").read_bytes()).hexdigest()
+        == hashlib.sha256((root / "OPERATIONALIZATION_V2_2.md").read_bytes()).hexdigest()
     )
     contract["adapter_sha256"] = "0" * 64
     altered = tmp_path / "altered-supplement.json"
@@ -346,6 +346,112 @@ def test_original_v2_contract_remains_immutable_and_explicitly_superseded():
         == "c6acac048f9ed649c8a678ed9ca8608c7fbaaae0442bcf6bce9c18fa2501e25d"
     )
     assert contract["schema"] == "neocortex.functional-context-operationalization/v2"
+
+
+def test_v2_1_contract_and_its_implementation_remain_historically_pinned():
+    root = Path(__file__).parent / "fixtures" / "knowledge_functional_v1"
+    path = root / "operationalization-v2.1.json"
+    assert (
+        hashlib.sha256(path.read_bytes()).hexdigest()
+        == "5c44480eb54b18268a2133e8c8ea958a6a9167137f7d7c1a9f331d2a624dfb5e"
+    )
+    assert (
+        json.loads(path.read_text())["adapter_sha256"]
+        == "acb0728fb351c67457d03fff4da7b745de21c2cfb6fd9ad26ec1840c2ea82795"
+    )
+    with pytest.raises(ValueError, match="incompatible"):
+        verify_operationalization(
+            path,
+            frozen_dataset_sha256=hashlib.sha256((root / "freeze.json").read_bytes()).hexdigest(),
+        )
+
+
+def _scoped_invoice_case(tmp_path, *, negative):
+    body = (
+        "El equipo M9 permaneció identificado. No se reemplazó el sello."
+        if negative
+        else "Factura MX-62\nSe reemplazó el sello de M9."
+    )
+    case = _case(
+        tmp_path,
+        question="¿Qué factura demuestra el reemplazo del sello de M9?",
+        body=body,
+        negative=negative,
+    )
+    citation = case[1]["citations"][0]
+    action_start = body.index("se reemplazó") if negative else body.index("Se reemplazó")
+    subject_start, subject_end = (0, body.index(".")) if negative else (action_start, len(body))
+    citation["witness_checks"].update(
+        policy_signature="query-necessary-evidence-checks-v2",
+        required_witnesses=[
+            "requested_subject",
+            "requested_document_kind:invoice",
+            "completed_action:replacement",
+        ],
+        missing_necessary_witnesses=[
+            "requested_document_kind:invoice",
+            "completed_action:replacement",
+        ]
+        if negative
+        else [],
+        counterevidence=["requested_action_negated:replacement"] if negative else [],
+        status="missing" if negative else "necessary_checks_not_failed",
+        retrieval_disposition="contradictory_evidence" if negative else "unchanged",
+        applicability={
+            "families": ["documented_action"],
+            "requested_subjects": ["M9"],
+            "subject_scope": "aligned",
+        },
+        scoped_observations=[
+            {
+                "requirement": "requested_subject",
+                "state": "necessary_marker_present",
+                "subject_scope": "aligned",
+                "start_char": subject_start,
+                "end_char": subject_end,
+            },
+            {
+                "requirement": "requested_document_kind:invoice",
+                "state": "unknown" if negative else "necessary_marker_present",
+                "subject_scope": "aligned" if negative else "unresolved",
+                "start_char": None if negative else 0,
+                "end_char": None if negative else body.index("\n"),
+            },
+            {
+                "requirement": "completed_action:replacement",
+                "state": "negated" if negative else "necessary_marker_present",
+                "subject_scope": "aligned",
+                "start_char": action_start,
+                "end_char": len(body),
+            },
+        ],
+    )
+    citation["evidence_disposition"] = "contradictory" if negative else "evidence_candidate"
+    return case
+
+
+def test_scoped_policy_v2_counter_requires_final_aligned_action_span(tmp_path):
+    case = _scoped_invoice_case(tmp_path, negative=True)
+    result = score_context_v2(*case)
+    assert result["unsupported_sufficient_evidence"] == 0
+    assert result["verified_related_material"] == result["legacy_negative_context_selections"] == 1
+    assert result["unknown_disposition_citations"] == 0
+    case[1]["citations"][0]["witness_checks"]["scoped_observations"][-1].update(
+        start_char=0, end_char=9
+    )
+    altered = score_context_v2(*case)
+    assert (
+        altered["unknown_disposition_citations"] == altered["unsupported_sufficient_evidence"] == 1
+    )
+
+
+def test_scoped_policy_v2_positive_invoice_is_not_all_abstention(tmp_path):
+    case = _scoped_invoice_case(tmp_path, negative=False)
+    result = score_context_v2(*case)
+    assert result["positive_sufficient_proven"]
+    assert result["unknown_disposition_citations"] == 0
+    case[1]["citations"][0]["evidence_disposition"] = "related_only"
+    assert not score_context_v2(*case)["positive_sufficient_proven"]
 
 
 def _subject_exclusion_case(tmp_path, question, body):

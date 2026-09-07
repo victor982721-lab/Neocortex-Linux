@@ -1,0 +1,3 @@
+Lista pendiente del enfriador V6
+
+Para V6 se propone revisar la posición de válvulas y medir el caudal después de arrancar la bomba. La actividad permanece pendiente, no hay mediciones y no se ha diagnosticado una causa de falta de agua. El documento no corresponde a V5.

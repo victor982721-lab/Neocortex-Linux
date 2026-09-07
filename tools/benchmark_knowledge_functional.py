@@ -30,6 +30,8 @@ MAX_FILES = 50
 MAX_BYTES = 20 * 1024 * 1024
 MEMORY_LIMIT_BYTES = 12 * 1024 * 1024 * 1024
 FROZEN_DATASET_SHA256 = "02c43c7100db4493785b3bd69ae43358115e800050eac8ac1d0fff4817921ce9"
+FROZEN_R2_DATASET_SHA256 = "50d8c735cd82db6b3032edc1beb09fdf54941230722ca2b24858232607542428"
+SUPPORTED_FROZEN_DATASETS = frozenset({FROZEN_DATASET_SHA256, FROZEN_R2_DATASET_SHA256})
 
 
 def sha256(path: Path) -> str:
@@ -99,7 +101,7 @@ def load_fixtures(root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
 
 
 def verify_freeze(root: Path, freeze_path: Path) -> None:
-    if sha256(freeze_path) != FROZEN_DATASET_SHA256:
+    if sha256(freeze_path) not in SUPPORTED_FROZEN_DATASETS:
         raise ValueError("frozen evaluation commitment changed")
     freeze = read_json(freeze_path)
     split = read_json(root / "manifest.json").get("split")
@@ -419,9 +421,37 @@ class InstalledMeasurement:
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
+    captures = getattr(args, "captured_responses", None)
+    if captures is not None or getattr(args, "capture_manifest", None) is not None:
+        if args.label != "development" or captures is None or args.capture_manifest is None:
+            raise ValueError("capture grading requires the explicit development-only mode")
+        if __package__:
+            from .knowledge_development_measurement import grade_development_captures
+        else:
+            from knowledge_development_measurement import grade_development_captures
+        return grade_development_captures(args)
     fixture_root = args.fixtures.resolve(strict=True)
-    verify_freeze(fixture_root, args.freeze)
-    manifest, judgments = load_fixtures(fixture_root)
+    development_groups = None
+    if args.label == "development":
+        if args.additional_fixtures:
+            raise ValueError("development measurement requires exactly the pinned 40-file union")
+        if __package__:
+            from .knowledge_development_measurement import load_development_union
+        else:
+            from knowledge_development_measurement import load_development_union
+        manifest, judgments, development_groups = load_development_union(fixture_root, args.freeze)
+    else:
+        verify_freeze(fixture_root, args.freeze)
+        manifest, judgments = load_fixtures(fixture_root)
+    freeze_sha = sha256(args.freeze)
+    if (
+        args.label == "candidate"
+        and manifest["split"] == "reserve"
+        and freeze_sha == FROZEN_DATASET_SHA256
+    ):
+        raise ValueError(
+            "retired R1 cannot be reused as an independent candidate holdout; use its development-only view"
+        )
     sources = [(fixture_root, manifest)]
     if args.additional_fixtures:
         other = args.additional_fixtures.resolve(strict=True)
@@ -430,6 +460,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         sources.append((other, additional))
     if sum(len(item[1]["files"]) for item in sources) > MAX_FILES:
         raise ValueError("combined fixture count exceeds the contained bound")
+    if any(not getattr(args, name, None) for name in ("launcher", "expected_sha", "model_cache")):
+        raise ValueError(
+            "installed measurement requires launcher, expected SHA and local model cache"
+        )
     release_manifest = args.launcher.resolve(strict=True).parent.parent / "neocortex-release.json"
     release = read_json(release_manifest)
     if release.get("source_sha") != args.expected_sha:
@@ -437,7 +471,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if args.label == "candidate" and args.candidate_frozen_sha != args.expected_sha:
         raise ValueError("candidate measurement requires explicit predeclared SHA freeze")
     context_version = getattr(args, "context_response_version", 1)
-    if context_version == 2 and args.label != "candidate":
+    if context_version == 2 and args.label not in {"candidate", "development"}:
         raise ValueError("the v2 supplement cannot overwrite the frozen legacy baseline")
     operationalization_sha = None
     if context_version == 2:
@@ -446,7 +480,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         else:
             from knowledge_functional_v2_metrics import verify_operationalization
         operationalization_sha = verify_operationalization(
-            args.operationalization, frozen_dataset_sha256=FROZEN_DATASET_SHA256
+            args.operationalization, frozen_dataset_sha256=freeze_sha
         )
     workspace = args.workspace.resolve()
     if workspace.exists() and not args.reuse_isolated_index:
@@ -576,7 +610,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         ]
         # The immutable original baseline predates this flag. New candidates
         # explicitly retain their v1 result in addition to optional v2 output.
-        if args.label == "candidate":
+        if args.label in {"candidate", "development"}:
             context_arguments.extend(("--knowledge-response-version", "1"))
         context_rc, context = measurement.call(
             f"{qid}-context",
@@ -605,6 +639,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "source_sha": args.expected_sha,
         "release_manifest_sha256": sha256(release_manifest),
         "fixture_manifest_sha256": sha256(fixture_root / "manifest.json"),
+        "fixture_freeze_sha256": freeze_sha,
         "judgments_sha256": sha256(fixture_root / "queries.json"),
         "fixture_files": len(entries_by_path),
         "logical_resources": len(
@@ -646,6 +681,20 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             ],
             "note": "v2 typed sufficient-evidence metric is additional; legacy counts and immutable baseline are not reclassified",
         }
+    if development_groups is not None:
+        report["evaluation_scope"] = "DEVELOPMENT_ONLY_NOT_INDEPENDENT_ACCEPTANCE"
+        report["independent_acceptance_eligible"] = False
+        report["groups"] = {}
+        for name, ids in development_groups.items():
+            group_queries = [query for query in judgments["queries"] if query["query_id"] in ids]
+            group = score_predictions(group_queries, predictions, entries_by_path)
+            if context_version == 2:
+                group_rows = [row for row in rows_v2 if row["query_id"] in ids]
+                group["context_v2"] = {
+                    "aggregate": aggregate_context_v2(group_rows),
+                    "queries": group_rows,
+                }
+            report["groups"][name] = group
     write_json(workspace / "measurement.json", report)
     return report
 
@@ -663,8 +712,8 @@ def main() -> int:
         / "freeze.json",
     )
     parser.add_argument("--additional-fixtures", type=Path)
-    parser.add_argument("--launcher", type=Path, required=True)
-    parser.add_argument("--expected-sha", required=True)
+    parser.add_argument("--launcher", type=Path)
+    parser.add_argument("--expected-sha")
     parser.add_argument("--candidate-frozen-sha")
     parser.add_argument("--context-response-version", type=int, choices=(1, 2), default=1)
     parser.add_argument(
@@ -674,11 +723,13 @@ def main() -> int:
         / "tests"
         / "fixtures"
         / "knowledge_functional_v1"
-        / "operationalization-v2.1.json",
+        / "operationalization-v2.2.json",
     )
-    parser.add_argument("--label", choices=("baseline", "candidate"), required=True)
+    parser.add_argument("--label", choices=("baseline", "candidate", "development"), required=True)
+    parser.add_argument("--captured-responses", type=Path)
+    parser.add_argument("--capture-manifest", type=Path)
     parser.add_argument("--workspace", type=Path, required=True)
-    parser.add_argument("--model-cache", type=Path, required=True)
+    parser.add_argument("--model-cache", type=Path)
     parser.add_argument("--timeout-seconds", type=int, default=900)
     parser.add_argument("--reuse-isolated-index", action="store_true")
     args = parser.parse_args()

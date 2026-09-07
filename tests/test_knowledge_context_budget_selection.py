@@ -85,9 +85,11 @@ def test_large_budget_preserves_candidates_stable_ties_and_original_rank_positio
     payload = build_context_response_v2(entries, query=QUERY, scope="personal",
         request_id="fixture", max_characters=100000, transport=transport)
     assert [item["evidence_id"] for item in payload["citations"]] == [
-        "evidence:3", "evidence:4", "evidence:1", "evidence:2", "evidence:5"]
-    assert [item["retrieval_rank"] for item in payload["citations"]] == [3, 4, 1, 2, 5]
-    assert [item["candidate_position"] for item in payload["citations"]] == [3, 4, 1, 2, 5]
+        "evidence:3", "evidence:4", "evidence:1", "evidence:5", "evidence:2"]
+    # Equal usable tiers stay stable unless a later excerpt adds original
+    # query terms absent from the prefixes accepted so far.
+    assert [item["retrieval_rank"] for item in payload["citations"]] == [3, 4, 1, 5, 2]
+    assert [item["candidate_position"] for item in payload["citations"]] == [3, 4, 1, 5, 2]
     assert payload["budget"]["characters_used"] == emitted_response_characters(payload, transport)
     repeated = build_context_response_v2(entries, query=QUERY, scope="personal",
         request_id="fixture", max_characters=100000, transport=transport)

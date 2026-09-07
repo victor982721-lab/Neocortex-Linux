@@ -18,10 +18,10 @@ from typing import Any
 import unicodedata
 
 
-METRIC_SCHEMA = "neocortex.functional-context-operationalization/v2.1"
-PREVIOUS_ADAPTER_SHA256 = "c6acac048f9ed649c8a678ed9ca8608c7fbaaae0442bcf6bce9c18fa2501e25d"
+METRIC_SCHEMA = "neocortex.functional-context-operationalization/v2.2"
+PREVIOUS_ADAPTER_SHA256 = "acb0728fb351c67457d03fff4da7b745de21c2cfb6fd9ad26ec1840c2ea82795"
 PREVIOUS_OPERATIONALIZATION_SHA256 = (
-    "6898c112bf670eec1d29b03881e3275407a6d5fa011d79618700cae7c34f4969"
+    "5c44480eb54b18268a2133e8c8ea958a6a9167137f7d7c1a9f331d2a624dfb5e"
 )
 CHECKS_POLICY = "query-necessary-evidence-checks-v1"
 ROLE_POLICY = "query-role-counterevidence-v1"
@@ -130,7 +130,7 @@ def verify_operationalization(path: Path, *, frozen_dataset_sha256: str) -> str:
         "recorded_before_candidate_sha_freeze": True,
         "previous_adapter_sha256": PREVIOUS_ADAPTER_SHA256,
         "previous_operationalization_sha256": PREVIOUS_OPERATIONALIZATION_SHA256,
-        "change_kind": "literal_verifier_coverage_correction_not_new_judgments",
+        "change_kind": "independent_scoped_policy_v2_compatibility_not_new_judgments",
     }
     if not isinstance(contract, dict) or any(
         contract.get(key) != value for key, value in expected.items()
@@ -139,6 +139,11 @@ def verify_operationalization(path: Path, *, frozen_dataset_sha256: str) -> str:
     adapter_sha = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     if contract.get("adapter_sha256") != adapter_sha:
         raise ValueError("context-v2 metric implementation differs from its recorded supplement")
+    scoped_sha = hashlib.sha256(
+        Path(__file__).with_name("knowledge_scoped_observation_metrics.py").read_bytes()
+    ).hexdigest()
+    if contract.get("scoped_verifier_sha256") != scoped_sha:
+        raise ValueError("scoped metric implementation differs from its recorded supplement")
     return hashlib.sha256(data).hexdigest()
 
 
@@ -469,7 +474,9 @@ def _citation_errors(
     # The compact v2 projection omits false flags and redundant input_text
     # basis. Its explicit final scope and measured length remain mandatory.
     if (
-        checks.get("policy_signature") != CHECKS_POLICY
+        not isinstance(checks.get("policy_signature"), str)
+        or checks.get("policy_signature")
+        not in {CHECKS_POLICY, "query-necessary-evidence-checks-v2"}
         or checks.get("basis", "input_text") != "input_text"
     ):
         errors.append("unknown_necessary_witness_policy")
@@ -493,6 +500,32 @@ def _citation_errors(
     ):
         errors.append("necessary_checks_not_complete_over_final_excerpt")
     required, missing = expected_necessary_checks(query, excerpt)
+    scoped_counter: set[str] = set()
+    scoped_disposition = None
+    if checks.get("policy_signature") == "query-necessary-evidence-checks-v2":
+        if __package__:
+            from .knowledge_scoped_observation_metrics import validate_scoped_checks
+        else:
+            from knowledge_scoped_observation_metrics import validate_scoped_checks
+        raw_roles = citation.get("role_counterevidence", [])
+        verified_legacy_counter = (
+            isinstance(raw_roles, list)
+            and any(not _role_errors(query, excerpt, witness) for witness in raw_roles)
+        ) or (
+            "asserted_torque_to_damage_causal_link" in required
+            and bool(re.search(r"\bno durante el apriete\b", _fold(excerpt)))
+        )
+        required, missing, scoped_counter, scoped_disposition, scoped_errors = (
+            validate_scoped_checks(
+                query,
+                excerpt,
+                checks,
+                required,
+                missing,
+                verified_legacy_counter=verified_legacy_counter,
+            )
+        )
+        errors.extend(scoped_errors)
     declared = [checks.get("required_witnesses"), checks.get("missing_necessary_witnesses")]
     if any(
         not isinstance(values, list)
@@ -515,16 +548,20 @@ def _citation_errors(
     for witness in role_witnesses:
         errors.extend(_role_errors(query, excerpt, witness))
     counter = checks.get("counterevidence", [])
-    if not isinstance(counter, list):
+    if not isinstance(counter, list) or any(not isinstance(reason, str) for reason in counter):
         errors.append("invalid_necessary_counterevidence")
         counter = []
     for reason in counter:
+        if reason in scoped_counter:
+            continue
         if (
             reason != "source_explicitly_places_incident_outside_tightening"
             or not re.search(r"\bno durante el apriete\b", _fold(excerpt))
             or "asserted_torque_to_damage_causal_link" not in required
         ):
             errors.append("necessary_counterevidence_not_verified")
+    if not scoped_counter.issubset(counter):
+        errors.append("scoped_counterevidence_not_reported")
     disposition = citation.get("evidence_disposition")
     if not isinstance(disposition, str) or disposition not in DISPOSITIONS:
         errors.append("unknown_evidence_disposition")
@@ -534,6 +571,13 @@ def _citation_errors(
         errors.append("related_only_without_verified_missing_requirement")
     elif disposition == "evidence_candidate" and (missing or role_witnesses or counter):
         errors.append("evidence_candidate_with_missing_or_counterwitness")
+    if scoped_disposition in {"related_evidence_only", "contradictory_evidence"}:
+        expected_disposition = {
+            "related_evidence_only": "related_only",
+            "contradictory_evidence": "contradictory",
+        }[scoped_disposition]
+        if disposition != expected_disposition:
+            errors.append("citation_disposition_disagrees_with_scoped_evidence")
     return sorted(set(errors))
 
 

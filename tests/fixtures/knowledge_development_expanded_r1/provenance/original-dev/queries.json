@@ -1,0 +1,209 @@
+{
+  "queries": [
+    {
+      "family": "radiator",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "positive",
+      "query_id": "Q01",
+      "relevance": {
+        "incident-radiator": 3
+      },
+      "text": "Encuentra el reporte del incidente al montar el radiador"
+    },
+    {
+      "family": "radiator",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "positive",
+      "query_id": "Q02",
+      "relevance": {
+        "incident-radiator": 3
+      },
+      "text": "¿Qué pasó con el panel que golpeó la eslinga y por qué retiraron el radiador?"
+    },
+    {
+      "family": "memory",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "positive",
+      "query_id": "Q03",
+      "relevance": {
+        "memory-oom": 3,
+        "memory-remedy": 2
+      },
+      "text": "¿Por qué murió el worker de Atlas cuando ya no quedaba RAM?"
+    },
+    {
+      "family": "memory",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "positive",
+      "query_id": "Q04",
+      "relevance": {
+        "memory-oom": 1,
+        "memory-remedy": 3
+      },
+      "text": "Busca cómo reanudaron Atlas tras la presión de memoria sin repetir páginas"
+    },
+    {
+      "family": "websocket",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "positive",
+      "query_id": "Q05",
+      "relevance": {
+        "websocket-drop": 3,
+        "websocket-resume": 2
+      },
+      "text": "Se cayó la conexión y quedó la pantalla vacía aunque el servidor terminó, ¿qué registro lo explica?"
+    },
+    {
+      "family": "websocket",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "positive",
+      "query_id": "Q06",
+      "relevance": {
+        "websocket-drop": 2,
+        "websocket-resume": 3
+      },
+      "text": "¿Cómo se recuperó el resultado después de un cierre inesperado del WebSocket?"
+    },
+    {
+      "family": "cable",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "positive",
+      "query_id": "Q07",
+      "relevance": {
+        "cable-open": 3,
+        "cable-repair": 2
+      },
+      "text": "¿Dónde se cortó el conductor que dejó abierto el circuito C31?"
+    },
+    {
+      "family": "cable",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "positive",
+      "query_id": "Q08",
+      "relevance": {
+        "cable-open": 1,
+        "cable-repair": 3
+      },
+      "text": "Localiza la medición que comprobó continuidad después de cambiar el cable azul"
+    },
+    {
+      "family": "crane",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "positive",
+      "query_id": "Q09",
+      "relevance": {
+        "lift-clearance": 3
+      },
+      "text": "¿Por qué pararon el primer izaje del depósito L4?"
+    },
+    {
+      "family": "crane",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "positive",
+      "query_id": "Q10",
+      "relevance": {
+        "lift-clearance": 3
+      },
+      "text": "¿Qué separación libre quedó al cambiar el apoyo del balancín?"
+    },
+    {
+      "family": "calibration",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "positive",
+      "query_id": "Q11",
+      "relevance": {
+        "calibration-expired": 3,
+        "calibration-replacement": 2
+      },
+      "text": "Busca la evidencia de que M27 tenía vencida su calibración"
+    },
+    {
+      "family": "calibration",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "positive",
+      "query_id": "Q12",
+      "relevance": {
+        "calibration-expired": 1,
+        "calibration-replacement": 3
+      },
+      "text": "¿Con qué instrumento sustituyeron el manómetro que ya no estaba vigente?"
+    },
+    {
+      "family": "oil",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "positive",
+      "query_id": "Q13",
+      "relevance": {
+        "oil-resample": 2,
+        "oil-water": 3
+      },
+      "text": "¿Qué resultado indicó demasiada agua en el aceite de E6?"
+    },
+    {
+      "family": "oil",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "positive",
+      "query_id": "Q14",
+      "relevance": {
+        "oil-resample": 3,
+        "oil-water": 2
+      },
+      "text": "¿Cuánto bajó la humedad después de secar el aceite?"
+    },
+    {
+      "family": "meeting",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "positive",
+      "query_id": "Q15",
+      "relevance": {
+        "drawing-delay": 2,
+        "drawing-due": 3
+      },
+      "text": "¿Para cuándo se acordó entregar los planos del tablero del proyecto Sierra?"
+    },
+    {
+      "family": "meeting",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "positive",
+      "query_id": "Q16",
+      "relevance": {
+        "drawing-delay": 3
+      },
+      "text": "Busca el documento que confirmó el retraso de tres días en los planos"
+    },
+    {
+      "family": "absent-authorization",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "negative",
+      "query_id": "Q17",
+      "relevance": {},
+      "text": "¿Quién autorizó energizar el transformador T12 después del incidente del radiador?"
+    },
+    {
+      "family": "absent-cause",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "negative",
+      "query_id": "Q18",
+      "relevance": {},
+      "text": "¿Cuál fue el torque aplicado que causó el golpe del radiador R7?"
+    },
+    {
+      "family": "absent-delivery",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "negative",
+      "query_id": "Q19",
+      "relevance": {},
+      "text": "Encuentra el acuse que demuestra que los planos de Sierra se recibieron el 20 de junio"
+    },
+    {
+      "family": "absent-topic",
+      "judgment_basis": "synthetic source propositions, frozen before retrieval tuning",
+      "kind": "negative",
+      "query_id": "Q20",
+      "relevance": {},
+      "text": "¿Qué planeta tiene vida microbiana confirmada por este expediente?"
+    }
+  ],
+  "schema": "neocortex.functional-judgments/v1",
+  "split": "dev"
+}

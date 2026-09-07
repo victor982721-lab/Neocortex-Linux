@@ -179,6 +179,7 @@ _NATURAL_STOPWORDS = frozenset(
         "a",
         "al",
         "como",
+        "cómo",
         "con",
         "cual",
         "cuales",
@@ -302,9 +303,12 @@ def _fold_retrieval_term(term: str) -> str:
 def _query_support_terms(query: str) -> tuple[str, ...]:
     # Semantic accepts longer queries than the FTS adapter.  Diagnostics are
     # bounded independently and must not narrow that existing query contract.
+    raw_terms = _NATURAL_TERM.findall(query[:MAX_QUERY_CHARS])
+    question = bool(raw_terms and raw_terms[0].casefold() in _QUESTION_OPENERS)
     terms = dict.fromkeys(
-        _fold_retrieval_term(term) for term in _NATURAL_TERM.findall(query[:MAX_QUERY_CHARS])
+        _fold_retrieval_term(term) for term in raw_terms
         if term.casefold() not in _NATURAL_STOPWORDS
+        and not (question and term.casefold() in _QUESTION_AUXILIARIES)
     )
     return tuple(terms)[:MAX_QUERY_TERMS]
 
@@ -436,6 +440,8 @@ class _NaturalFTSQueryPlan:
 _QUESTION_OPENERS = frozenset(
     {
         # Spanish
+        "como",
+        "cómo",
         "cual",
         "cuales",
         "cuál",
@@ -448,6 +454,7 @@ _QUESTION_OPENERS = frozenset(
         "qué",
         # English
         "find",
+        "how",
         "show",
         "what",
         "where",
@@ -462,6 +469,7 @@ _QUESTION_OPENERS = frozenset(
         "zeige",
     }
 )
+_QUESTION_AUXILIARIES = frozenset({"se"})
 
 
 def _natural_query_terms(query: str) -> tuple[str, ...]:
@@ -578,8 +586,9 @@ def _cjk_substring_terms(query: str) -> tuple[tuple[str, ...], bool]:
 def _compile_natural_fts_query_plan(query: str) -> _NaturalFTSQueryPlan:
     terms = _natural_query_terms(query)
     normalized = _all_terms_query(terms)
-    content_terms = tuple(term for term in terms if term.casefold() not in _NATURAL_STOPWORDS)
     is_question_request = terms[0].casefold() in _QUESTION_OPENERS
+    content_terms = tuple(term for term in terms if term.casefold() not in _NATURAL_STOPWORDS
+                          and not (is_question_request and term.casefold() in _QUESTION_AUXILIARIES))
     if is_question_request and content_terms:
         primary_query = _all_terms_query(content_terms)
         primary_strategy = "question_content_terms_all"
