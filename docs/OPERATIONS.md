@@ -13,7 +13,8 @@ Antes de procesar contenido:
    porque dos instalaciones pueden declarar la misma versión;
 3. consulta estado y health sin crear cobertura nueva;
 4. comprueba espacio, memoria, herramientas externas y modelos necesarios;
-5. fija una ruta, máximo de elementos y límite de tiempo;
+5. fija la selección de rutas y, para una corrida amplia, los límites globales
+   de items, bytes y deadline;
 6. confirma que no existe otro writer sobre los mismos owners desde el namespace
    del host; un `ps` dentro de un sandbox puede mostrar sólo sus procesos.
 
@@ -47,11 +48,41 @@ cache hits y throughput. Corrige el primer bloqueo antes de ampliar rutas.
 Ejecuta el mismo comando por segunda vez. El replay debe mostrar qué se reutilizó
 y qué trabajo nuevo quedó, sin ocultar una reejecución como incremental.
 
+### Piloto del lifecycle 0.13
+
+El primer recorrido de aceptación usa una raíz temporal con 20–50 fixtures
+heterogéneas, tomando como base las 28 fixtures existentes. No abre el corpus
+personal ni una SQLite cercada de producción. Fija un límite global y conserva
+los recibos fuera de `docs/`:
+
+```bash
+Pilot="$HOME/Documentos/NeoCortex/Pilot-013"
+Neocortex --root "$Pilot" --state-directory "$Pilot-state" --all \
+  --run-max-items 1000 \
+  --run-max-bytes 1073741824 \
+  --run-time-budget-seconds 900 \
+  --strict-exit-codes
+```
+
+La corrida debe publicar el manifest antes de workers y mostrar los stages
+`preflight`, `inventory`, `catalog/dedup`, `routes`, `semantic`, `publication` y
+`finalize`. La ausencia de Audio/Whisper, FFmpeg, un modelo u otra herramienta
+se registra como `unavailable`/`blocked` y deja `incomplete`; no se corrige
+relajando fences ni se presenta como cobertura completa. El stage Semantic se
+coordina dentro del run, pero sus fuentes pesadas Archive, Code y Video se
+seleccionan explícitamente y no se activan por `--all`.
+
 ## Ampliación controlada
 
 Después de aprobar una ruta, añade otra explícitamente. `--all` es una operación
 amplia, no el primer smoke; selecciona todas las rutas registradas, incluida Code
 como contenido.
+
+Para el gate 0.13, la ampliación final se ejecuta sólo sobre el piloto temporal
+y prueba las nueve rutas (`pdf`, `docx`, `office`, `archive`, `text`, `audio`,
+`video`, `image`, `code`) bajo el mismo presupuesto. Code no ejecuta el contenido
+observado. Semantic pesado sigue siendo opt-in, aunque el stage se registre y
+conserve su resultado en el lifecycle.
 
 Una corrida sin `--apply` no modifica originales, pero sí escribe inventario,
 cachés, planes y publicaciones. Distingue siempre consulta read-only, producción
@@ -63,12 +94,24 @@ Usa el identificador durable de la corrida:
 
 ```bash
 Neocortex --status --status-run RUN_ID --status-json
-Neocortex --route pdf --resume-run RUN_ID --strict-exit-codes
+Neocortex --resume-run RUN_ID --root "$Pilot" --state-directory "$Pilot-state" \
+  --strict-exit-codes
 ```
 
-La reanudación debe usar los inputs durables del run, no volver a descubrir una
-raíz cambiante como si fuera la misma ejecución. Si cambió una precondición,
-crea una corrida nueva o registra la abstención.
+Resume usa los inputs y publicaciones durables del run origen, omite stages y
+rutas ya completados y reanuda sólo lo incompleto. Hereda el presupuesto y
+deadline restantes; no abre una ventana nueva. PDF conserva `phase_resume`,
+`safe_replay` exige entradas y publicaciones estables, y `not_resumable` se
+rechaza explícitamente. También puede reanudarse sólo el stage Semantic, pero
+debe recuperar sus fuentes, selección, modelo, presupuesto y publicación desde
+el run origen.
+
+Antes de publicar se revalidan root/identidad, política, snapshot, manifest,
+modelo, herramienta y owner heads. Cualquier drift, publicación parcial,
+capacidad no reanudable o ambigüedad queda `blocked`/`recovery_required`; no se
+reinicia por inferencia ni se marca `complete` por haber terminado otras rutas.
+Dos reanudaciones consecutivas deben ser idempotentes y conservar candidatos,
+errores y presupuesto restante.
 
 ## Watcher
 
@@ -86,8 +129,12 @@ su grupo antes de escalar; no mates procesos por nombre genérico.
 ## Recursos y progreso
 
 Las rutas emiten `ProgressEvent` con fase, completado, total y métricas. La salida
-operativa debe mostrar al menos fase, elementos, bytes, errores, velocidad y
-tiempo. Configura presupuestos globales sólo cuando una medición los justifique.
+operativa debe mostrar al menos stage/ruta, elementos, bytes, errores, velocidad,
+tiempo, presupuesto restante, checkpoint y causa de recuperación. En 0.13 los
+límites globales (`--run-max-items`, `--run-max-bytes` y
+`--run-time-budget-seconds`) cubren todo el lifecycle, incluidos inventario,
+workers, Semantic y publicación; los límites específicos de una ruta no los
+sustituyen.
 
 No ejecutes un recorrido largo sin máximo o deadline. Evita un proceso por
 archivo y commits SQLite por elemento; usa streaming y batches acotados.
@@ -110,9 +157,17 @@ mientras backend, versión y fingerprint deben permanecer explícitos. Escoger
 `--route text,code` limita expresamente una ejecución, no redefine `--all` ni
 convierte una generación parcial en una publicación completa.
 
-Los límites de inventario y verificación no equivalen a un deadline durable
-global de `--all`: el lifecycle entre workers y la uniformidad de reanudación
-siguen siendo trabajo objetivo de 0.13.0.
+El ledger `neocortex.run-budget/v1` reserva por stage/ruta/unidad de forma
+idempotente, comprueba el deadline antes de admitir trabajo y antes de cada
+transición terminal, y persiste cancelación y consumo. Una ruta filtrada no
+reserva todo el snapshot: su adapter estima workload de forma bounded y actualiza
+checkpoints cooperativos. `GlobalResourceCoordinator` es el único coordinador
+de recursos; no se crea un ledger paralelo por worker.
+
+El estado público usa el envelope bounded
+`neocortex.lifecycle-envelope/v1`, compartido por CLI, API, SDK y MCP. Las
+consultas no crean runs ni estado. MCP permanece read-only para este lifecycle y
+no recibe herramientas de ejecución, autorización, aplicación o mutación.
 
 ## Modelos y herramientas externas
 
@@ -124,6 +179,11 @@ Neocortex models prepare
 `status` es local. `prepare` puede usar red y requiere autorización. Tesseract,
 FFmpeg/FFprobe y otros binarios se detectan antes de iniciar la ruta;
 una ausencia se reporta como cobertura o bloqueo, no como éxito vacío.
+
+Semantic pesado no se prepara automáticamente durante `--all`. Si se solicita
+una fuente explícita, el modelo y su caché deben estar disponibles y ligados al
+manifest; Archive, Code y Video no se seleccionan por inferencia. La preparación
+de modelos sigue siendo una operación separada, explícita y autorizada.
 
 ## Curación
 
@@ -260,7 +320,10 @@ la semántica de instalación, overrides y verificación está en
 Una auditoría integral es excepcional. Registra estado vivo, HEAD, alcance,
 comando, exit, duración y evidencia; separa hechos, inferencias y no verificado.
 Un benchmark compara la misma carga y entorno. Una release se valida desde el
-artefacto instalado, no desde el checkout.
+artefacto instalado, no desde el checkout. La documentación y una prueba focal
+de lifecycle no acreditan por sí solas una release 0.13 instalada ni el éxito de
+`--all`; ese cierre requiere los gates C0–C7, build/manifest/launcher, smoke,
+replay y `HEAD == main == origin/main` con árbol limpio.
 
 Los informes y salidas brutas viven fuera de la documentación canónica. El
 repositorio conserva sólo contratos actuales, roadmap y changelog.

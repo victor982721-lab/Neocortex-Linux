@@ -226,6 +226,65 @@ NeoCortex se abstiene antes de crear estado y muestra cómo usar
 `--all` selecciona todas las rutas registradas, incluida Code. No ejecuta código
 del corpus ni produce evidencia de validación del repositorio.
 
+### Lifecycle durable de `--all` (0.13 en desarrollo)
+
+Una corrida amplia puede fijar un presupuesto global opcional para todo el
+lifecycle, no sólo para una ruta o un documento:
+
+```bash
+Neocortex --root "$Root" --all \
+  --run-max-items 1000 \
+  --run-max-bytes 1073741824 \
+  --run-time-budget-seconds 900 \
+  --strict-exit-codes
+```
+
+`--run-max-items`, `--run-max-bytes` y `--run-time-budget-seconds` se persisten
+en `neocortex.run-budget/v1` junto con el deadline efectivo. El límite cubre
+preflight/inventario, catalogación y deduplicación, las nueve rutas, Semantic y
+la publicación lógica. Cada reserva por stage/ruta/unidad es bounded e
+idempotente; cancelación, deadline o falta de presupuesto detienen la admisión
+antes de cruzar otra frontera de trabajo.
+
+El run publica primero `neocortex.run-manifest/v1` y avanza los stages
+`preflight`, `inventory`, `catalog/dedup`, `routes`, `semantic`, `publication` y
+`finalize`. Los checkpoints conservan el digest del manifest, root/identidad,
+snapshot, configuración, owner heads, presupuesto y último límite durable. El
+estado terminal diferencia `complete`, `partial`, `unavailable`, `blocked`,
+`cancelled` y `recovery_required`; terminar una ruta no acredita completar el
+run.
+
+Consulta y reanudación usan el mismo identificador durable:
+
+```bash
+Neocortex --status --status-run RUN_ID --status-json
+Neocortex --resume-run RUN_ID --root "$Root" --strict-exit-codes
+```
+
+Resume hereda el presupuesto y deadline restantes del run origen, omite rutas y
+stages ya completados y reejecuta sólo los incompletos. `pdf` puede declarar
+`phase_resume`; una ruta `safe_replay` sólo reusa entradas/publicaciones
+durables, y `not_resumable` se rechaza con causa explícita. Root, política,
+snapshot, modelo, herramienta, manifest o owner-head drift producen abstención
+fail-closed y no una corrida nueva por inferencia. El replay terminal expone
+`replayed`/`new_work` sin ocultar trabajo reejecutado.
+
+Semantic pertenece al mismo lifecycle cuando se solicita `--all` o se reanuda
+un stage Semantic, pero el Semantic pesado continúa siendo opt-in. Archive,
+Code y Video son fuentes Semantic explícitas; `--all` coordina sus rutas de
+contenido sin indexarlas automáticamente como fuentes Semantic pesadas. Code
+permanece contenido no ejecutable. Si falta Audio/Whisper, FFmpeg, un modelo u
+otra herramienta, la ruta o el stage conserva `unavailable`/`blocked` y el run
+queda `incomplete`, nunca éxito vacío ni skip silencioso.
+
+`read_run_status`, `lifecycle_status`, API, SDK y MCP deben devolver el envelope
+bounded `neocortex.lifecycle-envelope/v1`, con manifest/digest, stages, rutas,
+presupuesto, checkpoints, capacidades, recuperación y owner heads equivalentes.
+Las consultas son read-only: no inician runs, no reservan trabajo y no crean
+estado. MCP no expone ejecución, autorización, aplicación ni mutación. Los
+manifests/checkpoints v1 históricos siguen siendo legibles y 0.13 sólo añade
+campos de forma compatible.
+
 ## Estado y salud
 
 ```bash

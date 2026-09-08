@@ -1,6 +1,6 @@
 # Roadmap de NeoCortex
 
-> Actualizado el 5 de septiembre de 2026. Un estado aquí no sustituye código,
+> Actualizado el 8 de septiembre de 2026. Un estado aquí no sustituye código,
 > pruebas ni una release instalada desde el SHA final.
 
 ## Convención de estado
@@ -10,6 +10,8 @@
 - **IMPLEMENTED:** presente en el checkout y cubierto por pruebas focales; su
   disponibilidad instalada depende del SHA del manifest y del comando público.
 - **TARGET:** todavía no implementado.
+- **SOURCE-ONLY:** existe en el checkout o está en integración, pero todavía no
+  acredita aceptación integral ni una release instalada.
 
 ## Resultado buscado
 
@@ -35,6 +37,7 @@ incierta, pero no cuenta como funcionalidad entregada para los casos soportados.
 | Mutación Linux | `curate apply` usa backends POSIX/KIO inyectados y ledger/recovery; `--apply`/`--organization-apply` genéricos siguen absteniéndose |
 | Backup/restore/purge | Implementados mediante `Neocortex databases` |
 | MCP | **IMPLEMENTED:** plan/scan/verify/review/decide; authorize se omite hasta resolver un principal autenticado |
+| Lifecycle durable de `--all` | **SOURCE-ONLY / TARGET 0.13:** manifest, stages, presupuesto y lectura bounded en la fuente; aceptación multimodal, replay y release permanecen abiertos |
 
 ## 0.10.0 — Evidencia y plan de curación
 
@@ -197,33 +200,90 @@ Criterios verificados del corte acotado:
 La conciliación integral entre owners y las métricas de precisión/recall para
 clasificación multimodal siguen siendo objetivos, no resultados de ese benchmark.
 
-## 0.13.0 — TARGET: lifecycle durable de --all
+## 0.13.0 — TARGET: lifecycle durable de `--all`
 
-**Vertical inicial implementado en la fuente:** las corridas Framework ya
-publican un manifest versionado y con digest, conservan candidatos de rutas
-necesarios para recuperación, mantienen un ledger durable de presupuesto y
-status/API/SDK/MCP exponen envelopes read-only; este vertical no sustituye
-todavía la reanudación multimodal completa ni la etapa Semantic integrada.
+**Estado:** `SOURCE-ONLY`. La fuente contiene un vertical de manifest,
+presupuesto, stages y lectura bounded, pero no se considera aceptado hasta
+completar C0–C7, integrar las rutas y verificar el artefacto instalado. Esta
+sección no declara una release 0.13 instalada ni una corrida `--all` exitosa.
 
-**Resultado objetivo:** reanudar una corrida multimodal interrumpida desde sus
-inputs y publicaciones durables, conservando cobertura, errores y presupuesto
-entre workers, sin repetir trabajo ya comprometido.
+**Resultado objetivo:** una corrida `--all` coordina `pdf`, `docx`, `office`,
+`archive`, `text`, `audio`, `video`, `image` y `code`, integra el stage Semantic
+con la misma identidad durable y puede reanudar sólo el trabajo incompleto,
+conservando cobertura, errores, checkpoints, owner heads y presupuesto entre
+workers.
 
-- Integrar inventario, rutas y publicaciones en un lifecycle comprobable; los
-  checkpoints DFS y page-level existentes no equivalen todavía a ese contrato.
-- Compartir un presupuesto global de trabajo, deadline y cancelación entre
-  workers, con observabilidad de avance y reanudación.
-- El ledger `neocortex.run-budget/v1` ya reserva trabajo por ruta con
-  idempotencia, cancelación durable y consumo bounded de items/bytes; falta
-  ampliar la cobertura a todas las fases y a la recuperación posterior a una
-  terminación abrupta.
-- `lifecycle_status` ya está disponible como lectura MCP bounded y read-only;
-  no inicia corridas ni concede autoridad.
-- Probar primero 20–50 fixtures heterogéneos: interrupción, replay terminal,
-  drift y paridad de envelopes CLI/API/SDK frente a una corrida limpia.
-- Conservar los fences de lectores y la separación entre consulta, producción
-  de estado y efectos físicos; ni KIO real ni corpus personal forman parte del
-  piloto de desarrollo.
+### Contrato y secuencia
+
+- Publicar antes de trabajar un `neocortex.run-manifest/v1` con root/identidad,
+  snapshot, configuración efectiva, rutas, owners, capacidades y digest.
+- Ejecutar `preflight → inventory → catalog/dedup → routes → semantic →
+  publication → finalize`; cada stage conserva transición idempotente y
+  checkpoint bounded ligado al digest del manifest.
+- Mantener `neocortex.run-budget/v1` como presupuesto de toda la corrida, con
+  reservas/consumo por stage, ruta y unidad, items, bytes, deadline absoluto y
+  cancelación durable, incluidos inventario, publicación Semantic y Code.
+- Exponer límites opcionales `--run-max-items`, `--run-max-bytes` y
+  `--run-time-budget-seconds` en FrameworkConfig y CLI, y proyectarlos sin
+  divergencias en API/SDK.
+- Reutilizar `GlobalResourceCoordinator`; una consulta de estado no crea runs,
+  no reserva trabajo y no concede autoridad.
+
+### Rutas, Semantic y recuperación
+
+- Cada adapter declara `phase_resume`, `safe_replay` o `not_resumable`; PDF
+  conserva reanudación por fase y una capacidad `not_resumable` siempre se
+  rechaza, nunca se interpreta por inferencia.
+- El adapter estima workload de forma bounded y emite checkpoints cooperativos;
+  no reserva todo un snapshot antes de aplicar sus filtros.
+- `--all` coordina las nueve rutas de contenido, incluido Code como contenido
+  no ejecutable. Semantic se integra en el mismo lifecycle, pero el Semantic
+  pesado permanece opt-in; Archive, Code y Video sólo entran como fuentes
+  Semantic cuando se seleccionan explícitamente.
+- Una fuente, modelo o herramienta ausente se registra como `unavailable` o
+  `blocked`, conserva la causa y produce `incomplete`; nunca hay skip silencioso
+  ni éxito por ausencia.
+- Resume hereda el presupuesto/deadline restante del run origen y valida root,
+  política, snapshot, modelo, herramienta, manifest y owner heads. Drift,
+  publicación parcial o ambigüedad queda `blocked`/`recovery_required`.
+- Semantic/Code publican por staging/CAS lógico: el epoch sólo avanza cuando
+  todos los heads requeridos están completos. No se simula una transacción
+  SQLite distribuida.
+
+### Superficies y compatibilidad
+
+- `read_run_status`, `lifecycle_status`, CLI, API, SDK y MCP comparten el
+  envelope read-only `neocortex.lifecycle-envelope/v1`, con stages, presupuesto,
+  checkpoints, capacidades, recuperación y owner heads bounded.
+- Los contratos v1 existentes siguen siendo legibles; los campos y extensiones
+  de 0.13 son aditivos. MCP no añade ejecución, autorización, aplicación ni
+  mutación.
+
+### Criterios de aceptación
+
+- **C0 — Contratos:** registro cerrado de rutas, owners, dependencias,
+  capacidades y estimadores de workload.
+- **C1 — Positiva:** 20–50 fixtures temporales, con las 28 heterogéneas como
+  base, nueve rutas, stages terminales y manifest completo.
+- **C2 — Replay:** segunda pasada con `new_work=0` para trabajo comprometido,
+  sin duplicados ni efectos repetidos.
+- **C3 — Dependencias:** ausencia de Audio/Whisper u otra herramienta devuelve
+  causa tipada `unavailable`/`incomplete`.
+- **C4 — Presupuesto:** items, bytes, deadline y cancelación se respetan en
+  inventario, workers, Semantic y publicación; no se completa después de expirar.
+- **C5 — Recuperación:** interrupciones en preparación, snapshot, worker, PDF,
+  Code, Semantic, publicación y finalización permiten dos resumes idempotentes.
+- **C6 — Drift:** root, política, snapshot, capability `not_resumable` y
+  owner-head drift se rechazan fail-closed.
+- **C7 — Paridad:** CLI/API/SDK/MCP devuelven los mismos estados, errores,
+  stages, capacidades y recuperación; consultar no crea estado.
+
+La validación local ejecuta Pytest, Ruff, Mypy, Pyright y Semgrep como
+herramientas individuales, además de una suite integral posterior a la
+integración transversal. La publicación exige después build reproducible,
+manifest/wheel/launcher verificados, smoke/replay desde el artefacto instalado,
+`HEAD == main == origin/main`, árbol limpio y evidencia de corpus intacto; hasta
+entonces el estado es `TARGET`/`SOURCE-ONLY`, no `IMPLEMENTED` instalado.
 
 ## Orden inmediato
 
@@ -235,11 +295,14 @@ familias reservadas que no se hayan utilizado para ajustar el sistema. El
 handoff funcional conserva ese gate separado de la publicación y la instalación;
 no habilita limpieza, KIO real, reindexación global ni modelos nuevos.
 
-1. Corregir y comprobar los defectos observados del recorrido actual, con
-   publicación de código e instalación como barreras separadas.
-2. Diseñar los fixtures y contratos de 0.13.0 antes de ampliar escala.
-3. Mantener KIO/restore de escritorio, sincronización de caches y cualquier
-   autoridad MCP como gates independientes, no como requisitos de ese piloto.
+1. Integrar el lifecycle y cerrar C0–C7 sobre temporales aislados, sin abrir el
+   corpus personal ni la SQLite cercada durante writers.
+2. Comparar estado, cobertura, errores, replay y procedencia entre CLI/API/SDK/MCP;
+   no convertir una prueba focal en cierre de release.
+3. Construir e instalar sólo después de la aceptación de fuente, conservando
+   publicación de código, instalación, smoke y promoción como barreras separadas.
+4. Mantener KIO/restore de escritorio, sincronización de caches y autoridad MCP
+   como gates independientes, no como requisitos del piloto.
 
 ## Límites
 
@@ -247,6 +310,8 @@ no habilita limpieza, KIO real, reindexación global ni modelos nuevos.
 - No abrir el corpus real durante desarrollo o validación sin autorización.
 - No reintroducir el antiguo subsistema de autoanálisis.
 - Windows/NTFS no forma parte de estas entregas.
+- Semantic pesado no se activa por `--all`; modelos y herramientas se preparan
+  sólo mediante una operación explícita y autorizada.
 - Los informes de auditoría y evidencia bruta viven fuera de `docs/`.
 
 La visión estable está en

@@ -1,7 +1,9 @@
 # Arquitectura de NeoCortex
 
 > Describe la arquitectura implementada en el checkout vigente; las entregas
-> futuras viven en [ROADMAP_90_DAYS.md](ROADMAP_90_DAYS.md).
+> futuras viven en [ROADMAP_90_DAYS.md](ROADMAP_90_DAYS.md). La sección de
+> lifecycle 0.13 distingue el contrato en desarrollo de una release instalada:
+> ninguna descripción aquí sustituye la evidencia de aceptación.
 
 ## Principios
 
@@ -77,6 +79,45 @@ Image y Code. Cada ruta declara inputs, límites, progreso, owner y resultado.
 Las implementaciones no tienen la misma riqueza: algunos formatos publican
 localizadores estructurales y otros sólo texto o archivo completo. Esa brecha se
 expone como cobertura, no se rellena con localizadores inventados.
+
+### Lifecycle durable de `--all` (0.13 en desarrollo)
+
+`--all` selecciona exactamente las nueve rutas registradas y las coordina bajo
+un único run Framework: `pdf`, `docx`, `office`, `archive`, `text`, `audio`,
+`video`, `image` y `code`. Code sigue siendo contenido observado: detecta,
+extrae y publica relaciones, pero nunca ejecuta el código del corpus ni lo
+convierte en una herramienta de validación del repositorio.
+
+El lifecycle ordena las fronteras `preflight → inventory → catalog/dedup →
+routes → semantic → publication → finalize`. El manifest inmutable
+`neocortex.run-manifest/v1` se publica antes de iniciar trabajo y liga la raíz,
+identidad física, snapshot de entradas, configuración efectiva, rutas,
+capacidad de replay y presupuesto. Cada transición de stage usa
+`neocortex.lifecycle-stage/v1` y conserva el digest del manifest; un stage
+interrumpido no se presenta como completado.
+
+El ledger `neocortex.run-budget/v1` es global para toda la corrida, no sólo para
+un worker: cubre inventario, catalogación/deduplicación, las nueve rutas, la
+etapa Semantic y la publicación lógica. Las reservas por stage/ruta/unidad son
+bounded e idempotentes, con items, bytes, deadline absoluto y cancelación
+durable. El gate se consulta antes de admitir trabajo y antes de cada transición
+terminal; el replay consume sólo el remanente del run origen y nunca abre una
+ventana de presupuesto nueva.
+
+Cada ruta declara una capacidad de lifecycle: `phase_resume` conserva progreso
+por fase, `safe_replay` reejecuta únicamente con entradas/publicaciones
+durables e idempotencia, y `not_resumable` se rechaza explícitamente. La ruta
+PDF conserva `phase_resume`; las demás sólo se reanudan cuando su manifest
+declara `safe_replay`. Un adapter debe poder estimar su workload de forma
+bounded y emitir checkpoints cooperativos, sin reservar de antemano todo un
+snapshot que luego filtre candidatos.
+
+Semantic y Code quedan ligados al mismo run, no como una operación posterior
+sin identidad. `--all` coordina las rutas de contenido; el Semantic pesado
+continúa siendo opt-in. Archive, Code y Video son fuentes Semantic explícitas,
+por lo que no se infieren por el solo hecho de seleccionar `--all`; si una
+fuente, modelo o herramienta falta, el stage conserva `unavailable` o `blocked`
+y la corrida queda `incomplete`, sin éxito vacío ni skip silencioso.
 
 ### Progreso y cancelación
 
@@ -186,6 +227,21 @@ multi-owner se validan contra el protocolo de publicación cross-owner y se
 abstienen cuando una transición relevante queda pendiente o inconsistente. No
 se promete una transacción física distribuida entre archivos SQLite.
 
+El lifecycle agrega al owner Framework los manifests, stages, reservas, eventos
+y checkpoints acotados, con digest de manifest, raíz/identidad, snapshot,
+configuración efectiva, owner heads y último límite durable. El inicio del run,
+la publicación del manifest y la creación de stages deben ser atómicos e
+idempotentes, para no dejar filas `running` huérfanas. El orquestador reutiliza
+`GlobalResourceCoordinator`; no existe un segundo coordinador para el
+presupuesto de `--all`.
+
+La publicación Semantic/Code usa staging y CAS lógico: sólo avanza el epoch
+cuando todos los heads requeridos por el manifest están completos y no hay
+drift. Parcialidad, owner-head drift o una preparación ambigua producen
+`blocked`/`recovery_required`; no se simula una transacción SQLite distribuida.
+Una consulta de estado observa estos datos mediante el owner/publication
+canónicos y no abre una SQLite cercada durante writers.
+
 El producto sí expone backup y restore generales mediante `Neocortex databases`.
 Persistencia define el contrato; el procedimiento está en
 [RECOVERY.md](RECOVERY.md).
@@ -203,6 +259,14 @@ Persistencia define el contrato; el procedimiento está en
 Las cuatro superficies deben conservar operación, scope, cobertura, epoch,
 errores y evidencia equivalentes. La salida estructurada es contrato; el texto
 humano no debe convertirse de nuevo en datos mediante parsing.
+
+El envelope read-only `neocortex.lifecycle-envelope/v1` es común para
+`read_run_status`, `lifecycle_status`, API, SDK y MCP. Expone de forma bounded
+manifest/digest, status, stages, rutas, presupuesto, checkpoints, capacidad de
+replay, recuperación y owner heads. Sus consultas no inician runs, no reservan
+trabajo y no conceden autorización; MCP no añade herramientas de ejecución,
+aplicación ni mutación. Los contratos v1 y manifests/checkpoints históricos
+siguen siendo legibles, y las extensiones 0.13 son aditivas.
 
 La tranche 0.12 incorpora `CurationWorkBudget` como límite opcional de la
 verificación exacta, con contabilidad de items, archivos y bytes, deadline
@@ -290,12 +354,21 @@ lifecycle conservan el owner original. La copia vive hasta que terminan todos
 los workers, incluso ante error o cancelación, sin abrir un lector ordinario
 en el origen ni relajar los fences de `SQLiteReadSession`.
 
+En `--all`, la misma frontera se conserva entre workers de ruta y stages
+posteriores. El progreso, transcript y estado público distinguen `complete`,
+`partial`, `unavailable`, `blocked`, `cancelled` y `recovery_required`; una
+ruta no disponible no se convierte en cobertura completa por terminar las
+demás. La reanudación valida root, política, snapshot, modelo, herramienta,
+manifest y owner heads antes de publicar, y se abstiene fail-closed ante drift.
+
 ## Brechas vigentes
 
 - la deduplicación rápida puede ser evidencia insuficiente para disposición;
 - la cobertura y precisión de localizadores varían por formato;
 - varias fuentes todavía tienen publicación no generacional;
-- progreso, límites y replay no son uniformes en todas las rutas;
+- la aceptación integral del lifecycle 0.13, incluidos replay y publicación
+  Semantic/Code, permanece pendiente de evidencia C0–C7 desde el artefacto
+  final;
 - MCP expone plan/scan/verify y review/decide, pero no autorización con actor autenticado;
 - la ruta física y restore sólo están habilitados mediante backends inyectados y
   fixtures;

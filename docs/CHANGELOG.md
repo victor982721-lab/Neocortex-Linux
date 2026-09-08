@@ -4,6 +4,50 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 0.13.0 — en desarrollo (fuente)
+
+Estas entradas describen el contrato y la integración de la fuente para el
+lifecycle durable de `--all`; no acreditan una release 0.13 instalada, un
+artefacto promovido ni una corrida multimodal completa. El estado de aceptación
+se cierra únicamente con evidencia C0–C7 y el gate de release documentado en
+[ROADMAP_90_DAYS.md](ROADMAP_90_DAYS.md).
+
+### Lifecycle durable
+
+- `--all` coordina las nueve rutas de contenido (`pdf`, `docx`, `office`,
+  `archive`, `text`, `audio`, `video`, `image` y `code`) bajo un mismo run
+  Framework; Code permanece contenido no ejecutable.
+- El run publica `neocortex.run-manifest/v1` antes de trabajar y enlaza root,
+  identidad, snapshot, configuración, owners, capacidades y digest. Los stages
+  `preflight`, `inventory`, `catalog/dedup`, `routes`, `semantic`, `publication`
+  y `finalize` dejan transiciones y checkpoints bounded, idempotentes y ligados
+  al manifest.
+- `neocortex.run-budget/v1` cubre inventario, catalogación/deduplicación, rutas,
+  Semantic y publicación con reservas por stage/ruta/unidad, consumo de items y
+  bytes, deadline absoluto y cancelación durable. El replay usa sólo el
+  remanente del run origen; no abre un presupuesto nuevo.
+- Las capacidades `phase_resume`, `safe_replay` y `not_resumable` forman parte
+  del manifest. PDF conserva `phase_resume`; una capacidad no reanudable se
+  rechaza explícitamente. Drift de root, política, snapshot, modelo,
+  herramienta, manifest u owner heads queda fail-closed.
+
+### Semantic, publicación y superficies
+
+- Semantic se registra dentro del mismo lifecycle y Code participa como ruta de
+  contenido. El Semantic pesado continúa opt-in; Archive, Code y Video son
+  fuentes Semantic explícitas y no se infieren por `--all`.
+- Semantic/Code publican por staging/CAS lógico y sólo avanzan el epoch cuando
+  todos los heads requeridos están completos; parcialidad o ambigüedad queda
+  `blocked`/`recovery_required`, sin simular una transacción SQLite distribuida.
+- CLI, `read_run_status`, API, SDK y MCP comparten el envelope read-only
+  `neocortex.lifecycle-envelope/v1`, con presupuesto, stages, checkpoints,
+  capacidades, recuperación y owner heads bounded. MCP no recibe herramientas
+  de ejecución, autorización, aplicación ni mutación.
+- Ausencias de modelos, herramientas o rutas producen `unavailable`/`blocked` y
+  `incomplete`, nunca éxito vacío ni skip silencioso. Los contratos v1 y sus
+  manifests/checkpoints históricos siguen siendo legibles; las extensiones 0.13
+  son aditivas.
+
 ## Cambios posteriores a 0.12.0
 
 - Identidad por codec/owner y bindings de recursos físicos/lógicos, planes
