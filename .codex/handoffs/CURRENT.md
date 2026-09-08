@@ -3,7 +3,7 @@
 **Última verificación:** 2026-09-07, `America/Mexico_City`  
 **Checkout:** `/home/winterboss/Neocortex/Repository`  
 **Fuente viva tras la integración del turno:** `main` = `origin/main` =
-`0cda31194c6888fc1045b45d1925935de6069d39`
+`PENDIENTES.md` (SSOT externo, verificado en cada cierre)
 
 ## Alcance actual
 
@@ -40,9 +40,7 @@ sus destinos canónicos fuera de este archivo.
 
 ## Marcador para el cierre de integración
 
-- **SHA final publicado:** `0cda31194c6888fc1045b45d1925935de6069d39`
-- **Release:** `0.12.0-0cda31194c68-cp314-linux-x86_64`, current con rollback `0.12.0-4ed8cc124911-cp314-linux-x86_64`
-- **Manifest/árbol/launcher:** `b41f6d554387f20310606bf89e39c1fb5387a96a024bffec75044d66423595ae` / `33d496e408f61c4e334fbd9329193694f1aaa13d76dd2768407f57fa46097a61` / `eff9573a0ae82cdc8a27872f99e85b54783fdf80eb8a0feab547991d56fbef2d`
+- **SHA/release final:** registrados en `PENDIENTES.md` y en el receipt de instalación vigente
 - **Release, manifest, launcher y smoke público:** pendiente de actualizar con
   sus receipts canónicos, si el alcance cruza instalación
 - **Árbol de trabajo final:** pendiente de comprobar después de la integración
