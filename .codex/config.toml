@@ -1,9 +1,47 @@
 # Neocortex-local Codex policy. Model, provider, authentication, MCP and telemetry
 # continue to inherit from the user configuration.
 approval_policy = "on-request"
-sandbox_mode = "workspace-write"
+default_permissions = "neocortex-main"
+approvals_reviewer = "auto_review"
+allow_login_shell = false
 
-[sandbox_workspace_write]
-network_access = false
-# Machine-specific writable roots and elevation policy belong in the local user
-# configuration, not in this portable repository.
+
+[permissions.neocortex-main]
+extends = ":workspace"
+
+[permissions.neocortex-main.filesystem]
+"/home/winterboss/Neocortex/Repository/.git" = "write"
+
+[permissions.neocortex-main.network]
+enabled = true
+mode = "full"
+enable_socks5 = false
+enable_socks5_udp = false
+allow_upstream_proxy = false
+allow_local_binding = false
+dangerously_allow_non_loopback_proxy = false
+dangerously_allow_all_unix_sockets = false
+
+[permissions.neocortex-main.network.domains]
+"github.com" = "allow"
+
+[features.network_proxy]
+enabled = true
+
+[mcp_servers.neocortex_readonly_pilot]
+command = "/home/winterboss/.local/bin/Neocortex"
+args = ["agent", "serve"]
+enabled = true
+required = false
+startup_timeout_sec = 30
+tool_timeout_sec = 30
+enabled_tools = ["status", "lifecycle_status", "search", "context", "evidence", "inspect_code", "lineage"]
+
+[mcp_servers.neocortex_readonly_pilot.tools.context]
+output_token_limit = 4000
+
+[mcp_servers.neocortex_readonly_pilot.tools.evidence]
+output_token_limit = 4000
+
+[mcp_servers.neocortex_readonly_pilot.tools.status]
+output_token_limit = 1500

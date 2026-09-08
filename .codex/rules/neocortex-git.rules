@@ -1,9 +1,5 @@
+# Permisos nativos para operaciones ordinarias; ningún allow genérico de git.
 # Safe Git is always available. More specific destructive rules override this.
-prefix_rule(
-    pattern = ["git"],
-    decision = "allow",
-    justification = "Git is the normal local change-control mechanism.",
-)
 
 prefix_rule(pattern = ["git", "reset"], decision = "forbidden", justification = "Create a checkpoint or a new commit; do not rewrite or discard work.")
 prefix_rule(pattern = ["git", "clean"], decision = "forbidden", justification = "Inspect and preserve untracked files instead of deleting them.")
