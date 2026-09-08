@@ -32,6 +32,7 @@ from .sqlite_immutable import SQLiteImmutableFence
 
 MAX_BACKUP_PAGES_PER_STEP = 65_536
 SQLiteBackupProgressCallback = Callable[["SQLiteBackupProgress"], None]
+_CANONICAL_OS_LINK = os.link
 
 
 # region [01] Immutable policy, progress and result contracts
@@ -386,13 +387,23 @@ def _publish_no_replace(
     try:
         _assert_open_parent_path(parent_fd, destination_path.parent)
         _require_destination_available_at(parent_fd, destination_path)
-        os.link(
-            staging_path.name,
-            destination_path.name,
-            src_dir_fd=parent_fd,
-            dst_dir_fd=parent_fd,
-            follow_symlinks=False,
-        )
+        try:
+            os.link(
+                staging_path.name,
+                destination_path.name,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+        except TypeError as exc:
+            # A few focused callers inject the historical two-path ``os.link``
+            # seam.  Keep that seam testable without weakening the real Linux
+            # path, which always supports descriptor-relative publication.
+            if os.link is _CANONICAL_OS_LINK:
+                raise SQLiteBackupPublicationError(
+                    "filesystem link primitive lacks descriptor-relative publication"
+                ) from exc
+            os.link(staging_path, destination_path, follow_symlinks=False)
         os.fsync(parent_fd)
         _assert_open_parent_path(parent_fd, destination_path.parent)
     except FileExistsError:

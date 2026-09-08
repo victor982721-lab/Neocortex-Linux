@@ -100,7 +100,7 @@ _TEXT_EXTRACT_STAGE_VERSION = "2"
 # hash; the source characterization requires updating it when those symbols
 # change, which in turn changes every affected processing signature.
 _TEXT_EXTRACTOR_CONTRACT_SHA256 = (
-    "sha256:a00193e4f0dc0d59c67b7f29bda7405068dbb4cf152c189c01ac56fb4d61ed66"
+    "sha256:e63a32920b161dfef5781c0f06427572451101b723f24d850a0b1c8c838a39f4"
 )
 _TEXT_IMPLEMENTATION_SCHEMA = "neocortex.text-implementation-contract/v1"
 _TEXT_DISTRIBUTION_NAME = "neocortex-framework"

@@ -161,9 +161,10 @@ reportUnusedFunction = "warning"
 reportUnusedClass = "warning"
 reportImportCycles = "warning"
 # The personal Linux quality environment is intentionally outside the product
-# package; keeping this here prevents a plain `pyright` invocation from
-# reporting false missing-import errors for the documented venv.
-venvPath = "/home/winterboss/.local/share/Neocortex/tooling"
+# package.  Resolve it relative to this canonical checkout so source archives
+# do not embed a private absolute path; callers in another checkout may still
+# override it with Pyright's ``--venvpath`` option.
+venvPath = "../../.local/share/Neocortex/tooling"
 venv = "quality-cp314-20260907"
 extraPaths = ["."]
 exclude = [

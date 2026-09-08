@@ -601,6 +601,18 @@ def _mupdf_warning_summary(fitz) -> tuple[int, tuple[str, ...]]:
     return len(lines), tuple(lines[:20])
 
 
+def _read_file_tail(path: Path, maximum_bytes: int) -> bytes:
+    """Read at most ``maximum_bytes`` from the end of a diagnostics file."""
+
+    if maximum_bytes < 1:
+        return b""
+    with path.open("rb") as stream:
+        stream.seek(0, os.SEEK_END)
+        size = stream.tell()
+        stream.seek(max(0, size - maximum_bytes), os.SEEK_SET)
+        return stream.read(maximum_bytes)
+
+
 @contextmanager
 def _qpdf_repaired_copy(
     snapshot: FileSnapshot,
