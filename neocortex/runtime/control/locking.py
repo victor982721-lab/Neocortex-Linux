@@ -4,7 +4,6 @@
 # Propósito: documentación embebida y separación visual de regiones.
 # endregion [00]
 
-
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
@@ -29,7 +28,7 @@ class FrameworkRunLock:
         stream.seek(0)
         try:
             if os.name == "nt":
-                import msvcrt
+                msvcrt = importlib.import_module("msvcrt")
 
                 msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
             else:  # pragma: no cover - framework execution itself is Windows-only
@@ -50,7 +49,7 @@ class FrameworkRunLock:
         try:
             self._stream.seek(0)
             if os.name == "nt":
-                import msvcrt
+                msvcrt = importlib.import_module("msvcrt")
 
                 msvcrt.locking(self._stream.fileno(), msvcrt.LK_UNLCK, 1)
             else:  # pragma: no cover
@@ -60,4 +59,6 @@ class FrameworkRunLock:
         finally:
             self._stream.close()
             self._stream = None
+
+
 # endregion [02]

@@ -33,7 +33,9 @@ def register_code_arguments(
     code.add_argument("--code-max-text-chars", type=int, default=4_000_000)
     code.add_argument("--code-chunk-chars", type=int, default=12_000)
     code.add_argument("--code-complexity-warning", type=int, default=15, help=argparse.SUPPRESS)
-    code.add_argument("--code-function-lines-warning", type=int, default=200, help=argparse.SUPPRESS)
+    code.add_argument(
+        "--code-function-lines-warning", type=int, default=200, help=argparse.SUPPRESS
+    )
     code.add_argument(
         "--code-cache-validation",
         choices=("metadata", "full"),
@@ -76,9 +78,21 @@ def register_code_arguments(
         "--code-search-mode",
         action="append",
         choices=(
-            "literal", "fts", "path", "language", "symbol", "definition", "reference",
-            "import", "dependency", "call", "signature", "diagnostic", "complexity",
-            "semantic", "hybrid",
+            "literal",
+            "fts",
+            "path",
+            "language",
+            "symbol",
+            "definition",
+            "reference",
+            "import",
+            "dependency",
+            "call",
+            "signature",
+            "diagnostic",
+            "complexity",
+            "semantic",
+            "hybrid",
         ),
         help="repeat to combine lexical, structural and semantic channels",
     )
@@ -124,10 +138,16 @@ def validate_code_arguments(args: argparse.Namespace) -> None:
     if args.code_search_mode and len(set(args.code_search_mode)) != len(args.code_search_mode):
         raise SystemExit("--code-search-mode values cannot be duplicated")
 
-    explicit = set(getattr(args, "_explicit_options", ()))
+    explicit: set[str] = set(getattr(args, "_explicit_options", ()))
     search_options = {
-        "code_search_mode", "code_search_limit", "code_path", "code_language",
-        "code_project", "code_symbol", "code_diagnostic", "code_min_complexity",
+        "code_search_mode",
+        "code_search_limit",
+        "code_path",
+        "code_language",
+        "code_project",
+        "code_symbol",
+        "code_diagnostic",
+        "code_min_complexity",
     }
     if search_options.intersection(explicit) and args.code_search is None:
         raise SystemExit("code search filters require --code-search")

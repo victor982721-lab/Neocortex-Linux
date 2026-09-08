@@ -18,9 +18,11 @@ import sqlite3
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field, replace
+from importlib import import_module
 from pathlib import Path
-from typing import Any, Callable, Iterator, Literal, Protocol, cast
+from typing import Any, Iterator, Literal, Protocol, cast, runtime_checkable
 
 from neocortex.deduplication import DedupIndex, FileSnapshot
 from neocortex.progress import (
@@ -140,6 +142,13 @@ _DocumentResult = DocumentResult
 
 _database = pdf_database
 _initialize = initialize_pdf_state
+
+
+@runtime_checkable
+class _PdfMinerTextContainer(Protocol):
+    """Minimal runtime contract for the optional pdfminer text container."""
+
+    def get_text(self) -> str: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -1821,6 +1830,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         state: _IsolatedExtractionState,
     ) -> None:
         state.reset_for_structural_recovery()
+
         def restart(connection: sqlite3.Connection) -> None:
             self._restart_structural_recovery_attempt(connection, snapshot)
 
@@ -1865,6 +1875,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         message: tuple[Any, ...],
     ) -> None:
         _, state.page_count, state.start, state.end, state.metadata = message
+
         def prepare(connection: sqlite3.Connection) -> None:
             self._prepare_document(
                 connection,
@@ -1999,6 +2010,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         is_partial: bool,
     ) -> None:
         error_limit = state.page_error_limit
+
         def promote(connection: sqlite3.Connection) -> None:
             self._promote_document(
                 connection,
@@ -2280,12 +2292,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
             ).fetchone()
 
         if connection is None:
-            owner_call = getattr(self, "_owner_call", None)
-            if callable(owner_call):
-                row = owner_call(read)
-            else:
-                with _database(self.config.state_path, readonly=True) as owned_connection:
-                    row = read(owned_connection)
+            row = self._owner_call(read)
         else:
             row = read(connection)
         if row is None or row["status"] != "partial":
@@ -2335,6 +2342,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
                         level="warning",
                     )
                     return False
+
                 def delete_cache(connection: sqlite3.Connection) -> None:
                     key = _file_key(snapshot)
                     self._delete_document_cache(connection, key)
@@ -2398,12 +2406,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
             return page_count, max(failed, page_count - completed)
 
         if connection is None:
-            owner_call = getattr(self, "_owner_call", None)
-            if callable(owner_call):
-                page_count, pending_pages = owner_call(read)
-            else:
-                with _database(self.config.state_path, readonly=True) as owned_connection:
-                    page_count, pending_pages = read(owned_connection)
+            page_count, pending_pages = self._owner_call(read)
         else:
             page_count, pending_pages = read(connection)
         return effective_document_timeout_seconds(
@@ -2429,17 +2432,14 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
             )
 
         if connection is None:
-            owner_call = getattr(self, "_owner_call", None)
-            if callable(owner_call):
-                return owner_call(read)
-            with _database(self.config.state_path, readonly=True) as owned_connection:
-                return read(owned_connection)
+            return self._owner_call(read)
         return read(connection)
 
     def _flush_extraction_batch(self, snapshot: FileSnapshot, messages: list[tuple]) -> None:
         """Promote a bounded child-message batch through the sole SQLite writer."""
 
         self._check_disk()
+
         def flush(connection: sqlite3.Connection) -> None:
             for message in messages:
                 if message[0] == "page":
@@ -2503,8 +2503,10 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
             page_count = int(document.page_count)
             start, end = self._page_bounds(page_count)
             metadata = dict(document.metadata or {})
+
             def prepare(connection: sqlite3.Connection) -> None:
                 self._prepare_document(connection, snapshot, page_count, metadata)
+
             self._owner_call(prepare)
             prepared = True
             self._extract_local_pages(
@@ -2518,9 +2520,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
                 only_pages,
                 local_state,
             )
-            status: Literal["done", "partial"] = (
-                "partial" if local_state.page_errors else "done"
-            )
+            status: Literal["done", "partial"] = "partial" if local_state.page_errors else "done"
             self._promote_local_document(
                 None,
                 snapshot,
@@ -2718,6 +2718,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
                 raise RuntimeError(
                     f"page text has {len(text)} characters; limit={self.config.max_page_text_chars}"
                 )
+
             def store(target: sqlite3.Connection) -> None:
                 self._store_staging_page(
                     target,
@@ -2794,8 +2795,13 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         """Fallback extraction that streams one pdfminer page layout at a time."""
 
         self.cancellation.checkpoint()
-        from pdfminer.high_level import extract_pages
-        from pdfminer.layout import LTTextContainer
+        high_level = import_module("pdfminer.high_level")
+        layout_module = import_module("pdfminer.layout")
+        extract_pages = cast(
+            Callable[[str | Path], Iterable[Iterable[object]]],
+            high_level.extract_pages,
+        )
+        text_container_type = cast(type[_PdfMinerTextContainer], layout_module.LTTextContainer)
 
         key = _file_key(snapshot)
         signature = self.config.processing_signature
@@ -2805,9 +2811,11 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         if self.config.max_pages is not None:
             end = min(end if end is not None else 2**63 - 1, start + self.config.max_pages)
         metadata = {"engine": "pdfminer", "fallback": True}
+
         def prepare(connection: sqlite3.Connection) -> None:
             self._prepare_document(connection, snapshot, 0, metadata)
             connection.execute("DELETE FROM page_staging WHERE file_key=?", (key,))
+
         self._owner_call(prepare)
         for page_number, layout in enumerate(extract_pages(snapshot.path)):
             self.cancellation.checkpoint()
@@ -2820,7 +2828,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
                 chunks = (
                     element.get_text()
                     for element in layout
-                    if isinstance(element, LTTextContainer)
+                    if isinstance(element, text_container_type)
                 )
                 text = "".join(chunks)
                 if len(text) > self.config.max_page_text_chars:
@@ -2892,6 +2900,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
                 is_partial=start > 0 or end is not None,
                 page_errors=page_errors,
             )
+
         self._owner_call(promote)
         if status == "done":
             self._reconcile_review(

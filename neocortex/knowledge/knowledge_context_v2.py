@@ -27,26 +27,67 @@ _MIN_EXCERPT = 240
 _COMPACT_EVIDENCE_TARGET = 6_000
 _TRUNCATED = " …[truncated]"
 _LOCATORS = (
-    "page", "start_line", "end_line", "sheet", "cell_range", "start_ms", "end_ms",
-    "bounding_box", "coordinate_space", "start_char", "end_char", "symbol",
-    "section_kind", "section_id",
+    "page",
+    "start_line",
+    "end_line",
+    "sheet",
+    "cell_range",
+    "start_ms",
+    "end_ms",
+    "bounding_box",
+    "coordinate_space",
+    "start_char",
+    "end_char",
+    "symbol",
+    "section_kind",
+    "section_id",
 )
 _TERM = re.compile(r"[^\W_]+", flags=re.UNICODE)
-_QUERY_STOPWORDS = frozenset({
-    "a", "al", "como", "con", "cual", "cuales", "de", "del", "donde",
-    "el", "en", "la", "las", "lo", "los", "para", "que", "qué", "se",
-    "un", "una", "y",
-})
+_QUERY_STOPWORDS = frozenset(
+    {
+        "a",
+        "al",
+        "como",
+        "con",
+        "cual",
+        "cuales",
+        "de",
+        "del",
+        "donde",
+        "el",
+        "en",
+        "la",
+        "las",
+        "lo",
+        "los",
+        "para",
+        "que",
+        "qué",
+        "se",
+        "un",
+        "una",
+        "y",
+    }
+)
 
 
 def serialize_context_response(payload: Mapping[str, Any]) -> str:
-    return json.dumps(payload, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        payload, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")
+    )
 
 
 def _text(value: object, limit: int = 4096) -> str:
     # Collapse control characters before they reach a terminal. JSON rendering
     # still quotes corpus strings, so fake headings never become instructions.
     return " ".join(str(value).split())[:limit]
+
+
+def _mapping_items(value: object) -> list[Mapping[str, Any]]:
+    """Keep only mapping records from an untrusted owner projection."""
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, Mapping)]
 
 
 def render_context_response(payload: Mapping[str, Any]) -> str:
@@ -71,11 +112,15 @@ def emitted_response_characters(payload: Mapping[str, Any], transport: str) -> i
     if transport == "json":
         return len(serialized) + 1
     if transport == "mcp":
-        return len(serialize_context_response({
-            "content": [{"type": "text", "text": serialized}],
-            "structuredContent": payload,
-            "isError": False,
-        }))
+        return len(
+            serialize_context_response(
+                {
+                    "content": [{"type": "text", "text": serialized}],
+                    "structuredContent": payload,
+                    "isError": False,
+                }
+            )
+        )
     raise ValueError("response_transport must be json, text or mcp")
 
 
@@ -106,9 +151,14 @@ def _coverage(entries: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         if not isinstance(result, Mapping):
             error = entry.get("error") or {}
             retrieval.append(f"{scope}:{_text(error.get('code', 'owner_unavailable'), 96)}")
-            scopes.append({"scope": scope, "snapshot_id": None,
-                           "exit_code": entry.get("exit_code", 4),
-                           "error_code": _text(error.get("code", "owner_unavailable"), 96)})
+            scopes.append(
+                {
+                    "scope": scope,
+                    "snapshot_id": None,
+                    "exit_code": entry.get("exit_code", 4),
+                    "error_code": _text(error.get("code", "owner_unavailable"), 96),
+                }
+            )
             continue
         snapshot = result.get("snapshot") or {}
         scope_entry = {"scope": scope, "snapshot_id": snapshot.get("snapshot_id")}
@@ -126,7 +176,9 @@ def _coverage(entries: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
                 continue
             state = owner.get("state")
             if state not in {None, "available"}:
-                retrieval.append(f"{scope}:{_text(owner.get('owner'), 96)}:{_text(state, 32)}:{_text(owner.get('error_code') or 'owner_unavailable', 128)}")
+                retrieval.append(
+                    f"{scope}:{_text(owner.get('owner'), 96)}:{_text(state, 32)}:{_text(owner.get('error_code') or 'owner_unavailable', 128)}"
+                )
             code = 7 if state == "corrupt" else (6 if state in {"future", "incompatible"} else None)
             if code is not None and scope_entry.get("exit_code") != 7:
                 scope_entry["exit_code"] = code
@@ -138,7 +190,12 @@ def _coverage(entries: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
                 continue
             name = _text(ranking.get("name", "unknown_channel"), 96)
             reason = _text(ranking.get("reason") or "incomplete_or_unavailable", 160)
-            target = relations if name == "inventory_duplicate_plan" or ranking.get("channel") in {"relation", "relations"} else retrieval
+            target = (
+                relations
+                if name == "inventory_duplicate_plan"
+                or ranking.get("channel") in {"relation", "relations"}
+                else retrieval
+            )
             target.append(f"{scope}:{name}:{reason}")
         if not result.get("complete", False) and not rankings:
             retrieval.append(f"{scope}:retrieval_incomplete")
@@ -148,23 +205,31 @@ def _coverage(entries: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         if result.get("truncated"):
             retrieval.append(f"{scope}:candidate_scan_truncated")
         for owner in result.get("blocking_owners") or []:
-            if any(item.get("owner") == owner and item.get("state") == "available"
-                   for item in snapshot.get("owners") or []):
+            if any(
+                item.get("owner") == owner and item.get("state") == "available"
+                for item in snapshot.get("owners") or []
+            ):
                 continue
             marker = f"{scope}:{_text(owner, 96)}:blocking_owner"
             if not any(str(owner) in item for item in (*retrieval, *relations)):
                 retrieval.append(marker)
-        if not result.get("complete", False) and (len(retrieval), len(relations)) == (prior_retrieval, prior_relations):
+        if not result.get("complete", False) and (len(retrieval), len(relations)) == (
+            prior_retrieval,
+            prior_relations,
+        ):
             retrieval.append(f"{scope}:unclassified_result_incomplete")
     return {
         "retrieval": _facet("partial" if retrieval else "complete", retrieval),
         "relations": _facet("partial" if relations else "complete", relations),
-        "evidence": _facet(), "presentation": _facet(), "scopes": scopes,
+        "evidence": _facet(),
+        "presentation": _facet(),
+        "scopes": scopes,
     }
 
 
 def _stale_revision_details(
-    hit: Mapping[str, Any], revision: Mapping[str, Any],
+    hit: Mapping[str, Any],
+    revision: Mapping[str, Any],
 ) -> dict[str, Any] | None:
     """Expose a stale source binding without upgrading its evidence status.
 
@@ -181,7 +246,9 @@ def _stale_revision_details(
         binding = direct_binding
     for signal in hit.get("signals", ()):
         support = signal.get("query_support") if isinstance(signal, Mapping) else None
-        candidate_binding = support.get("revision_binding") if isinstance(support, Mapping) else None
+        candidate_binding = (
+            support.get("revision_binding") if isinstance(support, Mapping) else None
+        )
         if isinstance(candidate_binding, Mapping):
             binding = candidate_binding
             break
@@ -202,10 +269,7 @@ def _stale_revision_details(
             mapping.get(name)
             for mapping in (binding or {}, revision, hit)
             for name in ("available_revision_id", "current_revision_id", "owner_revision_id")
-            if (
-                isinstance(mapping.get(name), int)
-                and not isinstance(mapping.get(name), bool)
-            )
+            if (isinstance(mapping.get(name), int) and not isinstance(mapping.get(name), bool))
             or (isinstance(mapping.get(name), str) and mapping[name].strip())
         ),
         None,
@@ -240,10 +304,16 @@ def _source(hit: Mapping[str, Any], scope: str, snapshot: Mapping[str, Any]) -> 
     resource = hit.get("resource") or {}
     revision = hit.get("revision") or {}
     owner = resource.get("owner")
-    owner_snapshot = next((item for item in snapshot.get("owners", []) if item.get("owner") == owner), {})
+    owners = _mapping_items(snapshot.get("owners", []))
+    owner_snapshot: Mapping[str, Any] = next(
+        (item for item in owners if item.get("owner") == owner), {}
+    )
     source = {
-        "scope": scope, "owner": owner, "source_kind": resource.get("source_kind"),
-        "resource_id": resource.get("resource_id"), "revision_id": revision.get("revision_id"),
+        "scope": scope,
+        "owner": owner,
+        "source_kind": resource.get("source_kind"),
+        "resource_id": resource.get("resource_id"),
+        "revision_id": revision.get("revision_id"),
         "revision_state": revision.get("state", "unknown"),
         "processing_signature": revision.get("processing_signature"),
         "publication": owner_snapshot.get("publications", []),
@@ -254,7 +324,9 @@ def _source(hit: Mapping[str, Any], scope: str, snapshot: Mapping[str, Any]) -> 
     stale_revision = _stale_revision_details(hit, revision)
     if stale_revision is not None:
         source["revision_binding"] = stale_revision
-    semantic = next((item for item in snapshot.get("owners", []) if item.get("owner") == "semantic"), {})
+    semantic: Mapping[str, Any] = next(
+        (item for item in owners if item.get("owner") == "semantic"), {}
+    )
     if semantic.get("publications"):
         source["retrieval_publication"] = semantic["publications"]
     return source
@@ -271,9 +343,9 @@ def _related_term(left: str, right: str) -> bool:
         return True
     for suffix in ("es", "s"):
         if len(left) > len(suffix) + 3 and left.endswith(suffix):
-            left = left[:-len(suffix)]
+            left = left[: -len(suffix)]
         if len(right) > len(suffix) + 3 and right.endswith(suffix):
-            right = right[:-len(suffix)]
+            right = right[: -len(suffix)]
     return left == right
 
 
@@ -288,15 +360,16 @@ def _compact_excerpt(text: str, query: str, *, max_chars: int = 1024) -> str:
     if len(text) <= max_chars:
         return text
     wanted = {
-        _fold_term(term) for term in _TERM.findall(query)
+        _fold_term(term)
+        for term in _TERM.findall(query)
         if _fold_term(term) not in _QUERY_STOPWORDS
     }
     matches: list[tuple[int, int, str]] = []
-    for match in _TERM.finditer(text):
-        token = _fold_term(match.group())
+    for term_match in _TERM.finditer(text):
+        token = _fold_term(term_match.group())
         matched_term = next((term for term in wanted if _related_term(token, term)), None)
         if matched_term is not None:
-            matches.append((match.start(), match.end(), matched_term))
+            matches.append((term_match.start(), term_match.end(), matched_term))
     if not matches:
         return text[:max_chars]
     # Select the shortest window containing the most distinct query terms in
@@ -306,23 +379,23 @@ def _compact_excerpt(text: str, query: str, *, max_chars: int = 1024) -> str:
     left = 0
     best: tuple[int, int, int, int] | None = None
     bounds = (matches[0][0], matches[0][1])
-    for right, match in enumerate(matches):
-        counts[match[2]] = counts.get(match[2], 0) + 1
+    for right, candidate in enumerate(matches):
+        counts[candidate[2]] = counts.get(candidate[2], 0) + 1
         while left < right and counts[matches[left][2]] > 1:
             first = matches[left][2]
             counts[first] -= 1
             left += 1
-        span = match[1] - matches[left][0]
-        key = (-len(counts), span, matches[left][0], match[1])
+        span = candidate[1] - matches[left][0]
+        key = (-len(counts), span, matches[left][0], candidate[1])
         if best is None or key < best:
-            best, bounds = key, (matches[left][0], match[1])
+            best, bounds = key, (matches[left][0], candidate[1])
     start, end = bounds
     if end - start >= max_chars:
-        return text[start:start + max_chars]
+        return text[start : start + max_chars]
     extra = max_chars - (end - start)
     start = max(0, start - extra // 2)
     start = min(start, len(text) - max_chars)
-    return text[start:start + max_chars]
+    return text[start : start + max_chars]
 
 
 def _compact_source_metadata(source: dict[str, Any]) -> dict[str, Any]:
@@ -333,8 +406,7 @@ def _compact_source_metadata(source: dict[str, Any]) -> dict[str, Any]:
     ``retrieval_publication`` is a repeated semantic diagnostic and is not part
     of that replay contract.
     """
-    return {name: value for name, value in source.items()
-            if name != "retrieval_publication"}
+    return {name: value for name, value in source.items() if name != "retrieval_publication"}
 
 
 def _compact_citation_metadata(citation: dict[str, Any]) -> dict[str, Any]:
@@ -350,26 +422,36 @@ def _compact_citation_metadata(citation: dict[str, Any]) -> dict[str, Any]:
     status remain available for replay.
     """
     compact = {
-        name: value for name, value in citation.items()
-        if name not in {
-            "generation", "retrieval_channel", "retrieval_rank", "candidate_position",
-            "retrieval_support", "extent",
+        name: value
+        for name, value in citation.items()
+        if name
+        not in {
+            "generation",
+            "retrieval_channel",
+            "retrieval_rank",
+            "candidate_position",
+            "retrieval_support",
+            "extent",
         }
     }
     checks = compact.get("witness_checks")
     if isinstance(checks, Mapping):
         keep = {
-            "status", "required_witnesses", "missing_necessary_witnesses",
-            "counterevidence", "applicability", "scoped_observations",
+            "status",
+            "required_witnesses",
+            "missing_necessary_witnesses",
+            "counterevidence",
+            "applicability",
+            "scoped_observations",
             "retrieval_disposition",
         }
-        compact["witness_checks"] = {
-            name: value for name, value in checks.items() if name in keep
-        }
+        compact["witness_checks"] = {name: value for name, value in checks.items() if name in keep}
         compact_checks = compact["witness_checks"]
         applicability = compact_checks.get("applicability")
-        if (isinstance(applicability, Mapping)
-                and applicability.get("subject_scope") == "not_requested"):
+        if (
+            isinstance(applicability, Mapping)
+            and applicability.get("subject_scope") == "not_requested"
+        ):
             compact_checks.pop("applicability", None)
         if not compact_checks.get("scoped_observations"):
             compact_checks.pop("scoped_observations", None)
@@ -382,8 +464,7 @@ def _compact_citation_metadata(citation: dict[str, Any]) -> dict[str, Any]:
     hydration = compact.get("hydration")
     if isinstance(hydration, Mapping):
         compact["hydration"] = {
-            name: value for name, value in hydration.items()
-            if name != "inspected_scope"
+            name: value for name, value in hydration.items() if name != "inspected_scope"
         }
     if not compact.get("role_counterevidence"):
         compact.pop("role_counterevidence", None)
@@ -399,7 +480,10 @@ def _compact_citation_metadata(citation: dict[str, Any]) -> dict[str, Any]:
 
 
 def _candidates(
-    entries: Sequence[Mapping[str, Any]], limit: int, *, query: str = "",
+    entries: Sequence[Mapping[str, Any]],
+    limit: int,
+    *,
+    query: str = "",
     compact: bool = False,
 ) -> tuple[list[tuple[dict[str, Any], dict[str, Any], str]], bool]:
     candidates: list[tuple[dict[str, Any], dict[str, Any], str]] = []
@@ -417,23 +501,47 @@ def _candidates(
             if compact:
                 source = _compact_source_metadata(source)
             primary = hit.get("evidence") or {}
-            primary_signal = next((signal for signal in hit.get("signals", [])
-                                   if isinstance(signal.get("evidence"), Mapping)
-                                   and signal["evidence"].get("evidence_id") == primary.get("evidence_id")), None)
+            primary_signal = next(
+                (
+                    signal
+                    for signal in hit.get("signals", [])
+                    if isinstance(signal.get("evidence"), Mapping)
+                    and signal["evidence"].get("evidence_id") == primary.get("evidence_id")
+                ),
+                None,
+            )
             evidences = [(primary, primary_signal)]
-            evidences.extend((signal["evidence"], signal) for signal in hit.get("signals", []) if isinstance(signal.get("evidence"), Mapping))
+            evidences.extend(
+                (signal["evidence"], signal)
+                for signal in hit.get("signals", [])
+                if isinstance(signal.get("evidence"), Mapping)
+            )
             for evidence, signal in evidences:
-                for key in ("resource_id", "revision_id"):
-                    if evidence.get(key) is not None and evidence[key] != source[key]:
-                        raise ValueError("evidence reference belongs to a different resource or revision")
+                for field_name in ("resource_id", "revision_id"):
+                    if (
+                        evidence.get(field_name) is not None
+                        and evidence[field_name] != source[field_name]
+                    ):
+                        raise ValueError(
+                            "evidence reference belongs to a different resource or revision"
+                        )
                 evidence_id = evidence.get("evidence_id")
                 if not isinstance(evidence_id, str) or not evidence_id:
                     continue
-                key = (scope, str(source["resource_id"]), str(source["revision_id"]), evidence_id)
-                if key in seen:
+                identity_key = (
+                    scope,
+                    str(source["resource_id"]),
+                    str(source["revision_id"]),
+                    evidence_id,
+                )
+                if identity_key in seen:
                     continue
-                seen.add(key)
-                identifiers = {pair["namespace"]: pair["value"] for pair in evidence.get("identifiers", []) if isinstance(pair, Mapping) and "namespace" in pair and "value" in pair}
+                seen.add(identity_key)
+                identifiers = {
+                    pair["namespace"]: pair["value"]
+                    for pair in evidence.get("identifiers", [])
+                    if isinstance(pair, Mapping) and "namespace" in pair and "value" in pair
+                }
                 # Keep the exact owner excerpt, including paragraph boundaries.
                 # JSON escapes controls for display; collapsing whitespace here
                 # would also change the scope of necessary-witness checks.
@@ -441,11 +549,16 @@ def _candidates(
                 snippet = _compact_excerpt(raw_snippet, query) if compact else raw_snippet
                 citation = {
                     "evidence_id": evidence_id,
-                    "locator": {name: evidence[name] for name in _LOCATORS if evidence.get(name) is not None},
+                    "locator": {
+                        name: evidence[name] for name in _LOCATORS if evidence.get(name) is not None
+                    },
                     "method": evidence.get("method", "ambiguous"),
                     "modality": "text" if snippet else "reference_only",
-                    "fragment_state": "full" if snippet and len(snippet) == len(raw_snippet)
-                    else "truncated" if snippet else "unavailable_from_owner",
+                    "fragment_state": "full"
+                    if snippet and len(snippet) == len(raw_snippet)
+                    else "truncated"
+                    if snippet
+                    else "unavailable_from_owner",
                     "excerpt": snippet,
                     "supplied_excerpt_characters": len(raw_snippet),
                     # Ordinal before presentation-only ordering. The common
@@ -469,9 +582,21 @@ def _candidates(
                         citation[name] = identifiers[name]
                 if signal:
                     support = signal.get("query_support") or {}
-                    citation["retrieval_support"] = {name: support[name] for name in ("support", "basis", "missing_terms", "missing_negation_terms", "query_strategy") if name in support}
+                    citation["retrieval_support"] = {
+                        name: support[name]
+                        for name in (
+                            "support",
+                            "basis",
+                            "missing_terms",
+                            "missing_negation_terms",
+                            "query_strategy",
+                        )
+                        if name in support
+                    }
                     if support:
-                        citation["retrieval_support"]["interpretation"] = "literal_support_not_answerability"
+                        citation["retrieval_support"]["interpretation"] = (
+                            "literal_support_not_answerability"
+                        )
                     citation["retrieval_channel"] = signal.get("source")
                 if compact:
                     # Keep ranking/support metadata available to the packing
@@ -485,7 +610,8 @@ def _candidates(
 
 
 def _budget_candidate_priority(
-    candidate: tuple[dict[str, Any], dict[str, Any], str], query: str,
+    candidate: tuple[dict[str, Any], dict[str, Any], str],
+    query: str,
 ) -> int:
     """Prefer usable evidence for packing, not a new retrieval score.
 
@@ -496,7 +622,8 @@ def _budget_candidate_priority(
     displacing every ordinary witness; final checks still decide disposition.
     """
     from neocortex.semantic.semantic_query_evidence import (
-        query_role_counterevidence, requested_evidence_checks,
+        query_role_counterevidence,
+        requested_evidence_checks,
     )
 
     _source_ref, citation, snippet = candidate
@@ -507,8 +634,10 @@ def _budget_candidate_priority(
     missing_negation = bool(support.get("missing_negation_terms"))
     if verified and not missing_negation:
         return 0
-    if (query_role_counterevidence(query, snippet)
-            or requested_evidence_checks(query, snippet)["counterevidence"]):
+    if (
+        query_role_counterevidence(query, snippet)
+        or requested_evidence_checks(query, snippet)["counterevidence"]
+    ):
         return 0 if verified else 1
     return 2
 
@@ -518,7 +647,8 @@ def _assess_witnesses(
     cache: dict[tuple[str, str], tuple[dict[str, Any], list[dict[str, Any]]]],
 ) -> None:
     from neocortex.semantic.semantic_query_evidence import (
-        query_role_counterevidence, requested_evidence_checks,
+        query_role_counterevidence,
+        requested_evidence_checks,
     )
 
     any_required = False
@@ -529,10 +659,18 @@ def _assess_witnesses(
         key = (payload["query"], excerpt)
         if key not in cache:
             raw_checks = requested_evidence_checks(*key)
-            checks = {name: raw_checks[name] for name in (
-                "policy_signature", "status", "required_witnesses",
-                "missing_necessary_witnesses", "counterevidence", "evaluated_chars", "interpretation",
-            )}
+            checks = {
+                name: raw_checks[name]
+                for name in (
+                    "policy_signature",
+                    "status",
+                    "required_witnesses",
+                    "missing_necessary_witnesses",
+                    "counterevidence",
+                    "evaluated_chars",
+                    "interpretation",
+                )
+            }
             if raw_checks["policy_signature"] == "query-necessary-evidence-checks-v2":
                 for name in ("applicability", "scoped_observations", "retrieval_disposition"):
                     checks[name] = raw_checks[name]
@@ -541,27 +679,46 @@ def _assess_witnesses(
             for flag in ("query_truncated", "evaluation_truncated"):
                 if raw_checks[flag]:
                     checks[flag] = True
+            missing_values = checks.get("missing_necessary_witnesses")
+            missing_names = (
+                [value for value in missing_values if isinstance(value, str)]
+                if isinstance(missing_values, list)
+                else []
+            )
+            checks["missing_necessary_witnesses"] = missing_names
             checks.update(recomputed_for="emitted_excerpt", inspected_scope="emitted_excerpt_only")
             cache[key] = (checks, query_role_counterevidence(*key))
         checks, role_counterevidence = cache[key]
+        missing_values = checks.get("missing_necessary_witnesses")
+        missing_names = (
+            [value for value in missing_values if isinstance(value, str)]
+            if isinstance(missing_values, list)
+            else []
+        )
         citation["witness_checks"] = checks
         citation["role_counterevidence"] = role_counterevidence
         # Reference verification and necessary witnesses never constitute an
         # answer assessment. The consuming LLM receives the evidence instead.
         citation["answer_sufficiency"] = "not_assessed"
         citation["emitted_extent"] = {
-            "units": "characters", "basis": "emitted_excerpt",
-            "start_char": 0, "end_char": len(excerpt),
+            "units": "characters",
+            "basis": "emitted_excerpt",
+            "start_char": 0,
+            "end_char": len(excerpt),
             "supplied_excerpt_characters": citation["supplied_excerpt_characters"],
-            "truncation_marker_chars": len(_TRUNCATED) if citation["fragment_state"] == "truncated" else 0,
+            "truncation_marker_chars": len(_TRUNCATED)
+            if citation["fragment_state"] == "truncated"
+            else 0,
             "document_completeness": "not_asserted",
         }
         any_required |= bool(checks["required_witnesses"])
-        missing |= bool(checks["missing_necessary_witnesses"])
+        missing |= bool(missing_names)
         declared_disposition = checks.get("retrieval_disposition")
         common_v2 = checks["policy_signature"] == "query-necessary-evidence-checks-v2"
         if common_v2 and declared_disposition not in {
-            "related_evidence_only", "contradictory_evidence", "unchanged",
+            "related_evidence_only",
+            "contradictory_evidence",
+            "unchanged",
         }:
             raise ValueError("common evidence policy returned an unsupported disposition")
         if common_v2 and declared_disposition == "related_evidence_only":
@@ -569,15 +726,23 @@ def _assess_witnesses(
             # requested subject. Applicability is decided by the common owner.
             disposition = "related_only"
         elif common_v2 and declared_disposition == "contradictory_evidence":
-            nonrecord_only = bool(role_counterevidence) and not checks["counterevidence"] and all(
-                "source_explicitly_limits_observed_event_evidence"
-                in witness.get("reasons", ())
-                for witness in role_counterevidence
+            nonrecord_only = (
+                bool(role_counterevidence)
+                and not checks["counterevidence"]
+                and all(
+                    "source_explicitly_limits_observed_event_evidence" in witness.get("reasons", ())
+                    for witness in role_counterevidence
+                )
             )
             folded_excerpt = excerpt.casefold()
             general_instruction = any(
                 term in folded_excerpt
-                for term in ("manual general", "guía general", "guide general", "procedimiento general")
+                for term in (
+                    "manual general",
+                    "guía general",
+                    "guide general",
+                    "procedimiento general",
+                )
             )
             if nonrecord_only and general_instruction:
                 disposition = "related_only"
@@ -587,14 +752,16 @@ def _assess_witnesses(
         elif not common_v2 and (role_counterevidence or checks["counterevidence"]):
             disposition = "contradictory"
             reasons.append(f"{citation['citation_id']}:literal_counterevidence")
-        elif (checks["missing_necessary_witnesses"] or not excerpt
-              or citation.get("hydration", {}).get("status") == "unavailable"):
+        elif (
+            checks["missing_necessary_witnesses"]
+            or not excerpt
+            or citation.get("hydration", {}).get("status") == "unavailable"
+        ):
             disposition = "related_only"
         else:
             disposition = "evidence_candidate"
         citation["evidence_disposition"] = disposition
-        reasons.extend(f"{citation['citation_id']}:missing:{name}"
-                       for name in checks["missing_necessary_witnesses"])
+        reasons.extend(f"{citation['citation_id']}:missing:{name}" for name in missing_names)
     payload["coverage"]["witness_checks"] = _facet(
         "missing" if missing else "necessary_checks_not_failed" if any_required else "not_assessed",
         reasons,
@@ -602,23 +769,34 @@ def _assess_witnesses(
 
 
 def _set_status(
-    payload: dict[str, Any], candidate_count: int,
+    payload: dict[str, Any],
+    candidate_count: int,
     assessment_cache: dict[tuple[str, str], tuple[dict[str, Any], list[dict[str, Any]]]],
-    *, compact: bool = False,
+    *,
+    compact: bool = False,
 ) -> None:
     coverage = payload["coverage"]
     citations = payload["citations"]
     _assess_witnesses(payload, assessment_cache)
     omitted = max(0, candidate_count - len(citations))
     unavailable = sum(item["fragment_state"] == "unavailable_from_owner" for item in citations)
-    hydration_failures = sum(item.get("hydration", {}).get("status") == "unavailable" for item in citations)
+    hydration_failures = sum(
+        item.get("hydration", {}).get("status") == "unavailable" for item in citations
+    )
     owner_bounded = sum(bool(item.get("extent", {}).get("bounded")) for item in citations)
     truncated = sum(item["fragment_state"] == "truncated" for item in citations)
-    evidence_reasons = ([f"unavailable_fragments:{unavailable}"] if unavailable else []) + ([f"owner_bounded_fragments:{owner_bounded}"] if owner_bounded else [])
+    evidence_reasons = ([f"unavailable_fragments:{unavailable}"] if unavailable else []) + (
+        [f"owner_bounded_fragments:{owner_bounded}"] if owner_bounded else []
+    )
     if hydration_failures:
         evidence_reasons.append(f"unverified_owner_hydration:{hydration_failures}")
-    coverage["evidence"] = _facet("partial" if evidence_reasons else ("complete" if citations else "no_evidence"), evidence_reasons)
-    reasons = ([f"omitted_citations:{omitted}"] if omitted else []) + ([f"truncated_fragments:{truncated}"] if truncated else [])
+    coverage["evidence"] = _facet(
+        "partial" if evidence_reasons else ("complete" if citations else "no_evidence"),
+        evidence_reasons,
+    )
+    reasons = ([f"omitted_citations:{omitted}"] if omitted else []) + (
+        [f"truncated_fragments:{truncated}"] if truncated else []
+    )
     if payload["budget"].get("input_candidates_capped"):
         reasons.append("candidate_projection_bound")
     coverage["presentation"] = _facet("partial" if reasons else "complete", reasons)
@@ -629,58 +807,97 @@ def _set_status(
     )
     payload["status"] = "partial" if partial else ("ok" if citations else "empty")
     payload["exit_code"] = 4 if partial else (0 if citations else 3)
-    payload["error"] = {"code": "incomplete_context", "message": "See coverage reasons", "retryable": False} if partial else None
+    payload["error"] = (
+        {"code": "incomplete_context", "message": "See coverage reasons", "retryable": False}
+        if partial
+        else None
+    )
     failures = [item for item in coverage["scopes"] if item.get("error_code")]
     if not citations and len(failures) == len(coverage["scopes"]) and len(failures) == 1:
-        payload["error"]["code"] = failures[0]["error_code"]
+        error = payload.get("error")
+        if isinstance(error, dict):
+            error["code"] = failures[0]["error_code"]
     failed_codes = {item.get("exit_code") for item in coverage["scopes"]}
-    for code, status in ((130, "cancelled"), (7, "corrupt"), (6, "schema_incompatible"),
-                         (5, "snapshot_changed"), (1, "error"), (2, "usage_error")):
+    for code, status in (
+        (130, "cancelled"),
+        (7, "corrupt"),
+        (6, "schema_incompatible"),
+        (5, "snapshot_changed"),
+        (1, "error"),
+        (2, "usage_error"),
+    ):
         if code in failed_codes:
             payload["exit_code"] = code
             payload["status"] = status
             break
     if compact:
         payload["citations"] = [
-            _compact_citation_metadata(dict(citation))
-            for citation in payload["citations"]
+            _compact_citation_metadata(dict(citation)) for citation in payload["citations"]
         ]
 
 
 def build_context_response_v2(
-    entries: Sequence[Mapping[str, Any]], *, query: str, scope: str,
-    request_id: str, mode: str = "evidence", include_history: bool = False,
-    limit: int = 8, max_characters: int = 12000, transport: str = "json",
+    entries: Sequence[Mapping[str, Any]],
+    *,
+    query: str,
+    scope: str,
+    request_id: str,
+    mode: str = "evidence",
+    include_history: bool = False,
+    limit: int = 8,
+    max_characters: int = 12000,
+    transport: str = "json",
     operation: str = "context",
 ) -> dict[str, Any]:
     """Compile immutable search results; no implicit lookup, synthesis or state."""
     if transport not in {"json", "text", "mcp"}:
         raise ValueError("response_transport must be json, text or mcp")
     valid_limit = isinstance(limit, int) and not isinstance(limit, bool) and 1 <= limit <= 100
-    valid_budget = isinstance(max_characters, int) and not isinstance(max_characters, bool) and 1 <= max_characters <= 1_000_000
-    valid_metadata = (isinstance(include_history, bool) and isinstance(query, str)
-                      and isinstance(scope, str) and scope in {"personal", "framework", "all"}
-                      and isinstance(mode, str) and mode in {"evidence", "discovery"})
+    valid_budget = (
+        isinstance(max_characters, int)
+        and not isinstance(max_characters, bool)
+        and 1 <= max_characters <= 1_000_000
+    )
+    valid_metadata = (
+        isinstance(include_history, bool)
+        and isinstance(query, str)
+        and isinstance(scope, str)
+        and scope in {"personal", "framework", "all"}
+        and isinstance(mode, str)
+        and mode in {"evidence", "discovery"}
+    )
     payload: dict[str, Any] = {
         "schema": EVIDENCE_RESPONSE_SCHEMA if operation == "evidence" else CONTEXT_RESPONSE_SCHEMA,
-        "operation": operation, "response_version": 2,
-        "request_id": _text(request_id, 4096), "query": _text(query) if isinstance(query, str) else "",
+        "operation": operation,
+        "response_version": 2,
+        "request_id": _text(request_id, 4096),
+        "query": _text(query) if isinstance(query, str) else "",
         "scope": _text(scope, 32) if isinstance(scope, str) else "invalid",
         "mode": mode if isinstance(mode, str) and mode in {"evidence", "discovery"} else "invalid",
         "include_history": include_history if isinstance(include_history, bool) else False,
         "limit_per_scope": limit if valid_limit else 0,
-        "read_only": True, "trust_boundary": _TRUST,
-        "coverage": _coverage(entries), "sources": [], "citations": [],
-        "status": "empty", "exit_code": 3, "error": None,
-        "budget": {"character_limit": max_characters if valid_budget else 0,
-                   "characters_used": 0, "transport": transport,
-                   "measurement_scope": "mcp_tool_result" if transport == "mcp" else "cli_stdout",
-                   "within_limit": True},
+        "read_only": True,
+        "trust_boundary": _TRUST,
+        "coverage": _coverage(entries),
+        "sources": [],
+        "citations": [],
+        "status": "empty",
+        "exit_code": 3,
+        "error": None,
+        "budget": {
+            "character_limit": max_characters if valid_budget else 0,
+            "characters_used": 0,
+            "transport": transport,
+            "measurement_scope": "mcp_tool_result" if transport == "mcp" else "cli_stdout",
+            "within_limit": True,
+        },
     }
     assessment_cache: dict[tuple[str, str], tuple[dict[str, Any], list[dict[str, Any]]]] = {}
-    candidates, projection_capped = _candidates(
-        entries, limit, query=payload["query"]
-    ) if valid_limit and valid_budget and valid_metadata else ([], False)
+    candidates, projection_capped = (
+        _candidates(entries, limit, query=payload["query"])
+        if valid_limit and valid_budget and valid_metadata
+        else ([], False)
+    )
     # Activate the compact profile only when the candidate material contains
     # observable query support.  Raw character volume alone is not evidence:
     # a set of long administrative prefixes must not be advertised as
@@ -688,8 +905,7 @@ def build_context_response_v2(
     from neocortex.semantic.semantic_lexical import query_term_support
 
     compact_candidate_window = (
-        valid_limit and valid_budget and valid_metadata
-        and 15_000 <= max_characters < 20_000
+        valid_limit and valid_budget and valid_metadata and 15_000 <= max_characters < 20_000
     )
     substantive_chars = 0
     if compact_candidate_window:
@@ -697,7 +913,9 @@ def build_context_response_v2(
             if not snippet:
                 continue
             support = query_term_support(
-                payload["query"], snippet, basis="compact_profile_activation",
+                payload["query"],
+                snippet,
+                basis="compact_profile_activation",
             )
             matched_terms = support.get("matched_terms")
             if isinstance(matched_terms, list) and matched_terms:
@@ -705,23 +923,41 @@ def build_context_response_v2(
     compact_profile = compact_candidate_window and substantive_chars >= 6_000
     if compact_profile:
         candidates, projection_capped = _candidates(
-            entries, limit, query=payload["query"], compact=True,
+            entries,
+            limit,
+            query=payload["query"],
+            compact=True,
         )
     candidates.sort(key=lambda item: _budget_candidate_priority(item, payload["query"]))
     if projection_capped:
         payload["budget"]["input_candidates_capped"] = True
     _set_status(payload, len(candidates), assessment_cache)
     if not valid_limit or not valid_budget or not valid_metadata:
-        message = ("limit must be an integer between 1 and 100" if not valid_limit else
-                   "max_characters must be an integer between 1 and 1000000" if not valid_budget else
-                   "query, scope, mode and include_history must have valid types and values")
-        payload.update(status="usage_error", exit_code=2,
-                       error={"code": "invalid_request", "message": message, "retryable": False})
+        message = (
+            "limit must be an integer between 1 and 100"
+            if not valid_limit
+            else "max_characters must be an integer between 1 and 1000000"
+            if not valid_budget
+            else "query, scope, mode and include_history must have valid types and values"
+        )
+        payload.update(
+            status="usage_error",
+            exit_code=2,
+            error={"code": "invalid_request", "message": message, "retryable": False},
+        )
         payload["budget"]["admission"] = "invalid_request"
         _measure(payload)
         return validate_context_response(payload)
     if _measure(payload) > max_characters:
-        payload.update(status="usage_error", exit_code=2, error={"code": "budget_insufficient", "message": "Required response envelope cannot fit; increase max_characters", "retryable": False})
+        payload.update(
+            status="usage_error",
+            exit_code=2,
+            error={
+                "code": "budget_insufficient",
+                "message": "Required response envelope cannot fit; increase max_characters",
+                "retryable": False,
+            },
+        )
         payload["budget"]["minimum_required"] = 0
         for _ in range(12):
             used = _measure(payload)
@@ -740,9 +976,17 @@ def build_context_response_v2(
 
     def original_query_terms(text: str) -> frozenset[str]:
         if text not in term_cache:
-            term_cache[text] = frozenset(query_term_support(
-                payload["query"], text, basis="context_excerpt_original_query",
-            )["matched_terms"])
+            support = query_term_support(
+                payload["query"],
+                text,
+                basis="context_excerpt_original_query",
+            )
+            matched_terms = support.get("matched_terms")
+            term_cache[text] = (
+                frozenset(value for value in matched_terms if isinstance(value, str))
+                if isinstance(matched_terms, list)
+                else frozenset()
+            )
         return term_cache[text]
 
     priorities = [_budget_candidate_priority(item, payload["query"]) for item in candidates]
@@ -760,14 +1004,22 @@ def build_context_response_v2(
         # Keep the first witness of the best tier in retrieval order. Later
         # witnesses can add literal query coverage rather than repeating it;
         # different embedding variants never define this comparison's terms.
-        selected = min(remaining, key=lambda index: (
-            priorities[index],
-            -len(original_query_terms(candidates[index][2]) - represented_terms)
-            if payload["citations"] else 0,
-        ))
+        selected = min(
+            remaining,
+            key=lambda index: (
+                priorities[index],
+                -len(original_query_terms(candidates[index][2]) - represented_terms)
+                if payload["citations"]
+                else 0,
+            ),
+        )
         remaining.remove(selected)
         source, raw_citation, snippet = candidates[selected]
-        if not snippet and text_available and not any(item["excerpt"] for item in payload["citations"]):
+        if (
+            not snippet
+            and text_available
+            and not any(item["excerpt"] for item in payload["citations"])
+        ):
             # Reference-only images cannot be a substitute for text that was
             # retrieved but did not fit the response's minimum proof envelope.
             continue
@@ -776,16 +1028,18 @@ def build_context_response_v2(
         source_id = sources.get(source_key, f"S{len(sources) + 1}")
         if source_key not in sources:
             proposal["sources"].append({"source_id": source_id, **source})
-        citation = dict(raw_citation, citation_id=f"K{len(proposal['citations']) + 1}", source_id=source_id)
+        citation = dict(
+            raw_citation, citation_id=f"K{len(proposal['citations']) + 1}", source_id=source_id
+        )
         proposal["citations"].append(citation)
         _set_status(proposal, len(candidates), assessment_cache, compact=compact_profile)
         cost = _measure(proposal)
         # A cheap prefix must not erase counter-witnesses already observed in
         # the supplied owner unit. Keep their exact source spans, or the whole
         # unit when a necessary-check counter-witness has no locatable span.
-        protected_end = max([_MIN_EXCERPT, *(
-            witness["end_char"] for witness in citation["role_counterevidence"]
-        )])
+        protected_end = max(
+            [_MIN_EXCERPT, *(witness["end_char"] for witness in citation["role_counterevidence"])]
+        )
         if citation["witness_checks"]["counterevidence"]:
             protected_end = len(snippet)
         already_bounded = citation["supplied_excerpt_characters"] > len(snippet)
@@ -798,8 +1052,9 @@ def build_context_response_v2(
                 continue
         elif len(snippet) > protected_end and not already_bounded:
             shortened = copy.deepcopy(proposal)
-            shortened["citations"][-1].update(excerpt=snippet[:protected_end] + _TRUNCATED,
-                                               fragment_state="truncated")
+            shortened["citations"][-1].update(
+                excerpt=snippet[:protected_end] + _TRUNCATED, fragment_state="truncated"
+            )
             _set_status(shortened, len(candidates), assessment_cache, compact=compact_profile)
             short_cost = _measure(shortened)
             # A truncation marker + partial envelope can cost MORE than a
@@ -835,7 +1090,10 @@ def build_context_response_v2(
                 continue
             count = min(len(snippet), len(item["excerpt"]) - len(_TRUNCATED) + 160)
             proposal = copy.deepcopy(payload)
-            proposal["citations"][index].update(excerpt=snippet[:count] + (_TRUNCATED if count < len(snippet) else ""), fragment_state="truncated" if count < len(snippet) else "full")
+            proposal["citations"][index].update(
+                excerpt=snippet[:count] + (_TRUNCATED if count < len(snippet) else ""),
+                fragment_state="truncated" if count < len(snippet) else "full",
+            )
             _set_status(proposal, len(candidates), assessment_cache, compact=compact_profile)
             if _measure(proposal) <= max_characters:
                 payload = proposal
@@ -860,25 +1118,44 @@ def validate_context_response(value: object) -> dict[str, Any]:
         raise ValueError("context response must remain read-only v2")
     if payload.get("trust_boundary") != _TRUST:
         raise ValueError("context response must preserve the untrusted-content boundary")
-    code_status = {0: "ok", 1: "error", 2: "usage_error", 3: "empty", 4: "partial",
-                   5: "snapshot_changed", 6: "schema_incompatible", 7: "corrupt", 130: "cancelled"}
+    code_status = {
+        0: "ok",
+        1: "error",
+        2: "usage_error",
+        3: "empty",
+        4: "partial",
+        5: "snapshot_changed",
+        6: "schema_incompatible",
+        7: "corrupt",
+        130: "cancelled",
+    }
     code = payload.get("exit_code")
-    if isinstance(code, bool) or code not in code_status or payload.get("status") != code_status[code]:
+    if (
+        isinstance(code, bool)
+        or code not in code_status
+        or payload.get("status") != code_status[code]
+    ):
         raise ValueError("context response status and exit code disagree")
     if code != 2 and payload.get("scope") not in {"personal", "framework", "all"}:
         raise ValueError("context response scope is not a fixed scope")
     if (code in {0, 3}) != (payload.get("error") is None):
         raise ValueError("context response error and exit code disagree")
-    if payload.get("error") is not None and (not isinstance(payload["error"], Mapping)
-                                             or not isinstance(payload["error"].get("code"), str)):
+    if payload.get("error") is not None and (
+        not isinstance(payload["error"], Mapping)
+        or not isinstance(payload["error"].get("code"), str)
+    ):
         raise ValueError("context response error must have a typed code")
-    if not isinstance(payload.get("coverage"), Mapping) or not isinstance(payload.get("budget"), Mapping):
+    if not isinstance(payload.get("coverage"), Mapping) or not isinstance(
+        payload.get("budget"), Mapping
+    ):
         raise ValueError("context response needs coverage and budget")
     sources = payload.get("sources", [])
     if not isinstance(sources, list) or not all(isinstance(item, Mapping) for item in sources):
         raise ValueError("context sources must be a list of records")
     source_ids = [item.get("source_id") for item in sources]
-    if len(set(source_ids)) != len(source_ids) or any(not isinstance(item, str) or not item for item in source_ids):
+    if len(set(source_ids)) != len(source_ids) or any(
+        not isinstance(item, str) or not item for item in source_ids
+    ):
         raise ValueError("context source IDs must be unique")
     citations = payload.get("citations", [])
     if not isinstance(citations, list) or not all(isinstance(item, Mapping) for item in citations):
@@ -886,11 +1163,17 @@ def validate_context_response(value: object) -> dict[str, Any]:
     citation_ids = [item.get("citation_id") for item in citations]
     if any(item.get("answer_sufficiency", "not_assessed") != "not_assessed" for item in citations):
         raise ValueError("context does not assess answer sufficiency")
-    if len(set(citation_ids)) != len(citation_ids) or any(item.get("source_id") not in source_ids for item in citations):
+    if len(set(citation_ids)) != len(citation_ids) or any(
+        item.get("source_id") not in source_ids for item in citations
+    ):
         raise ValueError("context citations must resolve to exactly one source")
     budget = payload["budget"]
-    if any(isinstance(budget.get(name), bool) or not isinstance(budget.get(name), int)
-           or budget[name] < 0 for name in ("characters_used", "character_limit")):
+    if any(
+        isinstance(budget.get(name), bool)
+        or not isinstance(budget.get(name), int)
+        or budget[name] < 0
+        for name in ("characters_used", "character_limit")
+    ):
         raise ValueError("context response budget must use nonnegative integer characters")
     if budget["characters_used"] != emitted_response_characters(payload, budget["transport"]):
         raise ValueError("context emitted budget differs from actual response")
@@ -902,8 +1185,11 @@ def validate_context_response(value: object) -> dict[str, Any]:
 
 
 def select_evidence_response_v2(
-    context_payload: Mapping[str, Any], *, citation_id: str,
-    evidence_id: str | None = None, expected_snapshot_id: str | None = None,
+    context_payload: Mapping[str, Any],
+    *,
+    citation_id: str,
+    evidence_id: str | None = None,
+    expected_snapshot_id: str | None = None,
 ) -> dict[str, Any]:
     """Project one v2 context citation into the v2 evidence envelope.
 
@@ -923,14 +1209,19 @@ def select_evidence_response_v2(
             if isinstance(scope, Mapping)
         }
         snapshot_mismatch = expected_snapshot_id not in snapshots
-    selected = [] if snapshot_mismatch else [
-        citation for citation in context["citations"]
-        if (
-            citation.get("evidence_id") == evidence_id
-            if evidence_id is not None
-            else citation.get("citation_id") == citation_id.strip()
-        )
-    ]
+    selected = (
+        []
+        if snapshot_mismatch
+        else [
+            citation
+            for citation in context["citations"]
+            if (
+                citation.get("evidence_id") == evidence_id
+                if evidence_id is not None
+                else citation.get("citation_id") == citation_id.strip()
+            )
+        ]
+    )
     source_ids = {citation.get("source_id") for citation in selected}
     payload = copy.deepcopy(context)
     payload["schema"] = EVIDENCE_RESPONSE_SCHEMA

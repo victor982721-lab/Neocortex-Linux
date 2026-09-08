@@ -372,11 +372,11 @@ def _backup_catalog_before_migration(path: Path, prior: int) -> Path:
                     raise RuntimeError("catalog migration backup failed integrity verification")
             finally:
                 target.close()
-        with destination.open("rb") as handle:
-            digest = hashlib.file_digest(handle, "sha256").hexdigest()
-            os.fsync(handle.fileno())
+        with destination.open("rb") as source_handle:
+            digest = hashlib.file_digest(source_handle, "sha256").hexdigest()
+            os.fsync(source_handle.fileno())
         receipt = destination.with_suffix(destination.suffix + ".json")
-        with receipt.open("x", encoding="utf-8") as handle:
+        with receipt.open("x", encoding="utf-8") as receipt_handle:
             os.chmod(receipt, 0o600)
             json.dump(
                 {
@@ -387,11 +387,11 @@ def _backup_catalog_before_migration(path: Path, prior: int) -> Path:
                     "sha256": digest,
                     "bytes": destination.stat().st_size,
                 },
-                handle,
+                receipt_handle,
                 sort_keys=True,
             )
-            handle.flush()
-            os.fsync(handle.fileno())
+            receipt_handle.flush()
+            os.fsync(receipt_handle.fileno())
         parent_descriptor = os.open(
             destination.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
         )
@@ -865,12 +865,13 @@ def update_document_catalog(
     # that have not enabled those routes yet.  Their source-specific adapters
     # below keep their taxonomies separate while sharing this catalog's
     # publication boundary.
+    optional_source_kinds: tuple[SourceKind, ...] = ("archive", "code", "image", "video")
     optional_assets: tuple[tuple[Path, SourceKind], ...] = tuple(
         (
             state_directory / content_capability_for_source(source_kind).state_database,
             source_kind,
         )
-        for source_kind in ("archive", "code", "image", "video")
+        for source_kind in optional_source_kinds
         if (state_directory / content_capability_for_source(source_kind).state_database).is_file()
     )
     return tuple(

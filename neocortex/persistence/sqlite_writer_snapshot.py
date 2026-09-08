@@ -243,12 +243,12 @@ def writer_coordinated_sqlite_snapshot(
             budget_state.record_prepare_time(started)
         try:
             shutil.rmtree(directory)
-        except BaseException as cleanup_error:
+        except BaseException as cleanup_failure:
             if primary_error is None:
                 raise
             primary_error.add_note(
                 "SQLite coordinated snapshot temporary cleanup failed: "
-                f"{type(cleanup_error).__name__}: {cleanup_error}"
+                f"{type(cleanup_failure).__name__}: {cleanup_failure}"
             )
 
 

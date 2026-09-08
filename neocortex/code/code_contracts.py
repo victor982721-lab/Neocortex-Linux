@@ -254,6 +254,7 @@ class LanguageAnalyzer(Protocol):
 
     def analyze(self, source: CodeFileInput, config: CodeRouteConfig) -> CodeAnalysis:
         """Analyze one immutable source observation without modifying it."""
+        ...
 
 
 # endregion [02]
@@ -300,6 +301,7 @@ class CodeRouteConfig:
             raise ValueError("code diagnostic thresholds must be positive")
         if any(not root.is_absolute() for root in self.explicit_project_roots):
             raise ValueError("code explicit_project_roots must be absolute")
+
     @property
     def processing_signature(self) -> str:
         payload = canonical_json(
@@ -315,6 +317,7 @@ class CodeRouteConfig:
             }
         )
         return "code-v3:" + fingerprint_text(payload).xxh3_128
+
 
 @dataclass(frozen=True, slots=True)
 class CodeRouteSummary:

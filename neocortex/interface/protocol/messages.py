@@ -12,7 +12,7 @@ import json
 import math
 import re
 from collections.abc import Mapping
-from typing import Any, Literal, TypedDict, cast
+from typing import Any, Literal, NotRequired, Required, TypedDict, cast
 
 from neocortex.progress import ProgressEvent
 
@@ -62,40 +62,40 @@ class WorkerMessage(TypedDict, total=False):
     applies the required fields for the selected ``type`` at runtime.
     """
 
-    protocol: int
-    type: WorkerMessageType
-    worker_run_id: str
-    sequence: int
-    request_id: str
-    operation: str
-    phase: str
-    description: str
-    completed: int
-    total: int | None
-    unit: str
-    finished: bool
-    metrics: dict[str, int | float | str | bool | None]
-    elapsed_seconds: int
-    active: list[dict[str, Any]]
-    root: str
-    state_directory: str
-    apply: bool
-    route: str
-    profile: str
-    max_items: int
-    deadline_seconds: float
-    run_id: int
-    files_checked: int
-    action_errors: int
-    route_errors: dict[str, int]
-    organization_errors: bool
-    issues: int
-    completion_status: str
-    exit_code: int
-    detail: str
-    error_type: str
-    stage: str
-    traceback: str
+    protocol: Required[int]
+    type: Required[WorkerMessageType]
+    worker_run_id: Required[str]
+    sequence: Required[int]
+    request_id: NotRequired[str]
+    operation: NotRequired[str]
+    phase: NotRequired[str]
+    description: NotRequired[str]
+    completed: NotRequired[int]
+    total: NotRequired[int | None]
+    unit: NotRequired[str]
+    finished: NotRequired[bool]
+    metrics: NotRequired[dict[str, int | float | str | bool | None]]
+    elapsed_seconds: NotRequired[int]
+    active: NotRequired[list[dict[str, Any]]]
+    root: NotRequired[str]
+    state_directory: NotRequired[str]
+    apply: NotRequired[bool]
+    route: NotRequired[str]
+    profile: NotRequired[str]
+    max_items: NotRequired[int]
+    deadline_seconds: NotRequired[float]
+    run_id: NotRequired[int]
+    files_checked: NotRequired[int]
+    action_errors: NotRequired[int]
+    route_errors: NotRequired[dict[str, int]]
+    organization_errors: NotRequired[bool]
+    issues: NotRequired[int]
+    completion_status: NotRequired[str]
+    exit_code: NotRequired[int]
+    detail: NotRequired[str]
+    error_type: NotRequired[str]
+    stage: NotRequired[str]
+    traceback: NotRequired[str]
 
 
 class WorkerProtocolError(ValueError):
@@ -112,9 +112,7 @@ def sanitize_text(value: object, *, limit: int = MAX_TEXT_FIELD_LENGTH) -> str:
     # Keep ordinary whitespace useful in labels, but never permit control
     # characters to forge additional terminal/UI records.
     text = "".join(
-        character
-        for character in text
-        if character in {"\t", "\n", "\r"} or ord(character) >= 0x20
+        character for character in text if character in {"\t", "\n", "\r"} or ord(character) >= 0x20
     )
     text = text.replace("\r", " ").replace("\n", " ").replace("\t", " ")
     text = " ".join(text.split())
@@ -174,8 +172,10 @@ def _require_number(
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise WorkerProtocolError(f"worker record field {name!r} must be numeric")
     numeric = float(value)
-    if not math.isfinite(numeric) or numeric < minimum or (
-        maximum is not None and numeric > maximum
+    if (
+        not math.isfinite(numeric)
+        or numeric < minimum
+        or (maximum is not None and numeric > maximum)
     ):
         raise WorkerProtocolError(f"worker record field {name!r} is outside its safe bound")
     return numeric

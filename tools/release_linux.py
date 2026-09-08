@@ -284,7 +284,9 @@ def _wheel_metadata(path: Path) -> tuple[str, str]:
                 raise LinuxReleaseError(f"wheel metadata exceeds its bound: {path.name}")
             payload = archive.read(member)
     except (OSError, UnicodeError, zipfile.BadZipFile, RuntimeError) as exc:
-        raise LinuxReleaseError(f"wheelhouse artifact is not a readable wheel: {path.name}") from exc
+        raise LinuxReleaseError(
+            f"wheelhouse artifact is not a readable wheel: {path.name}"
+        ) from exc
     try:
         metadata_text = payload.decode("utf-8", errors="strict")
     except UnicodeError as exc:
@@ -910,9 +912,7 @@ def _validate_tracked_source_links(
             try:
                 metadata = cursor.lstat()
             except OSError as exc:
-                raise LinuxReleaseError(
-                    f"tracked source owner is unavailable: {relative}"
-                ) from exc
+                raise LinuxReleaseError(f"tracked source owner is unavailable: {relative}") from exc
             if not stat.S_ISLNK(metadata.st_mode):
                 continue
             target = cursor.resolve(strict=True)
@@ -1649,7 +1649,9 @@ def _read_gc_marker(transaction: Path) -> dict[str, object]:
     candidates = payload.get("candidates")
     if not isinstance(current, str) or parse_release_id(current) is None:
         raise LinuxReleaseError("release GC marker current is invalid")
-    if rollback is not None and (not isinstance(rollback, str) or parse_release_id(rollback) is None):
+    if rollback is not None and (
+        not isinstance(rollback, str) or parse_release_id(rollback) is None
+    ):
         raise LinuxReleaseError("release GC marker rollback is invalid")
     if rollback == current:
         raise LinuxReleaseError("release GC marker keeps current as its own rollback")
@@ -1887,10 +1889,14 @@ def _recover_gc_transaction(layout: LinuxReleaseLayout, transaction: Path) -> st
     if _gc_marker_active(payload):
         raise LinuxReleaseError(f"release GC workspace is active: {transaction}")
     current = _current_target(layout)
-    if current is not None and current.name == payload["current"] and _gc_receipt_commits(
-        layout,
-        current=current,
-        payload=payload,
+    if (
+        current is not None
+        and current.name == payload["current"]
+        and _gc_receipt_commits(
+            layout,
+            current=current,
+            payload=payload,
+        )
     ):
         _commit_old_releases(transaction)
         return "committed"
@@ -1942,8 +1948,7 @@ def _validate_retention_receipt(
     actual = sorted(path.name for path in _release_inventory(layout))
     if actual != sorted(expected):
         raise LinuxReleaseError(
-            "release retention drift: "
-            f"expected={sorted(expected)!r} actual={actual!r}"
+            f"release retention drift: expected={sorted(expected)!r} actual={actual!r}"
         )
 
 
@@ -2622,7 +2627,6 @@ def install_release(
         preflight = locked_preflight
         wheelhouse = preflight.wheelhouse
         source_sha = preflight.source_sha
-        source_runtime_lock = preflight.source_runtime_lock
         _reap_staging(layout)
         corpus_root_created = _prepare_corpus_root(corpus_root)
         name = release_id(source_sha)
@@ -2639,7 +2643,9 @@ def install_release(
                 # A process killed before publication may leave an old partial
                 # slot.  It is safe to recover only this exact generated name.
                 if previous is not None and final_release.resolve(strict=False) == previous:
-                    raise LinuxReleaseError("active release manifest is unavailable; refusing rebuild")
+                    raise LinuxReleaseError(
+                        "active release manifest is unavailable; refusing rebuild"
+                    )
                 _remove_incomplete_release(final_release)
                 release_exists = False
         if release_exists:
@@ -2686,7 +2692,9 @@ def install_release(
                 try:
                     validate_release_artifact(wheel, expected_version=__version__)
                 except ArtifactValidationError as exc:
-                    raise LinuxReleaseError(f"built wheel failed artifact validation: {exc}") from exc
+                    raise LinuxReleaseError(
+                        f"built wheel failed artifact validation: {exc}"
+                    ) from exc
                 wheel_sha = _sha256_file(wheel)
                 candidate_root = workspace / "release"
                 staged_source = workspace / "source"
@@ -2761,7 +2769,12 @@ def install_release(
         )
         receipt_interpreter = release_artifacts.get("interpreter")
         if receipt_interpreter is not None:
-            _validate_release_interpreter(final_release, expected=receipt_interpreter)
+            if not isinstance(receipt_interpreter, dict):
+                raise LinuxReleaseError("release interpreter attestation is malformed")
+            _validate_release_interpreter(
+                final_release,
+                expected=cast(Mapping[str, object], receipt_interpreter),
+            )
 
         environment = _candidate_environment(layout, smoke_corpus_root)
         if prepare_models:
@@ -2821,9 +2834,7 @@ def install_release(
                 "corpus_root_created": corpus_root_created,
                 "wheelhouse_provenance": receipt_wheelhouse_provenance,
                 "wheelhouse_path": receipt_wheelhouse_provenance["path"],
-                "wheelhouse_manifest_sha256": receipt_wheelhouse_provenance[
-                    "manifest_sha256"
-                ],
+                "wheelhouse_manifest_sha256": receipt_wheelhouse_provenance["manifest_sha256"],
                 "wheelhouse_artifact_set_sha256": receipt_wheelhouse_provenance[
                     "artifact_set_sha256"
                 ],
@@ -2834,9 +2845,7 @@ def install_release(
                 **({"interpreter": receipt_interpreter} if receipt_interpreter is not None else {}),
                 "artifacts": {
                     **release_artifacts,
-                    "wheelhouse_manifest_sha256": receipt_wheelhouse_provenance[
-                        "manifest_sha256"
-                    ],
+                    "wheelhouse_manifest_sha256": receipt_wheelhouse_provenance["manifest_sha256"],
                     "wheelhouse_artifact_set_sha256": receipt_wheelhouse_provenance[
                         "artifact_set_sha256"
                     ],
@@ -2938,8 +2947,11 @@ def _validate_receipt_binding(
     if provenance is not None or manifest_provenance is not None:
         if provenance is None or manifest_provenance is None:
             raise LinuxReleaseError("installation receipt wheelhouse provenance is incomplete")
-        _validate_wheelhouse_provenance(provenance, label="installation receipt wheelhouse provenance")
-        _validate_wheelhouse_provenance(
+        provenance = _validate_wheelhouse_provenance(
+            provenance,
+            label="installation receipt wheelhouse provenance",
+        )
+        manifest_provenance = _validate_wheelhouse_provenance(
             manifest_provenance,
             label="release manifest wheelhouse provenance",
         )
@@ -2999,10 +3011,7 @@ def _verify_release_unlocked(
         raise LinuxReleaseError("installation receipt source SHA is invalid")
     manifest_path = current / RELEASE_MANIFEST_NAME
     expected_manifest_hash = _receipt_artifact_hash(receipt, "release_manifest_sha256")
-    if (
-        expected_manifest_hash is not None
-        and _sha256_file(manifest_path) != expected_manifest_hash
-    ):
+    if expected_manifest_hash is not None and _sha256_file(manifest_path) != expected_manifest_hash:
         raise LinuxReleaseError("release manifest differs from its installation receipt")
     manifest = _read_release_manifest(
         current,
@@ -3033,7 +3042,10 @@ def _verify_release_unlocked(
     if launcher_payload != expected_launcher:
         raise LinuxReleaseError("stable launcher differs from its corpus/runtime configuration")
     expected_launcher_hash = _receipt_artifact_hash(receipt, "launcher_sha256")
-    if expected_launcher_hash is not None and _sha256_file(layout.launcher) != expected_launcher_hash:
+    if (
+        expected_launcher_hash is not None
+        and _sha256_file(layout.launcher) != expected_launcher_hash
+    ):
         raise LinuxReleaseError("stable launcher differs from its installation receipt")
     runtime_lock = _manifest_runtime_dependency_lock(current, manifest)
     versions = _verify_python_release(
@@ -3264,17 +3276,13 @@ def rollback_release(
                 receipt["wheelhouse_provenance"] = target_provenance
                 receipt["wheelhouse_path"] = target_provenance["path"]
                 receipt["wheelhouse_manifest_sha256"] = target_provenance["manifest_sha256"]
-                receipt["wheelhouse_artifact_set_sha256"] = target_provenance[
-                    "artifact_set_sha256"
-                ]
+                receipt["wheelhouse_artifact_set_sha256"] = target_provenance["artifact_set_sha256"]
                 receipt_artifacts = receipt["artifacts"]
                 assert isinstance(receipt_artifacts, dict)
                 receipt_artifacts.update(
                     {
                         "wheelhouse_manifest_sha256": target_provenance["manifest_sha256"],
-                        "wheelhouse_artifact_set_sha256": target_provenance[
-                            "artifact_set_sha256"
-                        ],
+                        "wheelhouse_artifact_set_sha256": target_provenance["artifact_set_sha256"],
                     }
                 )
             target_interpreter = manifest.get("interpreter")

@@ -42,10 +42,12 @@ def cpu_capacity_snapshot() -> CpuCapacitySnapshot:
         cpuset_count = sum(last - first + 1 for first, last in cgroup.cpuset_ranges)
         capacities.append(cpuset_count)
         if affinity:
-            capacities.append(sum(
-                any(first <= cpu <= last for first, last in cgroup.cpuset_ranges)
-                for cpu in affinity
-            ))
+            capacities.append(
+                sum(
+                    any(first <= cpu <= last for first, last in cgroup.cpuset_ranges)
+                    for cpu in affinity
+                )
+            )
     quota = None if cgroup.quota_cpus is None else float(cgroup.quota_cpus)
     if quota is not None:
         capacities.append(quota)
@@ -84,7 +86,8 @@ def _windows_cpu_times() -> CpuTimes | None:
     idle = FileTime()
     kernel = FileTime()
     user = FileTime()
-    if not ctypes.windll.kernel32.GetSystemTimes(
+    windll = getattr(ctypes, "windll", None)
+    if windll is None or not windll.kernel32.GetSystemTimes(
         ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)
     ):
         return None
@@ -142,4 +145,6 @@ class CpuLoadSampler:
         load = 100.0 * (1.0 - min(idle_delta, total_delta) / total_delta)
         self._last_load_percent = max(0.0, min(100.0, load))
         return self._last_load_percent
+
+
 # endregion [02]

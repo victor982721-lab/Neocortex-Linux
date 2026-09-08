@@ -7,7 +7,10 @@ from __future__ import annotations
 import argparse
 
 from .cli_operations import DirectOperationFamily, selected_direct_operations
-from neocortex.runtime.orchestration.route_selection import BUILTIN_ROUTE_ORDER, normalize_route_selection
+from neocortex.runtime.orchestration.route_selection import (
+    BUILTIN_ROUTE_ORDER,
+    normalize_route_selection,
+)
 
 __all__ = ["register_knowledge_arguments", "validate_knowledge_arguments"]
 
@@ -28,7 +31,7 @@ class _KnowledgeScopeAction(argparse.Action):
         setattr(namespace, self.dest, values)
         # ``scope`` is convenient for direct CLI callers; the namespaced
         # destination is what the Knowledge surface owns internally.
-        setattr(namespace, "scope", values)
+        namespace.scope = values
 
 
 # region [02] Stable flat argument registration
@@ -85,10 +88,7 @@ def register_knowledge_arguments(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=12_000,
         metavar="N",
-        help=(
-            "maximum ContextBundle characters; defaults to 12000 "
-            "(allowed range: 1..1000000)"
-        ),
+        help=("maximum ContextBundle characters; defaults to 12000 (allowed range: 1..1000000)"),
     )
     knowledge.add_argument("--knowledge-history", action="store_true")
     knowledge.add_argument(
@@ -124,15 +124,11 @@ def validate_knowledge_arguments(args: argparse.Namespace) -> None:
         if value is not None and not value.strip():
             raise SystemExit(f"--{name.replace('_', '-')} must be non-empty")
         if value is not None and len(value) > 4_096:
-            raise SystemExit(
-                f"--{name.replace('_', '-')} cannot exceed 4096 characters"
-            )
+            raise SystemExit(f"--{name.replace('_', '-')} cannot exceed 4096 characters")
     if not 1 <= args.knowledge_limit <= 1_000:
         raise SystemExit("--knowledge-limit must be between 1 and 1000")
     if args.knowledge_context is not None and args.knowledge_limit > 100:
-        raise SystemExit(
-            "--knowledge-limit must be between 1 and 100 for --knowledge-context"
-        )
+        raise SystemExit("--knowledge-limit must be between 1 and 100 for --knowledge-context")
     if not 1 <= args.knowledge_context_characters <= 1_000_000:
         raise SystemExit("--knowledge-context-characters must be between 1 and 1000000")
     if "knowledge_context_characters" in explicit and args.knowledge_context is None:
@@ -152,9 +148,7 @@ def validate_knowledge_arguments(args: argparse.Namespace) -> None:
     }
     if not operations and optional.intersection(explicit):
         raise SystemExit("Knowledge options require one Knowledge direct action")
-    query_selected = (
-        args.knowledge_search is not None or args.knowledge_context is not None
-    )
+    query_selected = args.knowledge_search is not None or args.knowledge_context is not None
     query_only = {"knowledge_limit", "knowledge_history", "knowledge_mode"}
     if query_only.intersection(explicit) and not query_selected:
         raise SystemExit("Knowledge limit, history and mode require search or context")

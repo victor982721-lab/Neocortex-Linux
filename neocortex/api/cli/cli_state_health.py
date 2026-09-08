@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Sequence
 
 from neocortex.workflow.state_health import inspect_state_health
 
@@ -12,26 +13,43 @@ def run_state_health(args: argparse.Namespace) -> int:
     """Inspect all known SQLite owners without opening them directly."""
 
     try:
-        options = {}
-        for argument, keyword, default in (
-            ("state_health_timeout", "timeout_seconds", 30.0),
-            ("state_health_scope", "scope", "full"),
-            ("state_health_max_owners", "max_owners", None),
-            ("state_health_after_owner", "after_owner", None),
+        timeout_seconds = getattr(args, "state_health_timeout", 30.0)
+        scope = getattr(args, "state_health_scope", "full")
+        max_owners = getattr(args, "state_health_max_owners", None)
+        after_owner = getattr(args, "state_health_after_owner", None)
+        raw_owners = getattr(args, "state_health_owner", None)
+        owners: Sequence[str] | None = None
+        if isinstance(raw_owners, (list, tuple)) and all(
+            isinstance(owner, str) for owner in raw_owners
         ):
-            value = getattr(args, argument, default)
-            if value != default:
-                options[keyword] = value
-        owners = getattr(args, "state_health_owner", None)
-        if owners is not None:
-            options["owners"] = tuple(owners)
-        health = inspect_state_health(args.state_directory, **options)
+            owners = tuple(raw_owners)
+        health = inspect_state_health(
+            args.state_directory,
+            timeout_seconds=timeout_seconds,
+            scope=scope,
+            owners=owners,
+            max_owners=max_owners,
+            after_owner=after_owner,
+        )
     except (OSError, RuntimeError, ValueError) as exc:
         if args.state_health_json:
-            print(json.dumps({
-                "kind": "state-health-error", "complete": False,
-                "error": {"code": "state_health_failed", "type": type(exc).__name__, "detail": str(exc)},
-            }, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")))
+            print(
+                json.dumps(
+                    {
+                        "kind": "state-health-error",
+                        "complete": False,
+                        "error": {
+                            "code": "state_health_failed",
+                            "type": type(exc).__name__,
+                            "detail": str(exc),
+                        },
+                    },
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
         else:
             print(f"ERROR state-health {type(exc).__name__}: {exc}")
         return 2
@@ -59,9 +77,9 @@ def run_state_health(args: argparse.Namespace) -> int:
             f"state={health.state_directory}"
         )
         for owner in health.owners:
-            sidecars = ",".join(
-                f"{sidecar.suffix}:{sidecar.size}" for sidecar in owner.sidecars
-            ) or "-"
+            sidecars = (
+                ",".join(f"{sidecar.suffix}:{sidecar.size}" for sidecar in owner.sidecars) or "-"
+            )
             print(
                 f"STATE_OWNER name={owner.name} status={owner.status} "
                 f"schema={owner.schema_version or '-'} user_version={owner.user_version or 0} "

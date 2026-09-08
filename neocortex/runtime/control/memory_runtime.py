@@ -66,9 +66,7 @@ def posix_physical_memory_snapshot(
         total = cgroup.limit_bytes if total is None else min(total, cgroup.limit_bytes)
     if cgroup.available_bytes is not None:
         available = (
-            cgroup.available_bytes
-            if available is None
-            else min(available, cgroup.available_bytes)
+            cgroup.available_bytes if available is None else min(available, cgroup.available_bytes)
         )
     if total is not None and available is not None:
         available = min(total, available)
@@ -123,7 +121,8 @@ def memory_snapshot() -> MemorySnapshot:
 
         status = MemoryStatus()
         status.length = ctypes.sizeof(status)
-        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        windll = getattr(ctypes, "windll", None)
+        if windll is not None and windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
             return MemorySnapshot(
                 int(status.available_physical),
                 int(status.available_page_file),
@@ -275,4 +274,6 @@ class WeightedMemoryGate:
                 with self._condition:
                     self._reserved -= reservation
                     self._condition.notify_all()
+
+
 # endregion [02]

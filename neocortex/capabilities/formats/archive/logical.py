@@ -62,7 +62,7 @@ def identify_logical_document(
     names = set(member_names)
     if declared_mime is not None:
         kind = ODF_MIME_KINDS.get(declared_mime)
-        required = ("mimetype", "content.xml", "META-INF/manifest.xml")
+        required: tuple[str, ...] = ("mimetype", "content.xml", "META-INF/manifest.xml")
         if declared_mime == "application/epub+zip":
             kind = "epub"
             required = ("mimetype", "META-INF/container.xml")

@@ -11,8 +11,13 @@ from typing import Protocol
 
 from ..domain.errors import FileChangedError, KeeperConflictError
 from ..domain.evidence import (
-    KEEPER_POLICY_VERSION, PROOF_VERSION, DedupPolicy, DuplicateGroupProof,
-    DuplicateMemberProof, KeeperPolicy, PlanCoverage,
+    KEEPER_POLICY_VERSION,
+    PROOF_VERSION,
+    DedupPolicy,
+    DuplicateGroupProof,
+    DuplicateMemberProof,
+    KeeperPolicy,
+    PlanCoverage,
 )
 from ..domain.models import (
     DedupPlan,
@@ -116,7 +121,12 @@ class _PlanAccumulator:
     """Persist plan groups in bounded batches while retaining exact totals."""
 
     def __init__(
-        self, index: DedupIndex, scan_id: int, *, exact_compare: bool, keeper_policy: KeeperPolicy,
+        self,
+        index: DedupIndex,
+        scan_id: int,
+        *,
+        exact_compare: bool,
+        keeper_policy: KeeperPolicy,
     ) -> None:
         self._index = index
         self._scan_id = scan_id
@@ -137,14 +147,23 @@ class _PlanAccumulator:
             missing.append("aliases_outside_inventory")
         return DuplicateMemberProof(
             proof_version=PROOF_VERSION,
-            comparison_method="full_xxh3" if reference or not self._exact_compare else "byte_for_byte",
-            comparison_result="reference" if reference else "equal" if self._exact_compare else "fingerprint_match",
+            comparison_method="full_xxh3"
+            if reference or not self._exact_compare
+            else "byte_for_byte",
+            comparison_result="reference"
+            if reference
+            else "equal"
+            if self._exact_compare
+            else "fingerprint_match",
             compared_to_identity=None if reference else keep.identity,
             comparison_bytes=member.size if self._exact_compare and not reference else None,
             fingerprint_algorithm=FULL_ALGORITHM,
             fingerprint_source="computed" if computed else "cached",
-            missing_checks=tuple(missing), aliases=aliases, alias_count=alias_count,
-            aliases_truncated=alias_count > len(aliases), observed_link_count=links,
+            missing_checks=tuple(missing),
+            aliases=aliases,
+            alias_count=alias_count,
+            aliases_truncated=alias_count > len(aliases),
+            observed_link_count=links,
         )
 
     def store(self, digest: bytes, keep: FileSnapshot, redundant: list[FileSnapshot]) -> None:
@@ -156,11 +175,17 @@ class _PlanAccumulator:
         )
         if len(set(selected)) > 1:
             raise KeeperConflictError(
-                policy=self._keeper_policy, identities=selected,
-                full_fingerprint=digest.hex(), exact_compare=self._exact_compare,
+                policy=self._keeper_policy,
+                identities=selected,
+                full_fingerprint=digest.hex(),
+                exact_compare=self._exact_compare,
             )
         ranks = tuple(keeper_rank(member, self._keeper_policy) for member in (keep, *redundant))
-        missing = ("path_disposability_not_verified", "authorization_not_granted", "physical_reclamation_not_verified")
+        missing: tuple[str, ...] = (
+            "path_disposability_not_verified",
+            "authorization_not_granted",
+            "physical_reclamation_not_verified",
+        )
         if not self._exact_compare:
             missing = ("byte_for_byte_comparison", *missing)
         group = DuplicateGroup(
@@ -174,7 +199,8 @@ class _PlanAccumulator:
                 requested_policy="exact" if self._exact_compare else "fast",
                 comparison_method="byte_for_byte" if self._exact_compare else "full_xxh3",
                 comparison_result="equal" if self._exact_compare else "fingerprint_match",
-                missing_checks=missing, keeper_policy_version=KEEPER_POLICY_VERSION,
+                missing_checks=missing,
+                keeper_policy_version=KEEPER_POLICY_VERSION,
                 keeper_reason=keeper_reason(ranks),
                 keeper_factors=keeper_factors(keep, self._keeper_policy),
             ),
@@ -198,8 +224,11 @@ def _store_fingerprints(index: DedupIndex, stage: str, batch: list[FingerprintRo
     if not batch:
         return
     index.store_planning_fingerprints(
-        stage, ((snapshot, digest) for snapshot, digest, _computed in batch),
-        computed_identities=frozenset(snapshot.identity for snapshot, _digest, computed in batch if computed),
+        stage,
+        ((snapshot, digest) for snapshot, digest, _computed in batch),
+        computed_identities=frozenset(
+            snapshot.identity for snapshot, _digest, computed in batch if computed
+        ),
     )
     computed_rows = [(snapshot, digest) for snapshot, digest, computed in batch if computed]
     if computed_rows:
@@ -332,7 +361,10 @@ class PlanningSession:
         self._counters = _PlanCounters()
         self._work = _PlanningProgress(progress, index.size_candidate_file_count(scan_id))
         self._groups = _PlanAccumulator(
-            index, scan_id, exact_compare=exact_compare, keeper_policy=self._keeper_policy,
+            index,
+            scan_id,
+            exact_compare=exact_compare,
+            keeper_policy=self._keeper_policy,
         )
 
     def run(self) -> DedupPlan:
@@ -349,7 +381,8 @@ class PlanningSession:
             redundant_files=self._groups.redundant_files,
             reclaimable_bytes=self._groups.reclaimable_bytes,
             verification_mode=self._verification_mode(),
-            requested_policy=self._requested_policy(), coverage=self._coverage(),
+            requested_policy=self._requested_policy(),
+            coverage=self._coverage(),
             exact_comparisons=self._counters.comparisons,
             changed_or_unreadable_files=self._counters.failures,
         )
@@ -389,7 +422,9 @@ class PlanningSession:
                 current_stat = os.stat(snapshot.path, follow_symlinks=False)
                 if not stat_matches_snapshot(snapshot, current_stat):
                     raise FileChangedError("file changed while capturing duplicate aliases")
-                observations.append((snapshot, keeper_rank(snapshot, self._keeper_policy), current_stat.st_nlink))
+                observations.append(
+                    (snapshot, keeper_rank(snapshot, self._keeper_policy), current_stat.st_nlink)
+                )
                 if len(observations) >= FINGERPRINT_WRITE_BATCH_SIZE:
                     self._index.store_planning_observations(observations)
                     observations.clear()
@@ -484,7 +519,8 @@ class PlanningSession:
             total_redundant_files=self._groups.redundant_files,
             total_reclaimable_bytes=self._groups.reclaimable_bytes,
             verification_mode=self._verification_mode(),
-            requested_policy=self._requested_policy(), coverage=self._coverage(),
+            requested_policy=self._requested_policy(),
+            coverage=self._coverage(),
         )
 
 

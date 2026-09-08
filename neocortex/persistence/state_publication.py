@@ -55,9 +55,7 @@ class StatePublicationCommitError(StatePublicationError):
     cannot undo a durable complete event in the append-only journal.
     """
 
-    def __init__(
-        self, message: str, publication: StatePublication, *, durable: bool
-    ) -> None:
+    def __init__(self, message: str, publication: StatePublication, *, durable: bool) -> None:
         super().__init__(message)
         self.publication = publication
         self.durable = durable
@@ -385,7 +383,9 @@ def _read_json_file(path: Path) -> dict[str, object] | None:
     except FileNotFoundError:
         return None
     except OSError as exc:
-        raise StatePublicationError(f"publication metadata cannot be inspected: {path.name}") from exc
+        raise StatePublicationError(
+            f"publication metadata cannot be inspected: {path.name}"
+        ) from exc
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
         raise StatePublicationError(f"publication metadata is not regular: {path.name}")
     if metadata.st_size > MAX_PUBLICATION_RECORD_BYTES:
@@ -400,14 +400,18 @@ def _read_json_file(path: Path) -> dict[str, object] | None:
     return value
 
 
-def _parse_epoch(value: Mapping[str, object], *, source: Literal["pointer", "journal"]) -> StateEpoch:
+def _parse_epoch(
+    value: Mapping[str, object], *, source: Literal["pointer", "journal"]
+) -> StateEpoch:
     if value.get("schema") != STATE_PUBLICATION_SCHEMA:
         raise StatePublicationError("publication epoch schema is incompatible")
     raw_epoch = value.get("epoch")
     if type(raw_epoch) is not int or raw_epoch < 0:
         raise StatePublicationError("publication epoch is invalid")
     raw_event = value.get("event_id")
-    event_id = None if raw_event is None else _required_text(raw_event, label="event_id", maximum=256)
+    event_id = (
+        None if raw_event is None else _required_text(raw_event, label="event_id", maximum=256)
+    )
     raw_operation = value.get("operation")
     operation = None if raw_operation is None else _required_text(raw_operation, label="operation")
     raw_owners = value.get("owners", ())
@@ -432,7 +436,9 @@ def _parse_epoch(value: Mapping[str, object], *, source: Literal["pointer", "jou
         owners=owners,
         manifest_sha256=_optional_sha256(manifest),
         source=source,
-        owner_heads=_parse_owner_heads(value.get("owner_heads"), label="publication epoch owner heads"),
+        owner_heads=_parse_owner_heads(
+            value.get("owner_heads"), label="publication epoch owner heads"
+        ),
         content_manifest_sha256=_optional_sha256(content_manifest),
         content_manifest_name=content_name,
     )
@@ -443,7 +449,9 @@ def _parse_publication(value: Mapping[str, object]) -> StatePublication:
         raise StatePublicationError("publication journal schema is incompatible")
     event_id = _required_text(value.get("event_id"), label="event_id", maximum=256)
     operation = _required_text(value.get("operation"), label="operation")
-    idempotency_key = _required_text(value.get("idempotency_key"), label="idempotency_key", maximum=256)
+    idempotency_key = _required_text(
+        value.get("idempotency_key"), label="idempotency_key", maximum=256
+    )
     raw_epoch = value.get("epoch")
     raw_created = value.get("created_ns")
     if type(raw_epoch) is not int or raw_epoch < 0:
@@ -453,9 +461,10 @@ def _parse_publication(value: Mapping[str, object]) -> StatePublication:
     raw_owners = value.get("owners")
     if not isinstance(raw_owners, list) or any(not isinstance(item, str) for item in raw_owners):
         raise StatePublicationError("publication journal owners are invalid")
-    status = value.get("status")
-    if status not in {"complete", "partial", "failed"}:
+    raw_status = value.get("status")
+    if raw_status not in {"complete", "partial", "failed"}:
         raise StatePublicationError("publication journal status is invalid")
+    status = cast(PublicationStatus, raw_status)
     manifest = value.get("manifest_sha256")
     if manifest is not None and not isinstance(manifest, str):
         raise StatePublicationError("publication journal manifest digest is invalid")
@@ -480,7 +489,9 @@ def _parse_publication(value: Mapping[str, object]) -> StatePublication:
         idempotency_key=idempotency_key,
         manifest_sha256=_optional_sha256(manifest),
         detail=detail,
-        owner_heads=_parse_owner_heads(value.get("owner_heads"), label="publication journal owner heads"),
+        owner_heads=_parse_owner_heads(
+            value.get("owner_heads"), label="publication journal owner heads"
+        ),
         content_manifest_sha256=_optional_sha256(content_manifest),
         content_manifest_name=content_name,
     )
@@ -553,14 +564,10 @@ def read_state_epoch(state_directory: str | Path) -> StateEpoch:
         return journal_epoch  # type: ignore[return-value]
     if journal_epoch is None:
         if pointer_epoch.epoch != 0 or pointer_epoch.event_id is not None:
-            raise StatePublicationError(
-                "publication epoch pointer has no matching journal event"
-            )
+            raise StatePublicationError("publication epoch pointer has no matching journal event")
         return pointer_epoch
     if pointer_epoch.epoch > journal_epoch.epoch:
-        raise StatePublicationError(
-            "publication epoch pointer is ahead of the complete journal"
-        )
+        raise StatePublicationError("publication epoch pointer is ahead of the complete journal")
     if pointer_epoch.epoch == journal_epoch.epoch:
         if pointer_epoch.event_id != journal_epoch.event_id:
             raise StatePublicationError(
@@ -594,11 +601,7 @@ def read_state_publication_state(state_directory: str | Path) -> StatePublicatio
     latest_by_key: dict[str, StatePublication] = {}
     for publication in publications:
         latest_by_key[publication.idempotency_key] = publication
-    pending = tuple(
-        item
-        for item in latest_by_key.values()
-        if item.status == "partial"
-    )
+    pending = tuple(item for item in latest_by_key.values() if item.status == "partial")
     pending = tuple(sorted(pending, key=lambda item: (item.created_ns, item.event_id)))
     complete = tuple(item for item in publications if item.status == "complete")
     latest_complete = max(complete, key=lambda item: (item.epoch, item.created_ns), default=None)
@@ -724,8 +727,7 @@ def _atomic_write_json(path: Path, value: Mapping[str, object]) -> None:
 
 def _canonical_json_bytes(value: Mapping[str, object]) -> bytes:
     return (
-        json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-        + "\n"
+        json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n"
     ).encode("utf-8")
 
 
@@ -771,7 +773,10 @@ def _write_content_manifest(
     if metadata is not None:
         if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
             raise StatePublicationError("content publication manifest is not regular")
-        if metadata.st_size != len(encoded) or hashlib.sha256(destination.read_bytes()).hexdigest() != digest:
+        if (
+            metadata.st_size != len(encoded)
+            or hashlib.sha256(destination.read_bytes()).hexdigest() != digest
+        ):
             raise StatePublicationConflictError(
                 "content publication manifest event already exists with different bytes"
             )
@@ -801,7 +806,10 @@ def _read_content_manifest_for_publication(
     publication: StatePublication,
 ) -> None:
     if not publication.owner_heads:
-        if publication.content_manifest_name is not None or publication.content_manifest_sha256 is not None:
+        if (
+            publication.content_manifest_name is not None
+            or publication.content_manifest_sha256 is not None
+        ):
             raise StatePublicationError("publication content manifest metadata is incomplete")
         return
     if publication.content_manifest_name is None or publication.content_manifest_sha256 is None:
@@ -826,7 +834,9 @@ def _read_content_manifest_for_publication(
         raise StatePublicationError("publication content manifest is not complete")
     if payload.get("event_id") != publication.event_id or payload.get("epoch") != publication.epoch:
         raise StatePublicationError("publication content manifest event is inconsistent")
-    if payload.get("operation") != publication.operation or payload.get("owners") != list(publication.owners):
+    if payload.get("operation") != publication.operation or payload.get("owners") != list(
+        publication.owners
+    ):
         raise StatePublicationError("publication content manifest scope is inconsistent")
     if payload.get("idempotency_key") != publication.idempotency_key:
         raise StatePublicationError("publication content manifest idempotency is inconsistent")
@@ -860,9 +870,12 @@ def _fsync_directory(path: Path) -> None:
 
 
 def _append_journal(path: Path, publication: StatePublication) -> None:
-    encoded = json.dumps(
-        publication.as_payload(), ensure_ascii=True, sort_keys=True, separators=(",", ":")
-    ) + "\n"
+    encoded = (
+        json.dumps(
+            publication.as_payload(), ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        )
+        + "\n"
+    )
     if len(encoded.encode("utf-8")) > MAX_PUBLICATION_RECORD_BYTES:
         raise StatePublicationError("publication record exceeds its bound")
     try:
@@ -943,7 +956,9 @@ def record_state_publication(
     idempotency_key = _required_text(idempotency_key, label="idempotency_key", maximum=256)
     manifest_sha256 = _optional_sha256(manifest_sha256)
     normalized_owner_heads = () if owner_heads is None else _owner_heads(tuple(owner_heads))
-    if normalized_owner_heads and {item.owner for item in normalized_owner_heads} != set(selected_owners):
+    if normalized_owner_heads and {item.owner for item in normalized_owner_heads} != set(
+        selected_owners
+    ):
         raise ValueError("owner heads must cover exactly the publication owners")
     if status not in {"complete", "partial", "failed"}:
         raise ValueError("publication status is invalid")
@@ -966,9 +981,7 @@ def record_state_publication(
                 item.status == "partial" and item.idempotency_key != digest
                 for item in latest_by_key.values()
             ):
-                raise StatePublicationConflictError(
-                    "another publication is pending recovery"
-                )
+                raise StatePublicationConflictError("another publication is pending recovery")
             latest_complete = next(
                 (item for item in reversed(journal) if item.status == "complete"), None
             )
@@ -1165,9 +1178,7 @@ def abort_state_publication(
         if latest_for_key is None or latest_for_key.event_id != pending.event_id:
             raise StatePublicationConflictError("publication prepare event was already resolved")
         if not pending.owner_heads:
-            raise StatePublicationError(
-                "publication recovery requires baseline owner heads"
-            )
+            raise StatePublicationError("publication recovery requires baseline owner heads")
         if observed != pending.owner_heads:
             raise StatePublicationConflictError(
                 "owner heads do not prove rollback to the prepared baseline"

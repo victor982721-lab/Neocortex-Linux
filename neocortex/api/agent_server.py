@@ -16,16 +16,6 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 from uuid import uuid4
 
-try:  # MCP is optional in the minimal Linux runtime.
-    from pydantic import BaseModel, ConfigDict, Field as _pydantic_field, RootModel
-except ImportError:  # pragma: no cover - exercised by minimal installs
-    def _pydantic_field(**_kwargs: object) -> object:
-        return None
-
-    BaseModel = None
-    ConfigDict = None
-    RootModel = None
-
 from .curation_api import (
     MAX_CURATION_CURSOR_BYTES,
     CurationCoverage,
@@ -80,6 +70,43 @@ from .content_diagnostics_api import (
 )
 from neocortex.platform.policy import default_corpus_root
 from neocortex.runtime.config.app_paths import default_state_directory
+
+
+# Pydantic is optional in the minimal Linux runtime.  Resolve it dynamically so
+# static analysis can check this module even when the quality environment does
+# not expose the optional package to its import resolver.
+_pydantic: Any
+try:
+    _candidate = importlib.import_module("pydantic")
+    _required_pydantic_symbols = ("BaseModel", "ConfigDict", "Field", "RootModel")
+    _pydantic = (
+        _candidate
+        if all(getattr(_candidate, name, None) is not None for name in _required_pydantic_symbols)
+        else None
+    )
+except ImportError:  # pragma: no cover - exercised by minimal installs
+    _pydantic = None
+
+BaseModel: Any
+ConfigDict: Any
+_pydantic_field: Any
+RootModel: Any
+
+
+def _missing_pydantic_field(**_kwargs: object) -> None:
+    return None
+
+
+if _pydantic is not None:
+    BaseModel = _pydantic.BaseModel
+    ConfigDict = _pydantic.ConfigDict
+    _pydantic_field = _pydantic.Field
+    RootModel = _pydantic.RootModel
+else:
+    BaseModel = None
+    ConfigDict = None
+    _pydantic_field = _missing_pydantic_field
+    RootModel = None
 
 
 SERVER_INSTRUCTIONS = """NeoCortex exposes published local evidence through bounded
@@ -808,22 +835,25 @@ if BaseModel is not None:
         exit_code: int
 
 else:  # pragma: no cover - minimal install fallback
-    MCPStatusOutput = StatusOutput  # type: ignore[misc]
-    MCPSearchOutput = SearchOutput  # type: ignore[misc]
-    MCPContextOutput = ContextOutput  # type: ignore[misc]
-    MCPNegotiatedContextOutput = ContextOutput  # type: ignore[misc]
-    MCPEvidenceOutput = EvidenceOutput  # type: ignore[misc]
-    MCPNegotiatedEvidenceOutput = EvidenceOutput  # type: ignore[misc]
-    MCPCodeSearchOutput = CodeSearchOutput  # type: ignore[misc]
-    MCPLineageOutput = LineageOutput  # type: ignore[misc]
-    MCPAssetHealthOutput = AssetHealthOutput  # type: ignore[misc]
-    MCPLifecycleStatusOutput = dict[str, object]  # type: ignore[misc,assignment]
-    MCPContentDiagnosticsOutput = dict[str, object]  # type: ignore[misc,assignment]
-    MCPCurationPlanOutput = CurationPlanOutput  # type: ignore[misc]
-    MCPCurationReviewOutput = dict[str, object]  # type: ignore[misc,assignment]
-    MCPCurationDecisionOutput = dict[str, object]  # type: ignore[misc,assignment]
-    MCPCurationScanOutput = dict[str, object]  # type: ignore[misc,assignment]
-    MCPCurationVerifyOutput = dict[str, object]  # type: ignore[misc,assignment]
+    # The fallback aliases are runtime-only when Pydantic/MCP is absent; mypy
+    # treats their assignments as type-alias rebinding, so keep this seam
+    # explicitly isolated instead of weakening the public models.
+    MCPStatusOutput = cast(Any, StatusOutput)  # type: ignore[misc]
+    MCPSearchOutput = cast(Any, SearchOutput)  # type: ignore[misc]
+    MCPContextOutput = cast(Any, ContextOutput)  # type: ignore[misc]
+    MCPNegotiatedContextOutput = cast(Any, ContextOutput)  # type: ignore[misc]
+    MCPEvidenceOutput = cast(Any, EvidenceOutput)  # type: ignore[misc]
+    MCPNegotiatedEvidenceOutput = cast(Any, EvidenceOutput)  # type: ignore[misc]
+    MCPCodeSearchOutput = cast(Any, CodeSearchOutput)  # type: ignore[misc]
+    MCPLineageOutput = cast(Any, LineageOutput)  # type: ignore[misc]
+    MCPAssetHealthOutput = cast(Any, AssetHealthOutput)  # type: ignore[misc]
+    MCPLifecycleStatusOutput = cast(Any, dict[str, object])  # type: ignore[misc]
+    MCPContentDiagnosticsOutput = cast(Any, dict[str, object])  # type: ignore[misc]
+    MCPCurationPlanOutput = cast(Any, CurationPlanOutput)  # type: ignore[misc]
+    MCPCurationReviewOutput = cast(Any, dict[str, object])  # type: ignore[misc]
+    MCPCurationDecisionOutput = cast(Any, dict[str, object])  # type: ignore[misc]
+    MCPCurationScanOutput = cast(Any, dict[str, object])  # type: ignore[misc]
+    MCPCurationVerifyOutput = cast(Any, dict[str, object])  # type: ignore[misc]
 
 
 def _requires_upstream_stdio_transport() -> bool:
@@ -1051,9 +1081,15 @@ def _structured_content_diagnostics_payload(
 
     def failure(kind: str, message: str, *, status: str = "error") -> dict[str, Any]:
         return content_diagnostics_error_payload(
-            owner, source_root,
-            kind=kind, message=sanitize_untrusted_text(message, limit=1_000), status=status,
-            limit=limit, file_key=file_key, path_fragment=path_fragment, reason=reason,
+            owner,
+            source_root,
+            kind=kind,
+            message=sanitize_untrusted_text(message, limit=1_000),
+            status=status,
+            limit=limit,
+            file_key=file_key,
+            path_fragment=path_fragment,
+            reason=reason,
         )
 
     try:
@@ -1066,8 +1102,14 @@ def _structured_content_diagnostics_payload(
 
     try:
         raw = content_diagnostics_payload(
-            owner, state_directory, source_root, limit,
-            cursor=cursor, file_key=file_key, path_fragment=path_fragment, reason=reason,
+            owner,
+            state_directory,
+            source_root,
+            limit,
+            cursor=cursor,
+            file_key=file_key,
+            path_fragment=path_fragment,
+            reason=reason,
         )
     except (TypeError, ValueError) as exc:
         return failure("invalid_request", str(exc))
@@ -1095,7 +1137,9 @@ def _structured_content_diagnostics_payload(
         if payload["count"] != len(items) or len(items) > limit:
             raise ValueError("content diagnostics page count is inconsistent")
         if payload["status"] == "ok":
-            if payload["error"] is not None or payload["truncated"] != (payload["next_cursor"] is not None):
+            if payload["error"] is not None or payload["truncated"] != (
+                payload["next_cursor"] is not None
+            ):
                 raise ValueError("content diagnostics page status is inconsistent")
         elif payload["error"] is None or items:
             raise ValueError("failed content diagnostics must not publish an apparently valid page")
@@ -1214,12 +1258,18 @@ def create_server() -> Any:
         limit: Annotated[int, _pydantic_field(ge=1, le=1_000)] = 20,
         cursor: Annotated[str | None, _pydantic_field(min_length=1, max_length=8_192)] = None,
         file_key: Annotated[str | None, _pydantic_field(min_length=1, max_length=2_048)] = None,
-        path_fragment: Annotated[str | None, _pydantic_field(min_length=1, max_length=2_048)] = None,
+        path_fragment: Annotated[
+            str | None, _pydantic_field(min_length=1, max_length=2_048)
+        ] = None,
         reason: Annotated[str | None, _pydantic_field(min_length=1, max_length=256)] = None,
     ) -> MCPContentDiagnosticsOutput:
         return _structured_content_diagnostics_payload(
-            owner, limit=limit, cursor=cursor, file_key=file_key,
-            path_fragment=path_fragment, reason=reason,
+            owner,
+            limit=limit,
+            cursor=cursor,
+            file_key=file_key,
+            path_fragment=path_fragment,
+            reason=reason,
         )  # type: ignore[return-value]
 
     @server.tool(
@@ -1493,7 +1543,10 @@ def create_server() -> Any:
         limit: _Limit = 50,
         cursor: _Cursor = None,
     ) -> MCPCurationPlanOutput:
-        return curation_plan_payload(limit=limit, cursor=cursor)
+        return cast(
+            MCPCurationPlanOutput,
+            curation_plan_payload(limit=limit, cursor=cursor),
+        )
 
     @server.tool(
         name="curation_scan",

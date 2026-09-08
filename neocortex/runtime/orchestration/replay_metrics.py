@@ -30,8 +30,10 @@ def _counter(value: object) -> int:
 
     if isinstance(value, bool):
         return int(value)
+    if not isinstance(value, (int, float, str)):
+        return 0
     try:
-        return max(0, int(value or 0))
+        return max(0, int(value))
     except (TypeError, ValueError, OverflowError):
         return 0
 

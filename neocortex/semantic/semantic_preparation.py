@@ -81,7 +81,10 @@ def resolve_text_token_guard(
         None,
     )
     if callable(contract_provider):
-        tokenizer_signature, token_limit = contract_provider()
+        contract = contract_provider()
+        if not isinstance(contract, tuple) or len(contract) != 2:
+            raise RuntimeError("text backend returned an invalid tokenizer contract")
+        tokenizer_signature, token_limit = contract
     else:
         if model.provider.startswith("fastembed"):
             raise RuntimeError("FastEmbed text backend has no signed tokenizer contract")
@@ -201,6 +204,7 @@ def require_local_fastembed_model(
             f"observed providers {availability.providers}",
         )
 
+
 def backend(
     model: EmbeddingModelSpec,
     *,
@@ -307,7 +311,8 @@ def prepare_semantic_models(
         models = [model for model in models if model.model_id in selected_ids]
     else:
         models = [
-            model for model in models
+            model
+            for model in models
             if include_compact or model.model_signature != COMPACT_TEXT_MODEL_SIGNATURE
         ]
     cache.mkdir(parents=True, exist_ok=True)

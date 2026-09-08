@@ -92,16 +92,28 @@ class RestoreOutcome:
         if type(self.action_id) is not int or self.action_id < 1:
             raise ValueError("restore outcome action_id must be positive")
         if not isinstance(self.status, str) or self.status not in {
-            "restored", "already_restored", "blocked", "recovery_required"
+            "restored",
+            "already_restored",
+            "blocked",
+            "recovery_required",
         }:
             raise ValueError("restore outcome status is unsupported")
-        if not isinstance(self.reason, str) or not self.reason or self.reason.strip() != self.reason:
+        if (
+            not isinstance(self.reason, str)
+            or not self.reason
+            or self.reason.strip() != self.reason
+        ):
             raise ValueError("restore outcome reason must be trimmed non-empty text")
         if len(self.reason.encode("utf-8")) > 512:
             raise ValueError("restore outcome reason is too long")
-        if self.detail is not None and (not isinstance(self.detail, str) or len(self.detail.encode("utf-8")) > 4_096):
+        if self.detail is not None and (
+            not isinstance(self.detail, str) or len(self.detail.encode("utf-8")) > 4_096
+        ):
             raise ValueError("restore outcome detail is invalid")
-        if self.receipt_json is not None and (not isinstance(self.receipt_json, str) or len(self.receipt_json.encode("utf-8")) > 65_536):
+        if self.receipt_json is not None and (
+            not isinstance(self.receipt_json, str)
+            or len(self.receipt_json.encode("utf-8")) > 65_536
+        ):
             raise ValueError("restore outcome receipt is invalid")
         if self.status == "restored" and not self.receipt_json:
             raise ValueError("restored outcome requires a receipt")
@@ -114,6 +126,8 @@ class RestoreBackend(Protocol):
 
     def restore(self, candidate: RestoreCandidate) -> RestoreOutcome:
         """Restore one verified trash item without replacing a destination."""
+
+        ...
 
 
 def _canonical_json(value: object) -> str:
@@ -183,13 +197,16 @@ def _rename_noreplace(
             ctypes.c_uint,
         ]
         renameat2.restype = ctypes.c_int
-        if renameat2(
-            source_fd,
-            os.fsencode(source_name),
-            destination_fd,
-            os.fsencode(destination_name),
-            1,
-        ) != 0:
+        if (
+            renameat2(
+                source_fd,
+                os.fsencode(source_name),
+                destination_fd,
+                os.fsencode(destination_name),
+                1,
+            )
+            != 0
+        ):
             error_number = ctypes.get_errno()
             raise OSError(error_number, os.strerror(error_number))
     finally:
@@ -198,7 +215,7 @@ def _rename_noreplace(
                 try:
                     os.close(descriptor)
                 except OSError:
-                        pass
+                    pass
 
 
 def _fsync_directory(path: Path) -> None:
@@ -266,8 +283,7 @@ def _read_authorization_grant_from_connection(
         return None
     validate_authorization_extension(connection)
     cursor = connection.execute(
-        f"SELECT {AUTHORIZATION_GRANT_COLUMNS} FROM {AUTHORIZATION_GRANTS_TABLE} "
-        "WHERE grant_id=?",
+        f"SELECT {AUTHORIZATION_GRANT_COLUMNS} FROM {AUTHORIZATION_GRANTS_TABLE} WHERE grant_id=?",
         (grant_id,),
     )
     rows = cursor.fetchall()
@@ -317,8 +333,12 @@ def _original_receipt_parts(
     except OSError as exc:
         raise ValueError("trash root cannot be snapshotted") from exc
     return (
-        trash_root, trash_path, info_path, root_snapshot,
-        effect.source.volume_id, effect.source.file_id,
+        trash_root,
+        trash_path,
+        info_path,
+        root_snapshot,
+        effect.source.volume_id,
+        effect.source.file_id,
     )
 
 
@@ -359,7 +379,10 @@ def _verify_restored_source(candidate: RestoreCandidate) -> None:
 def _verify_restore_postconditions(candidate: RestoreCandidate) -> None:
     _verify_grant_root(candidate)
     _verify_restored_source(candidate)
-    for path, role in ((candidate.trash_path, "restored trash file"), (candidate.info_path, "restored trash info")):
+    for path, role in (
+        (candidate.trash_path, "restored trash file"),
+        (candidate.info_path, "restored trash info"),
+    ):
         validate_mutation_path(candidate.trash_root, path, role=role, allow_missing_leaf=True)
         if os.path.lexists(path):
             raise ValueError("restore receipt conflicts with retained Trash evidence")
@@ -486,7 +509,9 @@ class PosixRestoreBackend:
                 str(exc),
             )
         except (RuntimeError, ValueError) as exc:
-            return RestoreOutcome(candidate.action_id, "blocked", "restore_preflight_failed", str(exc))
+            return RestoreOutcome(
+                candidate.action_id, "blocked", "restore_preflight_failed", str(exc)
+            )
         try:
             _verify_restored_source(candidate)
             # The .trashinfo is deliberately removed only after the restored
@@ -529,7 +554,7 @@ def _candidate_from_action(
     state: FrameworkState | _ReadonlyState,
     action_id: int,
 ) -> tuple[RestoreCandidate, int, str]:
-    row = state._connection.execute(  # type: ignore[attr-defined]
+    row = state._connection.execute(
         """SELECT run_id,status,action_type,source_path,target_path,evidence,
         effect_receipt_json FROM file_actions WHERE action_id=?""",
         (action_id,),
@@ -552,7 +577,9 @@ def _candidate_from_action(
         )
         if grant is None or grant.authorized_effects is None or grant.root_snapshot is None:
             raise ValueError("authorization grant is unavailable for restore")
-        effect = next(effect for effect in grant.authorized_effects if effect.effect_id == effect_id)
+        effect = next(
+            effect for effect in grant.authorized_effects if effect.effect_id == effect_id
+        )
         (
             trash_root,
             trash_path,
@@ -597,8 +624,10 @@ def restore_curation_preview(database: Path, action_id: int) -> dict[str, object
         detail = None
         try:
             validate_mutation_path(
-                candidate.root, candidate.effect.source.path,
-                role="restore destination", allow_missing_leaf=True,
+                candidate.root,
+                candidate.effect.source.path,
+                role="restore destination",
+                allow_missing_leaf=True,
             )
             _verify_trash_candidate(candidate)
         except (OSError, RuntimeError, ValueError, FileChangedError) as exc:
@@ -658,7 +687,7 @@ def restore_curation_action(
                     "schema": RESTORE_INTENT_SCHEMA,
                 }
             )
-            row = effective_state._connection.execute(  # type: ignore[attr-defined]
+            row = effective_state._connection.execute(
                 "SELECT action_id,status,effect_receipt_json FROM file_actions WHERE evidence=? LIMIT 1",
                 (intent,),
             ).fetchone()
@@ -685,11 +714,17 @@ def restore_curation_action(
                     _verify_restore_postconditions(candidate)
                 except (OSError, RuntimeError, ValueError, FileChangedError) as exc:
                     return RestoreOutcome(
-                        restore_id, "recovery_required", "restore_receipt_conflicts",
-                        str(exc), idempotent=True,
+                        restore_id,
+                        "recovery_required",
+                        "restore_receipt_conflicts",
+                        str(exc),
+                        idempotent=True,
                     )
                 return RestoreOutcome(
-                    restore_id, "already_restored", "already_restored", idempotent=True,
+                    restore_id,
+                    "already_restored",
+                    "already_restored",
+                    idempotent=True,
                 )
             if status in {"recovery_required", "applying"}:
                 if status == "applying":
@@ -704,7 +739,9 @@ def restore_curation_action(
                     idempotent=True,
                 )
             if status in {"failed", "skipped", "planned"}:
-                return RestoreOutcome(restore_id, "blocked", "existing_terminal_restore", idempotent=True)
+                return RestoreOutcome(
+                    restore_id, "blocked", "existing_terminal_restore", idempotent=True
+                )
             expected = expected_identity_json(
                 original.effect.source,
                 source_path=original.effect.source.path,
@@ -726,8 +763,12 @@ def restore_curation_action(
                 if not isinstance(outcome, RestoreOutcome):
                     raise ValueError("restore backend returned an unsupported outcome")
                 outcome = RestoreOutcome(
-                    outcome.action_id, outcome.status, outcome.reason, outcome.detail,
-                    outcome.receipt_json, outcome.idempotent,
+                    outcome.action_id,
+                    outcome.status,
+                    outcome.reason,
+                    outcome.detail,
+                    outcome.receipt_json,
+                    outcome.idempotent,
                 )
                 if outcome.action_id != restore_id or outcome.idempotent:
                     raise ValueError("restore backend outcome is not bound to the fresh action")
@@ -748,7 +789,9 @@ def restore_curation_action(
                         (restore_id,),
                         "restore receipt is invalid",
                     )
-                    return RestoreOutcome(restore_id, "recovery_required", "restore_receipt_invalid")
+                    return RestoreOutcome(
+                        restore_id, "recovery_required", "restore_receipt_invalid"
+                    )
                 try:
                     _verify_restore_postconditions(candidate)
                 except (OSError, RuntimeError, ValueError, FileChangedError) as exc:
@@ -763,14 +806,19 @@ def restore_curation_action(
                         str(exc),
                     )
                 try:
-                    effective_state.confirm_file_actions_applied(((restore_id, outcome.receipt_json),))
+                    effective_state.confirm_file_actions_applied(
+                        ((restore_id, outcome.receipt_json),)
+                    )
                 except BaseException as exc:
                     effective_state.require_file_action_recovery(
                         (restore_id,),
                         f"restore receipt persistence failed: {type(exc).__name__}: {exc}",
                     )
                     return RestoreOutcome(
-                        restore_id, "recovery_required", "restore_receipt_persistence_failed", str(exc),
+                        restore_id,
+                        "recovery_required",
+                        "restore_receipt_persistence_failed",
+                        str(exc),
                     )
                 return outcome
             detail = outcome.detail or outcome.reason

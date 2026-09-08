@@ -3,9 +3,10 @@
 from __future__ import annotations
 import argparse
 import json
-from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING
+from collections.abc import Callable, Iterable, Mapping
+from typing import TYPE_CHECKING, cast
 
+from neocortex.deduplication.domain.models import DuplicateGroup
 from neocortex.runtime.orchestration.replay_metrics import route_replay_metrics
 
 if TYPE_CHECKING:
@@ -415,7 +416,10 @@ def has_organization_errors(result) -> bool:
 
 
 def _print_duplicate_groups(
-    result, limit: int, *, emit: Callable[[str], object] = print,
+    result,
+    limit: int,
+    *,
+    emit: Callable[[str], object] = print,
 ) -> None:
     """Use the same bounded evidence detail for terminals and pipes."""
     plan = getattr(result, "dedup_plan", None)
@@ -430,7 +434,7 @@ def _print_duplicate_groups(
         )
     if limit <= 0:
         return
-    groups = tuple(getattr(plan, "groups", ()))[:limit]
+    groups = tuple(cast(Iterable[DuplicateGroup], getattr(plan, "groups", ())))[:limit]
     total = int(plan.group_count)
     emit(
         f"DUPLICATE_GROUPS shown={len(groups)} total={total} "
@@ -484,6 +488,25 @@ def print_reports(result, args: argparse.Namespace) -> None:
 
 def _human_count(value: int | float) -> str:
     return f"{int(value):,}".replace(",", " ")
+
+
+def _route_metric_count(metrics: Mapping[str, object], key: str) -> int:
+    value = metrics.get(key)
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        try:
+            return int(value)
+        except (OverflowError, ValueError):
+            return 0
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except (ValueError, OverflowError):
+            return 0
+    return 0
 
 
 def _human_bytes(value: int) -> str:
@@ -648,9 +671,9 @@ def print_professional_summary(
             "Código": "code",
         }.get(label, label.casefold())
         metrics = route_replay_metrics(route_name, summary)
-        candidates = int(metrics["candidates"])
-        cache_hits = int(metrics["cache_hits"])
-        work = int(metrics["new_work"])
+        candidates = _route_metric_count(metrics, "candidates")
+        cache_hits = _route_metric_count(metrics, "cache_hits")
+        work = _route_metric_count(metrics, "new_work")
         issues = _route_issue_count(summary)
         review = _route_review_count(summary)
         routes.add_row(

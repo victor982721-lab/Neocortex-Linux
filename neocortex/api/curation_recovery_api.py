@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import Required, TypedDict
+from typing import Required, TypedDict, cast
 from uuid import uuid4
 
 from neocortex.api.curation_application_api import _error_payload, _request_id, _safe_text
@@ -31,12 +31,16 @@ class CurationRecoveryStatusOutput(TypedDict, total=False):
     request_id: Required[str]
     status: Required[str]
     read_only: Required[bool]
+    effects: Required[dict[str, str]]
     result: Required[dict[str, object] | None]
     error: Required[dict[str, object] | None]
     exit_code: Required[int]
 
 
-def _paths(state_directory, database) -> tuple[Path, Path]:
+def _paths(
+    state_directory: Path | str | None,
+    database: Path | str | None,
+) -> tuple[Path, Path]:
     state = default_state_directory() if state_directory is None else Path(state_directory)
     return state, state / "framework.sqlite3" if database is None else Path(database)
 
@@ -50,15 +54,18 @@ def _error(
     code: str,
     kind: str,
 ) -> dict[str, object]:
-    return _error_payload(
-        schema=schema,
-        operation=operation,
-        request_id=request_id,
-        grant_id=None,
-        code=code,
-        error=error,
-        retryable=False,
-        kind=kind,
+    return cast(
+        dict[str, object],
+        _error_payload(
+            schema=schema,
+            operation=operation,
+            request_id=request_id,
+            grant_id=None,
+            code=code,
+            error=error,
+            retryable=False,
+            kind=kind,
+        ),
     )
 
 
@@ -77,23 +84,29 @@ def curation_recovery_status_payload(
     try:
         request = _request_id(request_id, prefix="curation-recovery-status")
     except ValueError as exc:
-        return _error(
-            schema=CURATION_RECOVERY_STATUS_API_SCHEMA,
-            operation="curation-recovery-status",
-            request_id=f"curation-recovery-status-{uuid4().hex}",
-            error=exc,
-            code="invalid_request",
-            kind="neocortex_curation_recovery_status",
+        return cast(
+            CurationRecoveryStatusOutput,
+            _error(
+                schema=CURATION_RECOVERY_STATUS_API_SCHEMA,
+                operation="curation-recovery-status",
+                request_id=f"curation-recovery-status-{uuid4().hex}",
+                error=exc,
+                code="invalid_request",
+                kind="neocortex_curation_recovery_status",
+            ),
         )
     if action_id is not None:
         if isinstance(action_id, bool) or not isinstance(action_id, int) or action_id < 1:
-            return _error(
-                schema=CURATION_RECOVERY_STATUS_API_SCHEMA,
-                operation="curation-recovery-status",
-                request_id=request,
-                error="action_id must be positive",
-                code="invalid_request",
-                kind="neocortex_curation_recovery_status",
+            return cast(
+                CurationRecoveryStatusOutput,
+                _error(
+                    schema=CURATION_RECOVERY_STATUS_API_SCHEMA,
+                    operation="curation-recovery-status",
+                    request_id=request,
+                    error="action_id must be positive",
+                    code="invalid_request",
+                    kind="neocortex_curation_recovery_status",
+                ),
             )
         after_action_id = action_id - 1
         limit = 1
@@ -106,22 +119,28 @@ def curation_recovery_status_payload(
             run_id=run_id,
         )
     except ValueError as exc:
-        return _error(
-            schema=CURATION_RECOVERY_STATUS_API_SCHEMA,
-            operation="curation-recovery-status",
-            request_id=request,
-            error=exc,
-            code="invalid_request",
-            kind="neocortex_curation_recovery_status",
+        return cast(
+            CurationRecoveryStatusOutput,
+            _error(
+                schema=CURATION_RECOVERY_STATUS_API_SCHEMA,
+                operation="curation-recovery-status",
+                request_id=request,
+                error=exc,
+                code="invalid_request",
+                kind="neocortex_curation_recovery_status",
+            ),
         )
     except (sqlite3.DatabaseError, OSError, RuntimeError) as exc:
-        return _error(
-            schema=CURATION_RECOVERY_STATUS_API_SCHEMA,
-            operation="curation-recovery-status",
-            request_id=request,
-            error=exc,
-            code="unavailable",
-            kind="neocortex_curation_recovery_status",
+        return cast(
+            CurationRecoveryStatusOutput,
+            _error(
+                schema=CURATION_RECOVERY_STATUS_API_SCHEMA,
+                operation="curation-recovery-status",
+                request_id=request,
+                error=exc,
+                code="unavailable",
+                kind="neocortex_curation_recovery_status",
+            ),
         )
     result = {
         "count": len(rows),
@@ -172,7 +191,9 @@ def curation_restore_preview_payload(
         return _error(
             schema=CURATION_RESTORE_API_SCHEMA,
             operation="curation-restore-preview",
-            request_id=request if "request" in locals() else f"curation-restore-preview-{uuid4().hex}",
+            request_id=request
+            if "request" in locals()
+            else f"curation-restore-preview-{uuid4().hex}",
             error=exc,
             code="invalid_request",
             kind="neocortex_curation_restore_preview",

@@ -14,7 +14,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, NamedTuple
+from typing import Literal, NamedTuple, cast
 
 from neocortex.workflow.review.review import (
     MAX_IDENTIFIER_CHARS,
@@ -175,9 +175,7 @@ _INSERT_MATERIALIZED_SQL = (
 
 def _validated_identifier(value: object, *, field_name: str) -> str:
     if not isinstance(value, str) or not value or value.strip() != value:
-        raise sqlite3.DatabaseError(
-            f"review evidence {field_name} must be non-empty and trimmed"
-        )
+        raise sqlite3.DatabaseError(f"review evidence {field_name} must be non-empty and trimmed")
     if len(value) > MAX_IDENTIFIER_CHARS:
         raise sqlite3.DatabaseError(
             f"review evidence {field_name} exceeds {MAX_IDENTIFIER_CHARS} characters"
@@ -187,9 +185,7 @@ def _validated_identifier(value: object, *, field_name: str) -> str:
 
 def _positive_integer(value: object, *, field_name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, str)):
-        raise sqlite3.DatabaseError(
-            f"review evidence {field_name} must be a positive integer"
-        )
+        raise sqlite3.DatabaseError(f"review evidence {field_name} must be a positive integer")
     try:
         result = int(value)
     except ValueError as exc:
@@ -197,17 +193,13 @@ def _positive_integer(value: object, *, field_name: str) -> int:
             f"review evidence {field_name} must be a positive integer"
         ) from exc
     if result <= 0:
-        raise sqlite3.DatabaseError(
-            f"review evidence {field_name} must be a positive integer"
-        )
+        raise sqlite3.DatabaseError(f"review evidence {field_name} must be a positive integer")
     return result
 
 
 def _non_negative_integer(value: object, *, field_name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, str)):
-        raise sqlite3.DatabaseError(
-            f"review evidence {field_name} must be a non-negative integer"
-        )
+        raise sqlite3.DatabaseError(f"review evidence {field_name} must be a non-negative integer")
     try:
         result = int(value)
     except ValueError as exc:
@@ -215,9 +207,7 @@ def _non_negative_integer(value: object, *, field_name: str) -> int:
             f"review evidence {field_name} must be a non-negative integer"
         ) from exc
     if result < 0:
-        raise sqlite3.DatabaseError(
-            f"review evidence {field_name} must be a non-negative integer"
-        )
+        raise sqlite3.DatabaseError(f"review evidence {field_name} must be a non-negative integer")
     return result
 
 
@@ -227,22 +217,16 @@ def _integer(value: object, *, field_name: str) -> int:
     try:
         return int(value)
     except ValueError as exc:
-        raise sqlite3.DatabaseError(
-            f"review evidence {field_name} must be an integer"
-        ) from exc
+        raise sqlite3.DatabaseError(f"review evidence {field_name} must be an integer") from exc
 
 
 def _json_object(raw_value: object, *, field_name: str) -> dict[str, object]:
     try:
         value = json.loads(str(raw_value))
     except (TypeError, ValueError) as exc:
-        raise sqlite3.DatabaseError(
-            f"review evidence {field_name} must be valid JSON"
-        ) from exc
+        raise sqlite3.DatabaseError(f"review evidence {field_name} must be valid JSON") from exc
     if not isinstance(value, dict):
-        raise sqlite3.DatabaseError(
-            f"review evidence {field_name} must be a JSON object"
-        )
+        raise sqlite3.DatabaseError(f"review evidence {field_name} must be a JSON object")
     return value
 
 
@@ -281,9 +265,7 @@ def _materialized_values(
     mtime_ns = _integer(source[7], field_name="mtime_ns")
     birthtime_ns = _integer(source[8], field_name="birthtime_ns")
     reason_code = _validated_identifier(source[9], field_name="reason_code")
-    candidate_generation = _non_negative_integer(
-        source[10], field_name="candidate_generation"
-    )
+    candidate_generation = _non_negative_integer(source[10], field_name="candidate_generation")
 
     candidate_values = source[11:17]
     if all(value is None for value in candidate_values):
@@ -295,20 +277,14 @@ def _materialized_values(
         detector_version = None
         candidate_evidence_complete = 0
     elif any(value is None for value in candidate_values):
-        raise sqlite3.DatabaseError(
-            "review decision candidate evidence is partially populated"
-        )
+        raise sqlite3.DatabaseError("review decision candidate evidence is partially populated")
     else:
         source_status = _validated_identifier(source[11], field_name="source_status")
         target_recommendation = str(source[12])
         if target_recommendation not in REVIEW_RECOMMENDATIONS:
-            raise sqlite3.DatabaseError(
-                "review evidence target recommendation is invalid"
-            )
+            raise sqlite3.DatabaseError("review evidence target recommendation is invalid")
         retryable_value = source[13]
-        if isinstance(retryable_value, bool) or not isinstance(
-            retryable_value, (int, str)
-        ):
+        if isinstance(retryable_value, bool) or not isinstance(retryable_value, (int, str)):
             raise sqlite3.DatabaseError("review evidence retryable is invalid")
         retryable = int(retryable_value)
         if retryable not in (0, 1):
@@ -322,16 +298,10 @@ def _materialized_values(
         if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
             raise sqlite3.DatabaseError("review evidence confidence is invalid")
         evidence_json = str(source[15])
-        candidate_evidence = _json_object(
-            evidence_json, field_name="candidate evidence"
-        )
+        candidate_evidence = _json_object(evidence_json, field_name="candidate evidence")
         if serialized_evidence(candidate_evidence) != evidence_json:
-            raise sqlite3.DatabaseError(
-                "review candidate evidence must be canonical and bounded"
-            )
-        detector_version = _validated_identifier(
-            source[16], field_name="detector_version"
-        )
+            raise sqlite3.DatabaseError("review candidate evidence must be canonical and bounded")
+        detector_version = _validated_identifier(source[16], field_name="detector_version")
         candidate_evidence_complete = 1
 
     decision_status = str(source[17])
@@ -390,8 +360,7 @@ def _materialize_review_decision(
     """Materialize one decision inside the caller's write transaction."""
 
     source = connection.execute(
-        "SELECT " + _SOURCE_DECISION_COLUMNS + " FROM review_decisions "
-        "WHERE decision_id=?",
+        "SELECT " + _SOURCE_DECISION_COLUMNS + " FROM review_decisions WHERE decision_id=?",
         (decision_id,),
     ).fetchone()
     if source is None:
@@ -409,9 +378,7 @@ def _materialize_review_decision(
     ).fetchall()
     if existing_rows:
         if len(existing_rows) != 1:
-            raise sqlite3.DatabaseError(
-                "materialized review evidence has conflicting identities"
-            )
+            raise sqlite3.DatabaseError("materialized review evidence has conflicting identities")
         _require_matching_materialization(values, tuple(existing_rows[0]))
         return False
 
@@ -458,9 +425,7 @@ def _pending_materializations(
         by_id = by_decision_id.get(value.decision_id)
         by_key = by_idempotency_key.get(value.idempotency_key)
         if by_id is not None and by_key is not None and by_id != by_key:
-            raise sqlite3.DatabaseError(
-                "materialized review evidence has conflicting identities"
-            )
+            raise sqlite3.DatabaseError("materialized review evidence has conflicting identities")
         existing = by_id if by_id is not None else by_key
         if existing is None:
             pending.append(value)
@@ -487,13 +452,10 @@ def materialize_review_evidence(
         or not 1 <= batch_size <= MAX_MATERIALIZATION_BATCH_SIZE
     ):
         raise ValueError(
-            "review evidence batch_size must be between 1 and "
-            f"{MAX_MATERIALIZATION_BATCH_SIZE}"
+            f"review evidence batch_size must be between 1 and {MAX_MATERIALIZATION_BATCH_SIZE}"
         )
 
-    connection = connect_existing_framework(
-        Path(database), readonly=False, timeout_seconds=60
-    )
+    connection = connect_existing_framework(Path(database), readonly=False, timeout_seconds=60)
     try:
         connection.execute("BEGIN IMMEDIATE")
         materialized_ns = time.time_ns()
@@ -508,9 +470,7 @@ def materialize_review_evidence(
             (_MATERIALIZATION_PIPELINE_KEY,),
         ).fetchone()
         if progress is None:  # pragma: no cover - insert/select invariant
-            raise sqlite3.DatabaseError(
-                "review evidence materialization progress is unavailable"
-            )
+            raise sqlite3.DatabaseError("review evidence materialization progress is unavailable")
         last_scanned_decision_id = _non_negative_integer(
             progress[0], field_name="last_scanned_decision_id"
         )
@@ -523,8 +483,7 @@ def materialize_review_evidence(
         ).fetchall()
         selected = rows[:batch_size]
         values = [
-            _materialized_values(tuple(row), materialized_ns=materialized_ns)
-            for row in selected
+            _materialized_values(tuple(row), materialized_ns=materialized_ns) for row in selected
         ]
         pending = _pending_materializations(connection, values)
         connection.executemany(
@@ -587,17 +546,10 @@ def _query_filters(
 ) -> tuple[list[str], list[object]]:
     route_name = _query_identifier(route_name, field_name="route_name")
     reason_code = _query_identifier(reason_code, field_name="reason_code")
-    detector_version = _query_identifier(
-        detector_version, field_name="detector_version"
-    )
+    detector_version = _query_identifier(detector_version, field_name="detector_version")
     actor = _query_identifier(actor, field_name="actor")
-    if (
-        target_recommendation is not None
-        and target_recommendation not in REVIEW_RECOMMENDATIONS
-    ):
-        raise ValueError(
-            f"invalid review target recommendation: {target_recommendation}"
-        )
+    if target_recommendation is not None and target_recommendation not in REVIEW_RECOMMENDATIONS:
+        raise ValueError(f"invalid review target recommendation: {target_recommendation}")
 
     clauses: list[str] = []
     parameters: list[object] = []
@@ -620,18 +572,14 @@ def _review_evidence_example(row: sqlite3.Row) -> ReviewEvidenceExample:
     candidate_values = values[11:17]
     candidate_evidence_complete = int(values[24])
     if candidate_evidence_complete not in (0, 1):
-        raise sqlite3.DatabaseError(
-            "review candidate evidence completeness flag is invalid"
-        )
+        raise sqlite3.DatabaseError("review candidate evidence completeness flag is invalid")
     if candidate_evidence_complete:
         if any(value is None for value in candidate_values):
             raise sqlite3.DatabaseError("review candidate evidence is incomplete")
         source_status = str(values[11])
         target_recommendation = str(values[12])
         if target_recommendation not in REVIEW_RECOMMENDATIONS:
-            raise sqlite3.DatabaseError(
-                "review evidence target recommendation is invalid"
-            )
+            raise sqlite3.DatabaseError("review evidence target recommendation is invalid")
         retryable_value = int(values[13])
         if retryable_value not in (0, 1):
             raise sqlite3.DatabaseError("review evidence retryable is invalid")
@@ -653,20 +601,18 @@ def _review_evidence_example(row: sqlite3.Row) -> ReviewEvidenceExample:
         candidate_evidence = None
         detector_version = None
 
-    decision_status = str(values[17])
-    outcome = str(values[23])
-    if decision_status not in REVIEW_DECISION_STATUSES:
+    raw_decision_status = str(values[17])
+    if raw_decision_status not in REVIEW_DECISION_STATUSES:
         raise sqlite3.DatabaseError("review evidence decision status is invalid")
-    if _OUTCOME_BY_STATUS[decision_status] != outcome:  # type: ignore[index]
-        raise sqlite3.DatabaseError(
-            "review evidence outcome does not match its decision status"
-        )
+    decision_status = cast(ReviewDecisionStatus, raw_decision_status)
+    expected_outcome = _OUTCOME_BY_STATUS[decision_status]
+    if expected_outcome != str(values[23]):
+        raise sqlite3.DatabaseError("review evidence outcome does not match its decision status")
+    outcome = expected_outcome
     provenance = _json_object(values[19], field_name="provenance")
     evidence_schema_version = int(values[25])
     if evidence_schema_version != EVIDENCE_SCHEMA_VERSION:
-        raise sqlite3.DatabaseError(
-            "review evidence schema version is unsupported by this reader"
-        )
+        raise sqlite3.DatabaseError("review evidence schema version is unsupported by this reader")
     return ReviewEvidenceExample(
         decision_id=int(values[0]),
         idempotency_key=str(values[1]),
@@ -685,7 +631,7 @@ def _review_evidence_example(row: sqlite3.Row) -> ReviewEvidenceExample:
         confidence=confidence,
         candidate_evidence=candidate_evidence,
         detector_version=detector_version,
-        decision_status=decision_status,  # type: ignore[arg-type]
+        decision_status=decision_status,
         outcome=outcome,
         actor=str(values[18]),
         provenance=provenance,
@@ -717,9 +663,7 @@ def list_review_evidence(
         or not isinstance(limit, int)
         or not 1 <= limit <= MAX_EVIDENCE_QUERY_LIMIT
     ):
-        raise ValueError(
-            f"review evidence limit must be between 1 and {MAX_EVIDENCE_QUERY_LIMIT}"
-        )
+        raise ValueError(f"review evidence limit must be between 1 and {MAX_EVIDENCE_QUERY_LIMIT}")
     if decision_status is not None and decision_status not in REVIEW_DECISION_STATUSES:
         raise ValueError(f"invalid review decision status: {decision_status}")
     if require_complete_candidate_evidence is not None and not isinstance(
@@ -742,9 +686,7 @@ def list_review_evidence(
         parameters.append(int(require_complete_candidate_evidence))
     parameters.append(limit)
 
-    connection = connect_existing_framework(
-        Path(database), readonly=True, timeout_seconds=60
-    )
+    connection = connect_existing_framework(Path(database), readonly=True, timeout_seconds=60)
     try:
         where = "" if not clauses else " WHERE " + " AND ".join(clauses)
         rows = connection.execute(
@@ -786,9 +728,7 @@ def review_evidence_metrics(
         for clause in clauses
     ]
     where = "" if not clauses else " WHERE " + " AND ".join(clauses)
-    connection = connect_existing_framework(
-        Path(database), readonly=True, timeout_seconds=60
-    )
+    connection = connect_existing_framework(Path(database), readonly=True, timeout_seconds=60)
     try:
         row = connection.execute(
             """SELECT COUNT(decisions.decision_id),
@@ -840,9 +780,7 @@ def review_evidence_metrics(
         complete_candidate_evidence=complete_candidate_evidence,
         materialization_coverage=_rate(materialized_examples, total_decisions),
         decisive_label_coverage=_rate(decisive_examples, materialized_examples),
-        candidate_evidence_coverage=_rate(
-            complete_candidate_evidence, materialized_examples
-        ),
+        candidate_evidence_coverage=_rate(complete_candidate_evidence, materialized_examples),
         acceptance_rate=_rate(confirmed_examples, materialized_examples),
         rejection_rate=_rate(dismissed_examples, materialized_examples),
         abstention_rate=_rate(deferred_examples, materialized_examples),

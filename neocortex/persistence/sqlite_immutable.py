@@ -680,9 +680,7 @@ def _verify_immutable_source(path: Path, fence: SQLiteImmutableFence) -> None:
     try:
         after = capture_sqlite_read_fence(path)
     except (OSError, ImmutableSQLiteUnavailable) as exc:
-        raise ImmutableSQLiteUnavailable(
-            "SQLite owner changed during immutable read"
-        ) from exc
+        raise ImmutableSQLiteUnavailable("SQLite owner changed during immutable read") from exc
     if after != fence:
         raise ImmutableSQLiteUnavailable("SQLite owner changed during immutable read")
 
@@ -771,9 +769,10 @@ def _copy_regular_file(
 
     source_fd = os.open(os.fspath(source), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
-        with os.fdopen(source_fd, "rb", closefd=True) as source_stream, destination.open(
-            "wb"
-        ) as destination_stream:
+        with (
+            os.fdopen(source_fd, "rb", closefd=True) as source_stream,
+            destination.open("wb") as destination_stream,
+        ):
             if budget_state is None:
                 shutil.copyfileobj(source_stream, destination_stream, length=1024 * 1024)
             else:
@@ -837,6 +836,7 @@ def _materialize_temporary_database(
 
     connection: sqlite3.Connection | None = None
     primary: BaseException | None = None
+    budget_error: BaseException | None = None
     try:
         if budget_state is not None:
             budget_state.checkpoint()
@@ -850,7 +850,6 @@ def _materialize_temporary_database(
                 "temporary SQLite snapshot could not be materialized as DELETE journal"
             )
         if budget_state is not None:
-            budget_error: BaseException | None = None
 
             def progress() -> int:
                 nonlocal budget_error
@@ -1031,7 +1030,9 @@ class SQLiteReadSession:
             except FileNotFoundError as exc:
                 raise ImmutableSQLiteUnavailable("SQLite snapshot temp root is missing") from exc
             if not stat.S_ISDIR(root_stat.st_mode) or self.temp_root.is_symlink():
-                raise ImmutableSQLiteUnavailable("SQLite snapshot temp root is not a real directory")
+                raise ImmutableSQLiteUnavailable(
+                    "SQLite snapshot temp root is not a real directory"
+                )
 
         last_error: BaseException | None = None
         operation_started = self.budget.monotonic_clock()
@@ -1120,9 +1121,9 @@ class SQLiteReadSession:
                 # the fenced connection retains a handle to a path that has
                 # already disappeared, and a failed ``__enter__`` cannot
                 # reach ``__exit__`` to perform the cleanup later.
-                connection = self._connection
-                self._connection = None
-                if connection is not None:
+                if self._connection is not None:
+                    connection = self._connection
+                    self._connection = None
                     try:
                         connection.close()
                     except BaseException as cleanup_error:
@@ -1223,8 +1224,7 @@ class _OwnedSnapshotConnection(sqlite3.Connection):
                     primary = exc
                 else:
                     primary.add_note(
-                        "temporary SQLite snapshot cleanup failed: "
-                        f"{type(exc).__name__}: {exc}"
+                        f"temporary SQLite snapshot cleanup failed: {type(exc).__name__}: {exc}"
                     )
         if primary is not None:
             raise primary

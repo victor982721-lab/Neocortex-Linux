@@ -118,25 +118,57 @@ def run_file_action_recovery_status(args: argparse.Namespace) -> int:
         )
     except FileNotFoundError:
         if args.action_recovery_json and not getattr(args, "action_recovery_json_lines", False):
-            print(json.dumps({
-                "kind": "file-action-reconciliation-page", "schema_version": 2,
-                "availability": "absent", "returned": 0, "total_matching": None,
-                "has_more": None, "next_cursor": None, "items": [],
-                "complete": False, "reason_code": "owner_absent", "read_only": True,
-                "actions_applied": False,
-                "scope": {"owner": "framework", "limit": args.action_recovery_limit,
-                          "after_action_id": args.action_recovery_after, "run_id": args.action_recovery_run},
-            }, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+            print(
+                json.dumps(
+                    {
+                        "kind": "file-action-reconciliation-page",
+                        "schema_version": 2,
+                        "availability": "absent",
+                        "returned": 0,
+                        "total_matching": None,
+                        "has_more": None,
+                        "next_cursor": None,
+                        "items": [],
+                        "complete": False,
+                        "reason_code": "owner_absent",
+                        "read_only": True,
+                        "actions_applied": False,
+                        "scope": {
+                            "owner": "framework",
+                            "limit": args.action_recovery_limit,
+                            "after_action_id": args.action_recovery_after,
+                            "run_id": args.action_recovery_run,
+                        },
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
         else:
-            print("ACTION_RECOVERY_PAGE returned=0 availability=absent complete=false reason=owner_absent")
+            print(
+                "ACTION_RECOVERY_PAGE returned=0 availability=absent complete=false reason=owner_absent"
+            )
         return 2
     except (OSError, sqlite3.Error, ValueError) as exc:
         if args.action_recovery_json and not getattr(args, "action_recovery_json_lines", False):
-            print(json.dumps({
-                "kind": "file-action-reconciliation-page", "complete": False,
-                "availability": "failed", "returned": 0, "total_matching": None,
-                "items": [], "reason_code": "recovery_query_failed", "error": str(exc),
-            }, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+            print(
+                json.dumps(
+                    {
+                        "kind": "file-action-reconciliation-page",
+                        "complete": False,
+                        "availability": "failed",
+                        "returned": 0,
+                        "total_matching": None,
+                        "items": [],
+                        "reason_code": "recovery_query_failed",
+                        "error": str(exc),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
         else:
             print(f"ERROR action-recovery-status {exc}")
         return 2
@@ -145,29 +177,66 @@ def run_file_action_recovery_status(args: argparse.Namespace) -> int:
     if args.action_recovery_json and not getattr(args, "action_recovery_json_lines", False):
         items = []
         for result in results:
-            items.append({
-                "kind": "file-action-reconciliation",
-                **{name: getattr(result, name) for name in (
-                    "action_id", "action_type", "classification", "detail",
-                    "idempotency_key", "recommendation", "recorded_status",
-                    "reconciler_signature", "run_id", "source_path", "target_path",
-                )},
-            })
-        unsafe = any(item["classification"] in {"ambiguous", "impossible_to_check"} for item in items)
-        print(json.dumps({
-            "kind": "file-action-reconciliation-page", "schema_version": 2,
-            "availability": "ready" if ready else "absent", "returned": len(items),
-            "total_matching": None, "has_more": None if limit_reached else False,
-            "next_cursor": results[-1].action_id if results and limit_reached else None,
-            "complete": ready and not limit_reached and not unsafe,
-            "reason_code": (
-                "owner_absent" if not ready else "limit_reached_more_not_verified" if limit_reached
-                else "uncertain_actions" if unsafe else None
-            ),
-            "scope": {"owner": "framework", "limit": args.action_recovery_limit,
-                      "after_action_id": args.action_recovery_after, "run_id": args.action_recovery_run},
-            "items": items, "read_only": True, "actions_applied": False,
-        }, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")))
+            items.append(
+                {
+                    "kind": "file-action-reconciliation",
+                    **{
+                        name: getattr(result, name)
+                        for name in (
+                            "action_id",
+                            "action_type",
+                            "classification",
+                            "detail",
+                            "idempotency_key",
+                            "recommendation",
+                            "recorded_status",
+                            "reconciler_signature",
+                            "run_id",
+                            "source_path",
+                            "target_path",
+                        )
+                    },
+                }
+            )
+        unsafe = any(
+            item["classification"] in {"ambiguous", "impossible_to_check"} for item in items
+        )
+        print(
+            json.dumps(
+                {
+                    "kind": "file-action-reconciliation-page",
+                    "schema_version": 2,
+                    "availability": "ready" if ready else "absent",
+                    "returned": len(items),
+                    "total_matching": None,
+                    "has_more": None if limit_reached else False,
+                    "next_cursor": results[-1].action_id if results and limit_reached else None,
+                    "complete": ready and not limit_reached and not unsafe,
+                    "reason_code": (
+                        "owner_absent"
+                        if not ready
+                        else "limit_reached_more_not_verified"
+                        if limit_reached
+                        else "uncertain_actions"
+                        if unsafe
+                        else None
+                    ),
+                    "scope": {
+                        "owner": "framework",
+                        "limit": args.action_recovery_limit,
+                        "after_action_id": args.action_recovery_after,
+                        "run_id": args.action_recovery_run,
+                    },
+                    "items": items,
+                    "read_only": True,
+                    "actions_applied": False,
+                },
+                ensure_ascii=False,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
         return 2 if unsafe or not ready else 0
     if not args.action_recovery_json:
         print(
@@ -322,13 +391,24 @@ def run_review_candidates(args: argparse.Namespace) -> int:
         from neocortex.workflow.review.review_candidate_query import list_review_candidates_page
 
         page = list_review_candidates_page(
-            database_path, limit=args.review_candidates,
-            route_name=args.review_route, recommendation=args.review_recommendation,
-            status=args.review_status, after=getattr(args, "review_after", None),
+            database_path,
+            limit=args.review_candidates,
+            route_name=args.review_route,
+            recommendation=args.review_recommendation,
+            status=args.review_status,
+            after=getattr(args, "review_after", None),
         )
         payload = page.to_dict()
         if getattr(args, "review_json", False):
-            print(json.dumps(payload, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")))
+            print(
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
             return 0 if page.availability == "ready" else 2
         print(
             f"REVIEW_PAGE returned={len(page.items)} availability={page.availability} "
@@ -337,7 +417,7 @@ def run_review_candidates(args: argparse.Namespace) -> int:
         )
         if page.availability != "ready":
             return 2
-        candidates = page.items
+        candidates = list(page.items)
     else:
         candidates = None
     try:
@@ -809,7 +889,8 @@ def run_organization_plan(args: argparse.Namespace) -> int:
                 source_root=args.root,
             )
             source_scope = capture_organization_input_scope(
-                args.state_directory / "document_catalog.sqlite3", args.root,
+                args.state_directory / "document_catalog.sqlite3",
+                args.root,
             )
             summary = plan_document_organization(
                 args.state_directory / "document_catalog.sqlite3",

@@ -158,7 +158,9 @@ def revision_identity(
 
 
 def revision_binding(
-    resolved: ResolvedSearchHit, *, revision_id: str,
+    resolved: ResolvedSearchHit,
+    *,
+    revision_id: str,
     revision_warnings: tuple[str, ...],
 ) -> dict[str, object] | None:
     """Carry owner revision currency through the ranking signal.
@@ -474,17 +476,21 @@ def candidate_from_resolved(
     )
     score_kind = "bm25" if ranking_name.startswith("fts_") else "cosine"
     support_value = resolved.section_provenance.get(
-        "query_support", resolved.hit.provenance.get("query_support"),
+        "query_support",
+        resolved.hit.provenance.get("query_support"),
     )
     query_support = dict(support_value) if isinstance(support_value, Mapping) else {}
     binding = revision_binding(
-        resolved, revision_id=revision_id, revision_warnings=revision_warnings,
+        resolved,
+        revision_id=revision_id,
+        revision_warnings=revision_warnings,
     )
     if binding is not None:
         query_support["revision_binding"] = binding
-    support_warnings = (
+    support_warnings: tuple[str, ...] = (
         ("query_matches_partial_terms_only",)
-        if query_support.get("support") == "partial_terms" else ()
+        if query_support.get("support") == "partial_terms"
+        else ()
     )
     if query_support.get("missing_negation_terms"):
         support_warnings += ("query_negation_not_supported_by_evidence",)

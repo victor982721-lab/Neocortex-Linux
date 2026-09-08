@@ -27,6 +27,7 @@ from .semantic_models import (
     EmbeddingModelSpec,
     EmbeddingRequest,
     EmbeddingRole,
+    ExactSearchPage,
     ExactSearchQuery,
     FusionEvidence,
     ResolvedSearchHit,
@@ -132,7 +133,9 @@ _EXPLICIT_TEXTUAL_TERMS = frozenset(
 )
 _EXPLICIT_VISUAL_SUBSTRINGS = ("图片", "图像", "照片", "相片", "截图", "图表", "示意图")
 _EXPLICIT_TEXTUAL_SUBSTRINGS = ("文本", "文档", "文件", "段落", "页面", "内容")
-_EXPLICIT_OCR_TERMS = frozenset({"ocr", "transcribe", "transcribir", "transcription", "transcripción"})
+_EXPLICIT_OCR_TERMS = frozenset(
+    {"ocr", "transcribe", "transcribir", "transcription", "transcripción"}
+)
 _IMAGE_READING_TERMS = frozenset({"dice", "says", "leer", "read"})
 _TEXT_IN_IMAGE = re.compile(
     r"\b(?:texto|text)\s+(?:(?:en|de|del|in|from|on)\s+)?"
@@ -220,7 +223,9 @@ def semantic_ranking(
     diagnostic_item_ids: tuple[str, ...] = (),
     cancellation_check: Callable[[], None] | None = None,
 ) -> SemanticRanking:
-    search_page = search_exact_evidence_page if evidence_mode else search_exact_page
+    search_page: Callable[..., ExactSearchPage] = (
+        search_exact_evidence_page if evidence_mode else search_exact_page
+    )
     diagnostics: dict[str, object] = {}
     page = search_page(
         database,
@@ -236,7 +241,8 @@ def semantic_ranking(
         max_vectors=max_vectors,
         text_scope=text_scope,
         cancellation_check=cancellation_check,
-        **({"diagnostic_item_ids": diagnostic_item_ids, "diagnostics": diagnostics} if diagnostic_item_ids else {}),
+        diagnostic_item_ids=diagnostic_item_ids,
+        diagnostics=diagnostics,
     )
     resolved_values: list[ResolvedSearchHit] = []
     for hit_batch in batches(page.hits, SEARCH_RESOLUTION_BATCH_SIZE):
@@ -270,7 +276,11 @@ def semantic_ranking(
     }
     if diagnostic_item_ids:
         raw_targets = diagnostics.pop("target_hits", ())
-        target_hits = tuple(hit for hit in raw_targets if isinstance(hit, SearchHit)) if isinstance(raw_targets, tuple) else ()
+        target_hits = (
+            tuple(hit for hit in raw_targets if isinstance(hit, SearchHit))
+            if isinstance(raw_targets, tuple)
+            else ()
+        )
         resolved_targets = {value.hit.ref_id: value for value in resolved}
         unresolved_targets = tuple(hit for hit in target_hits if hit.ref_id not in resolved_targets)
         if unresolved_targets:
@@ -286,23 +296,28 @@ def semantic_ranking(
             target = resolved_targets.get(ref_id) if isinstance(ref_id, int) else None
             if target is not None:
                 backend, pipeline, conflict = _retrieval_contract_provenance(target.hit.provenance)
-                entry.update({
-                    "source_kind": target.source_kind,
-                    "source_status": target.source_status,
-                    "published_revision_id": target.published_revision_id,
-                    "current_revision_id": target.current_revision_id,
-                    "source_revision_is_current": target.source_revision_is_current,
-                    "source_processing_signature": target.source_revision.get("processing_signature"),
-                    "section_kind": target.section_kind,
-                    "section_id": target.section_id,
-                    "start_char": target.start_char,
-                    "end_char": target.end_char,
-                    "snippet": target.snippet,
-                    "published_chunk_fingerprint_verified": target.hit.modality is EmbeddingModality.TEXT,
-                    "backend": backend if isinstance(backend, str) else None,
-                    "pipeline": pipeline if isinstance(pipeline, str) else None,
-                    "calibration_contract_conflict": conflict,
-                })
+                entry.update(
+                    {
+                        "source_kind": target.source_kind,
+                        "source_status": target.source_status,
+                        "published_revision_id": target.published_revision_id,
+                        "current_revision_id": target.current_revision_id,
+                        "source_revision_is_current": target.source_revision_is_current,
+                        "source_processing_signature": target.source_revision.get(
+                            "processing_signature"
+                        ),
+                        "section_kind": target.section_kind,
+                        "section_id": target.section_id,
+                        "start_char": target.start_char,
+                        "end_char": target.end_char,
+                        "snippet": target.snippet,
+                        "published_chunk_fingerprint_verified": target.hit.modality
+                        is EmbeddingModality.TEXT,
+                        "backend": backend if isinstance(backend, str) else None,
+                        "pipeline": pipeline if isinstance(pipeline, str) else None,
+                        "calibration_contract_conflict": conflict,
+                    }
+                )
             entries.append(entry)
         ranking_provenance["target_diagnostics"] = entries
     return SemanticRanking(
@@ -396,7 +411,10 @@ def _retrieval_stage_provenance(
     provenance = dict(ranking.provenance)
     funnel_value = provenance.get("candidate_funnel")
     funnel = dict(funnel_value) if isinstance(funnel_value, Mapping) else {}
-    funnel[stage] = {"input_candidates": len(ranking.hits), "retained_candidates": len(retained_hits)}
+    funnel[stage] = {
+        "input_candidates": len(ranking.hits),
+        "retained_candidates": len(retained_hits),
+    }
     provenance["candidate_funnel"] = funnel
     raw_targets = provenance.get("target_diagnostics")
     if not isinstance(raw_targets, list):
@@ -418,14 +436,19 @@ def _retrieval_stage_provenance(
                     backend=target.get("backend"),
                     source_kind=source_kind,
                 )
-                if isinstance(model_signature, str) and isinstance(source_kind, str)
-                and selected_model is not None and selected_model.model_signature == TEXT_MODEL_SIGNATURE
-                and target.get("calibration_contract_conflict") is False else None
+                if isinstance(model_signature, str)
+                and isinstance(source_kind, str)
+                and selected_model is not None
+                and selected_model.model_signature == TEXT_MODEL_SIGNATURE
+                and target.get("calibration_contract_conflict") is False
+                else None
             )
             raw_score = target.get("raw_score")
             target["source_score_floor"] = floor
             target["above_score_floor"] = (
-                raw_score >= floor if isinstance(raw_score, (int, float)) and floor is not None else None
+                raw_score >= floor
+                if isinstance(raw_score, (int, float)) and floor is not None
+                else None
             )
             # A targeted hit may be observed by the exhaustive diagnostic scan
             # but omitted from the bounded candidate window.  Calibration is
@@ -433,24 +456,28 @@ def _retrieval_stage_provenance(
             # of implying that the floor rejected an unexamined hit.
             if isinstance(ref_id := target.get("ref_id"), int) and ref_id not in before:
                 target["threshold_evaluation"] = (
-                    "not_reached_candidate_window" if floor is not None
-                    else "not_calibrated"
+                    "not_reached_candidate_window" if floor is not None else "not_calibrated"
                 )
         elif stage == "image_calibration":
             raw_score = target.get("raw_score")
             target["source_score_floor"] = image_score_floor
             target["above_score_floor"] = (
                 raw_score >= image_score_floor
-                if isinstance(raw_score, (int, float)) and image_score_floor is not None else None
+                if isinstance(raw_score, (int, float)) and image_score_floor is not None
+                else None
             )
         ref_id = target.get("ref_id")
         if isinstance(ref_id, int) and ref_id in before:
             target["stage"] = (
-                "rejected_by_text_floor" if stage == "text_calibration"
-                else "rejected_by_image_calibration" if stage == "image_calibration"
-                else "excluded_by_document_diversity"
-            ) if ref_id not in after else (
-                "accepted_by_text_calibration" if stage == "text_calibration" else "retained"
+                (
+                    "rejected_by_text_floor"
+                    if stage == "text_calibration"
+                    else "rejected_by_image_calibration"
+                    if stage == "image_calibration"
+                    else "excluded_by_document_diversity"
+                )
+                if ref_id not in after
+                else ("accepted_by_text_calibration" if stage == "text_calibration" else "retained")
             )
         targets.append(target)
     provenance["target_diagnostics"] = targets
@@ -486,7 +513,10 @@ def apply_text_retrieval_calibration(
             ranking,
             provenance={
                 **_retrieval_stage_provenance(
-                    ranking, ranking.hits, stage="text_calibration", selected_model=selected_model,
+                    ranking,
+                    ranking.hits,
+                    stage="text_calibration",
+                    selected_model=selected_model,
                 ),
                 "retrieval_abstention": calibration,
             },
@@ -550,7 +580,10 @@ def apply_text_retrieval_calibration(
         resolved=retained_resolved,
         provenance={
             **_retrieval_stage_provenance(
-                ranking, retained_hits, stage="text_calibration", selected_model=selected_model,
+                ranking,
+                retained_hits,
+                stage="text_calibration",
+                selected_model=selected_model,
             ),
             "retrieval_abstention": calibration,
         },
@@ -678,12 +711,16 @@ def _image_abstention_ranking(
     calibration: ImageRetrievalCalibration | None,
 ) -> SemanticRanking:
     routed_away = reason in {
-        "textual_query_routed_away_from_clip", "ambiguous_query_requires_text_evidence",
+        "textual_query_routed_away_from_clip",
+        "ambiguous_query_requires_text_evidence",
     }
     calibration_metadata: dict[str, object] = {
         "status": (
-            "not_required_for_query" if routed_away else "not_calibrated"
-            if calibration is None else "contract_mismatch"
+            "not_required_for_query"
+            if routed_away
+            else "not_calibrated"
+            if calibration is None
+            else "contract_mismatch"
         ),
         "query_abstained": True,
         "abstention_reason": reason,
@@ -803,7 +840,10 @@ def apply_image_retrieval_calibration(
         resolved=retained_resolved,
         provenance={
             **_retrieval_stage_provenance(
-                ranking, retained_hits, stage="image_calibration", image_score_floor=calibration.minimum_score,
+                ranking,
+                retained_hits,
+                stage="image_calibration",
+                image_score_floor=calibration.minimum_score,
             ),
             "retrieval_abstention": calibration_metadata,
         },
@@ -846,22 +886,32 @@ def _merge_text_query_variants(
     observations: dict[tuple[str, str], list[dict[str, object]]] = {}
     metadata: list[dict[str, object]] = []
     for position, (variant, ranking) in enumerate(variants):
-        metadata.append({
-            **variant, "executed": True, "vectors_scanned": ranking.scanned,
-            "complete": ranking.complete, "raw_candidates": len(ranking.hits),
-            "cutoff_score": ranking.cutoff_score,
-        })
+        metadata.append(
+            {
+                **variant,
+                "executed": True,
+                "vectors_scanned": ranking.scanned,
+                "complete": ranking.complete,
+                "raw_candidates": len(ranking.hits),
+                "cutoff_score": ranking.cutoff_score,
+            }
+        )
         resolved_by_key = {_search_hit_key(value.hit): value for value in ranking.resolved}
         for rank, hit in enumerate(ranking.hits, 1):
             resolved = resolved_by_key.get(_search_hit_key(hit))
             if resolved is None:
                 continue
             key = (hit.item_id, hit.entity_id if evidence_mode else "")
-            observations.setdefault(key, []).append({
-                "variant_id": variant["variant_id"], "raw_score": hit.score,
-                "source_rank": rank, "ref_id": hit.ref_id, "entity_id": hit.entity_id,
-                "generation_id": hit.generation_id,
-            })
+            observations.setdefault(key, []).append(
+                {
+                    "variant_id": variant["variant_id"],
+                    "raw_score": hit.score,
+                    "source_rank": rank,
+                    "ref_id": hit.ref_id,
+                    "entity_id": hit.entity_id,
+                    "generation_id": hit.generation_id,
+                }
+            )
             previous = by_key.get(key)
             if previous is None or hit.score > previous[1].score:
                 by_key[key] = (position, hit, resolved)
@@ -879,22 +929,31 @@ def _merge_text_query_variants(
             "unlisted_variant_scores": "not_observed_in_that_candidate_window",
             "score_interpretation": "cosine_for_named_effective_query_not_original_query_probability",
         }
-        updated_hit = replace(hit, provenance={**hit.provenance, "retrieval_query_variants": expansion})
+        updated_hit = replace(
+            hit, provenance={**hit.provenance, "retrieval_query_variants": expansion}
+        )
         support_value = resolved.section_provenance.get("query_support")
         support = dict(support_value) if isinstance(support_value, Mapping) else {}
         support["query_expansion"] = expansion
         hits.append(updated_hit)
-        resolved_hits.append(replace(
-            resolved, hit=updated_hit,
-            section_provenance={**resolved.section_provenance, "query_support": support},
-        ))
+        resolved_hits.append(
+            replace(
+                resolved,
+                hit=updated_hit,
+                section_provenance={**resolved.section_provenance, "query_support": support},
+            )
+        )
     provenance = dict(original.provenance)
     provenance["query_variants"] = metadata
     provenance["candidate_selection"] = {
         "policy_signature": "semantic-candidate-funnel-v1",
-        "aggregation": "best_single_variant_per_evidence" if evidence_mode else "best_single_variant_per_item",
-        "candidate_limit": limit, "selected_candidates": len(hits),
-        "union_candidates": len(by_key), "variants_executed": len(variants),
+        "aggregation": "best_single_variant_per_evidence"
+        if evidence_mode
+        else "best_single_variant_per_item",
+        "candidate_limit": limit,
+        "selected_candidates": len(hits),
+        "union_candidates": len(by_key),
+        "variants_executed": len(variants),
         "vectors_scanned": sum(ranking.scanned for _, ranking in variants),
         "score_interpretation": "maximum_observed_cosine_over_named_query_variants_not_probability",
     }
@@ -903,28 +962,44 @@ def _merge_text_query_variants(
         raw_targets = ranking.provenance.get("target_diagnostics")
         for raw_target in raw_targets if isinstance(raw_targets, list) else ():
             if isinstance(raw_target, dict) and isinstance(raw_target.get("item_id"), str):
-                targets_by_item.setdefault(raw_target["item_id"], []).append({**raw_target, "variant_id": variant["variant_id"]})
+                targets_by_item.setdefault(raw_target["item_id"], []).append(
+                    {**raw_target, "variant_id": variant["variant_id"]}
+                )
     if targets_by_item:
         targets: list[dict[str, object]] = []
         for item_id, observed in targets_by_item.items():
             selected_hit = next((hit for hit in hits if hit.item_id == item_id), None)
             selected_variant = next(
-                (variants[by_key[key][0]][0]["variant_id"] for key in ordered if key[0] == item_id), None,
+                (variants[by_key[key][0]][0]["variant_id"] for key in ordered if key[0] == item_id),
+                None,
             )
-            winner = next((value for value in observed if value["variant_id"] == selected_variant), None)
+            winner = next(
+                (value for value in observed if value["variant_id"] == selected_variant), None
+            )
             if winner is None:
-                winner = max(observed, key=lambda value: float(value.get("raw_score", -2.0)))
+
+                def raw_score(value: dict[str, object]) -> float:
+                    score = value.get("raw_score", -2.0)
+                    return float(score) if isinstance(score, (int, float, str)) else -2.0
+
+                winner = max(observed, key=raw_score)
             target = dict(winner)
             target["query_variant_diagnostics"] = observed
             target["raw_rank_basis"] = target["variant_id"]
             target["within_candidate_window"] = selected_hit is not None
-            target["candidate_rank"] = next((rank for rank, hit in enumerate(hits, 1) if hit.item_id == item_id), None)
+            target["candidate_rank"] = next(
+                (rank for rank, hit in enumerate(hits, 1) if hit.item_id == item_id), None
+            )
             if target.get("observed_in_published_scope"):
-                target["stage"] = "candidate_selected" if selected_hit is not None else "outside_candidate_window"
+                target["stage"] = (
+                    "candidate_selected" if selected_hit is not None else "outside_candidate_window"
+                )
             targets.append(target)
         provenance["target_diagnostics"] = targets
     return replace(
-        original, hits=tuple(hits), resolved=tuple(resolved_hits),
+        original,
+        hits=tuple(hits),
+        resolved=tuple(resolved_hits),
         scanned=sum(ranking.scanned for _, ranking in variants),
         complete=all(ranking.complete for _, ranking in variants),
         cutoff_reason="top_k" if len(by_key) > limit else original.cutoff_reason,
@@ -1015,13 +1090,19 @@ def text_search_rankings(
     prepared_backend: EmbeddingBackend | None = None
 
     def shared_backend(
-        model: EmbeddingModelSpec, *, cache_dir: Path, local_files_only: bool,
+        model: EmbeddingModelSpec,
+        *,
+        cache_dir: Path,
+        local_files_only: bool,
         threads: int | None,
     ) -> EmbeddingBackend:
         nonlocal prepared_backend
         if prepared_backend is None:
             prepared_backend = backend_factory(
-                model, cache_dir=cache_dir, local_files_only=local_files_only, threads=threads,
+                model,
+                cache_dir=cache_dir,
+                local_files_only=local_files_only,
+                threads=threads,
             )
         return prepared_backend
 
@@ -1060,48 +1141,77 @@ def text_search_rankings(
     )
     if expansions:
         original_variant: dict[str, object] = {
-            "variant_id": "original", "effective_query": query,
-            "original_query": query, "interpretation": "original_user_query",
+            "variant_id": "original",
+            "effective_query": query,
+            "original_query": query,
+            "interpretation": "original_user_query",
         }
-        variants: list[tuple[Mapping[str, object], SemanticRanking]] = [(original_variant, body_ranking)]
+        variants: list[tuple[Mapping[str, object], SemanticRanking]] = [
+            (original_variant, body_ranking)
+        ]
         skipped: list[dict[str, object]] = []
         remaining = max_vectors - body_ranking.scanned
         for expansion in expansions:
-            if not body_ranking.complete or body_ranking.scanned == 0 or remaining < body_ranking.scanned:
-                skipped.append({
-                    **expansion, "executed": False,
-                    "reason": "original_scope_incomplete_or_expansion_vector_budget_unavailable",
-                })
+            if (
+                not body_ranking.complete
+                or body_ranking.scanned == 0
+                or remaining < body_ranking.scanned
+            ):
+                skipped.append(
+                    {
+                        **expansion,
+                        "executed": False,
+                        "reason": "original_scope_incomplete_or_expansion_vector_budget_unavailable",
+                    }
+                )
                 continue
             effective_query = expansion["effective_query"]
             assert isinstance(effective_query, str)
             try:
                 expanded_vector = query_vector(
-                    selected_model, effective_query, cache_dir=cache,
-                    local_files_only=local_files_only, threads=threads,
-                    backend_factory=query_backend_factory, cancellation_check=cancellation_check,
+                    selected_model,
+                    effective_query,
+                    cache_dir=cache,
+                    local_files_only=local_files_only,
+                    threads=threads,
+                    backend_factory=query_backend_factory,
+                    cancellation_check=cancellation_check,
                 )
             except (TextTokenLimitExceededError, SemanticModelUnavailableError) as exc:
-                skipped.append({
-                    **expansion, "executed": False,
-                    "reason": f"optional_query_expansion_unavailable:{type(exc).__name__}",
-                })
+                skipped.append(
+                    {
+                        **expansion,
+                        "executed": False,
+                        "reason": f"optional_query_expansion_unavailable:{type(exc).__name__}",
+                    }
+                )
                 continue
             expanded = semantic_ranking(
-                database, name=SEMANTIC_TEXT_RANKING, query_model=selected_model,
-                target_modality=EmbeddingModality.TEXT, vector=expanded_vector,
+                database,
+                name=SEMANTIC_TEXT_RANKING,
+                query_model=selected_model,
+                target_modality=EmbeddingModality.TEXT,
+                vector=expanded_vector,
                 indexed_model_signatures=(selected_model.model_signature,),
-                limit=limit, max_vectors=remaining, evidence_mode=evidence_mode,
-                text_scope="content", query=effective_query,
+                limit=limit,
+                max_vectors=remaining,
+                evidence_mode=evidence_mode,
+                text_scope="content",
+                query=effective_query,
                 diagnostic_item_ids=diagnostic_item_ids,
                 provenance={"channel": "source_content", "query_variant": dict(expansion)},
                 cancellation_check=cancellation_check,
             )
             remaining -= expanded.scanned
             variants.append((expansion, expanded))
-        body_ranking = _merge_text_query_variants(variants, limit=limit, evidence_mode=evidence_mode)
+        body_ranking = _merge_text_query_variants(
+            variants, limit=limit, evidence_mode=evidence_mode
+        )
         if skipped:
-            body_ranking = replace(body_ranking, provenance={**body_ranking.provenance, "query_variants_not_executed": skipped})
+            body_ranking = replace(
+                body_ranking,
+                provenance={**body_ranking.provenance, "query_variants_not_executed": skipped},
+            )
     body_ranking = apply_text_retrieval_calibration(
         body_ranking,
         selected_model=selected_model,
@@ -1343,7 +1453,8 @@ def _resolve_fused_hits(
         assert value.witness is not None
         snippet = value.witness.snippet or ""
         support_value = value.witness.section_provenance.get(
-            "snippet_query_support", value.witness.hit.provenance.get("query_support"),
+            "snippet_query_support",
+            value.witness.hit.provenance.get("query_support"),
         )
         support = support_value if isinstance(support_value, Mapping) else {}
         coverage = support.get("term_coverage")
@@ -1364,10 +1475,15 @@ def _resolve_fused_hits(
                 evidence,
                 witness=resolved_by_key.get(
                     (
-                        evidence.ranking, evidence.ref_id, evidence.entity_id,
-                        value.item_id, evidence.generation_id,
+                        evidence.ranking,
+                        evidence.ref_id,
+                        evidence.entity_id,
+                        value.item_id,
+                        evidence.generation_id,
                     )
-                ) if evidence.ref_id is not None and evidence.generation_id is not None else None,
+                )
+                if evidence.ref_id is not None and evidence.generation_id is not None
+                else None,
             )
             for evidence in value.evidence
         )
@@ -1386,10 +1502,15 @@ def _resolve_fused_hits(
                 primary_evidence=primary,
             )
         )
+
     def scoped_counterevidence(value: FusedResolvedHit) -> bool:
-        witnesses = tuple(evidence.witness for evidence in value.fused.evidence if evidence.witness is not None)
+        witnesses = tuple(
+            evidence.witness for evidence in value.fused.evidence if evidence.witness is not None
+        )
         support_values = tuple(
-            witness.section_provenance.get("query_support", witness.hit.provenance.get("query_support"))
+            witness.section_provenance.get(
+                "query_support", witness.hit.provenance.get("query_support")
+            )
             for witness in witnesses
         )
         return bool(witnesses) and all(
@@ -1415,7 +1536,8 @@ def _validated_search_query(query: object) -> str:
 
 
 def _annotate_target_fusion(
-    ranking: SemanticRanking, fused: Sequence[FusedResolvedHit],
+    ranking: SemanticRanking,
+    fused: Sequence[FusedResolvedHit],
 ) -> SemanticRanking:
     raw_targets = ranking.provenance.get("target_diagnostics")
     if not isinstance(raw_targets, list):

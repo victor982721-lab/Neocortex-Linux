@@ -1,0 +1,117 @@
+rules:
+  # These rules are intentionally local, syntactic guardrails.  They do not
+  # replace pytest, Ruff, a type checker, or the runtime's fail-closed checks.
+  - id: neo-no-shell-execution
+    languages: [python]
+    message: >-
+      Do not invoke a shell from NeoCortex; use an allow-listed bounded helper
+      and pass an argv sequence instead.
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: subprocess.run(..., shell=True, ...)
+          - pattern: subprocess.call(..., shell=True, ...)
+          - pattern: subprocess.check_call(..., shell=True, ...)
+          - pattern: subprocess.check_output(..., shell=True, ...)
+          - pattern: subprocess.Popen(..., shell=True, ...)
+
+  - id: neo-no-eval-execution
+    languages: [python]
+    message: Do not evaluate dynamically supplied Python or corpus content.
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: eval(...)
+          - pattern: exec(...)
+
+  - id: neo-no-os-system
+    languages: [python]
+    message: Do not use os.system or an os process-spawning primitive.
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: os.system(...)
+          - pattern: os.popen(...)
+          - pattern: os.execv(...)
+          - pattern: os.execve(...)
+          - pattern: os.execl(...)
+          - pattern: os.execlp(...)
+          - pattern: os.execlpe(...)
+          - pattern: os.spawnv(...)
+          - pattern: os.spawnve(...)
+
+  - id: neo-no-corpus-execution
+    languages: [python]
+    message: Do not execute a file or module from the corpus.
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: runpy.run_path(...)
+          - pattern: runpy.run_module(...)
+
+  - id: neo-sqlite-unsafe-read
+    languages: [python]
+    message: >-
+      Do not open a published SQLite owner with sqlite3.connect; use the
+      fenced immutable/snapshot read surface instead.
+    severity: ERROR
+    paths:
+      include:
+        - /tests/fixtures/semgrep_invariants/positive.py
+        - /tests/fixtures/semgrep_invariants/negative.py
+    patterns:
+      - pattern: sqlite3.connect($DATABASE, ...)
+      - pattern-not: sqlite3.connect(":memory:", ...)
+
+  - id: neo-subprocess-without-limits
+    languages: [python]
+    message: >-
+      Every subprocess must have an explicit timeout or child/resource limit;
+      prefer the bounded subprocess helper.
+    severity: ERROR
+    paths:
+      include:
+        - /tests/fixtures/semgrep_invariants/positive.py
+        - /tests/fixtures/semgrep_invariants/negative.py
+    patterns:
+      - pattern-either:
+          - pattern: subprocess.run(...)
+          - pattern: subprocess.call(...)
+          - pattern: subprocess.check_call(...)
+          - pattern: subprocess.check_output(...)
+          - pattern: subprocess.Popen(...)
+      - pattern-not: subprocess.run(..., timeout=$TIMEOUT, ...)
+      - pattern-not: subprocess.call(..., timeout=$TIMEOUT, ...)
+      - pattern-not: subprocess.check_call(..., timeout=$TIMEOUT, ...)
+      - pattern-not: subprocess.check_output(..., timeout=$TIMEOUT, ...)
+      - pattern-not: subprocess.Popen(..., preexec_fn=$LIMITER, ...)
+
+  - id: neo-mutation-without-grant-fence
+    languages: [python]
+    message: >-
+      Corpus mutation must stay inside an explicit grant_fence context; a
+      static path check is not a substitute for grant and fence revalidation.
+    severity: ERROR
+    paths:
+      include:
+        - /tests/fixtures/semgrep_invariants/positive.py
+        - /tests/fixtures/semgrep_invariants/negative.py
+    patterns:
+      - pattern-either:
+          - pattern: os.remove(...)
+          - pattern: os.unlink(...)
+          - pattern: os.rename(...)
+          - pattern: os.replace(...)
+          - pattern: shutil.move(...)
+          - pattern: shutil.copy(...)
+          - pattern: shutil.copy2(...)
+          - pattern: shutil.copytree(...)
+          - pattern: shutil.rmtree(...)
+          - pattern: $PATH.unlink(...)
+          - pattern: $PATH.rename(...)
+          - pattern: $PATH.replace(...)
+          - pattern: $PATH.write_text(...)
+          - pattern: $PATH.write_bytes(...)
+      - pattern-not-inside: |
+          with grant_fence(...):
+              ...

@@ -12,7 +12,7 @@ import sqlite3
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Required, TypedDict
+from typing import Required, TypedDict, cast
 from uuid import uuid4
 
 from neocortex.curation.application import (
@@ -157,11 +157,7 @@ def _result_payload(
         "result": payload,
         "error": None,
         "exit_code": (
-            0
-            if result.status == "complete"
-            else 3
-            if result.status == "recovery_required"
-            else 2
+            0 if result.status == "complete" else 3 if result.status == "recovery_required" else 2
         ),
     }
 
@@ -259,7 +255,11 @@ def curation_apply_payload(
         )
     except (sqlite3.DatabaseError, OSError, RuntimeError) as exc:
         message = _safe_text(exc).casefold()
-        code = "corrupt" if any(token in message for token in ("corrupt", "malformed", "not a database")) else "unavailable"
+        code = (
+            "corrupt"
+            if any(token in message for token in ("corrupt", "malformed", "not a database"))
+            else "unavailable"
+        )
         return _error_payload(
             schema=CURATION_APPLY_SCHEMA,
             operation="curation-apply",
@@ -334,7 +334,11 @@ def curation_reconcile_payload(
         )
     except sqlite3.DatabaseError as exc:
         message = _safe_text(exc).casefold()
-        code = "corrupt" if any(token in message for token in ("corrupt", "malformed", "not a database")) else "unavailable"
+        code = (
+            "corrupt"
+            if any(token in message for token in ("corrupt", "malformed", "not a database"))
+            else "unavailable"
+        )
         return _error_payload(
             schema=CURATION_RECONCILE_API_SCHEMA,
             operation="curation-reconcile",
@@ -356,18 +360,26 @@ def curation_reconcile_payload(
             retryable=False,
             kind="neocortex_curation_reconciliation",
         )
-    result = sanitize_untrusted_payload(
-        {
-            "events": [event.__dict__ if hasattr(event, "__dict__") else {
-                "event_id": event.event_id,
-                "action_id": event.action_id,
-                "classification": event.classification,
-                "recommendation": event.recommendation,
-                "sequence": event.sequence,
-            } for event in events],
-            "count": len(events),
-        },
-        budget=[10_000],
+    result = cast(
+        dict[str, object],
+        sanitize_untrusted_payload(
+            {
+                "events": [
+                    event.__dict__
+                    if hasattr(event, "__dict__")
+                    else {
+                        "event_id": event.event_id,
+                        "action_id": event.action_id,
+                        "classification": event.classification,
+                        "recommendation": event.recommendation,
+                        "sequence": event.sequence,
+                    }
+                    for event in events
+                ],
+                "count": len(events),
+            },
+            budget=[10_000],
+        ),
     )
     return {
         "schema": CURATION_RECONCILE_API_SCHEMA,
@@ -386,6 +398,7 @@ def curation_reconcile_payload(
             "actions_authorized": False,
             "physical_effect_applied": False,
         },
+        "attempt": None,
         "result": result,
         "error": None,
         "exit_code": 0,

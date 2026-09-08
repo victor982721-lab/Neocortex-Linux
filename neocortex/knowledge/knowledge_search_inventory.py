@@ -1,5 +1,6 @@
 """Inventory relationship support for the Knowledge Search facade."""
 
+
 # region [00] Contexto del módulo
 # Módulo: neocortex/knowledge_search_inventory.py
 # Propósito: documentación embebida y separación visual de regiones.
@@ -68,7 +69,7 @@ def _head_sql_values(head: InventoryHead | Sequence[int]) -> tuple[int, int, int
     values = tuple(int(value) for value in head)
     if len(values) != 5:
         raise ValueError("inventory plan head has an invalid shape")
-    return values  # type: ignore[return-value]
+    return values
 
 
 def _issue_sql_values(issue: InventoryPlanIssue) -> tuple[int, str | None]:

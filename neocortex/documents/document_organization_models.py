@@ -68,6 +68,21 @@ class OrganizationApplyProgress:
 
 
 @dataclass(frozen=True, slots=True)
+class _OrganizationPlanContractView:
+    source_scope_id: str | None = None
+    source_root: str | None = None
+    classification_status: str = "unverified"
+    taxonomy_status: str = "unverified"
+    confidence_kind: str = "uncalibrated_heuristic"
+    suggested_logical_location: str | None = None
+    representation_kind: str = "unknown"
+    operation_kind: str = "unresolved"
+    eligibility_status: str = "unverified"
+    executable: bool = False
+    blockers: tuple[str, ...] = ("legacy_unscoped",)
+
+
+@dataclass(frozen=True, slots=True)
 class _ApplyRowOutcome:
     status: str
     cache_synced: bool = False
@@ -158,41 +173,59 @@ def list_organization_plans(
             ORDER BY plan_id DESC LIMIT ?""",
             (*parameters, limit),
         ).fetchall()
-        return tuple(
-            OrganizationPlanView(
-                plan_id=int(row["plan_id"]),
-                source_kind=str(row["source_kind"]),
-                source_path=str(row["source_path"]),
-                destination_path=(
-                    None if row["destination_path"] is None else str(row["destination_path"])
-                ),
-                primary_kind=str(row["primary_kind"]),
-                confidence=float(row["confidence"]),
-                status=str(row["status"]),
-                reason=str(row["reason"]),
-                detail=None if row["detail"] is None else str(row["detail"]),
-                **_organization_plan_contract_view(row),
+        views: list[OrganizationPlanView] = []
+        for row in rows:
+            contract = _organization_plan_contract_view(row)
+            views.append(
+                OrganizationPlanView(
+                    plan_id=int(row["plan_id"]),
+                    source_kind=str(row["source_kind"]),
+                    source_path=str(row["source_path"]),
+                    destination_path=(
+                        None if row["destination_path"] is None else str(row["destination_path"])
+                    ),
+                    primary_kind=str(row["primary_kind"]),
+                    confidence=float(row["confidence"]),
+                    status=str(row["status"]),
+                    reason=str(row["reason"]),
+                    detail=None if row["detail"] is None else str(row["detail"]),
+                    source_scope_id=contract.source_scope_id,
+                    source_root=contract.source_root,
+                    classification_status=contract.classification_status,
+                    taxonomy_status=contract.taxonomy_status,
+                    confidence_kind=contract.confidence_kind,
+                    suggested_logical_location=contract.suggested_logical_location,
+                    representation_kind=contract.representation_kind,
+                    operation_kind=contract.operation_kind,
+                    eligibility_status=contract.eligibility_status,
+                    executable=contract.executable,
+                    blockers=contract.blockers,
+                )
             )
-            for row in rows
-        )
+        return tuple(views)
 
 
-def _organization_plan_contract_view(row: sqlite3.Row) -> dict[str, object]:
+def _organization_plan_contract_view(row: sqlite3.Row) -> _OrganizationPlanContractView:
     """Old proposals stay visible, but missing scope never implies executability."""
 
     columns = set(row.keys())
-    base: dict[str, object] = {}
+    base = _OrganizationPlanContractView()
     try:
         evidence = json.loads(row["evidence_json"])
         if isinstance(evidence, dict):
-            base = {
-                "classification_status": str(evidence.get("classification_status", "unverified")),
-                "taxonomy_status": str(evidence.get("taxonomy_status", "unverified")),
-                "confidence_kind": str(
+            suggested_logical_location = evidence.get("suggested_logical_location")
+            base = _OrganizationPlanContractView(
+                classification_status=str(evidence.get("classification_status", "unverified")),
+                taxonomy_status=str(evidence.get("taxonomy_status", "unverified")),
+                confidence_kind=str(
                     evidence.get("classification_score_kind", "uncalibrated_heuristic")
                 ),
-                "suggested_logical_location": evidence.get("suggested_logical_location"),
-            }
+                suggested_logical_location=(
+                    suggested_logical_location
+                    if isinstance(suggested_logical_location, str)
+                    else None
+                ),
+            )
     except (ValueError, TypeError, KeyError):
         pass
     if not {"source_scope_json", "source_scope_id", "blockers_json"}.issubset(columns):
@@ -207,22 +240,31 @@ def _organization_plan_contract_view(row: sqlite3.Row) -> dict[str, object]:
         blockers = json.loads(row["blockers_json"])
         if not isinstance(blockers, list) or not all(isinstance(value, str) for value in blockers):
             raise ValueError("organization_blockers_invalid")
-        return {
-            **base,
-            "source_scope_id": scope.scope_id,
-            "source_root": str(scope.root),
-            "representation_kind": str(row["representation_kind"] or "unknown"),
-            "operation_kind": str(row["operation_kind"] or "unresolved"),
-            "eligibility_status": str(row["eligibility_status"]),
+        return _OrganizationPlanContractView(
+            source_scope_id=scope.scope_id,
+            source_root=str(scope.root),
+            classification_status=base.classification_status,
+            taxonomy_status=base.taxonomy_status,
+            confidence_kind=base.confidence_kind,
+            suggested_logical_location=base.suggested_logical_location,
+            representation_kind=str(row["representation_kind"] or "unknown"),
+            operation_kind=str(row["operation_kind"] or "unresolved"),
+            eligibility_status=str(row["eligibility_status"]),
             # This facade has no grant-consuming backend.  A persisted flag
             # alone cannot attest execution authority or backend availability.
-            "executable": False,
-            "blockers": tuple(
+            executable=False,
+            blockers=tuple(
                 sorted(set(blockers) | {"backend_unavailable", "authorization_required"})
             ),
-        }
+        )
     except (ValueError, TypeError, KeyError):
-        return {**base, "blockers": ("organization_contract_invalid",)}
+        return _OrganizationPlanContractView(
+            classification_status=base.classification_status,
+            taxonomy_status=base.taxonomy_status,
+            confidence_kind=base.confidence_kind,
+            suggested_logical_location=base.suggested_logical_location,
+            blockers=("organization_contract_invalid",),
+        )
 
 
 def _begin_organization_run(

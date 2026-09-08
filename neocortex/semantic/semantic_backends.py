@@ -43,6 +43,7 @@ class EmbeddingBackend(Protocol):
 
     def embed(self, requests: Sequence[EmbeddingRequest]) -> Sequence[BackendEmbedding]:
         """Embed one already-bounded batch in request order."""
+        ...
 
 
 def _validated_backend_results(

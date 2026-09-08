@@ -8,7 +8,7 @@ import re
 import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal
+from typing import Literal, overload
 from uuid import uuid4
 
 from neocortex.api.read_contract import sanitize_untrusted_text
@@ -43,27 +43,72 @@ _RUN_KINDS = frozenset({"initial", "route_only", "resume"})
 
 _RUN_FIELDS = frozenset(
     {
-        "run_id", "run_kind", "status", "root", "source_run_id", "current_phase",
-        "owner_pid", "owner_alive", "heartbeat_ns", "heartbeat_stale", "started_ns",
-        "completed_ns", "elapsed_ns", "recovery_required_actions", "manifest", "budget",
-        "recovery", "resumed", "replayed", "skipped_routes", "non_replayable_routes",
-        "stages", "route_capabilities", "lifecycle", "routes",
+        "run_id",
+        "run_kind",
+        "status",
+        "root",
+        "source_run_id",
+        "current_phase",
+        "owner_pid",
+        "owner_alive",
+        "heartbeat_ns",
+        "heartbeat_stale",
+        "started_ns",
+        "completed_ns",
+        "elapsed_ns",
+        "recovery_required_actions",
+        "manifest",
+        "budget",
+        "recovery",
+        "resumed",
+        "replayed",
+        "skipped_routes",
+        "non_replayable_routes",
+        "stages",
+        "route_capabilities",
+        "lifecycle",
+        "routes",
     }
 )
 _MANIFEST_FIELDS = frozenset(
     {
-        "schema", "run_id", "run_kind", "source_run_id", "root", "root_identity",
-        "selected_routes", "route_capabilities", "configuration", "budget",
-        "input_snapshot", "digest",
+        "schema",
+        "run_id",
+        "run_kind",
+        "source_run_id",
+        "root",
+        "root_identity",
+        "selected_routes",
+        "route_capabilities",
+        "configuration",
+        "budget",
+        "input_snapshot",
+        "digest",
     }
 )
 _BUDGET_FIELDS = frozenset(
     {
-        "schema", "manifest_digest", "max_items", "max_bytes", "max_duration_seconds",
-        "started_ns", "deadline_ns", "consumed_items", "consumed_bytes",
-        "consumed_bytes_kind", "remaining_items", "remaining_bytes", "elapsed_ns",
-        "elapsed_seconds", "elapsed_until_ns", "elapsed_scope", "expired", "cancel_requested",
-        "cancel_reason", "reservation_count", "last_event_id",
+        "schema",
+        "manifest_digest",
+        "max_items",
+        "max_bytes",
+        "max_duration_seconds",
+        "started_ns",
+        "deadline_ns",
+        "consumed_items",
+        "consumed_bytes",
+        "consumed_bytes_kind",
+        "remaining_items",
+        "remaining_bytes",
+        "elapsed_ns",
+        "elapsed_seconds",
+        "elapsed_until_ns",
+        "elapsed_scope",
+        "expired",
+        "cancel_requested",
+        "cancel_reason",
+        "reservation_count",
+        "last_event_id",
     }
 )
 _PHASE_FIELDS = frozenset(
@@ -71,19 +116,55 @@ _PHASE_FIELDS = frozenset(
 )
 _ROUTE_FIELDS = frozenset(
     {
-        "route_name", "status", "current_phase", "started_ns", "completed_ns", "elapsed_ns",
-        "heartbeat_ns", "error_type", "resume_capability", "replayability", "candidates",
-        "processed", "cache_hits", "new_work", "cached_errors", "replay_status", "phases",
+        "route_name",
+        "status",
+        "current_phase",
+        "started_ns",
+        "completed_ns",
+        "elapsed_ns",
+        "heartbeat_ns",
+        "error_type",
+        "resume_capability",
+        "replayability",
+        "candidates",
+        "processed",
+        "cache_hits",
+        "new_work",
+        "cached_errors",
+        "replay_status",
+        "phases",
     }
 )
 _STAGE_FIELDS = frozenset(
-    {"schema", "run_id", "manifest_digest", "stage", "status", "details", "idempotency_key", "event_id"}
+    {
+        "schema",
+        "run_id",
+        "manifest_digest",
+        "stage",
+        "status",
+        "details",
+        "idempotency_key",
+        "event_id",
+    }
 )
 _LIFECYCLE_FIELDS = frozenset(
     {
-        "schema", "status", "run_id", "source_run_id", "manifest_digest", "resumed_from",
-        "resumed", "replayed", "skipped", "non_replayable", "budget", "recovery", "stages",
-        "route_capabilities", "routes", "errors",
+        "schema",
+        "status",
+        "run_id",
+        "source_run_id",
+        "manifest_digest",
+        "resumed_from",
+        "resumed",
+        "replayed",
+        "skipped",
+        "non_replayable",
+        "budget",
+        "recovery",
+        "stages",
+        "route_capabilities",
+        "routes",
+        "errors",
     }
 )
 
@@ -107,7 +188,43 @@ def _keys(value: Mapping[str, object], expected: frozenset[str], *, label: str) 
         raise LifecycleStatusContractError(f"{label} contains unsupported fields", kind="schema")
 
 
-def _text(value: object, *, label: str, limit: int = MAX_TEXT_CHARS, optional: bool = False) -> str | None:
+@overload
+def _text(
+    value: object,
+    *,
+    label: str,
+    limit: int = MAX_TEXT_CHARS,
+    optional: Literal[False] = False,
+) -> str: ...
+
+
+@overload
+def _text(
+    value: object,
+    *,
+    label: str,
+    limit: int = MAX_TEXT_CHARS,
+    optional: Literal[True],
+) -> str | None: ...
+
+
+@overload
+def _text(
+    value: object,
+    *,
+    label: str,
+    limit: int = MAX_TEXT_CHARS,
+    optional: bool,
+) -> str | None: ...
+
+
+def _text(
+    value: object,
+    *,
+    label: str,
+    limit: int = MAX_TEXT_CHARS,
+    optional: bool = False,
+) -> str | None:
     if value is None and optional:
         return None
     if not isinstance(value, str):
@@ -118,12 +235,75 @@ def _text(value: object, *, label: str, limit: int = MAX_TEXT_CHARS, optional: b
     return cleaned
 
 
-def _integer(value: object, *, label: str, optional: bool = False, minimum: int = 0) -> int | None:
+@overload
+def _integer(
+    value: object,
+    *,
+    label: str,
+    optional: Literal[False] = False,
+    minimum: int = 0,
+) -> int: ...
+
+
+@overload
+def _integer(
+    value: object,
+    *,
+    label: str,
+    optional: Literal[True],
+    minimum: int = 0,
+) -> int | None: ...
+
+
+@overload
+def _integer(
+    value: object,
+    *,
+    label: str,
+    optional: bool,
+    minimum: int = 0,
+) -> int | None: ...
+
+
+def _integer(
+    value: object,
+    *,
+    label: str,
+    optional: bool = False,
+    minimum: int = 0,
+) -> int | None:
     if value is None and optional:
         return None
     if type(value) is not int or value < minimum or value > (1 << 63) - 1:
         raise LifecycleStatusContractError(f"{label} must be a bounded integer")
     return value
+
+
+@overload
+def _boolean(
+    value: object,
+    *,
+    label: str,
+    optional: Literal[False] = False,
+) -> bool: ...
+
+
+@overload
+def _boolean(
+    value: object,
+    *,
+    label: str,
+    optional: Literal[True],
+) -> bool | None: ...
+
+
+@overload
+def _boolean(
+    value: object,
+    *,
+    label: str,
+    optional: bool,
+) -> bool | None: ...
 
 
 def _boolean(value: object, *, label: str, optional: bool = False) -> bool | None:
@@ -134,7 +314,9 @@ def _boolean(value: object, *, label: str, optional: bool = False) -> bool | Non
     return value
 
 
-def _metadata(value: object, *, label: str, depth: int = 0, budget: list[int] | None = None) -> object:
+def _metadata(
+    value: object, *, label: str, depth: int = 0, budget: list[int] | None = None
+) -> object:
     """Return bounded JSON metadata with ANSI/C0 text removed."""
 
     if budget is None:
@@ -160,7 +342,9 @@ def _metadata(value: object, *, label: str, depth: int = 0, budget: list[int] | 
             key = sanitize_untrusted_text(raw_key, limit=256, single_line=True)
             if not key or key in result:
                 raise LifecycleStatusContractError(f"{label} has an invalid key")
-            result[key] = _metadata(raw_item, label=f"{label}.{key}", depth=depth + 1, budget=budget)
+            result[key] = _metadata(
+                raw_item, label=f"{label}.{key}", depth=depth + 1, budget=budget
+            )
         return result
     if isinstance(value, (list, tuple)):
         return [
@@ -249,21 +433,31 @@ def _manifest(
     if len(identity) != 3 or any(type(item) is not int or item < -1 for item in identity):
         raise LifecycleStatusContractError(f"{label}.root_identity is invalid")
     selected = _route_names(raw.get("selected_routes", []), label=f"{label}.selected_routes")
-    capabilities = _capabilities(raw.get("route_capabilities", {}), label=f"{label}.route_capabilities")
+    capabilities = _capabilities(
+        raw.get("route_capabilities", {}), label=f"{label}.route_capabilities"
+    )
     if set(selected) != set(capabilities):
-        raise LifecycleStatusContractError(f"{label} route capabilities do not match selected routes")
+        raise LifecycleStatusContractError(
+            f"{label} route capabilities do not match selected routes"
+        )
     return {
         "schema": RUN_MANIFEST_SCHEMA,
         "run_id": run_id,
         "run_kind": run_kind,
-        "source_run_id": _integer(raw.get("source_run_id"), label=f"{label}.source_run_id", optional=True, minimum=1),
+        "source_run_id": _integer(
+            raw.get("source_run_id"), label=f"{label}.source_run_id", optional=True, minimum=1
+        ),
         "root": root,
         "root_identity": list(identity),
         "selected_routes": selected,
         "route_capabilities": capabilities,
-        "configuration": _object_metadata(raw.get("configuration", {}), label=f"{label}.configuration"),
+        "configuration": _object_metadata(
+            raw.get("configuration", {}), label=f"{label}.configuration"
+        ),
         "budget": _object_metadata(raw.get("budget", {}), label=f"{label}.budget"),
-        "input_snapshot": _object_metadata(raw.get("input_snapshot", {}), label=f"{label}.input_snapshot"),
+        "input_snapshot": _object_metadata(
+            raw.get("input_snapshot", {}), label=f"{label}.input_snapshot"
+        ),
         "digest": _digest(raw.get("digest"), label=f"{label}.digest"),
     }
 
@@ -277,9 +471,18 @@ def _budget(value: object, *, label: str) -> dict[str, object] | None:
         raise LifecycleStatusContractError(f"{label} schema is unsupported", kind="schema")
     result: dict[str, object] = {"schema": RUN_BUDGET_SCHEMA}
     integer_fields = {
-        "max_items", "max_bytes", "started_ns", "deadline_ns", "consumed_items",
-        "consumed_bytes", "remaining_items", "remaining_bytes", "elapsed_ns",
-        "elapsed_until_ns", "reservation_count", "last_event_id",
+        "max_items",
+        "max_bytes",
+        "started_ns",
+        "deadline_ns",
+        "consumed_items",
+        "consumed_bytes",
+        "remaining_items",
+        "remaining_bytes",
+        "elapsed_ns",
+        "elapsed_until_ns",
+        "reservation_count",
+        "last_event_id",
     }
     text_fields = {"consumed_bytes_kind", "elapsed_scope"}
     boolean_fields = {"expired", "cancel_requested"}
@@ -303,7 +506,9 @@ def _budget(value: object, *, label: str) -> dict[str, object] | None:
             else:
                 raise LifecycleStatusContractError(f"{label}.{name} is invalid")
         elif name == "cancel_reason":
-            result[name] = _text(item, label=f"{label}.{name}", limit=MAX_ERROR_CHARS, optional=True)
+            result[name] = _text(
+                item, label=f"{label}.{name}", limit=MAX_ERROR_CHARS, optional=True
+            )
     return result
 
 
@@ -314,9 +519,13 @@ def _phase(value: object, *, label: str) -> dict[str, object]:
         "phase_name": _text(raw.get("phase_name"), label=f"{label}.phase_name"),
         "status": _text(raw.get("status"), label=f"{label}.status", limit=64),
         "started_ns": _integer(raw.get("started_ns", 0), label=f"{label}.started_ns"),
-        "completed_ns": _integer(raw.get("completed_ns"), label=f"{label}.completed_ns", optional=True),
+        "completed_ns": _integer(
+            raw.get("completed_ns"), label=f"{label}.completed_ns", optional=True
+        ),
         "elapsed_ns": _integer(raw.get("elapsed_ns", 0), label=f"{label}.elapsed_ns"),
-        "error_type": _text(raw.get("error_type"), label=f"{label}.error_type", limit=MAX_ERROR_CHARS, optional=True),
+        "error_type": _text(
+            raw.get("error_type"), label=f"{label}.error_type", limit=MAX_ERROR_CHARS, optional=True
+        ),
     }
 
 
@@ -324,23 +533,35 @@ def _route(value: object, *, label: str) -> dict[str, object]:
     raw = _mapping(value, label=label)
     _keys(raw, _ROUTE_FIELDS, label=label)
     capability = _text(raw.get("resume_capability"), label=f"{label}.resume_capability", limit=32)
-    replayability = _text(raw.get("replayability", capability), label=f"{label}.replayability", limit=32)
+    replayability = _text(
+        raw.get("replayability", capability), label=f"{label}.replayability", limit=32
+    )
     assert capability is not None and replayability is not None
     if capability not in _CAPABILITIES or replayability != capability:
         raise LifecycleStatusContractError(f"{label} replay capability is invalid")
     phases = [
         _phase(item, label=f"{label}.phases[{index}]")
-        for index, item in enumerate(_items(raw.get("phases", []), label=f"{label}.phases", limit=MAX_PHASES))
+        for index, item in enumerate(
+            _items(raw.get("phases", []), label=f"{label}.phases", limit=MAX_PHASES)
+        )
     ]
     return {
         "route_name": _text(raw.get("route_name"), label=f"{label}.route_name"),
         "status": _text(raw.get("status"), label=f"{label}.status", limit=64),
-        "current_phase": _text(raw.get("current_phase"), label=f"{label}.current_phase", optional=True),
+        "current_phase": _text(
+            raw.get("current_phase"), label=f"{label}.current_phase", optional=True
+        ),
         "started_ns": _integer(raw.get("started_ns", 0), label=f"{label}.started_ns"),
-        "completed_ns": _integer(raw.get("completed_ns"), label=f"{label}.completed_ns", optional=True),
+        "completed_ns": _integer(
+            raw.get("completed_ns"), label=f"{label}.completed_ns", optional=True
+        ),
         "elapsed_ns": _integer(raw.get("elapsed_ns", 0), label=f"{label}.elapsed_ns"),
-        "heartbeat_ns": _integer(raw.get("heartbeat_ns"), label=f"{label}.heartbeat_ns", optional=True),
-        "error_type": _text(raw.get("error_type"), label=f"{label}.error_type", limit=MAX_ERROR_CHARS, optional=True),
+        "heartbeat_ns": _integer(
+            raw.get("heartbeat_ns"), label=f"{label}.heartbeat_ns", optional=True
+        ),
+        "error_type": _text(
+            raw.get("error_type"), label=f"{label}.error_type", limit=MAX_ERROR_CHARS, optional=True
+        ),
         "resume_capability": capability,
         "replayability": replayability,
         "candidates": _integer(raw.get("candidates", 0), label=f"{label}.candidates"),
@@ -348,7 +569,9 @@ def _route(value: object, *, label: str) -> dict[str, object]:
         "cache_hits": _integer(raw.get("cache_hits", 0), label=f"{label}.cache_hits"),
         "new_work": _integer(raw.get("new_work", 0), label=f"{label}.new_work"),
         "cached_errors": _integer(raw.get("cached_errors", 0), label=f"{label}.cached_errors"),
-        "replay_status": _text(raw.get("replay_status", "unobserved"), label=f"{label}.replay_status", limit=64),
+        "replay_status": _text(
+            raw.get("replay_status", "unobserved"), label=f"{label}.replay_status", limit=64
+        ),
         "phases": phases,
     }
 
@@ -360,7 +583,9 @@ def _stage(value: object, *, label: str, run_id: int, digest: str | None) -> dic
         raise LifecycleStatusContractError(f"{label} schema is unsupported", kind="schema")
     if raw.get("run_id") != run_id:
         raise LifecycleStatusContractError(f"{label} owner does not match run")
-    stage_digest = _digest(raw.get("manifest_digest"), label=f"{label}.manifest_digest", optional=True)
+    stage_digest = _digest(
+        raw.get("manifest_digest"), label=f"{label}.manifest_digest", optional=True
+    )
     if digest is not None and stage_digest != digest:
         raise LifecycleStatusContractError(f"{label} is detached from its manifest")
     return {
@@ -380,11 +605,20 @@ def _lifecycle_error(value: object, *, label: str) -> dict[str, object]:
     _keys(raw, frozenset({"route_name", "error_type"}), label=label)
     return {
         "route_name": _text(raw.get("route_name"), label=f"{label}.route_name"),
-        "error_type": _text(raw.get("error_type"), label=f"{label}.error_type", limit=MAX_ERROR_CHARS),
+        "error_type": _text(
+            raw.get("error_type"), label=f"{label}.error_type", limit=MAX_ERROR_CHARS
+        ),
     }
 
 
-def _lifecycle(value: object, *, label: str, run_id: int | None, digest: str | None, run_status: str | None = None) -> dict[str, object]:
+def _lifecycle(
+    value: object,
+    *,
+    label: str,
+    run_id: int | None,
+    digest: str | None,
+    run_status: str | None = None,
+) -> dict[str, object]:
     raw = _mapping(value, label=label)
     _keys(raw, _LIFECYCLE_FIELDS, label=label)
     if raw.get("schema") != LIFECYCLE_ENVELOPE_SCHEMA:
@@ -392,7 +626,9 @@ def _lifecycle(value: object, *, label: str, run_id: int | None, digest: str | N
     actual_id = _integer(raw.get("run_id"), label=f"{label}.run_id", optional=True, minimum=1)
     if run_id is not None and actual_id != run_id:
         raise LifecycleStatusContractError(f"{label} owner does not match run")
-    actual_digest = _digest(raw.get("manifest_digest"), label=f"{label}.manifest_digest", optional=True)
+    actual_digest = _digest(
+        raw.get("manifest_digest"), label=f"{label}.manifest_digest", optional=True
+    )
     if digest is not None and actual_digest != digest:
         raise LifecycleStatusContractError(f"{label} digest does not match manifest")
     status = _text(raw.get("status"), label=f"{label}.status", limit=64)
@@ -404,15 +640,23 @@ def _lifecycle(value: object, *, label: str, run_id: int | None, digest: str | N
         "schema": LIFECYCLE_ENVELOPE_SCHEMA,
         "status": status,
         "run_id": actual_id,
-        "source_run_id": _integer(raw.get("source_run_id"), label=f"{label}.source_run_id", optional=True, minimum=1),
+        "source_run_id": _integer(
+            raw.get("source_run_id"), label=f"{label}.source_run_id", optional=True, minimum=1
+        ),
         "manifest_digest": actual_digest,
-        "resumed_from": _integer(raw.get("resumed_from"), label=f"{label}.resumed_from", optional=True, minimum=1),
+        "resumed_from": _integer(
+            raw.get("resumed_from"), label=f"{label}.resumed_from", optional=True, minimum=1
+        ),
         "resumed": _boolean(raw.get("resumed"), label=f"{label}.resumed"),
         "replayed": _boolean(raw.get("replayed"), label=f"{label}.replayed"),
         "skipped": _route_names(raw.get("skipped", []), label=f"{label}.skipped"),
-        "non_replayable": _route_names(raw.get("non_replayable", []), label=f"{label}.non_replayable"),
+        "non_replayable": _route_names(
+            raw.get("non_replayable", []), label=f"{label}.non_replayable"
+        ),
         "budget": _budget(raw.get("budget"), label=f"{label}.budget"),
-        "recovery": None if raw.get("recovery") is None else _object_metadata(raw.get("recovery"), label=f"{label}.recovery"),
+        "recovery": None
+        if raw.get("recovery") is None
+        else _object_metadata(raw.get("recovery"), label=f"{label}.recovery"),
         "stages": [
             _stage(
                 item,
@@ -428,16 +672,24 @@ def _lifecycle(value: object, *, label: str, run_id: int | None, digest: str | N
                 ),
                 digest=actual_digest,
             )
-            for index, item in enumerate(_items(raw.get("stages", []), label=f"{label}.stages", limit=MAX_STAGES))
+            for index, item in enumerate(
+                _items(raw.get("stages", []), label=f"{label}.stages", limit=MAX_STAGES)
+            )
         ],
-        "route_capabilities": None if raw.get("route_capabilities") is None else _capabilities(raw.get("route_capabilities"), label=f"{label}.route_capabilities"),
+        "route_capabilities": None
+        if raw.get("route_capabilities") is None
+        else _capabilities(raw.get("route_capabilities"), label=f"{label}.route_capabilities"),
         "routes": [
             _route(item, label=f"{label}.routes[{index}]")
-            for index, item in enumerate(_items(raw.get("routes", []), label=f"{label}.routes", limit=MAX_ROUTES))
+            for index, item in enumerate(
+                _items(raw.get("routes", []), label=f"{label}.routes", limit=MAX_ROUTES)
+            )
         ],
         "errors": [
             _lifecycle_error(item, label=f"{label}.errors[{index}]")
-            for index, item in enumerate(_items(raw.get("errors", []), label=f"{label}.errors", limit=MAX_ROUTES))
+            for index, item in enumerate(
+                _items(raw.get("errors", []), label=f"{label}.errors", limit=MAX_ROUTES)
+            )
         ],
     }
 
@@ -464,37 +716,71 @@ def _run(value: object, *, label: str, verify_manifest: bool = True) -> dict[str
         raise LifecycleStatusContractError(f"{label}.root does not match manifest")
     routes = [
         _route(item, label=f"{label}.routes[{index}]")
-        for index, item in enumerate(_items(raw.get("routes", []), label=f"{label}.routes", limit=MAX_ROUTES))
+        for index, item in enumerate(
+            _items(raw.get("routes", []), label=f"{label}.routes", limit=MAX_ROUTES)
+        )
     ]
     stages = [
         _stage(item, label=f"{label}.stages[{index}]", run_id=run_id, digest=digest)
-        for index, item in enumerate(_items(raw.get("stages", []), label=f"{label}.stages", limit=MAX_STAGES))
+        for index, item in enumerate(
+            _items(raw.get("stages", []), label=f"{label}.stages", limit=MAX_STAGES)
+        )
     ]
     return {
         "run_id": run_id,
         "run_kind": run_kind,
         "status": status,
         "root": root,
-        "source_run_id": _integer(raw.get("source_run_id"), label=f"{label}.source_run_id", optional=True, minimum=1),
-        "current_phase": _text(raw.get("current_phase"), label=f"{label}.current_phase", optional=True),
-        "owner_pid": _integer(raw.get("owner_pid"), label=f"{label}.owner_pid", optional=True, minimum=1),
-        "owner_alive": _boolean(raw.get("owner_alive"), label=f"{label}.owner_alive", optional=True),
-        "heartbeat_ns": _integer(raw.get("heartbeat_ns"), label=f"{label}.heartbeat_ns", optional=True),
-        "heartbeat_stale": _boolean(raw.get("heartbeat_stale"), label=f"{label}.heartbeat_stale", optional=True),
+        "source_run_id": _integer(
+            raw.get("source_run_id"), label=f"{label}.source_run_id", optional=True, minimum=1
+        ),
+        "current_phase": _text(
+            raw.get("current_phase"), label=f"{label}.current_phase", optional=True
+        ),
+        "owner_pid": _integer(
+            raw.get("owner_pid"), label=f"{label}.owner_pid", optional=True, minimum=1
+        ),
+        "owner_alive": _boolean(
+            raw.get("owner_alive"), label=f"{label}.owner_alive", optional=True
+        ),
+        "heartbeat_ns": _integer(
+            raw.get("heartbeat_ns"), label=f"{label}.heartbeat_ns", optional=True
+        ),
+        "heartbeat_stale": _boolean(
+            raw.get("heartbeat_stale"), label=f"{label}.heartbeat_stale", optional=True
+        ),
         "started_ns": _integer(raw.get("started_ns"), label=f"{label}.started_ns"),
-        "completed_ns": _integer(raw.get("completed_ns"), label=f"{label}.completed_ns", optional=True),
+        "completed_ns": _integer(
+            raw.get("completed_ns"), label=f"{label}.completed_ns", optional=True
+        ),
         "elapsed_ns": _integer(raw.get("elapsed_ns"), label=f"{label}.elapsed_ns"),
-        "recovery_required_actions": _integer(raw.get("recovery_required_actions", 0), label=f"{label}.recovery_required_actions"),
+        "recovery_required_actions": _integer(
+            raw.get("recovery_required_actions", 0), label=f"{label}.recovery_required_actions"
+        ),
         "manifest": manifest,
         "budget": _budget(raw.get("budget"), label=f"{label}.budget"),
-        "recovery": None if raw.get("recovery") is None else _object_metadata(raw.get("recovery"), label=f"{label}.recovery"),
+        "recovery": None
+        if raw.get("recovery") is None
+        else _object_metadata(raw.get("recovery"), label=f"{label}.recovery"),
         "resumed": _boolean(raw.get("resumed"), label=f"{label}.resumed"),
         "replayed": _boolean(raw.get("replayed"), label=f"{label}.replayed"),
-        "skipped_routes": _route_names(raw.get("skipped_routes", []), label=f"{label}.skipped_routes"),
-        "non_replayable_routes": _route_names(raw.get("non_replayable_routes", []), label=f"{label}.non_replayable_routes"),
+        "skipped_routes": _route_names(
+            raw.get("skipped_routes", []), label=f"{label}.skipped_routes"
+        ),
+        "non_replayable_routes": _route_names(
+            raw.get("non_replayable_routes", []), label=f"{label}.non_replayable_routes"
+        ),
         "stages": stages,
-        "route_capabilities": None if raw.get("route_capabilities") is None else _capabilities(raw.get("route_capabilities"), label=f"{label}.route_capabilities"),
-        "lifecycle": _lifecycle(raw.get("lifecycle"), label=f"{label}.lifecycle", run_id=run_id, digest=digest, run_status=status),
+        "route_capabilities": None
+        if raw.get("route_capabilities") is None
+        else _capabilities(raw.get("route_capabilities"), label=f"{label}.route_capabilities"),
+        "lifecycle": _lifecycle(
+            raw.get("lifecycle"),
+            label=f"{label}.lifecycle",
+            run_id=run_id,
+            digest=digest,
+            run_status=status,
+        ),
         "routes": routes,
     }
 
@@ -503,7 +789,9 @@ def _decode(value: object, *, label: str) -> dict[str, object]:
     if not isinstance(value, str):
         raise LifecycleStatusContractError(f"{label} is not JSON text")
     try:
-        decoded = json.loads(value, parse_constant=lambda constant: (_ for _ in ()).throw(ValueError(constant)))
+        decoded = json.loads(
+            value, parse_constant=lambda constant: (_ for _ in ()).throw(ValueError(constant))
+        )
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
         raise LifecycleStatusContractError(f"{label} is malformed JSON") from exc
     return dict(_mapping(decoded, label=label))
@@ -569,23 +857,51 @@ def _classify(exc: BaseException) -> tuple[str, str, int, str]:
 
 def _validate_envelope(payload: dict[str, object]) -> dict[str, object]:
     expected = {
-        "schema", "kind", "operation", "request_id", "read_only", "coverage", "status", "exit_code",
-        "error", "state_directory", "limit", "run_id", "runs", "result", "lifecycle",
+        "schema",
+        "kind",
+        "operation",
+        "request_id",
+        "read_only",
+        "coverage",
+        "status",
+        "exit_code",
+        "error",
+        "state_directory",
+        "limit",
+        "run_id",
+        "runs",
+        "result",
+        "lifecycle",
     }
     _keys(payload, frozenset(expected), label="lifecycle envelope")
     if payload.get("schema") != LIFECYCLE_ENVELOPE_SCHEMA:
-        raise LifecycleStatusContractError("lifecycle envelope schema is unsupported", kind="schema")
-    if payload.get("kind") != LIFECYCLE_STATUS_KIND or payload.get("operation") != LIFECYCLE_STATUS_OPERATION:
+        raise LifecycleStatusContractError(
+            "lifecycle envelope schema is unsupported", kind="schema"
+        )
+    if (
+        payload.get("kind") != LIFECYCLE_STATUS_KIND
+        or payload.get("operation") != LIFECYCLE_STATUS_OPERATION
+    ):
         raise LifecycleStatusContractError("lifecycle envelope identity is invalid")
     if payload.get("read_only") is not True:
         raise LifecycleStatusContractError("lifecycle envelope is not read-only")
     request_id = _text(payload.get("request_id"), label="request_id")
-    state_directory = _text(payload.get("state_directory"), label="state_directory", limit=MAX_PATH_CHARS)
+    state_directory = _text(
+        payload.get("state_directory"), label="state_directory", limit=MAX_PATH_CHARS
+    )
     coverage = _text(payload.get("coverage"), label="coverage", limit=32)
     status = _text(payload.get("status"), label="status", limit=32)
-    assert request_id is not None and state_directory is not None and coverage is not None and status is not None
+    assert (
+        request_id is not None
+        and state_directory is not None
+        and coverage is not None
+        and status is not None
+    )
     if coverage not in {"complete", "unavailable"} or status not in {
-        "ok", "unavailable", "schema_incompatible", "corrupt",
+        "ok",
+        "unavailable",
+        "schema_incompatible",
+        "corrupt",
     }:
         raise LifecycleStatusContractError("lifecycle outcome is unsupported", kind="schema")
     limit = _integer(payload.get("limit"), label="limit", minimum=1)
@@ -595,6 +911,7 @@ def _validate_envelope(payload: dict[str, object]) -> dict[str, object]:
     if type(exit_code) is not int or exit_code not in {0, 1, 6, 7}:
         raise LifecycleStatusContractError("exit_code is unsupported")
     raw_error = payload.get("error")
+    error: dict[str, object] | None
     if raw_error is None:
         error = None
     else:
@@ -602,7 +919,9 @@ def _validate_envelope(payload: dict[str, object]) -> dict[str, object]:
         _keys(error_map, frozenset({"code", "message", "retryable"}), label="error")
         error = {
             "code": _text(error_map.get("code"), label="error.code", limit=64),
-            "message": _text(error_map.get("message"), label="error.message", limit=MAX_ERROR_CHARS),
+            "message": _text(
+                error_map.get("message"), label="error.message", limit=MAX_ERROR_CHARS
+            ),
         }
         if "retryable" in error_map:
             error["retryable"] = _boolean(error_map["retryable"], label="error.retryable")
@@ -614,11 +933,16 @@ def _validate_envelope(payload: dict[str, object]) -> dict[str, object]:
     if set(result) != {"count", "run_ids"}:
         raise LifecycleStatusContractError("result contains unsupported fields", kind="schema")
     count = _integer(result.get("count"), label="result.count")
-    run_ids = [_integer(item, label="result.run_ids", minimum=1) for item in _items(result.get("run_ids"), label="result.run_ids", limit=MAX_RUNS)]
+    run_ids = [
+        _integer(item, label="result.run_ids", minimum=1)
+        for item in _items(result.get("run_ids"), label="result.run_ids", limit=MAX_RUNS)
+    ]
     assert count is not None
     if count != len(runs) or run_ids != [run["run_id"] for run in runs]:
         raise LifecycleStatusContractError("result does not match runs")
-    lifecycle = _lifecycle(payload.get("lifecycle"), label="lifecycle", run_id=requested, digest=None)
+    lifecycle = _lifecycle(
+        payload.get("lifecycle"), label="lifecycle", run_id=requested, digest=None
+    )
     if coverage == "complete" and (status != "ok" or exit_code != 0 or error is not None):
         raise LifecycleStatusContractError("complete lifecycle status has an error")
     if coverage == "unavailable" and (status == "ok" or exit_code == 0 or error is None):
@@ -678,10 +1002,19 @@ def lifecycle_status_payload(
     try:
         statuses = read_run_status(database, limit=limit, run_id=run_id)
         runs = [
-            _run(_decode(serialized_run_status(status), label=f"runs[{index}]"), label=f"runs[{index}]")
+            _run(
+                _decode(serialized_run_status(status), label=f"runs[{index}]"),
+                label=f"runs[{index}]",
+            )
             for index, status in enumerate(statuses)
         ]
-        stages = [stage for run in runs for stage in run["stages"]][-MAX_STAGES:]
+        stages: list[object] = []
+        for run in runs:
+            raw_stages = run["stages"]
+            if not isinstance(raw_stages, list):
+                raise LifecycleStatusContractError("run stages are invalid")
+            stages.extend(raw_stages)
+        stages = stages[-MAX_STAGES:]
         payload = {
             "schema": LIFECYCLE_ENVELOPE_SCHEMA,
             "kind": LIFECYCLE_STATUS_KIND,
@@ -717,7 +1050,14 @@ def lifecycle_status_payload(
             },
         }
         return _validate_envelope(payload)
-    except (LifecycleStatusContractError, OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
+    except (
+        LifecycleStatusContractError,
+        OSError,
+        RuntimeError,
+        sqlite3.Error,
+        TypeError,
+        ValueError,
+    ) as exc:
         code, status, exit_code, message = _classify(exc)
         return _validate_envelope(
             _error_envelope(

@@ -25,7 +25,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from neocortex.persistence.sqlite_immutable import (
     ImmutableSQLiteUnavailable,
@@ -35,7 +35,10 @@ from neocortex.persistence.sqlite_cancellation import (
     SQLiteCancellationBridge,
     sqlite_cancellation_scope,
 )
-from neocortex.persistence.sqlite_schema_contract import SQLiteSchemaContractError
+from neocortex.persistence.sqlite_schema_contract import (
+    SQLiteSchemaContract,
+    SQLiteSchemaContractError,
+)
 
 
 STATE_HEALTH_SCHEMA_VERSION = 2
@@ -82,15 +85,17 @@ DEFAULT_INSPECTION_TIMEOUT_SECONDS = 30.0
 MAX_INSPECTION_OWNER_BATCH = 256
 
 HealthScope = Literal["compatibility", "integrity", "referential", "full"]
-HEALTH_SCOPES: tuple[HealthScope, ...] = (
-    "compatibility", "integrity", "referential", "full"
-)
+HEALTH_SCOPES: tuple[HealthScope, ...] = ("compatibility", "integrity", "referential", "full")
 _SCOPE_CHECKS: dict[str, tuple[str, ...]] = {
     "compatibility": ("metadata",),
     "integrity": ("metadata", "quick_integrity", "fts"),
     "referential": ("metadata", "foreign_keys", "exact_schema"),
     "full": (
-        "metadata", "quick_integrity", "foreign_keys", "fts", "exact_schema",
+        "metadata",
+        "quick_integrity",
+        "foreign_keys",
+        "fts",
+        "exact_schema",
         "status_observations",
     ),
 }
@@ -189,7 +194,8 @@ class StateHealth:
         """Only the selected batch, not unobserved owners or a prior page."""
 
         return (
-            bool(self.owners) and self.scope_complete_count == len(self.owners)
+            bool(self.owners)
+            and self.scope_complete_count == len(self.owners)
             and self.unknown_discovery in {"complete", "not_requested"}
         )
 
@@ -278,30 +284,22 @@ _VALIDATOR_SPECS: dict[str, _ValidatorSpec] = {
         "document_catalog_schema_contract",
         "contract",
     ),
-    "pdf": _ValidatorSpec(
-        "neocortex.capabilities.formats.pdf.pdf_schema", "validate_pdf_schema"
-    ),
-    "docx": _ValidatorSpec(
-        "neocortex.capabilities.formats.docx.schema", "validate_docx_schema"
-    ),
+    "pdf": _ValidatorSpec("neocortex.capabilities.formats.pdf.pdf_schema", "validate_pdf_schema"),
+    "docx": _ValidatorSpec("neocortex.capabilities.formats.docx.schema", "validate_docx_schema"),
     "office": _ValidatorSpec(
         "neocortex.capabilities.formats.office.state", "_office_schema_contract", "contract"
     ),
     "audio": _ValidatorSpec(
         "neocortex.capabilities.formats.audio.state", "_audio_schema_contract", "contract"
     ),
-    "video": _ValidatorSpec(
-        "neocortex.capabilities.formats.video.state", "validate_video_schema"
-    ),
+    "video": _ValidatorSpec("neocortex.capabilities.formats.video.state", "validate_video_schema"),
     "image": _ValidatorSpec(
         "neocortex.capabilities.formats.image.state", "_validate_current_image_schema"
     ),
     "semantic": _ValidatorSpec(
         "neocortex.semantic.semantic_schema", "_validate_version_contract", "semantic"
     ),
-    "code": _ValidatorSpec(
-        "neocortex.code.code_schema", "validate_code_schema"
-    ),
+    "code": _ValidatorSpec("neocortex.code.code_schema", "validate_code_schema"),
     "archive": _ValidatorSpec(
         "neocortex.capabilities.formats.archive.state", "archive_schema_contract", "contract"
     ),
@@ -573,7 +571,9 @@ def _validation_error_status(exc: BaseException) -> tuple[str, str]:
         # A validator's missing object/column error is a schema mismatch; other
         # operational errors remain unreadable rather than being called corrupt.
         message = str(exc).casefold()
-        if any(marker in message for marker in ("no such table", "no such index", "no such column")):
+        if any(
+            marker in message for marker in ("no such table", "no such index", "no such column")
+        ):
             return "incompatible", str(exc)
         return "unreadable", f"{type(exc).__name__}: {exc}"
     return "unreadable", f"{type(exc).__name__}: {exc}"
@@ -643,7 +643,7 @@ def _load_registry_validator(name: str, expected: int) -> Callable[[sqlite3.Conn
     from neocortex.persistence.sqlite_schema_contract import validate_sqlite_schema_contract
 
     def validate_contract(connection: sqlite3.Connection) -> None:
-        contract = target()
+        contract = cast(Callable[[], SQLiteSchemaContract], target)()
         validate_sqlite_schema_contract(
             connection,
             contract,
@@ -659,9 +659,7 @@ def _exact_validator(name: str, expected: int) -> Callable[[sqlite3.Connection],
     return _load_registry_validator(name, expected)
 
 
-def _proc_processes(
-    path: Path, *, deadline: float | None = None
-) -> tuple[dict[str, object], ...]:
+def _proc_processes(path: Path, *, deadline: float | None = None) -> tuple[dict[str, object], ...]:
     """Return bounded process holders using only read-only /proc operations."""
 
     if deadline is not None and time.monotonic() >= deadline:
@@ -680,9 +678,9 @@ def _proc_processes(
             break
         fd_directory = process / "fd"
         try:
-            descriptors = sorted(
-                fd_directory.iterdir(), key=lambda item: item.name
-            )[:MAX_PROCESS_FDS]
+            descriptors = sorted(fd_directory.iterdir(), key=lambda item: item.name)[
+                :MAX_PROCESS_FDS
+            ]
         except OSError:
             continue
         matching = 0
@@ -797,7 +795,9 @@ def _owner_record(
             sidecars=sidecars,
             observations={},
             detail=detail,
-            processes=_proc_processes(path, deadline=deadline) if status in {"blocked", "active"} else (),
+            processes=_proc_processes(path, deadline=deadline)
+            if status in {"blocked", "active"}
+            else (),
         )
 
     sidecar_status, sidecar_detail = _sidecar_safety(path)
@@ -859,8 +859,13 @@ def _owner_record(
             budget.checkpoint()
             completed.append("metadata")
             observations = _run_scoped_checks(
-                connection, budget, tables, descriptor=descriptor, scope=scope,
-                completed=completed, attempted=attempted,
+                connection,
+                budget,
+                tables,
+                descriptor=descriptor,
+                scope=scope,
+                completed=completed,
+                attempted=attempted,
             )
         return StateOwnerHealth(
             name=descriptor.name,
@@ -906,7 +911,9 @@ def _owner_record(
             sidecars=_sidecars(path),
             observations={},
             detail=detail,
-            processes=_proc_processes(path, deadline=deadline) if status in {"blocked", "active"} else (),
+            processes=_proc_processes(path, deadline=deadline)
+            if status in {"blocked", "active"}
+            else (),
             checks_completed=tuple(completed),
             checks_attempted=tuple(attempted),
         )
@@ -972,7 +979,9 @@ def _unknown_record(
             sidecars=sidecars,
             observations={},
             detail=detail,
-            processes=_proc_processes(path, deadline=deadline) if status in {"blocked", "active"} else (),
+            processes=_proc_processes(path, deadline=deadline)
+            if status in {"blocked", "active"}
+            else (),
         )
     sidecar_status, sidecar_detail = _sidecar_safety(path)
     if sidecar_status is not None:
@@ -1005,8 +1014,13 @@ def _unknown_record(
             budget.checkpoint()
             completed.append("metadata")
             observations = _run_scoped_checks(
-                connection, budget, tables, descriptor=None, scope=scope,
-                completed=completed, attempted=attempted,
+                connection,
+                budget,
+                tables,
+                descriptor=None,
+                scope=scope,
+                completed=completed,
+                attempted=attempted,
             )
         return StateOwnerHealth(
             name=f"unknown:{path.name}",
@@ -1039,7 +1053,9 @@ def _unknown_record(
         sidecars=_sidecars(path),
         observations={},
         detail=detail,
-        processes=_proc_processes(path, deadline=deadline) if status in {"blocked", "active"} else (),
+        processes=_proc_processes(path, deadline=deadline)
+        if status in {"blocked", "active"}
+        else (),
         checks_completed=tuple(completed),
         checks_attempted=tuple(attempted),
     )
@@ -1090,7 +1106,9 @@ def inspect_state_health(
         or not isinstance(max_owners, int)
         or not 1 <= max_owners <= MAX_INSPECTION_OWNER_BATCH
     ):
-        raise ValueError(f"state-health max_owners must be between 1 and {MAX_INSPECTION_OWNER_BATCH}")
+        raise ValueError(
+            f"state-health max_owners must be between 1 and {MAX_INSPECTION_OWNER_BATCH}"
+        )
     deadline = time.monotonic() + timeout
     descriptors = _state_store_descriptors()
     names = tuple(descriptor.name for descriptor in descriptors)
@@ -1127,7 +1145,9 @@ def inspect_state_health(
             unknown_discovery = "not_verified"
             unknown_discovery_detail = f"{type(exc).__name__}: {exc}"[:512]
         else:
-            unknown_discovery = "bounded" if len(unknown_paths) >= MAX_UNKNOWN_DATABASES else "complete"
+            unknown_discovery = (
+                "bounded" if len(unknown_paths) >= MAX_UNKNOWN_DATABASES else "complete"
+            )
     records: list[StateOwnerHealth] = []
     remaining_owners = len(batch) + len(unknown_paths)
 
@@ -1228,7 +1248,10 @@ def inspect_state_health(
     not_verified = count("not_verified")
     overall = (
         "healthy"
-        if records and healthy == len(records) and not omitted and not deferred
+        if records
+        and healthy == len(records)
+        and not omitted
+        and not deferred
         and unknown_discovery == "complete"
         else "partial"
     )
@@ -1253,10 +1276,14 @@ def inspect_state_health(
         deferred_owners=deferred,
         next_after_owner=next_after_owner,
         retry_owners=tuple(
-            owner.name for owner in records if owner.status == "not_verified" and owner.name in names
+            owner.name
+            for owner in records
+            if owner.status == "not_verified" and owner.name in names
         ),
         retry_unknown_owners=tuple(
-            owner.name for owner in records if owner.status == "not_verified" and owner.name not in names
+            owner.name
+            for owner in records
+            if owner.status == "not_verified" and owner.name not in names
         ),
         scope_complete_count=count(_SCOPE_SUCCESS[scope]),
         unknown_discovery=unknown_discovery,

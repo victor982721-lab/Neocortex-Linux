@@ -5,6 +5,7 @@ import gc
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Protocol
 
 from neocortex.platform.policy import current_platform_policy
 # Keep the product namespace explicit for the foundation migration contract.
@@ -22,6 +23,21 @@ from neocortex.semantic.semantic_config import (
 MODELS_REPORT_SCHEMA_VERSION = 2
 WHISPER_MODEL_ID = "Systran/faster-whisper-small"
 WHISPER_REQUIRED_FILES = ("model.bin", "config.json", "tokenizer.json")
+
+
+class SemanticPreparer(Protocol):
+    """Callable contract used to acquire the selected semantic models."""
+
+    def __call__(
+        self,
+        state_directory: Path,
+        *,
+        model_cache_override: Path,
+        include_compact: bool,
+        local_files_only: bool,
+        threads: int | None,
+        model_ids: Sequence[str] | None = None,
+    ) -> object: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,14 +70,18 @@ def _backend_metadata(*, audio: bool) -> tuple[dict[str, object], ...]:
         components = (
             inspect_python_component("fastembed", "fastembed", extra="semantic"),
             inspect_python_component(
-                "onnxruntime", "onnxruntime", extra="semantic", owner_distribution="fastembed",
+                "onnxruntime",
+                "onnxruntime",
+                extra="semantic",
+                owner_distribution="fastembed",
             ),
         )
     return tuple(component.to_dict() for component in components)
 
 
 def _semantic_statuses(
-    models_root: Path, selected_ids: frozenset[str],
+    models_root: Path,
+    selected_ids: frozenset[str],
 ) -> tuple[ManagedModelStatus, ...]:
     cache = models_root / "fastembed"
     statuses: list[ManagedModelStatus] = []
@@ -80,12 +100,20 @@ def _semantic_statuses(
         backend_available = all(component["available"] for component in components)
         if files_available and not backend_available:
             reason = "semantic_backend_requirements_unmet"
-        statuses.append(ManagedModelStatus(
-            model.model_id, f"fastembed-{model.modality.value}",
-            files_available and backend_available, reason, str(snapshot),
-            files_available, components, contract.required_files,
-            contract.repository_id, model.model_signature,
-        ))
+        statuses.append(
+            ManagedModelStatus(
+                model.model_id,
+                f"fastembed-{model.modality.value}",
+                files_available and backend_available,
+                reason,
+                str(snapshot),
+                files_available,
+                components,
+                contract.required_files,
+                contract.repository_id,
+                model.model_signature,
+            )
+        )
     return tuple(statuses)
 
 
@@ -97,7 +125,8 @@ def _valid_whisper_directory(candidate: Path) -> bool:
 
 
 def _whisper_snapshot_directory(
-    cache: Path, model_id: str = WHISPER_MODEL_ID,
+    cache: Path,
+    model_id: str = WHISPER_MODEL_ID,
 ) -> Path | None:
     basename = model_id.rsplit("/", 1)[-1]
     direct_candidates = (cache, cache / basename.removeprefix("faster-whisper-"), cache / basename)
@@ -134,12 +163,17 @@ def _whisper_status(models_root: Path) -> ManagedModelStatus:
         "whisper-cpu-int8",
         prepared,
         (
-            "local_files_present_runtime_not_verified" if prepared
-            else "whisper_backend_requirements_unmet" if snapshot is not None
+            "local_files_present_runtime_not_verified"
+            if prepared
+            else "whisper_backend_requirements_unmet"
+            if snapshot is not None
             else "whisper_small_cache_incomplete"
         ),
         str(cache if snapshot is None else snapshot),
-        snapshot is not None, components, WHISPER_REQUIRED_FILES, WHISPER_MODEL_ID,
+        snapshot is not None,
+        components,
+        WHISPER_REQUIRED_FILES,
+        WHISPER_MODEL_ID,
     )
 
 
@@ -154,7 +188,9 @@ def _selected_models(model_ids: Sequence[str] | None) -> frozenset[str]:
 
 
 def inspect_models(
-    *, models_root: Path | None = None, model_ids: Sequence[str] | None = None,
+    *,
+    models_root: Path | None = None,
+    model_ids: Sequence[str] | None = None,
 ) -> dict[str, object]:
     """Inspect local files and package metadata without creating any path."""
 
@@ -195,7 +231,7 @@ def prepare_models(
     *,
     models_root: Path | None = None,
     model_ids: Sequence[str] | None = None,
-    semantic_preparer: Callable[..., object] | None = None,
+    semantic_preparer: SemanticPreparer | None = None,
     whisper_preparer: Callable[[Path], None] = _prepare_whisper_default,
 ) -> dict[str, object]:
     """Explicitly acquire selected models sequentially, retaining partial caches.
@@ -217,23 +253,34 @@ def prepare_models(
         if semantic_preparer is None:
             from neocortex.semantic.semantic_preparation import prepare_semantic_models
 
-            semantic_preparer = prepare_semantic_models
-        selection = {} if model_ids is None else {"model_ids": semantic_ids}
-        semantic_preparer(
-            policy.state_directory,
-            model_cache_override=fastembed_cache,
-            include_compact=True,
-            local_files_only=False,
-            threads=None,
-            **selection,
-        )
+            preparer: SemanticPreparer = prepare_semantic_models
+        else:
+            preparer = semantic_preparer
+        if model_ids is None:
+            preparer(
+                policy.state_directory,
+                model_cache_override=fastembed_cache,
+                include_compact=True,
+                local_files_only=False,
+                threads=None,
+            )
+        else:
+            preparer(
+                policy.state_directory,
+                model_cache_override=fastembed_cache,
+                include_compact=True,
+                local_files_only=False,
+                threads=None,
+                model_ids=semantic_ids,
+            )
         gc.collect()
     if WHISPER_MODEL_ID in selected:
         whisper_cache.mkdir(parents=True, exist_ok=True)
         whisper_preparer(whisper_cache)
         gc.collect()
     report = (
-        inspect_models(models_root=root) if model_ids is None
+        inspect_models(models_root=root)
+        if model_ids is None
         else inspect_models(models_root=root, model_ids=model_ids)
     )
     if not report["all_prepared"]:

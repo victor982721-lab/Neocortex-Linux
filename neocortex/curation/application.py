@@ -108,15 +108,28 @@ class BackendOutcome:
     receipt_json: str | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.status, str) or self.status not in {"applied", "blocked", "recovery_required"}:
+        if not isinstance(self.status, str) or self.status not in {
+            "applied",
+            "blocked",
+            "recovery_required",
+        }:
             raise ValueError("unsupported backend outcome status")
-        if not isinstance(self.reason, str) or not self.reason or self.reason.strip() != self.reason:
+        if (
+            not isinstance(self.reason, str)
+            or not self.reason
+            or self.reason.strip() != self.reason
+        ):
             raise ValueError("backend outcome reason must be non-empty and trimmed")
         if len(self.reason.encode("utf-8")) > 512:
             raise ValueError("backend outcome reason is too long")
-        if self.detail is not None and (not isinstance(self.detail, str) or len(self.detail.encode("utf-8")) > 4_096):
+        if self.detail is not None and (
+            not isinstance(self.detail, str) or len(self.detail.encode("utf-8")) > 4_096
+        ):
             raise ValueError("backend outcome detail is too long")
-        if self.receipt_json is not None and (not isinstance(self.receipt_json, str) or len(self.receipt_json.encode("utf-8")) > 65_536):
+        if self.receipt_json is not None and (
+            not isinstance(self.receipt_json, str)
+            or len(self.receipt_json.encode("utf-8")) > 65_536
+        ):
             raise ValueError("backend outcome receipt is too long")
         if self.status == "applied" and not self.receipt_json:
             raise ValueError("applied backend outcome requires a receipt")
@@ -139,6 +152,8 @@ class MutationBackend(Protocol):
 
     def apply(self, candidate: ApplyCandidate) -> BackendOutcome:
         """Perform one already-preflighted effect and return typed evidence."""
+
+        ...
 
 
 def _canonical_json(value: object) -> str:
@@ -169,9 +184,7 @@ def _digest_snapshot(snapshot: FileSnapshot) -> str:
     try:
         current = snapshot_path(snapshot.path)
         if not _same_snapshot(current, snapshot):
-            raise CurationApplicationSnapshotChanged(
-                f"source snapshot changed: {snapshot.path}"
-            )
+            raise CurationApplicationSnapshotChanged(f"source snapshot changed: {snapshot.path}")
         digest = full_fingerprint(current)
     except CurationApplicationSnapshotChanged:
         raise
@@ -180,9 +193,7 @@ def _digest_snapshot(snapshot: FileSnapshot) -> str:
             f"source changed while hashing: {snapshot.path}"
         ) from exc
     except OSError as exc:
-        raise CurationApplicationUnavailable(
-            f"source cannot be hashed: {snapshot.path}"
-        ) from exc
+        raise CurationApplicationUnavailable(f"source cannot be hashed: {snapshot.path}") from exc
     return "xxh3_128_full_v1:" + digest.hex()
 
 
@@ -395,7 +406,9 @@ def _grant_context(
     root = Path(page.root or "")
     if not root.is_absolute() or os.path.normcase(os.fspath(root)) != os.path.normcase(grant.root):
         raise CurationApplicationSnapshotChanged("curation plan root differs from grant")
-    current_heads = tuple(CanonicalJsonObject.from_mapping(head.to_dict()) for head in page.source_heads)
+    current_heads = tuple(
+        CanonicalJsonObject.from_mapping(head.to_dict()) for head in page.source_heads
+    )
     if current_heads != grant.source_heads:
         raise CurationApplicationSnapshotChanged("curation source heads changed")
     from neocortex.workflow.authorization.contracts import _source_heads_digest
@@ -408,7 +421,17 @@ def _grant_context(
         guard.reject_run_mutation()
         if os.path.normcase(os.fspath(guard.policy.root)) != os.path.normcase(os.fspath(root)):
             raise CurationApplicationError("framework run root differs from grant")
-        guard.require_paths_allowed(*(path for effect in grant.authorized_effects for path in (effect.source.path, effect.target_path, None if effect.keeper is None else effect.keeper.path)))
+        guard.require_paths_allowed(
+            *(
+                path
+                for effect in grant.authorized_effects
+                for path in (
+                    effect.source.path,
+                    effect.target_path,
+                    None if effect.keeper is None else effect.keeper.path,
+                )
+            )
+        )
     except CurationApplicationError:
         raise
     except BaseException as exc:
@@ -440,8 +463,7 @@ def _grant_context(
             ):
                 raise CurationApplicationSnapshotChanged("authorized duplicate source changed")
             if effect.keeper is None or not any(
-                _member_matches_snapshot(member, effect.keeper, role="keep")
-                for member in members
+                _member_matches_snapshot(member, effect.keeper, role="keep") for member in members
             ):
                 raise CurationApplicationSnapshotChanged("authorized duplicate keeper changed")
             if effect.kind != getattr(item, "kind", None):
@@ -474,7 +496,7 @@ def _action_type(action: str) -> str:
 
 
 def _read_action_row(state: FrameworkState, action_id: int) -> tuple[str, str | None]:
-    row = state._connection.execute(  # type: ignore[attr-defined]
+    row = state._connection.execute(
         "SELECT status,effect_receipt_json FROM file_actions WHERE action_id=?",
         (action_id,),
     ).fetchone()
@@ -499,7 +521,7 @@ def _lookup_action_by_intent(
         intent,
         True,
     )
-    row = state._connection.execute(  # type: ignore[attr-defined]
+    row = state._connection.execute(
         """SELECT action_id,status,action_type,source_path,target_path,
         apply_requested,evidence FROM file_actions WHERE idempotency_key=?""",
         (key,),
@@ -508,7 +530,7 @@ def _lookup_action_by_intent(
         # ``file_actions.idempotency_key`` predates grants and includes the
         # Framework run id.  The canonical intent itself is grant/effect bound,
         # so a replay in another operational run must still reuse the old row.
-        rows = state._connection.execute(  # type: ignore[attr-defined]
+        rows = state._connection.execute(
             """SELECT action_id,status,action_type,source_path,target_path,
             apply_requested,evidence FROM file_actions WHERE evidence=?
             ORDER BY action_id LIMIT 2""",
@@ -702,13 +724,16 @@ class PosixRenameBackend:
             ]
             renameat2.restype = ctypes.c_int
             effect_crossed = True
-            if renameat2(
-                source_parent_fd,
-                os.fsencode(source_name),
-                target_parent_fd,
-                os.fsencode(target_name),
-                1,
-            ) != 0:
+            if (
+                renameat2(
+                    source_parent_fd,
+                    os.fsencode(source_name),
+                    target_parent_fd,
+                    os.fsencode(target_name),
+                    1,
+                )
+                != 0
+            ):
                 effect_crossed = False
                 error_number = ctypes.get_errno()
                 if error_number == errno.EEXIST:
@@ -739,16 +764,20 @@ class PosixRenameBackend:
                 return BackendOutcome("recovery_required", "rename_effect_ambiguous", str(exc))
             if exc.errno == errno.EXDEV:
                 return BackendOutcome("blocked", "exdev_same_filesystem_required")
-            return BackendOutcome("blocked", "rename_preflight_failed", f"{type(exc).__name__}: {exc}")
+            return BackendOutcome(
+                "blocked", "rename_preflight_failed", f"{type(exc).__name__}: {exc}"
+            )
         except BaseException as exc:
             if effect_crossed:
-                return BackendOutcome("recovery_required", "rename_effect_ambiguous", type(exc).__name__)
+                return BackendOutcome(
+                    "recovery_required", "rename_effect_ambiguous", type(exc).__name__
+                )
             return BackendOutcome("blocked", "rename_interrupted_before_effect", type(exc).__name__)
         finally:
-            for descriptor in (source_parent_fd, target_parent_fd, root_fd):
-                if descriptor is not None:
+            for fd in (source_parent_fd, target_parent_fd, root_fd):
+                if fd is not None:
                     try:
-                        os.close(descriptor)
+                        os.close(fd)
                     except OSError:
                         pass
         try:
@@ -781,7 +810,9 @@ class PosixRenameBackend:
                     "target_digest": effect.source_digest,
                 }
             )
-            return BackendOutcome("applied", "rename_verified", receipt_json=_canonical_json(payload))
+            return BackendOutcome(
+                "applied", "rename_verified", receipt_json=_canonical_json(payload)
+            )
         except BaseException as exc:
             return BackendOutcome("recovery_required", "rename_effect_unverified", str(exc))
 
@@ -886,7 +917,9 @@ class KioTrashBackend:
                 "trash": evidence,
             }
         )
-        return BackendOutcome("applied", "kio_trash_verified", receipt_json=_canonical_json(payload))
+        return BackendOutcome(
+            "applied", "kio_trash_verified", receipt_json=_canonical_json(payload)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -985,7 +1018,10 @@ def apply_authorization_grant(
                 effective_state,
             )
             total_effect_bytes = sum(effect.source.size for effect in authorized_effects)
-            if total_effect_bytes > grant.max_bytes or total_effect_bytes > CURATION_APPLY_MAX_BYTES:
+            if (
+                total_effect_bytes > grant.max_bytes
+                or total_effect_bytes > CURATION_APPLY_MAX_BYTES
+            ):
                 raise CurationApplicationError("grant byte budget is exceeded")
             planned: list[tuple[AuthorizationEffect, int | None, str, str | None]] = []
             preflight_failed = False
@@ -1046,8 +1082,10 @@ def apply_authorization_grant(
                         status = "started"
                     prepared.append((effect, action_id, status))
 
-            if not cancelled and not preflight_failed and not any(
-                effect.status == "blocked" for effect in effects
+            if (
+                not cancelled
+                and not preflight_failed
+                and not any(effect.status == "blocked" for effect in effects)
             ):
                 for effect, action_id, status in prepared:
                     if cancellation_check is not None and cancellation_check():
@@ -1118,7 +1156,9 @@ def apply_authorization_grant(
                             or current_now <= 0
                             or current_now >= grant.expires_ns
                         ):
-                            raise CurationApplicationError("authorization grant expired before effect")
+                            raise CurationApplicationError(
+                                "authorization grant expired before effect"
+                            )
                         _check_root_snapshot(grant.root_snapshot, root)  # type: ignore[arg-type]
                         expected = _expected_identity_for_effect(effect, root)
                         effective_state.mark_file_actions_applying(((action_id, expected),))
@@ -1129,9 +1169,14 @@ def apply_authorization_grant(
                             ApplyCandidate(grant.grant_id, _grant_digest(grant), root, effect)
                         )
                         if not isinstance(outcome, BackendOutcome):
-                            raise CurationApplicationError("backend returned an unsupported outcome")
+                            raise CurationApplicationError(
+                                "backend returned an unsupported outcome"
+                            )
                         outcome = BackendOutcome(
-                            outcome.status, outcome.reason, outcome.detail, outcome.receipt_json,
+                            outcome.status,
+                            outcome.reason,
+                            outcome.detail,
+                            outcome.receipt_json,
                         )
                     except CurationApplicationError as exc:
                         if frontier_crossed:
@@ -1211,7 +1256,13 @@ def apply_authorization_grant(
                             )
                             break
                         effects.append(
-                            AppliedEffect(effect.effect_id, action_id, "applied", outcome.reason, outcome.detail)
+                            AppliedEffect(
+                                effect.effect_id,
+                                action_id,
+                                "applied",
+                                outcome.reason,
+                                outcome.detail,
+                            )
                         )
                         continue
                     detail = outcome.detail or outcome.reason
@@ -1227,7 +1278,9 @@ def apply_authorization_grant(
                     )
                     break
             if cancelled:
-                status_value: Literal["complete", "partial", "blocked", "recovery_required", "unavailable"] = "partial"
+                status_value: Literal[
+                    "complete", "partial", "blocked", "recovery_required", "unavailable"
+                ] = "partial"
             elif any(effect.status == "recovery_required" for effect in effects):
                 status_value = "recovery_required"
             elif any(effect.status == "blocked" for effect in effects):
@@ -1274,7 +1327,7 @@ def reconcile_curation_actions(
             )
             result: list[RecordedFileActionReconciliation] = []
             for reconciliation in records:
-                latest_row = state._connection.execute(  # type: ignore[attr-defined]
+                latest_row = state._connection.execute(
                     """SELECT reconciliation_event_id,action_id,sequence,previous_event_id,
                     reconciliation_key,observed_ns,recorded_ns,action_status,
                     reconciler_signature,event_schema_version,actor,provenance_json,

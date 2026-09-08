@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 import sqlite3
 import time
+from collections.abc import Callable
+from typing import cast
 
 from neocortex.deduplication import DedupIndex, FileChangedError, FileSnapshot
 from neocortex.platform.policy import sqlite_path_collation
@@ -238,8 +240,7 @@ class PdfRouteCacheMixin:
         with serialized_pdf_write(), pdf_database(self.config.state_path) as connection:
             cache_scope = self._cache_scope_for_inventory(connection, self.run_id)
             scope_is_complete = bool(
-                cache_scope is not None
-                and self._cache_scope_is_complete(connection, cache_scope)
+                cache_scope is not None and self._cache_scope_is_complete(connection, cache_scope)
             )
             connection.execute(
                 """CREATE TEMP TABLE IF NOT EXISTS stale_pdf_keys(
@@ -317,8 +318,7 @@ class PdfRouteCacheMixin:
                 scoped_inventory = tuple(
                     (row[0],)
                     for row in old_inventory
-                    if cache_scope is not None
-                    and self._path_is_in_cache_scope(row[1], cache_scope)
+                    if cache_scope is not None and self._path_is_in_cache_scope(row[1], cache_scope)
                 )
                 for offset in range(0, len(scoped_inventory), 1000):
                     self.cancellation.checkpoint()
@@ -968,8 +968,15 @@ class PdfRouteCacheMixin:
 
         if connection is not None:
             return read(connection)
-        owner_call = getattr(self, "_owner_call", None)
-        if callable(owner_call):
+        owner_call = cast(
+            Callable[
+                [Callable[[sqlite3.Connection], tuple[int, frozenset[int], int]]],
+                tuple[int, frozenset[int], int],
+            ]
+            | None,
+            getattr(self, "_owner_call", None),
+        )
+        if owner_call is not None:
             return owner_call(read)
         with pdf_database(self.config.state_path) as owned_connection:
             return read(owned_connection)

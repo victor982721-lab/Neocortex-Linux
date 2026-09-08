@@ -34,13 +34,12 @@ from .knowledge_snapshot import (
     collect_knowledge_snapshot,
 )
 
+# region [01] Injectable read-only boundaries
+
 if TYPE_CHECKING:
     from .knowledge_search import KnowledgeSearchResult
 else:
     KnowledgeSearchResult = Any
-
-
-# region [01] Injectable read-only boundaries
 
 
 CancellationCheck = Callable[[], None]
@@ -50,6 +49,45 @@ ReadMetricsSink = Callable[[dict[str, object]], None]
 
 class _ReadAttemptInvalidated(Exception):
     """Carry the primary fence failure through strict-view cleanup."""
+
+
+def _needs_fence_fallback(
+    result: KnowledgeSearchResult | None,
+    owner_fence_changed: bool,
+) -> bool:
+    """Keep the context-manager invalidation opaque to static narrowing."""
+
+    return result is None and owner_fence_changed
+
+
+def _fence_fallback_result(
+    plan: KnowledgePlan,
+    snapshot: KnowledgeSnapshot,
+    changed_fence_owners: tuple[str, ...],
+) -> KnowledgeSearchResult:
+    """Build an empty, explicitly blocked result after a fence drift."""
+
+    from .knowledge_search_contracts import KnowledgeSearchResult as SearchResult
+
+    return SearchResult(
+        plan=plan,
+        snapshot=snapshot,
+        hits=(),
+        rankings=(),
+        complete=False,
+        truncated=False,
+        omitted_candidates=0,
+        rows_scanned=0,
+        vectors_scanned=0,
+        elapsed_milliseconds=0,
+        warnings=(
+            ("owner_read_fence_changed",)
+            + (("semantic_owner_fence_changed",) if "semantic" in changed_fence_owners else ())
+            if changed_fence_owners
+            else ("owner_read_fence_unverified",)
+        ),
+        blocking_owners=changed_fence_owners or ("semantic",),
+    )
 
 
 @contextmanager
@@ -244,9 +282,7 @@ def _attempt_phases(
     ):
         return ()
     return tuple(
-        replace(phase, service_attempt=service_attempt)
-        if phase.service_attempt
-        else phase
+        replace(phase, service_attempt=service_attempt) if phase.service_attempt else phase
         for phase in telemetry.phases
     )
 
@@ -270,17 +306,11 @@ def _changed_owner_names(
     before: KnowledgeSnapshot,
     after: KnowledgeSnapshot,
 ) -> tuple[str, ...]:
-    before_by_name = {
-        owner.owner: owner.identity_dict() for owner in before.owners
-    }
+    before_by_name = {owner.owner: owner.identity_dict() for owner in before.owners}
     after_by_name = {owner.owner: owner.identity_dict() for owner in after.owners}
     names = before_by_name.keys() | after_by_name.keys()
     return tuple(
-        sorted(
-            name
-            for name in names
-            if before_by_name.get(name) != after_by_name.get(name)
-        )
+        sorted(name for name in names if before_by_name.get(name) != after_by_name.get(name))
     )
 
 
@@ -294,8 +324,7 @@ def _marked_retrieval_owners(
     for owner in retrieval_snapshot.owners:
         after_owner = after_by_name.get(owner.owner)
         identity_changed = (
-            after_owner is None
-            or owner.identity_dict() != after_owner.identity_dict()
+            after_owner is None or owner.identity_dict() != after_owner.identity_dict()
         )
         marked.append(replace(owner, identity_changed=identity_changed))
 
@@ -312,8 +341,9 @@ def _changed_snapshot_marker(
     *,
     forced_changed_owners: tuple[str, ...] = (),
 ) -> KnowledgeSnapshot:
-    changed_owners = tuple(sorted(set(_changed_owner_names(retrieval_snapshot, after))
-                                 | set(forced_changed_owners)))
+    changed_owners = tuple(
+        sorted(set(_changed_owner_names(retrieval_snapshot, after)) | set(forced_changed_owners))
+    )
     warnings = list(retrieval_snapshot.warnings)
     warnings.append("snapshot_changed_during_query")
     if changed_owners:
@@ -371,13 +401,8 @@ class KnowledgeSearchService:
             KnowledgeTelemetryClock,
         ):
             raise ValueError("telemetry_clock must be a KnowledgeTelemetryClock")
-        if (
-            self.telemetry_clock is not None
-            and self.clock_ns is not time.perf_counter_ns
-        ):
-            raise ValueError(
-                "telemetry_clock and legacy clock_ns cannot both be provided"
-            )
+        if self.telemetry_clock is not None and self.clock_ns is not time.perf_counter_ns:
+            raise ValueError("telemetry_clock and legacy clock_ns cannot both be provided")
         self._clock_contract()
 
     def _clock_contract(self) -> KnowledgeTelemetryClock:
@@ -463,19 +488,23 @@ class KnowledgeSearchService:
             owner_fence_changed = False
             changed_fence_owners: tuple[str, ...] = ()
             consumed: object = None
-            result = None
+            result: KnowledgeSearchResult | None = None
             with _read_attempt_scope(read_context):
                 execution_error: OSError | RuntimeError | None = None
                 try:
                     if trusted_clock_handoff:
                         result = _default_search_executor(
-                            self.paths, plan, before,
+                            self.paths,
+                            plan,
+                            before,
                             cancellation_check=cancellation_check,
                             telemetry_clock=clock_contract,
                         )
                     else:
                         result = self.search_executor(
-                            self.paths, plan, before,
+                            self.paths,
+                            plan,
+                            before,
                             cancellation_check=cancellation_check,
                         )
                     if _attempt_consumer is not None:
@@ -491,10 +520,13 @@ class KnowledgeSearchService:
                     owner_fence_changed = True
                     result = None
                 fences_after = _read_owner_fences(self.paths)
-                changed_fence_owners = tuple(sorted(
-                    owner for owner in fences_before.keys() & fences_after.keys()
-                    if fences_before[owner] != fences_after[owner]
-                ))
+                changed_fence_owners = tuple(
+                    sorted(
+                        owner
+                        for owner in fences_before.keys() & fences_after.keys()
+                        if fences_before[owner] != fences_after[owner]
+                    )
+                )
                 if changed_fence_owners:
                     owner_fence_changed = True
                     result = None
@@ -503,22 +535,10 @@ class KnowledgeSearchService:
                 if owner_fence_changed:
                     raise _ReadAttemptInvalidated("read attempt changed before commit")
 
-            if result is None and not owner_fence_changed:
-                raise TypeError("Knowledge search executor returned no result")
             if result is None:
-                from .knowledge_search_contracts import KnowledgeSearchResult as SearchResult
-
-                result = SearchResult(
-                    plan=plan, snapshot=before, hits=(), rankings=(),
-                    complete=False, truncated=False, omitted_candidates=0,
-                    rows_scanned=0, vectors_scanned=0, elapsed_milliseconds=0,
-                    warnings=(
-                        ("owner_read_fence_changed",) +
-                        (("semantic_owner_fence_changed",) if "semantic" in changed_fence_owners else ())
-                        if changed_fence_owners else ("owner_read_fence_unverified",)
-                    ),
-                    blocking_owners=changed_fence_owners or ("semantic",),
-                )
+                if not _needs_fence_fallback(result, owner_fence_changed):
+                    raise TypeError("Knowledge search executor returned no result")
+                result = _fence_fallback_result(plan, before, changed_fence_owners)
             executor_duration_ns = _duration_ns(clock, executor_started_ns)
             attempt_phases = _attempt_phases(
                 result.telemetry,
@@ -549,22 +569,22 @@ class KnowledgeSearchService:
             )
             stable_attempt = not owner_fence_changed and _stable_identity(before, after)
             if read_metrics_sink is not None:
-                read_metrics_sink({
-                    "schema": "neocortex.knowledge-read-attempt/v1",
-                    "service_attempt": service_attempt,
-                    "outcome": "stable" if stable_attempt else (
-                        "owner_fence_changed" if owner_fence_changed else "snapshot_changed"
-                    ),
-                    "semantic_read": read_context.metrics,
-                })
+                read_metrics_sink(
+                    {
+                        "schema": "neocortex.knowledge-read-attempt/v1",
+                        "service_attempt": service_attempt,
+                        "outcome": "stable"
+                        if stable_attempt
+                        else ("owner_fence_changed" if owner_fence_changed else "snapshot_changed"),
+                        "semantic_read": read_context.metrics,
+                    }
+                )
             if stable_attempt:
                 if _consumer_commit is not None:
                     _consumer_commit(consumed)
                 warnings = result.warnings
                 if first_view_changed:
-                    warnings = _deduplicate(
-                        (*warnings, "snapshot_retry_succeeded")
-                    )
+                    warnings = _deduplicate((*warnings, "snapshot_retry_succeeded"))
                 return replace(
                     result,
                     snapshot=before,
@@ -582,11 +602,10 @@ class KnowledgeSearchService:
                 _checkpoint(cancellation_check)
                 continue
 
-            changed_snapshot = (
-                before if owner_fence_changed and not changed_fence_owners
-                and _stable_identity(before, after) else
-                _changed_snapshot_marker(before, after,
-                                         forced_changed_owners=changed_fence_owners)
+            changed_snapshot = _changed_snapshot_marker(
+                before,
+                after,
+                forced_changed_owners=changed_fence_owners,
             )
             warnings = _deduplicate(
                 (
@@ -612,16 +631,22 @@ class KnowledgeSearchService:
         raise AssertionError("bounded Knowledge service loop did not return")
 
     def _search_with_consumer(
-        self, query: KnowledgeQuery,
-        consumer: Callable[[KnowledgeSearchResult], object], *,
+        self,
+        query: KnowledgeQuery,
+        consumer: Callable[[KnowledgeSearchResult], object],
+        *,
         cancellation_check: CancellationCheck | None = None,
         read_metrics_sink: ReadMetricsSink | None = None,
     ) -> tuple[KnowledgeSearchResult, object | None]:
         """Commit a detached projection only after the owning attempt is stable."""
         committed: list[object] = []
-        result = self.search(query, cancellation_check=cancellation_check,
-                             read_metrics_sink=read_metrics_sink,
-                             _attempt_consumer=consumer, _consumer_commit=committed.append)
+        result = self.search(
+            query,
+            cancellation_check=cancellation_check,
+            read_metrics_sink=read_metrics_sink,
+            _attempt_consumer=consumer,
+            _consumer_commit=committed.append,
+        )
         return result, committed[0] if committed else None
 
     def context(
@@ -635,33 +660,25 @@ class KnowledgeSearchService:
     ) -> ContextBundle:
         """Search a stable view and compile a bounded context from its hits."""
 
-        default_characters, max_character_limit, max_context_hits = (
-            _context_limits()
-        )
-        resolved_characters = (
-            default_characters if max_characters is None else max_characters
-        )
+        default_characters, max_character_limit, max_context_hits = _context_limits()
+        resolved_characters = default_characters if max_characters is None else max_characters
         if isinstance(resolved_characters, bool) or not (
             1 <= resolved_characters <= max_character_limit
         ):
-            raise ValueError(
-                "max_characters must be between 1 and "
-                f"{max_character_limit}"
-            )
+            raise ValueError(f"max_characters must be between 1 and {max_character_limit}")
         if max_hits is not None and (
             isinstance(max_hits, bool) or not 1 <= max_hits <= max_context_hits
         ):
-            raise ValueError(
-                f"max_hits must be between 1 and {max_context_hits} when present"
-            )
+            raise ValueError(f"max_hits must be between 1 and {max_context_hits} when present")
         clock_contract = self._clock_contract()
         clock = clock_contract.now_ns
         operation_started_ns = clock()
         result = (
             self.search(query, cancellation_check=cancellation_check)
-            if read_metrics_sink is None else
-            self.search(query, cancellation_check=cancellation_check,
-                        read_metrics_sink=read_metrics_sink)
+            if read_metrics_sink is None
+            else self.search(
+                query, cancellation_check=cancellation_check, read_metrics_sink=read_metrics_sink
+            )
         )
         _checkpoint(cancellation_check)
         builder = self.context_builder or _default_context_builder

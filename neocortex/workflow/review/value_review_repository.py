@@ -749,7 +749,7 @@ def _validate_owner_schema(
     validator: Callable[[sqlite3.Connection], None],
 ) -> int:
     observed = read_application_schema_version(connection, label=owner)
-    if observed != expected_version:
+    if observed is None or observed != expected_version:
         raise _StateIncompatibleError(
             f"{owner} schema {observed!r} is incompatible with {expected_version}"
         )

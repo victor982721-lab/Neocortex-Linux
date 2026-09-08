@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 from typing import NoReturn
 from neocortex.api.content_diagnostics_api import (
     content_diagnostics_error_payload,
@@ -22,14 +23,24 @@ def register_content_diagnostics_arguments(parser: argparse.ArgumentParser) -> N
     group = parser.add_mutually_exclusive_group()
     for name, owner in _SELECTORS:
         group.add_argument(
-            "--" + name.replace("_", "-"), type=int, metavar="N",
+            "--" + name.replace("_", "-"),
+            type=int,
+            metavar="N",
             help=f"Read at most N persisted {owner} diagnostic records under --root",
         )
     parser.add_argument("--diagnostics-cursor", help="Continue the same owner/root/filter snapshot")
-    parser.add_argument("--diagnostics-file-key", help="Exact file key, or Archive physical container key")
-    parser.add_argument("--diagnostics-path", help="Literal path fragment within the requested root")
-    parser.add_argument("--diagnostics-reason", help="Exact PDF/Text error_type or Archive reason_code")
-    parser.add_argument("--diagnostics-json", action="store_true", help="Print the structured diagnostic envelope")
+    parser.add_argument(
+        "--diagnostics-file-key", help="Exact file key, or Archive physical container key"
+    )
+    parser.add_argument(
+        "--diagnostics-path", help="Literal path fragment within the requested root"
+    )
+    parser.add_argument(
+        "--diagnostics-reason", help="Exact PDF/Text error_type or Archive reason_code"
+    )
+    parser.add_argument(
+        "--diagnostics-json", action="store_true", help="Print the structured diagnostic envelope"
+    )
 
 
 def _options(args: argparse.Namespace) -> dict[str, str | None]:
@@ -49,9 +60,18 @@ def _validation_error(args: argparse.Namespace, message: str) -> NoReturn:
         )
         options = _options(args)
         options.pop("cursor")
+        selected_limit = getattr(args, name, None)
+        if not isinstance(selected_limit, int) or isinstance(selected_limit, bool):
+            selected_limit = 20
         payload = content_diagnostics_error_payload(
-            owner, getattr(args, "root", None), kind="invalid_request", message=message,
-            limit=getattr(args, name, None), **options,
+            owner,
+            getattr(args, "root", None),
+            kind="invalid_request",
+            message=message,
+            limit=selected_limit,
+            file_key=options["file_key"],
+            path_fragment=options["path_fragment"],
+            reason=options["reason"],
         )
         print(json.dumps(payload, ensure_ascii=False, allow_nan=False, sort_keys=True))
         raise SystemExit(2)
@@ -59,36 +79,67 @@ def _validation_error(args: argparse.Namespace, message: str) -> NoReturn:
 
 
 def validate_content_diagnostics_arguments(args: argparse.Namespace) -> None:
-    selected = [(name, owner) for name, owner in _SELECTORS if getattr(args, name, None) is not None]
+    selected = [
+        (name, owner) for name, owner in _SELECTORS if getattr(args, name, None) is not None
+    ]
     if len(selected) > 1:
         _validation_error(args, "format diagnostic selectors are mutually exclusive")
     if not selected:
-        if any(value is not None for value in _options(args).values()) or getattr(args, "diagnostics_json", False):
-            _validation_error(args, "--diagnostics-* requires --pdf-diagnostics, --text-errors or --archive-issues")
+        if any(value is not None for value in _options(args).values()) or getattr(
+            args, "diagnostics_json", False
+        ):
+            _validation_error(
+                args,
+                "--diagnostics-* requires --pdf-diagnostics, --text-errors or --archive-issues",
+            )
         return
     if getattr(args, "apply", False) or getattr(args, "organization_apply", False):
-        _validation_error(args, "content diagnostics are read-only and cannot be combined with apply")
+        _validation_error(
+            args, "content diagnostics are read-only and cannot be combined with apply"
+        )
     if getattr(args, "all", False) or getattr(args, "route_only", False):
-        _validation_error(args, "content diagnostics only read state and cannot be combined with --all or --route-only")
+        _validation_error(
+            args,
+            "content diagnostics only read state and cannot be combined with --all or --route-only",
+        )
     try:
-        selected_routes = normalize_route_selection(getattr(args, "route", "none") or "none", BUILTIN_ROUTE_ORDER)
+        selected_routes = normalize_route_selection(
+            getattr(args, "route", "none") or "none", BUILTIN_ROUTE_ORDER
+        )
     except ValueError as exc:
         _validation_error(args, str(exc))
     if selected_routes:
-        _validation_error(args, "content diagnostics only read state and cannot be combined with --route")
+        _validation_error(
+            args, "content diagnostics only read state and cannot be combined with --route"
+        )
     name, owner = selected[0]
+    source_root = getattr(args, "root", None)
+    selected_limit = getattr(args, name, None)
+    if not isinstance(source_root, (Path, str)):
+        _validation_error(args, "--root is required for content diagnostics")
+    if not isinstance(selected_limit, int) or isinstance(selected_limit, bool):
+        _validation_error(args, "diagnostic limit must be an integer")
     try:
         validate_content_diagnostics_request(
-            owner, getattr(args, "root", None), getattr(args, name), **_options(args),
+            owner,
+            source_root,
+            selected_limit,
+            **_options(args),
         )
     except (TypeError, ValueError) as exc:
         _validation_error(args, str(exc))
 
 
 def _run(args: argparse.Namespace, owner: str, selector: str) -> int:
+    source_root = getattr(args, "root", None)
+    if not isinstance(source_root, (Path, str)):
+        raise ValueError("--root is required for content diagnostics")
     payload = content_diagnostics_payload(
-        owner, args.state_directory, getattr(args, "root", None),
-        getattr(args, selector), **_options(args),
+        owner,
+        args.state_directory,
+        source_root,
+        getattr(args, selector),
+        **_options(args),
     )
     if getattr(args, "diagnostics_json", False):
         print(json.dumps(payload, ensure_ascii=False, allow_nan=False, sort_keys=True))
@@ -105,7 +156,9 @@ def _run(args: argparse.Namespace, owner: str, selector: str) -> int:
             record_id = item.get("record_id", item.get("file_key", item.get("issue_id")))
             path = item.get("path", item.get("container_path"))
             reason = item.get("error_type", item.get("reason_code")) or item.get("status")
-            print(f"CONTENT_ITEM id={json.dumps(record_id)} path={json.dumps(path)} reason={json.dumps(reason)}")
+            print(
+                f"CONTENT_ITEM id={json.dumps(record_id)} path={json.dumps(path)} reason={json.dumps(reason)}"
+            )
         if payload["next_cursor"] is not None:
             print(f"CONTENT_NEXT_CURSOR {payload['next_cursor']}")
         if payload["error"] is not None:

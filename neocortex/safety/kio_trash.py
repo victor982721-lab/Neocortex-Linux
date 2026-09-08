@@ -19,8 +19,14 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
+from typing import cast
 
-from neocortex.deduplication import FileSnapshot, full_fingerprint, snapshot_path, stat_matches_snapshot
+from neocortex.deduplication import (
+    FileSnapshot,
+    full_fingerprint,
+    snapshot_path,
+    stat_matches_snapshot,
+)
 from neocortex.platform.policy import stat_birthtime_ns
 from neocortex.workflow.actions.action_policy import validate_mutation_path
 
@@ -144,7 +150,10 @@ def _curation_trash_paths(
         # than the Trash object.  If duplicated here it must agree as well.
         or (
             "birthtime_ns" in evidence
-            and (type(evidence["birthtime_ns"]) is not int or evidence["birthtime_ns"] != expected.birthtime_ns)
+            and (
+                type(evidence["birthtime_ns"]) is not int
+                or evidence["birthtime_ns"] != expected.birthtime_ns
+            )
         )
     ):
         raise ValueError("trash receipt identity or digest differs from the source")
@@ -185,7 +194,11 @@ def _verify_curation_trash_evidence(
     info_metadata = validate_mutation_path(root, info_path, role="trash info")
     if metadata is None or not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
         raise ValueError("trash destination is not a regular unique file")
-    if info_metadata is None or not stat.S_ISREG(info_metadata.st_mode) or info_metadata.st_nlink != 1:
+    if (
+        info_metadata is None
+        or not stat.S_ISREG(info_metadata.st_mode)
+        or info_metadata.st_nlink != 1
+    ):
         raise ValueError("trash info is not a regular unique file")
     relocated = replace(expected, path=str(trash_path))
     observed = snapshot_path(trash_path)
@@ -222,7 +235,10 @@ def _validated_timeout(timeout_seconds: float) -> float:
     if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)):
         raise TypeError("KIO timeout must be a real number")
     timeout = float(timeout_seconds)
-    if not math.isfinite(timeout) or not MIN_KIO_TIMEOUT_SECONDS <= timeout <= MAX_KIO_TIMEOUT_SECONDS:
+    if (
+        not math.isfinite(timeout)
+        or not MIN_KIO_TIMEOUT_SECONDS <= timeout <= MAX_KIO_TIMEOUT_SECONDS
+    ):
         raise ValueError(
             "KIO timeout must be between "
             f"{MIN_KIO_TIMEOUT_SECONDS:g} and {MAX_KIO_TIMEOUT_SECONDS:g} seconds"
@@ -564,7 +580,7 @@ def move_to_trash(
         return _blocked(source_path, exc)
 
     command = [os.fspath(preflight.client), "move", os.fspath(source_path), KIO_TRASH_URL]
-    effective_runner = subprocess.run if runner is None else runner
+    effective_runner: KioRunner = cast(KioRunner, subprocess.run if runner is None else runner)
     client_descriptor: int | None = None
     try:
         # Keep the descriptor open through the real exec.  Injected runners keep
@@ -673,7 +689,9 @@ def move_to_trash(
         verification = verifier(source_path, expected, preflight.client)
         if isinstance(verification, KioTrashVerification):
             verification = KioTrashVerification(
-                verification.source_absent, verification.trash_evidence, verification.detail,
+                verification.source_absent,
+                verification.trash_evidence,
+                verification.detail,
             )
     except BaseException as exc:
         return _recovery_required(
@@ -687,7 +705,10 @@ def move_to_trash(
     if (
         not isinstance(verification, KioTrashVerification)
         or type(verification.source_absent) is not bool
-        or (verification.trash_evidence is not None and not isinstance(verification.trash_evidence, str))
+        or (
+            verification.trash_evidence is not None
+            and not isinstance(verification.trash_evidence, str)
+        )
         or (verification.detail is not None and not isinstance(verification.detail, str))
     ):
         return _recovery_required(
@@ -704,7 +725,8 @@ def move_to_trash(
         return _recovery_required(
             source_path,
             reason="kio_effect_unverified",
-            detail=verification.detail or "source absence and trash evidence were not both confirmed",
+            detail=verification.detail
+            or "source absence and trash evidence were not both confirmed",
             client=preflight.client,
             command=command,
             returncode=returncode,

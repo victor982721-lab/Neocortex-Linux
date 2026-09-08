@@ -16,6 +16,7 @@ import signal
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any, cast
 
 _TERMINATION_GRACE_SECONDS = 0.5
 
@@ -95,8 +96,9 @@ def isolated_spawn_process(
         args=(target, args, memory_limit_bytes, session_identity),
         daemon=daemon,
     )
-    process._neocortex_session_identity = session_identity
-    process._neocortex_group_closed = False
+    managed_process = cast(Any, process)
+    managed_process._neocortex_session_identity = session_identity
+    managed_process._neocortex_group_closed = False
     return process
 
 
@@ -115,7 +117,7 @@ def set_isolated_process_memory_limit(
     prlimit = getattr(resource, "prlimit", None)
     if not callable(prlimit):
         raise RuntimeError("posix_memory_containment_unavailable: resource.prlimit is required")
-    _soft, hard = prlimit(process.pid, resource.RLIMIT_AS)
+    _soft, hard = cast(tuple[int, int], prlimit(process.pid, resource.RLIMIT_AS))
     requested = hard if memory_limit_bytes is None else memory_limit_bytes
     if hard != resource.RLIM_INFINITY and requested > hard:
         raise RuntimeError(

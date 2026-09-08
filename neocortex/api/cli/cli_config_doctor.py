@@ -48,7 +48,9 @@ _PATH_OVERRIDE_ENVIRONMENT: Final = (
 def _path_text(value: object) -> str:
     """Render one path without resolving it through the filesystem."""
 
-    return os.fspath(value)
+    if not isinstance(value, (str, bytes, os.PathLike)):
+        raise TypeError("path value must implement the filesystem path protocol")
+    return os.fsdecode(os.fspath(value))
 
 
 def _environment_sources() -> dict[str, str]:
@@ -158,11 +160,7 @@ def configuration_report(
             "mutation": {
                 "available": bool(policy.mutation_available),
                 "backend": policy.mutation_backend,
-                "reason": (
-                    None
-                    if policy.mutation_available
-                    else LINUX_MUTATION_REASON
-                ),
+                "reason": (None if policy.mutation_available else LINUX_MUTATION_REASON),
             },
         },
         "environment": {

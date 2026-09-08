@@ -9,7 +9,8 @@ from collections.abc import Mapping
 from typing import Any
 
 from neocortex.api.read_contract import sanitize_untrusted_payload, sanitize_untrusted_text
-from neocortex.curation import CurationStateError, build_curation_preview
+from neocortex.curation import build_curation_preview
+from neocortex.curation.preview import CurationStateError
 
 
 _CLI_TEXT_LIMIT = 800
@@ -217,7 +218,7 @@ def run_curation_preview(args: argparse.Namespace) -> int:
     return 0 if payload.get("coverage") == "complete" else 2
 
 
-def _print_curation_error(args: argparse.Namespace, error: BaseException) -> int:
+def _print_curation_error(args: argparse.Namespace, error: Exception) -> int:
     if getattr(args, "curation_json", False):
         payload = (
             error.to_dict()

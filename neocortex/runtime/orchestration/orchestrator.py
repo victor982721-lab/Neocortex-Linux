@@ -11,12 +11,13 @@ import os
 import sqlite3
 import threading
 import time
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from neocortex.platform.policy import stat_birthtime_ns
-from typing import TYPE_CHECKING, Mapping, cast
+from typing import TYPE_CHECKING, cast
 
 from neocortex.enumeration.errors import NtfsUsnError
 from neocortex.enumeration.models import JournalCursor
@@ -42,7 +43,10 @@ from neocortex.runtime.control.incremental_gate import (
     IncrementalGateRequest,
     evaluate_incremental_gate,
 )
-from neocortex.integrations.inventory.inventory_coordinator import PreparedInventory, prepare_inventory
+from neocortex.integrations.inventory.inventory_coordinator import (
+    PreparedInventory,
+    prepare_inventory,
+)
 from neocortex.integrations.inventory.inventory_boundary import (
     AuthorizedStateDirectory as AuthorizedStateDirectory,
     NormalInventoryBoundary,
@@ -79,6 +83,19 @@ def query_journal_cursor(volume: str) -> JournalCursor:
     from neocortex.enumeration.ntfs.enumeration import query_journal_cursor as reader
 
     return reader(volume)
+
+
+def _complete_root_identity(policy: CorpusAccessPolicy) -> tuple[int, int, int]:
+    """Return the manifest identity only when all root fields are captured."""
+
+    identity = (
+        policy.root_device_id,
+        policy.root_file_id,
+        policy.root_birthtime_ns,
+    )
+    if any(type(value) is not int for value in identity):
+        raise ValueError("corpus root identity is incomplete")
+    return cast(tuple[int, int, int], identity)
 
 
 # endregion [01]
@@ -168,9 +185,13 @@ class FrameworkOrchestrator:
             preferred_roots=self.config.dedup_prefer_roots,
         )
         if (self.config.dedup_keep_paths or self.config.dedup_prefer_roots) and (
-            self.config.route_only or self.config.candidate_run_id is not None or self.config.resume_run_id is not None
+            self.config.route_only
+            or self.config.candidate_run_id is not None
+            or self.config.resume_run_id is not None
         ):
-            raise ValueError("keeper preferences require an initial inventory and duplicate-plan run")
+            raise ValueError(
+                "keeper preferences require an initial inventory and duplicate-plan run"
+            )
         self.route_registry = dict(route_registry or builtin_route_registry())
         self.selected_routes = normalize_route_selection(
             self.config.route, tuple(self.route_registry)
@@ -273,18 +294,14 @@ class FrameworkOrchestrator:
             if remaining is None:
                 return configured
             if type(remaining) is not int or remaining < 0:
-                raise RuntimeError(
-                    f"run {source_run_id} lifecycle budget has invalid {name}"
-                )
+                raise RuntimeError(f"run {source_run_id} lifecycle budget has invalid {name}")
             return remaining if configured is None else min(configured, remaining)
 
         source_duration: float | None = None
         if source.get("max_duration_seconds") is not None:
             deadline = source.get("deadline_ns")
             if type(deadline) is not int:
-                raise RuntimeError(
-                    f"run {source_run_id} lifecycle budget has no valid deadline"
-                )
+                raise RuntimeError(f"run {source_run_id} lifecycle budget has no valid deadline")
             remaining_ns = deadline - time.time_ns()
             if remaining_ns <= 0:
                 raise RunBudgetExceeded("time", source)
@@ -292,9 +309,7 @@ class FrameworkOrchestrator:
         duration = requested.max_duration_seconds
         if source_duration is not None:
             duration = (
-                source_duration
-                if duration is None
-                else min(float(duration), source_duration)
+                source_duration if duration is None else min(float(duration), source_duration)
             )
         return (
             RunBudget(
@@ -378,9 +393,6 @@ class FrameworkOrchestrator:
             self.config.state_directory,
         )
         return tuple(Path(path) for path in boundary.exclusion_policy.explicit_roots)
-
-
-
 
     def _normal_incremental_gate(
         self,
@@ -573,7 +585,7 @@ class FrameworkOrchestrator:
         coordinator: GlobalResourceCoordinator | None = None
         executor: ThreadPoolExecutor | None = None
         interrupted = False
-        futures = {}
+        futures: dict[Future[tuple[object, int]], str] = {}
         try:
             state.set_run_phase(run_id, "routes")
             coordinator = self._resource_coordinator()
@@ -615,7 +627,7 @@ class FrameworkOrchestrator:
                     int(inventory_summary.bytes_seen),
                 )
 
-            def execute_route(route_name: str):
+            def execute_route(route_name: str) -> tuple[object, int]:
                 adapter = self.route_registry[route_name]
                 context = RouteExecutionContext(
                     config=self.config,
@@ -771,6 +783,7 @@ class FrameworkOrchestrator:
         if self.config.route_only or self.config.resume_run_id is not None:
             return self.run_route_only()
         return self.run_initial()
+
     def run_initial(self) -> InitialRunResult:
         """Run the pre-index stage, optionally applying explicitly enabled actions."""
 
@@ -854,8 +867,12 @@ class FrameworkOrchestrator:
                 self.config.global_resource_wait_timeout_seconds
             ),
             "dedup_policy": self.config.dedup_policy,
-            "dedup_keep_paths": [os.path.abspath(path.expanduser()) for path in self.config.dedup_keep_paths],
-            "dedup_prefer_roots": [os.path.abspath(path.expanduser()) for path in self.config.dedup_prefer_roots],
+            "dedup_keep_paths": [
+                os.path.abspath(path.expanduser()) for path in self.config.dedup_keep_paths
+            ],
+            "dedup_prefer_roots": [
+                os.path.abspath(path.expanduser()) for path in self.config.dedup_prefer_roots
+            ],
             "code_max_file_bytes": self.config.code_max_file_bytes,
             "code_max_documents": self.config.code_max_documents,
             "code_cache_validation": self.config.code_cache_validation,
@@ -962,20 +979,14 @@ class FrameworkOrchestrator:
             "pdf_max_documents",
             "image_max_documents",
         )
-        budget = {
-            name: getattr(self.config, name, None) for name in budget_names
-        }
+        budget = {name: getattr(self.config, name, None) for name in budget_names}
         budget["durable"] = self._durable_run_budget().as_mapping()
         manifest = RunManifest(
             run_id=run_id,
             run_kind="initial",
             source_run_id=self.config.resume_run_id,
             root=str(boundary.access_policy.root),
-            root_identity=(
-                int(boundary.access_policy.root_device_id),
-                int(boundary.access_policy.root_file_id),
-                int(boundary.access_policy.root_birthtime_ns),
-            ),
+            root_identity=_complete_root_identity(boundary.access_policy),
             selected_routes=tuple(self.selected_routes),
             route_capabilities={
                 name: self.route_registry[name].lifecycle_capability
@@ -1070,12 +1081,15 @@ class FrameworkOrchestrator:
         )
 
         selection = resolve_keeper_inputs(
-            dedup_index, scan_id,
+            dedup_index,
+            scan_id,
             keep_paths=self.config.dedup_keep_paths,
             preferred_roots=self.config.dedup_prefer_roots,
         )
         references = resolve_keeper_references(
-            dedup_index, scan_id, self.config.code_database,
+            dedup_index,
+            scan_id,
+            self.config.code_database,
         )
 
         def build_plan() -> DedupPlan:
@@ -1090,7 +1104,9 @@ class FrameworkOrchestrator:
                 references.verify()
 
             return DedupPlanner(
-                dedup_index, keeper_policy=policy, keeper_validation=verify_keeper_inputs,
+                dedup_index,
+                keeper_policy=policy,
+                keeper_validation=verify_keeper_inputs,
             ).plan(
                 scan_id,
                 progress=self.progress,
@@ -1104,7 +1120,10 @@ class FrameworkOrchestrator:
             # Refuse to publish the stale-reference choice, then retry once
             # with unchanged explicit preferences and no unproved reference.
             references = KeeperReferenceResolution(
-                selection.policy, "stale", "reference_changed_before_plan_publication", 0,
+                selection.policy,
+                "stale",
+                "reference_changed_before_plan_publication",
+                0,
             )
             plan = build_plan()
         plan = replace(
@@ -1375,9 +1394,7 @@ class FrameworkOrchestrator:
                     "budget" if isinstance(exc, RunBudgetExceeded) else "user",
                 )
         transitioned = (
-            state.cancel_initial_run(run_id)
-            if cancelled
-            else state.fail_initial_run(run_id)
+            state.cancel_initial_run(run_id) if cancelled else state.fail_initial_run(run_id)
         )
         abandoned_actions = state.mark_abandoned_actions()
         state.record_event(
@@ -1677,7 +1694,12 @@ class FrameworkOrchestrator:
             raise ValueError(f"run {source_run_id} has no resumable content routes")
         read_capabilities = getattr(state, "read_run_route_capabilities", None)
         if callable(read_capabilities) and self.config.resume_run_id is not None:
-            capabilities = read_capabilities(source_run_id)
+            raw_capabilities = read_capabilities(source_run_id)
+            capabilities = (
+                {str(name): str(value) for name, value in raw_capabilities.items()}
+                if isinstance(raw_capabilities, Mapping)
+                else {}
+            )
             unsupported = tuple(
                 name
                 for name in self.selected_routes
@@ -1812,11 +1834,7 @@ class FrameworkOrchestrator:
                     run_kind=run_kind,
                     source_run_id=source.run_id,
                     root=str(boundary.access_policy.root),
-                    root_identity=(
-                        int(boundary.access_policy.root_device_id),
-                        int(boundary.access_policy.root_file_id),
-                        int(boundary.access_policy.root_birthtime_ns),
-                    ),
+                    root_identity=_complete_root_identity(boundary.access_policy),
                     selected_routes=tuple(self.selected_routes),
                     route_capabilities={
                         name: self.route_registry[name].lifecycle_capability
@@ -1957,4 +1975,6 @@ class FrameworkOrchestrator:
             route_results=routes,
             global_resources=execution.global_resources,
         )
+
+
 # endregion [02]

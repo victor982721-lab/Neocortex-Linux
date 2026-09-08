@@ -515,8 +515,7 @@ def _semantic_index_failure(
             )
             if elapsed is not None:
                 print(
-                    f"SEMANTIC_TIMING scope={scope} elapsed_ns={elapsed} "
-                    "basis=monotonic_interval"
+                    f"SEMANTIC_TIMING scope={scope} elapsed_ns={elapsed} basis=monotonic_interval"
                 )
     return _semantic_failure(
         "semantic-index",
@@ -542,8 +541,7 @@ def _complete_semantic_index_execution(
             )
             if elapsed is not None:
                 print(
-                    f"SEMANTIC_TIMING scope={scope} elapsed_ns={elapsed} "
-                    "basis=monotonic_interval"
+                    f"SEMANTIC_TIMING scope={scope} elapsed_ns={elapsed} basis=monotonic_interval"
                 )
         scope_failed = _semantic_index_result_failed(
             result,
@@ -703,6 +701,7 @@ def _begin_integrated_publication(
         begin_state_publication,
         publication_idempotency_key,
     )
+
     with FrameworkState(args.state_directory / "framework.sqlite3", existing_only=True) as state:
         manifest = state.read_run_manifest(run_id)
     if manifest is None:
@@ -791,6 +790,7 @@ def _final_publication_owner_heads(
             )
         )
     return tuple(heads)
+
 
 def run_integrated_all_semantic_index(
     args: argparse.Namespace,
@@ -1013,9 +1013,9 @@ def run_semantic_search(args: argparse.Namespace) -> int:
     from neocortex.semantic.semantic_service import search_semantic_index
 
     mode = args.semantic_search_mode
-    diagnostic_options = {}
-    if getattr(args, "semantic_diagnostic_item", None):
-        diagnostic_options["diagnostic_item_ids"] = tuple(args.semantic_diagnostic_item)
+    diagnostic_item_ids: tuple[str, ...] = tuple(
+        getattr(args, "semantic_diagnostic_item", ()) or ()
+    )
     try:
         result = search_semantic_index(
             args.state_directory,
@@ -1029,7 +1029,7 @@ def run_semantic_search(args: argparse.Namespace) -> int:
             model_cache=args.semantic_model_cache,
             local_files_only=True,
             threads=args.semantic_threads,
-            **diagnostic_options,
+            diagnostic_item_ids=diagnostic_item_ids,
         )
     except Exception as exc:  # FTS/ONNX backends expose distinct exceptions
         return _semantic_failure("semantic-search", exc, offline=mode != "lexical")
@@ -1081,13 +1081,13 @@ def run_semantic_search(args: argparse.Namespace) -> int:
         f"calibrated_abstentions={calibrated_abstentions} "
         f"fused_hits={len(result.fused)}"
     )
-    if diagnostic_options:
+    if diagnostic_item_ids:
         # The search service already collected these bounded target
         # diagnostics while traversing the funnel.  Project them into one
         # ordered trace without rerunning retrieval or opening another owner.
         from neocortex.knowledge.knowledge_operational_query import semantic_item_diagnostic
 
-        for item_id in diagnostic_options["diagnostic_item_ids"]:
+        for item_id in diagnostic_item_ids:
             trace = semantic_item_diagnostic(result, item_id)
             _print_console_line(
                 "SEMANTIC_ITEM_DIAGNOSTIC "

@@ -17,6 +17,14 @@ _FAILED_UNREGISTRATIONS: dict[int, tuple[Any, Any]] = {}
 _FAILED_UNREGISTRATIONS_LOCK = threading.Lock()
 
 
+def _last_error_code() -> int:
+    getter = getattr(ctypes, "get_last_error", None)
+    if not callable(getter):
+        return 0
+    value = getter()
+    return value if isinstance(value, int) else 0
+
+
 def _retain_failed_unregistration(callback: Any, kernel32: Any) -> None:
     """Keep native handler targets alive when Windows could still call them."""
 
@@ -69,13 +77,17 @@ class ConsoleCancellationBridge:
             self._requested = False
         if os.name != "nt":
             return self
-        handler_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_uint32)
+        winfunctype = getattr(ctypes, "WINFUNCTYPE", None)
+        win_dll = getattr(ctypes, "WinDLL", None)
+        if not callable(winfunctype) or not callable(win_dll):
+            raise RuntimeError("Windows console control API is unavailable")
+        handler_type = winfunctype(ctypes.c_bool, ctypes.c_uint32)
         self._callback = handler_type(self.handle_event)
-        self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._kernel32 = win_dll("kernel32", use_last_error=True)
         self._kernel32.SetConsoleCtrlHandler.argtypes = [handler_type, ctypes.c_bool]
         self._kernel32.SetConsoleCtrlHandler.restype = ctypes.c_bool
         if not self._kernel32.SetConsoleCtrlHandler(self._callback, True):
-            error_code = ctypes.get_last_error()
+            error_code = _last_error_code()
             self._callback = None
             self._kernel32 = None
             raise OSError(error_code, "SetConsoleCtrlHandler registration failed")
@@ -98,7 +110,7 @@ class ConsoleCancellationBridge:
             _retain_failed_unregistration(callback, kernel32)
             raise
         if not removed:
-            error_code = ctypes.get_last_error()
+            error_code = _last_error_code()
             _retain_failed_unregistration(callback, kernel32)
             failure = OSError(
                 error_code,
@@ -112,4 +124,6 @@ class ConsoleCancellationBridge:
         self._registered = False
         self._callback = None
         self._kernel32 = None
+
+
 # endregion [01]

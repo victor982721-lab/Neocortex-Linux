@@ -131,21 +131,16 @@ class FrameworkRouteState:
                 timeout_seconds=60.0,
                 max_attempts=8,
             )
-        else:
-            connection = sqlite3.connect(
-                existing_sqlite_uri(self.path),
-                uri=True,
-                timeout=60,
-            )
+        connection = sqlite3.connect(
+            existing_sqlite_uri(self.path),
+            uri=True,
+            timeout=60,
+        )
         try:
             connection.execute("PRAGMA busy_timeout=60000")
             connection.execute("PRAGMA foreign_keys=ON")
             if int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
                 raise RuntimeError("framework route state could not enable foreign keys")
-            if readonly:
-                connection.execute("PRAGMA query_only=ON")
-                if int(connection.execute("PRAGMA query_only").fetchone()[0]) != 1:
-                    raise RuntimeError("framework route state could not enforce query-only mode")
         except BaseException:
             connection.close()
             raise
@@ -361,7 +356,10 @@ class FrameworkRouteState:
                     "SELECT status FROM initial_runs WHERE run_id=?", (run_id,)
                 ).fetchone()
                 if source is None or str(source[0]) not in {
-                    "completed", "failed", "cancelled", "interrupted"
+                    "completed",
+                    "failed",
+                    "cancelled",
+                    "interrupted",
                 }:
                     raise ImmutableSQLiteUnavailable(
                         "resume phase snapshot requires an explicitly bound terminal source run"

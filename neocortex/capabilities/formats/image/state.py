@@ -247,9 +247,6 @@ def connect_image_state(
             connection.execute("PRAGMA query_only=ON")
             if int(connection.execute("PRAGMA query_only").fetchone()[0]) != 1:
                 raise RuntimeError("image state could not enforce query-only mode")
-        else:
-            connection.execute("PRAGMA journal_mode=WAL")
-            connection.execute("PRAGMA synchronous=NORMAL")
     except BaseException:
         connection.close()
         raise
@@ -290,10 +287,7 @@ def _migrate_image_schema(connection: sqlite3.Connection) -> None:
 def _remove_retired_adult_columns(connection: sqlite3.Connection) -> None:
     """Rebuild a legacy image table without NudeNet-owned data."""
 
-    columns = {
-        str(column[1])
-        for column in connection.execute("PRAGMA table_info(images)")
-    }
+    columns = {str(column[1]) for column in connection.execute("PRAGMA table_info(images)")}
     retired = columns & _RETIRED_ADULT_COLUMNS
     if not retired:
         return
@@ -319,8 +313,7 @@ def _remove_retired_adult_columns(connection: sqlite3.Connection) -> None:
     connection.execute(_IMAGE_REBUILT_TABLE_DDL)
     column_sql = ",".join(_IMAGE_PRODUCT_COLUMNS)
     connection.execute(
-        f"INSERT INTO images_without_nudenet({column_sql}) "
-        f"SELECT {column_sql} FROM images"
+        f"INSERT INTO images_without_nudenet({column_sql}) SELECT {column_sql} FROM images"
     )
     connection.execute("DROP TABLE images")
     connection.execute("ALTER TABLE images_without_nudenet RENAME TO images")
@@ -339,8 +332,7 @@ def _validate_image_integrity(connection: sqlite3.Connection) -> None:
     foreign_key_error = connection.execute("PRAGMA foreign_key_check").fetchone()
     if foreign_key_error is not None:
         raise RuntimeError(
-            "image migration created a foreign-key violation: "
-            f"{tuple(foreign_key_error)!r}"
+            f"image migration created a foreign-key violation: {tuple(foreign_key_error)!r}"
         )
     integrity = tuple(str(row[0]) for row in connection.execute("PRAGMA integrity_check"))
     if integrity != ("ok",):

@@ -20,6 +20,7 @@ import stat
 import sys
 import tempfile
 import time
+import resource
 import tracemalloc
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
@@ -27,12 +28,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Callable
 from unittest.mock import patch
-
-try:
-    import resource
-except ImportError:  # pragma: no cover - Linux is the supported platform
-    resource = None  # type: ignore[assignment]
-
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
@@ -137,9 +132,7 @@ def validate_config(
     )
     bounded_timeout = _timeout(timeout_seconds)
     if bounded_count > LARGE_COUNT_THRESHOLD and not allow_large:
-        raise BenchmarkConfigurationError(
-            "count above 100000 requires explicit --allow-large"
-        )
+        raise BenchmarkConfigurationError("count above 100000 requires explicit --allow-large")
     estimated_bytes = bounded_count * bounded_payload
     if estimated_bytes > MAX_TOTAL_BYTES:
         raise BenchmarkConfigurationError(
@@ -272,8 +265,6 @@ def _rate(count: int, elapsed_seconds: float) -> float:
 
 
 def _rss_kib() -> int | None:
-    if resource is None:
-        return None
     try:
         value = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     except (AttributeError, OSError, ValueError):
@@ -314,7 +305,7 @@ def _scan_with_metrics(
     ) -> None:
         nonlocal flush_count, max_pending_rows
         _check_deadline(deadline)
-        pending = len(batch._rows)  # type: ignore[attr-defined]
+        pending = len(batch._rows)
         if pending:
             flush_count += 1
             max_pending_rows = max(max_pending_rows, pending)
@@ -454,13 +445,16 @@ def _rename_noreplace(source: Path, destination: Path, directory_fd: int) -> Non
         ctypes.c_uint,
     ]
     renameat2.restype = ctypes.c_int
-    if renameat2(
-        directory_fd,
-        os.fsencode(source.name),
-        directory_fd,
-        os.fsencode(destination.name),
-        1,
-    ) == 0:
+    if (
+        renameat2(
+            directory_fd,
+            os.fsencode(source.name),
+            directory_fd,
+            os.fsencode(destination.name),
+            1,
+        )
+        == 0
+    ):
         return
     error_number = ctypes.get_errno()
     if error_number == errno.EEXIST:
@@ -472,7 +466,9 @@ def _assert_free_space(parent: Path, estimated_bytes: int) -> None:
     try:
         free_bytes = int(shutil.disk_usage(parent).free)
     except OSError as exc:
-        raise BenchmarkConfigurationError("temporary fixture free space cannot be inspected") from exc
+        raise BenchmarkConfigurationError(
+            "temporary fixture free space cannot be inspected"
+        ) from exc
     required = estimated_bytes + MIN_FREE_SPACE_BYTES
     if free_bytes < required:
         raise BenchmarkConfigurationError(

@@ -19,7 +19,7 @@ from pathlib import Path
 
 from .semantic_backends import EmbeddingBackend
 from .semantic_config import SEMANTIC_PIPELINE_VERSION, clip_image_model, clip_text_model
-from .semantic_models import EmbeddingModality
+from .semantic_models import EmbeddingModality, SearchHit
 from .semantic_schema import semantic_database
 from .semantic_ontology import expand_domain_query
 from .semantic_service_contracts import ImageRetrievalCalibration
@@ -73,18 +73,18 @@ def _query_values(value: object, *, name: str, positive: bool) -> tuple[_Calibra
         raise ImageCalibrationError(f"calibration {name} must be a JSON array")
     if len(value) < MIN_CALIBRATION_QUERIES_PER_POLARITY:
         raise ImageCalibrationError(
-            f"calibration {name} requires at least "
-            f"{MIN_CALIBRATION_QUERIES_PER_POLARITY} queries"
+            f"calibration {name} requires at least {MIN_CALIBRATION_QUERIES_PER_POLARITY} queries"
         )
     if len(value) > 1_000:
         raise ImageCalibrationError(f"calibration {name} exceeds the query bound")
     result: list[_CalibrationQuery] = []
     for entry in value:
+        raw_query: object
         if isinstance(entry, str):
-            query = entry
+            raw_query = entry
             expected: tuple[str, ...] = ()
         elif isinstance(entry, Mapping):
-            query = entry.get("query")
+            raw_query = entry.get("query")
             raw_expected = entry.get("expected_item_ids", ())
             if not isinstance(raw_expected, list) or any(
                 not isinstance(item_id, str) or not item_id.strip() for item_id in raw_expected
@@ -95,13 +95,13 @@ def _query_values(value: object, *, name: str, positive: bool) -> tuple[_Calibra
             expected = tuple(dict.fromkeys(item_id.strip() for item_id in raw_expected))
         else:
             raise ImageCalibrationError(f"calibration {name} entries must be strings or objects")
-        if not isinstance(query, str) or not query.strip() or len(query) > 4_096:
+        if not isinstance(raw_query, str) or not raw_query.strip() or len(raw_query) > 4_096:
             raise ImageCalibrationError(f"calibration {name} contains an invalid query")
         if positive and not expected:
             raise ImageCalibrationError(
                 "positive calibration queries must declare expected_item_ids"
             )
-        result.append(_CalibrationQuery(query.strip(), expected))
+        result.append(_CalibrationQuery(raw_query.strip(), expected))
     return tuple(result)
 
 
@@ -255,7 +255,7 @@ def measure_image_retrieval_calibration(
     query_model = clip_text_model()
     indexed_model = clip_image_model()
 
-    def scores_for(query: str) -> tuple[object, ...]:
+    def scores_for(query: str) -> tuple[SearchHit, ...]:
         if cancellation_check is not None:
             cancellation_check()
         vector = query_vector(
@@ -295,9 +295,7 @@ def measure_image_retrieval_calibration(
     for entry in negative_queries:
         hits = scores_for(entry.query)
         values = [float(hit.score) for hit in hits]
-        negative_scores.append(
-            _validate_score(max(values, default=-1.0), label="negative")
-        )
+        negative_scores.append(_validate_score(max(values, default=-1.0), label="negative"))
     positive_floor = min(positive_scores)
     negative_ceiling = max(negative_scores)
     if positive_floor <= negative_ceiling:

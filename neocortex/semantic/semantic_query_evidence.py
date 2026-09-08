@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
+from typing import TypedDict
 
 
 MAX_EVIDENCE_CHECK_CHARS = 32_768
@@ -34,9 +35,7 @@ _NONRECORD = re.compile(
     r"no demuestra su ejecucion|todavia no ejecutados|no acredita que se|"
     r"solo en el catalogo)\b"
 )
-_NONOCCURRENCE = re.compile(
-    r"\bno (?:se (?:presento|produjo|registro)|ocurrio|hubo|aparecio)\b"
-)
+_NONOCCURRENCE = re.compile(r"\bno (?:se (?:presento|produjo|registro)|ocurrio|hubo|aparecio)\b")
 _HYPOTHETICAL_WARNING = re.compile(
     r"\b(?:puede[n]?|podria[n]?|es posible que|can|could|may|might)\s+"
     r"(?:ocurrir|suceder|presentarse|aparecer|occur|happen|arise)\b|"
@@ -46,13 +45,39 @@ _OBSERVED_EVENT = re.compile(
     r"\b(?:hubo|existio|ocurrio|ocurrieron|sucedio|se produjo|se presento|"
     r"aparecio|estallo|occurred|happened|there was|was observed|was reported)\b"
 )
-_EVENT_QUERY_GRAMMAR = frozenset({
-    "a", "al", "an", "de", "del", "durante", "el", "en", "la", "las",
-    "los", "que", "the", "una", "un", "when", "what", "where", "with",
-    "hubo", "existio", "ocurrio", "ocurrieron", "sucedio", "paso",
-})
+_EVENT_QUERY_GRAMMAR = frozenset(
+    {
+        "a",
+        "al",
+        "an",
+        "de",
+        "del",
+        "durante",
+        "el",
+        "en",
+        "la",
+        "las",
+        "los",
+        "que",
+        "the",
+        "una",
+        "un",
+        "when",
+        "what",
+        "where",
+        "with",
+        "hubo",
+        "existio",
+        "ocurrio",
+        "ocurrieron",
+        "sucedio",
+        "paso",
+    }
+)
 _EXCLUDED_SUBJECT = re.compile(r"\bno corresponde (?:a|al)\b")
-_DETERMINERS = frozenset({"un", "una", "ningun", "ninguna", "el", "la", "los", "las", "ninguno", "algun", "alguna"})
+_DETERMINERS = frozenset(
+    {"un", "una", "ningun", "ninguna", "el", "la", "los", "las", "ninguno", "algun", "alguna"}
+)
 _AUTHORIZATION = re.compile(r"\b(?:autorizo|autorizaron|fue autorizado|fue autorizada)\b")
 _ACTIVE_AUTHORIZATION = re.compile(r"\b(?:autorizo|autorizaron)\b")
 _ACTOR_ROLES = re.compile(
@@ -60,11 +85,35 @@ _ACTOR_ROLES = re.compile(
     r"coordinador|coordinadora|director|directora|gerente|fabricante|operador|"
     r"operadora|representante)\b"
 )
-_NOT_NAMED_ACTORS = frozenset({
-    "despues", "antes", "entonces", "hoy", "ayer", "manana", "posteriormente",
-    "finalmente", "alguien", "nadie", "el", "ella", "ellos", "ellas", "se",
-    "cuando", "durante", "segun", "si", "en", "una", "un", "la", "los", "las",
-})
+_NOT_NAMED_ACTORS = frozenset(
+    {
+        "despues",
+        "antes",
+        "entonces",
+        "hoy",
+        "ayer",
+        "manana",
+        "posteriormente",
+        "finalmente",
+        "alguien",
+        "nadie",
+        "el",
+        "ella",
+        "ellos",
+        "ellas",
+        "se",
+        "cuando",
+        "durante",
+        "segun",
+        "si",
+        "en",
+        "una",
+        "un",
+        "la",
+        "los",
+        "las",
+    }
+)
 _TORQUE = re.compile(r"\b(?:torque|apriete)\b")
 _TORQUE_VALUE = re.compile(r"\d+(?:[.,]\d+)?\s*(?:n\s*[·.*]?\s*m|nm)\b")
 _CAUSAL = re.compile(r"\b(?:causo|provoco|origino|debido)\b")
@@ -75,9 +124,24 @@ _RECEIPT = re.compile(
 _DATE = re.compile(r"\b\d{1,2} de [a-z]+\b")
 
 
+class _LegacyEvidenceChecks(TypedDict):
+    policy_signature: str
+    basis: str
+    interpretation: str
+    status: str
+    required_witnesses: list[str]
+    missing_necessary_witnesses: list[str]
+    counterevidence: list[str]
+    retrieval_disposition: str
+    evaluated_chars: int
+    evaluation_truncated: bool
+    query_truncated: bool
+
+
 def _fold(value: str) -> str:
     return "".join(
-        character for character in unicodedata.normalize("NFKD", value.casefold())
+        character
+        for character in unicodedata.normalize("NFKD", value.casefold())
         if not unicodedata.combining(character)
     )
 
@@ -90,14 +154,16 @@ def _prepare(query: str, text: str) -> tuple[str, str]:
 
 def _query_polarity_unassessed(folded_query: str) -> bool:
     """The literal helper does not resolve the scope of a negated request."""
-    return bool(_ACTION_NEGATION.search(folded_query)
-                or re.search(r"\bcannot\b|\b\w+n['\u2019]t\b", folded_query))
+    return bool(
+        _ACTION_NEGATION.search(folded_query)
+        or re.search(r"\bcannot\b|\b\w+n['\u2019]t\b", folded_query)
+    )
 
 
 def _split(text: str, boundary_pattern: re.Pattern[str]) -> Iterator[tuple[int, str]]:
     start = 0
     for boundary in boundary_pattern.finditer(text):
-        yield start, text[start:boundary.start()]
+        yield start, text[start : boundary.start()]
         start = boundary.end()
     yield start, text[start:]
 
@@ -125,8 +191,14 @@ def _original_span(text: str, start: int, end: int) -> tuple[int, int]:
 
 
 def _role_witness(
-    text: str, start: int, end: int, focus: tuple[int, int], reasons: list[str],
-    *, evaluation_truncated: bool, query_truncated: bool,
+    text: str,
+    start: int,
+    end: int,
+    focus: tuple[int, int],
+    reasons: list[str],
+    *,
+    evaluation_truncated: bool,
+    query_truncated: bool,
 ) -> dict[str, object]:
     focus_start, focus_end = focus
     width = min(MAX_ROLE_EXCERPT_CHARS, end - start)
@@ -190,14 +262,26 @@ def query_role_counterevidence(query: str, text: str) -> list[dict[str, object]]
             focuses.append(match.span())
         for clause_start, clause in _clauses(folded):
             if match := _NONOCCURRENCE.search(clause):
-                head = next((term for term in _TERM.finditer(clause, match.end())
-                             if term.group() not in _DETERMINERS), None)
+                head = next(
+                    (
+                        term
+                        for term in _TERM.finditer(clause, match.end())
+                        if term.group() not in _DETERMINERS
+                    ),
+                    None,
+                )
                 if head is not None and head.group() in terms:
                     reasons.append("literal_requested_event_occurrence_is_negated")
                     focuses.append((clause_start + match.start(), clause_start + head.end()))
             if match := _EXCLUDED_SUBJECT.search(clause):
-                excluded = next((term for term in _TERM.finditer(clause, match.end())
-                                 if term.group() in identifiers), None)
+                excluded = next(
+                    (
+                        term
+                        for term in _TERM.finditer(clause, match.end())
+                        if term.group() in identifiers
+                    ),
+                    None,
+                )
                 if excluded is not None:
                     reasons.append("requested_named_subject_is_explicitly_excluded")
                     focuses.append((clause_start + match.start(), clause_start + excluded.end()))
@@ -214,12 +298,17 @@ def query_role_counterevidence(query: str, text: str) -> list[dict[str, object]]
             focuses.append(warning.span())
         if focuses:
             focus_start, focus_end = _original_span(sentence, *min(focuses))
-            witnesses.append(_role_witness(
-                bounded, sentence_start, sentence_end,
-                (sentence_start + focus_start, sentence_start + focus_end), reasons,
-                evaluation_truncated=len(text) > len(bounded),
-                query_truncated=len(query) > MAX_EVIDENCE_QUERY_CHARS,
-            ))
+            witnesses.append(
+                _role_witness(
+                    bounded,
+                    sentence_start,
+                    sentence_end,
+                    (sentence_start + focus_start, sentence_start + focus_end),
+                    reasons,
+                    evaluation_truncated=len(text) > len(bounded),
+                    query_truncated=len(query) > MAX_EVIDENCE_QUERY_CHARS,
+                )
+            )
             if len(witnesses) == MAX_ROLE_WITNESSES:
                 break
     return witnesses
@@ -231,28 +320,33 @@ def _identified_actor(raw_clause: str, folded_clause: str) -> bool:
     active = _ACTIVE_AUTHORIZATION.search(folded_clause)
     if active is None:
         return False
-    prefix = folded_clause[:active.start()].strip()
+    prefix = folded_clause[: active.start()].strip()
     if not prefix or re.search(r"\bse$", prefix):
         return False
     if _ACTOR_ROLES.search(prefix):
         return True
     original_end, _ = _original_span(raw_clause, active.start(), active.end())
     return any(
-        len(term.group()) > 1 and term.group()[0].isupper()
+        len(term.group()) > 1
+        and term.group()[0].isupper()
         and _fold(term.group()) not in _NOT_NAMED_ACTORS
         for term in _TERM.finditer(raw_clause[:original_end])
     )
 
 
-def _legacy_requested_evidence_checks(query: str, text: str) -> dict[str, object]:
+def _legacy_requested_evidence_checks(query: str, text: str) -> _LegacyEvidenceChecks:
     """Check necessary actors, causal witnesses or receipts without claiming truth.
 
     Missing checks preserve evidence as related material.  Passing checks do
     not establish an answer, entailment, permission, approval or authority.
     """
     folded_query, bounded = _prepare(query, text)
-    clauses = [(raw, _fold(raw)) for _, _, sentence in _sentences(bounded)
-               for _, raw in _clauses(sentence) if raw.strip()]
+    clauses = [
+        (raw, _fold(raw))
+        for _, _, sentence in _sentences(bounded)
+        for _, raw in _clauses(sentence)
+        if raw.strip()
+    ]
     positive = [(raw, folded) for raw, folded in clauses if not _NEGATION.search(folded)]
     required: list[str] = []
     missing: list[str] = []
@@ -264,7 +358,9 @@ def _legacy_requested_evidence_checks(query: str, text: str) -> dict[str, object
             missing.append("authorization_event")
         if not any(_identified_actor(raw, folded) for raw, folded in authorization):
             missing.append("identified_authorizing_actor")
-    if re.search(r"\btorque\b", folded_query) and re.search(r"\b(?:causo|causa|provoco)\b", folded_query):
+    if re.search(r"\btorque\b", folded_query) and re.search(
+        r"\b(?:causo|causa|provoco)\b", folded_query
+    ):
         required.extend(("applied_torque_value_with_unit", "asserted_torque_to_damage_causal_link"))
         torque = [folded for _, folded in positive if _TORQUE.search(folded)]
         if not any(_TORQUE_VALUE.search(clause) for clause in torque):
@@ -277,8 +373,11 @@ def _legacy_requested_evidence_checks(query: str, text: str) -> dict[str, object
         re.search(r"\bdemuestra\b", folded_query) and re.search(r"\brecib\w*\b", folded_query)
     ):
         required.append("affirmative_receipt_or_delivery_acknowledgment")
-        receipts = [folded for _, folded in positive if _RECEIPT.search(folded)
-                    and not re.search(r"\b(?:pendiente|todavia)\b", folded)]
+        receipts = [
+            folded
+            for _, folded in positive
+            if _RECEIPT.search(folded) and not re.search(r"\b(?:pendiente|todavia)\b", folded)
+        ]
         if not receipts:
             missing.append("affirmative_receipt_or_delivery_acknowledgment")
         dates = _DATE.findall(folded_query)
@@ -290,7 +389,11 @@ def _legacy_requested_evidence_checks(query: str, text: str) -> dict[str, object
         "policy_signature": CHECKS_POLICY_SIGNATURE,
         "basis": "input_text",
         "interpretation": "necessary_conditions_only_not_answer_entailment_or_authority",
-        "status": "missing" if missing else "necessary_checks_not_failed" if required else "not_assessed",
+        "status": "missing"
+        if missing
+        else "necessary_checks_not_failed"
+        if required
+        else "not_assessed",
         "required_witnesses": required,
         "missing_necessary_witnesses": missing,
         "counterevidence": counterevidence,
@@ -302,21 +405,66 @@ def _legacy_requested_evidence_checks(query: str, text: str) -> dict[str, object
 
 
 _SUBJECT_ID = re.compile(r"\b[a-z]+(?:-?\d+)+\b", re.IGNORECASE)
-_NOT_SUBJECTS = _NOT_NAMED_ACTORS | frozenset({
-    "que", "cual", "cuales", "quien", "como", "donde", "cuando", "en", "por",
-    "busca", "encuentra", "muestra", "what", "which", "when", "where", "who",
-    "find", "show", "how", "sha256", "sha512", "md5", "xxh3", "utf8", "utf16",
-    "proyecto", "equipo", "respaldo", "factura", "invoice", "project", "backup",
-    "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
-    "septiembre", "octubre", "noviembre", "diciembre",
-})
-_NAME_ANCHORS = frozenset({"de", "del", "para", "of", "for", "proyecto", "project", "equipo", "respaldo", "backup"})
+_NOT_SUBJECTS = _NOT_NAMED_ACTORS | frozenset(
+    {
+        "que",
+        "cual",
+        "cuales",
+        "quien",
+        "como",
+        "donde",
+        "cuando",
+        "en",
+        "por",
+        "busca",
+        "encuentra",
+        "muestra",
+        "what",
+        "which",
+        "when",
+        "where",
+        "who",
+        "find",
+        "show",
+        "how",
+        "sha256",
+        "sha512",
+        "md5",
+        "xxh3",
+        "utf8",
+        "utf16",
+        "proyecto",
+        "equipo",
+        "respaldo",
+        "factura",
+        "invoice",
+        "project",
+        "backup",
+        "enero",
+        "febrero",
+        "marzo",
+        "abril",
+        "mayo",
+        "junio",
+        "julio",
+        "agosto",
+        "septiembre",
+        "octubre",
+        "noviembre",
+        "diciembre",
+    }
+)
+_NAME_ANCHORS = frozenset(
+    {"de", "del", "para", "of", "for", "proyecto", "project", "equipo", "respaldo", "backup"}
+)
 _SCOPED_BOUNDARY = re.compile(r";|(?<!\d),|,(?!\d)|\b(?:y|pero|aunque|ni|sin)\b", re.IGNORECASE)
 _ACTION_REPLACEMENT = re.compile(r"\b(?:reemplaz\w*|sustit\w*|cambi\w*|replac\w*)\b")
 _ACTION_RESTORE = re.compile(r"\b(?:restaur\w*|restor\w*)\b")
 _ACTION_COMPARE = re.compile(r"\b(?:compar\w*|cotej\w*|verific\w*|verif\w*)\b")
-_PENDING_ACTION = re.compile(r"\b(?:pendiente|programad\w*|planificad\w*|previst\w*|debera|debe|deben|"
-                             r"se requiere|se propone|futuro|probar|probado|planned|pending|scheduled|will)\b")
+_PENDING_ACTION = re.compile(
+    r"\b(?:pendiente|programad\w*|planificad\w*|previst\w*|debera|debe|deben|"
+    r"se requiere|se propone|futuro|probar|probado|planned|pending|scheduled|will)\b"
+)
 # Keep query polarity conservative across the languages already supported by
 # lexical retrieval.  A negated request is left unassessed rather than having
 # its requested absence silently interpreted as a completed positive action.
@@ -325,10 +473,12 @@ _ACTION_NEGATION = re.compile(
     r"not|without|never|none|nobody|nothing|neither|nor|"
     r"nicht|ohne|kein(?:e|en|em|er|es)?)\b"
 )
-_COMPLETED_ACTION = re.compile(r"\b(?:reemplazo|reemplazaron|reemplazad[oa]s?|sustituyo|sustituyeron|sustituid[oa]s?|"
-                               r"cambio|cambiaron|cambiad[oa]s?|restauro|restauraron|restaurad[oa]s?|"
-                               r"comparo|compararon|comparad[oa]s?|cotejo|cotejaron|cotejad[oa]s?|"
-                               r"verifico|verificaron|verificad[oa]s?|restored|replaced|compared|verified)\b")
+_COMPLETED_ACTION = re.compile(
+    r"\b(?:reemplazo|reemplazaron|reemplazad[oa]s?|sustituyo|sustituyeron|sustituid[oa]s?|"
+    r"cambio|cambiaron|cambiad[oa]s?|restauro|restauraron|restaurad[oa]s?|"
+    r"comparo|compararon|comparad[oa]s?|cotejo|cotejaron|cotejad[oa]s?|"
+    r"verifico|verificaron|verificad[oa]s?|restored|replaced|compared|verified)\b"
+)
 _EVENT_DATE = re.compile(
     r"\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{4}|"
     r"\d{1,2}\s+(?:de\s+)?(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|"
@@ -337,14 +487,22 @@ _EVENT_DATE = re.compile(
 
 
 def _requested_subjects(query: str) -> tuple[str, ...]:
-    values = [match.group() for match in _SUBJECT_ID.finditer(query)
-              if _fold(match.group()).replace("-", "") not in _NOT_SUBJECTS]
+    values = [
+        match.group()
+        for match in _SUBJECT_ID.finditer(query)
+        if _fold(match.group()).replace("-", "") not in _NOT_SUBJECTS
+    ]
     # Literal names require a relationship anchor, not title capitalization or
     # an inferred entity from a filename/catalogue.  Numeric asset IDs are exact.
     previous = ""
     for match in _TERM.finditer(query):
         token = match.group()
-        if previous in _NAME_ANCHORS and token[0].isupper() and len(token) > 1 and _fold(token) not in _NOT_SUBJECTS:
+        if (
+            previous in _NAME_ANCHORS
+            and token[0].isupper()
+            and len(token) > 1
+            and _fold(token) not in _NOT_SUBJECTS
+        ):
             if not any(_fold(token) == _fold(value) for value in values):
                 values.append(token)
         previous = _fold(token)
@@ -359,8 +517,14 @@ def _subject_scope(text: str, subjects: tuple[str, ...]) -> str:
     if not subjects:
         return "not_requested"
     folded = _fold(text)
-    exclusions = [re.compile(r"\b(?:no (?:es|son|corresponde a|corresponde al|se trata de)|is not|not)\s+"
-                             + re.escape(_fold(subject)) + r"\b") for subject in subjects]
+    exclusions = [
+        re.compile(
+            r"\b(?:no (?:es|son|corresponde a|corresponde al|se trata de)|is not|not)\s+"
+            + re.escape(_fold(subject))
+            + r"\b"
+        )
+        for subject in subjects
+    ]
     positive_mentions = folded
     for exclusion in exclusions:
         positive_mentions = exclusion.sub("", positive_mentions)
@@ -368,17 +532,32 @@ def _subject_scope(text: str, subjects: tuple[str, ...]) -> str:
         return "aligned"
     if any(exclusion.search(folded) for exclusion in exclusions):
         return "different"
-    requested_prefixes = {re.match(r"[a-z]+", _fold(subject))[0] for subject in subjects if _SUBJECT_ID.fullmatch(subject)}
-    if requested_prefixes and any(
-        re.match(r"[a-z]+", match.group())[0] in requested_prefixes
-        and not any(match.group() == _fold(subject) for subject in subjects)
-        for match in _SUBJECT_ID.finditer(folded)
-    ):
+    requested_prefixes: set[str] = set()
+    for subject in subjects:
+        if not _SUBJECT_ID.fullmatch(subject):
+            continue
+        prefix = re.match(r"[a-z]+", _fold(subject))
+        if prefix is not None:
+            requested_prefixes.add(prefix.group(0))
+    different_subject_id = False
+    for subject_match in _SUBJECT_ID.finditer(folded):
+        prefix = re.match(r"[a-z]+", subject_match.group())
+        if (
+            prefix is not None
+            and prefix.group(0) in requested_prefixes
+            and not any(subject_match.group() == _fold(subject) for subject in subjects)
+        ):
+            different_subject_id = True
+            break
+    if requested_prefixes and different_subject_id:
         return "different"
     if any(not _SUBJECT_ID.fullmatch(subject) for subject in subjects):
         named = _requested_subjects(text)
-        if any(not _SUBJECT_ID.fullmatch(name) and not any(_mentions(name, subject) for subject in subjects)
-               for name in named):
+        if any(
+            not _SUBJECT_ID.fullmatch(name)
+            and not any(_mentions(name, subject) for subject in subjects)
+            for name in named
+        ):
             return "different"
     return "unresolved"
 
@@ -407,15 +586,30 @@ def _scoped_units(text: str, subjects: tuple[str, ...]) -> list[dict[str, object
                     # an intervening explicit subject changes that scope.  A
                     # later unrelated target mention cannot lend it backwards.
                     scope = inherited_scope
-                units.append({"text": stripped, "folded": _fold(stripped), "start": offset,
-                              "end": offset + len(stripped), "scope": scope,
-                              "sentence": sentence_id, "connector": connector,
-                              "conditional": conditional})
+                units.append(
+                    {
+                        "text": stripped,
+                        "folded": _fold(stripped),
+                        "start": offset,
+                        "end": offset + len(stripped),
+                        "scope": scope,
+                        "sentence": sentence_id,
+                        "connector": connector,
+                        "conditional": conditional,
+                    }
+                )
             if boundary is None:
                 break
             connector = _fold(boundary.group())
             start = boundary.start() if connector in {"ni", "sin"} else boundary.end()
     return units
+
+
+def _unit_int(unit: Mapping[str, object], name: str) -> int:
+    value = unit.get(name)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"scoped evidence unit has an invalid {name}")
+    return value
 
 
 def _noun_key(value: str) -> str:
@@ -429,25 +623,42 @@ def _replacement_object(query: str) -> str | None:
     match = _ACTION_REPLACEMENT.search(query)
     if match is None:
         return None
-    tail = query[match.end():]
-    words = [value for value in _TERM.findall(tail) if value not in {"de", "del", "el", "la", "los", "las", "the", "of"}]
+    tail = query[match.end() :]
+    words = [
+        value
+        for value in _TERM.findall(tail)
+        if value not in {"de", "del", "el", "la", "los", "las", "the", "of"}
+    ]
     return _noun_key(words[0]) if words else None
 
 
 def _action_matches(unit: dict[str, object], action: str, object_term: str | None) -> bool:
     value = str(unit["folded"])
-    pattern = {"replacement": _ACTION_REPLACEMENT, "restore": _ACTION_RESTORE, "hash_comparison": _ACTION_COMPARE}[action]
+    pattern = {
+        "replacement": _ACTION_REPLACEMENT,
+        "restore": _ACTION_RESTORE,
+        "hash_comparison": _ACTION_COMPARE,
+    }[action]
     match = pattern.search(value)
     if match is None:
         return False
     if action == "hash_comparison":
         return re.search(r"\bhash(?:es)?\b", value) is not None
     if action == "replacement" and object_term:
-        following = [word for word in _TERM.findall(value[match.end():]) if word not in {"de", "del", "el", "la", "los", "las", "the", "of"}]
-        preceding = value[max(0, match.start()-80):match.start()]
-        passive_object = re.search(r"\b" + re.escape(object_term) + r"(?:s|es)?\s+"
-                                   r"(?:(?:de|del)\s+\S+\s+)?(?:se|fue|fueron|ha sido|han sido|was|were)\s*$", preceding)
-        return bool(following and _noun_key(following[0]) == object_term) or passive_object is not None
+        following = [
+            word
+            for word in _TERM.findall(value[match.end() :])
+            if word not in {"de", "del", "el", "la", "los", "las", "the", "of"}
+        ]
+        preceding = value[max(0, match.start() - 80) : match.start()]
+        passive_object = re.search(
+            r"\b" + re.escape(object_term) + r"(?:s|es)?\s+"
+            r"(?:(?:de|del)\s+\S+\s+)?(?:se|fue|fueron|ha sido|han sido|was|were)\s*$",
+            preceding,
+        )
+        return (
+            bool(following and _noun_key(following[0]) == object_term) or passive_object is not None
+        )
     return True
 
 
@@ -459,14 +670,18 @@ def _action_state(unit: dict[str, object], action: str) -> str:
         return "negated"
     if _PENDING_ACTION.search(value):
         return "pending"
-    pattern = {"replacement": _ACTION_REPLACEMENT, "restore": _ACTION_RESTORE, "hash_comparison": _ACTION_COMPARE}[action]
+    pattern = {
+        "replacement": _ACTION_REPLACEMENT,
+        "restore": _ACTION_RESTORE,
+        "hash_comparison": _ACTION_COMPARE,
+    }[action]
     event = pattern.search(value)
     if event is None or not _COMPLETED_ACTION.fullmatch(event.group()):
         return "unknown"
     if event.group() in {"reemplazo", "cambio", "restauro", "comparo", "cotejo", "verifico"}:
         start, end = _original_span(str(unit["text"]), event.start(), event.end())
         actual = str(unit["text"])[start:end].casefold()
-        if not actual.endswith("ó") and not re.search(r"\bse\s+$", value[:event.start()]):
+        if not actual.endswith("ó") and not re.search(r"\bse\s+$", value[: event.start()]):
             return "unknown"  # A noun such as "reemplazo" is not a past event.
     return "necessary_marker_present"
 
@@ -474,7 +689,10 @@ def _action_state(unit: dict[str, object], action: str) -> str:
 def _requested_document_kind(query: str) -> str | None:
     kind = re.search(r"\b(?:que|cual|what|which)\s+(?:[a-z]+\s+)?(factura|invoice)\b", query)
     if kind is None:
-        kind = re.search(r"\b(?:encuentra|busca|muestra|find|show)\s+(?:(?:la|una|the|an?)\s+)?(factura|invoice)\b", query)
+        kind = re.search(
+            r"\b(?:encuentra|busca|muestra|find|show)\s+(?:(?:la|una|the|an?)\s+)?(factura|invoice)\b",
+            query,
+        )
     return "invoice" if kind else None
 
 
@@ -490,20 +708,34 @@ def requested_evidence_checks(query: str, text: str) -> dict[str, object]:
     if _query_polarity_unassessed(folded_query):
         # Preserve the retrieved passage without asserting either execution or
         # contradiction when the request's polarity/scope is not interpreted.
-        return {**legacy, "status": "not_assessed",
-                "not_assessed_reason": "query_polarity_scope_not_supported",
-                "required_witnesses": [], "missing_necessary_witnesses": [],
-                "counterevidence": [], "retrieval_disposition": "unchanged",
-                "applicability": {"families": [], "requested_subjects": [], "subject_scope": "not_requested"},
-                "scoped_observations": []}
+        return {
+            **legacy,
+            "status": "not_assessed",
+            "not_assessed_reason": "query_polarity_scope_not_supported",
+            "required_witnesses": [],
+            "missing_necessary_witnesses": [],
+            "counterevidence": [],
+            "retrieval_disposition": "unchanged",
+            "applicability": {
+                "families": [],
+                "requested_subjects": [],
+                "subject_scope": "not_requested",
+            },
+            "scoped_observations": [],
+        }
     required = list(legacy["required_witnesses"])
     missing = list(legacy["missing_necessary_witnesses"])
     counter = list(legacy["counterevidence"])
     families: list[str] = ["legacy_necessary_witnesses"] if required else []
     kind = _requested_document_kind(folded_query)
     replacement = bool(kind and _ACTION_REPLACEMENT.search(folded_query))
-    dated_actions = bool(re.search(r"\b(?:fecha|cuando|date|when)\b", folded_query)
-                         and (_ACTION_RESTORE.search(folded_query) or (_ACTION_COMPARE.search(folded_query) and "hash" in folded_query)))
+    dated_actions = bool(
+        re.search(r"\b(?:fecha|cuando|date|when)\b", folded_query)
+        and (
+            _ACTION_RESTORE.search(folded_query)
+            or (_ACTION_COMPARE.search(folded_query) and "hash" in folded_query)
+        )
+    )
     if kind:
         families.append("documented_action")
     if dated_actions:
@@ -511,7 +743,9 @@ def requested_evidence_checks(query: str, text: str) -> dict[str, object]:
     subjects = _requested_subjects(query[:MAX_EVIDENCE_QUERY_CHARS]) if families else ()
     scope = _subject_scope(bounded, subjects)
     units = _scoped_units(bounded, subjects)
-    aligned_text = "\n".join(str(unit["text"]) for unit in units if unit["scope"] in {"aligned", "not_requested"})
+    aligned_text = "\n".join(
+        str(unit["text"]) for unit in units if unit["scope"] in {"aligned", "not_requested"}
+    )
     if subjects and legacy["required_witnesses"]:
         scoped_legacy = _legacy_requested_evidence_checks(query, aligned_text)
         missing = list(scoped_legacy["missing_necessary_witnesses"])
@@ -520,14 +754,26 @@ def requested_evidence_checks(query: str, text: str) -> dict[str, object]:
 
     def observe(requirement: str, state: str, unit: dict[str, object] | None = None) -> None:
         if len(observations) < 16:
-            observations.append({"requirement": requirement, "state": state,
-                                 "subject_scope": str(unit["scope"]) if unit is not None else scope,
-                                 "start_char": int(unit["start"]) if unit is not None else None,
-                                 "end_char": int(unit["end"]) if unit is not None else None})
+            observations.append(
+                {
+                    "requirement": requirement,
+                    "state": state,
+                    "subject_scope": str(unit["scope"]) if unit is not None else scope,
+                    "start_char": _unit_int(unit, "start") if unit is not None else None,
+                    "end_char": _unit_int(unit, "end") if unit is not None else None,
+                }
+            )
 
     if subjects:
         required.append("requested_subject")
-        subject_unit = next((unit for unit in units if all(_mentions(str(unit["text"]), value) for value in subjects)), None)
+        subject_unit = next(
+            (
+                unit
+                for unit in units
+                if all(_mentions(str(unit["text"]), value) for value in subjects)
+            ),
+            None,
+        )
         if subject_unit is None and scope == "aligned":
             # This span witnesses literal identity mentions, not a relationship
             # between actions in distinct clauses or a cross-subject conclusion.
@@ -536,16 +782,34 @@ def requested_evidence_checks(query: str, text: str) -> dict[str, object]:
             missing.append("requested_subject")
             if scope == "different":
                 counter.append("requested_subject_explicitly_different_or_excluded")
-        observe("requested_subject", "necessary_marker_present" if scope == "aligned" else "different_subject" if scope == "different" else "unknown", subject_unit)
+        observe(
+            "requested_subject",
+            "necessary_marker_present"
+            if scope == "aligned"
+            else "different_subject"
+            if scope == "different"
+            else "unknown",
+            subject_unit,
+        )
     if required and subjects and scope != "aligned":
         # Do not retain legacy positive witnesses from an unrelated subject.
         missing.extend(str(value) for value in legacy["required_witnesses"])
     if kind:
         requirement = "requested_document_kind:invoice"
         required.append(requirement)
-        heading = next((unit for unit in units if not bounded[:int(unit["start"])].strip()
-                        and re.match(r"^(?:factura|invoice)\b", str(unit["folded"]))
-                        and not re.search(r"\b(?:ejemplo|modelo|referencia|citada|borrador|proforma|example|draft)\b", str(unit["folded"]))), None)
+        heading = next(
+            (
+                unit
+                for unit in units
+                if not bounded[: _unit_int(unit, "start")].strip()
+                and re.match(r"^(?:factura|invoice)\b", str(unit["folded"]))
+                and not re.search(
+                    r"\b(?:ejemplo|modelo|referencia|citada|borrador|proforma|example|draft)\b",
+                    str(unit["folded"]),
+                )
+            ),
+            None,
+        )
         if heading is None:
             missing.append(requirement)
         observe(requirement, "necessary_marker_present" if heading else "unknown", heading)
@@ -563,10 +827,16 @@ def requested_evidence_checks(query: str, text: str) -> dict[str, object]:
     for action in actions:
         requirement = f"completed_action:{action}"
         required.append(requirement)
-        matching = [unit for unit in units if _action_matches(unit, action, object_term)
-                    and unit["scope"] in {"aligned", "not_requested"}]
+        matching = [
+            unit
+            for unit in units
+            if _action_matches(unit, action, object_term)
+            and unit["scope"] in {"aligned", "not_requested"}
+        ]
         states = [(unit, _action_state(unit, action)) for unit in matching]
-        affirmative = next((unit for unit, state in states if state == "necessary_marker_present"), None)
+        affirmative = next(
+            (unit for unit, state in states if state == "necessary_marker_present"), None
+        )
         negative = next((unit for unit, state in states if state == "negated"), None)
         if affirmative is None:
             missing.append(requirement)
@@ -589,25 +859,47 @@ def requested_evidence_checks(query: str, text: str) -> dict[str, object]:
             if dated is None and unit is not None and unit["connector"] == "y":
                 # One coordinated timestamp may frame both requested actions;
                 # a preparation date or a different sentence cannot lend it.
-                dated = next((prior for prior in completed.values() if prior["sentence"] == unit["sentence"]
-                              and int(prior["end"]) < int(unit["start"])
-                              and _EVENT_DATE.search(str(prior["folded"]))), None)
+                dated = next(
+                    (
+                        prior
+                        for prior in completed.values()
+                        if prior["sentence"] == unit["sentence"]
+                        and _unit_int(prior, "end") < _unit_int(unit, "start")
+                        and _EVENT_DATE.search(str(prior["folded"]))
+                    ),
+                    None,
+                )
             if dated is None:
                 missing.append(requirement)
             observe(requirement, "necessary_marker_present" if dated else "unknown", dated)
     role_counter = query_role_counterevidence(query, aligned_text if subjects else bounded)
     disposition = (
-        "related_evidence_only" if subjects and scope != "aligned"
-        else "contradictory_evidence" if aligned_negation or counter
-        else "related_evidence_only" if missing
-        else "contradictory_evidence" if role_counter
+        "related_evidence_only"
+        if subjects and scope != "aligned"
+        else "contradictory_evidence"
+        if aligned_negation or counter
+        else "related_evidence_only"
+        if missing
+        else "contradictory_evidence"
+        if role_counter
         else "unchanged"
     )
-    return {**legacy, "policy_signature": CHECKS_POLICY_SIGNATURE,
-            "status": "missing" if missing else "necessary_checks_not_failed" if required else "not_assessed",
-            "required_witnesses": list(dict.fromkeys(required)),
-            "missing_necessary_witnesses": list(dict.fromkeys(missing)),
-            "counterevidence": list(dict.fromkeys(counter)),
-            "retrieval_disposition": disposition,
-            "applicability": {"families": families, "requested_subjects": list(subjects), "subject_scope": scope},
-            "scoped_observations": observations}
+    return {
+        **legacy,
+        "policy_signature": CHECKS_POLICY_SIGNATURE,
+        "status": "missing"
+        if missing
+        else "necessary_checks_not_failed"
+        if required
+        else "not_assessed",
+        "required_witnesses": list(dict.fromkeys(required)),
+        "missing_necessary_witnesses": list(dict.fromkeys(missing)),
+        "counterevidence": list(dict.fromkeys(counter)),
+        "retrieval_disposition": disposition,
+        "applicability": {
+            "families": families,
+            "requested_subjects": list(subjects),
+            "subject_scope": scope,
+        },
+        "scoped_observations": observations,
+    }

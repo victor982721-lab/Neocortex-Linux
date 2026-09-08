@@ -104,12 +104,12 @@ def ensure_private_sqlite_owner(path: str | Path) -> bool:
         )
         try:
             descriptor = os.open(selected, flags, STATE_FILE_MODE)
-        except FileExistsError:
+        except FileExistsError as err:
             metadata = selected.lstat()
             if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
                 raise sqlite3.OperationalError(
                     f"SQLite state owner is not a regular file: {selected}"
-                )
+                ) from err
             return False
         try:
             return True
@@ -150,12 +150,12 @@ def ensure_private_sqlite_sidecars(path: str | Path) -> None:
             )
             try:
                 descriptor = os.open(candidate, flags, STATE_FILE_MODE)
-            except FileExistsError:
+            except FileExistsError as err:
                 metadata = candidate.lstat()
                 if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
                     raise sqlite3.OperationalError(
                         f"SQLite state sidecar is not a regular file: {candidate}"
-                    )
+                    ) from err
                 continue
             os.close(descriptor)
 
@@ -179,16 +179,12 @@ class SQLiteWriterPragmas:
         if self.journal_mode is not None:
             journal_mode = self.journal_mode.upper()
             if journal_mode not in _JOURNAL_MODES:
-                raise ValueError(
-                    f"unsupported SQLite journal mode: {self.journal_mode}"
-                )
+                raise ValueError(f"unsupported SQLite journal mode: {self.journal_mode}")
             object.__setattr__(self, "journal_mode", journal_mode)
         if self.synchronous is not None:
             synchronous = self.synchronous.upper()
             if synchronous not in _SYNCHRONOUS_MODES:
-                raise ValueError(
-                    f"unsupported SQLite synchronous mode: {self.synchronous}"
-                )
+                raise ValueError(f"unsupported SQLite synchronous mode: {self.synchronous}")
             object.__setattr__(self, "synchronous", synchronous)
         _require_positive_integer(self.cache_size_kib, name="cache_size_kib")
         _require_positive_integer(
@@ -236,9 +232,7 @@ class SQLiteConnectionPolicy:
         if self.verify_foreign_keys and not self.enable_foreign_keys:
             raise ValueError("foreign-key verification requires enabling foreign keys")
         if self.verify_query_only and not self.enforce_query_only:
-            raise ValueError(
-                "query-only verification requires enforcing query-only mode"
-            )
+            raise ValueError("query-only verification requires enforcing query-only mode")
 
 
 # endregion [01]
@@ -303,13 +297,9 @@ def _configure_writer(
     if pragmas.cache_size_kib is not None:
         connection.execute(f"PRAGMA cache_size=-{pragmas.cache_size_kib}")
     if pragmas.wal_autocheckpoint_pages is not None:
-        connection.execute(
-            f"PRAGMA wal_autocheckpoint={pragmas.wal_autocheckpoint_pages}"
-        )
+        connection.execute(f"PRAGMA wal_autocheckpoint={pragmas.wal_autocheckpoint_pages}")
     if pragmas.journal_size_limit_bytes is not None:
-        connection.execute(
-            f"PRAGMA journal_size_limit={pragmas.journal_size_limit_bytes}"
-        )
+        connection.execute(f"PRAGMA journal_size_limit={pragmas.journal_size_limit_bytes}")
 
 
 def _disable_checkpoint_on_readonly_close(
@@ -382,6 +372,8 @@ __all__ = [
     "READONLY_EXISTING",
     "READWRITE_CREATE",
     "READWRITE_EXISTING",
+    "STATE_DIRECTORY_MODE",
+    "STATE_FILE_MODE",
     "SQLiteConnectionPolicy",
     "SQLiteOpenMode",
     "SQLiteRowFactory",
@@ -391,8 +383,6 @@ __all__ = [
     "ensure_private_sqlite_sidecars",
     "ensure_private_state_directory",
     "private_state_creation",
-    "STATE_DIRECTORY_MODE",
-    "STATE_FILE_MODE",
 ]
 
 

@@ -25,6 +25,19 @@ from neocortex.runtime.orchestration.replay_metrics import (
 # region [01] Status models
 
 
+def _coerce_int(value: object, *, default: int = 0) -> int:
+    """Convert JSON scalar counters without widening ``int`` calls to object."""
+
+    if isinstance(value, bool):
+        return int(value)
+    if not isinstance(value, (int, float, str)):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 @dataclass(frozen=True, slots=True)
 class PhaseStatus:
     route_name: str
@@ -93,6 +106,8 @@ class RunStatus:
     def elapsed_ns(self) -> int:
         end = time.time_ns() if self.completed_ns is None else self.completed_ns
         return max(0, end - self.started_ns)
+
+
 # endregion [01]
 
 
@@ -114,8 +129,7 @@ def list_run_status(
         raise ValueError("stale heartbeat threshold must be positive")
     with immutable_sqlite_database(database_path, timeout_seconds=10) as connection:
         run_columns = {
-            str(row["name"])
-            for row in connection.execute("PRAGMA table_info(initial_runs)")
+            str(row["name"]) for row in connection.execute("PRAGMA table_info(initial_runs)")
         }
         if not run_columns:
             raise sqlite3.DatabaseError("framework state has no initial_runs table")
@@ -142,8 +156,7 @@ def list_run_status(
         now = time.time_ns()
         threshold_ns = int(stale_after_seconds * 1_000_000_000)
         return tuple(
-            _run_status(connection, row, now=now, threshold_ns=threshold_ns)
-            for row in rows
+            _run_status(connection, row, now=now, threshold_ns=threshold_ns) for row in rows
         )
 
 
@@ -157,11 +170,7 @@ def _run_status(
     run_id = int(row["run_id"])
     run_state = str(row["status"])
     heartbeat = None if row["heartbeat_ns"] is None else int(row["heartbeat_ns"])
-    stale = (
-        None
-        if run_state != "running" or heartbeat is None
-        else now - heartbeat > threshold_ns
-    )
+    stale = None if run_state != "running" or heartbeat is None else now - heartbeat > threshold_ns
     owner_pid = None if row["owner_pid"] is None else int(row["owner_pid"])
     manifest = _run_manifest(connection, run_id)
     budget = _run_budget(
@@ -178,9 +187,7 @@ def _run_status(
     # its owner reused cached work.  Keep lifecycle replay (resume/recovery)
     # separate from per-route cache replay, which is exposed by
     # ``RouteStatus.replay_status`` and its counters below.
-    skipped_routes = tuple(
-        route.route_name for route in routes if route.status == "skipped"
-    )
+    skipped_routes = tuple(route.route_name for route in routes if route.status == "skipped")
     non_replayable_routes = _non_replayable_routes(routes, recovery)
     # An interrupted source is recoverable, but it was not itself resumed.
     # ``resume`` identifies a new execution linked to that source.  Initial
@@ -203,22 +210,16 @@ def _run_status(
         run_kind=str(row["run_kind"] or "initial"),
         status=run_state,
         root=str(row["root"]),
-        source_run_id=(
-            None if row["source_run_id"] is None else int(row["source_run_id"])
-        ),
+        source_run_id=(None if row["source_run_id"] is None else int(row["source_run_id"])),
         current_phase=current_phase,
         owner_pid=owner_pid,
         owner_alive=process_is_alive(owner_pid) if run_state == "running" else None,
         heartbeat_ns=heartbeat,
         heartbeat_stale=stale,
         started_ns=int(row["started_ns"]),
-        completed_ns=(
-            None if row["completed_ns"] is None else int(row["completed_ns"])
-        ),
+        completed_ns=(None if row["completed_ns"] is None else int(row["completed_ns"])),
         routes=routes,
-        recovery_required_actions=_recovery_required_action_count(
-            connection, run_id
-        ),
+        recovery_required_actions=_recovery_required_action_count(connection, run_id),
         manifest=manifest,
         budget=budget,
         recovery=recovery,
@@ -423,7 +424,9 @@ def _run_stages(
         if value.get("run_id") != run_id:
             raise sqlite3.DatabaseError(f"run {run_id} lifecycle stage owner is invalid")
         if manifest is not None and value.get("manifest_digest") != manifest.get("digest"):
-            raise sqlite3.DatabaseError(f"run {run_id} lifecycle stage is detached from its manifest")
+            raise sqlite3.DatabaseError(
+                f"run {run_id} lifecycle stage is detached from its manifest"
+            )
         if not isinstance(value.get("stage"), str) or not isinstance(value.get("status"), str):
             raise sqlite3.DatabaseError(f"run {run_id} lifecycle stage identity is invalid")
         if not isinstance(value.get("details"), dict):
@@ -437,7 +440,7 @@ def _non_replayable_routes(
     routes: tuple[RouteStatus, ...],
     recovery: dict[str, object] | None,
 ) -> tuple[str, ...]:
-    if recovery is not None and int(recovery.get("candidate_rows", 0)) == 0:
+    if recovery is not None and _coerce_int(recovery.get("candidate_rows", 0)) == 0:
         input_sources = recovery.get("route_input_sources", {})
         if not isinstance(input_sources, dict):
             input_sources = {}
@@ -449,8 +452,7 @@ def _non_replayable_routes(
             for route in routes
             if route.status in {"failed", "cancelled", "interrupted"}
             and (
-                input_sources.get(route.route_name, "route_candidates")
-                != "inventory_snapshot"
+                input_sources.get(route.route_name, "route_candidates") != "inventory_snapshot"
                 or capabilities.get(route.route_name, "safe_replay") == "not_resumable"
             )
         )
@@ -487,9 +489,7 @@ def _route_statuses(
     route_capabilities: dict[str, str] | None = None,
 ) -> tuple[RouteStatus, ...]:
     route_capabilities = {} if route_capabilities is None else route_capabilities
-    columns = {
-        str(row["name"]) for row in connection.execute("PRAGMA table_info(route_runs)")
-    }
+    columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(route_runs)")}
     current = "current_phase" if "current_phase" in columns else "NULL AS current_phase"
     heartbeat = "heartbeat_ns" if "heartbeat_ns" in columns else "NULL AS heartbeat_ns"
     summary = "summary_json" if "summary_json" in columns else "NULL AS summary_json"
@@ -517,15 +517,9 @@ def _route_statuses(
                     status=str(phase["status"]),
                     started_ns=int(phase["started_ns"]),
                     completed_ns=(
-                        None
-                        if phase["completed_ns"] is None
-                        else int(phase["completed_ns"])
+                        None if phase["completed_ns"] is None else int(phase["completed_ns"])
                     ),
-                    error_type=(
-                        None
-                        if phase["error_type"] is None
-                        else str(phase["error_type"])
-                    ),
+                    error_type=(None if phase["error_type"] is None else str(phase["error_type"])),
                 )
             )
     else:
@@ -567,23 +561,15 @@ def _route_statuses(
                     f"route {run_id}/{route_name} summary is invalid"
                 ) from exc
             if not isinstance(decoded_summary, dict):
-                raise sqlite3.DatabaseError(
-                    f"route {run_id}/{route_name} summary is not an object"
-                )
+                raise sqlite3.DatabaseError(f"route {run_id}/{route_name} summary is not an object")
             summary_payload = decoded_summary
         replay_metrics = normalize_route_replay_metrics(
             route_name,
             summary_payload,
             replayability=route_capabilities.get(route_name, "not_resumable"),
         )
-        current_phase = (
-            None if route["current_phase"] is None else str(route["current_phase"])
-        )
-        if (
-            current_phase is None
-            and str(route["status"]) == "running"
-            and route_name == "pdf"
-        ):
+        current_phase = None if route["current_phase"] is None else str(route["current_phase"])
+        if current_phase is None and str(route["status"]) == "running" and route_name == "pdf":
             completed = {phase.phase_name for phase in route_phases}
             if "text_dedup" in completed and "derived" not in completed:
                 current_phase = "derived_pending"
@@ -596,25 +582,19 @@ def _route_statuses(
                 current_phase=current_phase,
                 started_ns=int(route["started_ns"]),
                 completed_ns=(
-                    None
-                    if route["completed_ns"] is None
-                    else int(route["completed_ns"])
+                    None if route["completed_ns"] is None else int(route["completed_ns"])
                 ),
                 heartbeat_ns=(
-                    None
-                    if route["heartbeat_ns"] is None
-                    else int(route["heartbeat_ns"])
+                    None if route["heartbeat_ns"] is None else int(route["heartbeat_ns"])
                 ),
-                error_type=(
-                    None if route["error_type"] is None else str(route["error_type"])
-                ),
+                error_type=(None if route["error_type"] is None else str(route["error_type"])),
                 phases=route_phases,
                 resume_capability=route_capabilities.get(route_name, "not_resumable"),
-                candidates=int(replay_metrics["candidates"]),
-                processed=int(replay_metrics["processed"]),
-                cache_hits=int(replay_metrics["cache_hits"]),
-                new_work=int(replay_metrics["new_work"]),
-                cached_errors=int(replay_metrics["cached_errors"]),
+                candidates=_coerce_int(replay_metrics["candidates"]),
+                processed=_coerce_int(replay_metrics["processed"]),
+                cache_hits=_coerce_int(replay_metrics["cache_hits"]),
+                new_work=_coerce_int(replay_metrics["new_work"]),
+                cached_errors=_coerce_int(replay_metrics["cached_errors"]),
                 replay_status=str(replay_metrics["replay_status"]),
             )
         )
@@ -628,7 +608,9 @@ def serialized_run_status(status: RunStatus) -> str:
     if isinstance(status.manifest, dict):
         value = status.manifest.get("route_capabilities")
         if isinstance(value, dict):
-            manifest_capabilities = {str(name): str(capability) for name, capability in value.items()}
+            manifest_capabilities = {
+                str(name): str(capability) for name, capability in value.items()
+            }
 
     return json.dumps(
         {
@@ -698,9 +680,9 @@ def serialized_run_status(status: RunStatus) -> str:
                     "route_name": route.route_name,
                     "status": route.status,
                     "current_phase": route.current_phase,
-                        "started_ns": route.started_ns,
-                        "completed_ns": route.completed_ns,
-                        "elapsed_ns": route.elapsed_ns,
+                    "started_ns": route.started_ns,
+                    "completed_ns": route.completed_ns,
+                    "elapsed_ns": route.elapsed_ns,
                     "heartbeat_ns": route.heartbeat_ns,
                     "error_type": route.error_type,
                     "resume_capability": route.resume_capability,

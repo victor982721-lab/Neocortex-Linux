@@ -23,6 +23,16 @@ from .pdf_schema import PDF_SCHEMA_VERSION, validate_pdf_schema
 from .pdf_state import pdf_database
 
 
+def _row_int(value: object, *, default: int = 0) -> int:
+    """Read a scalar SQL counter without passing an untyped object to ``int``."""
+
+    if not value:
+        return default
+    if isinstance(value, (int, float, str)):
+        return int(value)
+    raise TypeError(f"PDF diagnostic counter is not numeric: {type(value).__name__}")
+
+
 def _validate_reader(connection: sqlite3.Connection) -> None:
     version = read_metadata_schema_version(connection, label="PDF")
     if version != PDF_SCHEMA_VERSION:
@@ -77,11 +87,11 @@ def project_pdf_diagnostic(row: Mapping[str, object]) -> dict[str, object]:
         history.append(attempt)
     page_count = row.get("page_count")
     total = int(page_count) if isinstance(page_count, int) and page_count >= 0 else None
-    published = int(row.get("published_pages") or 0)
-    declared = int(row.get("completed_pages") or 0)
-    page_errors = int(row.get("page_errors_count") or 0)
-    observed_errors = int(row.get("current_page_errors") or 0)
-    attempt_errors = int(row.get("attempt_page_error_records") or observed_errors)
+    published = _row_int(row.get("published_pages"))
+    declared = _row_int(row.get("completed_pages"))
+    page_errors = _row_int(row.get("page_errors_count"))
+    observed_errors = _row_int(row.get("current_page_errors"))
+    attempt_errors = _row_int(row.get("attempt_page_error_records"), default=observed_errors)
     page_min, page_max = row.get("first_published_page"), row.get("last_published_page")
     bounds_valid = published == 0 or (
         isinstance(page_min, int)
@@ -155,8 +165,8 @@ def project_pdf_diagnostic(row: Mapping[str, object]) -> dict[str, object]:
             "total_pages": total,
             "published_pages": published,
             "declared_completed_pages": declared,
-            "pages_without_text": int(row.get("pages_without_text") or 0),
-            "pages_with_text": int(row.get("pages_with_text") or 0),
+            "pages_without_text": _row_int(row.get("pages_without_text")),
+            "pages_with_text": _row_int(row.get("pages_with_text")),
             "missing_pages": missing,
             "page_errors": observed_errors,
             "stored_page_errors_count": page_errors,
@@ -272,7 +282,7 @@ def read_pdf_coverage(path: Path, *, path_scope: str | None = None) -> dict[str,
     }
     if not path.is_file():
         return result
-    counts = dict.fromkeys(
+    counts: dict[str, int] = dict.fromkeys(
         (
             "documents",
             "extractions_complete",

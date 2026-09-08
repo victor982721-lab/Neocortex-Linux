@@ -62,7 +62,9 @@ CheckpointState = Literal[
     "invalid",
 ]
 CheckpointValidationStatus = Literal["valid", "snapshot_changed", "invalid"]
-ResumeStatus = Literal["resume", "complete", "partial", "budget_exhausted", "snapshot_changed", "invalid"]
+ResumeStatus = Literal[
+    "resume", "complete", "partial", "budget_exhausted", "snapshot_changed", "invalid"
+]
 SourceHeadCoverage = Literal["complete", "partial", "unavailable"]
 
 _CHECKPOINT_KEYS = frozenset(
@@ -84,7 +86,10 @@ _CHECKPOINT_KEYS = frozenset(
     }
 )
 _CHECKPOINT_V2_KEYS = _CHECKPOINT_KEYS | {
-    "page_limit", "traversal_complete", "coverage", "coverage_reasons",
+    "page_limit",
+    "traversal_complete",
+    "coverage",
+    "coverage_reasons",
 }
 _ROOT_KEYS = frozenset({"birthtime_ns", "dev", "inode", "path"})
 _SOURCE_HEAD_KEYS = frozenset(
@@ -281,9 +286,7 @@ class CurationCheckpointRoot:
         return cls(
             path=_canonical_path(mapping["path"], label="root.path"),
             dev=_integer(mapping["dev"], label="root.dev", minimum=0, maximum=(1 << 63) - 1),
-            inode=_integer(
-                mapping["inode"], label="root.inode", minimum=0, maximum=(1 << 63) - 1
-            ),
+            inode=_integer(mapping["inode"], label="root.inode", minimum=0, maximum=(1 << 63) - 1),
             birthtime_ns=_integer(
                 mapping["birthtime_ns"],
                 label="root.birthtime_ns",
@@ -391,7 +394,9 @@ class CurationCheckpointSourceHead:
             _validate_json_value(value, label="source_head.metadata")
         if names != sorted(names) or len(set(names)) != len(names):
             raise CurationCheckpointError("source_head.metadata must be sorted and unique")
-        _canonical_json_bytes(dict(self.metadata), label="source_head.metadata", maximum=MAX_METADATA_BYTES)
+        _canonical_json_bytes(
+            dict(self.metadata), label="source_head.metadata", maximum=MAX_METADATA_BYTES
+        )
 
     @classmethod
     def from_mapping(cls, value: object) -> "CurationCheckpointSourceHead":
@@ -441,7 +446,9 @@ class CurationCheckpointSourceHead:
             reason=(
                 None
                 if mapping["reason"] is None
-                else _bounded_string(mapping["reason"], label="source_head.reason", maximum=4 * 1024)
+                else _bounded_string(
+                    mapping["reason"], label="source_head.reason", maximum=4 * 1024
+                )
             ),
             verification_mode=(
                 None
@@ -588,7 +595,9 @@ def _normalize_source_heads(
         raise CurationCheckpointError("source_heads exceed the count bound")
     normalized = tuple(CurationCheckpointSourceHead.from_mapping(head) for head in source_heads)
     normalized = tuple(
-        sorted(normalized, key=lambda head: (head.owner, head.kind, head.head_id or "", head.digest))
+        sorted(
+            normalized, key=lambda head: (head.owner, head.kind, head.head_id or "", head.digest)
+        )
     )
     identity_keys = [(head.owner, head.kind, head.head_id) for head in normalized]
     if len(set(identity_keys)) != len(identity_keys):
@@ -671,7 +680,10 @@ class CurationCheckpoint:
         if normalized != self.source_heads:
             raise CurationCheckpointError("checkpoint source_heads are not canonical")
         actual_source_heads_digest = compute_source_heads_digest(self.source_heads)
-        if _digest(self.source_heads_digest, label="source_heads_digest") != actual_source_heads_digest:
+        if (
+            _digest(self.source_heads_digest, label="source_heads_digest")
+            != actual_source_heads_digest
+        ):
             raise CurationCheckpointError("source_heads_digest does not match source_heads")
         _digest(self.plan_digest, label="plan_digest")
         _digest(self.snapshot_id, label="snapshot_id")
@@ -706,8 +718,12 @@ class CurationCheckpoint:
                 or self.coverage_reasons
                 or any(head.coverage != "complete" for head in self.source_heads)
             ):
-                raise CurationCheckpointError("complete coverage requires complete sources and traversal")
-        encoded = _canonical_json_bytes(self.to_dict(), label="checkpoint", maximum=MAX_CHECKPOINT_BYTES)
+                raise CurationCheckpointError(
+                    "complete coverage requires complete sources and traversal"
+                )
+        encoded = _canonical_json_bytes(
+            self.to_dict(), label="checkpoint", maximum=MAX_CHECKPOINT_BYTES
+        )
         if not encoded:
             raise CurationCheckpointError("checkpoint cannot be empty")
 
@@ -722,8 +738,14 @@ class CurationCheckpoint:
         )
         if schema_version not in {1, CURATION_CHECKPOINT_SCHEMA_VERSION}:
             raise CurationCheckpointError("unsupported checkpoint schema version")
-        _exact_keys(mapping, _CHECKPOINT_KEYS if schema_version == 1 else _CHECKPOINT_V2_KEYS, label="checkpoint")
-        expected_contract = _LEGACY_CHECKPOINT_CONTRACT if schema_version == 1 else CURATION_CHECKPOINT_CONTRACT
+        _exact_keys(
+            mapping,
+            _CHECKPOINT_KEYS if schema_version == 1 else _CHECKPOINT_V2_KEYS,
+            label="checkpoint",
+        )
+        expected_contract = (
+            _LEGACY_CHECKPOINT_CONTRACT if schema_version == 1 else CURATION_CHECKPOINT_CONTRACT
+        )
         if mapping["contract"] != expected_contract:
             raise CurationCheckpointError("checkpoint contract is unsupported")
         source_value = mapping["source_heads"]
@@ -733,6 +755,10 @@ class CurationCheckpoint:
         operation = _operation(mapping["operation"], label="checkpoint.operation")
         state = _state(mapping["state"], label="checkpoint.state")
         cursor = _validate_cursor(mapping["cursor"])
+        traversal_complete: bool
+        coverage: Literal["complete", "partial"]
+        reasons: tuple[str, ...]
+        page_limit: int
         if schema_version == 1:
             # V1 did not distinguish exhausted pagination from partial evidence.
             # Never infer complete evidence from its terminal state alone.
@@ -741,21 +767,41 @@ class CurationCheckpoint:
             reasons = ("legacy_coverage_unproven",)
             page_limit = 100  # V1 did not retain the caller's page size.
         else:
-            traversal_complete = mapping["traversal_complete"]
-            coverage = mapping["coverage"]
+            traversal_value = mapping["traversal_complete"]
+            if not isinstance(traversal_value, bool):
+                raise CurationCheckpointError("traversal_complete must be a boolean")
+            traversal_complete = traversal_value
+            coverage_value = mapping["coverage"]
+            if not isinstance(coverage_value, str) or coverage_value not in {
+                "complete",
+                "partial",
+            }:
+                raise CurationCheckpointError("checkpoint coverage is invalid")
+            coverage = cast(Literal["complete", "partial"], coverage_value)
             reasons_value = mapping["coverage_reasons"]
             if not isinstance(reasons_value, list):
                 raise CurationCheckpointError("coverage_reasons must be a JSON array")
-            reasons = tuple(reasons_value)
-            page_limit = mapping["page_limit"]
+            if any(not isinstance(reason, str) for reason in reasons_value):
+                raise CurationCheckpointError("coverage_reasons must contain strings")
+            reasons = tuple(cast(str, reason) for reason in reasons_value)
+            page_limit = _integer(
+                mapping["page_limit"],
+                label="page_limit",
+                minimum=1,
+                maximum=100,
+            )
         return cls(
             schema_version=schema_version,
-            event_id=_bounded_string(mapping["event_id"], label="event_id", maximum=MAX_EVENT_ID_BYTES),
+            event_id=_bounded_string(
+                mapping["event_id"], label="event_id", maximum=MAX_EVENT_ID_BYTES
+            ),
             operation=operation,
             state=state,
             root=CurationCheckpointRoot.from_mapping(mapping["root"]),
             source_heads=source_heads,
-            source_heads_digest=_digest(mapping["source_heads_digest"], label="source_heads_digest"),
+            source_heads_digest=_digest(
+                mapping["source_heads_digest"], label="source_heads_digest"
+            ),
             plan_digest=_digest(mapping["plan_digest"], label="plan_digest"),
             previous_checkpoint_digest=_optional_digest(
                 mapping["previous_checkpoint_digest"],
@@ -765,9 +811,9 @@ class CurationCheckpoint:
             cursor=cursor,
             batch_digest=_digest(mapping["batch_digest"], label="batch_digest"),
             budget=CurationCheckpointBudget.from_mapping(mapping["budget"]),
-            page_limit=page_limit,  # type: ignore[arg-type]
-            traversal_complete=traversal_complete,  # type: ignore[arg-type]
-            coverage=coverage,  # type: ignore[arg-type]
+            page_limit=page_limit,
+            traversal_complete=traversal_complete,
+            coverage=coverage,
             coverage_reasons=reasons,
         )
 
@@ -775,7 +821,9 @@ class CurationCheckpoint:
         result: dict[str, object] = {
             "batch_digest": self.batch_digest,
             "budget": self.budget.to_dict(),
-            "contract": _LEGACY_CHECKPOINT_CONTRACT if self.schema_version == 1 else CURATION_CHECKPOINT_CONTRACT,
+            "contract": _LEGACY_CHECKPOINT_CONTRACT
+            if self.schema_version == 1
+            else CURATION_CHECKPOINT_CONTRACT,
             "cursor": self.cursor,
             "event_id": self.event_id,
             "operation": self.operation,
@@ -789,12 +837,14 @@ class CurationCheckpoint:
             "state": self.state,
         }
         if self.schema_version == 2:
-            result.update({
-                "page_limit": self.page_limit,
-                "traversal_complete": self.traversal_complete,
-                "coverage": self.coverage,
-                "coverage_reasons": list(self.coverage_reasons),
-            })
+            result.update(
+                {
+                    "page_limit": self.page_limit,
+                    "traversal_complete": self.traversal_complete,
+                    "coverage": self.coverage,
+                    "coverage_reasons": list(self.coverage_reasons),
+                }
+            )
         return result
 
     def to_json(self) -> str:
@@ -826,7 +876,9 @@ def create_checkpoint(
     normalized_root = CurationCheckpointRoot.from_root_identity(root)
     normalized_heads = _normalize_source_heads(source_heads)
     normalized_budget = (
-        budget if isinstance(budget, CurationCheckpointBudget) else CurationCheckpointBudget.from_mapping(budget)
+        budget
+        if isinstance(budget, CurationCheckpointBudget)
+        else CurationCheckpointBudget.from_mapping(budget)
     )
     effective_event_id = event_id if event_id is not None else f"checkpoint-{uuid.uuid4().hex}"
     normalized_operation = _operation(operation, label="checkpoint.operation")
@@ -849,8 +901,12 @@ def create_checkpoint(
         batch_digest=_digest(batch_digest, label="batch_digest"),
         budget=normalized_budget,
         page_limit=page_limit,
-        traversal_complete=state == "complete" if traversal_complete is None else traversal_complete,
-        coverage=("complete" if state == "complete" else "partial") if coverage is None else coverage,
+        traversal_complete=state == "complete"
+        if traversal_complete is None
+        else traversal_complete,
+        coverage=("complete" if state == "complete" else "partial")
+        if coverage is None
+        else coverage,
         coverage_reasons=coverage_reasons,
     )
 
@@ -900,13 +956,18 @@ class CurationSnapshotObserver(Protocol):
 
     def observe(self) -> CurationSnapshotObservation:
         """Return a read-only, already captured source snapshot."""
+        ...
 
 
 def _observe(
     observer: CurationSnapshotObserver | Callable[[], CurationSnapshotObservation],
 ) -> CurationSnapshotObservation:
     callback = getattr(observer, "observe", None)
-    value = callback() if callable(callback) else observer()
+    value = (
+        callback()
+        if callable(callback)
+        else cast(Callable[[], CurationSnapshotObservation], observer)()
+    )
     if not isinstance(value, CurationSnapshotObservation):
         raise CurationCheckpointError("snapshot observer returned the wrong type")
     return value
@@ -931,9 +992,13 @@ class CurationCheckpointValidation:
             and not (self.checkpoint.schema_version == 1 and self.checkpoint.cursor is None)
             and "budget_exhausted" not in self.checkpoint.coverage_reasons
             and self.checkpoint.budget.items_remaining > 0
-            and (self.checkpoint.operation == "scan" or (
-                self.checkpoint.budget.files_remaining > 0 and self.checkpoint.budget.bytes_remaining > 0
-            ))
+            and (
+                self.checkpoint.operation == "scan"
+                or (
+                    self.checkpoint.budget.files_remaining > 0
+                    and self.checkpoint.budget.bytes_remaining > 0
+                )
+            )
         )
 
 
@@ -962,7 +1027,9 @@ def validate_checkpoint(
     if not isinstance(checkpoint, CurationCheckpoint):
         raise CurationCheckpointError("checkpoint has the wrong type")
     if checkpoint.state == "invalid":
-        return _validation(checkpoint, "invalid", "checkpoint_invalid", "checkpoint is marked invalid")
+        return _validation(
+            checkpoint, "invalid", "checkpoint_invalid", "checkpoint is marked invalid"
+        )
     if checkpoint.state == "snapshot_changed":
         return _validation(
             checkpoint,
@@ -991,13 +1058,23 @@ def validate_checkpoint(
             "source_heads_digest_changed",
             "source heads digest changed",
         ),
-        (checkpoint.plan_digest == observed.plan_digest, "plan_digest_changed", "plan digest changed"),
-        (checkpoint.snapshot_id == observed.snapshot_id, "snapshot_id_changed", "snapshot id changed"),
+        (
+            checkpoint.plan_digest == observed.plan_digest,
+            "plan_digest_changed",
+            "plan digest changed",
+        ),
+        (
+            checkpoint.snapshot_id == observed.snapshot_id,
+            "snapshot_id_changed",
+            "snapshot id changed",
+        ),
     )
     for matches, reason_code, detail in comparisons:
         if not matches:
             return _validation(checkpoint, "snapshot_changed", reason_code, detail, observed)
-    return _validation(checkpoint, "valid", "snapshot_match", "checkpoint snapshot matches", observed)
+    return _validation(
+        checkpoint, "valid", "snapshot_match", "checkpoint snapshot matches", observed
+    )
 
 
 def compute_batch_digest(
@@ -1014,7 +1091,9 @@ def compute_batch_digest(
 
     normalized_operation = _operation(operation, label="batch.operation")
     normalized_budget = (
-        budget if isinstance(budget, CurationCheckpointBudget) else CurationCheckpointBudget.from_mapping(budget)
+        budget
+        if isinstance(budget, CurationCheckpointBudget)
+        else CurationCheckpointBudget.from_mapping(budget)
     )
     _digest(plan_digest, label="batch.plan_digest")
     _digest(snapshot_id, label="batch.snapshot_id")
@@ -1109,7 +1188,9 @@ def resume_checkpoint(
     if checkpoint.state == "complete" or checkpoint.traversal_complete:
         return CurationCheckpointResume(
             status="complete" if checkpoint.coverage == "complete" else "partial",
-            reason_code="checkpoint_complete" if checkpoint.coverage == "complete" else "coverage_partial",
+            reason_code="checkpoint_complete"
+            if checkpoint.coverage == "complete"
+            else "coverage_partial",
             checkpoint=checkpoint,
             cursor=None,
             budget=checkpoint.budget,
@@ -1118,19 +1199,30 @@ def resume_checkpoint(
         )
     if checkpoint.schema_version == 1 and checkpoint.cursor is None:
         invalid = _validation(
-            checkpoint, "invalid", "legacy_continuation_unproven",
-            "legacy checkpoint has no provable continuation", validation.observed,
+            checkpoint,
+            "invalid",
+            "legacy_continuation_unproven",
+            "legacy checkpoint has no provable continuation",
+            validation.observed,
         )
         return CurationCheckpointResume(
-            status="invalid", reason_code=invalid.reason_code,
-            checkpoint=checkpoint, cursor=None, budget=checkpoint.budget,
-            replay_required=False, validation=invalid,
+            status="invalid",
+            reason_code=invalid.reason_code,
+            checkpoint=checkpoint,
+            cursor=None,
+            budget=checkpoint.budget,
+            replay_required=False,
+            validation=invalid,
         )
     if not validation.resumable:
         return CurationCheckpointResume(
-            status="budget_exhausted", reason_code="budget_exhausted",
-            checkpoint=checkpoint, cursor=checkpoint.cursor, budget=checkpoint.budget,
-            replay_required=False, validation=validation,
+            status="budget_exhausted",
+            reason_code="budget_exhausted",
+            checkpoint=checkpoint,
+            cursor=checkpoint.cursor,
+            budget=checkpoint.budget,
+            replay_required=False,
+            validation=validation,
         )
     return CurationCheckpointResume(
         status="resume",
@@ -1339,7 +1431,9 @@ def write_checkpoint(path: str | Path, checkpoint: CurationCheckpoint) -> Curati
         current = read_checkpoint(target)
         if current.to_json().encode("utf-8") == payload:
             return current
-        raise CurationCheckpointConflictError("checkpoint target already contains different evidence")
+        raise CurationCheckpointConflictError(
+            "checkpoint target already contains different evidence"
+        )
 
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{target.name}.",
@@ -1363,7 +1457,9 @@ def write_checkpoint(path: str | Path, checkpoint: CurationCheckpoint) -> Curati
                 "checkpoint target was concurrently published with different evidence"
             ) from None
         except OSError as error:
-            raise CurationCheckpointStorageError("checkpoint no-replace publication failed") from error
+            raise CurationCheckpointStorageError(
+                "checkpoint no-replace publication failed"
+            ) from error
         _fsync_directory(target.parent)
         return checkpoint
     finally:

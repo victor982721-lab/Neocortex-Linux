@@ -12,6 +12,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import cast
 
 from neocortex.semantic import semantic_service
 from neocortex.code.code_contracts import CodeSearchHit, CodeSearchQuery, CodeSearchRelation
@@ -66,11 +67,14 @@ from .knowledge_search_content import (
     semantic_rankings as _content_semantic_rankings,
 )
 from .knowledge_search_catalog import (
+    _DocumentCatalogDatabase as _CatalogDatabaseFactory,
     catalog_identifiers as _catalog_identifiers_impl,
     catalog_ranking as _catalog_ranking_impl,
     escape_like as _catalog_escape_like_impl,
 )
 from .knowledge_search_inventory import (
+    InventoryHead,
+    InventoryPlanIssue,
     apply_inventory_dispositions as _inventory_apply_inventory_dispositions,
     inventory_identity_blob as _inventory_identity_blob_impl,
     inventory_plan_heads as _inventory_plan_heads_impl,
@@ -91,7 +95,10 @@ from neocortex.semantic.semantic_lexical import (
     search_lexical_sources,
 )
 from neocortex.semantic.semantic_models import ResolvedSearchHit, canonical_json, fingerprint_text
-from neocortex.persistence.sqlite_cancellation import SQLiteCancellationBridge, sqlite_cancellation_scope
+from neocortex.persistence.sqlite_cancellation import (
+    SQLiteCancellationBridge,
+    sqlite_cancellation_scope,
+)
 from neocortex.persistence.sqlite_immutable import (
     open_immutable_sqlite_connection,
     preferred_sqlite_read_mode,
@@ -161,6 +168,7 @@ _CODE_QUERY_CUES = frozenset(
         "symbol",
     }
 )
+
 
 def _duration_ns(clock_ns: Callable[[], int], started_ns: int) -> int:
     finished_ns = clock_ns()
@@ -494,11 +502,18 @@ def _physical_identity_tuple(
 
 def _inventory_plan_heads(
     snapshot: KnowledgeSnapshot,
-) -> tuple[tuple[tuple[int, int, int, int, int], ...], bool]:
+) -> tuple[tuple[InventoryHead, ...], tuple[InventoryPlanIssue, ...]]:
     return _inventory_plan_heads_impl(
         snapshot,
         available_state=OwnerAvailability.AVAILABLE,
     )
+
+
+# Preserve the historical late-bound facade signature while the implementation
+# keeps its richer typed issue contract for the relation reader.
+_inventory_plan_heads.__annotations__["return"] = (
+    "tuple[tuple[tuple[int, int, int, int, int], ...], bool]"
+)
 
 
 def _inventory_identity_blob(value: int) -> bytes:
@@ -725,7 +740,9 @@ def _catalog_ranking(
         planned_candidate_limit_fn=_planned_candidate_limit,
         max_candidates=MAX_KNOWLEDGE_CANDIDATES,
         cancellation_bridge_type=SQLiteCancellationBridge,
-        document_catalog_database_fn=document_catalog_database,
+        # The public factory installs sqlite3.Row before yielding; its concrete
+        # sqlite3 annotations are narrower than the catalog reader protocol.
+        document_catalog_database_fn=cast(_CatalogDatabaseFactory, document_catalog_database),
         sqlite_cancellation_scope_fn=sqlite_cancellation_scope,
         sqlite_error_type=sqlite3.Error,
         reraise_captured_cancellation_fn=_reraise_captured_cancellation,
@@ -984,22 +1001,28 @@ def _run_semantic_phase(execution: _SearchExecution) -> None:
     if not _planned(execution.plan, "semantic"):
         return
     cancellation = SQLiteCancellationBridge(execution.cancellation_check)
+    rankings: dict[str, tuple[KnowledgeCandidate, ...]] = {}
+    reports: list[RankingExecution] = []
     try:
-        result = _semantic_rankings(
-            execution.paths,
-            execution.plan,
-            execution.snapshot,
-            cancellation.checkpoint if cancellation.enabled else None,
-            clock_ns=execution.clock,
+        result = cast(
+            tuple[object, ...],
+            _semantic_rankings(
+                execution.paths,
+                execution.plan,
+                execution.snapshot,
+                cancellation.checkpoint if cancellation.enabled else None,
+                clock_ns=execution.clock,
+            ),
         )
         if len(result) == 2:  # compatibility for injected v2 seams
-            rankings, reports = result
+            rankings = cast(dict[str, tuple[KnowledgeCandidate, ...]], result[0])
+            reports = cast(list[RankingExecution], result[1])
         else:
-            rankings, discovery_signals, reports = result
-            execution.discovery_signals = discovery_signals
+            rankings = cast(dict[str, tuple[KnowledgeCandidate, ...]], result[0])
+            execution.discovery_signals = cast(tuple[ResourceDiscoverySignal, ...], result[1])
+            reports = cast(list[RankingExecution], result[2])
     except (OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
         _reraise_captured_cancellation(cancellation, exc)
-        rankings = {}
         execution.discovery_signals = ()
         failed_steps = (
             *_planned_steps(execution.plan, "semantic"),
@@ -1026,24 +1049,30 @@ def _run_exact_phase(execution: _SearchExecution) -> None:
     execution.check_cancelled()
     if not _planned(execution.plan, "exact"):
         return
-    result = _exact_rankings(
-        execution.paths,
-        execution.plan,
-        execution.snapshot,
-        cancellation_check=execution.cancellation_check,
-        clock_ns=execution.clock,
+    result = cast(
+        tuple[object, ...],
+        _exact_rankings(
+            execution.paths,
+            execution.plan,
+            execution.snapshot,
+            cancellation_check=execution.cancellation_check,
+            clock_ns=execution.clock,
+        ),
     )
+    rankings: dict[str, tuple[KnowledgeCandidate, ...]]
+    reports: list[RankingExecution]
     if len(result) == 4:
-        rankings, reports, execution.exact_omitted, execution.exact_truncated = result
+        rankings = cast(dict[str, tuple[KnowledgeCandidate, ...]], result[0])
+        reports = cast(list[RankingExecution], result[1])
+        execution.exact_omitted = cast(int, result[2])
+        execution.exact_truncated = cast(bool, result[3])
         owner_timings: tuple[ExactOwnerTiming, ...] = ()
     else:
-        (
-            rankings,
-            reports,
-            execution.exact_omitted,
-            execution.exact_truncated,
-            owner_timings,
-        ) = result
+        rankings = cast(dict[str, tuple[KnowledgeCandidate, ...]], result[0])
+        reports = cast(list[RankingExecution], result[1])
+        execution.exact_omitted = cast(int, result[2])
+        execution.exact_truncated = cast(bool, result[3])
+        owner_timings = cast(tuple[ExactOwnerTiming, ...], result[4])
     execution.rankings.update(rankings)
     execution.reports.extend(reports)
     execution.phase_timings.extend(
@@ -1268,7 +1297,8 @@ def _named_ranking_gaps(
     for name in required_names:
         report = reports_by_name.get(name)
         if (
-            report is not None and report.intentional_omission
+            report is not None
+            and report.intentional_omission
             and intentional_omissions is not None
             and intentional_omissions.get(name) == report.reason
         ):

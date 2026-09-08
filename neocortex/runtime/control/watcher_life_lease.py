@@ -19,9 +19,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Literal
 
-import xxhash
-
 from neocortex import __version__
+
+xxhash = importlib.import_module("xxhash")
 _METADATA_SCHEMA = "neocortex-watcher-life-lease-v1"
 _MAX_METADATA_BYTES = 64 * 1024
 _MAX_ARG_COUNT = 64
@@ -96,7 +96,11 @@ def _process_creation_observation(pid: int) -> tuple[int | None, OwnerStatus]:
 
     from ctypes import wintypes
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    win_dll = getattr(ctypes, "WinDLL", None)
+    get_last_error = getattr(ctypes, "get_last_error", None)
+    if not callable(win_dll) or not callable(get_last_error):
+        return None, "unknown"
+    kernel32 = win_dll("kernel32", use_last_error=True)
     kernel32.GetCurrentProcess.restype = wintypes.HANDLE
     kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel32.OpenProcess.restype = wintypes.HANDLE
@@ -121,7 +125,7 @@ def _process_creation_observation(pid: int) -> tuple[int | None, OwnerStatus]:
     if not handle:
         # ERROR_INVALID_PARAMETER is returned for a PID that does not exist.
         # Access-denied and other failures must remain diagnostically unknown.
-        if ctypes.get_last_error() == 87:
+        if get_last_error() == 87:
             return None, "not-live"
         return None, "unknown"
 
@@ -205,7 +209,7 @@ def _owner_status(owner: dict[str, object] | None) -> OwnerStatus:
 def _lock_stream(stream: BinaryIO) -> None:
     stream.seek(0)
     if os.name == "nt":
-        import msvcrt
+        msvcrt = importlib.import_module("msvcrt")
 
         msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
     else:  # pragma: no cover - compatibility for development hosts
@@ -216,7 +220,7 @@ def _lock_stream(stream: BinaryIO) -> None:
 def _unlock_stream(stream: BinaryIO) -> None:
     stream.seek(0)
     if os.name == "nt":
-        import msvcrt
+        msvcrt = importlib.import_module("msvcrt")
 
         msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
     else:  # pragma: no cover
@@ -236,9 +240,7 @@ class WatcherLifeLease:
     def __init__(self, root: str | Path, state_directory: str | Path) -> None:
         self.identity = watcher_lease_identity(root, state_directory)
         state = Path(self.identity.state_directory)
-        self.path = state / (
-            f"watcher-life-xxh3-128-{self.identity.xxh3_128}.lock"
-        )
+        self.path = state / (f"watcher-life-xxh3-128-{self.identity.xxh3_128}.lock")
         self.owner: dict[str, object] | None = None
         self.previous_metadata: dict[str, object] | None = None
         self._stream: BinaryIO | None = None

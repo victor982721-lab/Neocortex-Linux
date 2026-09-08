@@ -174,7 +174,11 @@ def build_fixture(root: Path) -> FixtureManifest:
         source = FIXTURE_ROOT / group
         if not source.is_dir():
             raise BenchmarkConfigurationError(f"fixture group is missing: {group}")
-        shutil.copytree(source, root / group)
+        shutil.copytree(
+            source,
+            root / group,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+        )
 
     archive_path = root / "archive" / "fixture.zip"
     archive_path.parent.mkdir(mode=0o700)
@@ -236,8 +240,10 @@ def _resolve_launcher(value: str | Path | None) -> Path:
                 "shell launcher has no literal isolated target; pass the direct executable"
             )
         candidate = Path(target_words[1]).expanduser()
-        if not candidate.is_absolute() or not candidate.is_file() or not os.access(
-            candidate, os.X_OK
+        if (
+            not candidate.is_absolute()
+            or not candidate.is_file()
+            or not os.access(candidate, os.X_OK)
         ):
             raise BenchmarkConfigurationError("shell launcher target is not executable")
     return candidate
@@ -398,11 +404,7 @@ def _route_metrics(payload: Mapping[str, Any], route: str) -> dict[str, Any]:
     if not isinstance(rows, list):
         raise BenchmarkExecutionError("status JSON has no route list")
     row = next(
-        (
-            value
-            for value in rows
-            if isinstance(value, dict) and value.get("route_name") == route
-        ),
+        (value for value in rows if isinstance(value, dict) and value.get("route_name") == route),
         None,
     )
     if row is None:

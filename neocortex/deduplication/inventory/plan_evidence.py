@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import fields
+from typing import cast
 
 from ..domain.errors import InventoryError
 from ..domain.evidence import (
@@ -38,7 +39,9 @@ def _payload(raw: str, model: type) -> dict[str, object] | None:
     for field in ("missing_checks", "keeper_factors", "aliases"):
         if field in value:
             sequence = value[field]
-            if not isinstance(sequence, list) or any(not isinstance(item, str) for item in sequence):
+            if not isinstance(sequence, list) or any(
+                not isinstance(item, str) for item in sequence
+            ):
                 raise InventoryError(f"duplicate proof {field} is invalid")
             value[field] = tuple(sequence)
     if value["comparison_method"] not in {"full_xxh3", "byte_for_byte"}:
@@ -60,8 +63,10 @@ def decode_group_proof(raw: str) -> DuplicateGroupProof | None:
         or not isinstance(value["keeper_policy_version"], str)
     ):
         raise InventoryError("duplicate group proof policy is invalid")
-    expected = ("byte_for_byte", "equal") if value["requested_policy"] == "exact" else (
-        "full_xxh3", "fingerprint_match"
+    expected = (
+        ("byte_for_byte", "equal")
+        if value["requested_policy"] == "exact"
+        else ("full_xxh3", "fingerprint_match")
     )
     if (value["comparison_method"], value["comparison_result"]) != expected:
         raise InventoryError("duplicate group proof does not match its requested policy")
@@ -74,8 +79,10 @@ def decode_member_proof(raw: str) -> DuplicateMemberProof:
         return DuplicateMemberProof()
     identity = value["compared_to_identity"]
     if identity is not None:
-        if not isinstance(identity, list) or len(identity) != 2 or any(
-            type(item) is not int or item < 0 for item in identity
+        if (
+            not isinstance(identity, list)
+            or len(identity) != 2
+            or any(type(item) is not int or item < 0 for item in identity)
         ):
             raise InventoryError("duplicate proof comparison identity is invalid")
         value["compared_to_identity"] = tuple(identity)
@@ -83,39 +90,56 @@ def decode_member_proof(raw: str) -> DuplicateMemberProof:
         number = value[field]
         if number is not None and (type(number) is not int or number < 0):
             raise InventoryError(f"duplicate proof {field} is invalid")
-    aliases = value["aliases"]
+    aliases_value = value["aliases"]
+    if not isinstance(aliases_value, tuple) or any(
+        not isinstance(alias, str) for alias in aliases_value
+    ):
+        raise InventoryError("duplicate proof aliases are invalid")
+    aliases = cast(tuple[str, ...], aliases_value)
     count = value["alias_count"]
     observed_links = value["observed_link_count"]
     if (
         not isinstance(count, int)
         or count < 1
-        or count < len(aliases)  # type: ignore[arg-type]
-        or any(not alias.strip() for alias in aliases)  # type: ignore[union-attr]
-        or len(set(aliases)) != len(aliases)  # type: ignore[arg-type]
+        or count < len(aliases)
+        or any(not alias.strip() for alias in aliases)
+        or len(set(aliases)) != len(aliases)
         or type(observed_links) is not int
         or observed_links < count
     ):
         raise InventoryError("duplicate proof alias topology is inconsistent")
     if type(value["aliases_truncated"]) is not bool or value["aliases_truncated"] != (
-        count > len(aliases)  # type: ignore[arg-type]
+        count > len(aliases)
     ):
         raise InventoryError("duplicate proof alias truncation is inconsistent")
+    missing_checks_value = value["missing_checks"]
+    if not isinstance(missing_checks_value, tuple) or any(
+        not isinstance(check, str) for check in missing_checks_value
+    ):
+        raise InventoryError("duplicate proof missing checks are invalid")
+    missing_checks = cast(tuple[str, ...], missing_checks_value)
     if value["fingerprint_source"] not in {"computed", "cached"} or not isinstance(
         value["fingerprint_algorithm"], str
     ):
         raise InventoryError("duplicate proof fingerprint evidence is invalid")
     result = value["comparison_result"]
     if result == "reference":
-        valid = value["comparison_method"] == "full_xxh3" and identity is None and value["comparison_bytes"] is None
+        valid = (
+            value["comparison_method"] == "full_xxh3"
+            and identity is None
+            and value["comparison_bytes"] is None
+        )
     elif result == "fingerprint_match":
         valid = (
-            value["comparison_method"] == "full_xxh3" and identity is not None
+            value["comparison_method"] == "full_xxh3"
+            and identity is not None
             and value["comparison_bytes"] is None
-            and "byte_for_byte_comparison" in value["missing_checks"]
+            and "byte_for_byte_comparison" in missing_checks
         )
     else:
         valid = (
-            value["comparison_method"] == "byte_for_byte" and identity is not None
+            value["comparison_method"] == "byte_for_byte"
+            and identity is not None
             and type(value["comparison_bytes"]) is int
         )
     if not valid:

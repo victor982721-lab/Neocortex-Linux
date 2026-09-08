@@ -11,11 +11,11 @@ filesystem effects.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Sequence
-from typing import Any, Literal, NotRequired, Required, TypedDict
+from collections.abc import Mapping, Sequence
+from typing import Any, Literal, NotRequired, Required, TypedDict, cast
 from uuid import uuid4
 
-from neocortex.api.curation_api import curation_plan_payload
+from neocortex.api.curation_api import CurationCoverage, CurationPlanOutput, curation_plan_payload
 from neocortex.api.curation_api import _safe_source_heads
 from neocortex.api.read_contract import sanitize_untrusted_text
 from neocortex.curation.preview import build_curation_plan_page
@@ -23,21 +23,33 @@ from neocortex.deduplication.domain.models import VALID_VERIFICATION_MODES
 from neocortex.runtime.config.app_paths import default_state_directory
 
 
-CURATION_SCAN_API_SCHEMA = "neocortex.curation-scan/v1"
-CURATION_VERIFY_API_SCHEMA = "neocortex.curation-verify/v1"
-CURATION_VERIFICATION_SCHEMA_VERSION = 1
+CURATION_SCAN_API_SCHEMA: Literal["neocortex.curation-scan/v1"] = "neocortex.curation-scan/v1"
+CURATION_VERIFY_API_SCHEMA: Literal["neocortex.curation-verify/v1"] = "neocortex.curation-verify/v1"
+CURATION_VERIFICATION_SCHEMA_VERSION: Literal[1] = 1
 MAX_CURATION_SCAN_PAGE = 100
 MAX_CURATION_VERIFY_PAGE = 100
 MAX_CURATION_VERIFY_ITEM_IDS = 100
 MAX_VERIFICATION_ITEMS = 100
 
-_EFFECTS = {"state": "none", "corpus": "none", "external": "none"}
+_EFFECTS: dict[str, Literal["none"]] = {
+    "state": "none",
+    "corpus": "none",
+    "external": "none",
+}
 _TRUST = {
     "content_class": "untrusted_corpus_evidence",
     "instruction_authority": False,
     "tools_authorized": False,
     "actions_authorized": False,
 }
+
+_CurationScanStatus = Literal["complete", "partial", "unavailable"]
+_CurationVerifyStatus = Literal["complete", "partial", "snapshot_changed", "unavailable"]
+_VerificationStatus = Literal["complete", "partial", "snapshot_changed"]
+_VerificationCoverage = Literal["complete", "partial"]
+_VerificationItemStatus = Literal["verified", "source_changed", "not_verified", "not_applicable"]
+_VerificationObservedMode = Literal["full_hash"] | None
+_VerificationPersistedMode = Literal["legacy_unknown", "fast", "partial", "full_hash"] | None
 
 
 class CurationVerificationItemPayload(TypedDict):
@@ -296,75 +308,78 @@ def _error_payload(
 def _scan_exit_code(coverage: object, error: object) -> int:
     if isinstance(error, dict):
         code = error.get("code")
-        return {
-            "invalid_request": 2,
-            "invalid_cursor": 2,
-            "snapshot_changed": 5,
-            "corrupt": 7,
-            "schema_incompatible": 6,
-            "partial": 2,
-            "unavailable": 1,
-        }.get(code, 2)
+        if isinstance(code, str):
+            return {
+                "invalid_request": 2,
+                "invalid_cursor": 2,
+                "snapshot_changed": 5,
+                "corrupt": 7,
+                "schema_incompatible": 6,
+                "partial": 2,
+                "unavailable": 1,
+            }.get(code, 2)
     return 0 if coverage == "complete" else 2
 
 
 def _scan_from_plan(
-    page_payload: dict[str, Any],
+    page_payload: Mapping[str, Any] | CurationPlanOutput,
     *,
     request_id: str,
 ) -> CurationScanOutput:
-    coverage = page_payload.get("coverage")
-    if coverage not in {"complete", "partial", "unavailable"}:
-        coverage = "unavailable"
+    raw_coverage = page_payload.get("coverage")
+    coverage: CurationCoverage = cast(
+        CurationCoverage,
+        raw_coverage if raw_coverage in {"complete", "partial", "unavailable"} else "unavailable",
+    )
     published_error = page_payload.get("error")
-    if published_error is not None and not isinstance(published_error, dict):
-        raise ValueError("published curation scan error is invalid")
+    if published_error is not None:
+        if not isinstance(published_error, Mapping):
+            raise ValueError("published curation scan error is invalid")
+        published_error = cast(CurationVerificationErrorPayload, dict(published_error))
     # An upstream error can never coexist with a successful scan, even if a
     # malformed producer labels the page complete.  Preserve its typed exit
     # code while failing the public coverage closed.
     if published_error is not None and coverage == "complete":
         coverage = "unavailable"
-    page = page_payload.get("page")
-    if not isinstance(page, dict):
-        page = {}
+    raw_page = page_payload.get("page")
+    if not isinstance(raw_page, Mapping):
+        page: CurationScanPagePayload = {}
     else:
         # ``curation_plan_payload`` has already sanitized each evidence object
         # at its structural boundary.  Do not run the generic shared-node
         # sanitizer again here: a large but valid page would otherwise lose
         # items and acquire a truncation marker while retaining ``complete``.
-        page = dict(page)
+        page = cast(CurationScanPagePayload, dict(raw_page))
         raw_items = page.get("items")
         if not isinstance(raw_items, list):
             raise ValueError("published curation scan page items are invalid")
-        copied_items: list[dict[str, object]] = []
+        copied_items: list[dict[str, Any]] = []
         for item in raw_items:
-            if not isinstance(item, dict):
+            if not isinstance(item, Mapping):
                 raise ValueError("published curation scan item is invalid")
             copied_items.append(dict(item))
         page["items"] = copied_items
-    published_snapshot = page_payload.get("snapshot")
-    if not isinstance(published_snapshot, dict):
+    raw_snapshot = page_payload.get("snapshot")
+    published_snapshot: Mapping[str, Any]
+    if not isinstance(raw_snapshot, Mapping):
         published_snapshot = {}
+    else:
+        published_snapshot = raw_snapshot
     source_heads = published_snapshot.get("source_heads", [])
     if not isinstance(source_heads, list):
         raise ValueError("published curation scan source_heads are invalid")
-    if any(not isinstance(head, dict) for head in source_heads):
+    if any(not isinstance(head, Mapping) for head in source_heads):
         raise ValueError("published curation scan source head is invalid")
-    result = {
+    result: CurationScanResultPayload = {
         "plan_digest": page.get("plan_digest"),
-        "snapshot_id": (
-            published_snapshot.get("snapshot_id")
-        ),
-        "scan_id": (
-            published_snapshot.get("scan_id")
-        ),
-        "root": (
-            published_snapshot.get("root")
-        ),
+        "snapshot_id": published_snapshot.get("snapshot_id"),
+        "scan_id": published_snapshot.get("scan_id"),
+        "root": published_snapshot.get("root"),
         "source_heads": [dict(head) for head in source_heads],
         "page": page,
         "source": "published_curation_plan",
     }
+    status: _CurationScanStatus = "complete" if coverage == "complete" else coverage
     return {
         "schema": CURATION_SCAN_API_SCHEMA,
         "schema_version": CURATION_VERIFICATION_SCHEMA_VERSION,
@@ -373,7 +388,7 @@ def _scan_from_plan(
         "request_id": request_id,
         "plan_id": result["plan_digest"],
         "scope": "personal",
-        "status": "complete" if coverage == "complete" else coverage,
+        "status": status,
         "coverage": coverage,
         "read_only": True,
         "effects": dict(_EFFECTS),
@@ -404,13 +419,16 @@ def curation_scan_payload(
         normalized_limit = _limit(limit, maximum=MAX_CURATION_SCAN_PAGE)
         normalized_cursor = _cursor(cursor)
     except (TypeError, ValueError) as exc:
-        return _error_payload(
-            schema=CURATION_SCAN_API_SCHEMA,
-            kind="neocortex_curation_scan",
-            operation="curation-scan",
-            request_id=_request_id(None, prefix="curation-scan"),
-            plan_id=None,
-            error=exc,
+        return cast(
+            CurationScanOutput,
+            _error_payload(
+                schema=CURATION_SCAN_API_SCHEMA,
+                kind="neocortex_curation_scan",
+                operation="curation-scan",
+                request_id=_request_id(None, prefix="curation-scan"),
+                plan_id=None,
+                error=exc,
+            ),
         )
     try:
         page = curation_plan_payload(
@@ -420,13 +438,16 @@ def curation_scan_payload(
         )
         return _scan_from_plan(page, request_id=normalized_request)
     except Exception as exc:
-        return _error_payload(
-            schema=CURATION_SCAN_API_SCHEMA,
-            kind="neocortex_curation_scan",
-            operation="curation-scan",
-            request_id=normalized_request,
-            plan_id=None,
-            error=exc,
+        return cast(
+            CurationScanOutput,
+            _error_payload(
+                schema=CURATION_SCAN_API_SCHEMA,
+                kind="neocortex_curation_scan",
+                operation="curation-scan",
+                request_id=normalized_request,
+                plan_id=None,
+                error=exc,
+            ),
         )
 
 
@@ -437,16 +458,20 @@ def _verification_success(
     plan_id: str,
     cursor: str | None,
 ) -> CurationVerifyOutput:
-    status = result.get("status")
-    coverage = result.get("coverage")
-    if status not in {"complete", "partial", "snapshot_changed"}:
-        status = "partial"
-    if coverage not in {"complete", "partial"}:
-        coverage = "partial"
+    raw_status = result.get("status")
+    status: _VerificationStatus = cast(
+        _VerificationStatus,
+        raw_status if raw_status in {"complete", "partial", "snapshot_changed"} else "partial",
+    )
+    raw_coverage = result.get("coverage")
+    coverage: _VerificationCoverage = cast(
+        _VerificationCoverage,
+        raw_coverage if raw_coverage in {"complete", "partial"} else "partial",
+    )
     raw_items = result.get("items")
     if not isinstance(raw_items, (list, tuple)):
         raise ValueError("curation verification items are invalid")
-    normalized_items: list[dict[str, object]] = []
+    normalized_items: list[CurationVerificationItemPayload] = []
     for raw_item in raw_items:
         if not isinstance(raw_item, dict):
             raise ValueError("curation verification item is invalid")
@@ -463,39 +488,34 @@ def _verification_success(
         }
         if set(raw_item) != required:
             raise ValueError("curation verification item shape is invalid")
-        item_status = raw_item["status"]
-        if not isinstance(item_status, str) or item_status not in {
+        raw_item_status = raw_item["status"]
+        if not isinstance(raw_item_status, str) or raw_item_status not in {
             "verified",
             "source_changed",
             "not_verified",
             "not_applicable",
         }:
             raise ValueError("curation verification item status is invalid")
+        item_status = cast(_VerificationItemStatus, raw_item_status)
         persisted_mode = raw_item["persisted_mode"]
         observed_mode = raw_item["observed_mode"]
-        if (
-            persisted_mode is not None
-            and (
-                not isinstance(persisted_mode, str)
-                or persisted_mode not in VALID_VERIFICATION_MODES
-            )
+        if persisted_mode is not None and (
+            not isinstance(persisted_mode, str) or persisted_mode not in VALID_VERIFICATION_MODES
         ):
             raise ValueError("curation verification persisted mode is invalid")
         if observed_mode is not None and observed_mode != "full_hash":
             raise ValueError("curation verification observed mode is invalid")
+        normalized_persisted_mode = cast(_VerificationPersistedMode, persisted_mode)
+        normalized_observed_mode = cast(_VerificationObservedMode, observed_mode)
         normalized_items.append(
             {
-                "checked_files": _nonnegative_int(
-                    raw_item["checked_files"], label="checked_files"
-                ),
+                "checked_files": _nonnegative_int(raw_item["checked_files"], label="checked_files"),
                 "item_id": sanitize_untrusted_text(raw_item["item_id"], limit=4_096),
                 "kind": sanitize_untrusted_text(raw_item["kind"], limit=256),
-                "observed_mode": observed_mode,
-                "persisted_mode": persisted_mode,
+                "observed_mode": normalized_observed_mode,
+                "persisted_mode": normalized_persisted_mode,
                 "reason": sanitize_untrusted_text(raw_item["reason"], limit=4_096),
-                "source_path": sanitize_untrusted_text(
-                    raw_item["source_path"], limit=4_096
-                ),
+                "source_path": sanitize_untrusted_text(raw_item["source_path"], limit=4_096),
                 "status": item_status,
                 "verified_files": _nonnegative_int(
                     raw_item["verified_files"], label="verified_files"
@@ -516,7 +536,7 @@ def _verification_success(
                 raw_value,
                 label=f"metric {raw_name}",
             )
-    normalized_result = {
+    normalized_result: CurationVerificationResultPayload = {
         "bytes_checked": _nonnegative_int(result.get("bytes_checked"), label="bytes_checked"),
         "coverage": coverage,
         "files_checked": _nonnegative_int(result.get("files_checked"), label="files_checked"),
@@ -531,6 +551,17 @@ def _verification_success(
         "status": status,
         "metrics": normalized_metrics,
     }
+    verification_error: CurationVerificationErrorPayload | None = None
+    if status != "complete":
+        verification_error = {
+            "code": "snapshot_changed" if status == "snapshot_changed" else "not_verified",
+            "message": (
+                "curation source changed during verification"
+                if status == "snapshot_changed"
+                else "curation verification is incomplete"
+            ),
+            "retryable": status == "snapshot_changed",
+        }
     return {
         "schema": CURATION_VERIFY_API_SCHEMA,
         "schema_version": CURATION_VERIFICATION_SCHEMA_VERSION,
@@ -551,19 +582,7 @@ def _verification_success(
             "source_heads": normalized_result["source_heads"],
         },
         "result": normalized_result,
-        "error": (
-            None
-            if status == "complete"
-            else {
-                "code": "snapshot_changed" if status == "snapshot_changed" else "not_verified",
-                "message": (
-                    "curation source changed during verification"
-                    if status == "snapshot_changed"
-                    else "curation verification is incomplete"
-                ),
-                "retryable": status == "snapshot_changed",
-            }
-        ),
+        "error": verification_error,
         "exit_code": 0 if status == "complete" else 5 if status == "snapshot_changed" else 2,
     }
 
@@ -585,13 +604,16 @@ def curation_verify_payload(
         normalized_ids = _item_ids(item_ids)
         normalized_cursor = _cursor(cursor)
     except (TypeError, ValueError) as exc:
-        return _error_payload(
-            schema=CURATION_VERIFY_API_SCHEMA,
-            kind="neocortex_curation_verify",
-            operation="curation-verify",
-            request_id=_request_id(None, prefix="curation-verify"),
-            plan_id=None,
-            error=exc,
+        return cast(
+            CurationVerifyOutput,
+            _error_payload(
+                schema=CURATION_VERIFY_API_SCHEMA,
+                kind="neocortex_curation_verify",
+                operation="curation-verify",
+                request_id=_request_id(None, prefix="curation-verify"),
+                plan_id=None,
+                error=exc,
+            ),
         )
     try:
         from neocortex.curation.verification import (
@@ -619,13 +641,16 @@ def curation_verify_payload(
             cursor=normalized_cursor,
         )
     except Exception as exc:
-        return _error_payload(
-            schema=CURATION_VERIFY_API_SCHEMA,
-            kind="neocortex_curation_verify",
-            operation="curation-verify",
-            request_id=normalized_request,
-            plan_id=normalized_plan,
-            error=exc,
+        return cast(
+            CurationVerifyOutput,
+            _error_payload(
+                schema=CURATION_VERIFY_API_SCHEMA,
+                kind="neocortex_curation_verify",
+                operation="curation-verify",
+                request_id=normalized_request,
+                plan_id=normalized_plan,
+                error=exc,
+            ),
         )
 
 
