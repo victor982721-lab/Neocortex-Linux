@@ -109,8 +109,15 @@ merge o push. Si ya existe una rama con trabajo verificado, intégrala por
 fast-forward cuando sea posible, sin reescribir historia ni forzar el remoto.
 Comprueba cambios ajenos, validaciones proporcionales, `HEAD == main ==
 origin/main` y árbol limpio antes de cerrar. Esta autorización no incluye
-mutar el corpus, promover una release, cambiar privacidad o ejecutar borrados
-destructivos no solicitados.
+mutar el corpus, cambiar privacidad o ejecutar borrados destructivos no
+solicitados.
+
+Víctor autoriza de forma permanente, sólo para este repositorio y para una
+tarea cuyo alcance incluya release, construir, instalar y promover el artefacto
+validado en `current`, conservar el rollback inmediato y ejecutar su smoke,
+replay y verificación, sin volver a pedir autorización para esa promoción. La
+excepción no autoriza mutar el corpus, preparar modelos, cambiar privacidad ni
+eliminar releases fuera de la retención vigente.
 
 1. Revisa `git status --short --branch`, HEAD y cambios preexistentes.
 2. Define en una frase qué podrá hacer Víctor al terminar.
@@ -145,7 +152,8 @@ Una comprobación focal verde no es aceptación integral. Un commit local no es
 publicación. Si el alcance exige `main`, verifica `HEAD == main == origin/main`,
 árbol limpio y las comprobaciones proporcionales. Sólo si también incluye una
 release, exige el artefacto instalado desde ese SHA y su launcher verificado;
-publicar código no autoriza por sí solo promover una instalación.
+la promoción queda cubierta por la autorización permanente específica
+documentada arriba cuando la tarea la incluya.
 
 ## Dependencias y releases
 
