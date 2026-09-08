@@ -15,6 +15,8 @@ from neocortex.runtime.orchestration.run_lifecycle import (
 )
 from neocortex.runtime.orchestration.run_manifest import (
     RUN_BUDGET_SCHEMA,
+    RUN_CHECKPOINT_SCHEMA,
+    RUN_RECOVERY_SCHEMA,
     RUN_STAGE_SCHEMA,
     lifecycle_envelope,
     verify_event_payload,
@@ -101,6 +103,7 @@ class RunStatus:
     skipped_routes: tuple[str, ...] = ()
     non_replayable_routes: tuple[str, ...] = ()
     stages: tuple[dict[str, object], ...] = ()
+    checkpoints: tuple[dict[str, object], ...] = ()
 
     @property
     def elapsed_ns(self) -> int:
@@ -179,8 +182,9 @@ def _run_status(
         completed_ns=None if row["completed_ns"] is None else int(row["completed_ns"]),
         observed_ns=now,
     )
-    recovery = _run_recovery(connection, run_id)
+    recovery = _run_recovery(connection, run_id, manifest=manifest)
     stages = _run_stages(connection, run_id)
+    checkpoints = _run_checkpoints(connection, run_id, manifest=manifest)
     route_capabilities = _route_capabilities(manifest)
     routes = _route_statuses(connection, run_id, route_capabilities)
     # A completed route was executed; it is not a skipped route merely because
@@ -188,7 +192,11 @@ def _run_status(
     # separate from per-route cache replay, which is exposed by
     # ``RouteStatus.replay_status`` and its counters below.
     skipped_routes = tuple(route.route_name for route in routes if route.status == "skipped")
-    non_replayable_routes = _non_replayable_routes(routes, recovery)
+    non_replayable_routes = _non_replayable_routes(
+        routes,
+        recovery,
+        route_capabilities=route_capabilities,
+    )
     # An interrupted source is recoverable, but it was not itself resumed.
     # ``resume`` identifies a new execution linked to that source.  Initial
     # runs can still report route-level cache replay without being lifecycle
@@ -228,6 +236,7 @@ def _run_status(
         skipped_routes=skipped_routes,
         non_replayable_routes=non_replayable_routes,
         stages=stages,
+        checkpoints=checkpoints,
     )
 
 
@@ -243,13 +252,15 @@ def _run_manifest(connection: sqlite3.Connection, run_id: int) -> dict[str, obje
     row = connection.execute(
         """SELECT details_json FROM run_events
         WHERE run_id=? AND phase='lifecycle-manifest'
-        AND message='Run manifest published' ORDER BY event_id DESC LIMIT 1""",
+        AND message='Run manifest published' ORDER BY event_id DESC LIMIT 2""",
         (run_id,),
-    ).fetchone()
-    if row is None or row[0] is None:
+    ).fetchall()
+    if len(row) > 1:
+        raise sqlite3.DatabaseError(f"run {run_id} has duplicate lifecycle manifests")
+    if not row or row[0][0] is None:
         return None
     try:
-        payload = json.loads(str(row[0]))
+        payload = json.loads(str(row[0][0]))
         if not isinstance(payload, dict):
             raise ValueError("manifest is not an object")
         return verify_event_payload(payload)
@@ -365,6 +376,8 @@ def _run_budget(
 def _run_recovery(
     connection: sqlite3.Connection,
     run_id: int,
+    *,
+    manifest: dict[str, object] | None = None,
 ) -> dict[str, object] | None:
     table = connection.execute(
         """SELECT 1 FROM sqlite_master
@@ -386,6 +399,32 @@ def _run_recovery(
         raise sqlite3.DatabaseError(f"run {run_id} lifecycle recovery is invalid") from exc
     if not isinstance(value, dict):
         raise sqlite3.DatabaseError(f"run {run_id} lifecycle recovery is not an object")
+    schema = value.get("schema")
+    if schema is not None and schema != RUN_RECOVERY_SCHEMA:
+        raise sqlite3.DatabaseError(f"run {run_id} lifecycle recovery schema is unsupported")
+    if schema == RUN_RECOVERY_SCHEMA:
+        if value.get("run_id") != run_id:
+            raise sqlite3.DatabaseError(f"run {run_id} lifecycle recovery owner is invalid")
+        digest = value.get("manifest_digest")
+        if digest is not None and (
+            not isinstance(digest, str)
+            or not digest.startswith("sha256:")
+            or len(digest) != len("sha256:") + 64
+            or any(character not in "0123456789abcdef" for character in digest[7:])
+        ):
+            raise sqlite3.DatabaseError(f"run {run_id} lifecycle recovery digest is invalid")
+        if manifest is None and digest is not None:
+            raise sqlite3.DatabaseError(f"run {run_id} lifecycle recovery has no manifest")
+        if manifest is not None and digest != manifest.get("digest"):
+            raise sqlite3.DatabaseError(f"run {run_id} lifecycle recovery is detached from its manifest")
+        capabilities = value.get("route_capabilities", {})
+        if not isinstance(capabilities, dict) or any(
+            not isinstance(name, str)
+            or not isinstance(capability, str)
+            or capability not in {"phase_resume", "safe_replay", "not_resumable"}
+            for name, capability in capabilities.items()
+        ):
+            raise sqlite3.DatabaseError(f"run {run_id} lifecycle recovery capabilities are invalid")
     return value
 
 
@@ -436,17 +475,76 @@ def _run_stages(
     return tuple(stages)
 
 
+def _run_checkpoints(
+    connection: sqlite3.Connection,
+    run_id: int,
+    *,
+    manifest: dict[str, object] | None = None,
+) -> tuple[dict[str, object], ...]:
+    """Read bounded manifest-bound lifecycle checkpoints without writing."""
+
+    table = connection.execute(
+        """SELECT 1 FROM sqlite_master
+        WHERE type='table' AND name='run_events'"""
+    ).fetchone()
+    if table is None:
+        return ()
+    rows = connection.execute(
+        """SELECT event_id,details_json FROM run_events
+        WHERE run_id=? AND phase='lifecycle-checkpoint'
+        AND message='Lifecycle checkpoint persisted'
+        ORDER BY event_id LIMIT 65""",
+        (run_id,),
+    ).fetchall()
+    if len(rows) > 64:
+        raise sqlite3.DatabaseError(f"run {run_id} has too many lifecycle checkpoints")
+    if manifest is None and rows:
+        raise sqlite3.DatabaseError(f"run {run_id} lifecycle checkpoints have no manifest")
+    result: list[dict[str, object]] = []
+    for row in rows:
+        try:
+            value = json.loads(str(row["details_json"]))
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise sqlite3.DatabaseError(f"run {run_id} lifecycle checkpoint is invalid") from exc
+        if not isinstance(value, dict) or value.get("schema") != RUN_CHECKPOINT_SCHEMA:
+            raise sqlite3.DatabaseError(
+                f"run {run_id} lifecycle checkpoint schema is unsupported"
+            )
+        if value.get("run_id") != run_id:
+            raise sqlite3.DatabaseError(f"run {run_id} lifecycle checkpoint owner is invalid")
+        if manifest is not None and value.get("manifest_digest") != manifest.get("digest"):
+            raise sqlite3.DatabaseError(
+                f"run {run_id} lifecycle checkpoint is detached from its manifest"
+            )
+        stage = value.get("stage")
+        if not isinstance(stage, str) or not stage or len(stage) > 128:
+            raise sqlite3.DatabaseError(f"run {run_id} lifecycle checkpoint stage is invalid")
+        if not isinstance(value.get("checkpoint"), dict):
+            raise sqlite3.DatabaseError(f"run {run_id} lifecycle checkpoint details are invalid")
+        key = value.get("idempotency_key")
+        if not isinstance(key, str) or not key or len(key) > 256:
+            raise sqlite3.DatabaseError(
+                f"run {run_id} lifecycle checkpoint idempotency key is invalid"
+            )
+        value["event_id"] = int(row["event_id"])
+        result.append(value)
+    return tuple(result)
+
+
 def _non_replayable_routes(
     routes: tuple[RouteStatus, ...],
     recovery: dict[str, object] | None,
+    *,
+    route_capabilities: dict[str, str] | None = None,
 ) -> tuple[str, ...]:
+    manifest_capabilities = {} if route_capabilities is None else route_capabilities
     if recovery is not None and _coerce_int(recovery.get("candidate_rows", 0)) == 0:
         input_sources = recovery.get("route_input_sources", {})
         if not isinstance(input_sources, dict):
             input_sources = {}
-        capabilities = recovery.get("route_capabilities", {})
+        capabilities = recovery.get("route_capabilities", manifest_capabilities)
         if not isinstance(capabilities, dict):
-            capabilities = {}
+            capabilities = manifest_capabilities
         return tuple(
             route.route_name
             for route in routes
@@ -457,7 +555,7 @@ def _non_replayable_routes(
             )
         )
     if recovery is not None:
-        capabilities = recovery.get("route_capabilities", {})
+        capabilities = recovery.get("route_capabilities", manifest_capabilities)
         if isinstance(capabilities, dict):
             return tuple(
                 route.route_name
@@ -465,6 +563,13 @@ def _non_replayable_routes(
                 if route.status in {"failed", "cancelled", "interrupted"}
                 and capabilities.get(route.route_name, "safe_replay") == "not_resumable"
             )
+    if manifest_capabilities:
+        return tuple(
+            route.route_name
+            for route in routes
+            if route.status in {"failed", "cancelled", "interrupted"}
+            and manifest_capabilities.get(route.route_name, "safe_replay") == "not_resumable"
+        )
     return ()
 
 
@@ -636,6 +741,7 @@ def serialized_run_status(status: RunStatus) -> str:
             "skipped_routes": list(status.skipped_routes),
             "non_replayable_routes": list(status.non_replayable_routes),
             "stages": list(status.stages),
+            "checkpoints": list(status.checkpoints),
             "route_capabilities": manifest_capabilities,
             "lifecycle": lifecycle_envelope(
                 manifest=status.manifest,
@@ -673,6 +779,7 @@ def serialized_run_status(status: RunStatus) -> str:
                 budget=status.budget,
                 recovery=status.recovery,
                 stages=tuple(status.stages),
+                checkpoints=tuple(status.checkpoints),
                 route_capabilities=manifest_capabilities,
             ),
             "routes": [

@@ -18,6 +18,8 @@ from typing import Any, Mapping
 RUN_MANIFEST_SCHEMA = "neocortex.run-manifest/v1"
 RUN_BUDGET_SCHEMA = "neocortex.run-budget/v1"
 RUN_STAGE_SCHEMA = "neocortex.lifecycle-stage/v1"
+RUN_CHECKPOINT_SCHEMA = "neocortex.lifecycle-checkpoint/v1"
+RUN_RECOVERY_SCHEMA = "neocortex.lifecycle-recovery/v1"
 
 
 def _canonical_json(value: object) -> str:
@@ -165,16 +167,60 @@ class RunManifest:
 def verify_event_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Validate and return one persisted manifest without mutating it."""
 
+    if not isinstance(payload, Mapping):
+        raise ValueError("run manifest must be an object")
     if payload.get("schema") != RUN_MANIFEST_SCHEMA:
         raise ValueError("unsupported run manifest schema")
     expected = payload.get("digest")
-    if not isinstance(expected, str):
+    if (
+        not isinstance(expected, str)
+        or len(expected) != len("sha256:") + 64
+        or not expected.startswith("sha256:")
+        or any(character not in "0123456789abcdef" for character in expected[7:])
+    ):
         raise ValueError("run manifest digest is missing")
     unsigned = dict(payload)
     unsigned.pop("digest", None)
     actual = "sha256:" + hashlib.sha256(_canonical_json(unsigned).encode("utf-8")).hexdigest()
     if actual != expected:
         raise ValueError("run manifest digest does not match its payload")
+    run_id = payload.get("run_id")
+    if type(run_id) is not int or run_id < 1:
+        raise ValueError("run manifest run_id is invalid")
+    if payload.get("run_kind") not in {"initial", "route_only", "resume"}:
+        raise ValueError("run manifest run_kind is unsupported")
+    root = payload.get("root")
+    if not isinstance(root, str) or not root or len(root.encode("utf-8")) > 8192:
+        raise ValueError("run manifest root is invalid")
+    root_identity = payload.get("root_identity")
+    if (
+        not isinstance(root_identity, list)
+        or len(root_identity) != 3
+        or any(type(value) is not int for value in root_identity)
+    ):
+        raise ValueError("run manifest root identity is invalid")
+    selected_routes = payload.get("selected_routes")
+    if not isinstance(selected_routes, list) or any(
+        not isinstance(route, str) or not route or len(route) > 128
+        for route in selected_routes
+    ):
+        raise ValueError("run manifest selected routes are invalid")
+    capabilities = payload.get("route_capabilities")
+    if capabilities is not None:
+        if not isinstance(capabilities, Mapping) or set(capabilities) != set(selected_routes):
+            raise ValueError("run manifest route capabilities are invalid")
+        if any(
+            not isinstance(value, str)
+            or value not in {"phase_resume", "safe_replay", "not_resumable"}
+            for value in capabilities.values()
+        ):
+            raise ValueError("run manifest route capability is unsupported")
+    for name in ("configuration", "budget", "input_snapshot"):
+        if not isinstance(payload.get(name), Mapping):
+            raise ValueError(f"run manifest {name} is invalid")
+    source_run_id = payload.get("source_run_id")
+    if source_run_id is not None and (type(source_run_id) is not int or source_run_id < 1):
+        raise ValueError("run manifest source_run_id is invalid")
     return dict(payload)
 
 
@@ -192,6 +238,7 @@ def lifecycle_envelope(
     budget: Mapping[str, Any] | None = None,
     recovery: Mapping[str, Any] | None = None,
     stages: tuple[Mapping[str, Any], ...] = (),
+    checkpoints: tuple[Mapping[str, Any], ...] = (),
     route_capabilities: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build a bounded read-only envelope shared by status callers."""
@@ -210,6 +257,7 @@ def lifecycle_envelope(
         "budget": None if budget is None else dict(budget),
         "recovery": None if recovery is None else dict(recovery),
         "stages": [dict(stage) for stage in stages],
+        "checkpoints": [dict(checkpoint) for checkpoint in checkpoints],
         "route_capabilities": (
             None if route_capabilities is None else dict(route_capabilities)
         ),
@@ -220,7 +268,9 @@ def lifecycle_envelope(
 
 __all__ = [
     "RUN_BUDGET_SCHEMA",
+    "RUN_CHECKPOINT_SCHEMA",
     "RUN_MANIFEST_SCHEMA",
+    "RUN_RECOVERY_SCHEMA",
     "RUN_STAGE_SCHEMA",
     "RunBudget",
     "RunManifest",

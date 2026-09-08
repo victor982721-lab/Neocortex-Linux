@@ -7,6 +7,7 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 import json
+import hashlib
 import os
 import sqlite3
 import stat
@@ -58,6 +59,8 @@ from neocortex.persistence.sqlite_connection import (
 from neocortex.persistence.framework_connection import connect_existing_framework
 from neocortex.runtime.orchestration.run_manifest import (
     RUN_BUDGET_SCHEMA,
+    RUN_CHECKPOINT_SCHEMA,
+    RUN_RECOVERY_SCHEMA,
     RUN_STAGE_SCHEMA,
     RunBudget,
     verify_event_payload,
@@ -76,6 +79,12 @@ class RunBudgetExceeded(RuntimeError):
         self.reason = reason
         self.snapshot = None if snapshot is None else dict(snapshot)
         super().__init__(f"run budget exceeded: {reason}")
+
+
+def _bounded_lifecycle_name(value: object, *, label: str, limit: int = 128) -> str:
+    if not isinstance(value, str) or not value or value.strip() != value or len(value) > limit:
+        raise ValueError(f"{label} is empty or too large")
+    return value
 
 if TYPE_CHECKING:
 
@@ -912,6 +921,57 @@ class FrameworkState:
             raise ValueError(f"source run {source_run_id} does not exist")
         return int(result.lastrowid)
 
+    def abort_run_start(
+        self,
+        run_id: int,
+        exc: BaseException | None = None,
+        *,
+        cancelled: bool = False,
+    ) -> bool:
+        """Terminalize a run whose post-insert startup sequence failed.
+
+        ``begin_operational_run`` must remain compatible with callers that
+        build a manifest and copy inputs in separate bounded steps.  This
+        compensating transition gives those callers a fail-closed boundary:
+        any exception after the row insert can be recorded as terminal rather
+        than leaving a synthetic ``running`` owner behind.
+        """
+
+        row = self._connection.execute(
+            "SELECT status FROM initial_runs WHERE run_id=?", (run_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"run {run_id} does not exist")
+        if str(row[0]) != "running":
+            return False
+        if cancelled:
+            reason = "user"
+            if isinstance(exc, RunBudgetExceeded):
+                reason = "budget"
+            try:
+                self.request_run_cancellation(run_id, reason)
+            except (OSError, RuntimeError, sqlite3.Error):
+                # The terminal row transition below is still authoritative;
+                # callers can inspect the error event when cancellation could
+                # not be appended.
+                pass
+            transitioned = self.cancel_initial_run(run_id)
+        else:
+            transitioned = self.fail_initial_run(run_id)
+        if transitioned and exc is not None:
+            self.record_event(
+                run_id,
+                "warning" if cancelled else "error",
+                "lifecycle-start",
+                "Inicio de ejecución abortado",
+                {
+                    "error_type": type(exc).__name__,
+                    "detail": str(exc)[:8192],
+                    "cancelled": cancelled,
+                },
+            )
+        return transitioned
+
     def corpus_mutation_guard(self, run_id: int) -> CorpusMutationGuard:
         """Return the immutable corpus mutation guard for one durable run."""
 
@@ -1373,6 +1433,12 @@ class FrameworkState:
                 raise RuntimeError(f"run {run_id} lifecycle budget is malformed") from exc
             if not isinstance(value, dict) or value.get("schema") != RUN_BUDGET_SCHEMA:
                 raise RuntimeError(f"run {run_id} lifecycle budget schema is unsupported")
+            if value.get("idempotency_key") is not None and (
+                not isinstance(value.get("idempotency_key"), str)
+                or not value["idempotency_key"]
+                or len(value["idempotency_key"]) > 256
+            ):
+                raise RuntimeError(f"run {run_id} lifecycle budget idempotency key is invalid")
             value["event_id"] = int(event_id)
             parsed.append(value)
         return parsed
@@ -1382,12 +1448,18 @@ class FrameworkState:
         if not rows:
             return None
         baseline = rows[0]
+        try:
+            normalized = RunBudget.from_mapping(baseline)
+        except ValueError as exc:
+            raise RuntimeError(f"run {run_id} lifecycle budget is invalid") from exc
+        if baseline.get("kind") not in {None, "baseline"}:
+            raise RuntimeError(f"run {run_id} lifecycle budget baseline is invalid")
         state: dict[str, Any] = {
             "schema": RUN_BUDGET_SCHEMA,
             "manifest_digest": baseline.get("manifest_digest"),
-            "max_items": baseline.get("max_items"),
-            "max_bytes": baseline.get("max_bytes"),
-            "max_duration_seconds": baseline.get("max_duration_seconds"),
+            "max_items": normalized.max_items,
+            "max_bytes": normalized.max_bytes,
+            "max_duration_seconds": normalized.max_duration_seconds,
             "started_ns": baseline.get("started_ns"),
             "deadline_ns": baseline.get("deadline_ns"),
             "consumed_items": int(baseline.get("consumed_items", 0)),
@@ -1402,24 +1474,42 @@ class FrameworkState:
             kind = event.get("kind")
             if kind == "consumed":
                 reservation_id = str(event.get("reservation_id", ""))
+                if not reservation_id or len(reservation_id) > 256:
+                    raise RuntimeError(f"run {run_id} lifecycle budget has invalid reservation")
                 if reservation_id in state["reservations"]:
                     # A duplicate reservation is not a second effect.
                     continue
-                items = int(event.get("items", 0))
-                byte_count = int(event.get("bytes", 0))
+                raw_items = event.get("items", 0)
+                raw_bytes = event.get("bytes", 0)
+                if type(raw_items) is not int or raw_items < 0:
+                    raise RuntimeError(f"run {run_id} lifecycle budget has invalid items")
+                if type(raw_bytes) is not int or raw_bytes < 0:
+                    raise RuntimeError(f"run {run_id} lifecycle budget has invalid bytes")
+                items = raw_items
+                byte_count = raw_bytes
+                stage = event.get("stage")
+                if stage is not None:
+                    _bounded_lifecycle_name(stage, label="budget stage")
                 state["consumed_items"] += items
                 state["consumed_bytes"] += byte_count
                 state["reservations"][reservation_id] = {
                     "items": items,
                     "bytes": byte_count,
                     "worker": event.get("worker"),
+                    "stage": stage,
                     "event_id": int(event["event_id"]),
                 }
             elif kind == "cancelled":
+                reason = event.get("reason")
+                if not isinstance(reason, str) or not reason or len(reason) > 512:
+                    raise RuntimeError(f"run {run_id} lifecycle cancellation reason is invalid")
                 state["cancel_requested"] = True
-                state["cancel_reason"] = event.get("reason")
+                state["cancel_reason"] = reason
             elif kind == "bound":
-                state["manifest_digest"] = event.get("manifest_digest")
+                digest = event.get("manifest_digest")
+                if not isinstance(digest, str) or not digest.startswith("sha256:"):
+                    raise RuntimeError(f"run {run_id} lifecycle budget binding is invalid")
+                state["manifest_digest"] = digest
         now = time.time_ns()
         terminal = self._connection.execute(
             "SELECT completed_ns FROM initial_runs WHERE run_id=?", (run_id,)
@@ -1471,6 +1561,33 @@ class FrameworkState:
 
         return self._read_run_budget_locked(run_id)
 
+    def read_run_stage_budget(self, run_id: int) -> dict[str, dict[str, int]]:
+        """Return reserved item/byte totals grouped by lifecycle stage."""
+
+        snapshot = self._read_run_budget_locked(run_id)
+        if snapshot is None:
+            return {}
+        result: dict[str, dict[str, int]] = {}
+        reservations = snapshot.get("reservations", {})
+        if not isinstance(reservations, Mapping):
+            raise RuntimeError(f"run {run_id} lifecycle budget reservations are invalid")
+        for reservation in reservations.values():
+            if not isinstance(reservation, Mapping):
+                raise RuntimeError(f"run {run_id} lifecycle budget reservation is invalid")
+            stage = reservation.get("stage")
+            if stage is None:
+                stage = "unattributed"
+            stage = _bounded_lifecycle_name(stage, label="budget stage")
+            bucket = result.setdefault(stage, {"items": 0, "bytes": 0, "reservations": 0})
+            bucket["items"] += int(reservation.get("items", 0))
+            bucket["bytes"] += int(reservation.get("bytes", 0))
+            bucket["reservations"] += 1
+        return result
+
+    # A descriptive alias keeps the writer API discoverable for callers that
+    # model the ledger as a per-stage view rather than a run-wide budget.
+    run_stage_budget = read_run_stage_budget
+
     def run_budget(self, run_id: int) -> dict[str, Any] | None:
         """Compatibility alias for callers that treat budgets as run state."""
 
@@ -1484,6 +1601,7 @@ class FrameworkState:
         items: int = 0,
         bytes: int = 0,
         worker: str | None = None,
+        stage: str | None = None,
         item_count: int | None = None,
         byte_count: int | None = None,
     ) -> dict[str, Any]:
@@ -1505,6 +1623,8 @@ class FrameworkState:
             bytes = byte_count
         if not reservation_id or len(reservation_id) > 256:
             raise ValueError("reservation_id must be non-empty and bounded")
+        if stage is not None:
+            stage = _bounded_lifecycle_name(stage, label="budget stage")
         if type(items) is not int or items < 0 or type(bytes) is not int or bytes < 0:
             raise ValueError("budget reservation items and bytes must be non-negative integers")
         with self._connection:
@@ -1520,7 +1640,11 @@ class FrameworkState:
             assert snapshot is not None
             existing = snapshot["reservations"].get(reservation_id)
             if existing is not None:
-                if existing["items"] != items or existing["bytes"] != bytes:
+                if (
+                    existing["items"] != items
+                    or existing["bytes"] != bytes
+                    or existing.get("stage") != stage
+                ):
                     raise ValueError(f"run {run_id} reservation {reservation_id} conflicts")
                 replay = dict(snapshot)
                 replay["replayed"] = True
@@ -1551,6 +1675,7 @@ class FrameworkState:
                 "manifest_digest": snapshot["manifest_digest"],
                 "reservation_id": reservation_id,
                 "worker": worker,
+                "stage": stage,
                 "items": items,
                 "bytes": bytes,
                 "consumed_items": snapshot["consumed_items"] + items,
@@ -1570,6 +1695,7 @@ class FrameworkState:
                 "items": items,
                 "bytes": bytes,
                 "worker": worker,
+                "stage": stage,
             }
             return result
 
@@ -1581,6 +1707,7 @@ class FrameworkState:
         items: int = 0,
         bytes: int = 0,
         worker: str | None = None,
+        stage: str | None = None,
         item_count: int | None = None,
         byte_count: int | None = None,
     ) -> dict[str, Any]:
@@ -1592,8 +1719,51 @@ class FrameworkState:
             items=items,
             bytes=bytes,
             worker=worker,
+            stage=stage,
             item_count=item_count,
             byte_count=byte_count,
+        )
+
+    def reserve_run_stage(
+        self,
+        run_id: int,
+        stage: str,
+        reservation_id: str,
+        *,
+        items: int = 0,
+        bytes: int = 0,
+        worker: str | None = None,
+    ) -> dict[str, Any]:
+        """Reserve shared lifecycle work while recording its owning stage."""
+
+        return self.reserve_run_budget(
+            run_id,
+            reservation_id,
+            items=items,
+            bytes=bytes,
+            worker=worker,
+            stage=stage,
+        )
+
+    def consume_run_stage(
+        self,
+        run_id: int,
+        stage: str,
+        reservation_id: str,
+        *,
+        items: int = 0,
+        bytes: int = 0,
+        worker: str | None = None,
+    ) -> dict[str, Any]:
+        """Record shared lifecycle work while retaining stage provenance."""
+
+        return self.consume_run_budget(
+            run_id,
+            reservation_id,
+            items=items,
+            bytes=bytes,
+            worker=worker,
+            stage=stage,
         )
 
     def request_run_cancellation(self, run_id: int, reason: str = "user") -> bool:
@@ -1672,6 +1842,18 @@ class FrameworkState:
                     (run_id,),
                 ).fetchone()
                 if existing is not None:
+                    try:
+                        existing_payload = json.loads(str(existing[0]))
+                    except (TypeError, json.JSONDecodeError) as exc:
+                        raise RuntimeError(
+                            f"run {run_id} lifecycle cancellation is malformed"
+                        ) from exc
+                    if not isinstance(existing_payload, Mapping) or existing_payload.get(
+                        "reason"
+                    ) != reason:
+                        raise ValueError(
+                            f"run {run_id} has a conflicting cancellation reason"
+                        )
                     return False
                 if row is None:
                     now = time.time_ns()
@@ -1738,6 +1920,30 @@ class FrameworkState:
             raise RunBudgetExceeded("time", snapshot)
         return snapshot
 
+    def _check_run_completion_budget_locked(self, run_id: int) -> dict[str, Any] | None:
+        """Enforce the lifecycle deadline immediately before terminal publication.
+
+        Route workers normally check the budget cooperatively while they run,
+        but a final result can arrive between two polling intervals.  Keep the
+        check inside the same writer transaction as the terminal status update
+        so a run cannot become ``completed`` after its durable deadline.
+        Legacy runs without a manifest/budget retain their historical behavior.
+        """
+
+        row = self._connection.execute(
+            "SELECT status FROM initial_runs WHERE run_id=?", (run_id,)
+        ).fetchone()
+        if row is None or str(row[0]) != "running":
+            return self._read_run_budget_locked(run_id)
+        snapshot = self._read_run_budget_locked(run_id)
+        if snapshot is None:
+            return None
+        if snapshot["cancel_requested"]:
+            raise RunBudgetExceeded("cancelled", snapshot)
+        if snapshot["expired"]:
+            raise RunBudgetExceeded("time", snapshot)
+        return snapshot
+
     def publish_run_manifest(self, run_id: int, manifest: Mapping[str, Any]) -> bool:
         """Publish one immutable lifecycle manifest idempotently as an event.
 
@@ -1748,8 +1954,14 @@ class FrameworkState:
         """
 
         verified = verify_event_payload(manifest)
+        if int(verified["run_id"]) != run_id:
+            raise ValueError(f"run manifest owner does not match run {run_id}")
         payload_json = json.dumps(verified, ensure_ascii=False, separators=(",", ":"))
         with self._connection:
+            if self._connection.execute(
+                "SELECT 1 FROM initial_runs WHERE run_id=?", (run_id,)
+            ).fetchone() is None:
+                raise ValueError(f"run {run_id} does not exist")
             rows = self._connection.execute(
                 """SELECT details_json FROM run_events
                 WHERE run_id=? AND phase='lifecycle-manifest'
@@ -1787,13 +1999,15 @@ class FrameworkState:
         row = self._connection.execute(
             """SELECT details_json FROM run_events
             WHERE run_id=? AND phase='lifecycle-manifest'
-            AND message='Run manifest published' ORDER BY event_id DESC LIMIT 1""",
+            AND message='Run manifest published' ORDER BY event_id DESC LIMIT 2""",
             (run_id,),
-        ).fetchone()
-        if row is None or row[0] is None:
+        ).fetchall()
+        if len(row) > 1:
+            raise RuntimeError(f"run {run_id} has duplicate lifecycle manifests")
+        if not row or row[0][0] is None:
             return None
         try:
-            payload = json.loads(str(row[0]))
+            payload = json.loads(str(row[0][0]))
         except json.JSONDecodeError as exc:
             raise RuntimeError(f"run {run_id} lifecycle manifest is malformed") from exc
         if not isinstance(payload, dict):
@@ -1825,6 +2039,7 @@ class FrameworkState:
         *,
         details: Mapping[str, Any] | None = None,
         idempotency_key: str | None = None,
+        checkpoint: Mapping[str, Any] | None = None,
     ) -> bool:
         """Append one bounded lifecycle stage transition idempotently.
 
@@ -1864,6 +2079,24 @@ class FrameworkState:
             manifest = self.read_run_manifest(run_id)
             if manifest is None:
                 raise ValueError(f"run {run_id} has no lifecycle manifest")
+            latest_row = self._connection.execute(
+                """SELECT details_json FROM run_events
+                WHERE run_id=? AND phase='lifecycle-stage'
+                AND message='Lifecycle stage transitioned'
+                AND json_extract(details_json,'$.stage')=?
+                ORDER BY event_id DESC LIMIT 1""",
+                (run_id, stage),
+            ).fetchone()
+            if latest_row is not None and latest_row[0] is not None:
+                try:
+                    latest = json.loads(str(latest_row[0]))
+                except (TypeError, json.JSONDecodeError) as exc:
+                    raise RuntimeError(f"run {run_id} lifecycle stage is malformed") from exc
+                latest_status = latest.get("status") if isinstance(latest, Mapping) else None
+                if latest_status in {"completed", "skipped"} and status != latest_status:
+                    raise RuntimeError(
+                        f"run {run_id} lifecycle stage {stage} is already {latest_status}"
+                    )
             payload = {
                 "schema": RUN_STAGE_SCHEMA,
                 "run_id": run_id,
@@ -1872,7 +2105,7 @@ class FrameworkState:
                 "status": status,
                 "details": selected_details,
             }
-            return self._append_lifecycle_event_once(
+            changed = self._append_lifecycle_event_once(
                 run_id,
                 level="error" if status == "failed" else "warning" if status in {"partial", "interrupted"} else "info",
                 phase="lifecycle-stage",
@@ -1880,6 +2113,58 @@ class FrameworkState:
                 idempotency_key=key,
                 details=payload,
             )
+            if checkpoint is not None:
+                self._publish_run_checkpoint_locked(
+                    run_id,
+                    manifest,
+                    stage,
+                    checkpoint,
+                    idempotency_key=f"{key}:checkpoint",
+                )
+            return changed
+
+    @staticmethod
+    def _validated_checkpoint(
+        checkpoint: Mapping[str, Any],
+    ) -> tuple[dict[str, Any], bytes]:
+        if not isinstance(checkpoint, Mapping):
+            raise ValueError("lifecycle checkpoint must be an object")
+        selected = dict(checkpoint)
+        encoded = json.dumps(
+            selected,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        if len(encoded) > 256 * 1024:
+            raise ValueError("lifecycle checkpoint exceeds the durable limit")
+        return selected, encoded
+
+    def _publish_run_checkpoint_locked(
+        self,
+        run_id: int,
+        manifest: Mapping[str, Any],
+        stage: str,
+        checkpoint: Mapping[str, Any],
+        *,
+        idempotency_key: str,
+    ) -> bool:
+        selected, _encoded = self._validated_checkpoint(checkpoint)
+        return self._append_lifecycle_event_once(
+            run_id,
+            level="info",
+            phase="lifecycle-checkpoint",
+            message="Lifecycle checkpoint persisted",
+            idempotency_key=idempotency_key,
+            details={
+                "schema": RUN_CHECKPOINT_SCHEMA,
+                "run_id": run_id,
+                "manifest_digest": manifest["digest"],
+                "stage": stage,
+                "checkpoint": selected,
+            },
+        )
 
     def read_run_stages(self, run_id: int) -> tuple[dict[str, Any], ...]:
         """Read and validate bounded lifecycle stage events for one run."""
@@ -1913,6 +2198,81 @@ class FrameworkState:
             payload["event_id"] = int(event_id)
             result.append(payload)
         return tuple(result)
+
+    def publish_run_checkpoint(
+        self,
+        run_id: int,
+        stage: str,
+        checkpoint: Mapping[str, Any],
+        *,
+        idempotency_key: str | None = None,
+    ) -> bool:
+        """Persist one bounded checkpoint owned by a manifest-bound stage.
+
+        Checkpoints are metadata only: they never open another owner and do
+        not grant permission to resume.  The manifest digest is copied into
+        the event so recovery can reject a checkpoint detached from the run
+        boundary.  The event is append-only and idempotent by caller key.
+        """
+
+        stage = _bounded_lifecycle_name(stage, label="lifecycle stage")
+        selected, encoded = self._validated_checkpoint(checkpoint)
+        key = idempotency_key or f"{stage}:checkpoint:sha256:{hashlib.sha256(encoded).hexdigest()}"
+        if not isinstance(key, str) or not key or len(key) > 256:
+            raise ValueError("lifecycle checkpoint idempotency key is invalid")
+        with self._connection:
+            manifest = self.read_run_manifest(run_id)
+            if manifest is None:
+                raise ValueError(f"run {run_id} has no lifecycle manifest")
+            return self._publish_run_checkpoint_locked(
+                run_id,
+                manifest,
+                stage,
+                selected,
+                idempotency_key=key,
+            )
+
+    def read_run_checkpoints(self, run_id: int) -> tuple[dict[str, Any], ...]:
+        """Read and validate bounded checkpoints for one lifecycle run."""
+
+        rows = self._connection.execute(
+            """SELECT event_id,details_json FROM run_events
+            WHERE run_id=? AND phase='lifecycle-checkpoint'
+            AND message='Lifecycle checkpoint persisted'
+            ORDER BY event_id LIMIT 65""",
+            (run_id,),
+        ).fetchall()
+        if len(rows) > 64:
+            raise RuntimeError(f"run {run_id} has too many lifecycle checkpoints")
+        manifest = self.read_run_manifest(run_id)
+        if manifest is None and rows:
+            raise RuntimeError(f"run {run_id} lifecycle checkpoints have no manifest")
+        result: list[dict[str, Any]] = []
+        for event_id, details_json in rows:
+            try:
+                payload = json.loads(str(details_json))
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise RuntimeError(f"run {run_id} lifecycle checkpoint is malformed") from exc
+            if not isinstance(payload, dict) or payload.get("schema") != RUN_CHECKPOINT_SCHEMA:
+                raise RuntimeError(f"run {run_id} lifecycle checkpoint schema is unsupported")
+            if payload.get("run_id") != run_id:
+                raise RuntimeError(f"run {run_id} lifecycle checkpoint has an invalid owner")
+            if manifest is not None and payload.get("manifest_digest") != manifest.get("digest"):
+                raise RuntimeError(f"run {run_id} lifecycle checkpoint is detached from its manifest")
+            _bounded_lifecycle_name(payload.get("stage"), label="lifecycle stage")
+            if not isinstance(payload.get("checkpoint"), dict):
+                raise RuntimeError(f"run {run_id} lifecycle checkpoint details are invalid")
+            payload["event_id"] = int(event_id)
+            result.append(payload)
+        return tuple(result)
+
+    def read_run_stage_state(self, run_id: int) -> dict[str, dict[str, Any]]:
+        """Return the latest durable transition for each stage name."""
+
+        latest: dict[str, dict[str, Any]] = {}
+        for event in self.read_run_stages(run_id):
+            latest[str(event["stage"])] = dict(event)
+        return latest
 
     def resumable_route_candidate_run_ids(self) -> tuple[int, ...]:
         """Return runs whose route inputs remain needed for recovery/replay."""
@@ -2254,6 +2614,7 @@ class FrameworkState:
                             ),
                         ),
                     )
+                manifest = self.read_run_manifest(active_id)
                 self._append_lifecycle_event_once(
                     active_id,
                     level="warning",
@@ -2261,14 +2622,17 @@ class FrameworkState:
                     message="Run abandoned after abrupt termination",
                     idempotency_key="abandoned",
                     details={
+                        "schema": RUN_RECOVERY_SCHEMA,
+                        "run_id": active_id,
+                        "manifest_digest": None if manifest is None else manifest["digest"],
                         "status": "interrupted",
                         "routes": list(route_names),
                         "candidate_rows": candidate_rows,
                         "candidate_bytes": candidate_bytes,
                         "route_input_sources": route_input_sources,
+                        "route_capabilities": self.read_run_route_capabilities(active_id),
                     },
                 )
-                manifest = self.read_run_manifest(active_id)
                 if manifest is not None:
                     latest_stages: dict[str, dict[str, Any]] = {}
                     for stage_event in self.read_run_stages(active_id):
@@ -2367,6 +2731,7 @@ class FrameworkState:
         ):
             raise ValueError("portable inventory must publish one unreconciled full scan")
         with self._connection:
+            self._check_run_completion_budget_locked(run_id)
             result = self._connection.execute(
                 "UPDATE initial_runs SET completed_ns=?, status='completed', "
                 "current_phase='completed',heartbeat_ns=?,end_usn=? "
@@ -2407,6 +2772,7 @@ class FrameworkState:
 
     def complete_operational_run(self, run_id: int) -> bool:
         with self._connection:
+            self._check_run_completion_budget_locked(run_id)
             result = self._connection.execute(
                 """UPDATE initial_runs SET completed_ns=?,status='completed',
                 current_phase='completed',heartbeat_ns=?
