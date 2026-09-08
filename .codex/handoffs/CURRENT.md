@@ -1,7 +1,7 @@
 # Handoff operativo vigente — NeoCortex
 
-**Última verificación:** 2026-09-08, `America/Mexico_City`  
-**Checkout:** `/home/winterboss/Neocortex/Repository`  
+**Última verificación:** 2026-09-08, `America/Mexico_City`
+**Checkout:** `/home/winterboss/Neocortex/Repository`
 **Fuente de verdad:** `main`, `origin/main`, `PENDIENTES.md` y el receipt
 canónico de estabilización
 
