@@ -100,6 +100,13 @@ if TYPE_CHECKING:
         WorkOutcome as WorkOutcome,
         WorkReceipt as WorkReceipt,
         plan_knowledge_query as plan_knowledge_query,
+        LIFECYCLE_ENVELOPE_SCHEMA as LIFECYCLE_ENVELOPE_SCHEMA,
+        LIFECYCLE_STATUS_KIND as LIFECYCLE_STATUS_KIND,
+        LIFECYCLE_STATUS_OPERATION as LIFECYCLE_STATUS_OPERATION,
+        LifecycleStatusContractError as LifecycleStatusContractError,
+        RUN_CHECKPOINT_SCHEMA as RUN_CHECKPOINT_SCHEMA,
+        lifecycle_status_payload as lifecycle_status_payload,
+        RunBudget as RunBudget,
         RunManifest as RunManifest,
         RunStatus as RunStatus,
         read_run_status as read_run_status,
@@ -174,6 +181,12 @@ __all__ = (  # noqa: RUF022
     "WorkExecutionMode",
     "WorkOutcome",
     "WorkReceipt",
+    "LIFECYCLE_ENVELOPE_SCHEMA",
+    "LIFECYCLE_STATUS_KIND",
+    "LIFECYCLE_STATUS_OPERATION",
+    "LifecycleStatusContractError",
+    "RUN_CHECKPOINT_SCHEMA",
+    "lifecycle_status_payload",
     "curation_apply_payload",
     "curation_authorize_payload",
     "curation_decide_payload",
@@ -197,6 +210,7 @@ __all__ = (  # noqa: RUF022
     "code_search_payload",
     "lineage_payload",
     "plan_knowledge_query",
+    "RunBudget",
     "RunManifest",
     "RunStatus",
     "read_run_status",
@@ -351,6 +365,34 @@ _READ_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "lineage_payload": ("neocortex.api.read_api", "lineage_payload"),
 }
 
+_LIFECYCLE_EXPORTS: Final[dict[str, tuple[str, str]]] = {
+    "LIFECYCLE_ENVELOPE_SCHEMA": (
+        "neocortex.api.lifecycle_read_api",
+        "LIFECYCLE_ENVELOPE_SCHEMA",
+    ),
+    "LIFECYCLE_STATUS_KIND": (
+        "neocortex.api.lifecycle_read_api",
+        "LIFECYCLE_STATUS_KIND",
+    ),
+    "LIFECYCLE_STATUS_OPERATION": (
+        "neocortex.api.lifecycle_read_api",
+        "LIFECYCLE_STATUS_OPERATION",
+    ),
+    "LifecycleStatusContractError": (
+        "neocortex.api.lifecycle_read_api",
+        "LifecycleStatusContractError",
+    ),
+    "RUN_CHECKPOINT_SCHEMA": (
+        "neocortex.api.lifecycle_read_api",
+        "RUN_CHECKPOINT_SCHEMA",
+    ),
+    "lifecycle_status_payload": (
+        "neocortex.api.lifecycle_read_api",
+        "lifecycle_status_payload",
+    ),
+    "RunBudget": ("neocortex.runtime.orchestration.run_manifest", "RunBudget"),
+}
+
 # endregion [01]
 
 
@@ -362,7 +404,11 @@ def __getattr__(name: str) -> Any:
 
     if name not in _PUBLIC_NAMES:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    target = _CURATION_EXPORTS.get(name) or _READ_EXPORTS.get(name)
+    target = (
+        _CURATION_EXPORTS.get(name)
+        or _READ_EXPORTS.get(name)
+        or _LIFECYCLE_EXPORTS.get(name)
+    )
     if target is None:
         target = (_PUBLIC_FACADE, name)
     module_name, attribute_name = target

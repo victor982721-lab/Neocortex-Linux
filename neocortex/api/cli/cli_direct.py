@@ -51,7 +51,34 @@ def _capture_authorized_direct_state_policies(
 def run_operational_status(args: argparse.Namespace) -> int:
     """Print bounded execution state without initializing or migrating it."""
 
-    from neocortex.runtime.orchestration.run_status import list_run_status, serialized_run_status
+    if args.status_json:
+        # The JSON CLI is the same read-only lifecycle envelope exposed by the
+        # Python facade and MCP.  Keep the legacy human-readable output below
+        # independent so terminal users retain its compact route table.
+        from neocortex.api.lifecycle_read_api import lifecycle_status_payload
+
+        try:
+            payload = lifecycle_status_payload(
+                limit=args.status_limit,
+                run_id=args.status_run,
+                state_directory=args.state_directory,
+            )
+        except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
+            print(f"ERROR status {exc}")
+            return 2
+        print(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+        exit_code = payload.get("exit_code")
+        return exit_code if type(exit_code) is int else 2
+
+    from neocortex.runtime.orchestration.run_status import list_run_status
 
     database_path = args.state_directory / "framework.sqlite3"
     try:
@@ -64,9 +91,6 @@ def run_operational_status(args: argparse.Namespace) -> int:
         print(f"ERROR status {exc}")
         return 2
     for status in statuses:
-        if args.status_json:
-            print(serialized_run_status(status))
-            continue
         print(
             f"RUN id={status.run_id} kind={status.run_kind} status={status.status} "
             f"phase={status.current_phase or '-'} source={status.source_run_id or '-'} "

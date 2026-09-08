@@ -94,6 +94,33 @@ def _validate_global(args: argparse.Namespace) -> None:
         raise SystemExit("--global-resource-wait-timeout cannot be negative")
 
 
+def _validate_run_budget(args: argparse.Namespace) -> None:
+    """Validate the process-independent limits attached to one Framework run."""
+
+    # The persistence contract accepts zero for item/byte ceilings so callers
+    # can deliberately exercise a no-work run.  Keep the CLI integer range
+    # within the signed SQLite/JSON envelope used by lifecycle status.
+    maximum = (1 << 63) - 1
+    for name in ("run_max_items", "run_max_bytes"):
+        value = getattr(args, name, None)
+        if value is None:
+            continue
+        if type(value) is not int or not 0 <= value <= maximum:
+            option = "--" + name.replace("_", "-")
+            raise SystemExit(f"{option} must be a non-negative integer at most {maximum}")
+
+    duration = getattr(args, "run_time_budget_seconds", None)
+    if duration is not None and (
+        isinstance(duration, bool)
+        or not isinstance(duration, (int, float))
+        or not math.isfinite(float(duration))
+        or not 0.001 <= float(duration) <= 172_800.0
+    ):
+        raise SystemExit(
+            "--run-time-budget-seconds must be finite and between 0.001 and 172800"
+        )
+
+
 def _validate_image(args: argparse.Namespace) -> None:
     if args.image_workers < 1:
         raise SystemExit("--image-workers must be positive")
@@ -221,8 +248,9 @@ def _validate_direct_operation_selection(args: argparse.Namespace) -> None:
 
 
 def _validate_status_operation(args: argparse.Namespace) -> None:
-    if args.status_limit < 1 or args.status_limit > 1000:
-        raise SystemExit("--status-limit must be between 1 and 1000")
+    maximum = 20 if args.status_json else 1000
+    if args.status_limit < 1 or args.status_limit > maximum:
+        raise SystemExit(f"--status-limit must be between 1 and {maximum}")
     if args.status_run is not None and args.status_run < 1:
         raise SystemExit("--status-run must be positive")
     if (args.status_run is not None or args.status_json) and not args.status:
@@ -711,6 +739,7 @@ def validate_arguments(args: argparse.Namespace) -> None:
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     _validate_global(args)
+    _validate_run_budget(args)
     _validate_image(args)
     _validate_pdf(args)
     validate_docx_arguments(args)

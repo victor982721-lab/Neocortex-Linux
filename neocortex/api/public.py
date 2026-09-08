@@ -143,8 +143,19 @@ if TYPE_CHECKING:
     from neocortex.runtime.models import FrameworkConfig as FrameworkConfig
     from neocortex.runtime.models import InitialRunResult as InitialRunResult
     from neocortex.runtime.models import RouteOnlyRunResult as RouteOnlyRunResult
-    from neocortex.runtime.orchestration.run_manifest import RunManifest as RunManifest
+    from neocortex.runtime.orchestration.run_manifest import (
+        RunBudget as RunBudget,
+        RunManifest as RunManifest,
+    )
     from neocortex.runtime.orchestration.run_status import RunStatus as RunStatus
+    from neocortex.api.lifecycle_read_api import (
+        LIFECYCLE_ENVELOPE_SCHEMA as LIFECYCLE_ENVELOPE_SCHEMA,
+        LIFECYCLE_STATUS_KIND as LIFECYCLE_STATUS_KIND,
+        LIFECYCLE_STATUS_OPERATION as LIFECYCLE_STATUS_OPERATION,
+        LifecycleStatusContractError as LifecycleStatusContractError,
+        RUN_CHECKPOINT_SCHEMA as RUN_CHECKPOINT_SCHEMA,
+        lifecycle_status_payload as lifecycle_status_payload,
+    )
     from neocortex.api.run_lifecycle import (
         read_run_status as read_run_status,
         read_run_status_json as read_run_status_json,
@@ -242,8 +253,15 @@ __all__ = [  # noqa: RUF022
     "OfficeRouteConfig",
     "OfficeRouteSummary",
     "RouteOnlyRunResult",
+    "RunBudget",
     "RunManifest",
     "RunStatus",
+    "LIFECYCLE_ENVELOPE_SCHEMA",
+    "LIFECYCLE_STATUS_KIND",
+    "LIFECYCLE_STATUS_OPERATION",
+    "LifecycleStatusContractError",
+    "RUN_CHECKPOINT_SCHEMA",
+    "lifecycle_status_payload",
     "read_run_status",
     "read_run_status_json",
     "StageDescriptor",
@@ -418,8 +436,33 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "OfficeRouteConfig": ("neocortex.capabilities.formats.office.route", "OfficeRouteConfig"),
     "OfficeRouteSummary": ("neocortex.capabilities.formats.office.route", "OfficeRouteSummary"),
     "RouteOnlyRunResult": ("neocortex.runtime.models", "RouteOnlyRunResult"),
+    "RunBudget": ("neocortex.runtime.orchestration.run_manifest", "RunBudget"),
     "RunManifest": ("neocortex.runtime.orchestration.run_manifest", "RunManifest"),
     "RunStatus": ("neocortex.runtime.orchestration.run_status", "RunStatus"),
+    "LIFECYCLE_ENVELOPE_SCHEMA": (
+        "neocortex.api.lifecycle_read_api",
+        "LIFECYCLE_ENVELOPE_SCHEMA",
+    ),
+    "LIFECYCLE_STATUS_KIND": (
+        "neocortex.api.lifecycle_read_api",
+        "LIFECYCLE_STATUS_KIND",
+    ),
+    "LIFECYCLE_STATUS_OPERATION": (
+        "neocortex.api.lifecycle_read_api",
+        "LIFECYCLE_STATUS_OPERATION",
+    ),
+    "LifecycleStatusContractError": (
+        "neocortex.api.lifecycle_read_api",
+        "LifecycleStatusContractError",
+    ),
+    "RUN_CHECKPOINT_SCHEMA": (
+        "neocortex.api.lifecycle_read_api",
+        "RUN_CHECKPOINT_SCHEMA",
+    ),
+    "lifecycle_status_payload": (
+        "neocortex.api.lifecycle_read_api",
+        "lifecycle_status_payload",
+    ),
     "read_run_status": ("neocortex.api.run_lifecycle", "read_run_status"),
     "read_run_status_json": ("neocortex.api.run_lifecycle", "read_run_status_json"),
     "StageDescriptor": ("neocortex.semantic.derivation_contracts", "StageDescriptor"),

@@ -26,6 +26,9 @@ from neocortex.runtime.orchestration.run_status import serialized_run_status
 LIFECYCLE_ENVELOPE_SCHEMA = "neocortex.lifecycle-envelope/v1"
 LIFECYCLE_STATUS_KIND = "neocortex_lifecycle_status"
 LIFECYCLE_STATUS_OPERATION = "lifecycle_status"
+# Keep the reader import-light while allowing it to validate checkpoints from
+# runtimes that already publish the 0.13 checkpoint contract.
+RUN_CHECKPOINT_SCHEMA = "neocortex.lifecycle-checkpoint/v1"
 
 MAX_RUNS = 20
 MAX_ROUTES = 64
@@ -65,6 +68,7 @@ _RUN_FIELDS = frozenset(
         "skipped_routes",
         "non_replayable_routes",
         "stages",
+        "checkpoints",
         "route_capabilities",
         "lifecycle",
         "routes",
@@ -147,6 +151,17 @@ _STAGE_FIELDS = frozenset(
         "event_id",
     }
 )
+_CHECKPOINT_FIELDS = frozenset(
+    {
+        "schema",
+        "run_id",
+        "manifest_digest",
+        "stage",
+        "checkpoint",
+        "idempotency_key",
+        "event_id",
+    }
+)
 _LIFECYCLE_FIELDS = frozenset(
     {
         "schema",
@@ -162,6 +177,7 @@ _LIFECYCLE_FIELDS = frozenset(
         "budget",
         "recovery",
         "stages",
+        "checkpoints",
         "route_capabilities",
         "routes",
         "errors",
@@ -600,6 +616,42 @@ def _stage(value: object, *, label: str, run_id: int, digest: str | None) -> dic
     }
 
 
+def _checkpoint(
+    value: object,
+    *,
+    label: str,
+    run_id: int,
+    digest: str | None,
+) -> dict[str, object]:
+    """Validate one manifest-bound checkpoint at the public read boundary."""
+
+    raw = _mapping(value, label=label)
+    _keys(raw, _CHECKPOINT_FIELDS, label=label)
+    if raw.get("schema") != RUN_CHECKPOINT_SCHEMA:
+        raise LifecycleStatusContractError(f"{label} schema is unsupported", kind="schema")
+    if raw.get("run_id") != run_id:
+        raise LifecycleStatusContractError(f"{label} owner does not match run")
+    checkpoint_digest = _digest(
+        raw.get("manifest_digest"), label=f"{label}.manifest_digest", optional=True
+    )
+    if digest is not None and checkpoint_digest != digest:
+        raise LifecycleStatusContractError(f"{label} is detached from its manifest")
+    stage = _text(raw.get("stage"), label=f"{label}.stage", limit=256)
+    idempotency_key = _text(
+        raw.get("idempotency_key"), label=f"{label}.idempotency_key", limit=256
+    )
+    assert stage is not None and idempotency_key is not None
+    return {
+        "schema": RUN_CHECKPOINT_SCHEMA,
+        "run_id": run_id,
+        "manifest_digest": checkpoint_digest,
+        "stage": stage,
+        "checkpoint": _object_metadata(raw.get("checkpoint", {}), label=f"{label}.checkpoint"),
+        "idempotency_key": idempotency_key,
+        "event_id": _integer(raw.get("event_id"), label=f"{label}.event_id", optional=True),
+    }
+
+
 def _lifecycle_error(value: object, *, label: str) -> dict[str, object]:
     raw = _mapping(value, label=label)
     _keys(raw, frozenset({"route_name", "error_type"}), label=label)
@@ -676,6 +728,25 @@ def _lifecycle(
                 _items(raw.get("stages", []), label=f"{label}.stages", limit=MAX_STAGES)
             )
         ],
+        "checkpoints": [
+            _checkpoint(
+                item,
+                label=f"{label}.checkpoints[{index}]",
+                run_id=(
+                    stage_id
+                    if stage_id is not None
+                    else _integer(
+                        _mapping(item, label=f"{label}.checkpoints[{index}]").get("run_id"),
+                        label=f"{label}.checkpoints[{index}].run_id",
+                        minimum=1,
+                    )
+                ),
+                digest=actual_digest,
+            )
+            for index, item in enumerate(
+                _items(raw.get("checkpoints", []), label=f"{label}.checkpoints", limit=MAX_STAGES)
+            )
+        ],
         "route_capabilities": None
         if raw.get("route_capabilities") is None
         else _capabilities(raw.get("route_capabilities"), label=f"{label}.route_capabilities"),
@@ -726,6 +797,17 @@ def _run(value: object, *, label: str, verify_manifest: bool = True) -> dict[str
             _items(raw.get("stages", []), label=f"{label}.stages", limit=MAX_STAGES)
         )
     ]
+    checkpoints = [
+        _checkpoint(
+            item,
+            label=f"{label}.checkpoints[{index}]",
+            run_id=run_id,
+            digest=digest,
+        )
+        for index, item in enumerate(
+            _items(raw.get("checkpoints", []), label=f"{label}.checkpoints", limit=MAX_STAGES)
+        )
+    ]
     return {
         "run_id": run_id,
         "run_kind": run_kind,
@@ -771,6 +853,7 @@ def _run(value: object, *, label: str, verify_manifest: bool = True) -> dict[str
             raw.get("non_replayable_routes", []), label=f"{label}.non_replayable_routes"
         ),
         "stages": stages,
+        "checkpoints": checkpoints,
         "route_capabilities": None
         if raw.get("route_capabilities") is None
         else _capabilities(raw.get("route_capabilities"), label=f"{label}.route_capabilities"),
@@ -837,6 +920,7 @@ def _error_envelope(
             "budget": None,
             "recovery": None,
             "stages": [],
+            "checkpoints": [],
             "route_capabilities": None,
             "routes": [],
             "errors": [],
@@ -1015,6 +1099,13 @@ def lifecycle_status_payload(
                 raise LifecycleStatusContractError("run stages are invalid")
             stages.extend(raw_stages)
         stages = stages[-MAX_STAGES:]
+        checkpoints: list[object] = []
+        for run in runs:
+            raw_checkpoints = run["checkpoints"]
+            if not isinstance(raw_checkpoints, list):
+                raise LifecycleStatusContractError("run checkpoints are invalid")
+            checkpoints.extend(raw_checkpoints)
+        checkpoints = checkpoints[-MAX_STAGES:]
         payload = {
             "schema": LIFECYCLE_ENVELOPE_SCHEMA,
             "kind": LIFECYCLE_STATUS_KIND,
@@ -1044,6 +1135,7 @@ def lifecycle_status_payload(
                 "budget": None,
                 "recovery": None,
                 "stages": stages,
+                "checkpoints": checkpoints,
                 "route_capabilities": None,
                 "routes": [],
                 "errors": [],
@@ -1078,5 +1170,6 @@ __all__ = [
     "LIFECYCLE_STATUS_KIND",
     "LIFECYCLE_STATUS_OPERATION",
     "LifecycleStatusContractError",
+    "RUN_CHECKPOINT_SCHEMA",
     "lifecycle_status_payload",
 ]

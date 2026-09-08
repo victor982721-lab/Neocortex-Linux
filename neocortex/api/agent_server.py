@@ -337,6 +337,17 @@ if BaseModel is not None:
         idempotency_key: str
         event_id: int | None
 
+    class _MCPLifecycleCheckpoint(BaseModel):
+        model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True)
+
+        schema_: Literal["neocortex.lifecycle-checkpoint/v1"] = _pydantic_field(alias="schema")
+        run_id: int
+        manifest_digest: str | None
+        stage: str
+        checkpoint: dict[str, object]
+        idempotency_key: str
+        event_id: int | None
+
     class _MCPLifecycleBudget(BaseModel):
         model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True)
 
@@ -403,6 +414,7 @@ if BaseModel is not None:
         skipped_routes: list[str]
         non_replayable_routes: list[str]
         stages: list[_MCPLifecycleStage]
+        checkpoints: list[_MCPLifecycleCheckpoint]
         route_capabilities: dict[str, str] | None
         lifecycle: "_MCPLifecycleEnvelope"
         routes: list[_MCPLifecycleRoute]
@@ -429,6 +441,7 @@ if BaseModel is not None:
         budget: _MCPLifecycleBudget | None
         recovery: dict[str, object] | None
         stages: list[_MCPLifecycleStage]
+        checkpoints: list[_MCPLifecycleCheckpoint]
         route_capabilities: dict[str, str] | None
         routes: list[_MCPLifecycleRoute]
         errors: list[_MCPLifecycleRouteError]

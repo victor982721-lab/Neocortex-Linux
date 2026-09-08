@@ -34,6 +34,9 @@ def framework_config_from_args(args: argparse.Namespace) -> FrameworkConfig:
         route_only=bool(args.route_only or args.resume_run is not None),
         candidate_run_id=args.candidate_run,
         resume_run_id=args.resume_run,
+        run_max_items=getattr(args, "run_max_items", None),
+        run_max_bytes=getattr(args, "run_max_bytes", None),
+        run_time_budget_seconds=getattr(args, "run_time_budget_seconds", None),
         selection=CandidateSelection.from_values(
             statuses=args.select_status,
             error_types=args.select_error_type,

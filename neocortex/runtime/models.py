@@ -60,6 +60,11 @@ class FrameworkConfig:
     route_only: bool = False
     candidate_run_id: int | None = None
     resume_run_id: int | None = None
+    # Durable lifecycle limits are keyword-only so adding the 0.13 contract
+    # does not shift the long-standing positional construction order above.
+    run_max_items: int | None = field(default=None, kw_only=True)
+    run_max_bytes: int | None = field(default=None, kw_only=True)
+    run_time_budget_seconds: float | None = field(default=None, kw_only=True)
     selection: CandidateSelection = field(default_factory=CandidateSelection)
     heartbeat_interval_seconds: float = 5.0
     document_catalog_enabled: bool = True

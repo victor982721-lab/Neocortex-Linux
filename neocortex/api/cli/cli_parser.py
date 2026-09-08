@@ -202,6 +202,37 @@ def build_parser() -> argparse.ArgumentParser:
             "inputs; this implies --route-only"
         ),
     )
+    lifecycle = parser.add_argument_group("Durable run lifecycle")
+    lifecycle.add_argument(
+        "--run-max-items",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "global non-negative item ceiling for this lifecycle run; the "
+            "remaining budget is inherited by --resume-run"
+        ),
+    )
+    lifecycle.add_argument(
+        "--run-max-bytes",
+        type=int,
+        default=None,
+        metavar="BYTES",
+        help=(
+            "global non-negative input-byte ceiling for this lifecycle run; "
+            "the remaining budget is inherited by --resume-run"
+        ),
+    )
+    lifecycle.add_argument(
+        "--run-time-budget-seconds",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "global monotonic wall-clock budget for this lifecycle run; the "
+            "deadline is inherited by --resume-run"
+        ),
+    )
     register_capabilities_arguments(parser)
     status = parser.add_argument_group("Operational status")
     status.add_argument(
