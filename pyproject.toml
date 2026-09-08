@@ -165,6 +165,9 @@ exclude = [
     "**/neocortex/safety/windows_handle_mutation.py",
     "**/tools/release_windows*.py",
     "**/tests/test_release_windows*.py",
+    # Semgrep positive/negative fixtures intentionally contain invalid calls
+    # to exercise syntax rules and are not product Python.
+    "**/tests/fixtures/semgrep_invariants/**",
     # Hash-pinned R1-R4 acceptance artifacts; no static rewrite is authorized.
     "**/tools/benchmark_knowledge_functional.py",
     "**/tools/knowledge_development_measurement.py",

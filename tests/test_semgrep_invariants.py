@@ -117,5 +117,9 @@ def test_local_ruleset_distinguishes_positive_and_negative_fixtures(tmp_path: Pa
     negative = _semgrep_summary(
         FIXTURES / "negative.py", home=isolated_home, config=isolated_config
     )
-    assert int(re.search(r"Findings: (\d+)", positive).group(1)) == EXPECTED_FINDINGS
-    assert int(re.search(r"Findings: (\d+)", negative).group(1)) == 0
+    positive_match = re.search(r"Findings: (\d+)", positive)
+    negative_match = re.search(r"Findings: (\d+)", negative)
+    assert positive_match is not None
+    assert negative_match is not None
+    assert int(positive_match.group(1)) == EXPECTED_FINDINGS
+    assert int(negative_match.group(1)) == 0
