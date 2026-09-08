@@ -1,4 +1,8 @@
-# Mejora funcional — implementación y aceptación
+# HISTÓRICO — Mejora funcional — implementación y aceptación
+
+> Este handoff conserva la trazabilidad de la línea funcional de septiembre y
+> no es un estado operativo vigente. Para reanudar NeoCortex se debe consultar
+> `.codex/handoffs/CURRENT.md` y el pendiente `NEO-CUR-001`.
 
 ## Objetivo y autoridad
 
