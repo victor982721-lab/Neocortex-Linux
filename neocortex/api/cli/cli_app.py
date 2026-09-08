@@ -120,11 +120,6 @@ _SQLITE_FAILURE_NEXT_STEP = (
 )
 
 
-
-
-
-
-
 # endregion [03]
 
 
@@ -343,7 +338,6 @@ def main(arguments: Sequence[str] | None = None) -> int:
         print("Use `Neocortex --help` para ver las opciones disponibles.")
         return 0
 
-
     from neocortex.progress import LineProgress, RichProgress
     from rich.console import Console
     from neocortex.api.read_contract import sanitize_untrusted_text
@@ -373,17 +367,29 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 framework_failed = bool(
                     (actions is not None and actions.errors) or has_organization_errors(result)
                 )
-                if args.all and not framework_failed:
-                    from .cli_semantic import run_integrated_all_semantic_index
-
-                    semantic_attempted = True
-                    semantic_exit_code = run_integrated_all_semantic_index(
-                        args,
-                        progress=progress,
-                        result_sink=lambda scope, value: semantic_results.append((scope, value)),
-                        print_output=not professional_output,
-                        run_id=getattr(result, "run_id", None),
+                if not framework_failed:
+                    from .cli_semantic import (
+                        run_integrated_all_semantic_index,
+                        semantic_resume_available,
                     )
+
+                    resume_source_run_id = None
+                    if args.resume_run is not None and semantic_resume_available(
+                        args, args.resume_run
+                    ):
+                        resume_source_run_id = args.resume_run
+                    if args.all or resume_source_run_id is not None:
+                        semantic_attempted = True
+                        semantic_exit_code = run_integrated_all_semantic_index(
+                            args,
+                            progress=progress,
+                            result_sink=lambda scope, value: semantic_results.append(
+                                (scope, value)
+                            ),
+                            print_output=not professional_output,
+                            run_id=getattr(result, "run_id", None),
+                            resume_source_run_id=resume_source_run_id,
+                        )
             except KeyboardInterrupt as exc:
                 _emit_unsuccessful_execution(
                     progress, exc, error_code="execution_cancelled", errors=0, cancelled=True
@@ -404,7 +410,9 @@ def main(arguments: Sequence[str] | None = None) -> int:
                     exc,
                     error_code=error_code,
                     errors=len(exc.failures) if isinstance(exc, RouteExecutionError) else 1,
-                    failed_routes=tuple(exc.failures) if isinstance(exc, RouteExecutionError) else (),
+                    failed_routes=tuple(exc.failures)
+                    if isinstance(exc, RouteExecutionError)
+                    else (),
                 )
                 raise
     except InventoryError as exc:
@@ -438,7 +446,9 @@ def main(arguments: Sequence[str] | None = None) -> int:
             )
         print(
             _SQLITE_FAILURE_NEXT_STEP
-            if any(isinstance(failure, ImmutableSQLiteUnavailable) for failure in exc.failures.values())
+            if any(
+                isinstance(failure, ImmutableSQLiteUnavailable) for failure in exc.failures.values()
+            )
             else _ROUTE_FAILURE_NEXT_STEP,
             file=sys.stderr,
         )

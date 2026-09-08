@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import stat
 import xml.etree.ElementTree as ET
 import zipfile
 import zlib
@@ -10,6 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Literal, Mapping
 
 from neocortex.platform.zip_safety import ZipStructureError, inspect_zip_structure
+from neocortex.capabilities.formats.xml_safety import safe_xml_fromstring
 from .extraction_support import (
     CancellationCheckpoint,
     _ReadBudget,
@@ -115,6 +117,15 @@ def _validated_members(archive: zipfile.ZipFile) -> tuple[zipfile.ZipInfo, ...]:
                 recommendation="deletion_candidate",
                 retryable=False,
             )
+        unix_mode = (int(info.external_attr) >> 16) & 0xFFFF
+        file_type = stat.S_IFMT(unix_mode)
+        if file_type and file_type not in {stat.S_IFREG, stat.S_IFDIR}:
+            raise OfficeExtractionError(
+                "office_special_member",
+                f"special office member is unsupported: {info.filename}",
+                recommendation="manual_review",
+                retryable=False,
+            )
         folded = name.casefold()
         if folded in names:
             raise OfficeExtractionError(
@@ -186,7 +197,7 @@ def _core_properties(
             recommendation="manual_review",
             retryable=False,
         )
-    root = ET.fromstring(payload)
+    root = safe_xml_fromstring(payload)
     values: dict[str, str] = {}
     aliases = {
         "title": "title",

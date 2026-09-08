@@ -8,6 +8,21 @@ import sqlite3
 __all__ = ["run_audio_doctor", "run_audio_search"]
 
 
+def _safe_human(value: object, *, limit: int = 4096) -> str:
+    """Keep corpus-controlled text from writing terminal controls or newlines."""
+
+    escaped: list[str] = []
+    for character in str(value):
+        code = ord(character)
+        if character == "\t" or 32 <= code < 127:
+            escaped.append(character)
+        elif code <= 0xFFFF:
+            escaped.append(f"\\u{code:04x}")
+        else:
+            escaped.append(f"\\U{code:08x}")
+    return "".join(escaped)[:limit]
+
+
 # region [01] Transcript queries
 
 
@@ -23,13 +38,15 @@ def run_audio_search(args: argparse.Namespace) -> int:
             args.audio_search_limit,
         )
     except (OSError, sqlite3.Error, ValueError) as exc:
-        print(f"ERROR audio-search {exc}")
+        print(f"ERROR audio-search {_safe_human(exc)}")
         return 2
     for result in results:
         print(
-            f"AUDIO path={result['path']} language={result['language'] or '-'} "
+            f"AUDIO path={_safe_human(result['path'])} "
+            f"language={_safe_human(result['language'] or '-')} "
             f"duration={result['duration_seconds'] or 0:.3f} "
-            f"model={result['model_name']} snippet={result['snippet']}"
+            f"model={_safe_human(result['model_name'])} "
+            f"snippet={_safe_human(result['snippet'])}"
         )
     return 0
 

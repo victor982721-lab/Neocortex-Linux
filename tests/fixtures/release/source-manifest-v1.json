@@ -1,0 +1,20 @@
+{
+  "constraints_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "files": [
+    {
+      "blob": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "mode": "100644",
+      "path": "constraints-linux-cp314.lock"
+    },
+    {
+      "blob": "cccccccccccccccccccccccccccccccccccccccc",
+      "mode": "100644",
+      "path": "constraints.txt"
+    }
+  ],
+  "kind": "neocortex_source_manifest",
+  "manifest_sha256": "a95d263ad22fb2cfd960f1e14d66f764985964797f07a7b79ef757d37916e193",
+  "runtime_dependency_lock_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "schema_version": 1,
+  "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}

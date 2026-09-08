@@ -11,6 +11,7 @@ compare.  Reads never create this state.
 from __future__ import annotations
 
 import hashlib
+import errno
 import json
 import os
 import stat
@@ -675,21 +676,47 @@ def require_complete_state_epoch(
 def _publication_lock(state_directory: Path):
     lock_path = _lock_path(state_directory)
     try:
-        metadata = lock_path.lstat()
-    except FileNotFoundError:
-        metadata = None
+        directory_metadata = state_directory.lstat()
     except OSError as exc:
-        raise StatePublicationError("publication lock cannot be inspected") from exc
-    if metadata is not None and (
-        stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode)
-    ):
-        raise StatePublicationError("publication lock is not a regular file")
+        raise StatePublicationError("publication state directory cannot be inspected") from exc
+    if stat.S_ISLNK(directory_metadata.st_mode) or not stat.S_ISDIR(directory_metadata.st_mode):
+        raise StatePublicationError("publication state directory is not a real directory")
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    directory_flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    directory_fd: int | None = None
+    lock_fd: int | None = None
     try:
-        stream = open(lock_path, "a+b", buffering=0)
+        directory_fd = os.open(state_directory, directory_flags)
+        opened_directory = os.fstat(directory_fd)
+        if (opened_directory.st_dev, opened_directory.st_ino) != (
+            directory_metadata.st_dev,
+            directory_metadata.st_ino,
+        ):
+            raise StatePublicationError("publication state directory identity changed")
+        lock_fd = os.open(
+            lock_path.name,
+            os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+            dir_fd=directory_fd,
+        )
+        os.fchmod(lock_fd, 0o600)
+        stream = os.fdopen(lock_fd, "a+b", buffering=0)
+        lock_fd = None
     except OSError as exc:
+        if lock_fd is not None:
+            os.close(lock_fd)
+        if directory_fd is not None:
+            os.close(directory_fd)
+        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise StatePublicationError("publication lock is a symlink or non-directory") from exc
         raise StatePublicationError("publication lock cannot be opened") from exc
+    except BaseException:
+        if lock_fd is not None:
+            os.close(lock_fd)
+        if directory_fd is not None:
+            os.close(directory_fd)
+        raise
     try:
-        os.fchmod(stream.fileno(), 0o600)
         if os.name == "nt":
             raise StatePublicationError("publication epochs are Linux-only")
         import fcntl
@@ -702,6 +729,8 @@ def _publication_lock(state_directory: Path):
         fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
     finally:
         stream.close()
+        if directory_fd is not None:
+            os.close(directory_fd)
 
 
 def _atomic_write_json(path: Path, value: Mapping[str, object]) -> None:

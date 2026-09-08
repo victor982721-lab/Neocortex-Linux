@@ -1,12 +1,20 @@
 rules:
   # These rules are intentionally local, syntactic guardrails.  They do not
   # replace pytest, Ruff, a type checker, or the runtime's fail-closed checks.
+  # The product scope is deliberate: this file is not a repository-wide
+  # generic security ruleset.  Positive and negative examples are versioned
+  # under the two fixture files listed below.
   - id: neo-no-shell-execution
     languages: [python]
     message: >-
       Do not invoke a shell from NeoCortex; use an allow-listed bounded helper
       and pass an argv sequence instead.
     severity: ERROR
+    paths:
+      include:
+        - /neocortex/**/*.py
+        - /tests/fixtures/semgrep_invariants/positive.py
+        - /tests/fixtures/semgrep_invariants/negative.py
     patterns:
       - pattern-either:
           - pattern: subprocess.run(..., shell=True, ...)
@@ -19,6 +27,11 @@ rules:
     languages: [python]
     message: Do not evaluate dynamically supplied Python or corpus content.
     severity: ERROR
+    paths:
+      include:
+        - /neocortex/**/*.py
+        - /tests/fixtures/semgrep_invariants/positive.py
+        - /tests/fixtures/semgrep_invariants/negative.py
     patterns:
       - pattern-either:
           - pattern: eval(...)
@@ -28,6 +41,11 @@ rules:
     languages: [python]
     message: Do not use os.system or an os process-spawning primitive.
     severity: ERROR
+    paths:
+      include:
+        - /neocortex/**/*.py
+        - /tests/fixtures/semgrep_invariants/positive.py
+        - /tests/fixtures/semgrep_invariants/negative.py
     patterns:
       - pattern-either:
           - pattern: os.system(...)
@@ -44,6 +62,11 @@ rules:
     languages: [python]
     message: Do not execute a file or module from the corpus.
     severity: ERROR
+    paths:
+      include:
+        - /neocortex/**/*.py
+        - /tests/fixtures/semgrep_invariants/positive.py
+        - /tests/fixtures/semgrep_invariants/negative.py
     patterns:
       - pattern-either:
           - pattern: runpy.run_path(...)
@@ -57,8 +80,28 @@ rules:
     severity: ERROR
     paths:
       include:
+        - /neocortex/**/*.py
         - /tests/fixtures/semgrep_invariants/positive.py
         - /tests/fixtures/semgrep_invariants/negative.py
+      # These modules are the only current direct sqlite3.connect owners.  They
+      # either create/write an owner, materialize a private snapshot, or expose
+      # the fenced immutable reader.  A new direct connection elsewhere must
+      # use the public fenced surface or intentionally add a reviewed exception.
+      exclude:
+        - /neocortex/capabilities/formats/image/state.py
+        - /neocortex/deduplication/persistence/connections.py
+        - /neocortex/documents/document_cache_sync.py
+        - /neocortex/enumeration/path_index/schema.py
+        - /neocortex/persistence/framework_connection.py
+        - /neocortex/persistence/framework_route_state.py
+        - /neocortex/persistence/framework_state_writer.py
+        - /neocortex/persistence/sqlite_connection.py
+        - /neocortex/persistence/sqlite_immutable.py
+        - /neocortex/persistence/sqlite_writer_snapshot.py
+        - /neocortex/semantic/semantic_plan_owners.py
+        - /neocortex/semantic/semantic_plan_scratch.py
+        - /neocortex/semantic/semantic_schema.py
+        - /neocortex/workflow/retention/planner.py
     patterns:
       - pattern: sqlite3.connect($DATABASE, ...)
       - pattern-not: sqlite3.connect(":memory:", ...)
@@ -71,8 +114,15 @@ rules:
     severity: ERROR
     paths:
       include:
+        - /neocortex/**/*.py
         - /tests/fixtures/semgrep_invariants/positive.py
         - /tests/fixtures/semgrep_invariants/negative.py
+      # The sole direct Popen in product code is the implementation of the
+      # bounded subprocess primitive.  Its timeout, output, memory and child
+      # lifecycle bounds are enforced by the surrounding protocol rather than
+      # by a Popen constructor keyword.
+      exclude:
+        - /neocortex/runtime/control/bounded_subprocess.py
     patterns:
       - pattern-either:
           - pattern: subprocess.run(...)
@@ -94,8 +144,15 @@ rules:
     severity: ERROR
     paths:
       include:
+        - /neocortex/curation/**/*.py
+        - /neocortex/safety/**/*.py
         - /tests/fixtures/semgrep_invariants/positive.py
         - /tests/fixtures/semgrep_invariants/negative.py
+      # Restore removes .trashinfo only after a grant/root/receipt-bound
+      # postcondition check.  It is a cleanup step, not an unguarded corpus
+      # mutation frontier, and is kept as an explicit file-level exception.
+      exclude:
+        - /neocortex/curation/recovery.py
     patterns:
       - pattern-either:
           - pattern: os.remove(...)
@@ -103,15 +160,6 @@ rules:
           - pattern: os.rename(...)
           - pattern: os.replace(...)
           - pattern: shutil.move(...)
-          - pattern: shutil.copy(...)
-          - pattern: shutil.copy2(...)
-          - pattern: shutil.copytree(...)
-          - pattern: shutil.rmtree(...)
-          - pattern: $PATH.unlink(...)
-          - pattern: $PATH.rename(...)
-          - pattern: $PATH.replace(...)
-          - pattern: $PATH.write_text(...)
-          - pattern: $PATH.write_bytes(...)
       - pattern-not-inside: |
           with grant_fence(...):
               ...

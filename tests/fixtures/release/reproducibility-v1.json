@@ -1,0 +1,23 @@
+{
+  "builds": [
+    {
+      "label": "first",
+      "logical_manifest_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "source_tree_sha256": "a95d263ad22fb2cfd960f1e14d66f764985964797f07a7b79ef757d37916e193",
+      "wheel_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    {
+      "label": "second",
+      "logical_manifest_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "source_tree_sha256": "a95d263ad22fb2cfd960f1e14d66f764985964797f07a7b79ef757d37916e193",
+      "wheel_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+    }
+  ],
+  "kind": "neocortex_reproducible_wheel_build",
+  "logical_manifest_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+  "release_tree_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "schema_version": 1,
+  "source_manifest_sha256": "a95d263ad22fb2cfd960f1e14d66f764985964797f07a7b79ef757d37916e193",
+  "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "source_tree_sha256": "a95d263ad22fb2cfd960f1e14d66f764985964797f07a7b79ef757d37916e193"
+}

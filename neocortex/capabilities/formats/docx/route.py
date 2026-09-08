@@ -41,6 +41,7 @@ from neocortex.platform.zip_safety import (
 )
 from neocortex.workflow.review.review import ReviewCandidate, ReviewRecommendation
 from neocortex.persistence.framework_route_state import ReviewCandidateReconciliation
+from neocortex.capabilities.formats.xml_safety import safe_xml_fromstring
 from .integrity import (
     classify_docx_exception,
     diagnostic_for_member,
@@ -301,7 +302,7 @@ def _read_xml_root(
     cancellation: CancellationToken | None,
 ) -> tuple[ET.Element | None, DocxDiagnostic | None]:
     try:
-        return ET.fromstring(_read_member(archive, info, limit)), None
+        return safe_xml_fromstring(_read_member(archive, info, limit)), None
     except ValueError as exc:
         diagnostic = diagnostic_for_member(info, exc, stage=stage, required=required)
         if required:
@@ -323,7 +324,7 @@ def _read_xml_root(
                 max_member_bytes=limit,
                 checkpoint=(cancellation.checkpoint if cancellation is not None else None),
             )
-            root = ET.fromstring(recovered.payload)
+            root = safe_xml_fromstring(recovered.payload)
         except CancellationRequested:
             raise
         except (

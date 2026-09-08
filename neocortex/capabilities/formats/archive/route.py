@@ -49,6 +49,7 @@ from neocortex.foundation.processing_provenance import (
 )
 from neocortex.safety.route_filters import CandidateSelection
 from neocortex.persistence.framework_route_state import FrameworkRouteState
+from neocortex.capabilities.formats.xml_safety import safe_xml_fromstring
 from .models import ArchiveRouteSummary
 from .logical import (
     LOGICAL_MEDIA_TYPES,
@@ -408,7 +409,7 @@ def _bounded_text(value: str, limit: int) -> tuple[str, bool]:
 
 
 def _xml_text(payload: bytes) -> str:
-    root = ET.fromstring(payload)
+    root = safe_xml_fromstring(payload)
     return "\n".join(part.strip() for part in root.itertext() if part.strip())
 
 

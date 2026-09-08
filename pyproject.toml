@@ -155,10 +155,17 @@ exclude = "(?x)(^|/)(build|dist|node_modules|\\.venv|\\.mypy_cache|\\.pytest_cac
 [tool.pyright]
 # Preserve 3.13-compatible source while runtime validation covers CPython 3.14.
 pythonVersion = "3.13"
+pythonPlatform = "Linux"
 typeCheckingMode = "basic"
 reportUnusedFunction = "warning"
 reportUnusedClass = "warning"
 reportImportCycles = "warning"
+# The personal Linux quality environment is intentionally outside the product
+# package; keeping this here prevents a plain `pyright` invocation from
+# reporting false missing-import errors for the documented venv.
+venvPath = "/home/winterboss/.local/share/Neocortex/tooling"
+venv = "quality-cp314-20260907"
+extraPaths = ["."]
 exclude = [
     "**/neocortex/enumeration/ntfs/**",
     "**/neocortex/interface/presentation/windows/**",

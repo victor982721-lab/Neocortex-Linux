@@ -18,6 +18,7 @@ import textwrap
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -51,6 +52,12 @@ from neocortex.knowledge.knowledge_snapshot import KnowledgeStatePaths
 # region [02] Implementación
 
 
+def _as_sqlite_row(value: Mapping[str, object]) -> sqlite3.Row:
+    """Treat an injected mapping fixture as the row protocol under test."""
+
+    return cast(sqlite3.Row, value)
+
+
 PUBLIC_MODULE = "neocortex.knowledge.knowledge_search"
 CONTRACT_MODULE = "neocortex.knowledge.knowledge_search_contracts"
 INVENTORY_MODULE = "neocortex.knowledge.knowledge_search_inventory"
@@ -60,7 +67,7 @@ EXPECTED_SIGNATURES = {
     "_physical_identity_tuple": ("(resource: 'ResourceRef') -> 'tuple[int, int, int] | None'"),
     "_inventory_plan_heads": (
         "(snapshot: 'KnowledgeSnapshot') -> "
-        "'tuple[tuple[tuple[int, int, int, int, int], ...], bool]'"
+        "'tuple[tuple[InventoryHead, ...], tuple[InventoryPlanIssue, ...]]'"
     ),
     "_inventory_identity_blob": "(value: 'int') -> 'bytes'",
     "_validated_inventory_blob": "(value: 'object') -> 'int'",
@@ -613,7 +620,7 @@ def test_direct_sqlite_open_resolves_current_dependencies_and_exact_order(
 
     opened = knowledge_search._open_direct_readonly_sqlite(path)
 
-    assert opened is connection
+    assert cast(object, opened) is connection
     assert connection.row_factory is row_factory
     assert events == [
         ("uri", path),
@@ -815,14 +822,18 @@ def test_malformed_head_only_degrades_identities_in_its_scan(tmp_path: Path, mon
         )
         connection.executemany(
             "INSERT INTO files VALUES(?,?,?,?,?,?)",
-            ((1, "C:/bad.pdf", _blob(1), _blob(2), 3, 100),
-             (2, "C:/good.pdf", _blob(9), _blob(10), 11, 100),
-             (2, "C:/keeper.pdf", _blob(11), _blob(12), 12, 100)),
+            (
+                (1, "C:/bad.pdf", _blob(1), _blob(2), 3, 100),
+                (2, "C:/good.pdf", _blob(9), _blob(10), 11, 100),
+                (2, "C:/keeper.pdf", _blob(11), _blob(12), 12, 100),
+            ),
         )
         connection.executemany(
             "INSERT INTO planned_duplicate_members VALUES(?,?,?,?,?,?,?,?)",
-            ((1, 0, "keep", "C:/keeper.pdf", _blob(11), _blob(12), 100, 12),
-             (1, 1, "redundant", "C:/good.pdf", _blob(9), _blob(10), 100, 11)),
+            (
+                (1, 0, "keep", "C:/keeper.pdf", _blob(11), _blob(12), 100, 12),
+                (1, 1, "redundant", "C:/good.pdf", _blob(9), _blob(10), 100, 11),
+            ),
         )
     connection = sqlite3.connect(database)
     connection.row_factory = sqlite3.Row
@@ -866,12 +877,16 @@ def test_current_plan_without_member_proof_is_not_a_valid_relation(tmp_path: Pat
             10,
             knowledge_search._inventory_identity_blob,
         )
-        assert rows_valid and knowledge_search_inventory.inventory_relation_row(
-            rows_valid[0],
-            validated_inventory_blob=knowledge_search._validated_inventory_blob,
-            file_identity_type=FileIdentity,
-            valid_full_fingerprint=knowledge_search._valid_full_fingerprint,
-        ) is not None
+        assert (
+            rows_valid
+            and knowledge_search_inventory.inventory_relation_row(
+                rows_valid[0],
+                validated_inventory_blob=knowledge_search._validated_inventory_blob,
+                file_identity_type=FileIdentity,
+                valid_full_fingerprint=knowledge_search._valid_full_fingerprint,
+            )
+            is not None
+        )
         index._connection.execute(
             "UPDATE planned_duplicate_members SET proof_json='{}' WHERE group_id=(SELECT group_id FROM planned_duplicate_groups WHERE scan_id=?) AND member_order=1",
             (scan.scan_id,),
@@ -885,24 +900,27 @@ def test_current_plan_without_member_proof_is_not_a_valid_relation(tmp_path: Pat
             knowledge_search._inventory_identity_blob,
         )
         assert rows
-        assert knowledge_search_inventory.inventory_relation_row(
-            rows[0],
-            validated_inventory_blob=knowledge_search._validated_inventory_blob,
-            file_identity_type=FileIdentity,
-            valid_full_fingerprint=knowledge_search._valid_full_fingerprint,
-        ) is None
+        assert (
+            knowledge_search_inventory.inventory_relation_row(
+                rows[0],
+                validated_inventory_blob=knowledge_search._validated_inventory_blob,
+                file_identity_type=FileIdentity,
+                valid_full_fingerprint=knowledge_search._valid_full_fingerprint,
+            )
+            is None
+        )
 
 
 def test_inventory_relation_validation_preserves_roles_and_rejects_conflicts() -> None:
     redundant = _relation_row((1, 2, 3))
-    assert knowledge_search._inventory_relation_row(redundant) == (
+    assert knowledge_search._inventory_relation_row(_as_sqlite_row(redundant)) == (
         (1, 2, 3),
         "redundant",
         (9, 10, 11),
     )
 
     keep = _relation_row((9, 10, 11), role="keep")
-    assert knowledge_search._inventory_relation_row(keep) == (
+    assert knowledge_search._inventory_relation_row(_as_sqlite_row(keep)) == (
         (9, 10, 11),
         "keep",
         (9, 10, 11),
@@ -912,8 +930,10 @@ def test_inventory_relation_validation_preserves_roles_and_rejects_conflicts() -
     linux["file_birthtime_ns"] = -1
     linux["member_birthtime_ns"] = -1
     linux["keeper_birthtime_ns"] = -1
-    assert knowledge_search._inventory_relation_row(linux) == (
-        (1, 2, -1), "redundant", (9, 10, -1)
+    assert knowledge_search._inventory_relation_row(_as_sqlite_row(linux)) == (
+        (1, 2, -1),
+        "redundant",
+        (9, 10, -1),
     )
 
     invalid_rows: list[Mapping[str, object]] = []
@@ -932,7 +952,10 @@ def test_inventory_relation_validation_preserves_roles_and_rejects_conflicts() -
     conflicting_keep["member_order"] = 1
     invalid_rows.append(conflicting_keep)
 
-    assert all(knowledge_search._inventory_relation_row(row) is None for row in invalid_rows)
+    assert all(
+        knowledge_search._inventory_relation_row(_as_sqlite_row(row)) is None
+        for row in invalid_rows
+    )
 
 
 def test_inventory_batches_in_sorted_order_and_preserves_safe_dispositions(
@@ -955,7 +978,7 @@ def test_inventory_batches_in_sorted_order_and_preserves_safe_dispositions(
         def execute(
             self,
             statement: str,
-            parameters: tuple[object, ...] = (),
+            parameters: tuple[bytes | int, ...] = (),
         ) -> object:
             if statement == "BEGIN":
                 events.append("BEGIN")
@@ -2058,7 +2081,7 @@ def test_inventory_multielement_batches_keep_identity_then_head_parameter_order(
         def execute(
             self,
             statement: str,
-            parameters: tuple[object, ...] = (),
+            parameters: tuple[bytes | int, ...] = (),
         ) -> object:
             if statement == "BEGIN":
                 self.in_transaction = True
@@ -2087,9 +2110,12 @@ def test_inventory_multielement_batches_keep_identity_then_head_parameter_order(
                 )
                 for offset in range(0, identity_end, 3)
             )
-            heads = tuple(
-                tuple(int(value) for value in parameters[offset : offset + 5])
-                for offset in range(identity_end, head_end, 5)
+            heads = cast(
+                tuple[tuple[int, int, int, int, int], ...],
+                tuple(
+                    tuple(int(value) for value in parameters[offset : offset + 5])
+                    for offset in range(identity_end, head_end, 5)
+                ),
             )
             assert all(len(head) == 5 for head in heads)
             query_calls.append((identities, heads, int(parameters[-1])))
@@ -2224,7 +2250,7 @@ def test_inventory_relation_malformed_keep_path_match_degrades_to_none() -> None
     row = _relation_row((1, 2, 3))
     row["keep_path_matches"] = "not-an-integer"
 
-    assert knowledge_search._inventory_relation_row(row) is None
+    assert knowledge_search._inventory_relation_row(_as_sqlite_row(row)) is None
 
 
 @pytest.mark.parametrize("member_order", (-1, 2, 999))
@@ -2234,7 +2260,7 @@ def test_inventory_relation_member_order_must_fit_declared_count(
     row = _relation_row((1, 2, 3))
     row["member_order"] = member_order
 
-    assert knowledge_search._inventory_relation_row(row) is None
+    assert knowledge_search._inventory_relation_row(_as_sqlite_row(row)) is None
 
 
 @pytest.mark.parametrize(
@@ -2249,7 +2275,7 @@ def test_inventory_relation_selected_keeper_requires_keep_provenance(
     row["keeper_role"] = keeper_role
     row["keeper_member_order"] = keeper_member_order
 
-    assert knowledge_search._inventory_relation_row(row) is None
+    assert knowledge_search._inventory_relation_row(_as_sqlite_row(row)) is None
 
 
 @pytest.mark.parametrize(
@@ -2264,7 +2290,7 @@ def test_inventory_relation_all_other_members_require_redundant_roles_and_orders
     row["redundant_role_count"] = redundant_role_count
     row["invalid_role_order_count"] = invalid_role_order_count
 
-    assert knowledge_search._inventory_relation_row(row) is None
+    assert knowledge_search._inventory_relation_row(_as_sqlite_row(row)) is None
 
 
 def test_inventory_relation_orders_must_be_unique_and_contiguous() -> None:
@@ -2275,7 +2301,7 @@ def test_inventory_relation_orders_must_be_unique_and_contiguous() -> None:
     row["group_reclaimable_bytes"] = 200
     row["distinct_member_order_count"] = 2
 
-    assert knowledge_search._inventory_relation_row(row) is None
+    assert knowledge_search._inventory_relation_row(_as_sqlite_row(row)) is None
 
 
 def test_inventory_query_exposes_keeper_and_group_role_order_provenance(

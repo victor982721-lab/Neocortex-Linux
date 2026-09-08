@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import html
 import re
 import unicodedata
@@ -10,6 +11,9 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 import pytest
+
+from neocortex.api.cli.cli_parser import build_parser
+from neocortex.api.cli.human import build_human_parser
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -76,6 +80,36 @@ _REFERENCE_LINK = re.compile(r"^\s*\[[^\]]+\]:\s*(?P<target><[^>]+>|\S+)")
 _HTML_LINK = re.compile(r"\b(?:href|src)=[\"'](?P<target>[^\"']+)[\"']", re.IGNORECASE)
 _HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(?P<title>.+?)\s*#*\s*$")
 _EXPLICIT_ANCHOR = re.compile(r"\b(?:id|name)=[\"'](?P<anchor>[^\"']+)[\"']", re.IGNORECASE)
+_CLI_FLAG = re.compile(r"--[A-Za-z][A-Za-z0-9-]*")
+
+# These options are intentionally outside the two parser builders below.  The
+# UI entrypoint is handled before the integrated parser by
+# ``neocortex.interface.entrypoint`` and must remain an explicit exception,
+# not a wildcard that would hide obsolete documentation.
+_ENTRYPOINT_FLAGS = frozenset({"--ui"})
+
+# The installed help hides compatibility/configuration plumbing, while the
+# canonical CLI document still shows it where it is needed for a reproducible
+# invocation.  Keep this list exact so a newly hidden or stale option fails
+# the contract instead of being silently accepted.
+_DOCUMENTED_HIDDEN_FLAGS = frozenset(
+    {
+        "--doctor-platform",
+        "--doctor-platform-json",
+        "--models-json",
+        "--models-model-id",
+        "--models-prepare",
+        "--models-root",
+        "--models-status",
+        "--state-directory",
+    }
+)
+
+# The allowlist is deliberately limited to parser construction and help
+# rendering.  No documented argv is parsed or dispatched here, so examples
+# containing ``--apply``, ``--models-prepare`` or another mutating operation
+# can never touch corpus or state during this contract test.
+_READ_ONLY_HELP_BUILDERS = (build_parser, build_human_parser)
 
 
 def _repository_markdown() -> frozenset[str]:
@@ -139,6 +173,74 @@ def _local_links(path: Path) -> Iterator[tuple[int, str]]:
             yield line_number, reference.group("target").strip("<>")
 
 
+def _markdown_code_blocks(text: str) -> Iterator[str]:
+    """Yield fenced blocks without interpreting prose as executable input."""
+
+    fence: str | None = None
+    lines: list[str] = []
+    for line in text.splitlines():
+        marker = line.lstrip()[:3]
+        if fence is None:
+            if marker in {"```", "~~~"}:
+                fence = marker
+                lines = []
+            continue
+        if marker == fence:
+            yield "\n".join(lines)
+            fence = None
+            lines = []
+            continue
+        lines.append(line)
+
+
+def _documented_cli_examples(path: Path) -> tuple[str, ...]:
+    """Extract command examples for static inspection, never dispatch them."""
+
+    examples: list[str] = []
+    for block in _markdown_code_blocks(path.read_text(encoding="utf-8")):
+        lines = block.splitlines()
+        position = 0
+        while position < len(lines):
+            line = lines[position].strip()
+            if not line.startswith("Neocortex"):
+                position += 1
+                continue
+            parts = [line]
+            while parts[-1].endswith("\\") and position + 1 < len(lines):
+                parts[-1] = parts[-1][:-1].rstrip()
+                position += 1
+                parts.append(lines[position].strip())
+            examples.append(" ".join(parts))
+            position += 1
+    return tuple(examples)
+
+
+def _parser_options_and_help(parser: argparse.ArgumentParser) -> tuple[frozenset[str], str]:
+    """Collect nested argparse options and their installed help text."""
+
+    options: set[str] = set()
+    help_text: list[str] = []
+    visited: set[int] = set()
+
+    def visit(current: argparse.ArgumentParser) -> None:
+        identity = id(current)
+        if identity in visited:
+            return
+        visited.add(identity)
+        help_text.append(current.format_help())
+        for action in current._actions:
+            options.update(action.option_strings)
+            choices = getattr(action, "choices", None)
+            if not isinstance(choices, dict):
+                continue
+            for child in choices.values():
+                if isinstance(child, argparse.ArgumentParser):
+                    visit(child)
+
+    visit(parser)
+    return frozenset(options), "\n".join(help_text)
+
+
 def test_documentation_inventory_is_exactly_the_canonical_set() -> None:
     assert _repository_markdown() == _ACTIVE_DOCUMENTS | _SOURCE_ONLY_DOCUMENTS
     for relative in _ACTIVE_DOCUMENTS | _SOURCE_ONLY_DOCUMENTS:
@@ -150,15 +252,50 @@ def test_documentation_inventory_is_exactly_the_canonical_set() -> None:
 
 def test_canonical_documents_do_not_reference_retired_documents() -> None:
     unique_basenames = {
-        Path(relative).name
-        for relative in _RETIRED_DOCUMENTS
-        if Path(relative).name != "README.md"
+        Path(relative).name for relative in _RETIRED_DOCUMENTS if Path(relative).name != "README.md"
     }
     tokens = _RETIRED_DOCUMENTS | unique_basenames
     for relative in _ACTIVE_DOCUMENTS | _SOURCE_ONLY_DOCUMENTS:
         text = (_PROJECT_ROOT / relative).read_text(encoding="utf-8").casefold()
         stale = sorted(token for token in tokens if token.casefold() in text)
         assert stale == [], f"{relative} references retired documentation: {stale}"
+
+
+def test_documented_cli_examples_match_installed_parser_help() -> None:
+    """Detect retired flags without dispatching any documented command."""
+
+    cli_document = _PROJECT_ROOT / "docs/CLI.md"
+    examples = _documented_cli_examples(cli_document)
+    assert examples, "docs/CLI.md must retain at least one CLI example"
+
+    documented_flags = frozenset(
+        flag for example in examples for flag in _CLI_FLAG.findall(example)
+    )
+    # Include inline option references too, so a stale flag cannot hide in
+    # explanatory prose after its example is removed.
+    documented_flags |= frozenset(_CLI_FLAG.findall(cli_document.read_text(encoding="utf-8")))
+
+    contracts = tuple(_parser_options_and_help(builder()) for builder in _READ_ONLY_HELP_BUILDERS)
+    installed_options = frozenset().union(*(options for options, _help in contracts))
+    installed_help = "\n".join(help_text for _options, help_text in contracts)
+
+    unknown = sorted(documented_flags - installed_options - _ENTRYPOINT_FLAGS)
+    assert unknown == [], f"docs/CLI.md references obsolete CLI flags: {unknown}"
+
+    not_in_help = sorted(
+        documented_flags
+        - set(_CLI_FLAG.findall(installed_help))
+        - _DOCUMENTED_HIDDEN_FLAGS
+        - _ENTRYPOINT_FLAGS
+    )
+    assert not_in_help == [], (
+        f"documented flags are absent from build_parser/build_human_parser help: {not_in_help}"
+    )
+
+    undocumented_hidden = sorted(_DOCUMENTED_HIDDEN_FLAGS - installed_options)
+    assert undocumented_hidden == [], (
+        f"the hidden-help allowlist contains options no longer registered: {undocumented_hidden}"
+    )
 
 
 @pytest.mark.parametrize("relative", sorted(_ACTIVE_DOCUMENTS | _SOURCE_ONLY_DOCUMENTS))

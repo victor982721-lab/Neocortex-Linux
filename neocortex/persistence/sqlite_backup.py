@@ -114,9 +114,7 @@ class SQLiteBackupVerificationError(SQLiteBackupError):
 
     def __init__(self, report: SQLiteIntegrityReport) -> None:
         self.report = report
-        super().__init__(
-            "SQLite backup verification did not produce a complete healthy report"
-        )
+        super().__init__("SQLite backup verification did not produce a complete healthy report")
 
 
 class SQLiteBackupPublicationError(SQLiteBackupError):
@@ -150,8 +148,8 @@ def _close_descriptor(descriptor: int | None) -> None:
         pass
 
 
-def _require_real_directory(parent: Path) -> None:
-    """Verify every parent component without following a symlink."""
+def _open_real_directory(parent: Path) -> int:
+    """Open every parent component without following a symlink."""
 
     try:
         metadata = parent.lstat()
@@ -178,10 +176,7 @@ def _require_real_directory(parent: Path) -> None:
 
     nofollow = int(getattr(os, "O_NOFOLLOW", 0))
     common_flags = (
-        os.O_RDONLY
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NONBLOCK", 0)
-        | nofollow
+        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0) | nofollow
     )
     directory_flags = common_flags | getattr(os, "O_DIRECTORY", 0)
     directory_descriptor: int | None = None
@@ -202,8 +197,7 @@ def _require_real_directory(parent: Path) -> None:
             except OSError as exc:
                 if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
                     raise SQLiteBackupPublicationError(
-                        "SQLite backup destination parent contains a symlink "
-                        "or non-directory"
+                        "SQLite backup destination parent contains a symlink or non-directory"
                     ) from exc
                 raise
             _close_descriptor(directory_descriptor)
@@ -213,41 +207,59 @@ def _require_real_directory(parent: Path) -> None:
             raise SQLiteBackupPublicationError(
                 "SQLite backup destination parent identity changed during preflight"
             )
+        result = directory_descriptor
+        directory_descriptor = None
+        return result
     finally:
         _close_descriptor(directory_descriptor)
 
 
-def _require_destination_available(destination: Path) -> None:
+def _require_destination_available_at(parent_fd: int, destination: Path) -> None:
+    """Check a destination relative to an already-open, identity-fenced parent."""
+
     try:
-        destination.lstat()
+        os.stat(destination.name, dir_fd=parent_fd, follow_symlinks=False)
     except FileNotFoundError:
-        pass
+        return
     except OSError as exc:
         raise SQLiteBackupPublicationError(
             f"SQLite backup destination cannot be inspected: {destination}"
         ) from exc
-    else:
-        raise FileExistsError(
-            errno.EEXIST,
-            "SQLite backup destination already exists",
-            destination,
-        )
-    parent = destination.parent
-    _require_real_directory(parent)
+    raise FileExistsError(errno.EEXIST, "SQLite backup destination already exists", destination)
 
 
-def _create_staging_file(parent: Path) -> Path:
+def _assert_open_parent_path(parent_fd: int, parent: Path) -> None:
+    """Require that a retained directory descriptor still names the requested path."""
+
+    try:
+        expected = parent.lstat()
+        opened = os.fstat(parent_fd)
+    except OSError as exc:
+        raise SQLiteBackupPublicationError(
+            f"SQLite backup destination parent changed: {parent}"
+        ) from exc
+    if (
+        stat.S_ISLNK(expected.st_mode)
+        or not stat.S_ISDIR(expected.st_mode)
+        or (expected.st_dev, expected.st_ino) != (opened.st_dev, opened.st_ino)
+    ):
+        raise SQLiteBackupPublicationError(f"SQLite backup destination parent changed: {parent}")
+
+
+def _create_staging_file(parent_fd: int) -> Path:
     descriptor, raw_path = tempfile.mkstemp(
         prefix=".neocortex-sqlite-backup-",
         suffix=".sqlite3.tmp",
-        dir=parent,
+        dir=f"/proc/self/fd/{parent_fd}",
     )
     try:
+        resolved = Path(os.path.realpath(raw_path))
+        os.fchmod(descriptor, 0o600)
         os.close(descriptor)
     except BaseException:
         Path(raw_path).unlink(missing_ok=True)
         raise
-    return Path(raw_path)
+    return resolved
 
 
 def _staging_artifacts(staging_path: Path) -> tuple[Path, ...]:
@@ -360,6 +372,7 @@ def _publish_no_replace(
     staging_path: Path,
     destination_path: Path,
     *,
+    parent_fd: int,
     expected_fence: SQLiteImmutableFence,
 ) -> None:
     observed = _capture_sqlite_owner_fence(
@@ -371,7 +384,17 @@ def _publish_no_replace(
             "staged SQLite database identity changed before publication"
         )
     try:
-        os.link(staging_path, destination_path, follow_symlinks=False)
+        _assert_open_parent_path(parent_fd, destination_path.parent)
+        _require_destination_available_at(parent_fd, destination_path)
+        os.link(
+            staging_path.name,
+            destination_path.name,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+        os.fsync(parent_fd)
+        _assert_open_parent_path(parent_fd, destination_path.parent)
     except FileExistsError:
         raise
     except OSError as exc:
@@ -403,7 +426,6 @@ def backup_sqlite_online(
         raise TypeError("progress_callback must be callable or None")
     source = _absolute_sqlite_path(source_path)
     destination = _absolute_sqlite_path(destination_path)
-    _require_destination_available(destination)
     source_fence = _capture_sqlite_owner_fence(
         source,
         label="SQLite backup source",
@@ -411,10 +433,15 @@ def backup_sqlite_online(
     cancellation = SQLiteCancellationBridge(cancellation_check)
     cancellation.checkpoint()
 
+    parent_fd: int | None = None
     staging: Path | None = None
     published = False
     try:
-        staging = _create_staging_file(destination.parent)
+        parent_fd = _open_real_directory(destination.parent)
+        assert parent_fd is not None
+        _assert_open_parent_path(parent_fd, destination.parent)
+        _require_destination_available_at(parent_fd, destination)
+        staging = _create_staging_file(parent_fd)
         invocations, page_count, page_size = _copy_online(
             source,
             staging,
@@ -449,11 +476,13 @@ def backup_sqlite_online(
         _publish_no_replace(
             staging,
             destination,
+            parent_fd=parent_fd,
             expected_fence=staging_fence,
         )
         published = True
         try:
             _cleanup_staging(staging)
+            os.fsync(parent_fd)
         except OSError as exc:
             raise SQLiteBackupPublishedCleanupError(destination, staging) from exc
     except BaseException as exc:
@@ -463,6 +492,8 @@ def backup_sqlite_online(
             except OSError as cleanup_error:
                 exc.add_note(f"staging cleanup also failed: {cleanup_error}")
         raise
+    finally:
+        _close_descriptor(parent_fd)
 
     return SQLiteBackupResult(
         source_path=source,

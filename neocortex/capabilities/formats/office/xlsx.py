@@ -24,6 +24,7 @@ from .extraction_support import (
     _local_name,
 )
 from .models import MAX_XLSX_SHARED_STRINGS, OfficeExtractionError, XlsxCell
+from neocortex.capabilities.formats.xml_safety import safe_xml_iterparse
 
 
 SharedStringsExtractor = Callable[..., tuple[str, ...]]
@@ -308,7 +309,7 @@ def _extract_xlsx_workbook(
     date_1904 = False
     events = 0
     try:
-        for _event, element in ET.iterparse(source, events=("end",)):
+        for _event, element in safe_xml_iterparse(source, events=("end",)):
             local = _local_name(element.tag)
             if local == "workbookPr":
                 raw = element.attrib.get("date1904", "").casefold()
@@ -364,7 +365,7 @@ def _extract_xlsx_relationships(
     targets: dict[str, str] = {}
     count = 0
     try:
-        for _event, element in ET.iterparse(source, events=("end",)):
+        for _event, element in safe_xml_iterparse(source, events=("end",)):
             if _local_name(element.tag) == "Relationship":
                 relationship_type = element.attrib.get("Type", "")
                 if relationship_type.rsplit("/", 1)[-1] == "worksheet":
@@ -415,7 +416,7 @@ def _extract_xlsx_styles(
     inside_cell_xfs = False
     try:
         for count, (event, element) in enumerate(
-            ET.iterparse(source, events=("start", "end")),
+            safe_xml_iterparse(source, events=("start", "end")),
             start=1,
         ):
             inside_cell_xfs = _consume_xlsx_style_event(
@@ -495,7 +496,7 @@ def _extract_xlsx_shared_strings(
     values: list[str] = []
     root: ET.Element | None = None
     try:
-        for event, element in ET.iterparse(source, events=("start", "end")):
+        for event, element in safe_xml_iterparse(source, events=("start", "end")):
             if root is None and event == "start":
                 root = element
             if event != "end":
@@ -823,7 +824,7 @@ def _extract_xlsx_worksheet(
     source = _bounded_member(archive, info, budget)
     references: set[str] = set()
     try:
-        for _event, element in ET.iterparse(source, events=("end",)):
+        for _event, element in safe_xml_iterparse(source, events=("end",)):
             local = _local_name(element.tag)
             if local == "c":
                 cell = _xlsx_cell_from_element(

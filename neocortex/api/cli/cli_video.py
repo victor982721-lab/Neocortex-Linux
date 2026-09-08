@@ -8,6 +8,21 @@ import sqlite3
 __all__ = ("run_video_doctor", "run_video_search", "run_video_status")
 
 
+def _safe_human(value: object, *, limit: int = 4096) -> str:
+    """Keep corpus-controlled text from writing terminal controls or newlines."""
+
+    escaped: list[str] = []
+    for character in str(value):
+        code = ord(character)
+        if character == "\t" or 32 <= code < 127:
+            escaped.append(character)
+        elif code <= 0xFFFF:
+            escaped.append(f"\\u{code:04x}")
+        else:
+            escaped.append(f"\\U{code:08x}")
+    return "".join(escaped)[:limit]
+
+
 def run_video_search(args: argparse.Namespace) -> int:
     from neocortex.capabilities.formats.video.state import search_video_state
 
@@ -19,15 +34,16 @@ def run_video_search(args: argparse.Namespace) -> int:
             audio_state_path=args.state_directory / "audio.sqlite3",
         )
     except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
-        print(f"ERROR video-search {exc}")
+        print(f"ERROR video-search {_safe_human(exc)}")
         return 2
     for result in results:
         confidence = result.get("ocr_mean_confidence")
         confidence_text = "-" if confidence is None else f"{float(confidence):.1f}"
         print(
-            f"VIDEO path={result['path']} at={result['evidence']} "
-            f"channel={result['channel']} confidence={confidence_text} "
-            f"snippet={result['snippet']}"
+            f"VIDEO path={_safe_human(result['path'])} "
+            f"at={_safe_human(result['evidence'])} "
+            f"channel={_safe_human(result['channel'])} confidence={confidence_text} "
+            f"snippet={_safe_human(result['snippet'])}"
         )
     return 0
 
@@ -38,7 +54,7 @@ def run_video_status(args: argparse.Namespace) -> int:
     try:
         status = video_state_status(args.state_directory / "video.sqlite3")
     except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
-        print(f"ERROR video-status {exc}")
+        print(f"ERROR video-status {_safe_human(exc)}")
         return 2
     print(json.dumps(status, ensure_ascii=False, sort_keys=True))
     return 0

@@ -11,6 +11,7 @@ from typing import Any, IO
 import xxhash
 
 from neocortex.runtime.control.cancellation import CancellationToken
+from neocortex.capabilities.formats.xml_safety import safe_xml_iterparse
 from .models import ALGORITHM_VERSION
 
 
@@ -130,7 +131,7 @@ def xml_text_and_layout(
         "styles": Counter(),
         "alignments": Counter(),
     }
-    for _event, element in ET.iterparse(source, events=("end",)):
+    for _event, element in safe_xml_iterparse(source, events=("end",)):
         if cancellation is not None:
             cancellation.checkpoint()
         tag = element.tag

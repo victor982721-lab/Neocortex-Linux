@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import importlib
+import errno
 from pathlib import Path
 from typing import BinaryIO
 # endregion [01]
@@ -22,7 +23,41 @@ class FrameworkRunLock:
         self._stream: BinaryIO | None = None
 
     def __enter__(self) -> "FrameworkRunLock":
-        stream = open(self.path, "a+b", buffering=0)
+        selected = Path(os.path.abspath(os.fspath(self.path)))
+        parent = selected.parent
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        parent_fd: int | None = None
+        descriptor: int | None = None
+        try:
+            parts = parent.parts
+            if not parts or parts[0] != os.sep:
+                raise RuntimeError(f"framework lock parent is not absolute: {parent}")
+            parent_fd = os.open(os.sep, flags)
+            for component in parts[1:]:
+                next_parent_fd = os.open(component, flags, dir_fd=parent_fd)
+                os.close(parent_fd)
+                parent_fd = next_parent_fd
+            descriptor = os.open(
+                selected.name,
+                os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+                dir_fd=parent_fd,
+            )
+            os.fchmod(descriptor, 0o600)
+            stream = os.fdopen(descriptor, "a+b", buffering=0)
+            descriptor = None
+        except OSError as exc:
+            if descriptor is not None:
+                os.close(descriptor)
+            if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+                raise RuntimeError(
+                    f"framework lock path is a symlink or non-directory: {selected}"
+                ) from exc
+            raise RuntimeError(f"framework lock cannot be opened: {selected}") from exc
+        finally:
+            if parent_fd is not None:
+                os.close(parent_fd)
         if stream.tell() == 0:
             stream.write(b"\0")
         stream.seek(0)

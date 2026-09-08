@@ -394,12 +394,11 @@ def pillow_decode_scope(*, allow_truncated: bool) -> AbstractContextManager[None
 
 
 def _sample_document_image(path: Path) -> Image.Image:
-    from PIL import Image
-
     from neocortex.safety.ocr_image_preprocess import bounded_grayscale
+    from .decode import open_image_no_follow
 
     with pillow_decode_scope(allow_truncated=False):
-        with Image.open(path) as source:
+        with open_image_no_follow(path) as source:
             return bounded_grayscale(
                 source,
                 max_side=DOCUMENT_OCR_SAMPLE_SIDE,

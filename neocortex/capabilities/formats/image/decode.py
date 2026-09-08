@@ -1,11 +1,14 @@
 """Scoped Pillow decode policy and conservative recovery validation."""
 
 from __future__ import annotations
+import os
+import stat
 import threading
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Iterator, Protocol
 
-from PIL import ImageFile
+from PIL import Image, ImageFile
 
 
 # region [01] Decode policy contracts
@@ -73,6 +76,25 @@ def pillow_decode_scope(*, allow_truncated: bool) -> Iterator[None]:
             yield
         finally:
             ImageFile.LOAD_TRUNCATED_IMAGES = previous
+
+
+@contextmanager
+def open_image_no_follow(path: Path) -> Iterator[Image.Image]:
+    """Open one regular image through an identity-stable no-following descriptor."""
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(os.fspath(path), flags)
+    try:
+        observed = os.fstat(descriptor)
+        if not stat.S_ISREG(observed.st_mode):
+            raise OSError(f"image source is not a regular file: {path}")
+        with os.fdopen(descriptor, "rb", buffering=0) as stream:
+            descriptor = -1
+            with Image.open(stream) as image:
+                yield image
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
 
 # endregion [02]

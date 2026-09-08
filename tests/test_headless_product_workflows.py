@@ -31,6 +31,8 @@ def _hashes(root: Path) -> dict[str, str]:
         path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
         for path in sorted(root.rglob("*"))
         if path.is_file()
+        and "__pycache__" not in path.parts
+        and path.suffix not in {".pyc", ".pyo"}
     }
 
 
@@ -60,7 +62,12 @@ class _ProductLab:
         expected = json.loads((_FIXTURES / "expected.json").read_text(encoding="utf-8"))
         source = _FIXTURES / group
         assert _hashes(source) == expected["groups"][group]["files"]
-        shutil.copytree(source, self.corpus, dirs_exist_ok=True)
+        shutil.copytree(
+            source,
+            self.corpus,
+            dirs_exist_ok=True,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+        )
         return _hashes(self.corpus)
 
     def execute(
@@ -172,6 +179,10 @@ def product_lab(tmp_path: Path) -> _ProductLab:
             "'version':m.version('neocortex-framework')}))",
         ]
     )
+    if not explicit and os.environ.get("NEOCORTEX_REQUIRE_INSTALLED") == "1":
+        pytest.fail(
+            "installed-product acceptance requires NEOCORTEX_TEST_PYTHON to point to an isolated venv"
+        )
     if not explicit and probe.returncode != 0:
         pytest.skip("requires an installed product; set NEOCORTEX_TEST_PYTHON to its isolated venv")
     _assert_completed(probe)

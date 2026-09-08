@@ -73,6 +73,7 @@ from neocortex.foundation.processing_provenance import (
     python_runtime_component,
 )
 from neocortex.safety.route_filters import CandidateSelection
+from neocortex.capabilities.formats.xml_safety import safe_xml_fromstring
 from neocortex.semantic.semantic_models import canonical_json, fingerprint_text
 from .text_derivation_repository import (
     TextDerivationAttemptStart,
@@ -115,6 +116,9 @@ _TEXT_SOURCE_PROCESSING_SIGNATURE = "text-source-revision-v1:xxh3-128"
 _TEXT_REPRESENTATION_KIND = "text_representation"
 _TEXT_FTS_KIND = "text_fts"
 _MAX_DERIVATION_VALUE_CHARS = 4_096
+MAX_EMAIL_PARTS = 4_096
+MAX_EMAIL_DEPTH = 64
+MAX_EMAIL_PART_BYTES = 8 * 1024 * 1024
 TEXT_ROUTE_MIMES = (
     "text/plain",
     "text/csv",
@@ -473,9 +477,7 @@ def _text_capability_request(mime: str, input_bytes: int) -> CapabilityRequest:
         language="unknown",
         input_bytes=input_bytes,
         workspace_id="text-owner",
-        acceptable_reproducibility=(
-            ReproducibilityClass.ENVIRONMENT_BOUND.value,
-        ),
+        acceptable_reproducibility=(ReproducibilityClass.ENVIRONMENT_BOUND.value,),
         require_incremental=True,
     )
 
@@ -717,12 +719,35 @@ def _visible_html(value: str) -> str:
 def _email_text(payload: bytes, limit: int) -> _ExtractedText:
     message = BytesParser(policy=policy.default).parsebytes(payload)
     parts: list[str] = []
-    for part in message.walk():
+    text_chars = 0
+    truncated = False
+    pending: list[tuple[Any, int]] = [(message, 0)]
+    visited = 0
+    while pending:
+        part, depth = pending.pop()
+        visited += 1
+        if visited > MAX_EMAIL_PARTS:
+            truncated = True
+            break
+        if depth > MAX_EMAIL_DEPTH:
+            raise ValueError(f"email MIME depth exceeds {MAX_EMAIL_DEPTH}")
         if part.is_multipart() or part.get_content_disposition() == "attachment":
+            if part.is_multipart():
+                children = part.get_payload()
+                if isinstance(children, list):
+                    pending.extend((child, depth + 1) for child in reversed(children))
             continue
         content_type = part.get_content_type().casefold()
         if content_type not in {"text/plain", "text/html"}:
             continue
+        encoded_payload = part.get_payload()
+        if isinstance(encoded_payload, str) and len(encoded_payload) > MAX_EMAIL_PART_BYTES * 2:
+            truncated = True
+            break
+        raw_payload = part.get_payload(decode=True)
+        if isinstance(raw_payload, bytes) and len(raw_payload) > MAX_EMAIL_PART_BYTES:
+            truncated = True
+            break
         try:
             content = part.get_content()
         except (LookupError, UnicodeError, ValueError):
@@ -732,8 +757,21 @@ def _email_text(payload: bytes, limit: int) -> _ExtractedText:
             content, _encoding = _decode_text(raw)
         if not isinstance(content, str):
             continue
-        parts.append(_visible_html(content) if content_type == "text/html" else content)
-    text, truncated = _bounded("\n".join(parts), limit)
+        visible = _visible_html(content) if content_type == "text/html" else content
+        remaining = limit - text_chars - (1 if parts else 0)
+        if remaining <= 0:
+            truncated = True
+            break
+        if len(visible) > remaining:
+            visible = visible[:remaining]
+            truncated = True
+        if parts:
+            text_chars += 1
+        parts.append(visible)
+        text_chars += len(visible)
+        if truncated:
+            break
+    text = "\n".join(parts)
     metadata: dict[str, object] = {
         key: str(message.get(key, ""))[:4096]
         for key in ("date", "from", "to", "cc", "message-id")
@@ -770,7 +808,7 @@ def _extract(
     if mime == "text/html":
         value = _visible_html(value)
     elif mime == "application/xml":
-        root = ET.fromstring(value)
+        root = safe_xml_fromstring(value)
         value = "\n".join(part.strip() for part in root.itertext() if part.strip())
     text, truncated = _bounded(value, config.max_text_chars)
     kind = {

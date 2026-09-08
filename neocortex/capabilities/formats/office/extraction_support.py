@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import io
 import re
-import xml.etree.ElementTree as ET
 import zipfile
 from typing import Mapping, Protocol
 
 from .models import MAX_MEMBER_BYTES, OfficeExtractionError
+from neocortex.capabilities.formats.xml_safety import safe_xml_iterparse
 
 
 class CancellationCheckpoint(Protocol):
@@ -128,7 +128,7 @@ def _extract_part_text(
         budget=budget,
     )
     try:
-        for _event, element in ET.iterparse(bounded, events=("end",)):
+        for _event, element in safe_xml_iterparse(bounded, events=("end",)):
             local = _local_name(element.tag)
             if format_name == "xlsx":
                 if local in {"t", "f", "definedName"}:

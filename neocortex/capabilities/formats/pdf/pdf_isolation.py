@@ -17,6 +17,7 @@ from typing import Any, Iterator, Literal, Sequence
 from neocortex.deduplication import FileSnapshot, stat_matches_snapshot
 
 from neocortex.runtime.control.cancellation import CancellationToken
+from neocortex.runtime.control.bounded_subprocess import run_bounded_capture
 from neocortex.runtime.control.isolated_process import (
     close_isolated_process as _close_process_handles,
     isolated_spawn_process,
@@ -600,18 +601,6 @@ def _mupdf_warning_summary(fitz) -> tuple[int, tuple[str, ...]]:
     return len(lines), tuple(lines[:20])
 
 
-def _read_file_tail(path: Path, maximum_bytes: int) -> bytes:
-    """Read at most ``maximum_bytes`` from the end of a diagnostics file."""
-
-    if maximum_bytes < 1:
-        return b""
-    with path.open("rb") as stream:
-        stream.seek(0, os.SEEK_END)
-        size = stream.tell()
-        stream.seek(max(0, size - maximum_bytes), os.SEEK_SET)
-        return stream.read(maximum_bytes)
-
-
 @contextmanager
 def _qpdf_repaired_copy(
     snapshot: FileSnapshot,
@@ -630,21 +619,14 @@ def _qpdf_repaired_copy(
     with tempfile.TemporaryDirectory(prefix="neocortex_pdf_recovery_") as directory:
         root = Path(directory)
         output = root / "recovered.pdf"
-        diagnostics = root / "qpdf.stderr"
-        with diagnostics.open("wb") as stderr:
-            try:
-                completed = subprocess.run(
-                    [executable, snapshot.path, str(output)],
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=stderr,
-                    check=False,
-                    timeout=timeout_seconds,
-                    creationflags=creation_flags,
-                )
-            except subprocess.TimeoutExpired as exc:
-                raise RuntimeError(f"qpdf recovery exceeded {timeout_seconds} seconds") from exc
-        sample = _read_file_tail(diagnostics, 8192).decode("utf-8", "replace")
+        completed = run_bounded_capture(
+            [executable, snapshot.path, str(output)],
+            timeout_seconds=timeout_seconds,
+            stdout_limit_bytes=64 * 1024,
+            stderr_limit_bytes=256 * 1024,
+            creationflags=creation_flags,
+        )
+        sample = completed.stderr.decode("utf-8", "replace")[-8192:]
         if completed.returncode not in {0, 2, 3} or not output.is_file():
             raise RuntimeError(
                 f"qpdf recovery exited with code {completed.returncode}: {sample[-1000:]}"

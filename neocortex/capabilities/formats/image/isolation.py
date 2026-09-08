@@ -7,10 +7,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from PIL import Image
-
 from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
-from .decode import pillow_decode_scope
+from .decode import open_image_no_follow, pillow_decode_scope
 from .errors import (
     ImageFailure,
     classify_image_failure,
@@ -81,9 +79,9 @@ def image_worker_memory_reservation(
     """Probe only container metadata and reserve decode plus interpreter space."""
 
     if features is None:
-        file_size = path.stat().st_size
+        file_size = path.lstat().st_size
         with pillow_decode_scope(allow_truncated=False):
-            with Image.open(path) as source:
+            with open_image_no_follow(path) as source:
                 width, height = source.size
     else:
         file_size = features.file_size

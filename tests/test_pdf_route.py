@@ -54,7 +54,7 @@ from neocortex.persistence.framework_route_state import FrameworkRouteState
 from neocortex.persistence.framework_state_writer import FrameworkState
 
 
-TEST_CAPABILITIES = ('documents',)
+TEST_CAPABILITIES = ("documents",)
 # endregion [01]
 
 # region [02] Implementación
@@ -561,9 +561,9 @@ class PdfRouteTests(unittest.TestCase):
             snapshot = snapshot_path(source)
             yielded: Path | None = None
 
-            def fake_run(command, **kwargs):
+            def fake_capture(command, **kwargs):
                 Path(command[-1]).write_bytes(original)
-                return subprocess.CompletedProcess(command, 3)
+                return subprocess.CompletedProcess(command, 3, b"", b"")
 
             with (
                 patch(
@@ -571,8 +571,8 @@ class PdfRouteTests(unittest.TestCase):
                     return_value="qpdf",
                 ),
                 patch(
-                    "neocortex.capabilities.formats.pdf.pdf_isolation.subprocess.run",
-                    side_effect=fake_run,
+                    "neocortex.capabilities.formats.pdf.pdf_isolation.run_bounded_capture",
+                    side_effect=fake_capture,
                 ),
                 _qpdf_repaired_copy(
                     snapshot,

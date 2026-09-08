@@ -175,9 +175,11 @@ def _rename_noreplace(
     *,
     source_root: Path,
     destination_root: Path,
+    expected_source: FileSnapshot | None = None,
 ) -> None:
     source_fd: int | None = None
     destination_fd: int | None = None
+    source_file_fd: int | None = None
     try:
         source_fd, source_name = _open_dirfd(source_root, source, role="trash source")
         destination_fd, destination_name = _open_dirfd(
@@ -185,6 +187,19 @@ def _rename_noreplace(
             destination,
             role="restore destination",
         )
+        if expected_source is not None:
+            source_file_fd = os.open(
+                source_name,
+                os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=source_fd,
+            )
+            source_metadata = os.fstat(source_file_fd)
+            if (
+                not stat.S_ISREG(source_metadata.st_mode)
+                or source_metadata.st_nlink != 1
+                or not stat_matches_snapshot(expected_source, source_metadata)
+            ):
+                raise FileChangedError("restore source changed before rename")
         libc = ctypes.CDLL(None, use_errno=True)
         renameat2 = getattr(libc, "renameat2", None)
         if renameat2 is None:
@@ -210,7 +225,7 @@ def _rename_noreplace(
             error_number = ctypes.get_errno()
             raise OSError(error_number, os.strerror(error_number))
     finally:
-        for descriptor in (source_fd, destination_fd):
+        for descriptor in (source_file_fd, source_fd, destination_fd):
             if descriptor is not None:
                 try:
                     os.close(descriptor)
@@ -483,6 +498,7 @@ class PosixRestoreBackend:
                 source,
                 source_root=files_root,
                 destination_root=candidate.root,
+                expected_source=candidate.effect.source,
             )
             _fsync_directory(files_root)
             _fsync_directory(candidate.root)

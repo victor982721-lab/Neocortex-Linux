@@ -509,13 +509,6 @@ def _inventory_plan_heads(
     )
 
 
-# Preserve the historical late-bound facade signature while the implementation
-# keeps its richer typed issue contract for the relation reader.
-_inventory_plan_heads.__annotations__["return"] = (
-    "tuple[tuple[tuple[int, int, int, int, int], ...], bool]"
-)
-
-
 def _inventory_identity_blob(value: int) -> bytes:
     return _inventory_identity_blob_impl(value)
 

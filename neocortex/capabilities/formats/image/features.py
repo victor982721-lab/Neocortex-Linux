@@ -12,6 +12,7 @@ from .decode import (
     RecoveredImageContentError,
     is_recoverable_decode_error,
     pillow_decode_scope,
+    open_image_no_follow,
     recovered_content_is_meaningful,
 )
 from .models import Features
@@ -276,7 +277,7 @@ def _extract_features_once(
 ) -> Features:
     file_size = path.stat().st_size
     with pillow_decode_scope(allow_truncated=allow_truncated):
-        with Image.open(path) as source:
+        with open_image_no_follow(path) as source:
             width, height = source.size
             if width <= 0 or height <= 0:
                 raise ValueError("dimensiones inválidas")

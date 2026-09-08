@@ -29,7 +29,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import cast
 
 if __package__ in {None, ""}:
@@ -51,6 +51,7 @@ from neocortex.runtime.source_staging import (
 from tools.release_artifacts import (
     SOURCE_DATE_EPOCH,
     ArtifactValidationError,
+    compare_logical_payloads,
     validate_release_artifact,
 )
 
@@ -62,6 +63,11 @@ RUNTIME_PROFILE = "product-only-v1"
 WHEELHOUSE_MANIFEST_NAME = "wheelhouse-manifest.json"
 WHEELHOUSE_SCHEMA_VERSION = 1
 WHEELHOUSE_ENVIRONMENT = "NEOCORTEX_WHEELHOUSE"
+SOURCE_MANIFEST_SCHEMA_VERSION = 1
+SOURCE_MANIFEST_KIND = "neocortex_source_manifest"
+REPRODUCIBILITY_SCHEMA_VERSION = 1
+REPRODUCIBILITY_KIND = "neocortex_reproducible_wheel_build"
+REPRODUCIBILITY_METADATA_NAME = ".reproducibility.json"
 # Kept as a compatibility-visible constant for bootstrap diagnostics.  Release
 # installation itself never dereferences it and has no network fallback.
 PIP_BOOTSTRAP_URL = pip_bootstrap.PIP_BOOTSTRAP_URL
@@ -118,6 +124,7 @@ class _InstallPreflight:
     source_runtime_lock: Path
     wheelhouse_artifacts: dict[str, _WheelhouseArtifact]
     wheelhouse_provenance: dict[str, object]
+    source_manifest: dict[str, object] | None
 
 
 class LinuxReleaseError(RuntimeError):
@@ -715,6 +722,189 @@ def _canonical_json(payload: dict[str, object]) -> bytes:
     ).encode("utf-8")
 
 
+def _source_manifest(
+    source_sha: str,
+    blobs: Mapping[str, tuple[str, str]],
+    *,
+    runtime_dependency_lock_sha256: str,
+    constraints_sha256: str,
+) -> dict[str, object]:
+    """Build the durable Git-tree/source-input manifest for one release."""
+
+    if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+        raise LinuxReleaseError("source manifest commit SHA is malformed")
+    for label, digest in (
+        ("runtime dependency lock", runtime_dependency_lock_sha256),
+        ("constraints", constraints_sha256),
+    ):
+        if _SHA256.fullmatch(digest) is None:
+            raise LinuxReleaseError(f"source manifest {label} hash is malformed")
+    rows = [
+        {"path": path, "mode": mode, "blob": blob}
+        for path, (mode, blob) in sorted(
+            blobs.items(), key=lambda item: (item[0].casefold(), item[0])
+        )
+    ]
+    body: dict[str, object] = {
+        "schema_version": SOURCE_MANIFEST_SCHEMA_VERSION,
+        "kind": SOURCE_MANIFEST_KIND,
+        "source_sha": source_sha,
+        "runtime_dependency_lock_sha256": runtime_dependency_lock_sha256,
+        "constraints_sha256": constraints_sha256,
+        "files": rows,
+    }
+    body["manifest_sha256"] = hashlib.sha256(_canonical_json(body)).hexdigest()
+    return body
+
+
+def _validate_source_manifest(
+    payload: object,
+    *,
+    expected_source_sha: str | None = None,
+) -> dict[str, object]:
+    """Validate a persisted Git-tree/source-input manifest."""
+
+    if not isinstance(payload, dict):
+        raise LinuxReleaseError("source manifest is malformed")
+    source_sha = payload.get("source_sha")
+    lock_sha = payload.get("runtime_dependency_lock_sha256")
+    constraints_sha = payload.get("constraints_sha256")
+    rows = payload.get("files")
+    manifest_sha = payload.get("manifest_sha256")
+    if (
+        payload.get("schema_version") != SOURCE_MANIFEST_SCHEMA_VERSION
+        or payload.get("kind") != SOURCE_MANIFEST_KIND
+        or not isinstance(source_sha, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", source_sha)
+        or (expected_source_sha is not None and source_sha != expected_source_sha)
+        or not isinstance(lock_sha, str)
+        or _SHA256.fullmatch(lock_sha) is None
+        or not isinstance(constraints_sha, str)
+        or _SHA256.fullmatch(constraints_sha) is None
+        or not isinstance(rows, list)
+        or not isinstance(manifest_sha, str)
+        or _SHA256.fullmatch(manifest_sha) is None
+    ):
+        raise LinuxReleaseError("source manifest identity is invalid")
+    canonical_rows: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise LinuxReleaseError("source manifest file row is malformed")
+        path, mode, blob = row.get("path"), row.get("mode"), row.get("blob")
+        if (
+            not isinstance(path, str)
+            or not path
+            or "\\" in path
+            or PurePosixPath(path).is_absolute()
+            or any(part in {"", ".", ".."} for part in PurePosixPath(path).parts)
+            or path in seen
+            or mode not in {"100644", "100755", "120000"}
+            or not isinstance(blob, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", blob)
+        ):
+            raise LinuxReleaseError("source manifest file identity is invalid")
+        seen.add(path)
+        canonical_rows.append({"path": path, "mode": str(mode), "blob": blob})
+    if canonical_rows != sorted(
+        canonical_rows, key=lambda item: (item["path"].casefold(), item["path"])
+    ):
+        raise LinuxReleaseError("source manifest files are not canonically ordered")
+    required_paths = {"constraints.txt", RUNTIME_DEPENDENCY_LOCK_NAME}
+    if not required_paths <= seen:
+        raise LinuxReleaseError("source manifest omits release input files")
+    body = {
+        "schema_version": SOURCE_MANIFEST_SCHEMA_VERSION,
+        "kind": SOURCE_MANIFEST_KIND,
+        "source_sha": source_sha,
+        "runtime_dependency_lock_sha256": lock_sha,
+        "constraints_sha256": constraints_sha,
+        "files": canonical_rows,
+    }
+    if hashlib.sha256(_canonical_json(body)).hexdigest() != manifest_sha:
+        raise LinuxReleaseError("source manifest digest differs from its contents")
+    return dict(payload)
+
+
+def _validate_reproducibility_metadata(
+    payload: object,
+    *,
+    expected_source_sha: str | None = None,
+    expected_source_manifest_sha256: str | None = None,
+) -> dict[str, object]:
+    """Validate the two-build evidence emitted by the wheel builder."""
+
+    if not isinstance(payload, dict):
+        raise LinuxReleaseError("reproducibility metadata is malformed")
+    source_sha = payload.get("source_sha")
+    source_manifest_sha = payload.get("source_manifest_sha256")
+    source_tree_sha = payload.get("source_tree_sha256")
+    release_tree_sha = payload.get("release_tree_sha256")
+    builds = payload.get("builds")
+    if (
+        payload.get("schema_version") != REPRODUCIBILITY_SCHEMA_VERSION
+        or payload.get("kind") != REPRODUCIBILITY_KIND
+        or not isinstance(source_sha, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", source_sha)
+        or (expected_source_sha is not None and source_sha != expected_source_sha)
+        or not isinstance(source_manifest_sha, str)
+        or _SHA256.fullmatch(source_manifest_sha) is None
+        or (
+            expected_source_manifest_sha256 is not None
+            and source_manifest_sha != expected_source_manifest_sha256
+        )
+        or not isinstance(source_tree_sha, str)
+        or _SHA256.fullmatch(source_tree_sha) is None
+        or source_tree_sha != source_manifest_sha
+        or (
+            release_tree_sha is not None
+            and (
+                not isinstance(release_tree_sha, str) or _SHA256.fullmatch(release_tree_sha) is None
+            )
+        )
+        or not isinstance(builds, list)
+        or len(builds) != 2
+    ):
+        raise LinuxReleaseError("reproducibility metadata identity is invalid")
+    normalized: list[dict[str, str]] = []
+    for row in builds:
+        if not isinstance(row, dict):
+            raise LinuxReleaseError("reproducibility build row is malformed")
+        label = row.get("label")
+        wheel_sha = row.get("wheel_sha256")
+        logical_sha = row.get("logical_manifest_sha256")
+        tree_sha = row.get("source_tree_sha256")
+        if (
+            not isinstance(label, str)
+            or label not in {"first", "second"}
+            or not isinstance(wheel_sha, str)
+            or _SHA256.fullmatch(wheel_sha) is None
+            or not isinstance(logical_sha, str)
+            or _SHA256.fullmatch(logical_sha) is None
+            or not isinstance(tree_sha, str)
+            or _SHA256.fullmatch(tree_sha) is None
+        ):
+            raise LinuxReleaseError("reproducibility build row is invalid")
+        normalized.append(
+            {
+                "label": label,
+                "wheel_sha256": wheel_sha,
+                "logical_manifest_sha256": logical_sha,
+                "source_tree_sha256": tree_sha,
+            }
+        )
+    if {row["label"] for row in normalized} != {"first", "second"}:
+        raise LinuxReleaseError("reproducibility build labels are ambiguous")
+    if any(
+        row["wheel_sha256"] != normalized[0]["wheel_sha256"]
+        or row["logical_manifest_sha256"] != normalized[0]["logical_manifest_sha256"]
+        or row["source_tree_sha256"] != source_tree_sha
+        for row in normalized
+    ):
+        raise LinuxReleaseError("reproducibility builds are not equivalent")
+    return dict(payload)
+
+
 def _ensure_directory(path: Path, *, mode: int = 0o700) -> None:
     """Create one directory tree without following a pre-existing symlink."""
 
@@ -996,13 +1186,14 @@ def _create_pip_environment(
         raise LinuxReleaseError("pip bootstrap selected an incompatible release interpreter")
 
 
-def _build_wheel(
+def _build_wheel_once(
     layout: LinuxReleaseLayout,
     workspace: Path,
     *,
     source_sha: str,
     pip_wheel: Path,
     wheelhouse: Path | None = None,
+    source_manifest: Mapping[str, object] | None = None,
     runner: CommandRunner = _run,
 ) -> Path:
     staged_source = workspace / "source"
@@ -1019,6 +1210,21 @@ def _build_wheel(
         raise LinuxReleaseError(str(error)) from error
     _verify_staged_source_commit(staged_source, source_blobs)
     _validate_tracked_source_links(staged_source, tracked_paths)
+    if source_manifest is not None:
+        expected_source_manifest = _validate_source_manifest(
+            dict(source_manifest),
+            expected_source_sha=source_sha,
+        )
+        observed_source_manifest = _source_manifest(
+            source_sha,
+            source_blobs,
+            runtime_dependency_lock_sha256=_sha256_file(
+                staged_source / RUNTIME_DEPENDENCY_LOCK_NAME
+            ),
+            constraints_sha256=_sha256_file(staged_source / "constraints.txt"),
+        )
+        if observed_source_manifest != expected_source_manifest:
+            raise LinuxReleaseError("staged source manifest differs from preflight")
     dependency_wheelhouse = pip_wheel.parent if wheelhouse is None else wheelhouse
     wheelhouse_artifacts: dict[str, _WheelhouseArtifact] | None = None
     if wheelhouse is not None:
@@ -1098,6 +1304,133 @@ def _build_wheel(
     if len(wheels) != 1:
         raise LinuxReleaseError("wheel build did not produce exactly one artifact")
     return wheels[0]
+
+
+def _write_reproducibility_metadata(
+    workspace: Path,
+    *,
+    source_sha: str,
+    source_manifest: Mapping[str, object],
+    first: Path,
+    second: Path,
+) -> dict[str, object]:
+    """Compare two built wheels and persist their durable equivalence receipt."""
+
+    validated_source = _validate_source_manifest(
+        dict(source_manifest),
+        expected_source_sha=source_sha,
+    )
+    first_report = validate_release_artifact(first, expected_version=__version__)
+    second_report = validate_release_artifact(second, expected_version=__version__)
+    logical = compare_logical_payloads(first_report, second_report)
+    first_sha = compare_reproducible_builds(first, second)
+    second_sha = _sha256_file(second)
+    source_tree_sha = str(validated_source["manifest_sha256"])
+    payload: dict[str, object] = {
+        "schema_version": REPRODUCIBILITY_SCHEMA_VERSION,
+        "kind": REPRODUCIBILITY_KIND,
+        "source_sha": source_sha,
+        "source_manifest_sha256": source_tree_sha,
+        "source_tree_sha256": source_tree_sha,
+        "logical_manifest_sha256": logical.sha256,
+        "builds": [
+            {
+                "label": "first",
+                "wheel_sha256": first_sha,
+                "logical_manifest_sha256": logical.sha256,
+                "source_tree_sha256": source_tree_sha,
+            },
+            {
+                "label": "second",
+                "wheel_sha256": second_sha,
+                "logical_manifest_sha256": logical.sha256,
+                "source_tree_sha256": source_tree_sha,
+            },
+        ],
+    }
+    validated = _validate_reproducibility_metadata(
+        payload,
+        expected_source_sha=source_sha,
+        expected_source_manifest_sha256=source_tree_sha,
+    )
+    _atomic_write(
+        workspace / REPRODUCIBILITY_METADATA_NAME,
+        _canonical_json(validated),
+        mode=0o600,
+    )
+    return validated
+
+
+def _read_reproducibility_metadata(workspace: Path) -> dict[str, object] | None:
+    path = workspace / REPRODUCIBILITY_METADATA_NAME
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise LinuxReleaseError("reproducibility metadata is unavailable or malformed") from exc
+    return _validate_reproducibility_metadata(payload)
+
+
+def _build_wheel(
+    layout: LinuxReleaseLayout,
+    workspace: Path,
+    *,
+    source_sha: str,
+    pip_wheel: Path,
+    wheelhouse: Path | None = None,
+    source_manifest: Mapping[str, object] | None = None,
+    runner: CommandRunner = _run,
+) -> Path:
+    """Build one wheel in legacy fixture mode or two in production mode.
+
+    The production installer always supplies a hash-authenticated wheelhouse,
+    which activates two independent source stages/build environments.  The
+    no-wheelhouse branch remains a private compatibility path for focused
+    tests and older callers; it never participates in release installation.
+    """
+
+    if wheelhouse is None:
+        return _build_wheel_once(
+            layout,
+            workspace,
+            source_sha=source_sha,
+            pip_wheel=pip_wheel,
+            wheelhouse=None,
+            runner=runner,
+        )
+    # Keep the first build at the historical workspace/source location so the
+    # subsequent install stage remains compatible with existing callers.
+    first_workspace = workspace
+    second_workspace = workspace / "build-second"
+    first = _build_wheel_once(
+        layout,
+        first_workspace,
+        source_sha=source_sha,
+        pip_wheel=pip_wheel,
+        wheelhouse=wheelhouse,
+        source_manifest=source_manifest,
+        runner=runner,
+    )
+    second = _build_wheel_once(
+        layout,
+        second_workspace,
+        source_sha=source_sha,
+        pip_wheel=pip_wheel,
+        wheelhouse=wheelhouse,
+        source_manifest=source_manifest,
+        runner=runner,
+    )
+    if source_manifest is None:
+        raise LinuxReleaseError("production reproducibility requires a source manifest")
+    _write_reproducibility_metadata(
+        workspace,
+        source_sha=source_sha,
+        source_manifest=source_manifest,
+        first=first,
+        second=second,
+    )
+    return first
 
 
 def compare_reproducible_builds(first: Path, second: Path) -> str:
@@ -2300,6 +2633,8 @@ def _release_manifest(
     runtime_dependency_lock: Path,
     versions: dict[str, str],
     wheelhouse_provenance: Mapping[str, object] | None = None,
+    source_manifest: Mapping[str, object] | None = None,
+    reproducibility: Mapping[str, object] | None = None,
     interpreter: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     locked_dependencies = _runtime_dependency_lock(runtime_dependency_lock)
@@ -2333,6 +2668,22 @@ def _release_manifest(
         manifest["wheelhouse_provenance"] = _validate_wheelhouse_provenance(
             dict(wheelhouse_provenance),
             label="release wheelhouse provenance",
+        )
+    if source_manifest is not None:
+        validated_source = _validate_source_manifest(
+            dict(source_manifest),
+            expected_source_sha=source_sha,
+        )
+        manifest["source_manifest"] = validated_source
+        manifest["source_manifest_sha256"] = validated_source["manifest_sha256"]
+    if reproducibility is not None:
+        source_digest = manifest.get("source_manifest_sha256")
+        manifest["reproducibility"] = _validate_reproducibility_metadata(
+            dict(reproducibility),
+            expected_source_sha=source_sha,
+            expected_source_manifest_sha256=(
+                source_digest if isinstance(source_digest, str) else None
+            ),
         )
     return manifest
 
@@ -2372,6 +2723,32 @@ def _read_release_manifest(
         )
     ):
         raise LinuxReleaseError("product-only release contains development-tool metadata")
+    source_manifest = payload.get("source_manifest")
+    source_manifest_sha = payload.get("source_manifest_sha256")
+    if source_manifest is not None or source_manifest_sha is not None:
+        if source_manifest is None or not isinstance(source_manifest_sha, str):
+            raise LinuxReleaseError("existing release source manifest identity is incomplete")
+        validated_source = _validate_source_manifest(
+            source_manifest,
+            expected_source_sha=source_sha,
+        )
+        if validated_source.get("manifest_sha256") != source_manifest_sha:
+            raise LinuxReleaseError("existing release source manifest digest differs")
+        source_lock_sha = validated_source["runtime_dependency_lock_sha256"]
+        if not isinstance(source_lock_sha, str):
+            raise LinuxReleaseError("existing release source lock identity is invalid")
+        source_lock_path = release_root / RUNTIME_DEPENDENCY_LOCK_NAME
+        if _sha256_file(source_lock_path) != source_lock_sha:
+            raise LinuxReleaseError("existing release source lock differs from its manifest")
+    reproducibility = payload.get("reproducibility")
+    if reproducibility is not None:
+        _validate_reproducibility_metadata(
+            reproducibility,
+            expected_source_sha=source_sha,
+            expected_source_manifest_sha256=(
+                source_manifest_sha if isinstance(source_manifest_sha, str) else None
+            ),
+        )
     interpreter = payload.get("interpreter")
     if interpreter is not None:
         _validate_release_interpreter(release_root, expected=interpreter)
@@ -2524,6 +2901,18 @@ def _preflight_install(
         observed = wheelhouse_artifacts[name].sha256
         if observed != expected_hash:
             raise LinuxReleaseError(f"runtime lock hash differs for wheelhouse artifact: {name}")
+    source_manifest: dict[str, object] | None = None
+    # Production source roots are Git worktrees.  The optional fallback keeps
+    # the private fixture-oriented install tests focused on publication logic;
+    # the real builder still fails closed when it needs the Git tree.
+    if os.path.lexists(layout.source_root / ".git"):
+        source_blobs = _source_commit_blobs(layout.source_root, source_sha, runner)
+        source_manifest = _source_manifest(
+            source_sha,
+            source_blobs,
+            runtime_dependency_lock_sha256=_sha256_file(source_runtime_lock),
+            constraints_sha256=_sha256_file(constraints),
+        )
     return _InstallPreflight(
         corpus_root=corpus_root,
         wheelhouse=resolved_wheelhouse,
@@ -2534,6 +2923,7 @@ def _preflight_install(
             resolved_wheelhouse,
             wheelhouse_artifacts,
         ),
+        source_manifest=source_manifest,
     )
 
 
@@ -2622,6 +3012,7 @@ def install_release(
         if (
             locked_preflight.source_sha != preflight.source_sha
             or locked_preflight.wheelhouse_provenance != preflight.wheelhouse_provenance
+            or locked_preflight.source_manifest != preflight.source_manifest
         ):
             raise LinuxReleaseError("release inputs changed between preflight and activation lock")
         preflight = locked_preflight
@@ -2687,6 +3078,7 @@ def install_release(
                     source_sha=source_sha,
                     pip_wheel=pip_wheel,
                     wheelhouse=wheelhouse,
+                    source_manifest=preflight.source_manifest,
                     runner=runner,
                 )
                 try:
@@ -2696,6 +3088,9 @@ def install_release(
                         f"built wheel failed artifact validation: {exc}"
                     ) from exc
                 wheel_sha = _sha256_file(wheel)
+                reproducibility = _read_reproducibility_metadata(workspace)
+                if preflight.source_manifest is not None and reproducibility is None:
+                    raise LinuxReleaseError("release build did not emit reproducibility metadata")
                 candidate_root = workspace / "release"
                 staged_source = workspace / "source"
                 staged_runtime_lock = staged_source / RUNTIME_DEPENDENCY_LOCK_NAME
@@ -2733,6 +3128,15 @@ def install_release(
                     runtime_dependency_lock=runtime_lock,
                     versions=candidate_versions,
                     wheelhouse_provenance=final_wheelhouse_provenance,
+                    source_manifest=preflight.source_manifest,
+                    reproducibility=(
+                        {
+                            **reproducibility,
+                            "release_tree_sha256": tree_digest,
+                        }
+                        if reproducibility is not None
+                        else None
+                    ),
                 )
                 release_artifacts["release_tree_sha256"] = tree_digest
                 _atomic_write(
@@ -2843,6 +3247,19 @@ def install_release(
                 "retention_policy": "current_and_immediate_rollback_v1",
                 "retained_releases": retained_releases,
                 **({"interpreter": receipt_interpreter} if receipt_interpreter is not None else {}),
+                **(
+                    {
+                        "source_manifest": release_artifacts["source_manifest"],
+                        "source_manifest_sha256": release_artifacts["source_manifest_sha256"],
+                    }
+                    if "source_manifest" in release_artifacts
+                    else {}
+                ),
+                **(
+                    {"reproducibility": release_artifacts["reproducibility"]}
+                    if "reproducibility" in release_artifacts
+                    else {}
+                ),
                 "artifacts": {
                     **release_artifacts,
                     "wheelhouse_manifest_sha256": receipt_wheelhouse_provenance["manifest_sha256"],
@@ -2957,6 +3374,10 @@ def _validate_receipt_binding(
         )
         if provenance != manifest_provenance:
             raise LinuxReleaseError("installation receipt wheelhouse differs from its manifest")
+        wheelhouse_path = provenance.get("path")
+        if not isinstance(wheelhouse_path, str):
+            raise LinuxReleaseError("installation receipt wheelhouse path is invalid")
+        _revalidate_wheelhouse(Path(wheelhouse_path), provenance)
         for key, expected in (
             ("wheelhouse_path", provenance["path"]),
             ("wheelhouse_manifest_sha256", provenance["manifest_sha256"]),
@@ -2974,6 +3395,34 @@ def _validate_receipt_binding(
                 observed = artifacts.get(key)
                 if observed is not None and observed != expected:
                     raise LinuxReleaseError(f"installation receipt artifact differs: {key}")
+    source_manifest = manifest.get("source_manifest")
+    receipt_source_manifest = receipt.get("source_manifest")
+    if source_manifest is not None or receipt_source_manifest is not None:
+        if source_manifest is None or receipt_source_manifest is None:
+            raise LinuxReleaseError("installation receipt source manifest is incomplete")
+        if _validate_source_manifest(source_manifest) != _validate_source_manifest(
+            receipt_source_manifest
+        ):
+            raise LinuxReleaseError(
+                "installation receipt source manifest differs from its manifest"
+            )
+        source_manifest_sha = manifest.get("source_manifest_sha256")
+        if (
+            source_manifest_sha is not None
+            and receipt.get("source_manifest_sha256") != source_manifest_sha
+        ):
+            raise LinuxReleaseError("installation receipt source manifest digest differs")
+    reproducibility = manifest.get("reproducibility")
+    receipt_reproducibility = receipt.get("reproducibility")
+    if reproducibility is not None or receipt_reproducibility is not None:
+        if reproducibility is None or receipt_reproducibility is None:
+            raise LinuxReleaseError("installation receipt reproducibility metadata is incomplete")
+        if _validate_reproducibility_metadata(
+            reproducibility
+        ) != _validate_reproducibility_metadata(receipt_reproducibility):
+            raise LinuxReleaseError(
+                "installation receipt reproducibility differs from its manifest"
+            )
 
 
 def _verify_release_unlocked(
@@ -3217,6 +3666,29 @@ def rollback_release(
         if target_tree_digest is not None and not isinstance(target_tree_digest, str):
             raise LinuxReleaseError("rollback target tree identity is invalid")
         _validate_release_tree(target, expected_tree_sha256=target_tree_digest)
+        target_source_sha = str(manifest["source_sha"])
+        target_runtime_lock = _manifest_runtime_dependency_lock(target, manifest)
+        target_versions: dict[str, str] = {}
+        if target_runtime_lock is not None:
+            target_provenance = manifest.get("wheelhouse_provenance")
+            if not isinstance(target_provenance, dict):
+                raise LinuxReleaseError("rollback target wheelhouse provenance is unavailable")
+            target_provenance = _validate_wheelhouse_provenance(
+                target_provenance,
+                label="rollback target wheelhouse provenance",
+            )
+            wheelhouse_path = target_provenance.get("path")
+            if not isinstance(wheelhouse_path, str):
+                raise LinuxReleaseError("rollback target wheelhouse path is invalid")
+            _revalidate_wheelhouse(Path(wheelhouse_path), target_provenance)
+            with tempfile.TemporaryDirectory(prefix="neocortex-rollback-smoke-") as smoke_directory:
+                target_versions = _verify_python_release(
+                    target,
+                    layout,
+                    Path(smoke_directory),
+                    runtime_lock=target_runtime_lock,
+                    runner=runner,
+                )
         latest = _latest_receipt(layout)
         corpus_root = (
             Path(str(latest["corpus_root"]))
@@ -3247,7 +3719,7 @@ def rollback_release(
                 "created_at": datetime.now(UTC).isoformat(),
                 "release_id": target.name,
                 "release_path": str(target),
-                "source_sha": "rollback",
+                "source_sha": target_source_sha,
                 "previous_release": str(current),
                 "current_link": str(layout.current),
                 "corpus_root": str(corpus_root),
@@ -3262,6 +3734,8 @@ def rollback_release(
                 "retained_releases": (target.name, current.name),
                 "pruned_releases": pruned_releases,
                 "artifacts": {
+                    **manifest,
+                    **target_versions,
                     "release_manifest_sha256": _sha256_file(target / RELEASE_MANIFEST_NAME),
                     **public_hashes,
                 },
@@ -3285,6 +3759,11 @@ def rollback_release(
                         "wheelhouse_artifact_set_sha256": target_provenance["artifact_set_sha256"],
                     }
                 )
+            if "source_manifest" in manifest:
+                receipt["source_manifest"] = manifest["source_manifest"]
+                receipt["source_manifest_sha256"] = manifest.get("source_manifest_sha256")
+            if "reproducibility" in manifest:
+                receipt["reproducibility"] = manifest["reproducibility"]
             target_interpreter = manifest.get("interpreter")
             if target_interpreter is not None:
                 _validate_release_interpreter(target, expected=target_interpreter)

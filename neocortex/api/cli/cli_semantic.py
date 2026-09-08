@@ -6,7 +6,7 @@ import hashlib
 import json
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -28,6 +28,7 @@ __all__ = [
     "run_semantic_prepare_models",
     "run_semantic_search",
     "run_semantic_status",
+    "semantic_resume_available",
 ]
 
 # region [01] Multimodal semantic index
@@ -635,6 +636,185 @@ def _publication_observation(state_directory: Path) -> dict[str, object]:
     }
 
 
+def _semantic_stage_for_resume(
+    state_directory: Path,
+    source_run_id: int,
+) -> dict[str, object] | None:
+    """Read one durable Semantic stage without opening any owner database.
+
+    The Framework owner is the source of the resume boundary.  A missing
+    Semantic budget is not replaced with current CLI defaults: the old run is
+    not safely resumable until its exact budget is available.
+    """
+
+    from neocortex.persistence.framework_state_writer import FrameworkState
+
+    with FrameworkState(state_directory / "framework.sqlite3", existing_only=True) as state:
+        manifest = state.read_run_manifest(source_run_id)
+        stages = state.read_run_stages(source_run_id)
+    if manifest is None:
+        raise RuntimeError(f"run {source_run_id} has no lifecycle manifest")
+    semantic = next(
+        (stage for stage in reversed(stages) if stage.get("stage") == "semantic"),
+        None,
+    )
+    if semantic is None:
+        return None
+    status = semantic.get("status")
+    if status in {"completed", "skipped"}:
+        return None
+    if status not in {"pending", "running", "partial", "failed", "interrupted"}:
+        raise RuntimeError(f"run {source_run_id} has an unsupported Semantic stage status")
+    details = semantic.get("details")
+    if not isinstance(details, Mapping):
+        raise RuntimeError(f"run {source_run_id} Semantic stage details are invalid")
+    raw_sources = details.get("selected_sources")
+    if not isinstance(raw_sources, list) or any(
+        not isinstance(value, str) or not value.strip() for value in raw_sources
+    ):
+        raise RuntimeError(f"run {source_run_id} Semantic source selection is unavailable")
+    raw_budget = details.get("semantic_budget")
+    if not isinstance(raw_budget, Mapping):
+        raise RuntimeError(f"run {source_run_id} Semantic budget is unavailable")
+    max_items = raw_budget.get("max_items")
+    max_new_jobs = raw_budget.get("max_new_jobs")
+    time_budget = raw_budget.get("time_budget_seconds")
+    if (
+        type(max_items) is not int
+        or max_items < 1
+        or type(max_new_jobs) is not int
+        or max_new_jobs < 1
+    ):
+        raise RuntimeError(f"run {source_run_id} Semantic budget is invalid")
+    if isinstance(time_budget, bool) or not isinstance(time_budget, (int, float)):
+        raise RuntimeError(f"run {source_run_id} Semantic budget is invalid")
+    time_budget_value = time_budget
+    if not 0.001 <= float(time_budget_value) <= 172_800.0:
+        raise RuntimeError(f"run {source_run_id} Semantic budget is invalid")
+    image_available = details.get("image_available", False)
+    if not isinstance(image_available, bool):
+        raise RuntimeError(f"run {source_run_id} Semantic image availability is invalid")
+    return {
+        "status": status,
+        "manifest": manifest,
+        "details": details,
+        "selected_sources": tuple(dict.fromkeys(raw_sources)),
+        "image_available": image_available,
+        "max_items": max_items,
+        "max_new_jobs": max_new_jobs,
+        "time_budget_seconds": float(time_budget_value),
+    }
+
+
+def semantic_resume_available(args: argparse.Namespace, source_run_id: int) -> bool:
+    """Return whether a previous ``--all`` Semantic stage needs resumption."""
+
+    try:
+        return _semantic_stage_for_resume(args.state_directory, source_run_id) is not None
+    except (OSError, RuntimeError, ValueError):
+        # Let the actual resume path report the durable reason and exit code.
+        return True
+
+
+def _semantic_resume_args(
+    args: argparse.Namespace,
+    source_run_id: int,
+) -> argparse.Namespace | None:
+    spec = _semantic_stage_for_resume(args.state_directory, source_run_id)
+    if spec is None:
+        return None
+    effective = argparse.Namespace(**vars(args))
+    effective.all = True
+    selected_sources = spec.get("selected_sources")
+    image_available = spec.get("image_available")
+    max_items = spec.get("max_items")
+    max_new_jobs = spec.get("max_new_jobs")
+    time_budget_seconds = spec.get("time_budget_seconds")
+    details = spec.get("details")
+    if (
+        not isinstance(selected_sources, tuple)
+        or any(not isinstance(value, str) for value in selected_sources)
+        or not isinstance(image_available, bool)
+        or type(max_items) is not int
+        or type(max_new_jobs) is not int
+        or isinstance(time_budget_seconds, bool)
+        or not isinstance(time_budget_seconds, (int, float))
+        or not isinstance(details, Mapping)
+    ):
+        raise RuntimeError(f"run {source_run_id} Semantic resume specification is invalid")
+    effective.semantic_source = list(selected_sources)
+    effective.semantic_max_items = max_items
+    effective.semantic_max_new_jobs = max_new_jobs
+    effective.semantic_time_budget_seconds = float(time_budget_seconds)
+    effective.semantic_index = (
+        "all" if selected_sources and image_available else "text" if selected_sources else "image"
+    )
+    for name, default in (
+        ("semantic_text_profile", "quality"),
+        ("semantic_threads", None),
+        ("semantic_no_ocr", False),
+    ):
+        value = details.get(name, default)
+        if name == "semantic_text_profile" and value not in {"quality", "compact"}:
+            raise RuntimeError(f"run {source_run_id} Semantic {name} is invalid")
+        if (
+            name == "semantic_threads"
+            and value is not None
+            and (type(value) is not int or value < 1)
+        ):
+            raise RuntimeError(f"run {source_run_id} Semantic {name} is invalid")
+        if name == "semantic_no_ocr" and not isinstance(value, bool):
+            raise RuntimeError(f"run {source_run_id} Semantic {name} is invalid")
+        setattr(effective, name, value)
+    raw_cache = details.get("semantic_model_cache")
+    if raw_cache is not None and not isinstance(raw_cache, str):
+        raise RuntimeError(f"run {source_run_id} Semantic model cache is invalid")
+    effective.semantic_model_cache = None if raw_cache is None else Path(raw_cache)
+    effective._semantic_resume_source_run_id = source_run_id
+    return effective
+
+
+def _recover_pending_integrated_publication(state_directory: Path) -> bool:
+    """Resolve an old prepare only when the publication API proves its scope."""
+
+    from neocortex.persistence.state_publication import (
+        abort_state_publication,
+        abort_unbound_state_publication,
+        read_state_publication_state,
+    )
+
+    view = read_state_publication_state(state_directory)
+    if view.status != "blocked":
+        return False
+    pending = tuple(item for item in view.pending if item.operation == "framework-all-semantic")
+    if len(pending) != 1 or len(pending) != len(view.pending):
+        raise RuntimeError("Semantic publication recovery_required: another publication is pending")
+    prepared = pending[0]
+    observed = view.epoch.owner_heads
+    if prepared.owner_heads:
+        if observed != prepared.owner_heads:
+            raise RuntimeError("Semantic publication recovery_required: owner-head drift")
+        abort_state_publication(
+            state_directory,
+            event_id=prepared.event_id,
+            observed_owner_heads=observed,
+            expected_epoch=view.epoch.epoch,
+            detail="Semantic resume verified unchanged owner heads before abort",
+        )
+        return True
+    if view.epoch.epoch != 0 or view.publication is not None:
+        raise RuntimeError(
+            "Semantic publication recovery_required: unbound prepare is not at epoch zero"
+        )
+    abort_unbound_state_publication(
+        state_directory,
+        event_id=prepared.event_id,
+        expected_epoch=0,
+        detail="Semantic resume invalidated unbound initial prepare",
+    )
+    return True
+
+
 def _integrated_stage_details(
     args: argparse.Namespace,
     *,
@@ -642,6 +822,8 @@ def _integrated_stage_details(
     image_available: bool,
     semantic_exit_code: int | None = None,
     error: BaseException | None = None,
+    recovery_required: bool = False,
+    resume_source_run_id: int | None = None,
 ) -> dict[str, object]:
     """Build a bounded link from the Framework run to Semantic owners."""
 
@@ -650,14 +832,30 @@ def _integrated_stage_details(
     details: dict[str, object] = {
         "selected_sources": list(selected_sources[:32]),
         "image_available": image_available,
+        "semantic_budget": {
+            "max_items": getattr(args, "semantic_max_items", None),
+            "max_new_jobs": getattr(args, "semantic_max_new_jobs", None),
+            "time_budget_seconds": getattr(args, "semantic_time_budget_seconds", None),
+        },
+        "semantic_text_profile": getattr(args, "semantic_text_profile", "quality"),
+        "semantic_model_cache": (
+            None
+            if getattr(args, "semantic_model_cache", None) is None
+            else str(args.semantic_model_cache)
+        ),
+        "semantic_threads": getattr(args, "semantic_threads", None),
+        "semantic_no_ocr": bool(getattr(args, "semantic_no_ocr", False)),
         "semantic_database": str(args.state_directory / SEMANTIC_DATABASE_NAME),
         "publication": _publication_observation(args.state_directory),
+        "recovery_required": recovery_required,
     }
     if semantic_exit_code is not None:
         details["semantic_exit_code"] = semantic_exit_code
     if error is not None:
         details["error_type"] = type(error).__name__
         details["error"] = str(error)[:512]
+    if resume_source_run_id is not None:
+        details["resume_source_run_id"] = resume_source_run_id
     return details
 
 
@@ -700,8 +898,10 @@ def _begin_integrated_publication(
     from neocortex.persistence.state_publication import (
         begin_state_publication,
         publication_idempotency_key,
+        read_state_publication_state,
     )
 
+    _recover_pending_integrated_publication(args.state_directory)
     with FrameworkState(args.state_directory / "framework.sqlite3", existing_only=True) as state:
         manifest = state.read_run_manifest(run_id)
     if manifest is None:
@@ -713,6 +913,12 @@ def _begin_integrated_publication(
         selected_sources,
         image_available,
     )
+    view = read_state_publication_state(args.state_directory)
+    if view.status not in {"absent", "complete"}:
+        raise RuntimeError("Semantic publication recovery_required: state publication is not ready")
+    baseline_heads = tuple(head for head in view.epoch.owner_heads if head.owner in owners)
+    if {head.owner for head in baseline_heads} != set(owners):
+        baseline_heads = ()
     return begin_state_publication(
         args.state_directory,
         operation="framework-all-semantic",
@@ -720,6 +926,7 @@ def _begin_integrated_publication(
         idempotency_key=key,
         manifest_sha256=str(manifest["digest"])[len("sha256:") :],
         detail="Semantic owner work is pending its terminal lifecycle publication",
+        owner_heads=baseline_heads or None,
     )
 
 
@@ -735,11 +942,20 @@ def _final_publication_owner_heads(
 
     generations: list[tuple[int, str]] = []
     for _scope, value in captured_results:
+        if getattr(value, "complete", False) is not True:
+            raise RuntimeError("Semantic publication requires complete generation results")
         for generation in getattr(value, "generations", ()):
             summary = getattr(generation, "summary", None)
             generation_id = getattr(summary, "generation_id", None)
             model_signature = getattr(summary, "model_signature", None)
-            if isinstance(generation_id, int) and isinstance(model_signature, str):
+            if (
+                isinstance(generation_id, int)
+                and isinstance(model_signature, str)
+                and getattr(summary, "status", None) == "ready"
+                and getattr(summary, "unfinished", 0) == 0
+                and getattr(summary, "errors", 0) == 0
+                and getattr(summary, "stale", 0) == 0
+            ):
                 generations.append((generation_id, model_signature))
     if not generations:
         raise RuntimeError("Semantic publication produced no owner generation")
@@ -792,6 +1008,70 @@ def _final_publication_owner_heads(
     return tuple(heads)
 
 
+def _semantic_results_ready(
+    captured_results: list[tuple[str, object]],
+    *,
+    selected_sources: tuple[str, ...],
+    image_available: bool,
+) -> bool:
+    required_scopes = set()
+    if selected_sources:
+        required_scopes.add("text")
+    if image_available:
+        required_scopes.add("image")
+    by_scope = dict(captured_results)
+    if not required_scopes.issubset(by_scope):
+        return False
+    for scope in required_scopes:
+        value = by_scope[scope]
+        if getattr(value, "complete", False) is not True:
+            return False
+        for generation in getattr(value, "generations", ()):
+            summary = getattr(generation, "summary", None)
+            if (
+                getattr(summary, "status", None) != "ready"
+                or getattr(summary, "unfinished", 0) != 0
+                or getattr(summary, "errors", 0) != 0
+                or getattr(summary, "stale", 0) != 0
+            ):
+                return False
+    return True
+
+
+def _resolve_integrated_publication_after_nonterminal(
+    state_directory: Path,
+    publication: object | None,
+) -> bool:
+    """Abort a prepared publication only after the owner-head CAS is proven."""
+
+    if publication is None:
+        return True
+    from neocortex.persistence.state_publication import read_state_publication_state
+
+    view = read_state_publication_state(state_directory)
+    if view.status != "blocked":
+        return view.status in {"absent", "complete"}
+    prepared = getattr(publication, "prepared", None)
+    event_id = getattr(prepared, "event_id", None)
+    baseline = getattr(prepared, "owner_heads", ())
+    pending = tuple(item for item in view.pending if item.event_id == event_id)
+    if len(pending) != 1:
+        return False
+    observed = view.epoch.owner_heads
+    if baseline:
+        if observed != baseline:
+            return False
+        abort = getattr(publication, "abort", None)
+        if not callable(abort):
+            return False
+        abort(observed, detail="Semantic stage ended without a complete generation")
+        return True
+    if view.epoch.epoch != 0 or view.publication is not None:
+        return False
+    _recover_pending_integrated_publication(state_directory)
+    return True
+
+
 def run_integrated_all_semantic_index(
     args: argparse.Namespace,
     *,
@@ -799,6 +1079,7 @@ def run_integrated_all_semantic_index(
     result_sink: Callable[[str, object], None] | None = None,
     print_output: bool = True,
     run_id: int | None = None,
+    resume_source_run_id: int | None = None,
 ) -> int:
     """Advance bounded document and image embeddings after ``--all`` routes.
 
@@ -809,21 +1090,33 @@ def run_integrated_all_semantic_index(
     run.
     """
 
-    if not args.all:
-        raise ValueError("integrated Semantic indexing requires --all")
+    if not args.all and resume_source_run_id is None:
+        raise ValueError("integrated Semantic indexing requires --all or a resumable --resume-run")
     from neocortex.semantic.semantic_sources import TEXT_SOURCE_KINDS, semantic_source_database
 
-    integrated_args = argparse.Namespace(**vars(args))
+    try:
+        integrated_args = (
+            _semantic_resume_args(args, resume_source_run_id)
+            if resume_source_run_id is not None
+            else argparse.Namespace(**vars(args))
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        if print_output:
+            _print_console_line(f"ERROR semantic-resume {type(exc).__name__}: {exc}")
+        return 2
+    if integrated_args is None:
+        return 0
+    resume_source = resume_source_run_id
     image_available = semantic_source_database(
-        args.state_directory,
+        integrated_args.state_directory,
         "image",
     ).is_file()
-    if args.semantic_source is None:
+    if resume_source is None and args.semantic_source is None:
         integrated_args.semantic_source = tuple(
             source_kind
             for source_kind in TEXT_SOURCE_KINDS
             if source_kind not in {"archive", "code"}
-            and semantic_source_database(args.state_directory, source_kind).is_file()
+            and semantic_source_database(integrated_args.state_directory, source_kind).is_file()
         )
     selected_sources = tuple(integrated_args.semantic_source or ())
     integrated_args.semantic_index = (
@@ -831,13 +1124,14 @@ def run_integrated_all_semantic_index(
     )
     if not selected_sources and not image_available:
         _record_integrated_semantic_stage(
-            args,
+            integrated_args,
             run_id,
             "skipped",
             details=_integrated_stage_details(
-                args,
+                integrated_args,
                 selected_sources=selected_sources,
                 image_available=image_available,
+                resume_source_run_id=resume_source,
             ),
             idempotency_key="semantic:skipped",
         )
@@ -857,33 +1151,36 @@ def run_integrated_all_semantic_index(
         )
         return 0
     _record_integrated_semantic_stage(
-        args,
+        integrated_args,
         run_id,
         "running",
         details=_integrated_stage_details(
-            args,
+            integrated_args,
             selected_sources=selected_sources,
             image_available=image_available,
+            resume_source_run_id=resume_source,
         ),
         idempotency_key="semantic:started",
     )
     try:
         publication = _begin_integrated_publication(
-            args,
+            integrated_args,
             run_id,
             selected_sources=selected_sources,
             image_available=image_available,
         )
     except BaseException as exc:
         _record_integrated_semantic_stage(
-            args,
+            integrated_args,
             run_id,
             "failed",
             details=_integrated_stage_details(
-                args,
+                integrated_args,
                 selected_sources=selected_sources,
                 image_available=image_available,
                 error=exc,
+                recovery_required=True,
+                resume_source_run_id=resume_source,
             ),
             idempotency_key="semantic:publication-failed",
         )
@@ -892,9 +1189,9 @@ def run_integrated_all_semantic_index(
         print(
             "SEMANTIC_ALL status=starting "
             f"sources={','.join(selected_sources)} "
-            f"max_items={args.semantic_max_items} "
-            f"max_new_jobs={args.semantic_max_new_jobs} "
-            f"time_budget_seconds={args.semantic_time_budget_seconds:g} "
+            f"max_items={integrated_args.semantic_max_items} "
+            f"max_new_jobs={integrated_args.semantic_max_new_jobs} "
+            f"time_budget_seconds={integrated_args.semantic_time_budget_seconds:g} "
             f"images={int(image_available)} "
             f"code_explicit={int('code' in selected_sources)}"
         )
@@ -912,6 +1209,8 @@ def run_integrated_all_semantic_index(
     )
     semantic_exit_code: int | None = None
     captured_results: list[tuple[str, object]] = []
+    stage_complete = False
+    recovery_required = False
 
     def capture_result(scope: str, value: object) -> None:
         captured_results.append((scope, value))
@@ -926,51 +1225,87 @@ def run_integrated_all_semantic_index(
             result_sink=capture_result,
             print_output=print_output,
         )
-        if semantic_exit_code == 0 and publication is not None:
+        stage_complete = semantic_exit_code == 0 and _semantic_results_ready(
+            captured_results,
+            selected_sources=selected_sources,
+            image_available=image_available,
+        )
+        if stage_complete and publication is not None:
             publication.commit(
                 _final_publication_owner_heads(
-                    args,
+                    integrated_args,
                     captured_results,
                     selected_sources=selected_sources,
                 )
             )
+        elif publication is not None:
+            try:
+                recovery_required = not _resolve_integrated_publication_after_nonterminal(
+                    integrated_args.state_directory,
+                    publication,
+                )
+            except BaseException:
+                recovery_required = True
+            if recovery_required:
+                semantic_exit_code = 2
+        terminal_status = "completed" if stage_complete and semantic_exit_code == 0 else "partial"
         _record_integrated_semantic_stage(
-            args,
+            integrated_args,
             run_id,
-            "completed" if semantic_exit_code == 0 else "partial",
+            terminal_status,
             details=_integrated_stage_details(
-                args,
+                integrated_args,
                 selected_sources=selected_sources,
                 image_available=image_available,
                 semantic_exit_code=semantic_exit_code,
+                recovery_required=recovery_required,
+                resume_source_run_id=resume_source,
             ),
             idempotency_key=f"semantic:terminal:{semantic_exit_code}",
         )
         return semantic_exit_code
     except KeyboardInterrupt as exc:
+        try:
+            recovery_required = not _resolve_integrated_publication_after_nonterminal(
+                integrated_args.state_directory,
+                publication,
+            )
+        except BaseException:
+            recovery_required = True
         _record_integrated_semantic_stage(
-            args,
+            integrated_args,
             run_id,
             "interrupted",
             details=_integrated_stage_details(
-                args,
+                integrated_args,
                 selected_sources=selected_sources,
                 image_available=image_available,
                 error=exc,
+                recovery_required=recovery_required,
+                resume_source_run_id=resume_source,
             ),
             idempotency_key="semantic:terminal:interrupted",
         )
         raise
     except BaseException as exc:
+        try:
+            recovery_required = not _resolve_integrated_publication_after_nonterminal(
+                integrated_args.state_directory,
+                publication,
+            )
+        except BaseException:
+            recovery_required = True
         _record_integrated_semantic_stage(
-            args,
+            integrated_args,
             run_id,
             "failed",
             details=_integrated_stage_details(
-                args,
+                integrated_args,
                 selected_sources=selected_sources,
                 image_available=image_available,
                 error=exc,
+                recovery_required=recovery_required,
+                resume_source_run_id=resume_source,
             ),
             idempotency_key="semantic:terminal:failed",
         )
@@ -983,10 +1318,10 @@ def run_integrated_all_semantic_index(
                 "integrated",
                 (
                     "Semantic completado"
-                    if semantic_exit_code == 0
+                    if stage_complete and semantic_exit_code == 0
                     else "Semantic interrumpido"
                     if semantic_exit_code is None
-                    else "Semantic completado con incidencias"
+                    else "Semantic pausado con progreso"
                 ),
                 1 if semantic_exit_code is not None else 0,
                 1,
@@ -997,9 +1332,11 @@ def run_integrated_all_semantic_index(
                     ProgressMetric(
                         "status",
                         "ok"
-                        if semantic_exit_code == 0
+                        if stage_complete and semantic_exit_code == 0
                         else "interrumpido"
                         if semantic_exit_code is None
+                        else "partial"
+                        if semantic_exit_code == 0
                         else "error",
                     ),
                 ),
