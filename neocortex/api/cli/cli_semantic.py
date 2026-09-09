@@ -669,6 +669,11 @@ def _semantic_stage_for_resume(
     if not isinstance(details, Mapping):
         raise RuntimeError(f"run {source_run_id} Semantic stage details are invalid")
     raw_sources = details.get("selected_sources")
+    selection_pending = details.get("selection_pending", False)
+    if not isinstance(selection_pending, bool):
+        raise RuntimeError(f"run {source_run_id} Semantic source selection is invalid")
+    if selection_pending and raw_sources in (None, []):
+        raw_sources = []
     if not isinstance(raw_sources, list) or any(
         not isinstance(value, str) or not value.strip() for value in raw_sources
     ):
@@ -699,6 +704,7 @@ def _semantic_stage_for_resume(
         "manifest": manifest,
         "details": details,
         "selected_sources": tuple(dict.fromkeys(raw_sources)),
+        "selection_pending": selection_pending,
         "image_available": image_available,
         "max_items": max_items,
         "max_new_jobs": max_new_jobs,
@@ -726,6 +732,7 @@ def _semantic_resume_args(
     effective = argparse.Namespace(**vars(args))
     effective.all = True
     selected_sources = spec.get("selected_sources")
+    selection_pending = spec.get("selection_pending", False)
     image_available = spec.get("image_available")
     max_items = spec.get("max_items")
     max_new_jobs = spec.get("max_new_jobs")
@@ -734,6 +741,7 @@ def _semantic_resume_args(
     if (
         not isinstance(selected_sources, tuple)
         or any(not isinstance(value, str) for value in selected_sources)
+        or not isinstance(selection_pending, bool)
         or not isinstance(image_available, bool)
         or type(max_items) is not int
         or type(max_new_jobs) is not int
@@ -742,13 +750,14 @@ def _semantic_resume_args(
         or not isinstance(details, Mapping)
     ):
         raise RuntimeError(f"run {source_run_id} Semantic resume specification is invalid")
-    effective.semantic_source = list(selected_sources)
+    effective.semantic_source = None if selection_pending else list(selected_sources)
     effective.semantic_max_items = max_items
     effective.semantic_max_new_jobs = max_new_jobs
     effective.semantic_time_budget_seconds = float(time_budget_seconds)
     effective.semantic_index = (
         "all" if selected_sources and image_available else "text" if selected_sources else "image"
     )
+    effective._semantic_selection_pending = selection_pending
     for name, default in (
         ("semantic_text_profile", "quality"),
         ("semantic_threads", None),
@@ -831,6 +840,7 @@ def _integrated_stage_details(
 
     details: dict[str, object] = {
         "selected_sources": list(selected_sources[:32]),
+        "selection_pending": False,
         "image_available": image_available,
         "semantic_budget": {
             "max_items": getattr(args, "semantic_max_items", None),
@@ -1038,6 +1048,57 @@ def _semantic_results_ready(
     return True
 
 
+def _record_integrated_semantic_work(
+    args: argparse.Namespace,
+    run_id: int | None,
+    captured_results: list[tuple[str, object]],
+) -> None:
+    """Account observed Semantic work in the Framework run ledger."""
+
+    if run_id is None:
+        return
+    from neocortex.persistence.framework_state_writer import FrameworkState
+
+    items = 0
+    for _scope, result in captured_results:
+        value = getattr(result, "items_staged", 0)
+        if type(value) is int and value > 0:
+            items += value
+    with FrameworkState(args.state_directory / "framework.sqlite3", existing_only=True) as state:
+        reader = getattr(state, "read_run_budget", None)
+        if not callable(reader) or reader(run_id) is None:
+            return
+        run_row = state._connection.execute(
+            "SELECT status FROM initial_runs WHERE run_id=?", (run_id,)
+        ).fetchone()
+        # Direct callers may attach Semantic metadata to a historical source
+        # run (the CLI resume path uses a new running continuation).  A
+        # terminal source cannot accept a new Framework-budget reservation;
+        # keep that compatibility path state-only.
+        if run_row is None or str(run_row[0]) != "running":
+            return
+        reservation = f"semantic:work:{items}:{len(captured_results)}"
+        reserve = getattr(state, "reserve_run_stage", None)
+        if callable(reserve):
+            reserve(
+                run_id,
+                "semantic",
+                reservation,
+                items=items,
+                bytes=0,
+                worker="semantic",
+            )
+        else:
+            state.reserve_run_budget(
+                run_id,
+                reservation,
+                items=items,
+                bytes=0,
+                worker="semantic",
+                stage="semantic",
+            )
+
+
 def _resolve_integrated_publication_after_nonterminal(
     state_directory: Path,
     publication: object | None,
@@ -1111,7 +1172,9 @@ def run_integrated_all_semantic_index(
         integrated_args.state_directory,
         "image",
     ).is_file()
-    if resume_source is None and args.semantic_source is None:
+    if args.semantic_source is None and (
+        resume_source is None or getattr(integrated_args, "_semantic_selection_pending", False)
+    ):
         integrated_args.semantic_source = tuple(
             source_kind
             for source_kind in TEXT_SOURCE_KINDS
@@ -1224,6 +1287,11 @@ def run_integrated_all_semantic_index(
             progress=progress,
             result_sink=capture_result,
             print_output=print_output,
+        )
+        _record_integrated_semantic_work(
+            integrated_args,
+            run_id,
+            captured_results,
         )
         stage_complete = semantic_exit_code == 0 and _semantic_results_ready(
             captured_results,

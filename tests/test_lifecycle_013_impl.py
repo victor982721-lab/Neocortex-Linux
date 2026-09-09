@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import time
 from argparse import Namespace
 from dataclasses import dataclass
@@ -145,9 +144,7 @@ def _make_source_fixture(
         for path in paths
     )
     selected_routes = tuple(route_names) if route_names else ("text",)
-    capabilities = route_capabilities or {
-        route: "safe_replay" for route in selected_routes
-    }
+    capabilities = route_capabilities or dict.fromkeys(selected_routes, "safe_replay")
     database = state_directory / "framework.sqlite3"
     with FrameworkState(database) as state:
         run_id = state.begin_initial_run(
@@ -185,7 +182,7 @@ def _make_source_fixture(
             state.begin_route_runs(
                 run_id,
                 route_names,
-                route_input_sources={route: "route_candidates" for route in route_names},
+                route_input_sources=dict.fromkeys(route_names, "route_candidates"),
             )
             for route in completed_routes:
                 state.complete_route_run(
@@ -543,7 +540,7 @@ def test_resume_rejects_a_replaced_root_before_new_run_or_worker(
 
     with pytest.raises(
         (ValueError, PermissionError),
-        match="identity changed|replaced corpus root",
+        match=r"identity changed|replaced corpus root",
     ):
         _run_route_only(source, registry, route="none", resume=True)
     assert calls == []
@@ -662,6 +659,127 @@ def test_semantic_only_resume_reuses_source_selection_and_budget(
         stages = state.read_run_stages(source.run_id)
     assert stages[-1]["stage"] == "semantic"
     assert stages[-1]["status"] == "completed"
+
+
+def test_completed_framework_with_partial_stage_is_not_reported_as_complete(
+    tmp_path: Path,
+) -> None:
+    source = _make_source_fixture(tmp_path)
+    with FrameworkState(source.database) as state:
+        state.publish_run_stage(
+            source.run_id,
+            "semantic",
+            "partial",
+            details={"recovery_required": False},
+            idempotency_key="semantic:partial",
+        )
+
+    status = list_run_status(source.database, run_id=source.run_id, limit=1)[0]
+    assert status.status == "partial"
+    assert status.current_phase == "semantic"
+
+
+def test_integrated_stage_runner_sees_pending_stage_before_framework_finalize(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "corpus"
+    state_directory = tmp_path / "state"
+    root.mkdir()
+    observed: dict[str, object] = {}
+
+    def run_stage(run_id: int) -> object:
+        with FrameworkState(state_directory / "framework.sqlite3") as state:
+            row = state._connection.execute(
+                "SELECT status FROM initial_runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+            observed["run_status"] = None if row is None else str(row[0])
+            stages = state.read_run_stages(run_id)
+            observed["pending"] = stages[-1]["status"]
+            state.publish_run_stage(
+                run_id,
+                "semantic",
+                "completed",
+                details={"publication": {"status": "complete"}},
+                idempotency_key="semantic:fixture:completed",
+            )
+        return 0
+
+    result = FrameworkOrchestrator(
+        FrameworkConfig(
+            root=root,
+            state_directory=state_directory,
+            route="none",
+            global_min_free_memory_bytes=0,
+            global_min_free_commit_bytes=0,
+        ),
+        lifecycle_stage_runner=run_stage,
+        lifecycle_stage_details={"selection_pending": True},
+    ).run()
+
+    assert observed == {"run_status": "running", "pending": "pending"}
+    status = list_run_status(state_directory / "framework.sqlite3", run_id=result.run_id)[0]
+    assert status.status == "completed"
+    assert status.stages[-1]["status"] == "completed"
+
+
+def test_cli_runs_semantic_as_a_framework_lifecycle_stage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from neocortex.api.cli import cli_reporting
+
+    root = tmp_path / "corpus"
+    state_directory = tmp_path / "state"
+    root.mkdir()
+    state_directory.mkdir()
+    observed: dict[str, object] = {}
+
+    def fake_semantic(_args, **kwargs):
+        observed["semantic_kwargs"] = kwargs
+        return 0
+
+    def fake_framework(
+        _args,
+        *,
+        progress,
+        lifecycle_stage_runner,
+        lifecycle_stage_details,
+    ):
+        observed["stage_details"] = lifecycle_stage_details
+        lifecycle_stage_runner(7)
+        return SimpleNamespace(
+            run_id=7,
+            actions=None,
+            organization_plan=None,
+            organization_apply=None,
+            route_results={},
+        )
+
+    monkeypatch.setenv("NEOCORTEX_PROGRESS_STREAM", "1")
+    monkeypatch.setattr(cli_app, "run_framework", fake_framework)
+    monkeypatch.setattr(cli_semantic, "run_integrated_all_semantic_index", fake_semantic)
+    monkeypatch.setattr(cli_reporting, "print_reports", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_reporting,
+        "print_professional_summary",
+        lambda *_args, **_kwargs: None,
+    )
+
+    assert (
+        cli_app.main(
+            [
+                "--all",
+                "--root",
+                str(root),
+                "--state-directory",
+                str(state_directory),
+            ]
+        )
+        == 0
+    )
+    assert observed["semantic_kwargs"]["run_id"] == 7
+    assert observed["semantic_kwargs"]["resume_source_run_id"] is None
+    assert observed["stage_details"]["selection_pending"] is True
 
 
 @pytest.mark.capability("agent")

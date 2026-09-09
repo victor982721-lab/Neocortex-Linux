@@ -6,9 +6,10 @@
 
 from __future__ import annotations
 import argparse
+import inspect
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 from .cli_operations import dispatch_direct_operation
@@ -40,7 +41,13 @@ def dispatch_direct(args: argparse.Namespace) -> int | None:
 # region [03] Framework configuration and execution
 
 
-def _run_framework_with_progress(args: argparse.Namespace, progress):
+def _run_framework_with_progress(
+    args: argparse.Namespace,
+    progress,
+    *,
+    lifecycle_stage_runner: Callable[[int], object] | None = None,
+    lifecycle_stage_details: Mapping[str, object] | None = None,
+):
     """Execute the framework with one caller-owned progress reporter."""
 
     from .cli_config import framework_config_from_args
@@ -48,23 +55,72 @@ def _run_framework_with_progress(args: argparse.Namespace, progress):
     from neocortex.runtime.orchestration.orchestrator import FrameworkOrchestrator
 
     config = framework_config_from_args(args)
-    orchestrator = FrameworkOrchestrator(config, progress=progress)
+    orchestrator = FrameworkOrchestrator(
+        config,
+        progress=progress,
+        lifecycle_stage_runner=lifecycle_stage_runner,
+        lifecycle_stage_details=lifecycle_stage_details,
+    )
     with ConsoleCancellationBridge(orchestrator.request_cancellation):
         return orchestrator.run()
 
 
-def run_framework(args: argparse.Namespace, *, progress=None):
+def run_framework(
+    args: argparse.Namespace,
+    *,
+    progress=None,
+    lifecycle_stage_runner: Callable[[int], object] | None = None,
+    lifecycle_stage_details: Mapping[str, object] | None = None,
+):
     """Build the validated configuration and run the integrated framework."""
 
     from neocortex.progress import LineProgress, RichProgress
 
     if progress is not None:
-        return _run_framework_with_progress(args, progress)
+        if lifecycle_stage_runner is None and lifecycle_stage_details is None:
+            return _run_framework_with_progress(args, progress)
+        return _run_framework_with_progress(
+            args,
+            progress,
+            lifecycle_stage_runner=lifecycle_stage_runner,
+            lifecycle_stage_details=lifecycle_stage_details,
+        )
     reporter = (
         LineProgress() if os.environ.get("NEOCORTEX_PROGRESS_STREAM") == "1" else RichProgress()
     )
     with reporter as progress:
-        return _run_framework_with_progress(args, progress)
+        if lifecycle_stage_runner is None and lifecycle_stage_details is None:
+            return _run_framework_with_progress(args, progress)
+        return _run_framework_with_progress(
+            args,
+            progress,
+            lifecycle_stage_runner=lifecycle_stage_runner,
+            lifecycle_stage_details=lifecycle_stage_details,
+        )
+
+
+def _semantic_stage_details(args: argparse.Namespace) -> dict[str, object]:
+    """Capture Semantic configuration before Framework workers start."""
+
+    selected_sources = tuple(getattr(args, "semantic_source", None) or ())
+    return {
+        "selected_sources": list(selected_sources),
+        "selection_pending": getattr(args, "semantic_source", None) is None,
+        "image_available": False,
+        "semantic_budget": {
+            "max_items": getattr(args, "semantic_max_items", None),
+            "max_new_jobs": getattr(args, "semantic_max_new_jobs", None),
+            "time_budget_seconds": getattr(args, "semantic_time_budget_seconds", None),
+        },
+        "semantic_text_profile": getattr(args, "semantic_text_profile", "quality"),
+        "semantic_model_cache": (
+            None
+            if getattr(args, "semantic_model_cache", None) is None
+            else str(args.semantic_model_cache)
+        ),
+        "semantic_threads": getattr(args, "semantic_threads", None),
+        "semantic_no_ocr": bool(getattr(args, "semantic_no_ocr", False)),
+    }
 
 
 def _emit_unsuccessful_execution(
@@ -356,40 +412,63 @@ def main(arguments: Sequence[str] | None = None) -> int:
     semantic_results: list[tuple[str, object]] = []
     semantic_exit_code = 0
     semantic_attempted = False
+    semantic_resume_source_run_id: int | None = None
+    semantic_stage_runner: Callable[[int], object] | None = None
+    semantic_stage_details: Mapping[str, object] | None = None
+    if args.resume_run is not None:
+        from .cli_semantic import semantic_resume_available
+
+        if semantic_resume_available(args, args.resume_run):
+            semantic_resume_source_run_id = args.resume_run
+    if args.all or semantic_resume_source_run_id is not None:
+        from .cli_semantic import run_integrated_all_semantic_index
+
+        semantic_attempted = True
+        semantic_stage_details = _semantic_stage_details(args)
+
+        def run_semantic_stage(run_id: int) -> object:
+            nonlocal semantic_exit_code
+            semantic_exit_code = run_integrated_all_semantic_index(
+                args,
+                progress=progress,
+                result_sink=lambda scope, value: semantic_results.append((scope, value)),
+                print_output=not professional_output,
+                run_id=run_id,
+                resume_source_run_id=semantic_resume_source_run_id,
+            )
+            return semantic_exit_code
+
+        semantic_stage_runner = run_semantic_stage
     try:
         reporter = (
             LineProgress() if os.environ.get("NEOCORTEX_PROGRESS_STREAM") == "1" else RichProgress()
         )
         with reporter as progress:
             try:
-                result = run_framework(args, progress=progress)
-                actions = getattr(result, "actions", None)
-                framework_failed = bool(
-                    (actions is not None and actions.errors) or has_organization_errors(result)
+                supports_lifecycle_hook = (
+                    "lifecycle_stage_runner" in inspect.signature(run_framework).parameters
                 )
-                if not framework_failed:
-                    from .cli_semantic import (
-                        run_integrated_all_semantic_index,
-                        semantic_resume_available,
+                if supports_lifecycle_hook:
+                    result = run_framework(
+                        args,
+                        progress=progress,
+                        lifecycle_stage_runner=semantic_stage_runner,
+                        lifecycle_stage_details=semantic_stage_details,
                     )
-
-                    resume_source_run_id = None
-                    if args.resume_run is not None and semantic_resume_available(
-                        args, args.resume_run
-                    ):
-                        resume_source_run_id = args.resume_run
-                    if args.all or resume_source_run_id is not None:
-                        semantic_attempted = True
-                        semantic_exit_code = run_integrated_all_semantic_index(
-                            args,
-                            progress=progress,
-                            result_sink=lambda scope, value: semantic_results.append(
-                                (scope, value)
-                            ),
-                            print_output=not professional_output,
-                            run_id=getattr(result, "run_id", None),
-                            resume_source_run_id=resume_source_run_id,
-                        )
+                else:
+                    # Keep lightweight test doubles and downstream callers
+                    # that implement the pre-0.13 two-argument seam working;
+                    # they cannot host the integrated Semantic callback.
+                    result = run_framework(args, progress=progress)
+                    if semantic_stage_runner is not None:
+                        # Compatibility path for callers/tests that replace
+                        # ``run_framework`` with the pre-0.13 seam.  The real
+                        # implementation receives the callback above; this
+                        # fallback keeps the historical post-run hook without
+                        # weakening the production lifecycle.
+                        fallback_run_id = getattr(result, "run_id", None)
+                        if type(fallback_run_id) is int:
+                            semantic_stage_runner(fallback_run_id)
             except KeyboardInterrupt as exc:
                 _emit_unsuccessful_execution(
                     progress, exc, error_code="execution_cancelled", errors=0, cancelled=True

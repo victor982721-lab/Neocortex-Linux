@@ -204,6 +204,9 @@ def _run_status(
     resumed = str(row["run_kind"] or "initial") == "resume"
     replayed = resumed
     current_phase = None if row["current_phase"] is None else str(row["current_phase"])
+    effective_status = _aggregate_stage_status(run_state, stages)
+    if effective_status != run_state and current_phase == "completed":
+        current_phase = _latest_incomplete_stage_name(stages) or "lifecycle"
     if current_phase is None:
         current_phase = next(
             (
@@ -216,7 +219,7 @@ def _run_status(
     return RunStatus(
         run_id=run_id,
         run_kind=str(row["run_kind"] or "initial"),
-        status=run_state,
+        status=effective_status,
         root=str(row["root"]),
         source_run_id=(None if row["source_run_id"] is None else int(row["source_run_id"])),
         current_phase=current_phase,
@@ -238,6 +241,43 @@ def _run_status(
         stages=stages,
         checkpoints=checkpoints,
     )
+
+
+def _aggregate_stage_status(
+    run_status: str,
+    stages: tuple[dict[str, object], ...],
+) -> str:
+    """Project dependent lifecycle stages onto the public run status.
+
+    Framework's historical ``initial_runs`` row can reach ``completed`` before
+    an owner-local stage publishes its terminal result.  A completed framework
+    row must therefore not hide a pending, partial, interrupted, or failed
+    Semantic/Code stage.  Non-completed framework states remain authoritative.
+    """
+
+    if run_status != "completed":
+        return run_status
+    latest: dict[str, str] = {}
+    for stage in stages:
+        name = stage.get("stage")
+        status = stage.get("status")
+        if isinstance(name, str) and isinstance(status, str):
+            latest[name] = status
+    values = set(latest.values())
+    if "failed" in values:
+        return "failed"
+    if values.intersection({"pending", "running", "partial", "interrupted"}):
+        return "partial"
+    return run_status
+
+
+def _latest_incomplete_stage_name(stages: tuple[dict[str, object], ...]) -> str | None:
+    for stage in reversed(stages):
+        name = stage.get("stage")
+        status = stage.get("status")
+        if isinstance(name, str) and status in {"pending", "running", "partial", "interrupted", "failed"}:
+            return name
+    return None
 
 
 def _run_manifest(connection: sqlite3.Connection, run_id: int) -> dict[str, object] | None:

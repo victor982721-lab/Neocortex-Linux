@@ -12,7 +12,7 @@ import sqlite3
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
@@ -172,6 +172,8 @@ class FrameworkOrchestrator:
         progress: ProgressCallback | None = None,
         route_registry: Mapping[str, RouteAdapter] | None = None,
         run_budget: RunBudget | Mapping[str, object] | None = None,
+        lifecycle_stage_runner: Callable[[int], object] | None = None,
+        lifecycle_stage_details: Mapping[str, object] | None = None,
     ):
         self.config = config or FrameworkConfig()
         if self.config.dedup_policy not in {"fast", "exact"}:
@@ -207,6 +209,10 @@ class FrameworkOrchestrator:
             RunBudget.from_mapping(run_budget)
             if isinstance(run_budget, Mapping)
             else (run_budget or RunBudget())
+        )
+        self._lifecycle_stage_runner = lifecycle_stage_runner
+        self._lifecycle_stage_details = (
+            {} if lifecycle_stage_details is None else dict(lifecycle_stage_details)
         )
 
     def _durable_run_budget(self) -> RunBudget:
@@ -259,6 +265,44 @@ class FrameworkOrchestrator:
         if any(value is not None for value in configured.values()):
             return RunBudget.from_mapping(configured)
         return self._run_budget
+
+    def _reserve_lifecycle_stage_work(
+        self,
+        state: FrameworkState,
+        run_id: int,
+        stage: str,
+        reservation_id: str,
+        *,
+        items: int = 0,
+        bytes_count: int = 0,
+        worker: str | None = None,
+    ) -> dict[str, object] | None:
+        """Account bounded non-route work in the shared lifecycle ledger."""
+
+        read_budget = getattr(state, "read_run_budget", None)
+        if not callable(read_budget) or read_budget(run_id) is None:
+            return None
+        if type(items) is not int or items < 0 or type(bytes_count) is not int or bytes_count < 0:
+            raise ValueError("lifecycle stage workload must be non-negative integers")
+        reserve = getattr(state, "reserve_run_stage", None)
+        if callable(reserve):
+            typed_reserve = cast(Callable[..., dict[str, object]], reserve)
+            return typed_reserve(
+                run_id,
+                stage,
+                reservation_id,
+                items=items,
+                bytes=bytes_count,
+                worker=worker,
+            )
+        return state.reserve_run_budget(
+            run_id,
+            reservation_id,
+            items=items,
+            bytes=bytes_count,
+            worker=worker,
+            stage=stage,
+        )
 
     def _route_only_budget(
         self,
@@ -479,6 +523,15 @@ class FrameworkOrchestrator:
             "Plan de organización técnica completado",
             {"organization_root": str(organization_root), **asdict(plan_summary)},
         )
+        self._reserve_lifecycle_stage_work(
+            state,
+            run_id,
+            "organization_plan",
+            f"organization:plan:{plan_summary.catalog_run_id}",
+            items=int(plan_summary.considered),
+            bytes_count=0,
+            worker="organization",
+        )
         if self._cancellation.is_cancelled:
             raise KeyboardInterrupt
         state.set_run_phase(run_id, "organization_apply")
@@ -500,6 +553,15 @@ class FrameworkOrchestrator:
             "document-organization-apply",
             "Aplicación de organización técnica completada",
             {"organization_root": str(organization_root), **asdict(apply_summary)},
+        )
+        self._reserve_lifecycle_stage_work(
+            state,
+            run_id,
+            "organization_apply",
+            f"organization:apply:{apply_summary.catalog_run_id}",
+            items=int(apply_summary.selected),
+            bytes_count=0,
+            worker="organization",
         )
         return plan_summary, apply_summary
 
@@ -598,7 +660,8 @@ class FrameworkOrchestrator:
         if stage is not None:
             reserve_stage = getattr(state, "reserve_run_stage", None)
             if callable(reserve_stage):
-                return reserve_stage(
+                typed_reserve_stage = cast(Callable[..., dict[str, object]], reserve_stage)
+                return typed_reserve_stage(
                     run_id,
                     stage,
                     reservation_id,
@@ -606,13 +669,21 @@ class FrameworkOrchestrator:
                     bytes=bytes_count,
                     worker=route_name,
                 )
+        if stage is not None:
+            return state.reserve_run_budget(
+                run_id,
+                reservation_id,
+                items=items,
+                bytes=bytes_count,
+                worker=route_name,
+                stage=stage,
+            )
         return state.reserve_run_budget(
             run_id,
             reservation_id,
             items=items,
             bytes=bytes_count,
             worker=route_name,
-            **({"stage": stage} if stage is not None else {}),
         )
 
     def _route_execution_stages(self) -> tuple[tuple[str, ...], ...]:
@@ -1179,6 +1250,18 @@ class FrameworkOrchestrator:
         publish_manifest = getattr(state, "publish_run_manifest", None)
         if callable(publish_manifest):
             publish_manifest(run_id, manifest.event_payload())
+            if self._lifecycle_stage_runner is not None:
+                # Publish the dependent stage before any worker starts.  If
+                # the process dies in the hand-off to the stage runner, the
+                # next status/resume still sees a durable pending stage rather
+                # than mistaking the Framework row for a complete --all run.
+                state.publish_run_stage(
+                    run_id,
+                    "semantic",
+                    "pending",
+                    details=self._lifecycle_stage_details,
+                    idempotency_key="semantic:pending",
+                )
             self._active_run = (self.config.framework_database, run_id)
 
     def _prepare_normal_inventory(
@@ -1191,6 +1274,9 @@ class FrameworkOrchestrator:
         journal_before: JournalCursor | None,
     ) -> PreparedInventory:
         state.set_run_phase(run_id, "inventory")
+        read_budget = getattr(state, "read_run_budget", None)
+        if callable(read_budget) and read_budget(run_id) is not None:
+            state.check_run_budget(run_id)
         if journal_before is None:
             allow_incremental = False
             gate_reason = "journal_unavailable_portable_full_scan"
@@ -1229,6 +1315,15 @@ class FrameworkOrchestrator:
         boundary.verify()
         if inventory.inventory_policy_signature != boundary.exclusion_policy.signature:
             raise RuntimeError("inventory result escaped its effective exclusion boundary")
+        self._reserve_lifecycle_stage_work(
+            state,
+            run_id,
+            "inventory",
+            f"inventory:scan:{inventory.scan.scan_id}",
+            items=int(inventory.scan.files_seen),
+            bytes_count=int(inventory.scan.bytes_seen),
+            worker="inventory",
+        )
         return inventory
 
     def _plan_initial_dedup(
@@ -1313,6 +1408,15 @@ class FrameworkOrchestrator:
                 "keeper_references": references.to_dict(),
             },
         )
+        self._reserve_lifecycle_stage_work(
+            state,
+            run_id,
+            "dedup",
+            f"dedup:plan:{scan_id}",
+            items=int(plan.group_count),
+            bytes_count=int(plan.reclaimable_bytes),
+            worker="dedup",
+        )
         return plan
 
     def _execute_initial_actions(
@@ -1341,6 +1445,15 @@ class FrameworkOrchestrator:
         actions = runner.execute(
             plan,
             cleanup_empty_directories=not self.selected_routes,
+        )
+        self._reserve_lifecycle_stage_work(
+            state,
+            run_id,
+            "actions",
+            f"actions:scan:{scan_id}",
+            items=int(actions.files_checked + actions.duplicate_candidates),
+            bytes_count=0,
+            worker="actions",
         )
         return runner, actions
 
@@ -1509,6 +1622,7 @@ class FrameworkOrchestrator:
         journal_before: JournalCursor | None,
         journal_error: str | None,
         excluded_paths: tuple[Path, ...],
+        finalize: bool = True,
     ) -> _InitialExecution:
         self._record_initial_start(
             state,
@@ -1526,13 +1640,14 @@ class FrameworkOrchestrator:
             excluded_paths=excluded_paths,
         )
         journal_after = self._initial_journal_after(work.inventory)
-        self._finalize_initial_run(
-            state,
-            run_id,
-            boundary,
-            work,
-            journal_after,
-        )
+        if finalize:
+            self._finalize_initial_run(
+                state,
+                run_id,
+                boundary,
+                work,
+                journal_after,
+            )
         return _InitialExecution(work, journal_after)
 
     @staticmethod
@@ -1585,6 +1700,7 @@ class FrameworkOrchestrator:
         journal_before: JournalCursor | None,
         journal_error: str | None,
         excluded_paths: tuple[Path, ...],
+        finalize: bool = True,
     ) -> _InitialExecution:
         heartbeat = RunHeartbeat(
             self.config.framework_database,
@@ -1599,6 +1715,7 @@ class FrameworkOrchestrator:
                 journal_before=journal_before,
                 journal_error=journal_error,
                 excluded_paths=excluded_paths,
+                finalize=finalize,
             )
         except KeyboardInterrupt as exc:
             self._persist_initial_termination(state, run_id, exc, cancelled=True)
@@ -1612,6 +1729,77 @@ class FrameworkOrchestrator:
         finally:
             heartbeat.stop()
             self._active_run = None
+
+    def _run_initial_lifecycle_stage(
+        self,
+        *,
+        run_id: int,
+        boundary: NormalInventoryBoundary,
+        work: _InitialWork,
+        journal_after: JournalCursor | None,
+    ) -> None:
+        """Run the dependent lifecycle stage before finalizing Framework.
+
+        The callback executes outside the Framework writer connection so an
+        owner-local stage (Semantic/Code publication) can use its own bounded
+        transactions.  The run remains ``running`` and has a pending stage
+        marker until the callback returns; interruption therefore remains
+        recoverable instead of being hidden behind a completed Framework row.
+        """
+
+        runner = self._lifecycle_stage_runner
+        if runner is None:
+            with FrameworkState(self.config.framework_database) as state:
+                self._finalize_initial_run(
+                    state,
+                    run_id,
+                    boundary,
+                    work,
+                    journal_after,
+                )
+            return
+        stage_heartbeat = RunHeartbeat(
+            self.config.framework_database,
+            run_id,
+            interval_seconds=self.config.heartbeat_interval_seconds,
+        ).start()
+        try:
+            runner(run_id)
+        except KeyboardInterrupt as exc:
+            with FrameworkState(self.config.framework_database) as state:
+                self._persist_initial_termination(state, run_id, exc, cancelled=True)
+            raise
+        except RunBudgetExceeded as exc:
+            with FrameworkState(self.config.framework_database) as state:
+                self._persist_initial_termination(state, run_id, exc, cancelled=True)
+            raise
+        except BaseException as exc:
+            with FrameworkState(self.config.framework_database) as state:
+                self._persist_initial_termination(state, run_id, exc, cancelled=False)
+            raise
+        finally:
+            stage_heartbeat.stop()
+        try:
+            with FrameworkState(self.config.framework_database) as state:
+                self._finalize_initial_run(
+                    state,
+                    run_id,
+                    boundary,
+                    work,
+                    journal_after,
+                )
+        except KeyboardInterrupt as exc:
+            with FrameworkState(self.config.framework_database) as state:
+                self._persist_initial_termination(state, run_id, exc, cancelled=True)
+            raise
+        except RunBudgetExceeded as exc:
+            with FrameworkState(self.config.framework_database) as state:
+                self._persist_initial_termination(state, run_id, exc, cancelled=True)
+            raise
+        except BaseException as exc:
+            with FrameworkState(self.config.framework_database) as state:
+                self._persist_initial_termination(state, run_id, exc, cancelled=False)
+            raise
 
     @staticmethod
     def _initial_result(
@@ -1667,6 +1855,14 @@ class FrameworkOrchestrator:
                 journal_before=journal_before,
                 journal_error=journal_error,
                 excluded_paths=excluded_paths,
+                finalize=self._lifecycle_stage_runner is None,
+            )
+        if self._lifecycle_stage_runner is not None:
+            self._run_initial_lifecycle_stage(
+                run_id=run_id,
+                boundary=boundary,
+                work=execution.work,
+                journal_after=execution.journal_after,
             )
         emit_progress(
             self.progress,
@@ -1821,6 +2017,13 @@ class FrameworkOrchestrator:
                 source=source,
                 run_id=run_id,
                 heartbeat=heartbeat,
+                finalize=self._lifecycle_stage_runner is None,
+            )
+        if self._lifecycle_stage_runner is not None:
+            self._run_route_only_lifecycle_stage(
+                run_id=run_id,
+                boundary=boundary,
+                source=source,
             )
         return self._route_only_result(execution)
 
@@ -1902,10 +2105,7 @@ class FrameworkOrchestrator:
     ) -> bool:
         """Return whether recovery may advance only the linked Semantic stage."""
 
-        reader = getattr(state, "read_run_stages", None)
-        if not callable(reader):
-            return False
-        stages = tuple(reader(source_run_id))
+        stages = state.read_run_stages(source_run_id)
         for stage in reversed(stages):
             if not isinstance(stage, Mapping) or stage.get("stage") != "semantic":
                 continue
@@ -2078,6 +2278,14 @@ class FrameworkOrchestrator:
                     input_snapshot=input_snapshot,
                 ).event_payload(),
             )
+            if self._lifecycle_stage_runner is not None:
+                state.publish_run_stage(
+                    run_id,
+                    "semantic",
+                    "pending",
+                    details=self._lifecycle_stage_details,
+                    idempotency_key="semantic:pending",
+                )
             self._active_run = (self.config.framework_database, run_id)
         return run_id, heartbeat
 
@@ -2152,6 +2360,7 @@ class FrameworkOrchestrator:
         source: _RouteOnlySource,
         run_id: int,
         heartbeat: RunHeartbeat,
+        finalize: bool = True,
     ) -> _RouteOnlyExecution:
         try:
             route_results, global_resources = self._run_content_routes(
@@ -2160,7 +2369,8 @@ class FrameworkOrchestrator:
                 run_id=run_id,
                 scan_id=source.scan_id,
             )
-            self._complete_route_only_run(state, boundary, source, run_id)
+            if finalize:
+                self._complete_route_only_run(state, boundary, source, run_id)
         except KeyboardInterrupt:
             self._cancel_route_only_run(state, source, run_id)
             raise
@@ -2182,6 +2392,71 @@ class FrameworkOrchestrator:
             route_results,
             global_resources,
         )
+
+    def _run_route_only_lifecycle_stage(
+        self,
+        *,
+        run_id: int,
+        boundary: NormalInventoryBoundary,
+        source: _RouteOnlySource,
+    ) -> None:
+        """Run a dependent owner stage before completing a route continuation."""
+
+        runner = self._lifecycle_stage_runner
+        if runner is None:
+            with FrameworkState(self.config.framework_database) as state:
+                self._complete_route_only_run(state, boundary, source, run_id)
+            return
+        stage_heartbeat = RunHeartbeat(
+            self.config.framework_database,
+            run_id,
+            interval_seconds=self.config.heartbeat_interval_seconds,
+        ).start()
+        try:
+            runner(run_id)
+        except KeyboardInterrupt as exc:
+            with FrameworkState(self.config.framework_database) as state:
+                self._cancel_route_only_run(state, source, run_id)
+                state.record_event(
+                    run_id,
+                    "warning",
+                    "lifecycle-stage",
+                    "Etapa dependiente interrumpida",
+                    {"error_type": type(exc).__name__, "detail": str(exc)[:8192]},
+                )
+            raise
+        except RunBudgetExceeded as exc:
+            with FrameworkState(self.config.framework_database) as state:
+                self._fail_route_only_run(state, source, run_id, exc)
+            raise
+        except BaseException as exc:
+            with FrameworkState(self.config.framework_database) as state:
+                self._fail_route_only_run(state, source, run_id, exc)
+            raise
+        finally:
+            stage_heartbeat.stop()
+        try:
+            with FrameworkState(self.config.framework_database) as state:
+                self._complete_route_only_run(state, boundary, source, run_id)
+        except KeyboardInterrupt as exc:
+            with FrameworkState(self.config.framework_database) as state:
+                self._cancel_route_only_run(state, source, run_id)
+                state.record_event(
+                    run_id,
+                    "warning",
+                    "lifecycle-stage",
+                    "Finalización interrumpida",
+                    {"error_type": type(exc).__name__, "detail": str(exc)[:8192]},
+                )
+            raise
+        except RunBudgetExceeded as exc:
+            with FrameworkState(self.config.framework_database) as state:
+                self._fail_route_only_run(state, source, run_id, exc)
+            raise
+        except BaseException as exc:
+            with FrameworkState(self.config.framework_database) as state:
+                self._fail_route_only_run(state, source, run_id, exc)
+            raise
 
     @staticmethod
     def _route_only_result(execution: _RouteOnlyExecution) -> RouteOnlyRunResult:

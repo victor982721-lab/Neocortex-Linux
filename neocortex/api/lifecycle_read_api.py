@@ -1169,7 +1169,7 @@ __all__ = [
     "LIFECYCLE_ENVELOPE_SCHEMA",
     "LIFECYCLE_STATUS_KIND",
     "LIFECYCLE_STATUS_OPERATION",
-    "LifecycleStatusContractError",
     "RUN_CHECKPOINT_SCHEMA",
+    "LifecycleStatusContractError",
     "lifecycle_status_payload",
 ]
