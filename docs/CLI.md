@@ -48,7 +48,7 @@ iniciarse una consulta nueva.
 
 **IMPLEMENTED — ReviewTask advisory:** `curate review` publica una página del
 plan completo como tareas de revisión, y `curate decide` registra por CAS una
-decisión humana. Son interfaces de 0.12.0; su presencia no demuestra que la
+decisión humana. Son interfaces heredadas de 0.12.0; su presencia no demuestra que la
 instalación incluya las correcciones posteriores del checkout.
 
 ```bash
