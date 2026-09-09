@@ -369,7 +369,6 @@ manifest y owner heads antes de publicar, y se abstiene fail-closed ante drift.
 ## Brechas vigentes
 
 - la deduplicación rápida puede ser evidencia insuficiente para disposición;
-- la cobertura y precisión de localizadores varían por formato;
 - varias fuentes todavía tienen publicación no generacional;
 - la cobertura y precisión de localizadores siguen variando por formato, aunque
   los recursos virtuales de Archive ya no exponen identidad física;
