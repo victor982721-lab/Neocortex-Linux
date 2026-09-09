@@ -5,6 +5,9 @@
 **Fuente de verdad:** estado vivo de `main`/`origin/main`,
 `PENDIENTES.md`, `HISTORIAL.md` y receipts canónicos fechados
 
+**Estado vivo:** `HEAD == main == origin/main ==
+062f743fb5cc99c67e8c7d2b0c622122b79f0794`; árbol limpio.
+
 ## Alcance actual
 
 NeoCortex 0.13.0 está en desarrollo para cerrar el lifecycle durable de
@@ -16,10 +19,18 @@ publicación staged/CAS. Code sigue siendo contenido no ejecutable.
 
 La fuente contiene el vertical de contratos `neocortex.run-manifest/v1`,
 `neocortex.run-budget/v1`, `neocortex.lifecycle-stage/v1` y
-`neocortex.lifecycle-envelope/v1`, además de lecturas bounded de estado. Eso es
-estado de fuente, no evidencia de aceptación integral, instalación o
-promoción. No se declara una release 0.13 instalada ni una corrida `--all`
-completa hasta cerrar C0–C7 desde el artefacto final.
+`neocortex.lifecycle-envelope/v1`, además de lecturas bounded de estado. C0–C7
+quedaron cubiertos en el checkout con **6912 pasadas, 59 omitidas y 42
+subtests**, Ruff/Mypy/Pyright sin errores en las cohortes afectadas y Semgrep
+sin hallazgos de producto; la evidencia está en
+`/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-08-lifecycle-013/`.
+
+El artefacto final `0.13.0-062f743fb5cc-cp314-linux-x86_64` pasó verificación y
+smoke/replay en un layout aislado temporal. La release canónica aún no se
+promueve desde este SHA: `current` permanece en
+`0.13.0-f17049318f46-cp314-linux-x86_64` porque el rollback
+`0.12.0-3396069da66d-cp314-linux-x86_64` está siendo usado por un
+`Neocortex agent serve` activo.
 
 Semantic se registra dentro del mismo lifecycle, pero el Semantic pesado es
 opt-in. Archive, Code y Video son fuentes Semantic explícitas; `--all` coordina
@@ -51,20 +62,13 @@ matriz C0–C7 que permita presentarla como terminada.
 
 ## Gates y siguiente paso
 
-1. Integrar el lifecycle completo y verificar C0–C7 sobre 20–50 fixtures
-   temporales, con las nueve rutas, dos reanudaciones, replay terminal,
-   dependencias ausentes, límites, cancelación, drift y paridad CLI/API/SDK/MCP.
-2. Confirmar que cada run conserva root/identidad, snapshot, configuración,
-   owner heads, checkpoints, presupuesto restante y capacidades de replay, y
-   que Semantic/Code no publican epochs parciales o ambiguos.
-3. Ejecutar Pytest, Ruff, Mypy, Pyright y Semgrep individualmente y la suite
-   integral después de integrar los cambios; registrar resultados y hashes fuera
-   de `docs/`.
-4. Sólo después de la aceptación de fuente, construir dos veces, verificar
-   wheel/manifest/launcher/`source_sha`, instalar con HOME/XDG aislados y
-   `NEOCORTEX_TEST_PYTHON`, y probar smoke/resume/replay desde el artefacto. La
-   promoción exige además `HEAD == main == origin/main`, árbol limpio, staging
-   vacío y evidencia de corpus intacto.
+1. Esperar una ventana quiescente para `Neocortex agent serve` y ejecutar la
+   instalación canónica desde `062f743fb5cc99c67e8c7d2b0c622122b79f0794`.
+2. Verificar `current`, rollback inmediato, manifest, launcher y staging, y
+   repetir smoke/resume/replay desde el artefacto canónico con
+   `NEOCORTEX_TEST_PYTHON`.
+3. Actualizar el pendiente y su receipt sólo después de esa promoción; mantener
+   separadas Semantic 17, R1–R4 y cualquier operación física o poda de estado.
 
 Los warnings y wheels de analizadores ausentes de la línea previa conservan su
 clasificación independiente; no reabrir Windows, R1–R4 ni las superficies de
