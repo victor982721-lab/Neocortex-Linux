@@ -5,8 +5,8 @@
 **Fuente de verdad:** estado vivo de `main`/`origin/main`,
 `PENDIENTES.md`, `HISTORIAL.md` y receipts canónicos fechados
 
-**Estado vivo:** `HEAD == main == origin/main ==
-a7c87ea779ce8df91f5b8f0bbade7e1d94ef04c4`; árbol limpio.
+**Estado vivo:** `HEAD == main == origin/main`; árbol limpio. El SHA exacto se
+revalida en cada gate de publicación.
 
 ## Alcance actual
 
@@ -64,7 +64,7 @@ matriz C0–C7 que permita presentarla como terminada.
 ## Gates y siguiente paso
 
 1. Esperar una ventana quiescente para `Neocortex agent serve` y ejecutar la
-   instalación canónica desde `a7c87ea779ce8df91f5b8f0bbade7e1d94ef04c4`.
+   instalación canónica desde el SHA vivo verificado en ese momento.
 2. Verificar `current`, rollback inmediato, manifest, launcher y staging, y
    repetir smoke/resume/replay desde el artefacto canónico con
    `NEOCORTEX_TEST_PYTHON`.
