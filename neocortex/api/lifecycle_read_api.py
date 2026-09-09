@@ -936,7 +936,11 @@ def _classify(exc: BaseException) -> tuple[str, str, int, str]:
         return "schema_incompatible", "schema_incompatible", 6, "lifecycle schema is unsupported"
     if isinstance(exc, (LifecycleStatusContractError, sqlite3.DatabaseError, json.JSONDecodeError)):
         return "state_corrupt", "corrupt", 7, "framework lifecycle snapshot is corrupt"
-    return "state_unavailable", "unavailable", 1, "framework lifecycle state is unavailable"
+    detail = sanitize_untrusted_text(str(exc), limit=MAX_ERROR_CHARS)
+    message = "framework lifecycle state is unavailable"
+    if detail:
+        message = f"{message}: {detail}"
+    return "state_unavailable", "unavailable", 1, message
 
 
 def _validate_envelope(payload: dict[str, object]) -> dict[str, object]:
