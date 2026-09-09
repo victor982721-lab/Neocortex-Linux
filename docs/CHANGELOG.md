@@ -4,13 +4,23 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
-## 0.13.0 — en desarrollo (fuente)
+## 0.13.0 — instalada y verificada (fuente `42115cd`)
 
-Estas entradas describen el contrato y la integración de la fuente para el
-lifecycle durable de `--all`; no acreditan una release 0.13 instalada, un
-artefacto promovido ni una corrida multimodal completa. El estado de aceptación
-se cierra únicamente con evidencia C0–C7 y el gate de release documentado en
-[ROADMAP_90_DAYS.md](ROADMAP_90_DAYS.md).
+Estas entradas describen el contrato y la integración del lifecycle durable de
+`--all`. La release `0.13.0-42115cd060f3-cp314-linux-x86_64` quedó instalada y
+verificada; el receipt E2E fechado está fuera de `docs/` en
+`/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-09-lifecycle-013/`.
+
+### Cierre instalado
+
+- `current` y rollback inmediato concilian con el SHA final; `.staging` quedó
+  vacío y el launcher reporta `Neocortex 0.13.0`.
+- Dos corridas `--all` sobre 29 fixtures aisladas terminaron con `RC1=0` y
+  `RC2=0`; las nueve rutas, Semantic y replay quedaron completos, sin cambios
+  en bytes de fixtures.
+- La corrección del lock integrado de Semantic evita reacquirir `framework.lock`
+  durante el callback lifecycle, mientras las invocaciones Semantic directas
+  conservan su exclusividad.
 
 ### Lifecycle durable
 

@@ -280,10 +280,11 @@ workers.
 
 La validación local ejecuta Pytest, Ruff, Mypy, Pyright y Semgrep como
 herramientas individuales, además de una suite integral posterior a la
-integración transversal. La publicación exige después build reproducible,
-manifest/wheel/launcher verificados, smoke/replay desde el artefacto instalado,
-`HEAD == main == origin/main`, árbol limpio y evidencia de corpus intacto; hasta
-entonces el estado es `TARGET`/`SOURCE-ONLY`, no `IMPLEMENTED` instalado.
+integración transversal. El gate quedó satisfecho desde `42115cd`: build
+reproducible, manifest/wheel/launcher verificados, smoke/replay desde el
+artefacto instalado, `HEAD == main == origin/main`, árbol limpio y evidencia de
+corpus intacto. El estado de 0.13 es `IMPLEMENTED` instalado; los gates físicos,
+Semantic 17 y reservas R1–R4 siguen separados.
 
 ## Orden inmediato
 
@@ -295,14 +296,11 @@ familias reservadas que no se hayan utilizado para ajustar el sistema. El
 handoff funcional conserva ese gate separado de la publicación y la instalación;
 no habilita limpieza, KIO real, reindexación global ni modelos nuevos.
 
-1. Integrar el lifecycle y cerrar C0–C7 sobre temporales aislados, sin abrir el
-   corpus personal ni la SQLite cercada durante writers.
-2. Comparar estado, cobertura, errores, replay y procedencia entre CLI/API/SDK/MCP;
-   no convertir una prueba focal en cierre de release.
-3. Construir e instalar sólo después de la aceptación de fuente, conservando
-   publicación de código, instalación, smoke y promoción como barreras separadas.
-4. Mantener KIO/restore de escritorio, sincronización de caches y autoridad MCP
+1. Mantener la release instalada y el rollback inmediato bajo verificación de
+   procedencia, sin abrir el corpus personal ni la SQLite cercada durante writers.
+2. Mantener KIO/restore de escritorio, sincronización de caches y autoridad MCP
    como gates independientes, no como requisitos del piloto.
+3. Tratar Semantic 17, R1–R4 y cualquier poda como decisiones separadas.
 
 ## Límites
 

@@ -1,17 +1,19 @@
 # Handoff operativo vigente — NeoCortex
 
-**Última verificación:** 2026-09-08, `America/Mexico_City`
+**Última verificación:** 2026-09-09, `America/Mexico_City`
 **Checkout:** `/home/winterboss/Neocortex/Repository`
 **Fuente de verdad:** estado vivo de `main`/`origin/main`,
 `PENDIENTES.md`, `HISTORIAL.md` y receipts canónicos fechados
 
-**Estado vivo:** `HEAD == main == origin/main`; árbol limpio. El SHA exacto se
-revalida en cada gate de publicación.
+**Estado vivo:** `HEAD == main == origin/main ==
+42115cd060f347a8f95aec8b46a92c1c502d13c8`; árbol limpio. `current` apunta a
+`0.13.0-42115cd060f3-cp314-linux-x86_64`, el rollback inmediato a
+`0.13.0-1bb73907d9ab-cp314-linux-x86_64` y `.staging` está vacío.
 
 ## Alcance actual
 
-NeoCortex 0.13.0 está en desarrollo para cerrar el lifecycle durable de
-`--all`. El objetivo coordina las nueve rutas (`pdf`, `docx`, `office`,
+NeoCortex 0.13.0 quedó implementado, instalado y verificado para el lifecycle
+durable de `--all`. El objetivo coordina las nueve rutas (`pdf`, `docx`, `office`,
 `archive`, `text`, `audio`, `video`, `image`, `code`), inventario,
 catalogación/deduplicación, Semantic y Code bajo un run Framework reanudable,
 con manifest, stages, checkpoints, presupuesto global, replay idempotente y
@@ -25,13 +27,18 @@ subtests**, Ruff/Mypy/Pyright sin errores en las cohortes afectadas y Semgrep
 sin hallazgos de producto; la evidencia está en
 `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-08-lifecycle-013/`.
 
-El artefacto del SHA anterior pasó verificación y smoke/replay en un layout
-aislado temporal; el receipt canónico de esta línea se regenerará desde el SHA
-vivo anterior a cualquier promoción. La release canónica aún no se promueve
-desde el SHA vivo: `current` permanece en
-`0.13.0-f17049318f46-cp314-linux-x86_64` porque el rollback
-`0.12.0-3396069da66d-cp314-linux-x86_64` está siendo usado por un
-`Neocortex agent serve` activo.
+La release canónica se construyó desde `42115cd`, verificó manifest, árbol,
+launcher y procedencia, y pasó `tools/release_linux.py verify` con corpus de
+smoke vacío. El receipt de instalación es
+`/home/winterboss/.local/state/Neocortex/state/installation-receipts/20260909T165618.879737Z-install-0.13.0-42115cd060f3-cp314-linux-x86_64.json`;
+el expediente E2E es
+`/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-09-lifecycle-013/`.
+
+El piloto instalado sobre 29 fixtures aisladas pasó dos corridas (`RC1=0`,
+`RC2=0`), nueve rutas, Semantic `completed`, replay con cachés y bytes de
+fixtures sin cambios. La corrección del lock integrado quedó incluida en el
+artefacto; los procesos `agent serve` bloqueantes se cerraron con `SIGTERM`
+antes de promover.
 
 Semantic se registra dentro del mismo lifecycle, pero el Semantic pesado es
 opt-in. Archive, Code y Video son fuentes Semantic explícitas; `--all` coordina
@@ -58,18 +65,15 @@ el cierre de 0.13:
   `.staging` quedó vacío.
 
 Estas observaciones son históricas y permanecen separadas de la aceptación del
-lifecycle 0.13. No hay aquí un receipt de instalación/promoción 0.13 ni una
-matriz C0–C7 que permita presentarla como terminada.
+lifecycle 0.13; la aceptación vigente está en el expediente fechado del SHA
+`42115cd`.
 
 ## Gates y siguiente paso
 
-1. Esperar una ventana quiescente para `Neocortex agent serve` y ejecutar la
-   instalación canónica desde el SHA vivo verificado en ese momento.
-2. Verificar `current`, rollback inmediato, manifest, launcher y staging, y
-   repetir smoke/resume/replay desde el artefacto canónico con
-   `NEOCORTEX_TEST_PYTHON`.
-3. Actualizar el pendiente y su receipt sólo después de esa promoción; mantener
-   separadas Semantic 17, R1–R4 y cualquier operación física o poda de estado.
+1. Mantener `current` y el rollback inmediato, sin iniciar `agent serve` sobre
+   una release que deba retirarse durante futuras promociones.
+2. Mantener separadas Semantic 17, R1–R4 y cualquier operación física o poda de
+   estado; no se incluyen en el cierre de este lifecycle.
 
 Los warnings y wheels de analizadores ausentes de la línea previa conservan su
 clasificación independiente; no reabrir Windows, R1–R4 ni las superficies de
