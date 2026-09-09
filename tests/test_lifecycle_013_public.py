@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, cast
 
 from neocortex.api import public
 from neocortex.api.cli.cli_config import framework_config_from_args
@@ -94,13 +95,15 @@ def test_status_json_is_the_same_bounded_read_only_envelope_as_api(
     )
 
     for payload in (cli_payload, api_payload):
+        payload_map = cast(dict[str, Any], payload)
         assert payload["schema"] == "neocortex.lifecycle-envelope/v1"
         assert payload["kind"] == "neocortex_lifecycle_status"
         assert payload["operation"] == "lifecycle_status"
         assert payload["read_only"] is True
-        assert payload["runs"][0]["run_id"] == run_id
-        assert "budget" in payload["runs"][0]
-        assert "stages" in payload["runs"][0]
+        run = cast(dict[str, Any], payload_map["runs"][0])
+        assert run["run_id"] == run_id
+        assert "budget" in run
+        assert "stages" in run
 
     # request_id is intentionally per read; the bounded result is otherwise
     # structurally equivalent across the two public read surfaces. Live status
@@ -108,7 +111,8 @@ def test_status_json_is_the_same_bounded_read_only_envelope_as_api(
     cli_payload.pop("request_id")
     api_payload.pop("request_id")
     for payload in (cli_payload, api_payload):
-        run = payload["runs"][0]
+        payload_map = cast(dict[str, Any], payload)
+        run = cast(dict[str, Any], payload_map["runs"][0])
         run["elapsed_ns"] = 0
         run["budget"]["elapsed_ns"] = 0
         run["budget"]["elapsed_seconds"] = 0

@@ -14,6 +14,7 @@ from argparse import Namespace
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -51,6 +52,7 @@ from neocortex.runtime.orchestration.orchestrator import (
 )
 from neocortex.runtime.orchestration.route_registry import (
     RouteAdapter,
+    RouteLifecycleCapability,
     builtin_route_registry,
 )
 from neocortex.runtime.orchestration.route_selection import BUILTIN_ROUTE_ORDER
@@ -235,7 +237,10 @@ def _route_registry(
         registry[name] = RouteAdapter(
             name,
             execute,
-            lifecycle_capability=(capabilities or {}).get(name, "safe_replay"),
+            lifecycle_capability=cast(
+                RouteLifecycleCapability,
+                (capabilities or {}).get(name, "safe_replay"),
+            ),
         )
     return registry
 
@@ -279,7 +284,7 @@ def test_all_contract_closes_nine_routes_and_types_missing_dependencies() -> Non
     statuses = inspect_runtime_capabilities(
         ALL_ROUTES,
         module_finder=lambda _module: None,
-        distribution_version=lambda _distribution: None,
+        distribution_version=lambda _distribution: "missing",
         executable_finder=lambda _executable: None,
     )
     assert tuple(status.capability for status in statuses) == ALL_ROUTES
@@ -311,14 +316,15 @@ def test_all_runs_twenty_fixtures_and_publishes_route_capabilities(
     status = statuses[0]
     assert status.status == "completed"
     assert status.manifest is not None
-    assert set(status.manifest["selected_routes"]) == set(ALL_ROUTES)
-    assert status.manifest["route_capabilities"]["pdf"] == "phase_resume"
-    assert set(status.manifest["route_capabilities"]) == set(ALL_ROUTES)
+    manifest = cast(dict[str, Any], status.manifest)
+    assert set(manifest["selected_routes"]) == set(ALL_ROUTES)
+    assert manifest["route_capabilities"]["pdf"] == "phase_resume"
+    assert set(manifest["route_capabilities"]) == set(ALL_ROUTES)
     assert {route.route_name for route in status.routes} == set(ALL_ROUTES)
     assert all(route.status == "completed" for route in status.routes)
     assert all(route.candidates == 20 for route in status.routes)
     assert all(
-        route.resume_capability == status.manifest["route_capabilities"][route.route_name]
+        route.resume_capability == manifest["route_capabilities"][route.route_name]
         for route in status.routes
     )
     assert status.budget is not None
@@ -777,9 +783,11 @@ def test_cli_runs_semantic_as_a_framework_lifecycle_stage(
         )
         == 0
     )
-    assert observed["semantic_kwargs"]["run_id"] == 7
-    assert observed["semantic_kwargs"]["resume_source_run_id"] is None
-    assert observed["stage_details"]["selection_pending"] is True
+    semantic_kwargs = cast(dict[str, Any], observed["semantic_kwargs"])
+    stage_details = cast(dict[str, Any], observed["stage_details"])
+    assert semantic_kwargs["run_id"] == 7
+    assert semantic_kwargs["resume_source_run_id"] is None
+    assert stage_details["selection_pending"] is True
 
 
 @pytest.mark.capability("agent")
@@ -818,8 +826,10 @@ def test_cli_api_sdk_and_mcp_expose_the_same_read_only_lifecycle_envelope(
         state_directory=source.state_directory,
     )
     assert payload["read_only"] is True
-    assert payload["runs"][0]["run_id"] == result.run_id
-    assert payload["runs"][0]["lifecycle"]["schema"] == "neocortex.lifecycle-envelope/v1"
+    payload_map = cast(dict[str, Any], payload)
+    run_payload = cast(dict[str, Any], payload_map["runs"][0])
+    assert run_payload["run_id"] == result.run_id
+    assert run_payload["lifecycle"]["schema"] == "neocortex.lifecycle-envelope/v1"
     api_payload = public.lifecycle_status_payload(
         limit=1,
         run_id=result.run_id,

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from argparse import Namespace
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
 from neocortex.deduplication import FileSnapshot
 from neocortex.persistence.framework_state_writer import FrameworkState
 from neocortex.runtime.models import FrameworkConfig
+from neocortex.runtime.models import RouteOnlyRunResult
 from neocortex.runtime.orchestration.orchestrator import FrameworkOrchestrator
 from neocortex.runtime.orchestration.route_registry import (
     RouteAdapter,
@@ -52,14 +54,14 @@ def _context(
         pdf_max_documents=max_documents,
     )
     return RouteExecutionContext(
-        config=config,
+        config=cast(FrameworkConfig, config),
         root=tmp_path,
-        framework_state=view,
+        framework_state=cast(Any, view),
         run_id=1,
         scan_id=1,
         progress=None,
         resource_coordinator=None,
-        cancellation=Namespace(),
+        cancellation=cast(Any, Namespace()),
     )
 
 
@@ -169,6 +171,7 @@ def test_semantic_only_resume_creates_no_content_route_run(tmp_path: Path) -> No
         },
     ).run()
 
+    result = cast(RouteOnlyRunResult, result)
     assert result.source_run_id == source_run
     assert result.route_results == {}
     assert calls == []
