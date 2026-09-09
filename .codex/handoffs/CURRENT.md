@@ -6,7 +6,7 @@
 `PENDIENTES.md`, `HISTORIAL.md` y receipts canónicos fechados
 
 **Estado vivo:** `HEAD == main == origin/main ==
-062f743fb5cc99c67e8c7d2b0c622122b79f0794`; árbol limpio.
+a7c87ea779ce8df91f5b8f0bbade7e1d94ef04c4`; árbol limpio.
 
 ## Alcance actual
 
@@ -25,9 +25,10 @@ subtests**, Ruff/Mypy/Pyright sin errores en las cohortes afectadas y Semgrep
 sin hallazgos de producto; la evidencia está en
 `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-08-lifecycle-013/`.
 
-El artefacto final `0.13.0-062f743fb5cc-cp314-linux-x86_64` pasó verificación y
-smoke/replay en un layout aislado temporal. La release canónica aún no se
-promueve desde este SHA: `current` permanece en
+El artefacto del SHA anterior pasó verificación y smoke/replay en un layout
+aislado temporal; el receipt canónico de esta línea se regenerará desde el SHA
+vivo anterior a cualquier promoción. La release canónica aún no se promueve
+desde el SHA vivo: `current` permanece en
 `0.13.0-f17049318f46-cp314-linux-x86_64` porque el rollback
 `0.12.0-3396069da66d-cp314-linux-x86_64` está siendo usado por un
 `Neocortex agent serve` activo.
@@ -63,7 +64,7 @@ matriz C0–C7 que permita presentarla como terminada.
 ## Gates y siguiente paso
 
 1. Esperar una ventana quiescente para `Neocortex agent serve` y ejecutar la
-   instalación canónica desde `062f743fb5cc99c67e8c7d2b0c622122b79f0794`.
+   instalación canónica desde `a7c87ea779ce8df91f5b8f0bbade7e1d94ef04c4`.
 2. Verificar `current`, rollback inmediato, manifest, launcher y staging, y
    repetir smoke/resume/replay desde el artefacto canónico con
    `NEOCORTEX_TEST_PYTHON`.
