@@ -9,6 +9,7 @@ import subprocess
 import sys
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -215,9 +216,13 @@ def test_environment_interpreter_path_supports_windows_layout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(pip_bootstrap.os, "name", "nt")
+    original_os_name = os.name
+    original_path = Path()
+    monkeypatch.setattr(pip_bootstrap, "os", SimpleNamespace(name="nt"))
 
     assert pip_bootstrap.environment_python(tmp_path) == tmp_path / "Scripts" / "python.exe"
+    assert os.name == original_os_name
+    assert Path() == original_path
 
 
 def test_bootstrap_cli_seeds_an_explicit_offline_target(

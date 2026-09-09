@@ -33,6 +33,133 @@ bootstrap implícito por red/PyPI. `pip-audit` o una consulta advisory remota s�
 proceden ante solicitud expresa y con nombres/versiones mínimos, sin código,
 corpus, secretos, `--fix` ni mutación de paquetes.
 
+## Validar una fuente temporal
+
+Usa esta receta sólo cuando la comprobación requiera una copia privada de fuente;
+no es una barrera nueva para toda tarea ni una validación de release instalada.
+`SRC` es la raíz completa de esa copia, con procedencia del mismo SHA/diff, no el
+checkout vivo ni tests de otro árbol. La receta crea un `RUN` nuevo y privado en
+`/tmp`; ambas raíces deben ser escribibles según el permiso efectivo, sin abrir
+el HOME real.
+
+Resuelve `QUALITY_PY` y `STATIC_PY` a los **binarios absolutos dentro de sus venvs**
+verificados; no uses `readlink -f` sobre Python, porque puede seleccionar el
+intérprete base. `TOOLING_ROOT` es el padre absoluto que contiene el venv nombrado
+en `[tool.pyright].venv`. Confirma módulos/versiones y Node local antes de analizar;
+si faltan, no permitas bootstrap remoto implícito. No muevas las raíces canónicas.
+
+```bash
+set -euo pipefail
+: "${SRC:?raíz privada}" "${QUALITY_PY:?Python de calidad}" \
+  "${STATIC_PY:?Python estático}" "${TOOLING_ROOT:?padre del venv de Pyright}"
+command -v node >/dev/null  # no bootstrap de Node por red
+RUN=$(mktemp -d /tmp/neocortex-validation-XXXXXX)
+export SRC RUN QUALITY_PY STATIC_PY TOOLING_ROOT
+SEMGREP_BIN="${STATIC_PY%/*}/semgrep"
+test -x "$SEMGREP_BIN" || exit 1
+umask 077
+export HOME="$RUN/home" XDG_CONFIG_HOME="$RUN/config" XDG_CACHE_HOME="$RUN/cache"
+export XDG_DATA_HOME="$RUN/data" XDG_STATE_HOME="$RUN/state"
+export XDG_DOCUMENTS_DIR="$RUN/documents" XDG_RUNTIME_DIR="$RUN/runtime"
+export XDG_CONFIG_DIRS="$RUN/config" XDG_DATA_DIRS="$RUN/data"
+export TMPDIR="$RUN/tmp" TMP="$RUN/tmp" TEMP="$RUN/tmp"
+export HF_HOME="$RUN/model-cache/huggingface" TORCH_HOME="$RUN/model-cache/torch"
+export HF_HUB_CACHE="$HF_HOME/hub"
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1
+export DO_NOT_TRACK=1 ORT_DISABLE_TELEMETRY=1 PIP_NO_INDEX=1
+export PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1
+export PYTHONPYCACHEPREFIX="$RUN/pycache" COVERAGE_FILE="$RUN/coverage"
+export SEMGREP_SETTINGS_FILE="$RUN/semgrep/settings.yml"
+export SEMGREP_LOG_FILE="$RUN/semgrep/semgrep.log"
+unset PYTHONPATH PYTHONHOME NEOCORTEX_CORPUS_ROOT NEOCORTEX_TEST_PYTHON
+unset HUGGINGFACE_HUB_CACHE TRANSFORMERS_CACHE
+mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" \
+  "$XDG_STATE_HOME" "$XDG_DOCUMENTS_DIR/NeoCortex/Corpus" "$XDG_RUNTIME_DIR" \
+  "$TMPDIR" "$HF_HUB_CACHE" "$TORCH_HOME" "$RUN/semgrep"
+cd -- "$SRC" || exit 1
+```
+
+Los exports no crean un sandbox ni cierran la red: conserva el aislamiento real
+autorizado. `XDG_CONFIG_HOME` debe existir antes de Semgrep; sus settings/log
+explícitos evitan el fallback a `HOME/.semgrep`. No uses el launcher productivo
+para comprobar fuente: puede fijar destinos instalados distintos de estos exports.
+
+### Metadatos y foco antes de una suite completa
+
+Genera metadatos desde **esa fuente privada**; nunca copies `.egg-info`/`.dist-info`
+del checkout ni instales otra versión en el venv para satisfacer la identidad.
+Con `setuptools==83.0.0`, `setup(script_args=["egg_info"])` crea metadatos propios
+en `SRC`, con lista de archivos y locators resolubles. No lo ejecutes en el
+checkout activo. Preparar sólo `.dist-info` externo mediante
+`prepare_metadata_for_build_wheel` no basta: puede carecer de registros de
+archivos y convertir el caso importante en un skip.
+
+```bash
+"$QUALITY_PY" - <<'PY'
+import importlib.metadata as md
+import os
+from pathlib import Path
+import sys
+import tomllib
+from setuptools import setup
+
+src = Path(os.environ["SRC"]).resolve()
+assert Path.cwd().resolve() == src
+assert not src.is_relative_to(Path("/home/winterboss/Neocortex/Repository").resolve())
+assert not (src / ".git").exists(), "usa una extracción privada, no un checkout"
+cfg = tomllib.loads((src / "pyproject.toml").read_text())
+assert cfg["build-system"]["build-backend"] == "setuptools.build_meta"
+assert f"setuptools=={md.version('setuptools')}" in cfg["build-system"]["requires"]
+assert not list(src.glob("*.egg-info")) and not list(src.glob("*.dist-info")), "usa fuente privada sin metadatos heredados"
+setup(script_args=["egg_info"])
+import neocortex
+assert Path(neocortex.__file__).resolve().parent == src / "neocortex"
+dist = md.distribution("neocortex-framework")
+metadata_dir = Path(dist._path).resolve()  # egg-info puede devolver una ruta relativa
+assert metadata_dir.parent == src and metadata_dir.name.endswith(".egg-info")
+assert Path(dist.locate_file("")).resolve() == src
+assert dist.version == neocortex.__version__
+files = {str(item): item for item in dist.files or ()}
+assert files, "los metadatos deben enumerar archivos reales"
+for relative in ("neocortex/__init__.py", "neocortex/capabilities/formats/text/text_route.py"):
+    assert relative in files
+    located = Path(dist.locate_file(files[relative])).resolve()
+    assert located == src / relative and located.is_file()
+assert Path(sys.prefix).resolve() == Path(os.environ["QUALITY_PY"]).parent.parent.resolve()
+assert (Path(os.environ["TOOLING_ROOT"]) / cfg["tool"]["pyright"]["venv"] / "bin/python").is_file()
+print(sys.executable, neocortex.__file__, metadata_dir, dist.version)
+PY
+```
+
+El preflight modifica sólo `SRC` privado y no instala paquetes. No basta con que
+coincida la versión: comprueba archivos de implementación y sus rutas, resolviendo
+primero las rutas relativas de metadatos. No uses `PYTHONPATH` para inyectar una
+distribución incompleta ni mezcles fuente con metadatos del artefacto instalado.
+
+Desde `SRC`, el foco de esta identidad es
+`"$QUALITY_PY" -m pytest --capabilities=all -q tests/test_text_implementation_identity.py`.
+Comprueba antes su colección con `--collect-only`, y exige todos sus casos
+ejecutados y aprobados, sin skips por metadatos ausentes. Sólo después amplía a la suite
+pertinente. Para otro cambio selecciona además su foco, sin borrar errores o
+confundir los skips previstos de otra capacidad con aceptación de esta identidad.
+
+Para estática, elige targets afectados, no agregues `neocortex tests tools` por
+costumbre. Ejecuta sólo las herramientas pertinentes, cada una por separado:
+
+- Ruff: `"$QUALITY_PY" -m ruff check --config "$SRC/pyproject.toml" <targets>`
+- Mypy: `"$QUALITY_PY" -m mypy --config-file "$SRC/pyproject.toml" <targets>`
+- Pyright: `"$QUALITY_PY" -m pyright --project "$SRC" --venvpath "$TOOLING_ROOT" <targets>`
+- Semgrep: `"$SEMGREP_BIN" --config "$SRC/semgrep/neo-invariants.yml" --metrics=off --disable-version-check <targets>`
+
+Usa el entrypoint del venv de Semgrep: `python -m semgrep` está retirado en la
+versión instalada y devuelve error antes de analizar archivos.
+
+Comprueba root/config, intérprete/venv, reglas y cobertura de archivos mayor que
+cero sobre el foco antes de ampliar el análisis. Un rc=0 con cero archivos no
+valida nada; un error de tipos tampoco se vuelve falso porque otra herramienta
+falló por entorno. Corrige la invocación mínima y conserva los errores restantes,
+sin silenciamientos ni nuevas barreras integrales.
+
 ## Release, sólo cuando esté en alcance
 
 Usa `tools/release_linux.py`, no otro instalador personal paralelo. La autorización

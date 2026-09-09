@@ -14,6 +14,11 @@ description: Implementar o corregir una capacidad solicitada de NeoCortex con ru
 3. Implementa el cambio pedido en el flujo existente y usa herramientas de
    validación individual conforme a [desarrollo](../../../docs/subprojects/development-release.md).
    Aísla fixtures/estado; ni corpus real, proveedores, modelos ni gate agregador.
+   Si usas fuente temporal, sigue la [receta de ejecución](../../../docs/subprojects/development-release.md#validar-una-fuente-temporal):
+   cwd en esa fuente, tooling absoluto, HOME/XDG/settings privados y metadatos
+   generados desde el mismo source, nunca copiados del checkout. Comprueba
+   intérprete/root, colección o cobertura no vacía y un foco antes de ampliar;
+   no soluciones rutas erróneas abriendo HOME ni descartes errores de tipos.
 4. Integra y publica main según autorización permanente, preservando trabajo
    ajeno. La raíz verifica remoto/árbol y actualiza registros; reactivar un agente
    inactivo requiere `followup_task`, no sólo enviar un mensaje.
