@@ -632,8 +632,115 @@ def test_semantic_index_public_signature_is_stable() -> None:
         "(args: 'argparse.Namespace', *, incomplete_is_error: 'bool' = True, "
         "progress: 'ProgressCallback | None' = None, result_sink: "
         "'Callable[[str, object], None] | None' = None, print_output: 'bool' = "
-        "True) -> 'int'"
+        "True, framework_lock_held: 'bool' = False) -> 'int'"
     )
+
+
+def test_integrated_semantic_seam_skips_nested_framework_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = build_parser().parse_args(
+        [
+            "--all",
+            "--state-directory",
+            str(tmp_path),
+            "--semantic-source",
+            "pdf",
+        ]
+    )
+    validate_arguments(args)
+    monkeypatch.setattr(semantic_cli, "_semantic_text_model", lambda _profile: object())
+    monkeypatch.setattr(
+        semantic_cli,
+        "_selected_semantic_text_sources",
+        lambda _args: ("pdf",),
+    )
+    monkeypatch.setattr(
+        semantic_cli,
+        "_validate_semantic_state_write",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(semantic_cli, "_execute_semantic_index_scopes", lambda *_args, **_kwargs: None)
+
+    from neocortex.runtime.control.locking import FrameworkRunLock
+
+    with FrameworkRunLock(tmp_path / "framework.lock"):
+        assert (
+            run_semantic_index(
+                args,
+                print_output=False,
+                framework_lock_held=True,
+            )
+            == 0
+        )
+
+
+def test_direct_semantic_index_still_rejects_framework_lock_contention(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = build_parser().parse_args(
+        [
+            "--semantic-index",
+            "text",
+            "--semantic-source",
+            "pdf",
+            "--state-directory",
+            str(tmp_path),
+        ]
+    )
+    validate_arguments(args)
+    monkeypatch.setattr(semantic_cli, "_semantic_text_model", lambda _profile: object())
+    monkeypatch.setattr(
+        semantic_cli,
+        "_selected_semantic_text_sources",
+        lambda _args: ("pdf",),
+    )
+    monkeypatch.setattr(
+        semantic_cli,
+        "_validate_semantic_state_write",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(semantic_cli, "_execute_semantic_index_scopes", lambda *_args, **_kwargs: None)
+
+    from neocortex.runtime.control.locking import FrameworkRunLock
+
+    with FrameworkRunLock(tmp_path / "framework.lock"):
+        assert run_semantic_index(args, print_output=False) == 2
+
+
+def test_integrated_semantic_forwards_outer_lock_ownership(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = build_parser().parse_args(
+        [
+            "--all",
+            "--state-directory",
+            str(tmp_path),
+            "--semantic-source",
+            "pdf",
+        ]
+    )
+    validate_arguments(args)
+    (tmp_path / "pdf.sqlite3").touch()
+    observed: dict[str, object] = {}
+
+    def fake_index(_args, **kwargs):
+        observed.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(semantic_cli, "run_semantic_index", fake_index)
+    assert (
+        run_integrated_all_semantic_index(
+            args,
+            print_output=False,
+            framework_lock_held=True,
+        )
+        == 0
+    )
+    assert observed["framework_lock_held"] is True
 
 
 def test_semantic_index_preserves_preparation_execution_and_publication_order(

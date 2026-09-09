@@ -362,8 +362,14 @@ def run_semantic_index(
     progress: ProgressCallback | None = None,
     result_sink: Callable[[str, object], None] | None = None,
     print_output: bool = True,
+    framework_lock_held: bool = False,
 ) -> int:
-    """Incrementally embed durable route state without authorizing downloads."""
+    """Incrementally embed durable route state without authorizing downloads.
+
+    ``framework_lock_held`` is an internal orchestration seam.  The integrated
+    ``--all`` callback runs while its outer Framework lifecycle owns the lock;
+    direct Semantic commands leave this false and acquire the lock here.
+    """
 
     from neocortex.runtime.control.locking import FrameworkRunLock
     from neocortex.semantic.semantic_service import index_image_embeddings, index_text_embeddings
@@ -389,12 +395,17 @@ def run_semantic_index(
             args.state_directory,
             database=True,
         )
-        with FrameworkRunLock(args.state_directory / "framework.lock"):
+        def execute_scopes() -> None:
             _execute_semantic_index_scopes(
                 execution,
                 text_operation=index_text_embeddings,
                 image_operation=index_image_embeddings,
             )
+        if framework_lock_held:
+            execute_scopes()
+        else:
+            with FrameworkRunLock(args.state_directory / "framework.lock"):
+                execute_scopes()
     except Exception as exc:  # model runtimes expose backend-specific exceptions
         return _semantic_index_failure(execution, exc, print_output=print_output)
     return _complete_semantic_index_execution(
@@ -1141,6 +1152,7 @@ def run_integrated_all_semantic_index(
     print_output: bool = True,
     run_id: int | None = None,
     resume_source_run_id: int | None = None,
+    framework_lock_held: bool = False,
 ) -> int:
     """Advance bounded document and image embeddings after ``--all`` routes.
 
@@ -1287,6 +1299,7 @@ def run_integrated_all_semantic_index(
             progress=progress,
             result_sink=capture_result,
             print_output=print_output,
+            framework_lock_held=framework_lock_held,
         )
         _record_integrated_semantic_work(
             integrated_args,

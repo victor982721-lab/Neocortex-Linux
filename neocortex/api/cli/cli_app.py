@@ -415,6 +415,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     semantic_resume_source_run_id: int | None = None
     semantic_stage_runner: Callable[[int], object] | None = None
     semantic_stage_details: Mapping[str, object] | None = None
+    semantic_callback_lock_held = False
     if args.resume_run is not None:
         from .cli_semantic import semantic_resume_available
 
@@ -435,6 +436,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 print_output=not professional_output,
                 run_id=run_id,
                 resume_source_run_id=semantic_resume_source_run_id,
+                framework_lock_held=semantic_callback_lock_held,
             )
             return semantic_exit_code
 
@@ -448,6 +450,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 supports_lifecycle_hook = (
                     "lifecycle_stage_runner" in inspect.signature(run_framework).parameters
                 )
+                semantic_callback_lock_held = supports_lifecycle_hook
                 if supports_lifecycle_hook:
                     result = run_framework(
                         args,
@@ -461,6 +464,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
                     # they cannot host the integrated Semantic callback.
                     result = run_framework(args, progress=progress)
                     if semantic_stage_runner is not None:
+                        semantic_callback_lock_held = False
                         # Compatibility path for callers/tests that replace
                         # ``run_framework`` with the pre-0.13 seam.  The real
                         # implementation receives the callback above; this
