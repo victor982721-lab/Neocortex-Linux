@@ -2221,23 +2221,41 @@ class FrameworkOrchestrator:
             run_kind=run_kind,
             source_run_id=source.run_id,
         )
-        copied = (
-            state.copy_route_candidates(source.run_id, run_id)
-            if source.candidate_backed_routes
-            else 0
-        )
-        heartbeat = RunHeartbeat(
-            self.config.framework_database,
-            run_id,
-            interval_seconds=self.config.heartbeat_interval_seconds,
-        ).start()
-        state.record_event(
-            run_id,
-            "info",
-            "run",
-            "Ejecución aislada de rutas iniciada",
-            self._route_only_start_payload(boundary, source, copied),
-        )
+        heartbeat: RunHeartbeat | None = None
+
+        def abort_start(exc: BaseException) -> None:
+            if heartbeat is not None:
+                heartbeat.stop()
+            try:
+                state.abort_run_start(
+                    run_id,
+                    exc,
+                    cancelled=isinstance(exc, KeyboardInterrupt),
+                )
+            except BaseException as cleanup_error:
+                exc.add_note(f"failed to terminalize startup row: {cleanup_error}")
+
+        try:
+            copied = (
+                state.copy_route_candidates(source.run_id, run_id)
+                if source.candidate_backed_routes
+                else 0
+            )
+            heartbeat = RunHeartbeat(
+                self.config.framework_database,
+                run_id,
+                interval_seconds=self.config.heartbeat_interval_seconds,
+            ).start()
+            state.record_event(
+                run_id,
+                "info",
+                "run",
+                "Ejecución aislada de rutas iniciada",
+                self._route_only_start_payload(boundary, source, copied),
+            )
+        except BaseException as exc:
+            abort_start(exc)
+            raise
         route_payload = self._route_only_start_payload(boundary, source, copied)
         input_snapshot: dict[str, object] = {
             "source_candidate_rows": source.candidate_rows,
@@ -2251,42 +2269,47 @@ class FrameworkOrchestrator:
                 "remaining_bytes": source_budget.get("remaining_bytes"),
                 "deadline_ns": source_budget.get("deadline_ns"),
             }
-        publish_manifest = getattr(state, "publish_run_manifest", None)
-        if callable(publish_manifest):
-            publish_manifest(
-                run_id,
-                RunManifest(
-                    run_id=run_id,
-                    run_kind=run_kind,
-                    source_run_id=source.run_id,
-                    root=str(boundary.access_policy.root),
-                    root_identity=_complete_root_identity(boundary.access_policy),
-                    selected_routes=tuple(self.selected_routes),
-                    route_capabilities={
-                        name: self.route_registry[name].lifecycle_capability
-                        for name in self.selected_routes
-                    },
-                    configuration=route_payload,
-                    budget={
-                        "durable": durable_budget.as_mapping(),
-                        "global_memory_budget_bytes": self.config.global_memory_budget_bytes,
-                        "global_cpu_slots": self.config.global_cpu_slots,
-                        "global_resource_wait_timeout_seconds": (
-                            self.config.global_resource_wait_timeout_seconds
-                        ),
-                    },
-                    input_snapshot=input_snapshot,
-                ).event_payload(),
-            )
-            if self._lifecycle_stage_runner is not None:
-                state.publish_run_stage(
+        try:
+            publish_manifest = getattr(state, "publish_run_manifest", None)
+            if callable(publish_manifest):
+                publish_manifest(
                     run_id,
-                    "semantic",
-                    "pending",
-                    details=self._lifecycle_stage_details,
-                    idempotency_key="semantic:pending",
+                    RunManifest(
+                        run_id=run_id,
+                        run_kind=run_kind,
+                        source_run_id=source.run_id,
+                        root=str(boundary.access_policy.root),
+                        root_identity=_complete_root_identity(boundary.access_policy),
+                        selected_routes=tuple(self.selected_routes),
+                        route_capabilities={
+                            name: self.route_registry[name].lifecycle_capability
+                            for name in self.selected_routes
+                        },
+                        configuration=route_payload,
+                        budget={
+                            "durable": durable_budget.as_mapping(),
+                            "global_memory_budget_bytes": self.config.global_memory_budget_bytes,
+                            "global_cpu_slots": self.config.global_cpu_slots,
+                            "global_resource_wait_timeout_seconds": (
+                                self.config.global_resource_wait_timeout_seconds
+                            ),
+                        },
+                        input_snapshot=input_snapshot,
+                    ).event_payload(),
                 )
-            self._active_run = (self.config.framework_database, run_id)
+                if self._lifecycle_stage_runner is not None:
+                    state.publish_run_stage(
+                        run_id,
+                        "semantic",
+                        "pending",
+                        details=self._lifecycle_stage_details,
+                        idempotency_key="semantic:pending",
+                    )
+                self._active_run = (self.config.framework_database, run_id)
+        except BaseException as exc:
+            abort_start(exc)
+            raise
+        assert heartbeat is not None
         return run_id, heartbeat
 
     @staticmethod

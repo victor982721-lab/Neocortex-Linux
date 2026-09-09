@@ -793,6 +793,24 @@ def test_cli_runs_semantic_as_a_framework_lifecycle_stage(
     assert stage_details["selection_pending"] is True
 
 
+def test_route_only_startup_failure_is_terminalized(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _make_source_fixture(tmp_path, route_names=("text",))
+
+    def fail_copy(*_args: object, **_kwargs: object) -> int:
+        raise RuntimeError("copy setup failed")
+
+    monkeypatch.setattr(FrameworkState, "copy_route_candidates", fail_copy)
+    with pytest.raises(RuntimeError, match="copy setup failed"):
+        _run_route_only(source, _route_registry(source, [], route_names=("text",)), route="text")
+
+    status = list_run_status(source.database, limit=1)[0]
+    assert status.status == "failed"
+    assert status.current_phase == "failed"
+
+
 @pytest.mark.capability("agent")
 def test_cli_api_sdk_and_mcp_expose_the_same_read_only_lifecycle_envelope(
     tmp_path: Path,
