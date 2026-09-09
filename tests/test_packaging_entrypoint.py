@@ -58,7 +58,7 @@ def test_project_metadata_uses_package_version_and_installed_command() -> None:
         "Issues": f"{repository}/issues",
     }
     assert metadata["tool"]["setuptools"]["dynamic"]["version"] == {"attr": "neocortex.__version__"}
-    assert neocortex.__version__ == "0.12.0"
+    assert neocortex.__version__ == "0.13.0"
 
 
 def test_linux_release_direct_pins_satisfy_current_product_metadata() -> None:

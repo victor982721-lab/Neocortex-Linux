@@ -32,6 +32,15 @@ _ACTIVE_DOCUMENTS = frozenset(
         "docs/RECOVERY.md",
         "docs/ROADMAP_90_DAYS.md",
         "docs/SECURITY.md",
+        "docs/SUBPROJECTS.md",
+        "docs/subprojects/code-content.md",
+        "docs/subprojects/curation-effects.md",
+        "docs/subprojects/development-release.md",
+        "docs/subprojects/formats.md",
+        "docs/subprojects/interfaces.md",
+        "docs/subprojects/inventory-catalog.md",
+        "docs/subprojects/platform-state.md",
+        "docs/subprojects/retrieval-context.md",
     }
 )
 _SOURCE_ONLY_DOCUMENTS = frozenset(
@@ -48,6 +57,18 @@ _SOURCE_ONLY_DOCUMENTS = frozenset(
         ".codex/handoffs/NEOCORTEX_0.9.0_CURATION_2026-09-04.md",
         ".codex/handoffs/NEOCORTEX_0.7.2_PAUSE_2026-07-30.md",
         "AGENTS.md",
+        "neocortex/api/AGENTS.md",
+        "neocortex/capabilities/AGENTS.md",
+        "neocortex/code/AGENTS.md",
+        "neocortex/curation/AGENTS.md",
+        "neocortex/deduplication/AGENTS.md",
+        "neocortex/documents/AGENTS.md",
+        "neocortex/interface/AGENTS.md",
+        "neocortex/knowledge/AGENTS.md",
+        "neocortex/persistence/AGENTS.md",
+        "neocortex/runtime/AGENTS.md",
+        "neocortex/semantic/AGENTS.md",
+        "neocortex/workflow/AGENTS.md",
     }
 )
 _RETIRED_DOCUMENTS = frozenset(
