@@ -262,7 +262,9 @@ def test_installed_entrypoints_and_fresh_status_are_headless(product_lab: _Produ
     assert resources["version_matches"] and resources["bundled_wheels"] == []
     status = lab.cli("--state-directory", str(lab.state), "--status", "--status-json")
     _assert_completed(status, expected=2)
-    assert "ERROR status" in status.stdout and "Traceback" not in status.stderr
+    status_payload = json.loads(status.stdout)
+    assert status_payload["error"]["code"] == "state_unavailable"
+    assert "Traceback" not in status.stderr
     assert not lab.state.exists(), "a read must not create or migrate absent state"
 
 
