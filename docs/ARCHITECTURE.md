@@ -1,11 +1,10 @@
 # Arquitectura de NeoCortex
 
 > Describe la arquitectura implementada en el checkout vigente; las entregas
-> futuras viven en [ROADMAP_90_DAYS.md](ROADMAP_90_DAYS.md). El checkout actual
-> está en `HEAD=0a28e92` y la release `current` proviene de
-> `source_sha=42115cd`; la sección de lifecycle 0.13 distingue ese artefacto de
-> la validación fuente-exacta. Ninguna descripción aquí sustituye la evidencia
-> de aceptación.
+> futuras viven en [ROADMAP_90_DAYS.md](ROADMAP_90_DAYS.md). La release
+> `current` proviene de `source_sha=1567fe46821b923be5e90ba4223abdaf81a9924c` y
+> C0–C7 están aceptados sobre ese artefacto. Ninguna descripción aquí sustituye
+> la evidencia de aceptación.
 
 ## Principios
 
@@ -82,7 +81,7 @@ Las implementaciones no tienen la misma riqueza: algunos formatos publican
 localizadores estructurales y otros sólo texto o archivo completo. Esa brecha se
 expone como cobertura, no se rellena con localizadores inventados.
 
-### Lifecycle durable de `--all` (0.13 instalado; aceptación condicionada)
+### Lifecycle durable de `--all` (0.13 instalado y aceptado)
 
 `--all` selecciona exactamente las nueve rutas registradas y las coordina bajo
 un único run Framework: `pdf`, `docx`, `office`, `archive`, `text`, `audio`,
@@ -90,12 +89,9 @@ un único run Framework: `pdf`, `docx`, `office`, `archive`, `text`, `audio`,
 extrae y publica relaciones, pero nunca ejecuta el código del corpus ni lo
 convierte en una herramienta de validación del repositorio.
 
-El artefacto instalado `0.13.0-42115cd060f3-cp314-linux-x86_64` contiene este
-contrato. El checkout donde se edita esta documentación está en
-`HEAD=0a28e92f91b0906dc8f16669783268ac1c42e13c` y sólo reconcilia documentación
-posterior al artefacto; no se debe presentar esa diferencia como una nueva
-release ni declarar aceptado el lifecycle hasta confirmar C0–C7 exactamente
-contra `source_sha=42115cd`.
+El artefacto instalado `0.13.0-1567fe46821b-cp314-linux-x86_64` contiene este
+contrato y fue aceptado con C0–C7, suite integral, calidad estática, smoke,
+replay y piloto aislado sobre el mismo `source_sha`.
 
 El lifecycle ordena las fronteras `preflight → inventory → catalog/dedup →
 routes → semantic → publication → finalize`. El manifest inmutable
@@ -375,10 +371,8 @@ manifest y owner heads antes de publicar, y se abstiene fail-closed ante drift.
 - la deduplicación rápida puede ser evidencia insuficiente para disposición;
 - la cobertura y precisión de localizadores varían por formato;
 - varias fuentes todavía tienen publicación no generacional;
-- la aceptación integral del lifecycle 0.13, incluidos replay y publicación
-  Semantic/Code, permanece pendiente de la evidencia C0–C7 exacta para
-  `source_sha=42115cd`; la suite histórica de 6912 pasadas pertenece a
-  `source_sha=1bb73907d9ab...` y no se transfiere automáticamente;
+- la cobertura y precisión de localizadores siguen variando por formato, aunque
+  los recursos virtuales de Archive ya no exponen identidad física;
 - MCP expone plan/scan/verify y review/decide, pero no autorización con actor autenticado;
 - la ruta física y restore sólo están habilitados mediante backends inyectados y
   fixtures;

@@ -38,7 +38,7 @@ incierta, pero no cuenta como funcionalidad entregada para los casos soportados.
 | Mutación Linux | `curate apply` usa backends POSIX/KIO inyectados y ledger/recovery; `--apply`/`--organization-apply` genéricos siguen absteniéndose |
 | Backup/restore/purge | Implementados mediante `Neocortex databases` |
 | MCP | **IMPLEMENTED:** plan/scan/verify/review/decide; authorize se omite hasta resolver un principal autenticado |
-| Lifecycle durable de `--all` | **ARTEFACTO INSTALADO / VALIDACIÓN FUENTE-EXACTA PENDIENTE:** `current` es `0.13.0-42115cd060f3-cp314-linux-x86_64`; la aceptación integral no se transfiere desde otro SHA |
+| Lifecycle durable de `--all` | **IMPLEMENTED INSTALADO:** `current` es `0.13.0-1567fe46821b-cp314-linux-x86_64`; C0–C7 están aceptados sobre su `source_sha` |
 
 ## 0.10.0 — Evidencia y plan de curación
 
@@ -201,17 +201,13 @@ Criterios verificados del corte acotado:
 La conciliación integral entre owners y las métricas de precisión/recall para
 clasificación multimodal siguen siendo objetivos, no resultados de ese benchmark.
 
-## 0.13.0 — Artefacto instalado; aceptación condicionada
+## 0.13.0 — IMPLEMENTED: lifecycle durable de `--all`
 
 **Estado documental:** el artefacto instalado es
-`0.13.0-42115cd060f3-cp314-linux-x86_64` y su `source_sha` es
-`42115cd060f347a8f95aec8b46a92c1c502d13c8`. El checkout actual, ya en
-`main == origin/main`, está en `HEAD=0a28e92f91b0906dc8f16669783268ac1c42e13c`
-y contiene cambios documentales posteriores al artefacto. La suite integral
-disponible de 6912 pasadas, 59 omitidas y 42 subtests corresponde a
-`source_sha=1bb73907d9ab...`; por tanto, esta sección no declara aceptado el
-lifecycle 0.13 hasta que la raíz confirme C0–C7 y calidad exactamente sobre
-`42115cd`.
+`0.13.0-1567fe46821b-cp314-linux-x86_64` y su `source_sha` es
+`1567fe46821b923be5e90ba4223abdaf81a9924c`. C0–C7 están aceptados exactamente
+sobre ese SHA con 6917 pasadas, 68 omitidas y 42 subtests; la calidad estática y
+el piloto instalado de 37 fixtures concilian con el mismo artefacto.
 
 **Resultado objetivo:** una corrida `--all` coordina `pdf`, `docx`, `office`,
 `archive`, `text`, `audio`, `video`, `image` y `code`, integra el stage Semantic
@@ -286,12 +282,10 @@ workers.
 
 La validación local requerida ejecuta Pytest, Ruff, Mypy, Pyright y Semgrep como
 herramientas individuales, además de una suite integral posterior a la
-integración transversal. El receipt del artefacto de `42115cd` acredita build
-reproducible, manifest/wheel/launcher, smoke/replay desde el artefacto instalado
-y corpus intacto, pero no sustituye la corrida fuente-exacta de C0–C7. La raíz
-debe registrar esa corrida antes de cambiar el estado documental a aceptado; el
-checkout actual es `HEAD=0a28e92` y no debe confundirse con el `source_sha`
-instalado. Los gates físicos, Semantic 17 y reservas R1–R4 siguen separados.
+integración transversal. El receipt final acredita build reproducible,
+manifest/wheel/launcher, smoke/replay desde el artefacto instalado, piloto
+aislado y corpus intacto. Los gates físicos, Semantic 17 y reservas R1–R4
+siguen separados.
 
 ## Orden inmediato
 
@@ -308,9 +302,8 @@ no habilita limpieza, KIO real, reindexación global ni modelos nuevos.
 2. Mantener KIO/restore de escritorio, sincronización de caches y autoridad MCP
    como gates independientes, no como requisitos del piloto.
 3. Tratar Semantic 17, R1–R4 y cualquier poda como decisiones separadas.
-4. No reconstruir ni reinstalar por esta reconciliación documental; cualquier
-   cambio posterior de código/configuración/build exige resolver de nuevo el SHA
-   final y ejecutar el procedimiento de release desde el artefacto.
+4. Cualquier cambio posterior de código/configuración/build exige resolver de
+   nuevo el SHA final y ejecutar el procedimiento de release desde el artefacto.
 
 ## Límites
 

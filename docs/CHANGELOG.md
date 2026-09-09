@@ -4,21 +4,19 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
-## 0.13.0 — artefacto instalado; validación fuente-exacta pendiente
+## 0.13.0 — instalada y verificada (fuente `1567fe4`)
 
 Estas entradas describen el contrato y la integración del lifecycle durable de
-`--all`. La release `0.13.0-42115cd060f3-cp314-linux-x86_64` quedó instalada y
-verificó su artefacto, manifest, launcher, smoke y replay; esa verificación no
-equivale a la aceptación integral C0–C7 del source SHA. La suite histórica de
-6912 pasadas, 59 omitidas y 42 subtests pertenece a `1bb73907d9ab...` y no se
-transfiere automáticamente. El receipt E2E fechado se conserva en el expediente
+`--all`. La release `0.13.0-1567fe46821b-cp314-linux-x86_64` quedó instalada y
+verificada; C0–C7 se aceptaron sobre el mismo `source_sha` con 6917 pasadas,
+68 omitidas y 42 subtests. El receipt E2E fechado se conserva en el expediente
 canónico de auditoría fuera de `docs/`.
 
 ### Cierre instalado
 
 - `current` y rollback inmediato concilian con el SHA final; `.staging` quedó
   vacío y el launcher reporta `Neocortex 0.13.0`.
-- Dos corridas `--all` sobre 29 fixtures aisladas terminaron con `RC1=0` y
+- Dos corridas `--all` sobre 37 fixtures aisladas terminaron con `RC1=0` y
   `RC2=0`; las nueve rutas, Semantic y replay quedaron completos, sin cambios
   en bytes de fixtures.
 - La corrección del lock integrado de Semantic evita reacquirir `framework.lock`

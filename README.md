@@ -5,19 +5,17 @@ organizar archivos personales en Linux. Su objetivo es sustituir inventarios,
 auditorías y scripts improvisados por un flujo reproducible que conserve
 identidad, evidencia, incertidumbre y trazabilidad.
 
-La fuente vigente declara `0.13.0`. El checkout actual está en
-`HEAD=0a28e92f91b0906dc8f16669783268ac1c42e13c` (`main == origin/main`) y
-contiene la reconciliación documental posterior al artefacto. El ejecutable
-`current` es `0.13.0-42115cd060f3-cp314-linux-x86_64`, construido desde
-`source_sha=42115cd060f347a8f95aec8b46a92c1c502d13c8`; el rollback inmediato es
-`0.13.0-1bb73907d9ab-cp314-linux-x86_64` y `.staging` está vacío. El estado
-instalado y el estado del checkout se comprueban por separado; ninguna versión
-por sí sola demuestra aceptación integral del lifecycle.
+La fuente vigente declara `0.13.0`. La última integración verificó
+`HEAD == main == origin/main == 1567fe46821b923be5e90ba4223abdaf81a9924c` y
+árbol limpio. El ejecutable `current` es
+`0.13.0-1567fe46821b-cp314-linux-x86_64`, construido desde ese `source_sha`; el
+rollback inmediato es `0.13.0-42115cd060f3-cp314-linux-x86_64` y `.staging` está
+vacío. El estado instalado y el estado del checkout se comprueban por separado.
 
-La aceptación C0–C7 de 0.13 permanece condicionada a una validación exacta del
-`source_sha=42115cd`. La suite histórica de 6912 pasadas, 59 omitidas y 42
-subtests corresponde a `source_sha=1bb73907d9ab...` y no se transfiere al
-artefacto actual por similitud.
+La aceptación C0–C7 de 0.13 está confirmada sobre el SHA final: 6917 pasadas,
+68 omitidas, 42 subtests, calidad estática sin errores/hallazgos bloqueantes,
+build reproducible, smoke/replay instalado y piloto de 37 fixtures sin cambios
+en sus bytes.
 
 ## Qué resuelve hoy
 

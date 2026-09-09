@@ -5,14 +5,11 @@
 **Fuente de verdad:** estado vivo de `main`/`origin/main`,
 `PENDIENTES.md`, `HISTORIAL.md` y receipts canónicos fechados
 
-**Estado vivo:** el checkout actual está en `main` con `HEAD == main ==
-origin/main == 0a28e92f91b0906dc8f16669783268ac1c42e13c`; la última verificación
-previa a esta reconciliación confirmó el árbol limpio; el estado debe volver a
-verificarse al integrar los cambios documentales y de código. Este checkout
-contiene la reconciliación documental posterior al
-artefacto y no es el `source_sha` de la release activa. `current` apunta a
-`0.13.0-42115cd060f3-cp314-linux-x86_64` (`source_sha=42115cd060f347a8f95aec8b46a92c1c502d13c8`),
-el rollback inmediato es `0.13.0-1bb73907d9ab-cp314-linux-x86_64` y `.staging`
+**Estado vivo:** la última verificación de integración confirmó `HEAD == main ==
+origin/main == 1567fe46821b923be5e90ba4223abdaf81a9924c` y árbol limpio antes de
+esta actualización documental, que es docs-only. `current` apunta a
+`0.13.0-1567fe46821b-cp314-linux-x86_64` (`source_sha=1567fe46821b923be5e90ba4223abdaf81a9924c`),
+el rollback inmediato es `0.13.0-42115cd060f3-cp314-linux-x86_64` y `.staging`
 está vacío.
 
 ## Alcance actual
@@ -24,36 +21,33 @@ inventario, catalogación/deduplicación, Semantic y Code bajo un run Framework
 reanudable, con manifest, stages, checkpoints, presupuesto global, replay
 idempotente y publicación staged/CAS. Code sigue siendo contenido no ejecutable.
 
-La aceptación integral del lifecycle queda condicionada a que la raíz confirme
-la suite C0–C7 y calidad exactamente sobre `source_sha=42115cd...`. La evidencia
-integral disponible de **6912 pasadas, 59 omitidas y 42 subtests** corresponde a
-la línea previa `source_sha=1bb73907d9ab...`; no se transfiere por similitud de
-artefacto ni por el receipt de instalación. Mientras esa corrida exacta no esté
-registrada, este handoff no declara 0.13 aceptado.
+La aceptación integral C0–C7 queda confirmada exactamente sobre
+`source_sha=1567fe46821b923be5e90ba4223abdaf81a9924c`: la suite final registró
+**6917 pasadas, 68 omitidas y 42 subtests**, y los dos tests de empaquetado se
+repitieron después de retirar una ruta privada del changelog. Ruff, Mypy,
+Pyright y Semgrep terminaron sin errores/hallazgos bloqueantes; las advertencias
+Pyright existentes permanecen clasificadas. Esta evidencia no se transfiere a
+otros SHAs.
 
 La fuente contiene el vertical de contratos `neocortex.run-manifest/v1`,
 `neocortex.run-budget/v1`, `neocortex.lifecycle-stage/v1` y
 `neocortex.lifecycle-envelope/v1`, además de lecturas bounded de estado. La
-evidencia registrada para C0–C7 en la línea previa (`source_sha=1bb73907d9ab...`)
-reporta **6912 pasadas, 59 omitidas y 42 subtests**, Ruff/Mypy/Pyright sin
-errores en las cohortes afectadas y Semgrep sin hallazgos de producto; la
-evidencia está en
-`/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-08-lifecycle-013/`.
+evidencia histórica de `source_sha=1bb73907d9ab...` permanece separada; la
+aceptación vigente corresponde al receipt de validación y al expediente E2E
+fechados del SHA `1567fe4`.
 
-La release canónica se construyó desde `42115cd`, verificó manifest, árbol,
+La release canónica se construyó desde `1567fe4`, verificó manifest, árbol,
 launcher y procedencia, y pasó `tools/release_linux.py verify` con corpus de
 smoke vacío. El receipt de instalación del artefacto es
-`/home/winterboss/.local/state/Neocortex/state/installation-receipts/20260909T165618.879737Z-install-0.13.0-42115cd060f3-cp314-linux-x86_64.json`;
-el expediente E2E es
-`/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-09-lifecycle-013/`.
-Estas comprobaciones prueban la procedencia y el estado instalado del artefacto,
-no sustituyen la validación fuente-exacta pendiente.
+`/home/winterboss/.local/state/Neocortex/state/installation-receipts/20260909T215132.124961Z-install-0.13.0-1567fe46821b-cp314-linux-x86_64.json`;
+el expediente E2E final está en
+`/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-09-knowledge-tranche-1567fe4/`.
 
-El piloto instalado sobre 29 fixtures aisladas pasó dos corridas (`RC1=0`,
+El piloto instalado sobre 37 fixtures aisladas pasó dos corridas (`RC1=0`,
 `RC2=0`), nueve rutas, Semantic `completed`, replay con cachés y bytes de
-fixtures sin cambios. La corrección del lock integrado quedó incluida en el
-artefacto; los procesos `agent serve` bloqueantes se cerraron con `SIGTERM`
-antes de promover.
+fixtures sin cambios. La tranche de Knowledge verificó que los miembros ZIP
+son virtuales, conservan localizadores y no exponen identidad física; el límite
+de cursores MCP operacionales quedó alineado a 8 KiB.
 
 Semantic se registra dentro del mismo lifecycle, pero el Semantic pesado es
 opt-in. Archive, Code y Video son fuentes Semantic explícitas; `--all` coordina
@@ -80,19 +74,15 @@ el cierre de 0.13:
 - el hash de metadata del corpus real permaneció idéntico en esa operación y
   `.staging` quedó vacío.
 
-Estas observaciones son históricas y permanecen separadas de la aceptación del
-lifecycle 0.13. El expediente fechado del artefacto `42115cd` conserva la
-evidencia de instalación/piloto, pero la aceptación fuente-exacta sigue
-pendiente de confirmación de la raíz.
+Estas observaciones son históricas y permanecen separadas de la aceptación
+vigente del lifecycle 0.13, que corresponde al SHA `1567fe4` y su artefacto
+instalado.
 
 ## Gates y siguiente paso
 
-1. Confirmar la validación exacta de `42115cd` antes de declarar aceptado el
-   lifecycle 0.13; no inferirla del receipt de instalación ni de la suite de
-   `1bb73907d9ab`.
-2. Mantener `current` y el rollback inmediato, sin iniciar `agent serve` sobre
+1. Mantener `current` y el rollback inmediato, sin iniciar `agent serve` sobre
    una release que deba retirarse durante futuras promociones.
-3. Mantener separadas Semantic 17, R1–R4 y cualquier operación física o poda de
+2. Mantener separadas Semantic 17, R1–R4 y cualquier operación física o poda de
    estado; no se incluyen en el cierre de este lifecycle.
 
 Los warnings y wheels de analizadores ausentes de la línea previa conservan su
