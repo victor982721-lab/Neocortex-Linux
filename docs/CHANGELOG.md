@@ -11,8 +11,8 @@ Estas entradas describen el contrato y la integración del lifecycle durable de
 verificó su artefacto, manifest, launcher, smoke y replay; esa verificación no
 equivale a la aceptación integral C0–C7 del source SHA. La suite histórica de
 6912 pasadas, 59 omitidas y 42 subtests pertenece a `1bb73907d9ab...` y no se
-transfiere automáticamente. El receipt E2E fechado está fuera de `docs/` en
-`/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-09-lifecycle-013/`.
+transfiere automáticamente. El receipt E2E fechado se conserva en el expediente
+canónico de auditoría fuera de `docs/`.
 
 ### Cierre instalado
 
