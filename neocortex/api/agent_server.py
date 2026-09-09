@@ -161,6 +161,14 @@ _ReviewActor = Annotated[
 ]
 _ReviewNote = Annotated[str | None, _pydantic_field(min_length=1, max_length=8_192)]
 _Limit = Annotated[int, _pydantic_field(ge=1, le=100)]
+# Operational-query cursors are federated read tokens, not curation cursors.
+# Keep their MCP admission bound aligned with ``read_api`` (8 KiB); the
+# curation token bound is intentionally smaller because it protects a
+# different, single-owner review contract.
+_OperationalCursor = Annotated[
+    str | None,
+    _pydantic_field(min_length=1, max_length=8_192),
+]
 _Cursor = Annotated[
     str | None,
     _pydantic_field(max_length=MAX_CURATION_CURSOR_BYTES),
@@ -1397,7 +1405,7 @@ def create_server() -> Any:
         query: _Query,
         scope: _Scope = "all",
         limit: _Limit = 20,
-        cursor: _Cursor = None,
+        cursor: _OperationalCursor = None,
     ) -> MCPOperationalQueryOutput:
         return _structured_read_payload(
             lambda: operational_query_payload(

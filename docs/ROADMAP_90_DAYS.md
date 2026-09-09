@@ -1,14 +1,15 @@
 # Roadmap de NeoCortex
 
-> Actualizado el 8 de septiembre de 2026. Un estado aquí no sustituye código,
-> pruebas ni una release instalada desde el SHA final.
+> Actualizado el 9 de septiembre de 2026. Un estado aquí no sustituye código,
+> pruebas ni una release instalada desde el SHA final; el `HEAD` documental y el
+> `source_sha` instalado se registran por separado.
 
 ## Convención de estado
 
 - **CURRENT:** frontera operativa y de seguridad vigente, no identidad de la
   instalación.
-- **IMPLEMENTED:** presente en el checkout y cubierto por pruebas focales; su
-  disponibilidad instalada depende del SHA del manifest y del comando público.
+- **IMPLEMENTED:** presente en el checkout y cubierto por pruebas focales; no
+  implica por sí solo aceptación integral ni disponibilidad instalada.
 - **TARGET:** todavía no implementado.
 - **SOURCE-ONLY:** existe en el checkout o está en integración, pero todavía no
   acredita aceptación integral ni una release instalada.
@@ -37,7 +38,7 @@ incierta, pero no cuenta como funcionalidad entregada para los casos soportados.
 | Mutación Linux | `curate apply` usa backends POSIX/KIO inyectados y ledger/recovery; `--apply`/`--organization-apply` genéricos siguen absteniéndose |
 | Backup/restore/purge | Implementados mediante `Neocortex databases` |
 | MCP | **IMPLEMENTED:** plan/scan/verify/review/decide; authorize se omite hasta resolver un principal autenticado |
-| Lifecycle durable de `--all` | **SOURCE-ONLY / TARGET 0.13:** manifest, stages, presupuesto y lectura bounded en la fuente; aceptación multimodal, replay y release permanecen abiertos |
+| Lifecycle durable de `--all` | **ARTEFACTO INSTALADO / VALIDACIÓN FUENTE-EXACTA PENDIENTE:** `current` es `0.13.0-42115cd060f3-cp314-linux-x86_64`; la aceptación integral no se transfiere desde otro SHA |
 
 ## 0.10.0 — Evidencia y plan de curación
 
@@ -200,12 +201,17 @@ Criterios verificados del corte acotado:
 La conciliación integral entre owners y las métricas de precisión/recall para
 clasificación multimodal siguen siendo objetivos, no resultados de ese benchmark.
 
-## 0.13.0 — TARGET: lifecycle durable de `--all`
+## 0.13.0 — Artefacto instalado; aceptación condicionada
 
-**Estado:** `SOURCE-ONLY`. La fuente contiene un vertical de manifest,
-presupuesto, stages y lectura bounded, pero no se considera aceptado hasta
-completar C0–C7, integrar las rutas y verificar el artefacto instalado. Esta
-sección no declara una release 0.13 instalada ni una corrida `--all` exitosa.
+**Estado documental:** el artefacto instalado es
+`0.13.0-42115cd060f3-cp314-linux-x86_64` y su `source_sha` es
+`42115cd060f347a8f95aec8b46a92c1c502d13c8`. El checkout actual, ya en
+`main == origin/main`, está en `HEAD=0a28e92f91b0906dc8f16669783268ac1c42e13c`
+y contiene cambios documentales posteriores al artefacto. La suite integral
+disponible de 6912 pasadas, 59 omitidas y 42 subtests corresponde a
+`source_sha=1bb73907d9ab...`; por tanto, esta sección no declara aceptado el
+lifecycle 0.13 hasta que la raíz confirme C0–C7 y calidad exactamente sobre
+`42115cd`.
 
 **Resultado objetivo:** una corrida `--all` coordina `pdf`, `docx`, `office`,
 `archive`, `text`, `audio`, `video`, `image` y `code`, integra el stage Semantic
@@ -278,13 +284,14 @@ workers.
 - **C7 — Paridad:** CLI/API/SDK/MCP devuelven los mismos estados, errores,
   stages, capacidades y recuperación; consultar no crea estado.
 
-La validación local ejecuta Pytest, Ruff, Mypy, Pyright y Semgrep como
+La validación local requerida ejecuta Pytest, Ruff, Mypy, Pyright y Semgrep como
 herramientas individuales, además de una suite integral posterior a la
-integración transversal. El gate quedó satisfecho desde `42115cd`: build
-reproducible, manifest/wheel/launcher verificados, smoke/replay desde el
-artefacto instalado, `HEAD == main == origin/main`, árbol limpio y evidencia de
-corpus intacto. El estado de 0.13 es `IMPLEMENTED` instalado; los gates físicos,
-Semantic 17 y reservas R1–R4 siguen separados.
+integración transversal. El receipt del artefacto de `42115cd` acredita build
+reproducible, manifest/wheel/launcher, smoke/replay desde el artefacto instalado
+y corpus intacto, pero no sustituye la corrida fuente-exacta de C0–C7. La raíz
+debe registrar esa corrida antes de cambiar el estado documental a aceptado; el
+checkout actual es `HEAD=0a28e92` y no debe confundirse con el `source_sha`
+instalado. Los gates físicos, Semantic 17 y reservas R1–R4 siguen separados.
 
 ## Orden inmediato
 
@@ -301,6 +308,9 @@ no habilita limpieza, KIO real, reindexación global ni modelos nuevos.
 2. Mantener KIO/restore de escritorio, sincronización de caches y autoridad MCP
    como gates independientes, no como requisitos del piloto.
 3. Tratar Semantic 17, R1–R4 y cualquier poda como decisiones separadas.
+4. No reconstruir ni reinstalar por esta reconciliación documental; cualquier
+   cambio posterior de código/configuración/build exige resolver de nuevo el SHA
+   final y ejecutar el procedimiento de release desde el artefacto.
 
 ## Límites
 

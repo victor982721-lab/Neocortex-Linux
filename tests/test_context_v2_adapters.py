@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from neocortex.api import read_api
+from neocortex.api import agent_server, read_api
 from neocortex.api.cli import human
 from neocortex.api.read_contract import ReadContractError
 from neocortex.capabilities.formats.text.text_state import initialize_text_state, text_database
@@ -135,6 +135,52 @@ def test_human_ask_text_emits_only_the_budgeted_renderer(
     assert observed[0]["budget"]["characters_used"] == len(captured.out)
     assert len(captured.out) <= 12_000
     assert _fingerprints(published_text_state) == before
+
+
+def test_mcp_context_defaults_to_v2_and_keeps_v1_explicit(
+    published_text_state: Path,
+) -> None:
+    """The MCP negotiation matches the CLI default without losing legacy v1."""
+
+    before = _fingerprints(published_text_state)
+    server = agent_server.create_server()
+
+    default_result = asyncio.run(
+        server.call_tool("context", {"query": "protección", "scope": "personal"})
+    )
+    compact = getattr(default_result, "structuredContent", None)
+    assert isinstance(compact, dict)
+    _assert_compact(compact)
+    assert compact["response_version"] == 2
+    assert all(
+        citation.get("answer_sufficiency", "not_assessed") == "not_assessed"
+        for citation in compact["citations"]
+    )
+
+    legacy_result = asyncio.run(
+        server.call_tool(
+            "context",
+            {"query": "protección", "scope": "personal", "response_version": 1},
+        )
+    )
+    _content, legacy = legacy_result
+    assert legacy["schema"] == "neocortex.read-api/v1"
+    assert legacy["scopes"][0]["context"]
+    legacy_rendered = legacy["scopes"][0]["context"]["rendered_context"]
+    assert '"instruction_authority":false' in legacy_rendered
+    assert '"tools_authorized":false' in legacy_rendered
+    assert '"actions_authorized":false' in legacy_rendered
+    assert _fingerprints(published_text_state) == before
+
+
+def test_mcp_operational_cursor_matches_bounded_read_api_contract() -> None:
+    server = agent_server.create_server()
+    tool = next(
+        item for item in asyncio.run(server.list_tools()) if item.name == "operational_query"
+    )
+    cursor_schema = tool.inputSchema["properties"]["cursor"]
+    cursor_branch = next(item for item in cursor_schema["anyOf"] if item.get("type") == "string")
+    assert cursor_branch["maxLength"] == 8_192
 
 
 @pytest.mark.parametrize("legacy", (False, True))

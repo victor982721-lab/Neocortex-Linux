@@ -4,11 +4,14 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
-## 0.13.0 — instalada y verificada (fuente `42115cd`)
+## 0.13.0 — artefacto instalado; validación fuente-exacta pendiente
 
 Estas entradas describen el contrato y la integración del lifecycle durable de
 `--all`. La release `0.13.0-42115cd060f3-cp314-linux-x86_64` quedó instalada y
-verificada; el receipt E2E fechado está fuera de `docs/` en
+verificó su artefacto, manifest, launcher, smoke y replay; esa verificación no
+equivale a la aceptación integral C0–C7 del source SHA. La suite histórica de
+6912 pasadas, 59 omitidas y 42 subtests pertenece a `1bb73907d9ab...` y no se
+transfiere automáticamente. El receipt E2E fechado está fuera de `docs/` en
 `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-09-lifecycle-013/`.
 
 ### Cierre instalado
@@ -60,6 +63,11 @@ verificada; el receipt E2E fechado está fuera de `docs/` en
 
 ## Cambios posteriores a 0.12.0
 
+- La tranche de Knowledge separa recursos físicos y virtuales: los miembros
+  `resource:archive:*` conservan sus localizadores, omiten `physical_identity`
+  y rechazan contratos con owner inconsistente; `operational_query` conserva
+  cursores MCP bounded de 8 KiB y el contexto v2 sigue siendo el default con v1
+  explícito.
 - Identidad por codec/owner y bindings de recursos físicos/lógicos, planes
   organizativos delimitados por raíz y errores de curación localizables en JSON.
 - Evidencia dedup por miembro, keeper explicable y distinción entre redundancia

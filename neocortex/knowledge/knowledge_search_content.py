@@ -289,6 +289,22 @@ def _resource_from_resolved(
     resource_ref_type: type[ResourceRef],
     physical_identity_ref_type: type[PhysicalIdentityRef],
 ) -> tuple[ResourceRef, tuple[str, ...]]:
+    # Archive members are virtual resources.  Their ``source_identity`` is a
+    # member key, not a filesystem identity, even when the key happens to look
+    # decodable by a provider's legacy codec.  Keep the virtual resource ID and
+    # member locators as evidence, but never expose that key as a physical
+    # identity (or allow inventory joins to treat it as one).
+    if resolved.source_kind == "archive" or resolved.section_kind == "archive_member":
+        resource = resource_ref_type(
+            resource_id=f"resource:{resolved.source_kind}:{resolved.source_identity}",
+            source_kind=resolved.source_kind,
+            owner=_candidate_owner(resolved.source_kind, lexical_owner_formats),
+            physical_identity=None,
+            current_path=resolved.path,
+            disposition=None,
+        )
+        return resource, ("physical_identity_unresolved",)
+
     canonical_physical = resolved_physical_identity_fn(resolved)
     birthtime_ns = int_provenance_fn(resolved.source_revision, "birthtime_ns")
     if canonical_physical is not None:

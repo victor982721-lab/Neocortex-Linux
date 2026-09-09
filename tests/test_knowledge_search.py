@@ -1174,6 +1174,10 @@ def test_search_returns_archive_member_with_explicit_nested_zip_evidence(
     identifiers = dict(hit.evidence.identifiers)
     assert hit.resource.owner == "archive"
     assert hit.resource.source_kind == "archive"
+    # An archive member is a virtual resource; its member key and locators do
+    # not prove the physical identity of the containing file.
+    assert hit.resource.physical_identity is None
+    assert "physical_identity_unresolved" in hit.warnings
     assert hit.resource.current_path == ("C:/docs/contenedor.zip!/interno.zip!/proteccion.txt")
     assert hit.evidence.section_kind == "archive_member"
     assert identifiers["inside_zip"] == "1"

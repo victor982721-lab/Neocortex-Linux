@@ -38,6 +38,12 @@ pueden cambiar; un join no se resuelve sólo por nombre o extensión.
 Una revisión distingue bytes/contenido en un momento determinado. Resultados de
 otra revisión, firma de procesamiento o snapshot no se mezclan silenciosamente.
 
+Los miembros de un archivo compuesto son recursos virtuales: usan el namespace
+`resource:archive:*`, conservan su cadena de miembros y localizadores publicados,
+pero no exponen `physical_identity`. La ausencia se declara como
+`physical_identity_unresolved`; una clave de miembro nunca puede alimentar un
+join de inventario físico ni convertirse en identidad por su forma textual.
+
 ## Snapshot y owners
 
 Knowledge captura el vector contractual de `STATE_STORE_REGISTRY`. Cada owner

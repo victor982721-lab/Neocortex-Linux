@@ -30,11 +30,12 @@ de abrir owners salvo que una superficie pública garantice una lectura compatib
 La ausencia de WAL no demuestra quiescencia y un fallo de fence no se corrige
 borrando sidecars ni sustituyendo el lector por `mode=ro`.
 
-## Piloto
+## Piloto y regresión acotada
 
-Empieza con una raíz que contenga sólo 20–50 elementos autorizados y cerca la
-corrida completa a 10–15 minutos. `--max-count` limita PDFs, no el inventario
-común; el timeout por documento tampoco es un deadline global. Para PDF:
+Para una nueva regresión acotada, usa una raíz que contenga sólo 20–50 elementos
+autorizados y cerca la corrida completa a 10–15 minutos. `--max-count` limita
+PDFs, no el inventario común; el timeout por documento tampoco es un deadline
+global. Para PDF:
 
 ```bash
 Root="$HOME/Documentos/NeoCortex/Pilot"
@@ -48,12 +49,14 @@ cache hits y throughput. Corrige el primer bloqueo antes de ampliar rutas.
 Ejecuta el mismo comando por segunda vez. El replay debe mostrar qué se reutilizó
 y qué trabajo nuevo quedó, sin ocultar una reejecución como incremental.
 
-### Piloto del lifecycle 0.13
+### Piloto del lifecycle 0.13 (regresión reutilizable)
 
-El primer recorrido de aceptación usa una raíz temporal con 20–50 fixtures
-heterogéneas, tomando como base las 28 fixtures existentes. No abre el corpus
-personal ni una SQLite cercada de producción. Fija un límite global y conserva
-los recibos fuera de `docs/`:
+El artefacto instalado `0.13.0-42115cd060f3-cp314-linux-x86_64` ya tiene un
+piloto documentado sobre 29 fixtures aisladas, nueve rutas, dos corridas y
+replay. Este procedimiento queda como regresión reutilizable, no como primer
+recorrido pendiente. Usa una raíz temporal con 20–50 fixtures heterogéneas,
+sin abrir el corpus personal ni una SQLite cercada de producción. Fija un
+límite global y conserva los recibos fuera de `docs/`:
 
 ```bash
 Pilot="$HOME/Documentos/NeoCortex/Pilot-013"
@@ -78,11 +81,12 @@ Después de aprobar una ruta, añade otra explícitamente. `--all` es una operac
 amplia, no el primer smoke; selecciona todas las rutas registradas, incluida Code
 como contenido.
 
-Para el gate 0.13, la ampliación final se ejecuta sólo sobre el piloto temporal
-y prueba las nueve rutas (`pdf`, `docx`, `office`, `archive`, `text`, `audio`,
-`video`, `image`, `code`) bajo el mismo presupuesto. Code no ejecuta el contenido
-observado. Semantic pesado sigue siendo opt-in, aunque el stage se registre y
-conserve su resultado en el lifecycle.
+Para reproducir o regresionar el lifecycle 0.13, ejecuta la ampliación sólo
+sobre el piloto temporal y prueba las nueve rutas (`pdf`, `docx`, `office`,
+`archive`, `text`, `audio`, `video`, `image`, `code`) bajo el mismo presupuesto.
+Code no ejecuta el contenido observado. Semantic pesado sigue siendo opt-in,
+aunque el stage se registre y conserve su resultado en el lifecycle. El piloto
+instalado no sustituye la validación fuente-exacta C0–C7 de `42115cd`.
 
 Una corrida sin `--apply` no modifica originales, pero sí escribe inventario,
 cachés, planes y publicaciones. Distingue siempre consulta read-only, producción
@@ -287,6 +291,13 @@ manifest/digest presentado, detén writers y sigue [RECOVERY.md](RECOVERY.md).
 
 ## Instalación y release
 
+La release activa comprobada es
+`0.13.0-42115cd060f3-cp314-linux-x86_64` (`source_sha=42115cd...`), con rollback
+inmediato `0.13.0-1bb73907d9ab-cp314-linux-x86_64` y `.staging` vacío. El
+checkout puede avanzar con documentación sin cambiar ese artefacto: actualmente
+`HEAD == main == origin/main == 0a28e92...`. No reinstales por una modificación
+docs-only.
+
 La [instalación ordinaria offline](LINUX_KUBUNTU.md#instalación-ordinaria-desde-una-extracción)
 en venv CPython 3.13 no promueve una release ni requiere Git. El procedimiento
 siguiente conserva el contrato de instalación personal CPython 3.14.
@@ -320,10 +331,12 @@ la semántica de instalación, overrides y verificación está en
 Una auditoría integral es excepcional. Registra estado vivo, HEAD, alcance,
 comando, exit, duración y evidencia; separa hechos, inferencias y no verificado.
 Un benchmark compara la misma carga y entorno. Una release se valida desde el
-artefacto instalado, no desde el checkout. La documentación y una prueba focal
-de lifecycle no acreditan por sí solas una release 0.13 instalada ni el éxito de
-`--all`; ese cierre requiere los gates C0–C7, build/manifest/launcher, smoke,
-replay y `HEAD == main == origin/main` con árbol limpio.
+artefacto instalado, no desde el checkout. El artefacto 0.13 está instalado,
+pero la documentación y una prueba focal de lifecycle no acreditan por sí solas
+su aceptación integral: ese cierre requiere los gates C0–C7 exactamente sobre
+`source_sha=42115cd`, build/manifest/launcher, smoke, replay y el estado limpio
+del checkout/remoto correspondiente. La suite histórica de 6912 pasadas no
+puede suplir esa verificación porque pertenece a `1bb73907d9ab...`.
 
 Los informes y salidas brutas viven fuera de la documentación canónica. El
 repositorio conserva sólo contratos actuales, roadmap y changelog.

@@ -56,6 +56,15 @@ def validate_resource_ref(
     required_text_fn("owner", contract.owner)
     optional_text_fn("current_path", contract.current_path)
     optional_text_fn("canonical_resource_id", contract.canonical_resource_id)
+    # ``resource:archive:*`` is the stable namespace for a virtual archive
+    # member.  A member locator is not a filesystem identity; keeping this
+    # invariant at the contract boundary prevents callers from accidentally
+    # feeding virtual keys into physical inventory joins.
+    if contract.resource_id.startswith("resource:archive:"):
+        if contract.source_kind != "archive" or contract.owner != "archive":
+            raise ValueError("virtual archive resource owner is inconsistent")
+        if contract.physical_identity is not None:
+            raise ValueError("virtual archive resource cannot expose physical identity")
     if contract.disposition is resource_disposition_type.DUPLICATE:
         required_text_fn(
             "canonical_resource_id",
