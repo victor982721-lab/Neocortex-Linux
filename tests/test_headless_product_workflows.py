@@ -221,11 +221,13 @@ def _terminal_status(lab: _ProductLab, routes: set[str]) -> list[dict[str, Any]]
     result = lab.cli("--state-directory", str(lab.state), "--status", "--status-json")
     _assert_completed(result)
     rows = [json.loads(line) for line in result.stdout.splitlines()]
-    assert rows and rows[0]["status"] == "completed"
-    assert rows[0]["root"] == str(lab.corpus)
-    assert rows[0]["recovery_required_actions"] == 0
-    assert {route["route_name"] for route in rows[0]["routes"]} == routes
-    assert all(route["status"] == "completed" for route in rows[0]["routes"])
+    assert rows
+    run = rows[0]["runs"][0] if "runs" in rows[0] else rows[0]
+    assert run["status"] == "completed"
+    assert run["root"] == str(lab.corpus)
+    assert run["recovery_required_actions"] == 0
+    assert {route["route_name"] for route in run["routes"]} == routes
+    assert all(route["status"] == "completed" for route in run["routes"])
     return rows
 
 

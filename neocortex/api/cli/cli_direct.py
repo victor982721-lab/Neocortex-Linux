@@ -76,6 +76,10 @@ def run_operational_status(args: argparse.Namespace) -> int:
             )
         )
         exit_code = payload.get("exit_code")
+        if payload.get("coverage") == "unavailable" and exit_code == 1:
+            # Preserve the CLI's historical operational failure code while
+            # the shared read envelope keeps its finer-grained API code.
+            return 2
         return exit_code if type(exit_code) is int else 2
 
     from neocortex.runtime.orchestration.run_status import list_run_status

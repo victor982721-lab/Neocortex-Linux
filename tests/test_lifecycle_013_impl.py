@@ -281,10 +281,13 @@ def test_all_contract_closes_nine_routes_and_types_missing_dependencies() -> Non
         if name != "pdf"
     )
 
+    def missing_distribution(_distribution: str) -> str:
+        raise ValueError("distribution unavailable")
+
     statuses = inspect_runtime_capabilities(
         ALL_ROUTES,
         module_finder=lambda _module: None,
-        distribution_version=lambda _distribution: "missing",
+        distribution_version=missing_distribution,
         executable_finder=lambda _executable: None,
     )
     assert tuple(status.capability for status in statuses) == ALL_ROUTES
