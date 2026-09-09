@@ -514,6 +514,23 @@ class FrameworkOrchestrator:
         if not self.selected_routes:
             return {}, None
 
+        # Code consumes the durable inventory snapshot directly.  Do not
+        # materialize the Framework route-candidate database when it is the
+        # only selected input source; that snapshot can contain every MIME
+        # candidate even though Code will admit only project/code paths.
+        needs_candidate_snapshot = any(
+            self.route_registry[name].input_source == "route_candidates"
+            for name in self.selected_routes
+        )
+        if not needs_candidate_snapshot:
+            return self._run_content_routes_with_snapshot(
+                root=root,
+                state=state,
+                run_id=run_id,
+                scan_id=scan_id,
+                candidate_database=None,
+            )
+
         # Candidates and selection evidence have already been committed. Pin
         # that input once through the writer owner, before route/event writers
         # start, rather than copying the changing framework for every batch.
@@ -539,6 +556,8 @@ class FrameworkOrchestrator:
         route_name: str,
         input_source: str,
         inventory_workload: tuple[int, int] | None = None,
+        context: RouteExecutionContext | None = None,
+        stage: str | None = None,
     ) -> dict[str, object]:
         """Consume one global route reservation before a worker starts.
 
@@ -556,22 +575,85 @@ class FrameworkOrchestrator:
             # through the manifest-publishing path.
             return {}
         items = bytes_count = 0
-        if input_source == "route_candidates":
+        adapter = self.route_registry[route_name]
+        if adapter.estimate_workload is not None and context is not None:
+            items, bytes_count = adapter.estimate_workload(context)
+        elif input_source == "route_candidates":
             items, bytes_count = state.route_candidate_workload(run_id)
         elif input_source == "inventory_snapshot":
             if inventory_workload is None:
                 raise RuntimeError("inventory-backed route has no durable workload")
             items, bytes_count = inventory_workload
+        if (
+            type(items) is not int
+            or items < 0
+            or type(bytes_count) is not int
+            or bytes_count < 0
+        ):
+            raise RuntimeError(f"route {route_name} returned an invalid workload estimate")
         # The manifest is published before routes begin, so this call is also
         # the first live assertion that the durable baseline is available.
         state.check_run_budget(run_id)
+        reservation_id = f"route:{route_name}"
+        if stage is not None:
+            reserve_stage = getattr(state, "reserve_run_stage", None)
+            if callable(reserve_stage):
+                return reserve_stage(
+                    run_id,
+                    stage,
+                    reservation_id,
+                    items=items,
+                    bytes=bytes_count,
+                    worker=route_name,
+                )
         return state.reserve_run_budget(
             run_id,
-            f"route:{route_name}",
+            reservation_id,
             items=items,
             bytes=bytes_count,
             worker=route_name,
+            **({"stage": stage} if stage is not None else {}),
         )
+
+    def _route_execution_stages(self) -> tuple[tuple[str, ...], ...]:
+        """Return deterministic dependency waves for the selected routes."""
+
+        selected = tuple(self.selected_routes)
+        selected_set = set(selected)
+        unavailable = tuple(
+            sorted(
+                {
+                    dependency
+                    for name in selected
+                    for dependency in self.route_registry[name].depends_on
+                    if dependency not in self.route_registry
+                }
+            )
+        )
+        if unavailable:
+            raise ValueError(
+                "route dependency is unavailable: " + ", ".join(unavailable)
+            )
+        remaining = set(selected)
+        completed: set[str] = set()
+        stages: list[tuple[str, ...]] = []
+        while remaining:
+            ready = tuple(
+                name
+                for name in selected
+                if name in remaining
+                and all(
+                    dependency not in selected_set or dependency in completed
+                    for dependency in self.route_registry[name].depends_on
+                )
+            )
+            if not ready:
+                unresolved = ", ".join(sorted(remaining))
+                raise ValueError(f"route dependency cycle or unavailable stage: {unresolved}")
+            stages.append(ready)
+            completed.update(ready)
+            remaining.difference_update(ready)
+        return tuple(stages)
 
     def _run_content_routes_with_snapshot(
         self,
@@ -580,7 +662,7 @@ class FrameworkOrchestrator:
         state: FrameworkState,
         run_id: int,
         scan_id: int,
-        candidate_database: Path,
+        candidate_database: Path | None,
     ) -> tuple[dict[str, object], GlobalResourceSummary | None]:
         coordinator: GlobalResourceCoordinator | None = None
         executor: ThreadPoolExecutor | None = None
@@ -627,9 +709,8 @@ class FrameworkOrchestrator:
                     int(inventory_summary.bytes_seen),
                 )
 
-            def execute_route(route_name: str) -> tuple[object, int]:
-                adapter = self.route_registry[route_name]
-                context = RouteExecutionContext(
+            def route_context(route_name: str) -> RouteExecutionContext:
+                return RouteExecutionContext(
                     config=self.config,
                     root=root,
                     framework_state=FrameworkRouteState(
@@ -643,6 +724,10 @@ class FrameworkOrchestrator:
                     resource_coordinator=coordinator,
                     cancellation=self._cancellation,
                 )
+
+            def execute_route(route_name: str) -> tuple[object, int]:
+                adapter = self.route_registry[route_name]
+                context = route_context(route_name)
                 started = time.perf_counter_ns()
                 summary = adapter.execute(context)
                 return summary, time.perf_counter_ns() - started
@@ -653,73 +738,83 @@ class FrameworkOrchestrator:
                 max_workers=len(self.selected_routes),
                 thread_name_prefix="neocortex-route",
             )
-            # Register each future as it is submitted so a BaseException during
-            # a later submit still leaves the earlier workers cancellable.
-            futures = {}
-            for route_name in self.selected_routes:
-                adapter = self.route_registry[route_name]
-                self._reserve_route_work(
-                    state=state,
-                    run_id=run_id,
-                    route_name=route_name,
-                    input_source=adapter.input_source,
-                    inventory_workload=inventory_workload,
-                )
-                futures[executor.submit(execute_route, route_name)] = route_name
-            pending = set(futures)
-            while pending:
-                if self._cancellation.is_cancelled:
-                    raise KeyboardInterrupt
-                completed, pending = wait(
-                    pending,
-                    timeout=0.1,
-                    return_when=FIRST_COMPLETED,
-                )
-                # A deadline or durable cancellation is checked by the
-                # foreground owner as well as route-local cooperative checks.
-                read_budget = getattr(state, "read_run_budget", None)
-                if callable(read_budget) and read_budget(run_id) is not None:
-                    state.check_run_budget(run_id)
-                if self._cancellation.is_cancelled:
-                    raise KeyboardInterrupt
-                for future in completed:
-                    route_name = futures[future]
+
+            def drain_stage(stage_futures: dict[Future[tuple[object, int]], str]) -> None:
+                pending = set(stage_futures)
+                while pending:
+                    if self._cancellation.is_cancelled:
+                        raise KeyboardInterrupt
+                    completed, pending = wait(
+                        pending,
+                        timeout=0.1,
+                        return_when=FIRST_COMPLETED,
+                    )
+                    # A deadline or durable cancellation is checked by the
+                    # foreground owner as well as route-local cooperative checks.
+                    read_budget = getattr(state, "read_run_budget", None)
+                    if callable(read_budget) and read_budget(run_id) is not None:
+                        state.check_run_budget(run_id)
+                    if self._cancellation.is_cancelled:
+                        raise KeyboardInterrupt
+                    for future in completed:
+                        route_name = stage_futures[future]
+                        adapter = self.route_registry[route_name]
+                        try:
+                            summary, elapsed_ns = future.result()
+                            mapping = dict(adapter.summary_mapping(summary))
+                            persisted = {"elapsed_ns": elapsed_ns, **mapping}
+                            state.complete_route_run(run_id, route_name, persisted)
+                            state.record_event(
+                                run_id,
+                                "info",
+                                route_name,
+                                f"Ruta {route_name} completada",
+                                persisted,
+                            )
+                            results[route_name] = summary
+                            self._finish_route_progress(route_name, "completed")
+                        except BaseException as exc:
+                            # KeyboardInterrupt is the run-wide cancellation
+                            # signal and must reach the outer handler. Other
+                            # BaseException subclasses still belong to this route:
+                            # persist the failure before aggregating it, otherwise
+                            # the durable route run remains ``running``.
+                            if isinstance(exc, KeyboardInterrupt):
+                                raise
+                            failures[route_name] = exc
+                            state.fail_route_run(run_id, route_name, exc)
+                            state.record_event(
+                                run_id,
+                                "error",
+                                route_name,
+                                f"Ruta {route_name} fallida",
+                                {
+                                    "error_type": type(exc).__name__,
+                                    "detail": str(exc),
+                                },
+                            )
+                            self._finish_route_progress(route_name, "failed")
+
+            # Submit one dependency wave at a time.  Independent routes retain
+            # the previous parallel behavior, while a route such as Video waits
+            # for the selected Audio producer to publish its optional link.
+            for stage_routes in self._route_execution_stages():
+                stage_futures: dict[Future[tuple[object, int]], str] = {}
+                for route_name in stage_routes:
                     adapter = self.route_registry[route_name]
-                    try:
-                        summary, elapsed_ns = future.result()
-                        mapping = dict(adapter.summary_mapping(summary))
-                        persisted = {"elapsed_ns": elapsed_ns, **mapping}
-                        state.complete_route_run(run_id, route_name, persisted)
-                        state.record_event(
-                            run_id,
-                            "info",
-                            route_name,
-                            f"Ruta {route_name} completada",
-                            persisted,
-                        )
-                        results[route_name] = summary
-                        self._finish_route_progress(route_name, "completed")
-                    except BaseException as exc:
-                        # KeyboardInterrupt is the run-wide cancellation
-                        # signal and must reach the outer handler. Other
-                        # BaseException subclasses still belong to this route:
-                        # persist the failure before aggregating it, otherwise
-                        # the durable route run remains ``running``.
-                        if isinstance(exc, KeyboardInterrupt):
-                            raise
-                        failures[route_name] = exc
-                        state.fail_route_run(run_id, route_name, exc)
-                        state.record_event(
-                            run_id,
-                            "error",
-                            route_name,
-                            f"Ruta {route_name} fallida",
-                            {
-                                "error_type": type(exc).__name__,
-                                "detail": str(exc),
-                            },
-                        )
-                        self._finish_route_progress(route_name, "failed")
+                    self._reserve_route_work(
+                        state=state,
+                        run_id=run_id,
+                        route_name=route_name,
+                        input_source=adapter.input_source,
+                        inventory_workload=inventory_workload,
+                        context=route_context(route_name),
+                        stage="routes",
+                    )
+                    future = executor.submit(execute_route, route_name)
+                    futures[future] = route_name
+                    stage_futures[future] = route_name
+                drain_stage(stage_futures)
         except KeyboardInterrupt:
             interrupted = True
             self.request_cancellation()
@@ -858,6 +953,13 @@ class FrameworkOrchestrator:
                 name: self.route_registry[name].lifecycle_capability
                 for name in self.selected_routes
             },
+            "run_max_items": getattr(self.config, "run_max_items", None),
+            "run_max_bytes": getattr(self.config, "run_max_bytes", None),
+            "run_time_budget_seconds": getattr(
+                self.config,
+                "run_time_budget_seconds",
+                None,
+            ),
             "global_memory_budget_bytes": self.config.global_memory_budget_bytes,
             "global_min_free_memory_bytes": self.config.global_min_free_memory_bytes,
             "global_min_free_commit_bytes": self.config.global_min_free_commit_bytes,
@@ -934,8 +1036,73 @@ class FrameworkOrchestrator:
             "audio_max_file_bytes": self.config.audio_max_file_bytes,
             "audio_max_documents": self.config.audio_max_documents,
             "audio_max_duration_seconds": self.config.audio_max_duration_seconds,
+            "audio_beam_size": self.config.audio_beam_size,
+            "audio_vad_filter": self.config.audio_vad_filter,
+            "audio_max_transcript_chars": self.config.audio_max_transcript_chars,
+            "audio_max_segments": self.config.audio_max_segments,
+            "audio_file_timeout_seconds": self.config.audio_file_timeout_seconds,
+            "audio_worker_startup_timeout_seconds": (
+                self.config.audio_worker_startup_timeout_seconds
+            ),
+            "audio_model_cache_directory": (
+                None
+                if self.config.audio_model_cache_directory is None
+                else str(self.config.audio_model_cache_directory)
+            ),
+            "audio_local_models_only": self.config.audio_local_models_only,
+            "audio_memory_wait_timeout_seconds": self.config.audio_memory_wait_timeout_seconds,
             "audio_memory_budget_bytes": self.config.audio_memory_budget_bytes,
             "audio_worker_memory_bytes": self.config.audio_worker_memory_bytes,
+            "archive_max_file_bytes": self.config.archive_max_file_bytes,
+            "archive_max_documents": self.config.archive_max_documents,
+            "archive_retry_errors": self.config.archive_retry_errors,
+            "archive_max_depth": self.config.archive_max_depth,
+            "archive_max_members": self.config.archive_max_members,
+            "archive_max_central_directory_bytes": (
+                self.config.archive_max_central_directory_bytes
+            ),
+            "archive_max_member_bytes": self.config.archive_max_member_bytes,
+            "archive_max_total_uncompressed_bytes": (
+                self.config.archive_max_total_uncompressed_bytes
+            ),
+            "archive_max_text_chars": self.config.archive_max_text_chars,
+            "archive_max_total_text_chars": self.config.archive_max_total_text_chars,
+            "archive_max_compression_ratio": self.config.archive_max_compression_ratio,
+            "archive_pdf_max_pages": self.config.archive_pdf_max_pages,
+            "archive_pdf_timeout_seconds": self.config.archive_pdf_timeout_seconds,
+            "archive_pdf_worker_memory_bytes": self.config.archive_pdf_worker_memory_bytes,
+            "archive_ocr_mode": self.config.archive_ocr_mode,
+            "archive_ocr_lang": self.config.archive_ocr_lang,
+            "archive_ocr_dpi": self.config.archive_ocr_dpi,
+            "archive_ocr_max_pages": self.config.archive_ocr_max_pages,
+            "archive_ocr_max_render_pixels": self.config.archive_ocr_max_render_pixels,
+            "archive_ocr_timeout_seconds": self.config.archive_ocr_timeout_seconds,
+            "text_max_file_bytes": self.config.text_max_file_bytes,
+            "text_max_documents": self.config.text_max_documents,
+            "text_max_text_chars": self.config.text_max_text_chars,
+            "text_worker_timeout_seconds": self.config.text_worker_timeout_seconds,
+            "text_worker_memory_bytes": self.config.text_worker_memory_bytes,
+            "text_retry_errors": self.config.text_retry_errors,
+            "video_max_file_bytes": self.config.video_max_file_bytes,
+            "video_max_documents": self.config.video_max_documents,
+            "video_max_duration_seconds": self.config.video_max_duration_seconds,
+            "video_max_frames": self.config.video_max_frames,
+            "video_interval_seconds": self.config.video_interval_seconds,
+            "video_scene_threshold": self.config.video_scene_threshold,
+            "video_include_scenes": self.config.video_include_scenes,
+            "video_include_keyframes": self.config.video_include_keyframes,
+            "video_max_frame_pixels": self.config.video_max_frame_pixels,
+            "video_max_frame_side": self.config.video_max_frame_side,
+            "video_probe_timeout_seconds": self.config.video_probe_timeout_seconds,
+            "video_discovery_timeout_seconds": self.config.video_discovery_timeout_seconds,
+            "video_frame_timeout_seconds": self.config.video_frame_timeout_seconds,
+            "video_file_timeout_seconds": self.config.video_file_timeout_seconds,
+            "video_worker_memory_bytes": self.config.video_worker_memory_bytes,
+            "video_retry_errors": self.config.video_retry_errors,
+            "video_ocr_mode": self.config.video_ocr_mode,
+            "video_ocr_lang": self.config.video_ocr_lang,
+            "video_ocr_profile": self.config.video_ocr_profile,
+            "video_ocr_timeout_seconds": self.config.video_ocr_timeout_seconds,
         }
 
     def _record_initial_start(
@@ -1682,15 +1849,32 @@ class FrameworkOrchestrator:
         state: FrameworkState,
         source_run_id: int,
     ) -> None:
-        if self.config.resume_run_id is not None and not self.selected_routes:
+        semantic_only_resume = False
+        if self.config.resume_run_id is not None:
             resumable = state.resumable_route_names(source_run_id)
             unknown = tuple(name for name in resumable if name not in self.route_registry)
             if unknown:
                 raise ValueError(
                     "resume source references unavailable routes: " + ", ".join(unknown)
                 )
-            self.selected_routes = resumable
-        if not self.selected_routes:
+            # An explicit route list is a request to narrow recovery, not a
+            # request to rerun a route whose source run already completed.  The
+            # resulting empty selection is meaningful when only the linked
+            # Semantic lifecycle stage remains resumable.
+            requested_routes = self.selected_routes
+            resumable_set = set(resumable)
+            if requested_routes:
+                self.selected_routes = tuple(
+                    name for name in requested_routes if name in resumable_set
+                )
+            else:
+                self.selected_routes = resumable
+            if not self.selected_routes:
+                semantic_only_resume = self._semantic_stage_is_resumable(
+                    state,
+                    source_run_id,
+                )
+        if not self.selected_routes and not semantic_only_resume:
             raise ValueError(f"run {source_run_id} has no resumable content routes")
         read_capabilities = getattr(state, "read_run_route_capabilities", None)
         if callable(read_capabilities) and self.config.resume_run_id is not None:
@@ -1711,6 +1895,24 @@ class FrameworkOrchestrator:
                     + ", ".join(sorted(unsupported))
                 )
 
+    @staticmethod
+    def _semantic_stage_is_resumable(
+        state: FrameworkState,
+        source_run_id: int,
+    ) -> bool:
+        """Return whether recovery may advance only the linked Semantic stage."""
+
+        reader = getattr(state, "read_run_stages", None)
+        if not callable(reader):
+            return False
+        stages = tuple(reader(source_run_id))
+        for stage in reversed(stages):
+            if not isinstance(stage, Mapping) or stage.get("stage") != "semantic":
+                continue
+            status = stage.get("status")
+            return status in {"pending", "running", "partial", "failed", "interrupted"}
+        return False
+
     def _prepare_route_only_source(
         self,
         state: FrameworkState,
@@ -1727,6 +1929,23 @@ class FrameworkOrchestrator:
             if input_source != "inventory_snapshot"
         )
         candidate_rows = state.route_candidate_run_count(source_run_id)
+        if not self.selected_routes:
+            # Semantic-only recovery consumes no Framework route input and
+            # therefore must not require a retained candidate snapshot or a
+            # fresh inventory validation.  Still bind it to the same corpus
+            # root before creating the operational lifecycle row.
+            source_root, _source_scan_id = state.source_run_inventory(source_run_id)
+            if self._normalized_root(source_root) != self._normalized_root(
+                boundary.access_policy.root
+            ):
+                raise ValueError(f"source run {source_run_id} belongs to another corpus root")
+            return _RouteOnlySource(
+                source_run_id,
+                0,
+                route_input_sources,
+                candidate_backed_routes,
+                candidate_rows,
+            )
         if candidate_rows == 0 and candidate_backed_routes:
             raise ValueError(
                 f"run {source_run_id} has no retained routing candidates "
@@ -1788,7 +2007,14 @@ class FrameworkOrchestrator:
         source: _RouteOnlySource,
     ) -> tuple[int, RunHeartbeat]:
         run_kind = "resume" if self.config.resume_run_id is not None else "route_only"
-        durable_budget, source_budget = self._route_only_budget(state, source.run_id)
+        if not self.selected_routes and self.config.resume_run_id is not None:
+            # The Semantic stage has its own persisted budget and will be
+            # resumed by the CLI after this no-op Framework continuation.  Do
+            # not let an exhausted Framework route budget prevent that stage
+            # from being reached.
+            durable_budget, source_budget = RunBudget(), None
+        else:
+            durable_budget, source_budget = self._route_only_budget(state, source.run_id)
         boundary.verify()
         run_id = state.begin_operational_run(
             boundary.access_policy.root,

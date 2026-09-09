@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, is_dataclass, replace
+import heapq
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, TYPE_CHECKING
 from neocortex.runtime.orchestration.route_selection import (
@@ -46,6 +48,7 @@ if TYPE_CHECKING:
 # region [01] Generic route contracts and selection exports
 
 RouteLifecycleCapability = Literal["phase_resume", "safe_replay", "not_resumable"]
+RouteWorkload = tuple[int, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +69,12 @@ class RouteAdapter:
     execute: Callable[[RouteExecutionContext], object]
     input_source: Literal["route_candidates", "inventory_snapshot"] = "route_candidates"
     lifecycle_capability: RouteLifecycleCapability = "safe_replay"
+    # Dependencies are ordering hints for the route scheduler.  They do not
+    # turn an optional producer into a hard availability gate: if the
+    # dependency is selected, its stage is drained first; a dependent route
+    # still runs when that producer reports a typed failure.
+    depends_on: tuple[str, ...] = ()
+    estimate_workload: Callable[[RouteExecutionContext], RouteWorkload] | None = None
 
     def __post_init__(self) -> None:
         if self.lifecycle_capability not in {
@@ -74,6 +83,16 @@ class RouteAdapter:
             "not_resumable",
         }:
             raise ValueError(f"unsupported lifecycle capability: {self.lifecycle_capability}")
+        if self.input_source not in {"route_candidates", "inventory_snapshot"}:
+            raise ValueError(f"unsupported route input source: {self.input_source}")
+        if not isinstance(self.depends_on, tuple):
+            raise TypeError("route dependencies must be an immutable tuple")
+        if any(not isinstance(name, str) or not name.strip() for name in self.depends_on):
+            raise ValueError("route dependencies must be non-empty names")
+        if len(set(self.depends_on)) != len(self.depends_on):
+            raise ValueError("route dependencies cannot repeat")
+        if self.estimate_workload is not None and not callable(self.estimate_workload):
+            raise TypeError("route workload estimator must be callable")
 
     def summary_mapping(self, summary: object) -> Mapping[str, Any]:
         if is_dataclass(summary) and not isinstance(summary, type):
@@ -89,6 +108,143 @@ class RouteAdapter:
             mapping,
             replayability=self.lifecycle_capability,
         )
+
+
+# region [01b] Bounded route workload projections
+
+
+def _bounded_workload(
+    values: Iterable[int],
+    limit: int | None,
+) -> RouteWorkload:
+    """Return item/byte work while bounding retained candidate-size state."""
+
+    eligible = 0
+    total_bytes = 0
+    largest: list[int] = []
+    for value in values:
+        eligible += 1
+        if limit is None:
+            total_bytes += value
+            continue
+        if limit <= 0:
+            continue
+        selected = min(eligible, limit)
+        # Route limits are user-configurable.  Keep only the largest selected
+        # values so the byte reservation cannot understate a route that chooses
+        # a different deterministic subset, while memory remains proportional
+        # to the bounded route limit rather than to the whole corpus.
+        if len(largest) < selected:
+            heapq.heappush(largest, value)
+        elif value > largest[0]:
+            heapq.heapreplace(largest, value)
+    selected = eligible if limit is None else min(eligible, limit)
+    return selected, total_bytes if limit is None else sum(largest)
+
+
+def _candidate_route_workload(
+    context: RouteExecutionContext,
+    route_name: str,
+) -> RouteWorkload:
+    """Estimate selected route input work from the immutable candidate view.
+
+    The old orchestration reservation counted every row in the shared routing
+    snapshot for every route.  This projection applies the route's MIME
+    contract, framework-visible selection predicates, size limit and count
+    limit before reserving.  Owner-specific status/error filters remain the
+    route's responsibility; their candidates are deliberately retained here
+    rather than guessed away.
+    """
+
+    candidate_database = getattr(context.framework_state, "candidate_database", None)
+    if candidate_database is None:
+        # Legacy state doubles do not expose a detached candidate view.  The
+        # caller keeps its compatibility fallback for those adapters.
+        return (0, 0)
+
+    from neocortex.platform.content_capability_manifest import content_capability_by_id
+
+    capability = content_capability_by_id(route_name)
+    selection = context.config.selection
+    max_file_bytes = getattr(context.config, f"{route_name}_max_file_bytes", None)
+    max_documents = getattr(context.config, f"{route_name}_max_documents", None)
+    if max_documents is not None and (type(max_documents) is not int or max_documents < 1):
+        raise ValueError(f"{route_name} max documents is invalid")
+
+    def candidate_sizes() -> Iterable[int]:
+        seen_paths: set[str] = set()
+        for mime in capability.mime_types:
+            if mime.endswith("/"):
+                rows = context.framework_state.iter_selected_route_candidates_by_prefix(
+                    context.run_id,
+                    mime,
+                    route_name,
+                    selection,
+                )
+                iterator = (snapshot for _observed_mime, snapshot in rows)
+            else:
+                iterator = context.framework_state.iter_selected_route_candidates(
+                    context.run_id,
+                    mime,
+                    route_name,
+                    selection,
+                )
+            for snapshot in iterator:
+                if snapshot.path in seen_paths:
+                    continue
+                seen_paths.add(snapshot.path)
+                if max_file_bytes is not None and snapshot.size > max_file_bytes:
+                    continue
+                yield max(0, int(snapshot.size))
+
+    return _bounded_workload(candidate_sizes(), max_documents)
+
+
+def _code_route_workload(context: RouteExecutionContext) -> RouteWorkload:
+    """Bound Code work from the durable inventory, not route candidates."""
+
+    from neocortex.code.ingestion.code_candidate_scope import (
+        ProjectCandidateScope,
+        is_project_marker,
+    )
+    from neocortex.code.ingestion.code_detection import likely_code_candidate
+    from neocortex.deduplication import DedupIndex
+
+    config = context.config
+    selected_paths = {
+        str(Path(value).expanduser().absolute()) for value in config.selection.paths
+    }
+    with DedupIndex(config.dedup_database) as index:
+        project_scope = None
+        if config.code_candidate_scope == "projects" and not selected_paths:
+            project_scope = ProjectCandidateScope.discover(
+                (snapshot.path for snapshot in index.snapshots(context.scan_id)),
+                include_generated=config.code_include_generated,
+                include_vendored=config.code_include_vendored,
+                explicit_roots=config.code_project_roots,
+            )
+        def code_sizes() -> Iterable[int]:
+            for snapshot in index.snapshots(context.scan_id):
+                if selected_paths and str(Path(snapshot.path).absolute()) not in selected_paths:
+                    continue
+                if not likely_code_candidate(snapshot.path) and not is_project_marker(snapshot.path):
+                    continue
+                if project_scope is not None and project_scope.decision(snapshot.path) != "admit":
+                    continue
+                if snapshot.size > config.code_max_file_bytes:
+                    # Code records this as a bounded skip, not a candidate that
+                    # enters analysis; do not reserve it as route work.
+                    continue
+                yield max(0, int(snapshot.size))
+
+        return _bounded_workload(code_sizes(), config.code_max_documents)
+
+
+def _candidate_workload_estimator(route_name: str) -> Callable[[RouteExecutionContext], RouteWorkload]:
+    return lambda context: _candidate_route_workload(context, route_name)
+
+
+# endregion [01b]
 
 
 # endregion [01]
@@ -493,15 +649,54 @@ def _summary_with_catalog(
 
 def builtin_route_registry() -> dict[str, RouteAdapter]:
     adapters = (
-        RouteAdapter("pdf", _run_pdf, lifecycle_capability="phase_resume"),
-        RouteAdapter("docx", _run_docx),
-        RouteAdapter("office", _run_office),
-        RouteAdapter("archive", _run_archive),
-        RouteAdapter("text", _run_text),
-        RouteAdapter("audio", _run_audio),
-        RouteAdapter("video", _run_video),
-        RouteAdapter("image", _run_image),
-        RouteAdapter("code", _run_code, input_source="inventory_snapshot"),
+        RouteAdapter(
+            "pdf",
+            _run_pdf,
+            lifecycle_capability="phase_resume",
+            estimate_workload=_candidate_workload_estimator("pdf"),
+        ),
+        RouteAdapter(
+            "docx",
+            _run_docx,
+            estimate_workload=_candidate_workload_estimator("docx"),
+        ),
+        RouteAdapter(
+            "office",
+            _run_office,
+            estimate_workload=_candidate_workload_estimator("office"),
+        ),
+        RouteAdapter(
+            "archive",
+            _run_archive,
+            estimate_workload=_candidate_workload_estimator("archive"),
+        ),
+        RouteAdapter(
+            "text",
+            _run_text,
+            estimate_workload=_candidate_workload_estimator("text"),
+        ),
+        RouteAdapter(
+            "audio",
+            _run_audio,
+            estimate_workload=_candidate_workload_estimator("audio"),
+        ),
+        RouteAdapter(
+            "video",
+            _run_video,
+            depends_on=("audio",),
+            estimate_workload=_candidate_workload_estimator("video"),
+        ),
+        RouteAdapter(
+            "image",
+            _run_image,
+            estimate_workload=_candidate_workload_estimator("image"),
+        ),
+        RouteAdapter(
+            "code",
+            _run_code,
+            input_source="inventory_snapshot",
+            estimate_workload=_code_route_workload,
+        ),
     )
     return {adapter.name: adapter for adapter in adapters}
 # endregion [02]
