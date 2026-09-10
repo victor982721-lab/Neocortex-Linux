@@ -1,21 +1,22 @@
 # Handoff operativo vigente — NeoCortex
 
-**Última verificación:** 2026-09-10T10:40:00-06:00, `America/Mexico_City`
+**Última verificación:** 2026-09-10T11:45:00-06:00, `America/Mexico_City`
 **Checkout:** `/home/winterboss/Neocortex/Repository`
 **Fuente de verdad:** estado vivo de `main`/`origin/main`,
 `PENDIENTES.md`, `HISTORIAL.md` y receipts canónicos fechados
 
 **Estado vivo:** la verificación de integración confirma `HEAD == main ==
-origin/main` y árbol limpio. `current` apunta a
-`0.13.0-c2066dcbd967-cp314-linux-x86_64`
+origin/main` en `cee69f3cc4c3863fc873b22205a08121281e9ff1` y árbol limpio. `current`
+apunta a `0.13.0-c2066dcbd967-cp314-linux-x86_64`
 (`source_sha=c2066dcbd967e8804df559f1fc9d15abdbd783bc`), el rollback inmediato es
-`0.13.0-38283df08491-cp314-linux-x86_64` y `.staging` está vacío. Los commits
-posteriores al SHA ejecutable son documentales; no se reescribió historia.
+`0.13.0-38283df08491-cp314-linux-x86_64` y `.staging` está vacío. No se
+reescribió historia.
 
-El checkout publicado contiene `3a7eba59962962c33796a4c7ae23cfd69ad9ba68`,
-con la tranche API/SDK/CLI read-only implementada, pero todavía no instalada en
-`current`; su promoción espera que el `agent serve` PID `398501` deje de usar el
-rollback anterior. No se fuerza GC ni se interrumpe la tarea MCP separada.
+El checkout publicado contiene la tranche API/SDK/CLI read-only y sus correcciones
+de límites en `cee69f3cc4c3863fc873b22205a08121281e9ff1`, pero todavía no está
+instalada en `current`. En el host real, el `agent serve` PID `398501` sigue usando
+el rollback histórico; el PID `527799` usa la release actual y no se toca. No se
+fuerza GC ni se interrumpe la tarea MCP separada.
 
 ## Alcance actual
 
@@ -37,21 +38,26 @@ autenticado. MCP no recibe autorización, aplicación ni conciliación escrita.
 
 La tranche incorpora los límites compartidos de `KnowledgeReadBudget` para
 curación `scan/verify/apply` y la proyección pública estable de evidencia
-Knowledge v1 con exports API/SDK. Sus focales pasaron y el artefacto instalado
-corresponde al SHA final `c2066dc`.
+Knowledge v1 con exports API/SDK. El artefacto instalado corresponde al SHA
+anterior `c2066dc`; la nueva tranche aún no está instalada.
 
 La tranche `NEO-EVO-008` añade `knowledge_search_projection_payload`, wrapper y
 metadatos aditivos de búsqueda, exports lazy API/SDK y `--knowledge-projection`
 opt-in en CLI. `search_payload` y las salidas por defecto permanecen intactas;
-los focales API/SDK/CLI pasaron 237 pruebas, con Ruff, Pyright y compileall
-limpios. La release activa aún corresponde a `c2066dc`.
+`cee69f3` conserva identifiers como procedencia, marca `blocking_owners` en la
+cobertura parcial, valida los mappings de `KnowledgeReadBudget` y copia
+defensivamente los payloads. Los focales API/SDK/CLI/proyección pasaron **239
+pruebas**, con Ruff, Pyright y compileall limpios. La release activa aún
+corresponde a `c2066dc`.
 
 La suite integral anterior terminó con **6959 pasadas, 67 omitidas y 42
-subtests**. Para la nueva tranche, los focales fueron **42** pasadas de curación
-y **202** de Knowledge/API; Ruff quedó limpio y Pyright terminó sin errores en
-el foco. Tras la corrección determinista del reloj, la suite completa desde el
-checkout final terminó **6984 pasadas, 60 omitidas y 42 subtests**, sin fallos.
-El test de deadline corregido pasó **20/20**.
+subtests**. Para la nueva tranche, los focales de curación fueron **42** y los
+focales API/SDK/CLI/proyección **239**; Ruff quedó limpio y Pyright terminó sin
+errores. La suite completa aislada desde `cee69f3`, con HOME/XDG/estado/corpus
+efímeros, modo offline y `umask 022`, terminó **7007 pasadas, 60 omitidas y 42
+subtests** sin fallos. Un primer intento con `umask 077` produjo un falso fallo
+en `test_checkpoint_parent_must_be_private` porque el umask ocultó los permisos
+inseguros; el nodeid pasó con `umask 022` y la corrida final quedó limpia.
 
 La release activa verificó manifest, árbol, launcher y procedencia. Sus hashes son:
 
@@ -61,12 +67,16 @@ La release activa verificó manifest, árbol, launcher y procedencia. Sus hashes
 - wheel `7d2fe292a55e6c49d43363f18011907ff79b6781c116bc44dea791395d1d8c40`;
 - manifest de fuente `19f2cce725bb9a7d1a60e05a75b3cb4d3401f1f35309d9bf4abb7bd2c517e1b9`.
 
-La release final quedó promovida al namespace canónico después de cerrar los
-`agent serve` idle de las releases históricas; `agent serve` quedó en cero, no se
-modificó `current` manualmente y se conservó sólo el rollback inmediato.
+La candidata aislada `0.13.0-cee69f3cc4c3-cp314-linux-x86_64` se construyó,
+instaló y verificó `verified=true` en un namespace temporal con corpus vacío; la
+evidencia canónica está en
+`/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-10-evo008-cee69f3-candidate/`.
+La release canónica `current` todavía no se modificó: el gate de promoción real
+mantiene el PID `398501` y no se detuvo ningún `agent serve`.
 
-La verificación canónica del artefacto activo terminó `verified=true` con corpus
-efímero, modelos locales preparados, launcher, manifest y rollback comprobados.
+La verificación canónica del artefacto activo anterior terminó `verified=true` con
+corpus efímero, modelos locales preparados, launcher, manifest y rollback
+comprobados; esa evidencia no acredita una instalación desde `cee69f3`.
 La evidencia de smoke/replay aislado de 23 fixtures y nueve rutas de la candidata
 anterior permanece conservada por separado; el alcance Code `projects`
 excluyó el archivo fuera de un proyecto configurado, sin ejecutarlo. Los hashes
@@ -78,9 +88,8 @@ El primer smoke con cache de modelos aislado, `RC1=2`/`RC2=2` por
 
 1. Conservar `current` en `0.13.0-c2066dcbd967-cp314-linux-x86_64` y el rollback
    inmediato `0.13.0-38283df08491-cp314-linux-x86_64`; no retirar el rollback.
-2. Promover/verificar la release desde `3a7eba5` cuando desaparezca el uso del
-   rollback por la tarea MCP separada; no forzar GC ni detenerla desde esta
-   tranche.
+2. Promover/verificar la release canónica desde `cee69f3` sólo cuando el fence de
+   `398501` tenga ownership resuelto; no forzar GC ni detenerlo desde esta tranche.
 3. Mantener `NEO-FUN-002` en `ESPERA_TERCERO`: CA-12 sigue `PARTIAL` y CA-15
    conserva 33.1% de excerpt, sin reabrir R1–R4 ni hacer tuning.
 4. Mantener `NEO-AUTH-001` en `EN_CURSO`: falta principal autenticado confiable
@@ -92,9 +101,10 @@ El primer smoke con cache de modelos aislado, `RC1=2`/`RC2=2` por
    GitHub Actions durante esta tranche; el contrato preparado de fixtures no
    acredita promoción física.
 
-El cierre de esta implementación incluye código, documentación, SSOT y release
-verificada/promovida; las decisiones y gates anteriores siguen siendo
-pendientes independientes.
+La implementación de código y validación de esta tranche está publicada; el
+cierre total aún requiere la promoción/verificación canónica desde `cee69f3` y
+la actualización documental externa. Las decisiones y gates anteriores siguen
+siendo pendientes independientes.
 
 ## Evidencia previa y límites de interpretación
 
@@ -113,7 +123,8 @@ el cierre de 0.13:
 
 Estas observaciones son históricas y permanecen separadas de la aceptación
 vigente del lifecycle 0.13, que corresponde al SHA `c2066dcbd967` y su artefacto
-instalado.
+instalado; `cee69f3` permanece como código publicado con candidata aislada
+verificada, pendiente de promoción canónica.
 
 ## Gates y siguiente paso
 
