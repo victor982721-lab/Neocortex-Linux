@@ -1,22 +1,21 @@
 # Handoff operativo vigente — NeoCortex
 
-**Última verificación:** 2026-09-09T21:50:53-06:00, `America/Mexico_City`
+**Última verificación:** 2026-09-09T22:22:00-06:00, `America/Mexico_City`
 **Checkout:** `/home/winterboss/Neocortex/Repository`
 **Fuente de verdad:** estado vivo de `main`/`origin/main`,
 `PENDIENTES.md`, `HISTORIAL.md` y receipts canónicos fechados
 
-**Estado vivo:** `current` apunta a
-`0.13.0-5b1873294ba7-cp314-linux-x86_64`
-(`source_sha=5b1873294ba71959a621b288468d082b57568a5f`), el rollback inmediato es
-`0.13.0-c6d3985f7a45-cp314-linux-x86_64` y `.staging` está vacío. El checkout
-local contiene la nueva tranche en `686f1ddbec4c5c5e181ab897b10055a29a9642da`,
-todavía no instalada ni publicada en `origin/main`; no se reescribió historia.
+**Estado vivo:** la verificación de integración confirma `HEAD == main ==
+origin/main` y árbol limpio. `current` apunta a
+`0.13.0-38283df08491-cp314-linux-x86_64`
+(`source_sha=38283df08491ae00619b17139bd277dea719187f`), el rollback inmediato es
+`0.13.0-5b1873294ba7-cp314-linux-x86_64` y `.staging` está vacío. Los commits
+posteriores al SHA ejecutable son documentales; no se reescribió historia.
 
 ## Alcance actual
 
 La tranche post-0.13 quedó implementada, publicada e instalada en el artefacto
-activo desde `5b1873294ba71959a621b288468d082b57568a5f`; los cambios entre el
-SHA ejecutable anterior y éste son documentales. Mantiene las nueve rutas
+activo desde `38283df08491ae00619b17139bd277dea719187f`; mantiene las nueve rutas
 (`pdf`, `docx`, `office`, `archive`, `text`, `audio`, `video`, `image`, `code`),
 inventario, catalogación/deduplicación, Semantic y Code bajo el lifecycle
 Framework reanudable, con manifest, stages, checkpoints, presupuesto global,
@@ -31,35 +30,37 @@ con entidades/relaciones/contradicciones/telemetría, `content-diagnostics/v2`,
 move/rename sólo en fixtures, panel GUI read-only y el contrato de principal
 autenticado. MCP no recibe autorización, aplicación ni conciliación escrita.
 
-El checkout añade además la tranche `686f1dd`: límites compartidos de
-`KnowledgeReadBudget` para curación `scan/verify/apply` y la proyección pública
-estable de evidencia Knowledge v1 con exports API/SDK. Esta tranche ya pasó sus
-focales, pero aún no forma parte de `current`; sus gates de release y publicación
-siguen abiertos.
+La tranche incorpora los límites compartidos de `KnowledgeReadBudget` para
+curación `scan/verify/apply` y la proyección pública estable de evidencia
+Knowledge v1 con exports API/SDK. Sus focales pasaron y el artefacto instalado
+corresponde al SHA documental final `38283df`.
 
-La suite integral desde el SHA ejecutable terminó con **6959 pasadas, 67
-omitidas y 42 subtests**. Ruff y Mypy quedaron limpios; Pyright terminó con 0
-errores y 123 warnings clasificados; Semgrep terminó con 0 hallazgos en 7 reglas.
+La suite integral anterior terminó con **6959 pasadas, 67 omitidas y 42
+subtests**. Para la nueva tranche, los focales fueron **42** pasadas de curación
+y **202** de Knowledge/API; Ruff quedó limpio y Pyright terminó sin errores en
+el foco. La suite completa desde el checkout final produjo **6984 pasadas, 59
+omitidas y 42 subtests**, con un único fallo temporal en
+`test_global_budget_covers_route_semantic_and_final_deadline_gate` (el deadline
+de 1 ms ganó a la aserción de items); la repetición aislada inmediata pasó. El
+receipt integral no se presenta como limpio hasta estabilizar esa barrera
+flaky.
 
 La release activa verificó manifest, árbol, launcher y procedencia. Sus hashes son:
 
-- manifest `e5b0a7ba84dd01437416984b99cf0310b3000a1983298946f97ca210429eb4fc`;
-- árbol `556a1eb44795860a8c797477048011dc84137fc7bd007f801cdeb6affd1fdaf1`;
-- launcher `9862394e8ddb286626cb6d2286c26131f45a8c7afa06173c0848aca0d6afa6fe`;
-- wheel `cb5f50308b0c2a39f5565c28ccd3cbc6a5f2677b83a56c7d24ec49093e15d4cc`;
-- manifest de fuente `d69555412b618360200f3ca2b8cf363b3ae54884247a8ec5661c5e318713327c`.
+- manifest `ea52172b62bc5fbb031a2c767c9ab94aa6c871b5d36bf1baae92f78736a7e9ef`;
+- árbol `1c8e83888a21601d2922ae45dca8dd292000a9e3b55d910dbe7d53ed2c7c8620`;
+- launcher `1aa9549679d1a3ee2e4156f3f51779d03359304eacea6170b7513314e7069299`;
+- wheel `7d2fe292a55e6c49d43363f18011907ff79b6781c116bc44dea791395d1d8c40`;
+- manifest de fuente `1bdc362314ee2fa5cc34b35ffc32c2481b021ed447e6d0c68d35cff6a3f3c693`.
 
-La candidata construida desde el SHA documental más reciente quedó promovida al
-namespace canónico después de cerrar únicamente los procesos históricos
-`agent serve` `87428` y `114389`; los procesos de la release anterior que siguen
-activos se conservaron como rollback inmediato. No se modificó `current`
-manualmente para sortear el fence.
+La release final quedó promovida al namespace canónico después de cerrar los
+`agent serve` idle de las releases históricas; `agent serve` quedó en cero, no se
+modificó `current` manualmente y se conservó sólo el rollback inmediato.
 
-La verificación canónica del artefacto activo terminó `verified=true`; la
-evidencia de smoke/replay de la misma fuente en namespace aislado sobre 23
-fixtures temporales terminó `RC1=0` y `RC2=0` en nueve rutas, con Semantic
-completo usando modelos locales existentes, Archive y Text con `cache_hits` en
-replay y `action_mode=dry-run`. El alcance Code `projects`
+La verificación canónica del artefacto activo terminó `verified=true` con corpus
+efímero, modelos locales preparados, launcher, manifest y rollback comprobados.
+La evidencia de smoke/replay aislado de 23 fixtures y nueve rutas de la candidata
+anterior permanece conservada por separado; el alcance Code `projects`
 excluyó el archivo fuera de un proyecto configurado, sin ejecutarlo. Los hashes
 de bytes de fixtures y estado temporal permanecieron estables entre corridas.
 El primer smoke con cache de modelos aislado, `RC1=2`/`RC2=2` por
@@ -67,12 +68,11 @@ El primer smoke con cache de modelos aislado, `RC1=2`/`RC2=2` por
 
 ## Gates y siguiente paso
 
-1. Conservar `current` en `0.13.0-5b1873294ba7-cp314-linux-x86_64` y el rollback
-   inmediato `0.13.0-c6d3985f7a45-cp314-linux-x86_64`; no iniciar una release
-   histórica ni retirar el rollback durante la siguiente tranche.
-2. Validar, construir e instalar la release desde `686f1dd`, y publicar el SHA
-   final sólo después de comprobar la suite proporcional, launcher, manifest,
-   `current` y rollback.
+1. Conservar `current` en `0.13.0-38283df08491-cp314-linux-x86_64` y el rollback
+   inmediato `0.13.0-5b1873294ba7-cp314-linux-x86_64`; no retirar el rollback.
+2. Resolver o caracterizar de forma estable el único fallo temporal del full
+   suite antes de cerrar `NEO-CUR-007` y `NEO-EVO-007`; los focales y la release
+   instalada ya están verificados.
 3. Mantener `NEO-FUN-002` en `ESPERA_TERCERO`: CA-12 sigue `PARTIAL` y CA-15
    conserva 33.1% de excerpt, sin reabrir R1–R4 ni hacer tuning.
 4. Mantener `NEO-AUTH-001` en `EN_CURSO`: falta principal autenticado confiable
@@ -104,7 +104,7 @@ el cierre de 0.13:
   `.staging` quedó vacío.
 
 Estas observaciones son históricas y permanecen separadas de la aceptación
-vigente del lifecycle 0.13, que corresponde al SHA `5b1873294ba7` y su artefacto
+vigente del lifecycle 0.13, que corresponde al SHA `38283df08491` y su artefacto
 instalado.
 
 ## Gates y siguiente paso
