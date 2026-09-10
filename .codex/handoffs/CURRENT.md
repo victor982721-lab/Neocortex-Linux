@@ -1,6 +1,6 @@
 # Handoff operativo vigente — NeoCortex
 
-**Última verificación:** 2026-09-10T07:38:26-06:00, `America/Mexico_City`
+**Última verificación:** 2026-09-10T10:40:00-06:00, `America/Mexico_City`
 **Checkout:** `/home/winterboss/Neocortex/Repository`
 **Fuente de verdad:** estado vivo de `main`/`origin/main`,
 `PENDIENTES.md`, `HISTORIAL.md` y receipts canónicos fechados
@@ -11,6 +11,11 @@ origin/main` y árbol limpio. `current` apunta a
 (`source_sha=c2066dcbd967e8804df559f1fc9d15abdbd783bc`), el rollback inmediato es
 `0.13.0-38283df08491-cp314-linux-x86_64` y `.staging` está vacío. Los commits
 posteriores al SHA ejecutable son documentales; no se reescribió historia.
+
+El checkout publicado contiene `3a7eba59962962c33796a4c7ae23cfd69ad9ba68`,
+con la tranche API/SDK/CLI read-only implementada, pero todavía no instalada en
+`current`; su promoción espera que el `agent serve` PID `398501` deje de usar el
+rollback anterior. No se fuerza GC ni se interrumpe la tarea MCP separada.
 
 ## Alcance actual
 
@@ -34,6 +39,12 @@ La tranche incorpora los límites compartidos de `KnowledgeReadBudget` para
 curación `scan/verify/apply` y la proyección pública estable de evidencia
 Knowledge v1 con exports API/SDK. Sus focales pasaron y el artefacto instalado
 corresponde al SHA final `c2066dc`.
+
+La tranche `NEO-EVO-008` añade `knowledge_search_projection_payload`, wrapper y
+metadatos aditivos de búsqueda, exports lazy API/SDK y `--knowledge-projection`
+opt-in en CLI. `search_payload` y las salidas por defecto permanecen intactas;
+los focales API/SDK/CLI pasaron 237 pruebas, con Ruff, Pyright y compileall
+limpios. La release activa aún corresponde a `c2066dc`.
 
 La suite integral anterior terminó con **6959 pasadas, 67 omitidas y 42
 subtests**. Para la nueva tranche, los focales fueron **42** pasadas de curación
@@ -67,8 +78,9 @@ El primer smoke con cache de modelos aislado, `RC1=2`/`RC2=2` por
 
 1. Conservar `current` en `0.13.0-c2066dcbd967-cp314-linux-x86_64` y el rollback
    inmediato `0.13.0-38283df08491-cp314-linux-x86_64`; no retirar el rollback.
-2. Preparar la siguiente tranche de interfaces Knowledge/API read-only con
-   ownership separado; no conectar `agent_server.py` ni MCP en esta etapa.
+2. Promover/verificar la release desde `3a7eba5` cuando desaparezca el uso del
+   rollback por la tarea MCP separada; no forzar GC ni detenerla desde esta
+   tranche.
 3. Mantener `NEO-FUN-002` en `ESPERA_TERCERO`: CA-12 sigue `PARTIAL` y CA-15
    conserva 33.1% de excerpt, sin reabrir R1–R4 ni hacer tuning.
 4. Mantener `NEO-AUTH-001` en `EN_CURSO`: falta principal autenticado confiable
