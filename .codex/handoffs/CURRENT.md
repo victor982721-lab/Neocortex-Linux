@@ -1,6 +1,6 @@
 # Handoff operativo vigente — NeoCortex
 
-**Última verificación:** 2026-09-10T11:50:00-06:00, `America/Mexico_City`
+**Última verificación:** 2026-09-10T11:55:26-06:00, `America/Mexico_City`
 **Checkout:** `/home/winterboss/Neocortex/Repository`
 **Fuente de verdad:** estado vivo de `main`/`origin/main`,
 `PENDIENTES.md`, `HISTORIAL.md` y receipts canónicos fechados
@@ -17,8 +17,8 @@ reescribió historia.
 El checkout publicado contiene la tranche API/SDK/CLI read-only y sus correcciones
 de límites en `cee69f3cc4c3863fc873b22205a08121281e9ff1`, pero todavía no está
 instalada en `current`. En el host real, el `agent serve` PID `398501` sigue usando
-el rollback histórico; el PID `527799` usa la release actual y no se toca. No se
-fuerza GC ni se interrumpe la tarea MCP separada.
+el rollback histórico; `527799`, `540752` y `573603` usan la release actual y no se
+tocan. No se fuerza GC ni se interrumpe ninguna tarea MCP separada.
 
 ## Alcance actual
 
@@ -74,7 +74,8 @@ instaló y verificó `verified=true` en un namespace temporal con corpus vacío;
 evidencia canónica está en
 `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-10-evo008-cee69f3-candidate/`.
 La release canónica `current` todavía no se modificó: el gate de promoción real
-mantiene el PID `398501` y no se detuvo ningún `agent serve`.
+mantiene el PID `398501`; no se detuvo ningún `agent serve` y no se observaron
+puertos TCP/UDP propios.
 
 La verificación canónica del artefacto activo anterior terminó `verified=true` con
 corpus efímero, modelos locales preparados, launcher, manifest y rollback
