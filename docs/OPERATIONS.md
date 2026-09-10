@@ -299,8 +299,9 @@ La release activa comprobada es
 `0.13.0-c6d3985f7a45-cp314-linux-x86_64`
 (`source_sha=c6d3985f7a45fc3120bd03e9561195674f2b8ac2`), con rollback inmediato
 `0.13.0-1567fe46821b-cp314-linux-x86_64` y `.staging` vacío. La última
-integración verificó `HEAD == main == origin/main == c6d3985f7a45fc3120bd03e9561195674f2b8ac2`;
-la tranche post-0.13 se ejecuta desde el launcher activo.
+integración documental dejó `HEAD == main == origin/main`; el código de la
+tranche post-0.13 se ejecuta desde el launcher activo y proviene de
+`c6d3985f7a45fc3120bd03e9561195674f2b8ac2`.
 
 La [instalación ordinaria offline](LINUX_KUBUNTU.md#instalación-ordinaria-desde-una-extracción)
 en venv CPython 3.13 no promueve una release ni requiere Git. El procedimiento

@@ -5,13 +5,14 @@ organizar archivos personales en Linux. Su objetivo es sustituir inventarios,
 auditorías y scripts improvisados por un flujo reproducible que conserve
 identidad, evidencia, incertidumbre y trazabilidad.
 
-La fuente vigente declara `0.13.0`. La última integración verificó
-`HEAD == main == origin/main == c6d3985f7a45fc3120bd03e9561195674f2b8ac2` y
-árbol limpio. El ejecutable `current` es
+La fuente vigente declara `0.13.0`. La última integración documental dejó
+`HEAD == main == origin/main` y árbol limpio. El ejecutable `current` es
 `0.13.0-c6d3985f7a45-cp314-linux-x86_64`, construido desde ese `source_sha`; el
 rollback inmediato es `0.13.0-1567fe46821b-cp314-linux-x86_64` y `.staging` está
 vacío. El estado instalado y el estado del checkout se comprueban por separado;
-la tranche post-0.13 ya está instalada y verificada desde el mismo SHA.
+el código de la tranche post-0.13 está instalado y verificado desde
+`c6d3985f7a45fc3120bd03e9561195674f2b8ac2`, mientras los commits posteriores
+son sólo documentales.
 
 La aceptación C0–C7 de 0.13 está confirmada sobre el SHA final: 6917 pasadas,
 68 omitidas, 42 subtests, calidad estática sin errores/hallazgos bloqueantes,
