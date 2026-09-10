@@ -85,6 +85,7 @@ if TYPE_CHECKING:
         KNOWLEDGE_EVIDENCE_PROJECTION_SCHEMA as KNOWLEDGE_EVIDENCE_PROJECTION_SCHEMA,
         KNOWLEDGE_EVIDENCE_PROJECTION_VERSION as KNOWLEDGE_EVIDENCE_PROJECTION_VERSION,
         KnowledgeEvidenceProjection as KnowledgeEvidenceProjection,
+        KnowledgeSearchProjection as KnowledgeSearchProjection,
         KnowledgePhaseTiming as KnowledgePhaseTiming,
         KnowledgePlan as KnowledgePlan,
         KnowledgeQuery as KnowledgeQuery,
@@ -134,6 +135,7 @@ if TYPE_CHECKING:
         content_diagnostics_v2_payload as content_diagnostics_v2_payload,
         evidence_payload as evidence_payload,
         lineage_payload as lineage_payload,
+        knowledge_search_projection_payload as knowledge_search_projection_payload,
         operational_query_payload as operational_query_payload,
         search_payload as search_payload,
         status_payload as status_payload,
@@ -185,6 +187,7 @@ __all__ = (  # noqa: RUF022
     "KNOWLEDGE_EVIDENCE_PROJECTION_SCHEMA",
     "KNOWLEDGE_EVIDENCE_PROJECTION_VERSION",
     "KnowledgeEvidenceProjection",
+    "KnowledgeSearchProjection",
     "KnowledgePhaseTiming",
     "KnowledgePlan",
     "KnowledgeQuery",
@@ -245,6 +248,7 @@ __all__ = (  # noqa: RUF022
     "asset_health_payload",
     "code_search_payload",
     "lineage_payload",
+    "knowledge_search_projection_payload",
     "plan_knowledge_query",
     "RunBudget",
     "RunManifest",
@@ -415,6 +419,10 @@ _READ_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "asset_health_payload": ("neocortex.api.read_api", "asset_health_payload"),
     "code_search_payload": ("neocortex.api.read_api", "code_search_payload"),
     "lineage_payload": ("neocortex.api.read_api", "lineage_payload"),
+    "knowledge_search_projection_payload": (
+        "neocortex.api.read_api",
+        "knowledge_search_projection_payload",
+    ),
 }
 
 _KNOWLEDGE_READ_EXPORTS: Final[dict[str, tuple[str, str]]] = {

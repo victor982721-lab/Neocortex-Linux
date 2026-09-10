@@ -62,6 +62,19 @@ EXPECTED_KNOWLEDGE_ACTIONS = (
         "search available lexical, semantic, structural and catalog evidence",
     ),
     (
+        ("--knowledge-projection",),
+        "knowledge_projection",
+        "_StoreTrueAction",
+        0,
+        True,
+        False,
+        None,
+        None,
+        None,
+        False,
+        "emit the additive evidence projection for --knowledge-search",
+    ),
+    (
         ("--knowledge-context",),
         "knowledge_context",
         "_StoreAction",
@@ -219,6 +232,9 @@ EXPECTED_KNOWLEDGE_HELP = (
     "  --knowledge-search QUERY\n"
     "                        search available lexical, semantic, structural and\n"
     "                        catalog evidence\n"
+    "  --knowledge-projection\n"
+    "                        emit the additive evidence projection for --knowledge-\n"
+    "                        search\n"
     "  --knowledge-context QUERY\n"
     "                        build a bounded cited context from one read-only\n"
     "                        Knowledge search\n"

@@ -4,10 +4,17 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
+
 from neocortex.knowledge.knowledge_contracts import (
     EvidenceMethod,
     EvidenceRef,
     KnowledgeHit,
+    KnowledgePhaseTiming,
+    KnowledgeQueryTelemetry,
+    KnowledgeSnapshot,
+    KnowledgeTelemetryOperation,
+    KnowledgeTimingPhase,
     PhysicalIdentityRef,
     RankingSignal,
     ResourceDisposition,
@@ -15,10 +22,19 @@ from neocortex.knowledge.knowledge_contracts import (
     RevisionRef,
     RevisionState,
 )
+from neocortex.knowledge.knowledge_planner import KnowledgePlan, RetrievalMode
+from neocortex.knowledge.knowledge_read_budget import KnowledgeReadBudget
+from neocortex.knowledge.knowledge_search_contracts import (
+    KnowledgeSearchResult,
+    RankingExecution,
+)
 from neocortex.knowledge.knowledge_evidence_projection import (
     EVIDENCE_PROJECTION_SCHEMA,
     KnowledgeEvidenceProjection,
+    KnowledgeSearchProjection,
     project_knowledge_hit,
+    project_knowledge_search,
+    validate_knowledge_projection_scope,
 )
 
 
@@ -141,3 +157,138 @@ def test_contract_wrapper_is_deterministic_and_does_not_mutate_payload() -> None
     payload = wrapped.to_dict()
     payload["identity"]["resource_id"] = "mutated"
     assert wrapped.to_json() == first
+
+
+def _search_result() -> KnowledgeSearchResult:
+    return KnowledgeSearchResult(
+        plan=KnowledgePlan(
+            plan_id="knowledge-plan-v1:projection-fixture",
+            normalized_query="consulta de prueba",
+            retrieval_mode=RetrievalMode.EVIDENCE,
+            intents=("lexical",),
+            exact_terms=(),
+            source_kinds=(),
+            formats=(),
+            project=None,
+            date_from=None,
+            date_to=None,
+            include_history=False,
+            limit=10,
+            max_per_resource=3,
+            min_section_distance=128,
+            max_vectors=500_000,
+            steps=(),
+        ),
+        snapshot=KnowledgeSnapshot.create(
+            source_version="fixture",
+            captured_at_utc="2026-09-10T00:00:00Z",
+            captured_monotonic_ns=1,
+            owners=(),
+        ),
+        hits=(_hit(snippet="resultado", with_locator=True),),
+        rankings=(
+            RankingExecution(
+                name="fixture",
+                channel="lexical",
+                executed=True,
+                available=True,
+                complete=False,
+                returned=1,
+                rows_scanned=4,
+                elapsed_ns=9_000,
+                result_window_full=True,
+            ),
+        ),
+        complete=False,
+        truncated=True,
+        omitted_candidates=5,
+        rows_scanned=4,
+        vectors_scanned=2,
+        elapsed_milliseconds=17,
+        warnings=("owner_partial",),
+        telemetry=KnowledgeQueryTelemetry(
+            operation=KnowledgeTelemetryOperation.SEARCH,
+            total_duration_ns=17_000_000,
+            phases=(KnowledgePhaseTiming(KnowledgeTimingPhase.BROKER, 9_000, service_attempt=1),),
+        ),
+        blocking_owners=("semantic",),
+        result_window_full=True,
+        window_omitted_candidates=3,
+    )
+
+
+def test_search_projection_copies_bounded_metadata_and_budget() -> None:
+    budget = KnowledgeReadBudget(max_rows=20, max_vectors=30)
+    budget.checkpoint(rows=4, vectors=2)
+
+    projected = project_knowledge_search(
+        _search_result(), scope="framework", read_budget=budget
+    )
+
+    assert projected["scope"] == "framework"
+    assert projected["rankings"] == [
+        {
+            "name": "fixture",
+            "channel": "lexical",
+            "executed": True,
+            "available": True,
+            "complete": False,
+            "returned": 1,
+            "rows_scanned": 4,
+            "row_count_semantics": "materialized_lower_bound",
+            "vectors_scanned": 0,
+            "elapsed_ns": 9_000,
+            "result_window_full": True,
+        }
+    ]
+    assert projected["telemetry"]["operation"] == "search"
+    assert projected["blocking_owners"] == ["semantic"]
+    assert projected["elapsed_milliseconds"] == 17
+    assert projected["result_window_full"] is True
+    assert projected["window_omitted_candidates"] == 3
+    assert projected["read_budget"] == {
+        "schema": "neocortex.knowledge-read-budget/v1",
+        "max_rows": 20,
+        "max_vectors": 30,
+        "max_temporary_bytes": None,
+        "deadline_configured": False,
+        "rows_used": 4,
+        "vectors_used": 2,
+        "temporary_bytes_used": 0,
+        "checkpoints": 1,
+    }
+    assert projected["coverage"]["reasons"] == [
+        "candidate_scan_truncated",
+        "owner_partial",
+        "search_incomplete",
+    ]
+    assert projected["warnings"] == ["owner_partial"]
+    assert projected["snapshot"]["kind"] == "knowledge_snapshot"
+
+
+@pytest.mark.parametrize("scope", ("personal", "framework", "all"))
+def test_projection_scope_accepts_only_fixed_read_scope_names(scope: str) -> None:
+    assert validate_knowledge_projection_scope(scope) == scope
+    assert project_knowledge_hit(_hit(snippet="v", with_locator=True), scope=scope)[
+        "provenance"
+    ]["scope"] == scope
+
+
+@pytest.mark.parametrize("scope", ("", "archive", "Personal", 1, True))
+def test_projection_scope_rejects_unrecognized_values(scope: object) -> None:
+    with pytest.raises(ValueError, match="scope must be personal, framework or all"):
+        validate_knowledge_projection_scope(scope)  # type: ignore[arg-type]
+
+
+def test_search_projection_wrapper_is_frozen_and_defensively_copied() -> None:
+    source = project_knowledge_search(_search_result(), scope="all")
+    wrapped = KnowledgeSearchProjection(source)
+    source["items"][0]["identity"]["resource_id"] = "changed"
+    observed = wrapped.to_dict()
+
+    assert observed["scope"] == "all"
+    assert observed["items"][0]["identity"]["resource_id"] == "resource:fixture"
+    observed["items"][0]["identity"]["resource_id"] = "changed-again"
+    assert wrapped.to_dict()["items"][0]["identity"]["resource_id"] == "resource:fixture"
+    with pytest.raises((AttributeError, TypeError)):
+        wrapped.payload = {}  # type: ignore[misc]

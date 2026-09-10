@@ -115,6 +115,7 @@ READ_EXPORTS = (
     "asset_health_payload",
     "code_search_payload",
     "lineage_payload",
+    "knowledge_search_projection_payload",
 )
 
 EXPECTED_EXPORTS = (
@@ -152,6 +153,7 @@ EXPECTED_EXPORTS = (
     "KNOWLEDGE_EVIDENCE_PROJECTION_SCHEMA",
     "KNOWLEDGE_EVIDENCE_PROJECTION_VERSION",
     "KnowledgeEvidenceProjection",
+    "KnowledgeSearchProjection",
     *LEGACY_EXPORTS[13:17],
     *BUDGET_EXPORTS,
     *LEGACY_EXPORTS[17:25],

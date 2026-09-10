@@ -636,6 +636,102 @@ def search_payload(
     )
 
 
+def knowledge_search_projection_payload(
+    query: str,
+    scope: str | ReadScope = ReadScope.ALL,
+    *,
+    limit: int = 10,
+    mode: str | RetrievalMode = RetrievalMode.EVIDENCE,
+    include_history: bool = False,
+    cancellation_check: CancellationCheck | None = None,
+    request_id: str | None = None,
+    read_budget: KnowledgeReadBudget | None = None,
+) -> dict[str, object]:
+    """Search and expose the additive Knowledge evidence projection.
+
+    ``search_payload`` remains the compatibility/default read surface.  This
+    opt-in sibling performs the same bounded, independent scope reads but
+    replaces each typed search result with the stable evidence projection.
+    Projection is deliberately imported only when this function is called so
+    importing the API facade does not import Knowledge projection machinery.
+    """
+
+    from neocortex.knowledge.knowledge_evidence_projection import project_knowledge_search
+
+    normalized = _validate_query(query)
+    selected = _scope(scope)
+    bindings = scope_bindings(selected)
+    bounded_limit = _validate_limit(limit)
+    retrieval_mode = mode if isinstance(mode, RetrievalMode) else RetrievalMode(mode)
+    if read_budget is not None and not isinstance(read_budget, KnowledgeReadBudget):
+        raise ValueError("read_budget must be a KnowledgeReadBudget when provided")
+    request = KnowledgeQuery(
+        normalized,
+        retrieval_mode=retrieval_mode,
+        include_history=include_history,
+        limit=bounded_limit,
+    )
+    entries: list[dict[str, object]] = []
+    for binding in bindings:
+        try:
+            result = _service(binding).search(
+                request,
+                cancellation_check=cancellation_check,
+                read_budget=read_budget,
+            )
+            entries.append(
+                {
+                    "scope": binding.scope.value,
+                    "state_directory": str(binding.state_directory),
+                    "status": "ok" if result.complete else "partial",
+                    "exit_code": int(knowledge_search_exit_code(result)),
+                    "result": project_knowledge_search(
+                        result,
+                        scope=binding.scope.value,
+                        read_budget=read_budget,
+                    ),
+                }
+            )
+        except KnowledgeReadBudgetExceeded as exc:
+            entries.append({
+                "scope": binding.scope.value,
+                "state_directory": str(binding.state_directory),
+                "status": "partial",
+                "exit_code": int(KnowledgeExitCode.PARTIAL),
+                "error": {
+                    "code": exc.reason,
+                    "message": sanitize_untrusted_text(str(exc)),
+                },
+            })
+        except (ModuleNotFoundError, OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
+            entries.append(_error_entry(binding, exc))
+    return _finalize_read_payload(
+        {
+            "schema": READ_API_SCHEMA,
+            "kind": "neocortex_scoped_search",
+            "read_only": True,
+            "scope_requested": selected.value,
+            "federation_policy": FEDERATION_POLICY,
+            "query": normalized,
+            "mode": retrieval_mode.value,
+            "include_history": include_history,
+            "limit_per_scope": bounded_limit,
+            "read_budget": None if read_budget is None else read_budget.to_dict(),
+            "projection": "neocortex.knowledge-evidence-projection/v1",
+            "exit_code": federated_exit_code(entries),
+            "scopes": entries,
+        },
+        ReadOperation.SEARCH,
+        selected,
+        bindings,
+        request_id=request_id,
+        query=normalized,
+        mode=retrieval_mode.value,
+        include_history=include_history,
+        limit=bounded_limit,
+    )
+
+
 def context_payload(
     query: str,
     scope: str | ReadScope = ReadScope.ALL,
@@ -1289,6 +1385,7 @@ __all__ = (
     "context_payload",
     "evidence_payload",
     "federated_exit_code",
+    "knowledge_search_projection_payload",
     "lineage_payload",
     "operational_query_payload",
     "scope_bindings",

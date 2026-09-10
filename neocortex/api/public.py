@@ -65,6 +65,7 @@ if TYPE_CHECKING:
         context_payload as context_payload,
         evidence_payload as evidence_payload,
         lineage_payload as lineage_payload,
+        knowledge_search_projection_payload as knowledge_search_projection_payload,
         operational_query_payload as operational_query_payload,
         search_payload as search_payload,
         status_payload as status_payload,
@@ -133,6 +134,7 @@ if TYPE_CHECKING:
         KNOWLEDGE_EVIDENCE_PROJECTION_SCHEMA as KNOWLEDGE_EVIDENCE_PROJECTION_SCHEMA,
         KNOWLEDGE_EVIDENCE_PROJECTION_VERSION as KNOWLEDGE_EVIDENCE_PROJECTION_VERSION,
         KnowledgeEvidenceProjection as KnowledgeEvidenceProjection,
+        KnowledgeSearchProjection as KnowledgeSearchProjection,
         evidence_projection_payload as evidence_projection_payload,
         evidence_search_projection_payload as evidence_search_projection_payload,
         knowledge_evidence_projection_payload as knowledge_evidence_projection_payload,
@@ -320,6 +322,7 @@ __all__ = [  # noqa: RUF022
     "asset_health_payload",
     "code_search_payload",
     "lineage_payload",
+    "knowledge_search_projection_payload",
     "ContextBundle",
     "ContextContradictionRef",
     "ContextEntityRef",
@@ -335,6 +338,7 @@ __all__ = [  # noqa: RUF022
     "KNOWLEDGE_EVIDENCE_PROJECTION_SCHEMA",
     "KNOWLEDGE_EVIDENCE_PROJECTION_VERSION",
     "KnowledgeEvidenceProjection",
+    "KnowledgeSearchProjection",
     "KnowledgePhaseTiming",
     "KnowledgePlan",
     "KnowledgeQuery",
@@ -613,6 +617,10 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "asset_health_payload": ("neocortex.api.read_api", "asset_health_payload"),
     "code_search_payload": ("neocortex.api.read_api", "code_search_payload"),
     "lineage_payload": ("neocortex.api.read_api", "lineage_payload"),
+    "knowledge_search_projection_payload": (
+        "neocortex.api.read_api",
+        "knowledge_search_projection_payload",
+    ),
     "ContextBundle": ("neocortex.knowledge.knowledge_contracts", "ContextBundle"),
     "ContextContradictionRef": (
         "neocortex.knowledge.knowledge_contracts",
@@ -648,6 +656,10 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "KnowledgeEvidenceProjection": (
         "neocortex.knowledge.knowledge_evidence_projection",
         "KnowledgeEvidenceProjection",
+    ),
+    "KnowledgeSearchProjection": (
+        "neocortex.knowledge.knowledge_evidence_projection",
+        "KnowledgeSearchProjection",
     ),
     "KnowledgePhaseTiming": ("neocortex.knowledge.knowledge_contracts", "KnowledgePhaseTiming"),
     "KnowledgePlan": ("neocortex.knowledge.knowledge_planner", "KnowledgePlan"),

@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 import neocortex.api.cli.cli_knowledge as cli_knowledge
+import neocortex.knowledge.knowledge_evidence_projection as knowledge_projection
 import neocortex.knowledge.knowledge_snapshot as knowledge_snapshot
 from neocortex.api.cli.cli_app import main
 from neocortex.api.cli.cli_operations import selected_direct_operations
@@ -147,6 +148,107 @@ def test_parser_selects_three_lazy_flat_operations_with_bounded_defaults() -> No
     assert tuple(item.destination for item in selected_direct_operations(context)) == (
         "knowledge_context",
     )
+
+
+def test_projection_is_opt_in_and_accepts_only_search_scope() -> None:
+    parser = build_parser()
+    default = parser.parse_args(("--knowledge-search", "relay"))
+    projected = parser.parse_args(
+        ("--knowledge-search", "relay", "--knowledge-projection", "--scope", "framework")
+    )
+
+    assert default.knowledge_projection is False
+    assert projected.knowledge_projection is True
+    assert projected.knowledge_scope == "framework"
+    validate_arguments(projected)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        ("--knowledge-projection",),
+        ("--knowledge-status", "--knowledge-projection"),
+        ("--knowledge-context", "relay", "--knowledge-projection"),
+    ),
+)
+def test_projection_requires_the_search_direct_action(arguments: tuple[str, ...]) -> None:
+    args = build_parser().parse_args(arguments)
+    with pytest.raises(SystemExit, match="--knowledge-projection requires --knowledge-search"):
+        validate_arguments(args)
+
+
+def test_projection_uses_additive_payload_and_forwards_scope_and_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    result = _empty_result(_snapshot(), complete=True)
+    observed: dict[str, object] = {}
+
+    class Service:
+        def search(self, *_args: object, **kwargs: object) -> KnowledgeSearchResult:
+            observed["search"] = kwargs
+            return result
+
+    def project(value: KnowledgeSearchResult, **kwargs: object) -> dict[str, object]:
+        observed["result"] = value
+        observed["projection"] = kwargs
+        return {"schema": "neocortex.knowledge-evidence-projection/v1", "scope": kwargs["scope"]}
+
+    monkeypatch.setattr(cli_knowledge, "_service", lambda _args: Service())
+    monkeypatch.setattr(
+        cli_knowledge,
+        "_with_cancellation",
+        lambda operation: operation(lambda: None),
+    )
+    monkeypatch.setattr(knowledge_projection, "knowledge_search_projection_payload", project)
+    args = build_parser().parse_args(
+        (
+            "--knowledge-search",
+            "relay",
+            "--knowledge-projection",
+            "--scope",
+            "framework",
+            "--knowledge-budget-rows",
+            "17",
+        )
+    )
+    validate_arguments(args)
+
+    code = cli_knowledge.run_knowledge_search(args)
+
+    assert code == int(cli_knowledge.KnowledgeExitCode.NO_RESULTS)
+    assert observed["result"] is result
+    assert observed["search"]["read_budget"].max_rows == 17
+    assert observed["projection"]["scope"] == "framework"
+    assert observed["projection"]["read_budget"].max_rows == 17
+    assert json.loads(capsys.readouterr().out) == {
+        "schema": "neocortex.knowledge-evidence-projection/v1",
+        "scope": "framework",
+    }
+
+
+def test_search_without_projection_keeps_legacy_human_output(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    result = _empty_result(_snapshot(), complete=True)
+
+    class Service:
+        def search(self, *_args: object, **_kwargs: object) -> KnowledgeSearchResult:
+            return result
+
+    monkeypatch.setattr(cli_knowledge, "_service", lambda _args: Service())
+    monkeypatch.setattr(
+        cli_knowledge,
+        "_with_cancellation",
+        lambda operation: operation(lambda: None),
+    )
+    args = build_parser().parse_args(("--knowledge-search", "relay"))
+    validate_arguments(args)
+
+    cli_knowledge.run_knowledge_search(args)
+
+    assert capsys.readouterr().out.startswith('KNOWLEDGE_SEARCH query="relay protection"')
 
 
 @pytest.mark.parametrize(

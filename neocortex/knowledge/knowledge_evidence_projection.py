@@ -11,7 +11,7 @@ from __future__ import annotations
 import copy
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from neocortex.semantic.semantic_models import canonical_json
 
@@ -42,6 +42,9 @@ _LOCATOR_FIELDS = (
     "section_id",
 )
 _MAX_SIGNALS = 64
+_KNOWLEDGE_PROJECTION_SCOPES = ("personal", "framework", "all")
+
+KnowledgeProjectionScope = Literal["personal", "framework", "all"]
 
 
 def _contract_types() -> tuple[type[Any], type[Any]]:
@@ -87,10 +90,43 @@ def _validate_hit(hit: Any) -> None:
         raise TypeError("hit must be a validated KnowledgeHit")
 
 
+def validate_knowledge_projection_scope(scope: object | None) -> str | None:
+    """Validate the fixed read scopes without importing the API facade.
+
+    ``None`` keeps the historical hit-level projection meaning "scope not
+    supplied".  Callers that project a federated search should pass the
+    selected scope explicitly; no arbitrary owner or path is accepted here.
+    """
+
+    if scope is None:
+        return None
+    if not isinstance(scope, str) or scope not in _KNOWLEDGE_PROJECTION_SCOPES:
+        raise ValueError("scope must be personal, framework or all")
+    return scope
+
+
+def _read_budget_payload(value: object | None) -> dict[str, object] | None:
+    """Copy a caller-owned bounded-read budget without exposing callbacks."""
+
+    if value is None:
+        return None
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        payload = to_dict()
+    elif isinstance(value, Mapping):
+        payload = dict(value)
+    else:
+        raise TypeError("read_budget must be a KnowledgeReadBudget or mapping")
+    if not isinstance(payload, Mapping):
+        raise TypeError("read_budget.to_dict() must return a mapping")
+    return copy.deepcopy(dict(payload))
+
+
 def project_knowledge_hit(hit: KnowledgeHit, *, scope: str | None = None) -> dict[str, object]:
     """Project one validated hit without deriving authority from retrieval."""
 
     _validate_hit(hit)
+    scope = validate_knowledge_projection_scope(scope)
     evidence = hit.evidence
     resource = hit.resource
     revision = hit.revision
@@ -190,12 +226,19 @@ def project_knowledge_search(
     result: KnowledgeSearchResult,
     *,
     scope: str | None = None,
+    read_budget: object | None = None,
 ) -> dict[str, object]:
-    """Project a complete search result while preserving its bounded coverage."""
+    """Project a search result with additive bounded-read metadata.
+
+    The underlying result remains the source of truth for ranking, telemetry,
+    owner blocking and coverage.  This adapter only copies those validated
+    values; it does not execute a search, combine scopes or infer sufficiency.
+    """
 
     _, KnowledgeSearchResult = _contract_types()
     if not isinstance(result, KnowledgeSearchResult):
         raise TypeError("result must be a validated KnowledgeSearchResult")
+    scope = validate_knowledge_projection_scope(scope)
     items = [project_knowledge_hit(hit, scope=scope) for hit in result.hits]
     partial = not result.complete or result.truncated or bool(result.warnings)
     reasons: list[str] = []
@@ -223,6 +266,16 @@ def project_knowledge_search(
         "query": result.plan.normalized_query,
         "scope": scope,
         "items": items,
+        "rankings": [copy.deepcopy(ranking.to_dict()) for ranking in result.rankings],
+        "telemetry": (
+            None if result.telemetry is None else copy.deepcopy(result.telemetry.to_dict())
+        ),
+        "blocking_owners": list(result.blocking_owners),
+        "elapsed_milliseconds": result.elapsed_milliseconds,
+        "result_window_full": result.result_window_full,
+        "window_omitted_candidates": result.window_omitted_candidates,
+        "read_budget": _read_budget_payload(read_budget),
+        "warnings": list(result.warnings),
         "coverage": coverage,
         "snapshot": result.snapshot.to_dict(),
     }
@@ -241,9 +294,34 @@ def knowledge_evidence_projection_payload(
 
 
 def evidence_search_projection_payload(
-    result: KnowledgeSearchResult, *, scope: str | None = None
+    result: KnowledgeSearchResult,
+    *,
+    scope: str | None = None,
+    read_budget: object | None = None,
 ) -> dict[str, object]:
-    return project_knowledge_search(result, scope=scope)
+    return project_knowledge_search(result, scope=scope, read_budget=read_budget)
+
+
+def knowledge_search_projection_payload(
+    result: KnowledgeSearchResult,
+    *,
+    scope: str | None = None,
+    read_budget: object | None = None,
+) -> dict[str, object]:
+    """Named search alias for API/SDK adapters."""
+
+    return project_knowledge_search(result, scope=scope, read_budget=read_budget)
+
+
+def knowledge_evidence_search_projection_payload(
+    result: KnowledgeSearchResult,
+    *,
+    scope: str | None = None,
+    read_budget: object | None = None,
+) -> dict[str, object]:
+    """Compatibility alias spelling the evidence/search relationship."""
+
+    return project_knowledge_search(result, scope=scope, read_budget=read_budget)
 
 
 @dataclass(frozen=True, slots=True)
@@ -287,6 +365,62 @@ class KnowledgeEvidenceProjection:
 EvidenceProjection = KnowledgeEvidenceProjection
 
 
+@dataclass(frozen=True, slots=True)
+class KnowledgeSearchProjection:
+    """Immutable wrapper around one projected Knowledge search."""
+
+    payload: Mapping[str, object]
+
+    def __post_init__(self) -> None:
+        required = {
+            "schema",
+            "schema_version",
+            "kind",
+            "version",
+            "query",
+            "scope",
+            "items",
+            "rankings",
+            "telemetry",
+            "blocking_owners",
+            "elapsed_milliseconds",
+            "result_window_full",
+            "window_omitted_candidates",
+            "read_budget",
+            "warnings",
+            "coverage",
+            "snapshot",
+        }
+        if not isinstance(self.payload, Mapping) or not required.issubset(self.payload):
+            raise ValueError("search projection payload is incomplete")
+        if self.payload.get("schema") != KNOWLEDGE_EVIDENCE_PROJECTION_SCHEMA:
+            raise ValueError("projection schema is incompatible")
+        validate_knowledge_projection_scope(self.payload.get("scope"))
+        object.__setattr__(self, "payload", copy.deepcopy(dict(self.payload)))
+
+    @classmethod
+    def from_result(
+        cls,
+        result: KnowledgeSearchResult,
+        *,
+        scope: str | None = None,
+        read_budget: object | None = None,
+    ) -> "KnowledgeSearchProjection":
+        return cls(
+            project_knowledge_search(result, scope=scope, read_budget=read_budget)
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return copy.deepcopy(dict(self.payload))
+
+    def to_json(self) -> str:
+        return canonical_json(self.to_dict())
+
+
+KnowledgeEvidenceSearchProjection = KnowledgeSearchProjection
+SearchEvidenceProjection = KnowledgeSearchProjection
+
+
 __all__ = (
     "EVIDENCE_PROJECTION_SCHEMA",
     "EVIDENCE_PROJECTION_VERSION",
@@ -294,9 +428,16 @@ __all__ = (
     "KNOWLEDGE_EVIDENCE_PROJECTION_VERSION",
     "EvidenceProjection",
     "KnowledgeEvidenceProjection",
+    "KnowledgeEvidenceSearchProjection",
+    "KnowledgeProjectionScope",
+    "KnowledgeSearchProjection",
+    "SearchEvidenceProjection",
     "evidence_projection_payload",
     "evidence_search_projection_payload",
     "knowledge_evidence_projection_payload",
+    "knowledge_evidence_search_projection_payload",
+    "knowledge_search_projection_payload",
     "project_knowledge_hit",
     "project_knowledge_search",
+    "validate_knowledge_projection_scope",
 )

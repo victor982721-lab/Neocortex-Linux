@@ -298,16 +298,32 @@ def run_knowledge_health(args: argparse.Namespace) -> int:
 def run_knowledge_search(args: argparse.Namespace) -> int:
     try:
         query = _query(args, args.knowledge_search)
+        read_budget = _read_budget(args)
         result = _with_cancellation(
             lambda checkpoint: _service(args).search(
                 query,
                 cancellation_check=checkpoint,
-                read_budget=_read_budget(args),
+                read_budget=read_budget,
             )
         )
     except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
         return _failure("knowledge-search", exc)
-    if args.knowledge_json:
+    if getattr(args, "knowledge_projection", False):
+        from neocortex.knowledge.knowledge_evidence_projection import (
+            knowledge_search_projection_payload,
+        )
+        from neocortex.semantic.semantic_models import canonical_json
+
+        _print_console_line(
+            canonical_json(
+                knowledge_search_projection_payload(
+                    result,
+                    scope=getattr(args, "knowledge_scope", "personal"),
+                    read_budget=read_budget,
+                )
+            )
+        )
+    elif args.knowledge_json:
         _print_console_line(result.to_json())
     else:
         _print_search(result)

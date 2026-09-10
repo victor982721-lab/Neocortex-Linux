@@ -57,6 +57,11 @@ def register_knowledge_arguments(parser: argparse.ArgumentParser) -> None:
         help="search available lexical, semantic, structural and catalog evidence",
     )
     knowledge.add_argument(
+        "--knowledge-projection",
+        action="store_true",
+        help="emit the additive evidence projection for --knowledge-search",
+    )
+    knowledge.add_argument(
         "--knowledge-context",
         metavar="QUERY",
         help="build a bounded cited context from one read-only Knowledge search",
@@ -150,12 +155,18 @@ def validate_knowledge_arguments(args: argparse.Namespace) -> None:
         raise SystemExit("--knowledge-context-characters requires --knowledge-context")
     if "knowledge_response_version" in explicit and args.knowledge_context is None:
         raise SystemExit("--knowledge-response-version requires --knowledge-context")
-    if "knowledge_scope" in explicit and args.knowledge_context is None:
+    query_selected = args.knowledge_search is not None or args.knowledge_context is not None
+    if args.knowledge_projection and args.knowledge_search is None:
+        raise SystemExit("--knowledge-projection requires --knowledge-search")
+    if "knowledge_scope" in explicit and args.knowledge_context is None and not (
+        args.knowledge_projection and args.knowledge_search is not None
+    ):
         raise SystemExit("--scope requires --knowledge-context")
     optional = {
         "knowledge_context_characters",
         "knowledge_response_version",
         "knowledge_scope",
+        "knowledge_projection",
         "knowledge_json",
         "knowledge_limit",
         "knowledge_history",
@@ -167,7 +178,6 @@ def validate_knowledge_arguments(args: argparse.Namespace) -> None:
     }
     if not operations and optional.intersection(explicit):
         raise SystemExit("Knowledge options require one Knowledge direct action")
-    query_selected = args.knowledge_search is not None or args.knowledge_context is not None
     query_only = {
         "knowledge_limit",
         "knowledge_history",

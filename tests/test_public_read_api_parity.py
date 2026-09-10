@@ -22,6 +22,7 @@ READ_PAYLOADS = (
     "asset_health_payload",
     "code_search_payload",
     "lineage_payload",
+    "knowledge_search_projection_payload",
 )
 
 _ENVELOPE_KINDS = {
@@ -36,6 +37,7 @@ _ENVELOPE_KINDS = {
     "asset_health_payload": ("neocortex_scoped_asset_health", "asset_health"),
     "code_search_payload": ("neocortex_scoped_code_search", "inspect_code"),
     "lineage_payload": ("neocortex_scoped_derivation_lineage", "lineage"),
+    "knowledge_search_projection_payload": ("neocortex_scoped_search", "search"),
 }
 
 
@@ -61,6 +63,7 @@ def test_read_facades_are_manifested_without_eager_read_api_import() -> None:
                     "asset_health_payload",
                     "code_search_payload",
                     "lineage_payload",
+                    "knowledge_search_projection_payload",
                 )
                 if "neocortex.api.read_api" in sys.modules:
                     raise SystemExit("read_api imported before a facade access")
@@ -110,6 +113,7 @@ def test_read_facades_preserve_typed_envelopes_without_state_mutation(
         "asset_health_payload": ("resource:file:1:2:-1", "personal"),
         "code_search_payload": ("query", "personal"),
         "lineage_payload": ("revision:fixture", "personal"),
+        "knowledge_search_projection_payload": ("query", "personal"),
     }
 
     for index, facade in enumerate((public, sdk)):
