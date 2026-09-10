@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+from .knowledge_read_budget import KnowledgeReadBudget
 from neocortex.semantic.semantic_models import canonical_json
 
 if TYPE_CHECKING:
@@ -62,11 +63,6 @@ def _locator(evidence: Any) -> dict[str, object]:
         value = getattr(evidence, name)
         if value is not None:
             result[name] = list(value) if name == "bounding_box" else value
-    if evidence.identifiers:
-        result["identifiers"] = [
-            {"namespace": namespace, "value": value}
-            for namespace, value in evidence.identifiers
-        ]
     return result
 
 
@@ -110,16 +106,11 @@ def _read_budget_payload(value: object | None) -> dict[str, object] | None:
 
     if value is None:
         return None
-    to_dict = getattr(value, "to_dict", None)
-    if callable(to_dict):
-        payload = to_dict()
-    elif isinstance(value, Mapping):
-        payload = dict(value)
-    else:
-        raise TypeError("read_budget must be a KnowledgeReadBudget or mapping")
-    if not isinstance(payload, Mapping):
-        raise TypeError("read_budget.to_dict() must return a mapping")
-    return copy.deepcopy(dict(payload))
+    if isinstance(value, KnowledgeReadBudget):
+        return copy.deepcopy(value.to_dict())
+    if isinstance(value, Mapping):
+        return KnowledgeReadBudget.from_mapping(value).to_dict()
+    raise TypeError("read_budget must be a KnowledgeReadBudget or mapping")
 
 
 def project_knowledge_hit(hit: KnowledgeHit, *, scope: str | None = None) -> dict[str, object]:
@@ -170,9 +161,11 @@ def project_knowledge_hit(hit: KnowledgeHit, *, scope: str | None = None) -> dic
             "processing_signature": revision.processing_signature,
             "revision_id": revision.revision_id,
             "generation": revision.generation,
+            "observed_at_utc": revision.observed_at_utc,
             "evidence_method": evidence.method.value,
             "extractor": evidence.extractor,
             "extractor_version": evidence.extractor_version,
+            "evidence_generation": evidence.generation,
             "identifiers": [
                 {"namespace": namespace, "value": value}
                 for namespace, value in evidence.identifiers
@@ -240,7 +233,12 @@ def project_knowledge_search(
         raise TypeError("result must be a validated KnowledgeSearchResult")
     scope = validate_knowledge_projection_scope(scope)
     items = [project_knowledge_hit(hit, scope=scope) for hit in result.hits]
-    partial = not result.complete or result.truncated or bool(result.warnings)
+    partial = (
+        not result.complete
+        or result.truncated
+        or bool(result.warnings)
+        or bool(result.blocking_owners)
+    )
     reasons: list[str] = []
     if not result.complete:
         reasons.append("search_incomplete")
@@ -248,6 +246,8 @@ def project_knowledge_search(
         reasons.append("candidate_scan_truncated")
     if result.warnings:
         reasons.extend(result.warnings)
+    if result.blocking_owners:
+        reasons.append("blocking_owners")
     coverage = {
         "status": "partial" if partial else ("complete" if items else "no_evidence"),
         "reasons": sorted(set(reasons)),
@@ -350,6 +350,7 @@ class KnowledgeEvidenceProjection:
             raise ValueError("projection payload is incomplete")
         if self.payload.get("schema") != KNOWLEDGE_EVIDENCE_PROJECTION_SCHEMA:
             raise ValueError("projection schema is incompatible")
+        object.__setattr__(self, "payload", copy.deepcopy(dict(self.payload)))
 
     @classmethod
     def from_hit(cls, hit: KnowledgeHit, *, scope: str | None = None) -> "KnowledgeEvidenceProjection":

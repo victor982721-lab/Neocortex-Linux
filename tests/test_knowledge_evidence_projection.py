@@ -125,6 +125,24 @@ def test_missing_locator_preserves_reference_only_even_with_text() -> None:
     }
 
 
+def test_identifiers_are_provenance_not_replay_locators() -> None:
+    original = _hit(snippet="texto identificado", with_locator=False)
+    hit = replace(
+        original,
+        evidence=replace(original.evidence, identifiers=(("archive-member", "entry-1"),)),
+    )
+
+    projected = project_knowledge_hit(hit)
+
+    assert projected["locator"] is None
+    assert projected["evidence"]["replayable"] is False
+    assert projected["value"]["kind"] == "reference_only"
+    assert projected["coverage"]["reasons"] == ["locator_unavailable"]
+    assert projected["provenance"]["identifiers"] == [
+        {"namespace": "archive-member", "value": "entry-1"}
+    ]
+
+
 def test_score_changes_do_not_change_identity_or_equality() -> None:
     original = _hit(snippet="same", with_locator=True)
     changed = replace(
@@ -258,6 +276,7 @@ def test_search_projection_copies_bounded_metadata_and_budget() -> None:
         "checkpoints": 1,
     }
     assert projected["coverage"]["reasons"] == [
+        "blocking_owners",
         "candidate_scan_truncated",
         "owner_partial",
         "search_incomplete",
@@ -292,3 +311,11 @@ def test_search_projection_wrapper_is_frozen_and_defensively_copied() -> None:
     assert wrapped.to_dict()["items"][0]["identity"]["resource_id"] == "resource:fixture"
     with pytest.raises((AttributeError, TypeError)):
         wrapped.payload = {}  # type: ignore[misc]
+
+
+def test_search_projection_rejects_untrusted_budget_mapping() -> None:
+    with pytest.raises(ValueError, match="unsupported fields"):
+        project_knowledge_search(
+            _search_result(),
+            read_budget={"cancellation_check": lambda: None},
+        )
