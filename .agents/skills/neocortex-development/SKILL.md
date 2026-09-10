@@ -11,6 +11,10 @@ description: Implementar o corregir una capacidad solicitada de NeoCortex con ru
 2. Inspecciona Git y actividad de writers sin refrescar ni mutar fuentes durante
    una corrida cercada. Define resultado, ownership y regresión mínima; si hay
    frentes realmente independientes, delega sin compartir escrituras.
+   Aplica [cobertura por ronda](../../../docs/subprojects/development-release.md#cobertura-por-ronda):
+   una tarea principal, matriz acotada de contratos/riesgos afectados, oleadas
+   sin reducir el alcance y revisión independiente de las fronteras críticas.
+   Comprueba herramientas y modelo/esfuerzo efectivos, no sólo el brief.
 3. Implementa el cambio pedido en el flujo existente y usa herramientas de
    validación individual conforme a [desarrollo](../../../docs/subprojects/development-release.md).
    Aísla fixtures/estado; ni corpus real, proveedores, modelos ni gate agregador.

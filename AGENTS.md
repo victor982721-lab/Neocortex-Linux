@@ -41,6 +41,9 @@ publicación exige `HEAD == main == origin/main`, árbol limpio y validación
 proporcional. No confundas una referencia remota local vieja con comprobación
 del remoto. La raíz coordina Git, integración, validación y registros; cada
 archivo tiene un único escritor y sólo se delegan frentes independientes.
+En trabajo complejo, usa una sola tarea principal y mide contratos/riesgos
+verificados por ronda, con oleadas y aceptación independiente según
+[cobertura por ronda](docs/subprojects/development-release.md#cobertura-por-ronda).
 
 Publicar código no incluye por sí solo instalar. Cuando la tarea incluya release,
 la autorización permanente cubre construir, instalar/promover y verificar el

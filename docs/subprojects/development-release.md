@@ -13,6 +13,117 @@ reescritura o force push; fast-forward para trabajo previo verificado cuando sea
 posible. Publicación exige SHA remoto comprobado, `HEAD == main == origin/main`,
 árbol limpio y evidencia proporcional, no sólo un commit local.
 
+## Cobertura por ronda
+
+La prioridad es corrección y cobertura útil por iteración, no llenar el cupo ni
+prometer menor tiempo por sumar agentes. Una consulta simple o un frente serial
+no exige una matriz ni delegación. En cambios complejos, la raíz descompone
+dependencias y delega en paralelo todos los frentes realmente independientes,
+mientras avanza trabajo distinto en la ruta crítica.
+
+### Una tarea principal, capacidad comprobada
+
+- Usa una sola tarea principal con subagentes internos, no varias tareas del
+  usuario como coordinadores implícitos. Un coordinador interno se justifica
+  sólo si sus hojas aportan cobertura distinta y reducen carga de integración.
+- Comprueba el namespace/esquema nativo del actor antes de exigir descendientes.
+  Si no lo tiene, la raíz admite directamente sus frentes pendientes, dentro de
+  la misma ronda. Un fallo local no demuestra imposibilidad global; no inventes
+  aliases, claves de profundidad, proveedores ni tareas visibles para sortearlo.
+  Habilitar un nivel anidado requiere observar una creación real y su entrega,
+  no sólo texto de configuración. Evita más niveles sin beneficio demostrado.
+- La configuración local conserva V2 con límite 16 y espera por defecto 120 s.
+  Verifica cómo cuenta el runtime los actores antes de planear al límite; no
+  traslades automáticamente semántica de otra versión/backend. Es un techo,
+  no un objetivo: no equivale a 16 validadores/OCR simultáneos. Ajusta admisión
+  a memoria, I/O y cuota; ante fallos homogéneos reduce concurrencia y prueba
+  una canaria. Si faltan slots, continúa en oleadas sin recortar la ronda.
+- El modelo de la raíz sigue la selección del usuario. Los workers acotados
+  tienen default `gpt-5.6-luna`/`max`; los coordinadores anidados y la revisión
+  crítica usan explícitamente `gpt-6-astra`/`max`, no el default de las hojas,
+  salvo selección distinta expresa del usuario. Verifica catálogo y herramientas
+  del actor antes de delegarle coordinación; no atribuyas capacidad por
+  el título del actor. Una instrucción no cambia modelo/esfuerzo de un actor
+  reanudado: comprueba metadata y, si no coincide, crea un reemplazo sin
+  escritores simultáneos. No reduzcas MAX tácitamente para acelerar.
+
+### Matriz y ownership antes del despacho
+
+Identifica todas las superficies afectadas, y sólo ésas: productor, owner/persistencia,
+publicación, consumidores e interfaz pública, compatibilidad y lifecycle.
+Asigna una celda estable a cada obligación/riesgo material, no a cada archivo
+o agente. Una misma prueba puede referenciar varias celdas sin contarse como
+evidencia independiente. Usa una tabla breve de trabajo, fuera del producto:
+
+| Celda / contrato o riesgo | Interfaces y consumidores | Actor / escritor exclusivo | POS y adversarial aplicables | Evidencia / ID del revisor | Estado / siguiente gate |
+|---|---|---|---|---|---|
+| ID estable y alcance | Productor → publicación → consumidor | Rutas lógicas asignadas | Conducta esperada y fallo/abstención | Fuente, comando, resultado y hash/SHA | Pendiente, en curso, verificada, fallida o bloqueada |
+
+Justifica `N/A`; falta de tiempo, herramienta, slots o autorización no es `N/A`.
+Congela el denominador al planear la ronda y amplíalo explícitamente ante un
+consumidor/riesgo descubierto; no elimines celdas fallidas para mejorar la cifra.
+Los briefs incluyen IDs, objetivo, entradas mínimas, rutas de escritura,
+dependencias, POS/adversarial, prohibiciones y entrega esperada. Usa
+`fork_turns="none"` con un brief autosuficiente; comparte historia acotada sólo
+si es necesaria. No vuelvas a copiar transcripciones completas entre actores.
+
+Ownership se aplica al archivo **lógico**, también entre copias temporales.
+Los cambios del mismo archivo se serializan; leer o proponer un diff no concede
+escritura. No hay aislamiento por actor garantizado sólo por el prompt: conserva
+el sandbox real y revisa el diff. La raíz es el único escritor de Git,
+integración, publicación y SSOT; un coordinador no cierra el objetivo global.
+
+### Aceptación independiente y evidencia compacta
+
+- El autor aporta regresión focal; un revisor distinto deriva la aceptación de
+  la especificación/interfaz pública, no sólo de los mocks o supuestos del autor.
+  Fronteras compartidas/críticas requieren esa revisión antes de integrar.
+- Prueba el caso útil positivo y los fallos pertinentes. Para budgets/I/O,
+  consulta deadline/cancelación **durante** la operación, no sólo antes; prueba
+  error tipado, retry/cursor/replay e idempotencia cuando sean parte del contrato.
+  Un deadline agotado no puede anunciar `complete`. No fuerces estos casos a
+  una edición documental que no los afecta: conserva un `N/A` razonado.
+- El handoff compacto conserva IDs de actor y revisor, modelo/esfuerzo observados, IDs cubiertos,
+  archivos/SHA, prueba y resultado, hallazgos, límites y próximo gate. Enlaza
+  logs grandes y lee sólo la evidencia/diff necesaria para aceptar; `OK`, un
+  archivo presente o tests focales verdes no sustituyen aceptación integral.
+- La raíz arbitra hallazgos contra el contrato y su evidencia: distingue defecto
+  demostrado, riesgo y mejora opcional. No convierte endurecimientos sugeridos
+  o un `FAIL` sin contraejemplo válido en gates automáticos ni en trabajo nuevo.
+- Espera sólo resultados de la ruta crítica con la herramienta nativa y esperas
+  largas interrumpibles. Para tareas de usuario autorizadas usa cursores cuando
+  existan; no apliques parámetros de esa API a Collaboration. `followup_task`
+  reactiva un subagente idle, y hay que verificar que arrancó. Un timeout no es
+  estado terminal: conserva intento/identidad y decide un reintento acotado
+  sólo si es seguro e idempotente. Una orden STOP detiene nuevas acciones y
+  descendientes propios; una continuación técnica no autoriza reanudar.
+- Acepta cada celda una sola vez; concilia respuestas tardías/duplicadas por ID
+  y SHA. Una oleada terminada no cierra la ronda. Reporta verificadas/aplicables,
+  fallidas, pendientes, bloqueadas y `N/A` por separado. Un gate externo permite
+  una entrega parcial explícita, no llamar completa la ronda.
+
+### Integración y medida
+
+Integra las oleadas admitidas, congela SHA/entradas y ejecuta en la raíz la
+validación final proporcional con herramientas individuales. No dupliques el
+gate pesado por actor ni edites entradas durante la corrida. Si cambia código,
+configuración efectiva o fixtures después del gate, revalida lo afectado; no
+disfraces ese cambio de docs-only. Publicación e instalación conservan sus
+verificaciones separadas en este documento y AGENTS.
+
+Mide cobertura verificada de la misma ronda y registra retrabajo, defectos
+escapados, tiempo de coordinación/espera y bytes de contexto sólo cuando ayuden
+a comparar rutas equivalentes. Más actores, más tokens, más tests o menos
+elapsed aislado no prueban mejor calidad. Configurar este procedimiento no
+acredita corregir defectos del producto ni mejorar velocidad sin medición.
+
+Los cambios de Codex se prueban con su consumidor nativo en proceso nuevo
+(configuración efectiva/origen e instrucciones cargadas), sin credenciales ni
+red si basta lectura. Una prueba de comportamiento usa trabajo acotado y los
+actores/herramientas realmente expuestos. No recargues tareas ajenas ni fuerces
+reiniciar Desktop; las sesiones existentes pueden conservar configuración vieja.
+Estos cambios de coordinación no requieren una release del producto por sí solos.
+
 ## MCP de desarrollo bajo demanda
 
 La integración MCP de Codex con NeoCortex permanece deshabilitada por defecto;
