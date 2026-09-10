@@ -40,9 +40,11 @@ from neocortex.documents.document_catalog_schema import (
 from neocortex.persistence.sqlite_immutable import (
     ImmutableSQLiteUnavailable,
     SQLiteReadSession,
+    SQLiteSnapshotBudget,
     capture_sqlite_read_fence,
     preferred_sqlite_read_mode,
 )
+from neocortex.knowledge.knowledge_read_budget import KnowledgeReadBudget, KnowledgeReadBudgetExceeded
 from neocortex.persistence.sqlite_schema_contract import validate_sqlite_schema_contract
 
 CURATION_PREVIEW_SCHEMA_VERSION = 1
@@ -481,13 +483,41 @@ def _readonly_sqlite_connection(
     *,
     label: str,
     expected_generation: tuple[object, ...] | None = None,
+    budget: KnowledgeReadBudget | None = None,
 ) -> Iterator[sqlite3.Connection]:
     """Read one owner through the shared lstat/O_NOFOLLOW/fence kernel."""
 
     try:
         mode = preferred_sqlite_read_mode(path)
-        session = SQLiteReadSession(path, mode=mode, timeout_seconds=60.0)
+        if budget is not None:
+            budget.checkpoint()
+        sqlite_budget = None
+        if (
+            budget is not None
+            and budget.max_temporary_bytes is not None
+            and getattr(mode, "value", mode) == "snapshot_temp"
+        ):
+            remaining = budget.temporary_bytes_remaining
+            if remaining is None or remaining <= 0:
+                raise KnowledgeReadBudgetExceeded("temporary_bytes_exhausted")
+            sqlite_budget = SQLiteSnapshotBudget(
+                max_temporary_bytes=remaining,
+                cancellation_check=budget.cancellation_check,
+            )
+        session = SQLiteReadSession(
+            path,
+            mode=mode,
+            timeout_seconds=60.0,
+            budget=sqlite_budget,
+            cancellation_check=(
+                budget.cancellation_check
+                if budget is not None and sqlite_budget is None
+                else None
+            ),
+        )
         with session as connection:
+            if budget is not None:
+                budget.checkpoint(temporary_bytes=int(session.metrics.temporary_bytes))
             if expected_generation is not None:
                 observed_generation = (str(path.absolute()), session.source_fence)
                 if observed_generation != expected_generation:
@@ -868,6 +898,7 @@ def _digest_duplicate_group(
     verification_mode: VerificationMode,
     *,
     members: Iterator[Any] | None = None,
+    budget: KnowledgeReadBudget | None = None,
 ) -> None:
     """Digest all individual proofs, including members omitted from page samples."""
 
@@ -885,6 +916,8 @@ def _digest_duplicate_group(
     seen_paths: set[str] = set()
     seen_identities: set[tuple[int, int]] = set()
     for member in members:
+        if budget is not None:
+            budget.checkpoint(rows=1)
         record, physical_identity = _duplicate_member_record(
             scan_id, group_id, member, group_proof, keeper_identity,
         )
@@ -914,6 +947,7 @@ def _digest_duplicate_group(
 
 def _digest_duplicate_groups(
     connection: sqlite3.Connection, scan_id: int, digest: Any, verification_mode: VerificationMode,
+    budget: KnowledgeReadBudget | None = None,
 ) -> int:
     """One ordered join streams every group and member instead of N member queries."""
 
@@ -929,9 +963,14 @@ def _digest_duplicate_groups(
     )
     count = 0
     for _group_id, stream in groupby(rows, key=lambda item: item[0]):
+        if budget is not None:
+            budget.checkpoint(rows=1)
         first = next(stream)
         members = (item[9:] for item in chain((first,), stream))
-        _digest_duplicate_group(connection, scan_id, first[:9], digest, verification_mode, members=members)
+        _digest_duplicate_group(
+            connection, scan_id, first[:9], digest, verification_mode,
+            members=members, budget=budget,
+        )
         count += 1
     return count
 
@@ -1590,6 +1629,7 @@ def _digest_plan_publication(
     organization_scope: _OrganizationPlanScope | None,
     organization_plans: int,
     empty_files: int,
+    budget: KnowledgeReadBudget | None = None,
 ) -> _PlanPublication:
     """Publish one complete digest by streaming owner rows exactly once."""
 
@@ -1629,7 +1669,7 @@ def _digest_plan_publication(
     duplicate_count = 0
     if duplicate_plan.complete:
         duplicate_count = _digest_duplicate_groups(
-            inventory, head.scan_id, digest, duplicate_plan.verification_mode,
+            inventory, head.scan_id, digest, duplicate_plan.verification_mode, budget,
         )
 
     organization_count = 0
@@ -1639,6 +1679,8 @@ def _digest_plan_publication(
             inventory_root=head.root,
             scope=organization_scope,
         ):
+            if budget is not None:
+                budget.checkpoint(rows=1)
             item = _organization_item_from_row(row)
             _digest_record(digest, "organization_plan", item.to_dict())
             organization_count += 1
@@ -1650,6 +1692,8 @@ def _digest_plan_publication(
         (head.scan_id,),
     )
     for row in rows:
+        if budget is not None:
+            budget.checkpoint(rows=1)
         _digest_record(digest, "empty_file", _empty_file_item(head.scan_id, row).to_dict())
         empty_count += 1
 
@@ -1682,6 +1726,7 @@ def _plan_publication(
     head: _InventoryHead,
     duplicate_plan: _DuplicatePlanState,
     cache_key: tuple[object, ...],
+    budget: KnowledgeReadBudget | None = None,
 ) -> _PlanPublication:
     """Get or create the complete publication for one fenced owner set."""
 
@@ -1715,6 +1760,7 @@ def _plan_publication(
             organization_scope=organization_scope,
             organization_plans=organization_plans,
             empty_files=empty_files,
+            budget=budget,
         )
         _PLAN_PUBLICATION_CACHE[cache_key] = publication
         _PLAN_PUBLICATION_CACHE.move_to_end(cache_key)
@@ -1882,6 +1928,7 @@ def _build_plan_page_from_connections(
     cursor: str | None,
     cursor_state: _CursorState | None,
     cache_key: tuple[object, ...],
+    budget: KnowledgeReadBudget | None = None,
 ) -> CurationPlanPage:
     publication = _plan_publication(
         inventory=inventory,
@@ -1890,6 +1937,7 @@ def _build_plan_page_from_connections(
         head=head,
         duplicate_plan=duplicate_plan,
         cache_key=cache_key,
+        budget=budget,
     )
     if cursor_state is not None:
         if cursor_state.snapshot_id != publication.snapshot_id:
@@ -1930,6 +1978,8 @@ def _build_plan_page_from_connections(
             after=after_key if cursor_category == 0 else None,
             limit=query_limit,
         )
+        if budget is not None:
+            budget.checkpoint(rows=min(len(rows), query_limit))
         if remaining:
             for row in rows:
                 key = (0, -int(row[4]), str(row[2]), int(row[0]))
@@ -1956,6 +2006,8 @@ def _build_plan_page_from_connections(
             after_plan_id=(-after_key[1] if cursor_category == 1 and after_key else None),
             limit=query_limit,
         )
+        if budget is not None:
+            budget.checkpoint(rows=min(len(rows), query_limit))
         if remaining:
             for row in rows:
                 consume((1, -int(row[0]), "", 0), _organization_item_from_row(row))
@@ -1971,6 +2023,8 @@ def _build_plan_page_from_connections(
             after_path=(after_key[2] if cursor_category == 2 and after_key else None),
             limit=query_limit,
         )
+        if budget is not None:
+            budget.checkpoint(rows=min(len(rows), query_limit))
         if remaining:
             for row in rows:
                 consume((2, 0, str(row[0]), 0), _empty_file_item(head.scan_id, row))
@@ -2108,11 +2162,14 @@ def build_curation_plan_page(
     state_directory: Path,
     limit: int,
     cursor: str | None = None,
+    budget: KnowledgeReadBudget | None = None,
 ) -> CurationPlanPage:
     """Read one stable keyset page without mutating owners or corpus content."""
 
     if type(limit) is not int or not 1 <= limit <= 10_000:
         raise ValueError("curation page limit must be between 1 and 10000")
+    if budget is not None and not isinstance(budget, KnowledgeReadBudget):
+        raise TypeError("budget must be a KnowledgeReadBudget")
     cursor_state = _decode_cursor(cursor)
     state_path = Path(state_directory)
     inventory_path = state_path / "dedup.sqlite3"
@@ -2154,6 +2211,7 @@ def build_curation_plan_page(
         inventory_path,
         label="dedup",
         expected_generation=inventory_generation,
+        budget=budget,
     ) as inventory:
         _validate_readable_inventory(inventory)
         if cached_publication is None:
@@ -2177,11 +2235,13 @@ def build_curation_plan_page(
                 cursor=cursor,
                 cursor_state=cursor_state,
                 cache_key=cache_key,
+                budget=budget,
             )
         with _readonly_sqlite_connection(
             catalog_path,
             label="document catalog",
             expected_generation=catalog_generation,
+            budget=budget,
         ) as catalog:
             _validate_readable_catalog(catalog)
             try:
@@ -2195,6 +2255,7 @@ def build_curation_plan_page(
                     cursor=cursor,
                     cursor_state=cursor_state,
                     cache_key=cache_key,
+                    budget=budget,
                 )
             except CurationStateError as error:
                 publication = error.context.setdefault("publication", {})
@@ -2204,10 +2265,15 @@ def build_curation_plan_page(
                 raise
 
 
-def build_curation_preview(state_directory: Path, *, limit: int) -> CurationPreview:
+def build_curation_preview(
+    state_directory: Path,
+    *,
+    limit: int,
+    budget: KnowledgeReadBudget | None = None,
+) -> CurationPreview:
     """Compatibility facade over the first immutable curation-plan page."""
 
-    page = build_curation_plan_page(state_directory, limit, None)
+    page = build_curation_plan_page(state_directory, limit, None, budget)
     sampled_items = list(page.items)
     return CurationPreview(
         schema_version=CURATION_PREVIEW_SCHEMA_VERSION,

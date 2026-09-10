@@ -21,6 +21,7 @@ from neocortex.api.read_contract import sanitize_untrusted_text
 from neocortex.curation.preview import build_curation_plan_page
 from neocortex.deduplication.domain.models import VALID_VERIFICATION_MODES
 from neocortex.runtime.config.app_paths import default_state_directory
+from neocortex.knowledge.knowledge_read_budget import KnowledgeReadBudget, KnowledgeReadBudgetExceeded
 
 
 CURATION_SCAN_API_SCHEMA: Literal["neocortex.curation-scan/v1"] = "neocortex.curation-scan/v1"
@@ -99,6 +100,9 @@ class CurationVerificationErrorPayload(TypedDict):
             "unavailable",
             "partial",
             "not_verified",
+            "budget_exhausted",
+            "deadline_exceeded",
+            "cancelled",
         ]
     ]
     message: Required[str]
@@ -262,6 +266,14 @@ def _error_code(error: BaseException) -> tuple[str, bool, int]:
         return "invalid_request", False, 2
     if type_name == "CurationVerificationUnavailable":
         return "unavailable", False, 1
+    if isinstance(error, KnowledgeReadBudgetExceeded):
+        return (
+            "budget_exhausted"
+            if error.reason in {"rows_exhausted", "vectors_exhausted", "temporary_bytes_exhausted"}
+            else error.reason,
+            False,
+            2,
+        )
     if isinstance(error, sqlite3.DatabaseError):
         if any(token in message for token in ("corrupt", "malformed", "not a database")):
             return "corrupt", False, 7
@@ -281,6 +293,8 @@ def _error_payload(
     error: BaseException,
 ) -> dict[str, object]:
     code, retryable, exit_code = _error_code(error)
+    status = "partial" if code in {"budget_exhausted", "deadline_exceeded", "cancelled"} else "unavailable"
+    coverage = "partial" if status == "partial" else "unavailable"
     return {
         "schema": schema,
         "schema_version": CURATION_VERIFICATION_SCHEMA_VERSION,
@@ -289,8 +303,8 @@ def _error_payload(
         "request_id": request_id,
         "plan_id": plan_id,
         "scope": "personal",
-        "status": "unavailable",
-        "coverage": "unavailable",
+        "status": status,
+        "coverage": coverage,
         "read_only": True,
         "effects": dict(_EFFECTS),
         "trust": dict(_TRUST),
@@ -411,6 +425,7 @@ def curation_scan_payload(
     limit: int = 50,
     cursor: str | None = None,
     request_id: str | None = None,
+    budget: KnowledgeReadBudget | None = None,
 ) -> CurationScanOutput:
     """Return one bounded scan view over the currently published plan."""
 
@@ -418,6 +433,8 @@ def curation_scan_payload(
         normalized_request = _request_id(request_id, prefix="curation-scan")
         normalized_limit = _limit(limit, maximum=MAX_CURATION_SCAN_PAGE)
         normalized_cursor = _cursor(cursor)
+        if budget is not None and not isinstance(budget, KnowledgeReadBudget):
+            raise TypeError("budget must be a KnowledgeReadBudget")
     except (TypeError, ValueError) as exc:
         return cast(
             CurationScanOutput,
@@ -435,6 +452,7 @@ def curation_scan_payload(
             limit=normalized_limit,
             cursor=normalized_cursor,
             request_id=normalized_request,
+            budget=budget,
         )
         return _scan_from_plan(page, request_id=normalized_request)
     except Exception as exc:
@@ -594,6 +612,7 @@ def curation_verify_payload(
     limit: int = 100,
     cursor: str | None = None,
     request_id: str | None = None,
+    budget: object | None = None,
 ) -> CurationVerifyOutput:
     """Verify duplicate items from one current, digest-bound plan page."""
 
@@ -603,6 +622,10 @@ def curation_verify_payload(
         normalized_limit = _limit(limit, maximum=MAX_CURATION_VERIFY_PAGE)
         normalized_ids = _item_ids(item_ids)
         normalized_cursor = _cursor(cursor)
+        if budget is not None and not isinstance(budget, KnowledgeReadBudget):
+            from neocortex.curation.verification import CurationWorkBudget
+            if not isinstance(budget, CurationWorkBudget):
+                raise TypeError("budget must be a CurationWorkBudget or KnowledgeReadBudget")
     except (TypeError, ValueError) as exc:
         return cast(
             CurationVerifyOutput,
@@ -625,6 +648,7 @@ def curation_verify_payload(
             default_state_directory(),
             limit=normalized_limit,
             cursor=normalized_cursor,
+            budget=(budget if isinstance(budget, KnowledgeReadBudget) else None),
         )
         if page.plan_digest != normalized_plan:
             raise CurationVerificationSnapshotChanged("curation plan digest changed")
@@ -632,6 +656,7 @@ def curation_verify_payload(
             page,
             item_ids=normalized_ids,
             max_items=MAX_VERIFICATION_ITEMS,
+            budget=budget,
             state_directory=default_state_directory(),
         )
         return _verification_success(

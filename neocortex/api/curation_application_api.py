@@ -28,6 +28,7 @@ from neocortex.curation.application import (
 from neocortex.api.read_contract import sanitize_untrusted_payload, sanitize_untrusted_text
 from neocortex.persistence.framework_state_writer import FrameworkState
 from neocortex.runtime.config.app_paths import default_state_directory
+from neocortex.knowledge.knowledge_read_budget import KnowledgeReadBudget
 
 
 CURATION_RECONCILE_API_SCHEMA = "neocortex.curation-reconcile/v1"
@@ -173,6 +174,7 @@ def curation_apply_payload(
     request_id: str | None = None,
     clock_ns: Callable[[], int] = time.time_ns,
     cancellation_check: Callable[[], bool] | None = None,
+    budget: KnowledgeReadBudget | None = None,
 ) -> CurationApplyOutput:
     """Apply one exact grant, requiring an explicit confirmation and backend."""
 
@@ -231,6 +233,7 @@ def curation_apply_payload(
                 state=state,
                 clock_ns=clock_ns,
                 cancellation_check=cancellation_check,
+                budget=budget,
             )
     except CurationApplicationError as exc:
         message = _safe_text(exc).casefold()

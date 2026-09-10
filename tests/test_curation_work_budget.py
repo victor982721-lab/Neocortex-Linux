@@ -12,6 +12,7 @@ from neocortex.curation.preview import build_curation_plan_page
 from neocortex.curation.verification import CurationWorkBudget, verify_curation_page
 from neocortex.deduplication import DedupIndex, DedupPlanner, InventoryCheckpoint
 from neocortex.documents.document_catalog import initialize_document_catalog
+from neocortex.knowledge.knowledge_read_budget import KnowledgeReadBudget
 
 
 def _page(tmp_path: Path, *, pair_count: int = 3):
@@ -47,6 +48,31 @@ def test_default_budget_preserves_the_existing_result(tmp_path: Path) -> None:
 
 def test_budget_is_available_from_the_lazy_curation_facade() -> None:
     assert curation.CurationWorkBudget is CurationWorkBudget
+
+
+def test_shared_knowledge_budget_stops_before_source_reads(tmp_path: Path) -> None:
+    _state, _corpus, page = _page(tmp_path, pair_count=1)
+
+    budget = KnowledgeReadBudget(max_rows=0)
+    result = verify_curation_page(page, budget=budget)
+
+    assert result.status == "partial"
+    assert result.files_checked == 0
+    assert result.bytes_checked == 0
+    assert {item.reason for item in result.items} == {"budget_exhausted"}
+    assert budget.rows_used == 0
+
+
+def test_shared_knowledge_deadline_stops_before_source_reads(tmp_path: Path) -> None:
+    _state, _corpus, page = _page(tmp_path, pair_count=1)
+
+    budget = KnowledgeReadBudget(deadline_ns=9, monotonic_clock=lambda: 10)
+    result = verify_curation_page(page, budget=budget)
+
+    assert result.status == "partial"
+    assert result.files_checked == 0
+    assert result.bytes_checked == 0
+    assert {item.reason for item in result.items} == {"deadline_exceeded"}
 
 
 def test_none_returning_cancellation_checkpoint_is_not_a_stop(

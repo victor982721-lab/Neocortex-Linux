@@ -41,6 +41,7 @@ from neocortex.persistence.sqlite_immutable import (
     SQLiteReadSession,
     preferred_sqlite_read_mode,
 )
+from neocortex.knowledge.knowledge_read_budget import KnowledgeReadBudget, KnowledgeReadBudgetExceeded
 
 from .preview import CurationItem, CurationPlanPage, CurationSourceHead
 
@@ -138,6 +139,7 @@ class _WorkBudgetState:
         self.items_started = 0
         self.files_checked = 0
         self.bytes_checked = 0
+        self.knowledge_budget: KnowledgeReadBudget | None = None
 
     def _control_reason(self) -> WorkStopReason | None:
         callback = self.budget.cancellation_check
@@ -166,6 +168,14 @@ class _WorkBudgetState:
         return None
 
     def start_item(self) -> None:
+        if self.knowledge_budget is not None:
+            try:
+                self.knowledge_budget.checkpoint(rows=1)
+            except KnowledgeReadBudgetExceeded as exc:
+                reason = exc.reason
+                if reason in {"rows_exhausted", "vectors_exhausted", "temporary_bytes_exhausted"}:
+                    reason = "budget_exhausted"
+                raise _WorkBudgetStop(cast(WorkStopReason, reason)) from exc
         reason = self._control_reason()
         if reason is not None:
             raise _WorkBudgetStop(reason)
@@ -194,6 +204,17 @@ class _WorkBudgetState:
         if count < 0 or count > self.max_bytes - self.bytes_checked:
             raise _WorkBudgetStop("budget_exhausted")
         self.bytes_checked += count
+
+    def record_temporary_bytes(self, count: int) -> None:
+        if self.knowledge_budget is None or not count:
+            return
+        try:
+            self.knowledge_budget.checkpoint(temporary_bytes=count)
+        except KnowledgeReadBudgetExceeded as exc:
+            reason = exc.reason
+            if reason in {"rows_exhausted", "vectors_exhausted", "temporary_bytes_exhausted"}:
+                reason = "budget_exhausted"
+            raise _WorkBudgetStop(cast(WorkStopReason, reason)) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -1067,6 +1088,7 @@ def _read_stable_payload(
                     "temporary curation verification storage wrote a short chunk",
                     reason_code="temporary_storage_unavailable",
                 )
+            work.record_temporary_bytes(written)
             metrics.observe_chunk(len(chunk))
             remaining -= len(chunk)
         after = os.fstat(descriptor)
@@ -1405,7 +1427,7 @@ def verify_curation_page(
     max_items: int = MAX_VERIFICATION_ITEMS,
     max_files: int = MAX_VERIFICATION_FILES,
     max_bytes: int = MAX_VERIFICATION_BYTES,
-    budget: CurationWorkBudget | None = None,
+    budget: CurationWorkBudget | KnowledgeReadBudget | None = None,
     state_directory: str | Path | None = None,
     inventory_database: str | Path | None = None,
 ) -> CurationVerificationResult:
@@ -1426,8 +1448,20 @@ def verify_curation_page(
         raise ValueError("max_files is outside the verification bound")
     if not 1 <= max_bytes <= MAX_VERIFICATION_BYTES:
         raise ValueError("max_bytes is outside the verification bound")
-    if budget is not None and not isinstance(budget, CurationWorkBudget):
-        raise TypeError("budget must be a CurationWorkBudget")
+    knowledge_budget: KnowledgeReadBudget | None = None
+    if budget is not None:
+        if isinstance(budget, KnowledgeReadBudget):
+            knowledge_budget = budget
+            # The curation-specific counters remain bounded by their historical
+            # defaults; KnowledgeReadBudget supplies the shared row/temporary
+            # byte/deadline/cancellation guard.
+            effective_budget = CurationWorkBudget()
+        elif isinstance(budget, CurationWorkBudget):
+            effective_budget = budget
+        else:
+            raise TypeError("budget must be a CurationWorkBudget or KnowledgeReadBudget")
+    else:
+        effective_budget = CurationWorkBudget()
     if state_directory is not None and inventory_database is not None:
         raise ValueError("state_directory and inventory_database are mutually exclusive")
     authoritative_database: Path | None = None
@@ -1455,11 +1489,12 @@ def verify_curation_page(
     elif len(selected) > max_items:
         raise CurationVerificationUnavailable("curation verification page exceeds its item bound")
     work = _WorkBudgetState(
-        CurationWorkBudget() if budget is None else budget,
+        effective_budget,
         max_items=max_items,
         max_files=max_files,
         max_bytes=max_bytes,
     )
+    work.knowledge_budget = knowledge_budget
     metrics = _VerificationMetrics()
     results: list[CurationVerificationItem] = []
     inventory_context: AbstractContextManager[Any]

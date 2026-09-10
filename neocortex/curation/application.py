@@ -71,6 +71,7 @@ from neocortex.workflow.review.review_task_repository import (
     read_review_task,
 )
 from neocortex.workflow.review.review_task_contracts import CanonicalJsonObject
+from neocortex.knowledge.knowledge_read_budget import KnowledgeReadBudget, KnowledgeReadBudgetExceeded
 
 
 CURATION_APPLY_SCHEMA = "neocortex.curation-apply/v1"
@@ -981,6 +982,7 @@ def apply_authorization_grant(
     state: FrameworkState | None = None,
     clock_ns: Callable[[], int] = time.time_ns,
     cancellation_check: Callable[[], bool] | None = None,
+    budget: KnowledgeReadBudget | None = None,
 ) -> CurationApplicationResult:
     """Consume one grant through a bounded, one-effect-at-a-time frontier."""
 
@@ -990,6 +992,8 @@ def apply_authorization_grant(
         raise ValueError("grant_id must be a trimmed non-empty string")
     if not hasattr(backend, "apply"):
         raise TypeError("backend must implement apply(candidate)")
+    if budget is not None and not isinstance(budget, KnowledgeReadBudget):
+        raise TypeError("budget must be a KnowledgeReadBudget")
     state_directory = Path(state_directory)
     database = Path(database)
     owned_state = state is None
@@ -1026,6 +1030,12 @@ def apply_authorization_grant(
             planned: list[tuple[AuthorizationEffect, int | None, str, str | None]] = []
             preflight_failed = False
             for effect in authorized_effects:
+                if budget is not None:
+                    try:
+                        budget.checkpoint(rows=1)
+                    except KnowledgeReadBudgetExceeded:
+                        cancelled = True
+                        break
                 if cancellation_check is not None and cancellation_check():
                     cancelled = True
                     break

@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from neocortex.api.read_contract import sanitize_untrusted_payload, sanitize_untrusted_text
 from neocortex.runtime.config.app_paths import default_state_directory
+from neocortex.knowledge.knowledge_read_budget import KnowledgeReadBudget, KnowledgeReadBudgetExceeded
 
 if TYPE_CHECKING:
     from neocortex.curation.preview import CurationPlanPage
@@ -43,6 +44,9 @@ CurationErrorCode = Literal[
     "corrupt",
     "unavailable",
     "partial",
+    "budget_exhausted",
+    "deadline_exceeded",
+    "cancelled",
 ]
 
 
@@ -372,6 +376,11 @@ def _error_code(exc: BaseException) -> tuple[CurationErrorCode, bool]:
     """Map known read failures to stable wire codes, fail-closed."""
 
     message = _exception_text(exc).casefold()
+    if isinstance(exc, KnowledgeReadBudgetExceeded):
+        reason = cast(CurationErrorCode, exc.reason)
+        if reason in {"rows_exhausted", "vectors_exhausted", "temporary_bytes_exhausted"}:
+            reason = "budget_exhausted"
+        return reason, False
     if _looks_like_snapshot_change(message):
         return "snapshot_changed", True
     if _looks_like_invalid_cursor(message):
@@ -582,6 +591,7 @@ def _error_payload(
     retryable: bool = False,
 ) -> CurationPlanOutput:
     bounded_message = sanitize_untrusted_text(message, limit=800)
+    partial_budget = code in {"budget_exhausted", "deadline_exceeded", "cancelled"}
     result: CurationPlanOutput = {
         "schema": CURATION_PLAN_API_SCHEMA,
         "kind": "neocortex_curation_plan",
@@ -590,11 +600,11 @@ def _error_payload(
         "read_only": True,
         "effects": _EFFECTS.copy(),
         "trust": _TRUST.copy(),
-        "coverage": "unavailable",
+        "coverage": "partial" if partial_budget else "unavailable",
         "snapshot": {
             "schema": CURATION_SNAPSHOT_API_SCHEMA,
             "snapshot_id": None,
-            "coverage": "unavailable",
+            "coverage": "partial" if partial_budget else "unavailable",
             "root": None,
             "scan_id": None,
             "missing_owners": [],
@@ -627,6 +637,9 @@ def _default_error_message(code: CurationErrorCode) -> str:
         "corrupt": "published curation state is corrupt",
         "unavailable": "published curation state is unavailable",
         "partial": "published curation state has partial coverage",
+        "budget_exhausted": "curation read budget is exhausted",
+        "deadline_exceeded": "curation read deadline was exceeded",
+        "cancelled": "curation read was cancelled",
     }[code]
 
 
@@ -635,6 +648,7 @@ def curation_plan_payload(
     limit: int = 50,
     cursor: str | None = None,
     request_id: str | None = None,
+    budget: KnowledgeReadBudget | None = None,
 ) -> CurationPlanOutput:
     """Return one bounded page from canonical published state without mutation."""
 
@@ -673,11 +687,12 @@ def curation_plan_payload(
         # partially installed/minimal runtime must return a typed unavailable
         # response rather than leaking ImportError through MCP.
         _state_error, builder = _plan_contract()
-        page = builder(
-            default_state_directory(),
-            limit=bounded_limit,
-            cursor=normalized_cursor,
-        )
+        if budget is not None and not isinstance(budget, KnowledgeReadBudget):
+            raise TypeError("budget must be a KnowledgeReadBudget")
+        builder_kwargs = {"limit": bounded_limit, "cursor": normalized_cursor}
+        if budget is not None:
+            builder_kwargs["budget"] = budget
+        page = builder(default_state_directory(), **builder_kwargs)
         return _success_payload(page, request_id=normalized_request_id)
     except Exception as exc:
         # The producer contract is intentionally lazy and its state exception

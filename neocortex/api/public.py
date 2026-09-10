@@ -126,6 +126,19 @@ if TYPE_CHECKING:
     from neocortex.knowledge.knowledge_contracts import ContextPlanStepRef as ContextPlanStepRef
     from neocortex.knowledge.knowledge_contracts import ContextRelationRef as ContextRelationRef
     from neocortex.knowledge.knowledge_contracts import EvidenceRef as EvidenceRef
+    from neocortex.knowledge.knowledge_evidence_projection import (
+        EVIDENCE_PROJECTION_SCHEMA as EVIDENCE_PROJECTION_SCHEMA,
+        EVIDENCE_PROJECTION_VERSION as EVIDENCE_PROJECTION_VERSION,
+        EvidenceProjection as EvidenceProjection,
+        KNOWLEDGE_EVIDENCE_PROJECTION_SCHEMA as KNOWLEDGE_EVIDENCE_PROJECTION_SCHEMA,
+        KNOWLEDGE_EVIDENCE_PROJECTION_VERSION as KNOWLEDGE_EVIDENCE_PROJECTION_VERSION,
+        KnowledgeEvidenceProjection as KnowledgeEvidenceProjection,
+        evidence_projection_payload as evidence_projection_payload,
+        evidence_search_projection_payload as evidence_search_projection_payload,
+        knowledge_evidence_projection_payload as knowledge_evidence_projection_payload,
+        project_knowledge_hit as project_knowledge_hit,
+        project_knowledge_search as project_knowledge_search,
+    )
     from neocortex.knowledge.knowledge_contracts import KnowledgeHit as KnowledgeHit
     from neocortex.knowledge.knowledge_contracts import KnowledgePhaseTiming as KnowledgePhaseTiming
     from neocortex.knowledge.knowledge_contracts import KnowledgeQueryTelemetry as KnowledgeQueryTelemetry
@@ -315,7 +328,13 @@ __all__ = [  # noqa: RUF022
     "ContextPlanStepRef",
     "ContextRelationRef",
     "EvidenceRef",
+    "EVIDENCE_PROJECTION_SCHEMA",
+    "EVIDENCE_PROJECTION_VERSION",
+    "EvidenceProjection",
     "KnowledgeHit",
+    "KNOWLEDGE_EVIDENCE_PROJECTION_SCHEMA",
+    "KNOWLEDGE_EVIDENCE_PROJECTION_VERSION",
+    "KnowledgeEvidenceProjection",
     "KnowledgePhaseTiming",
     "KnowledgePlan",
     "KnowledgeQuery",
@@ -331,6 +350,11 @@ __all__ = [  # noqa: RUF022
     "KnowledgeTelemetryClock",
     "KnowledgeTelemetryOperation",
     "KnowledgeTimingPhase",
+    "evidence_projection_payload",
+    "evidence_search_projection_payload",
+    "knowledge_evidence_projection_payload",
+    "project_knowledge_hit",
+    "project_knowledge_search",
     "ResourceRef",
     "RetrievalMode",
     "RevisionRef",
@@ -600,7 +624,31 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "ContextPlanStepRef": ("neocortex.knowledge.knowledge_contracts", "ContextPlanStepRef"),
     "ContextRelationRef": ("neocortex.knowledge.knowledge_contracts", "ContextRelationRef"),
     "EvidenceRef": ("neocortex.knowledge.knowledge_contracts", "EvidenceRef"),
+    "EVIDENCE_PROJECTION_SCHEMA": (
+        "neocortex.knowledge.knowledge_evidence_projection",
+        "EVIDENCE_PROJECTION_SCHEMA",
+    ),
+    "EVIDENCE_PROJECTION_VERSION": (
+        "neocortex.knowledge.knowledge_evidence_projection",
+        "EVIDENCE_PROJECTION_VERSION",
+    ),
+    "EvidenceProjection": (
+        "neocortex.knowledge.knowledge_evidence_projection",
+        "EvidenceProjection",
+    ),
     "KnowledgeHit": ("neocortex.knowledge.knowledge_contracts", "KnowledgeHit"),
+    "KNOWLEDGE_EVIDENCE_PROJECTION_SCHEMA": (
+        "neocortex.knowledge.knowledge_evidence_projection",
+        "KNOWLEDGE_EVIDENCE_PROJECTION_SCHEMA",
+    ),
+    "KNOWLEDGE_EVIDENCE_PROJECTION_VERSION": (
+        "neocortex.knowledge.knowledge_evidence_projection",
+        "KNOWLEDGE_EVIDENCE_PROJECTION_VERSION",
+    ),
+    "KnowledgeEvidenceProjection": (
+        "neocortex.knowledge.knowledge_evidence_projection",
+        "KnowledgeEvidenceProjection",
+    ),
     "KnowledgePhaseTiming": ("neocortex.knowledge.knowledge_contracts", "KnowledgePhaseTiming"),
     "KnowledgePlan": ("neocortex.knowledge.knowledge_planner", "KnowledgePlan"),
     "KnowledgeQuery": ("neocortex.knowledge.knowledge_planner", "KnowledgeQuery"),
@@ -634,6 +682,26 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
         "KnowledgeTelemetryOperation",
     ),
     "KnowledgeTimingPhase": ("neocortex.knowledge.knowledge_contracts", "KnowledgeTimingPhase"),
+    "evidence_projection_payload": (
+        "neocortex.knowledge.knowledge_evidence_projection",
+        "evidence_projection_payload",
+    ),
+    "evidence_search_projection_payload": (
+        "neocortex.knowledge.knowledge_evidence_projection",
+        "evidence_search_projection_payload",
+    ),
+    "knowledge_evidence_projection_payload": (
+        "neocortex.knowledge.knowledge_evidence_projection",
+        "knowledge_evidence_projection_payload",
+    ),
+    "project_knowledge_hit": (
+        "neocortex.knowledge.knowledge_evidence_projection",
+        "project_knowledge_hit",
+    ),
+    "project_knowledge_search": (
+        "neocortex.knowledge.knowledge_evidence_projection",
+        "project_knowledge_search",
+    ),
     "ResourceRef": ("neocortex.knowledge.knowledge_contracts", "ResourceRef"),
     "RetrievalMode": ("neocortex.knowledge.knowledge_planner", "RetrievalMode"),
     "RevisionRef": ("neocortex.knowledge.knowledge_contracts", "RevisionRef"),
