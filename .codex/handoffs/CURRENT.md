@@ -1,12 +1,14 @@
 # Handoff operativo vigente — NeoCortex
 
-**Última verificación:** 2026-09-10T11:45:00-06:00, `America/Mexico_City`
+**Última verificación:** 2026-09-10T11:50:00-06:00, `America/Mexico_City`
 **Checkout:** `/home/winterboss/Neocortex/Repository`
 **Fuente de verdad:** estado vivo de `main`/`origin/main`,
 `PENDIENTES.md`, `HISTORIAL.md` y receipts canónicos fechados
 
 **Estado vivo:** la verificación de integración confirma `HEAD == main ==
-origin/main` en `cee69f3cc4c3863fc873b22205a08121281e9ff1` y árbol limpio. `current`
+origin/main` y árbol limpio. El SHA funcional de `NEO-EVO-008` es
+`cee69f3cc4c3863fc873b22205a08121281e9ff1`; este handoff posterior sólo
+documenta ese código y no cambia la identidad del candidato aislado. `current`
 apunta a `0.13.0-c2066dcbd967-cp314-linux-x86_64`
 (`source_sha=c2066dcbd967e8804df559f1fc9d15abdbd783bc`), el rollback inmediato es
 `0.13.0-38283df08491-cp314-linux-x86_64` y `.staging` está vacío. No se
