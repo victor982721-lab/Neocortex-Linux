@@ -13,6 +13,27 @@ reescritura o force push; fast-forward para trabajo previo verificado cuando sea
 posible. Publicación exige SHA remoto comprobado, `HEAD == main == origin/main`,
 árbol limpio y evidencia proporcional, no sólo un commit local.
 
+## MCP de desarrollo bajo demanda
+
+La integración MCP de Codex con NeoCortex permanece deshabilitada por defecto;
+actívala sólo dentro de un alcance concreto que necesite MCP, sin ampliar las
+herramientas permitidas ni la autoridad sobre corpus. Una tarea LLM, un subagente
+y una conexión MCP son unidades distintas: su número no acredita ownership.
+
+Cambiar el default no autoriza recargas globales ni cerrar conexiones activas.
+Los transportes previos pueden conservar sus llamadas aunque el inventario
+refleje el nuevo OFF: un catálogo vacío no prueba que el proceso haya terminado.
+Capacidades nuevas se incorporan mediante una conexión nueva en un punto seguro,
+no forzando un reload de las anteriores. Desconecta únicamente clientes
+innecesarios identificados, sin peticiones en vuelo y al terminar su uso;
+verifica identidad y salida, sin killall ni cierre por estar idle. Si siguen
+siendo necesarios, consérvalos.
+
+Este ajuste operativo no exige promover una release. En una promoción incluida
+en alcance, una release seleccionada para retirar que siga en uso conserva su
+gate de bloqueo; no fuerces GC ni alteres la retención para sortearlo. Ser una
+release anterior no exige detenerla si pertenece al par current/rollback retenido.
+
 ## Herramientas individuales
 
 Pytest prueba comportamiento, Ruff errores estáticos, Mypy/Pyright tipos y
