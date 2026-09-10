@@ -33,10 +33,10 @@ y 42 subtests, y la promoción a `current` conservó el corpus personal cerrado 
 no ejecutó KIO real.
 
 La release tiene manifest `6f2a44f6e7ab937a3b92fac3f71be196cbffa707eddb21c7fac58972b7823b84`,
-árbol `6e67d6c6314268dacab90a69e17d755b7c9caa164301987b30b52a42706196be`,
-wheel `7e7a73eb30c7ceaa026c2d70a21f0e218abd08151a608db74e7ba74185f479aa` y
-receipt de instalación en
-`/home/winterboss/.local/state/Neocortex/state/installation-receipts/20260910T014132.624563Z-install-0.13.0-c6d3985f7a45-cp314-linux-x86_64.json`.
+árbol `6e67d6c6314268dacab90a69e17d755b7c9caa164301987b30b52a42706196be` y
+wheel `7e7a73eb30c7ceaa026c2d70a21f0e218abd08151a608db74e7ba74185f479aa`;
+el receipt de instalación se conserva en el estado canónico fuera del
+repositorio.
 
 ## Qué resuelve hoy
 
