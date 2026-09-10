@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from pathlib import Path
 
 from ..domain.models import FileSnapshot
-from ..fingerprinting import snapshot_path
+from ..fingerprinting import FULL_ALGORITHM, snapshot_path
 from .scan import id_blob as _id_blob
+from .repository_scans import resolve_scan_id
 
 
 def iter_size_collision_groups(
@@ -20,6 +21,7 @@ def iter_size_collision_groups(
 ) -> Iterator[tuple[FileSnapshot, ...]]:
     """Yield physically distinct, still-current files from equal-size buckets."""
 
+    scan_id = resolve_scan_id(connection, scan_id)
     resolver = snapshot_path if snapshot_resolver is None else snapshot_resolver
     sizes = connection.execute(
         "SELECT size FROM files WHERE scan_id=? AND size>0 "
@@ -76,6 +78,7 @@ class FileRepositoryMixin:
     _connection: sqlite3.Connection
 
     def snapshots(self, scan_id: int) -> Iterator[FileSnapshot]:
+        scan_id = resolve_scan_id(self._connection, scan_id)
         rows = self._connection.execute(
             "SELECT path, volume_id, file_id, size, mtime_ns, birthtime_ns "
             "FROM files WHERE scan_id=? ORDER BY path",
@@ -135,6 +138,42 @@ class FileRepositoryMixin:
         ).fetchone()
         return None if row is None else bytes(row[0])
 
+    def validated_cached_fingerprint(
+        self,
+        snapshot: FileSnapshot,
+        algorithm: str,
+    ) -> bytes | None:
+        """Use a cache hit only when its stored full-content digest still matches."""
+
+        row = self._connection.execute(
+            "SELECT f.digest,e.content_digest FROM fingerprints f "
+            "JOIN fingerprint_content_evidence e ON "
+            "e.volume_id=f.volume_id AND e.file_id=f.file_id AND e.size=f.size "
+            "AND e.mtime_ns=f.mtime_ns AND e.birthtime_ns=f.birthtime_ns "
+            "AND e.algorithm=f.algorithm WHERE f.volume_id=? AND f.file_id=? "
+            "AND f.size=? AND f.mtime_ns=? AND f.birthtime_ns=? AND f.algorithm=?",
+            (
+                _id_blob(snapshot.volume_id),
+                _id_blob(snapshot.file_id),
+                snapshot.size,
+                snapshot.mtime_ns,
+                snapshot.birthtime_ns,
+                algorithm,
+            ),
+        ).fetchone()
+        if row is None:
+            return None
+        from ..domain.errors import FileChangedError
+        from ..fingerprinting import full_fingerprint
+
+        try:
+            current_content_digest = full_fingerprint(snapshot)
+        except (OSError, FileChangedError):
+            return None
+        if current_content_digest != bytes(row[1]):
+            return None
+        return bytes(row[0])
+
     def store_fingerprint(self, snapshot: FileSnapshot, algorithm: str, digest: bytes) -> None:
         with self._connection:
             self._connection.execute(
@@ -151,14 +190,32 @@ class FileRepositoryMixin:
                     digest,
                 ),
             )
+            if algorithm == FULL_ALGORITHM:
+                self._connection.execute(
+                    "INSERT OR REPLACE INTO fingerprint_content_evidence("
+                    "volume_id,file_id,size,mtime_ns,birthtime_ns,algorithm,content_digest) "
+                    "VALUES(?,?,?,?,?,?,?)",
+                    (
+                        _id_blob(snapshot.volume_id),
+                        _id_blob(snapshot.file_id),
+                        snapshot.size,
+                        snapshot.mtime_ns,
+                        snapshot.birthtime_ns,
+                        algorithm,
+                        digest,
+                    ),
+                )
 
     def store_fingerprints(
         self,
         algorithm: str,
         rows: Iterable[tuple[FileSnapshot, bytes]],
+        *,
+        content_digests: Mapping[tuple[int, int], bytes] | None = None,
     ) -> None:
         """Persist a bounded fingerprint batch in one WAL transaction."""
 
+        materialized = tuple(rows)
         with self._connection:
             self._connection.executemany(
                 """INSERT OR REPLACE INTO fingerprints(
@@ -174,11 +231,31 @@ class FileRepositoryMixin:
                         algorithm,
                         digest,
                     )
-                    for snapshot, digest in rows
+                    for snapshot, digest in materialized
                 ),
             )
+            if content_digests:
+                self._connection.executemany(
+                    "INSERT OR REPLACE INTO fingerprint_content_evidence("
+                    "volume_id,file_id,size,mtime_ns,birthtime_ns,algorithm,content_digest) "
+                    "VALUES(?,?,?,?,?,?,?)",
+                    (
+                        (
+                            _id_blob(snapshot.volume_id),
+                            _id_blob(snapshot.file_id),
+                            snapshot.size,
+                            snapshot.mtime_ns,
+                            snapshot.birthtime_ns,
+                            algorithm,
+                            content_digests.get(snapshot.identity),
+                        )
+                        for snapshot, digest in materialized
+                        if content_digests.get(snapshot.identity) is not None
+                    ),
+                )
 
     def file_count(self, scan_id: int) -> int:
+        scan_id = resolve_scan_id(self._connection, scan_id)
         return int(
             self._connection.execute(
                 "SELECT COUNT(*) FROM files WHERE scan_id=?", (scan_id,)
@@ -186,6 +263,7 @@ class FileRepositoryMixin:
         )
 
     def contains_identity(self, scan_id: int, volume_id: int, file_id: int) -> bool:
+        scan_id = resolve_scan_id(self._connection, scan_id)
         return (
             self._connection.execute(
                 "SELECT 1 FROM files WHERE scan_id=? AND volume_id=? AND file_id=? LIMIT 1",
@@ -195,6 +273,7 @@ class FileRepositoryMixin:
         )
 
     def size_candidate_file_count(self, scan_id: int) -> int:
+        scan_id = resolve_scan_id(self._connection, scan_id)
         row = self._connection.execute(
             "SELECT COALESCE(SUM(candidate_count), 0) FROM ("
             "SELECT COUNT(*) AS candidate_count FROM files WHERE scan_id=? AND size>0 "
@@ -206,6 +285,7 @@ class FileRepositoryMixin:
     def size_collision_sizes(self, scan_id: int) -> Iterator[tuple[int, int]]:
         """Stream size buckets without materializing their file members."""
 
+        scan_id = resolve_scan_id(self._connection, scan_id)
         rows = self._connection.execute(
             "SELECT size,COUNT(*) FROM files WHERE scan_id=? AND size>0 "
             "GROUP BY size HAVING COUNT(*)>1 ORDER BY size",
@@ -215,6 +295,7 @@ class FileRepositoryMixin:
             yield int(size), int(count)
 
     def snapshots_by_size(self, scan_id: int, size: int) -> Iterator[FileSnapshot]:
+        scan_id = resolve_scan_id(self._connection, scan_id)
         rows = self._connection.execute(
             "SELECT path,volume_id,file_id,size,mtime_ns,birthtime_ns "
             "FROM files WHERE scan_id=? AND size=? ORDER BY path",
@@ -231,6 +312,7 @@ class FileRepositoryMixin:
             )
 
     def file_count_by_size(self, scan_id: int, size: int) -> int:
+        scan_id = resolve_scan_id(self._connection, scan_id)
         return int(
             self._connection.execute(
                 "SELECT COUNT(*) FROM files WHERE scan_id=? AND size=?",
@@ -241,6 +323,7 @@ class FileRepositoryMixin:
     def snapshots_excluding_planned_redundant(self, scan_id: int) -> Iterator[FileSnapshot]:
         """Stream files that would survive the persisted dry-run plan."""
 
+        scan_id = resolve_scan_id(self._connection, scan_id)
         rows = self._connection.execute(
             "SELECT f.path,f.volume_id,f.file_id,f.size,f.mtime_ns,f.birthtime_ns "
             "FROM files f WHERE f.scan_id=? AND NOT EXISTS("

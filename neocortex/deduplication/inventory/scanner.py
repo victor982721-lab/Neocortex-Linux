@@ -38,6 +38,7 @@ from .resume import (
     empty_prefix_digest,
     relative_cursor,
 )
+from .generation import inventory_content_digest
 
 
 DEFAULT_BATCH_SIZE = 5000
@@ -948,6 +949,10 @@ class InventoryScanner:
                     scan_id,
                 ),
             )
+            self._connection.execute(
+                "DELETE FROM inventory_generation_heads WHERE scan_id=?",
+                (scan_id,),
+            )
 
     def _begin_scan(
         self,
@@ -992,6 +997,13 @@ class InventoryScanner:
                     scan_id,
                 ),
             )
+            if status == "complete":
+                digest = inventory_content_digest(self._connection, scan_id)
+                self._connection.execute(
+                    "INSERT OR REPLACE INTO inventory_generation_heads("
+                    "scan_id,content_digest,created_ns) VALUES(?,?,?)",
+                    (scan_id, digest, time.time_ns()),
+                )
 
     def _complete_interrupted_scan(
         self,

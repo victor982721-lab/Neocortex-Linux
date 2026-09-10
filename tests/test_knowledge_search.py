@@ -1013,6 +1013,17 @@ def _create_catalog_state(state: Path) -> None:
         )
 
 
+def _mutate_published_catalog(path: Path, statement: str) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE catalog_generations SET status='building' WHERE generation_id=1"
+        )
+        connection.execute(statement)
+        connection.execute(
+            "UPDATE catalog_generations SET status='published' WHERE generation_id=1"
+        )
+
+
 def _create_inventory_duplicate_state(state: Path) -> None:
     inventory = state / "dedup.sqlite3"
     initialize_inventory_schema(inventory)
@@ -1713,8 +1724,10 @@ def test_catalog_head_constrains_all_rankings_and_aligns_physical_resource(
     )
     assert prefix.hits == ()
 
-    with sqlite3.connect(state / "document_catalog.sqlite3") as connection:
-        connection.execute("UPDATE catalog_generation_documents SET birthtime_ns=-1")
+    _mutate_published_catalog(
+        state / "document_catalog.sqlite3",
+        "UPDATE catalog_generation_documents SET birthtime_ns=-1",
+    )
     unresolved = execute_knowledge_search(
         KnowledgeStatePaths.from_directory(state),
         plan_knowledge_query(KnowledgeQuery("IEC-61850", limit=5)),

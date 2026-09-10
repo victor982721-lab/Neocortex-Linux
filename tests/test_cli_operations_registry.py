@@ -32,6 +32,12 @@ DIRECT_ARGUMENT_CASES = (
     ("pdf_diagnostics", "run_pdf_diagnostics", ("--pdf-diagnostics", "20")),
     ("text_errors", "run_text_errors", ("--text-errors", "20")),
     ("archive_issues", "run_archive_issues", ("--archive-issues", "20")),
+    ("content_diagnostics", "run_content_diagnostics", ("--content-diagnostics", "20")),
+    (
+        "content_diagnostics_v2",
+        "run_content_diagnostics",
+        ("--content-diagnostics-v2", "20"),
+    ),
     (
         "doctor_capabilities",
         "run_doctor_capabilities",

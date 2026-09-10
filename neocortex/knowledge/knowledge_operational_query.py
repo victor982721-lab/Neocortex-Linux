@@ -19,15 +19,16 @@ import json
 import base64
 import unicodedata
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from .knowledge_asset_diagnosis_contracts import (
     AssetDiagnosticCertainty,
     AssetProblemScope,
 )
+from .knowledge_read_budget import KnowledgeReadBudget
 
 
 OPERATIONAL_QUERY_SCHEMA = "neocortex.knowledge-operational-query/v1"
@@ -51,9 +52,14 @@ class OperationalIntent(StrEnum):
 
 class OperationalOwner(StrEnum):
     PDF = "pdf"
+    DOCX = "docx"
     TEXT = "text"
     OFFICE = "office"
     ARCHIVE = "archive"
+    AUDIO = "audio"
+    VIDEO = "video"
+    IMAGE = "image"
+    CODE = "code"
     FRAMEWORK = "framework"
     FEDERATED = "federated"
     NONE = "none"
@@ -69,6 +75,9 @@ class OperationalQueryRequest:
     limit: int = 20
     cursor: str | None = None
     scope: str = "personal"
+    response_version: int = 1
+    diagnostic_owner: str | tuple[str, ...] | None = None
+    budget: KnowledgeReadBudget | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.query, str) or not self.query.strip() or len(self.query) > 4096:
@@ -96,6 +105,14 @@ class OperationalQueryRequest:
             raise ValueError("cursor must be bounded, non-empty text")
         if self.scope not in {"personal", "framework", "all"}:
             raise ValueError("scope must be personal, framework or all")
+        if isinstance(self.response_version, bool) or self.response_version not in {1, 2}:
+            raise ValueError("response_version must be 1 or 2")
+        if self.diagnostic_owner is not None and not isinstance(
+            self.diagnostic_owner, (str, tuple)
+        ):
+            raise TypeError("diagnostic_owner must be a v2 owner, tuple or None")
+        if self.budget is not None and not isinstance(self.budget, KnowledgeReadBudget):
+            raise TypeError("budget must be a KnowledgeReadBudget")
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,6 +267,7 @@ class OperationalQueryResult:
     next_cursor: str | None
     coverage: Mapping[str, Any]
     error: Mapping[str, Any] | None = None
+    metrics: Mapping[str, Any] = field(default_factory=dict, compare=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.facts, tuple) or len(self.facts) > 1000:
@@ -274,6 +292,7 @@ class OperationalQueryResult:
             "next_cursor": self.next_cursor,
             "coverage": dict(self.coverage),
             "error": None if self.error is None else dict(self.error),
+            "metrics": dict(self.metrics),
         }
 
     def to_json(self) -> str:
@@ -717,6 +736,19 @@ class KnowledgeOperationalQueryService:
                 "no supported diagnostic intent",
             )
         try:
+            if request.response_version == 2 and intent in {
+                OperationalIntent.PDF_ERROR,
+                OperationalIntent.ARCHIVE_ISSUE,
+                OperationalIntent.OFFICE_ERROR,
+                OperationalIntent.CORPUS_ERROR,
+            }:
+                selected_owner = request.diagnostic_owner
+                if selected_owner is None:
+                    selected_owner = {
+                        OperationalIntent.PDF_ERROR: "pdf",
+                        OperationalIntent.ARCHIVE_ISSUE: "archive",
+                    }.get(intent, "all")
+                return self.content_diagnostics(request, owner=selected_owner)
             if intent is OperationalIntent.PDF_ERROR:
                 return self._format_diagnostics(request, intent, "pdf")
             if intent is OperationalIntent.ARCHIVE_ISSUE:
@@ -747,6 +779,112 @@ class KnowledgeOperationalQueryService:
                 "owner_read_failed",
                 str(exc),
             )
+
+    def content_diagnostics(
+        self,
+        request: OperationalQueryRequest,
+        *,
+        owner: str | tuple[str, ...] | None = "all",
+        budget: KnowledgeReadBudget | None = None,
+    ) -> OperationalQueryResult:
+        """Project the additive content-diagnostics/v2 page as typed facts."""
+
+        if not isinstance(request, OperationalQueryRequest):
+            raise TypeError("request must be an OperationalQueryRequest")
+        if budget is not None and not isinstance(budget, KnowledgeReadBudget):
+            raise TypeError("budget must be a KnowledgeReadBudget")
+        from neocortex.api.content_diagnostics_api import content_diagnostics_v2_payload
+
+        selected_budget = budget if budget is not None else request.budget
+        payload = content_diagnostics_v2_payload(
+            owner,
+            request.state_directory,
+            request.source_root,
+            request.limit,
+            cursor=request.cursor,
+            budget=selected_budget,
+        )
+        raw_owner = payload.get("owner")
+        try:
+            result_owner = (
+                OperationalOwner.FEDERATED
+                if raw_owner == "all" or isinstance(raw_owner, list)
+                else OperationalOwner(str(raw_owner))
+            )
+        except ValueError:
+            result_owner = OperationalOwner.FEDERATED
+        status = str(payload.get("status", "error"))
+        allowed_statuses = {"ok", "empty", "partial", "unavailable", "blocked", "error", "snapshot_changed"}
+        if status not in allowed_statuses:
+            status = "error"
+        raw_items = payload.get("items", [])
+        items = raw_items if isinstance(raw_items, list) else []
+        snapshot = payload.get("snapshot_id")
+        snapshot_id = snapshot if isinstance(snapshot, str) else None
+        facts: list[OperationalFact] = []
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            code = item.get("error_type") or item.get("status") or "diagnostic_record"
+            if not isinstance(code, str) or not code:
+                continue
+            item_owner = item.get("owner") or (raw_owner if isinstance(raw_owner, str) else "federated")
+            if not isinstance(item_owner, str) or not item_owner:
+                item_owner = "federated"
+            record_id = item.get("record_id")
+            if not isinstance(record_id, str) or not record_id:
+                record_id = _diagnostic_record_id(item_owner, item, code)
+            facts.append(
+                OperationalFact(
+                    scope=AssetProblemScope.PROCESSING,
+                    code=code,
+                    certainty=AssetDiagnosticCertainty.OBSERVED,
+                    owner=item_owner,
+                    record_id=record_id,
+                    snapshot_id=snapshot_id or "unavailable",
+                    provenance={
+                        "operation": payload.get("operation"),
+                        "requested_root": payload.get("requested_root"),
+                        "record": _bounded_projection(item),
+                        "projection_digest": _digest(item),
+                    },
+                )
+            )
+        error_value = payload.get("error")
+        error_map = error_value if isinstance(error_value, Mapping) else None
+        if status == "snapshot_changed":
+            result_status: OperationalStatus = "snapshot_changed"
+        elif status in {"unavailable", "blocked", "error"}:
+            result_status = cast(OperationalStatus, status)
+        elif status == "partial":
+            result_status = "partial"
+        else:
+            result_status = "ok" if facts or payload.get("next_cursor") else "empty"
+        next_cursor = payload.get("next_cursor")
+        coverage_value = payload.get("coverage")
+        coverage_map: Mapping[str, Any] = (
+            coverage_value if isinstance(coverage_value, Mapping) else {"status": "unknown"}
+        )
+        metrics_value = payload.get("metrics")
+        metrics_map: Mapping[str, Any] = (
+            metrics_value if isinstance(metrics_value, Mapping) else {}
+        )
+        return OperationalQueryResult(
+            query=request.query.strip(),
+            intent=detect_operational_intent(request.query),
+            owner=result_owner,
+            status=result_status,
+            facts=tuple(facts),
+            snapshot_id=snapshot_id,
+            next_cursor=next_cursor if isinstance(next_cursor, str) else None,
+            coverage=coverage_map,
+            error=error_map,
+            metrics=metrics_map,
+        )
+
+    # Keep a descriptive alias for SDK and adapter callers that use the
+    # operation name instead of the service method name.
+    query_content_diagnostics = content_diagnostics
 
     def _format_diagnostics(
         self,

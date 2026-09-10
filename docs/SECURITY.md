@@ -182,6 +182,8 @@ externos sin autorización explícita.
 - no todos los owners son generacionales;
 - deduplicación fast no equivale a igualdad bytewise;
 - algunos formatos publican localizadores menos precisos que su manifest;
+- el principal autenticado está definido como contrato, pero aún no habilita
+  autorización MCP;
 - la coordinación multi-owner ofrece consistencia lógica, no atomicidad física;
 - herramientas externas y modelos amplían la superficie de ataque.
 

@@ -55,6 +55,7 @@ from ...application.request import (
 )
 from ...protocol.messages import WorkerProtocolError, sanitize_text, validate_message
 from ...read.client import SharedReadClient
+from ...read.curation import CurationReadRepository, present_curation_snapshot
 from ...read.models import (
     ReadClient,
     ReadOperation,
@@ -133,6 +134,11 @@ class MainWindow(QMainWindow):
     consult_result_summary: QLabel
     consult_result: QPlainTextEdit
     consult_copy_button: QPushButton
+    curation_status: StatusPill
+    curation_refresh_button: QPushButton
+    curation_copy_button: QPushButton
+    curation_result_summary: QLabel
+    curation_result: QPlainTextEdit
 
     def __init__(
         self,
@@ -158,6 +164,7 @@ class MainWindow(QMainWindow):
         self._repository = StatusRepository(self._state_directory)
         self._controller = controller or WorkerController(self)
         self._read_client = read_client or SharedReadClient()
+        self._curation_read_repository = CurationReadRepository(self._state_directory)
         self._read_tasks = ReadTaskController(self._read_client, self)
         self._active_read_request: int | None = None
         self._nav_buttons: list[NavButton] = []
@@ -290,6 +297,8 @@ class MainWindow(QMainWindow):
         self.page_subtitle.setText(subtitle)
         if index in {0, 2, 3}:
             self._refresh_data()
+        elif index == 4:
+            self._refresh_curation_view()
 
     # endregion [01]
 
@@ -521,6 +530,39 @@ class MainWindow(QMainWindow):
         if text:
             QApplication.clipboard().setText(text)
 
+    def _refresh_curation_view(self) -> None:
+        """Refresh the bounded grant/action projection without mutation controls."""
+
+        try:
+            presentation = present_curation_snapshot(
+                self._curation_read_repository.read(limit=50)
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            presentation = ReadPresentation(
+                title="Curación no disponible",
+                summary=" ".join(str(exc).split())[:800],
+                body=(
+                    "La vista durable se abstuvo de continuar.\n"
+                    "No se creó, migró ni modificó estado, corpus o sistemas externos."
+                ),
+                state="failed",
+            )
+        status_text = {
+            "completed": "Vista lista",
+            "warning": "Requiere atención",
+            "failed": "No disponible",
+        }[presentation.state]
+        self.curation_status.set_state(presentation.state, status_text)
+        self.curation_result_summary.setText(presentation.summary)
+        self.curation_result.setPlainText(presentation.body)
+        self.curation_result.moveCursor(QTextCursor.MoveOperation.Start)
+        self.curation_copy_button.setEnabled(bool(presentation.body))
+
+    def _copy_curation_result(self) -> None:
+        text = self.curation_result.toPlainText()
+        if text:
+            QApplication.clipboard().setText(text)
+
     # endregion [02]
 
     # region [03] Durable status and settings
@@ -580,6 +622,8 @@ class MainWindow(QMainWindow):
         self._populate_history(self.history_table, runs)
         self._populate_history(self.overview_table, runs[:5])
         self._refresh_overview(latest, inventory)
+        if hasattr(self, "pages") and self.pages.currentIndex() == 4:
+            self._refresh_curation_view()
         if not self._controller.is_running:
             if latest is None:
                 self.header_status.set_state("idle")

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import cast
 
 from ..domain.models import DedupPlan, FileSnapshot
 from ..domain.evidence import KeeperPolicy
@@ -56,7 +57,13 @@ class DedupPlanner:
 
     def _fingerprint(self, snapshot: FileSnapshot, *, partial: bool) -> tuple[bytes, bool]:
         algorithm = PARTIAL_ALGORITHM if partial else FULL_ALGORITHM
-        cached = self._index.cached_fingerprint(snapshot, algorithm)
+        validated_cache = getattr(self._index, "validated_cached_fingerprint", None)
+        if callable(validated_cache):
+            cached = cast(
+                Callable[[FileSnapshot, str], bytes | None], validated_cache
+            )(snapshot, algorithm)
+        else:
+            cached = self._index.cached_fingerprint(snapshot, algorithm)
         if cached is not None:
             return cached, False
         digest = partial_fingerprint(snapshot) if partial else full_fingerprint(snapshot)
@@ -72,6 +79,7 @@ class DedupPlanner:
     ) -> DedupPlan:
         if preview_limit is not None and preview_limit < 0:
             raise ValueError("preview_limit cannot be negative")
+        scan_id = self._index.current_scan_id(scan_id)
         self._index.begin_duplicate_plan(scan_id)
         return PlanningSession(
             self._index,

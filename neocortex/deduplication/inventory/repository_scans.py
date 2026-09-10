@@ -12,6 +12,7 @@ from neocortex.progress import ProgressCallback
 
 from ..domain.errors import InventoryError
 from ..domain.models import InventoryCheckpoint, ScanSummary
+from .generation import inventory_content_digest as _inventory_content_digest
 from .scan import (
     DEFAULT_BATCH_SIZE,
     InventoryExclusionPolicy,
@@ -21,6 +22,26 @@ from .scan import (
 
 
 PRUNE_BATCH_SIZE = 1000
+
+
+def resolve_scan_id(connection: sqlite3.Connection, scan_id: int) -> int:
+    """Resolve a legacy scan identifier to its immutable current successor."""
+
+    if isinstance(scan_id, bool) or not isinstance(scan_id, int) or scan_id < 1:
+        raise ValueError("scan_id must be a positive integer")
+    current = scan_id
+    seen: set[int] = set()
+    while current not in seen:
+        seen.add(current)
+        row = connection.execute(
+            "SELECT successor_scan_id FROM inventory_scan_successors "
+            "WHERE predecessor_scan_id=?",
+            (current,),
+        ).fetchone()
+        if row is None:
+            return current
+        current = int(row[0])
+    raise InventoryError("inventory scan successor cycle detected")
 
 
 def scan_inventory(
@@ -101,6 +122,123 @@ class ScanCheckpointRepositoryMixin:
 
     _connection: sqlite3.Connection
 
+    def current_scan_id(self, scan_id: int) -> int:
+        """Return the current immutable generation for a legacy scan handle."""
+
+        return resolve_scan_id(self._connection, scan_id)
+
+    def scan_content_digest(self, scan_id: int) -> bytes:
+        """Return the canonical content identity of a complete scan head."""
+
+        return self._ensure_inventory_content_digest(scan_id)
+
+    def _ensure_inventory_content_digest(self, scan_id: int) -> bytes:
+        """Load or derive the content identity for one complete generation."""
+
+        current = resolve_scan_id(self._connection, scan_id)
+        row = self._connection.execute(
+            "SELECT content_digest FROM inventory_generation_heads WHERE scan_id=?",
+            (current,),
+        ).fetchone()
+        if row is not None:
+            return bytes(row[0])
+        status = self._connection.execute(
+            "SELECT status FROM scans WHERE scan_id=?", (current,)
+        ).fetchone()
+        if status is None:
+            raise InventoryError(f"unknown scan_id: {scan_id}")
+        if str(status[0]) != "complete":
+            raise InventoryError(f"scan {current} has no complete inventory content identity")
+        digest = _inventory_content_digest(self._connection, current)
+        with self._connection:
+            self._connection.execute(
+                "INSERT OR IGNORE INTO inventory_generation_heads("
+                "scan_id,content_digest,created_ns) VALUES(?,?,?)",
+                (current, digest, time.time_ns()),
+            )
+        row = self._connection.execute(
+            "SELECT content_digest FROM inventory_generation_heads WHERE scan_id=?",
+            (current,),
+        ).fetchone()
+        if row is None:
+            raise InventoryError(f"cannot publish inventory content identity for scan {current}")
+        return bytes(row[0])
+
+    def _create_inventory_successor(self, scan_id: int, *, reason: str) -> int:
+        """Copy one complete generation before applying an incremental change."""
+
+        source_id = resolve_scan_id(self._connection, scan_id)
+        existing = self._connection.execute(
+            "SELECT successor_scan_id FROM inventory_scan_successors "
+            "WHERE predecessor_scan_id=?",
+            (source_id,),
+        ).fetchone()
+        if existing is not None:
+            return resolve_scan_id(self._connection, int(existing[0]))
+        source = self._connection.execute(
+            """SELECT root,root_volume_id,root_file_id,root_birthtime_ns,
+            started_ns,completed_ns,files_seen,directories_seen,bytes_seen,
+            skipped_links,excluded_directories,errors,status,inventory_policy_signature
+            FROM scans WHERE scan_id=?""",
+            (source_id,),
+        ).fetchone()
+        if source is None or str(source[12]) != "complete" or source[5] is None:
+            raise InventoryError("incremental reconciliation requires a complete inventory scan")
+        # Ensure the source has an identity before any successor can become
+        # visible.  The original rows remain untouched and are available for
+        # historical audit until the normal retention owner prunes them.
+        source_digest = self._ensure_inventory_content_digest(source_id)
+        now = time.time_ns()
+        cursor = self._connection.execute(
+            """INSERT INTO scans(
+            root,root_volume_id,root_file_id,root_birthtime_ns,started_ns,
+            completed_ns,files_seen,directories_seen,bytes_seen,skipped_links,
+            excluded_directories,errors,status,inventory_policy_signature)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                source[0],
+                source[1],
+                source[2],
+                source[3],
+                now,
+                now,
+                source[6],
+                source[7],
+                source[8],
+                source[9],
+                source[10],
+                source[11],
+                "complete",
+                source[13],
+            ),
+        )
+        if cursor.lastrowid is None:
+            raise InventoryError("SQLite did not return an inventory successor identifier")
+        successor_id = int(cursor.lastrowid)
+        self._connection.execute(
+            """INSERT INTO files(
+            scan_id,path,volume_id,file_id,size,mtime_ns,birthtime_ns)
+            SELECT ?,path,volume_id,file_id,size,mtime_ns,birthtime_ns
+            FROM files WHERE scan_id=?""",
+            (successor_id, source_id),
+        )
+        self._connection.execute(
+            "INSERT INTO inventory_generation_heads(scan_id,content_digest,created_ns) "
+            "VALUES(?,?,?)",
+            (successor_id, source_digest, now),
+        )
+        self._connection.execute(
+            "INSERT INTO inventory_scan_successors("
+            "predecessor_scan_id,successor_scan_id,created_ns,reason) "
+            "VALUES(?,?,?,?)",
+            (source_id, successor_id, now, reason),
+        )
+        self._connection.execute(
+            "UPDATE duplicate_plan_heads SET status='superseded' WHERE scan_id=?",
+            (source_id,),
+        )
+        return successor_id
+
     def mark_abandoned_scans(self) -> tuple[int, ...]:
         """Close unpublishable ``building`` scans while preserving their rows."""
 
@@ -158,7 +296,7 @@ class ScanCheckpointRepositoryMixin:
             raise InventoryError("inventory publication has a partial USN cursor")
         return InventoryCheckpoint(
             root_path,
-            int(scan_id),
+            resolve_scan_id(self._connection, int(scan_id)),
             None if volume is None else str(volume),
             None if journal_id is None else int(journal_id),
             None if next_usn is None else int(next_usn),
@@ -188,6 +326,7 @@ class ScanCheckpointRepositoryMixin:
     def scan_inventory_policy_signature(self, scan_id: int) -> str | None:
         """Return the producing policy signature, or ``None`` for legacy scans."""
 
+        scan_id = resolve_scan_id(self._connection, scan_id)
         row = self._connection.execute(
             "SELECT inventory_policy_signature FROM scans WHERE scan_id=?",
             (scan_id,),
@@ -211,6 +350,7 @@ class ScanCheckpointRepositoryMixin:
             raise InventoryError(f"scan {scan_id} inventory policy signature does not match")
 
     def _require_publishable_scan(self, scan_id: int) -> tuple[Path, str]:
+        scan_id = resolve_scan_id(self._connection, scan_id)
         row = self._connection.execute(
             """SELECT root,status,completed_ns,files_seen,directories_seen,
             bytes_seen,skipped_links,excluded_directories,errors,
@@ -249,7 +389,8 @@ class ScanCheckpointRepositoryMixin:
         ):
             raise InventoryError("inventory publication has a partial USN cursor")
         root_path = os.path.abspath(checkpoint.root)
-        scan_root, scan_signature = self._require_publishable_scan(checkpoint.scan_id)
+        current_scan_id = resolve_scan_id(self._connection, checkpoint.scan_id)
+        scan_root, scan_signature = self._require_publishable_scan(current_scan_id)
         normalized_scan_root = os.path.abspath(os.fspath(scan_root))
         if os.path.normcase(root_path) != os.path.normcase(normalized_scan_root):
             raise InventoryError(
@@ -262,7 +403,7 @@ class ScanCheckpointRepositoryMixin:
             raise InventoryError("checkpoint inventory policy signature does not match its scan")
         return InventoryCheckpoint(
             root_path,
-            checkpoint.scan_id,
+            current_scan_id,
             checkpoint.volume,
             checkpoint.journal_id,
             checkpoint.next_usn,
@@ -274,9 +415,10 @@ class ScanCheckpointRepositoryMixin:
         signature = self._validated_inventory_policy_signature(
             checkpoint.inventory_policy_signature
         )
+        scan_id = resolve_scan_id(self._connection, checkpoint.scan_id)
         matching_scan = self._connection.execute(
             "SELECT 1 FROM scans WHERE scan_id=? AND inventory_policy_signature=?",
-            (checkpoint.scan_id, signature),
+            (scan_id, signature),
         ).fetchone()
         if matching_scan is None:
             raise InventoryError("checkpoint inventory policy signature does not match its scan")
@@ -293,7 +435,7 @@ class ScanCheckpointRepositoryMixin:
                     updated_ns=excluded.updated_ns""",
             (
                 os.path.abspath(checkpoint.root),
-                checkpoint.scan_id,
+                scan_id,
                 checkpoint.volume,
                 (None if checkpoint.journal_id is None else str(checkpoint.journal_id)),
                 checkpoint.next_usn,
@@ -305,6 +447,7 @@ class ScanCheckpointRepositoryMixin:
     def scan_summary(self, scan_id: int) -> ScanSummary:
         """Load the persisted summary for a reusable completed inventory."""
 
+        scan_id = resolve_scan_id(self._connection, scan_id)
         row = self._connection.execute(
             "SELECT root,files_seen,directories_seen,bytes_seen,skipped_links,"
             "excluded_directories,errors FROM scans WHERE scan_id=? "
@@ -318,6 +461,7 @@ class ScanCheckpointRepositoryMixin:
     def refresh_scan_aggregates(self, scan_id: int) -> None:
         """Refresh mutable file totals after applying an incremental USN window."""
 
+        scan_id = resolve_scan_id(self._connection, scan_id)
         with self._connection:
             result = self._connection.execute(
                 "UPDATE scans SET files_seen=(SELECT COUNT(*) FROM files WHERE scan_id=?),"
@@ -329,6 +473,7 @@ class ScanCheckpointRepositoryMixin:
                 raise InventoryError(f"cannot refresh unknown completed scan {scan_id}")
 
     def scan_root(self, scan_id: int) -> Path:
+        scan_id = resolve_scan_id(self._connection, scan_id)
         row = self._connection.execute(
             "SELECT root FROM scans WHERE scan_id=?", (scan_id,)
         ).fetchone()
@@ -339,6 +484,7 @@ class ScanCheckpointRepositoryMixin:
     def scan_root_identity(self, scan_id: int) -> tuple[int, int, int]:
         """Return the durable volume, file and birth-time identity of a scan root."""
 
+        scan_id = resolve_scan_id(self._connection, scan_id)
         row = self._connection.execute(
             "SELECT root_volume_id,root_file_id,root_birthtime_ns FROM scans WHERE scan_id=?",
             (scan_id,),

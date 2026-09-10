@@ -21,12 +21,13 @@ MODULES = tuple(
 
 
 def test_knowledge_modules_are_owned_by_the_canonical_tree() -> None:
-    assert len(MODULES) == 35
+    assert len(MODULES) == 36
     assert {
         "knowledge_asset_diagnosis", "knowledge_asset_diagnosis_contracts",
         "knowledge_asset_diagnosis_owners", "knowledge_context_v2",
         "knowledge_context_hydration", "knowledge_evidence_lookup",
         "knowledge_operational_query",
+        "knowledge_read_budget",
     } <= set(MODULES)
     for name in MODULES:
         product = importlib.import_module(f"neocortex.knowledge.{name}")

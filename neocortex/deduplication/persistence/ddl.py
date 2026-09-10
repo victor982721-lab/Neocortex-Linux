@@ -7,7 +7,7 @@ import sqlite3
 from neocortex.platform.policy import sqlite_path_collation
 
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 SCHEMA_LABEL = "dedup inventory"
 PATH_COLLATION = sqlite_path_collation()
 METADATA_DDL = """
@@ -189,7 +189,63 @@ V12_EVIDENCE_DDL = (
     "ALTER TABLE planned_duplicate_groups ADD COLUMN proof_json TEXT NOT NULL DEFAULT '{}'",
     "ALTER TABLE planned_duplicate_members ADD COLUMN proof_json TEXT NOT NULL DEFAULT '{}'",
 )
-CURRENT_DDL = (*V11_DDL, *V12_EVIDENCE_DDL)
+
+# v13 keeps the historical row shapes intact and adds the publication
+# evidence in side tables.  This is intentional: a number of older owners
+# still use positional inserts into ``files`` and ``fingerprints`` while
+# migrating their state.  Side tables let the new generation contract be
+# additive without changing those legacy INSERT arities.
+V12_DDL = (*V11_DDL, *V12_EVIDENCE_DDL)
+V13_FINGERPRINT_CONTENT_DDL = """
+    CREATE TABLE fingerprint_content_evidence (
+        volume_id BLOB NOT NULL,
+        file_id BLOB NOT NULL,
+        size INTEGER NOT NULL,
+        mtime_ns INTEGER NOT NULL,
+        birthtime_ns INTEGER NOT NULL,
+        algorithm TEXT NOT NULL,
+        content_digest BLOB NOT NULL,
+        PRIMARY KEY(volume_id,file_id,size,mtime_ns,birthtime_ns,algorithm)
+    ) WITHOUT ROWID
+    """
+V13_GENERATION_HEAD_DDL = """
+    CREATE TABLE inventory_generation_heads (
+        scan_id INTEGER PRIMARY KEY,
+        content_digest BLOB NOT NULL,
+        created_ns INTEGER NOT NULL,
+        FOREIGN KEY(scan_id) REFERENCES scans(scan_id) ON DELETE RESTRICT
+    ) WITHOUT ROWID
+    """
+V13_SUCCESSOR_DDL = """
+    CREATE TABLE inventory_scan_successors (
+        predecessor_scan_id INTEGER PRIMARY KEY,
+        successor_scan_id INTEGER NOT NULL UNIQUE,
+        created_ns INTEGER NOT NULL,
+        reason TEXT NOT NULL,
+        FOREIGN KEY(predecessor_scan_id) REFERENCES scans(scan_id) ON DELETE RESTRICT,
+        FOREIGN KEY(successor_scan_id) REFERENCES scans(scan_id) ON DELETE RESTRICT,
+        CHECK(predecessor_scan_id<>successor_scan_id)
+    ) WITHOUT ROWID
+    """
+V13_PLAN_HEAD_DDL = """
+    CREATE TABLE duplicate_plan_heads (
+        scan_id INTEGER PRIMARY KEY,
+        inventory_content_digest BLOB NOT NULL,
+        plan_digest BLOB NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('published','superseded')),
+        completed_ns INTEGER NOT NULL,
+        FOREIGN KEY(scan_id) REFERENCES scans(scan_id) ON DELETE RESTRICT
+    ) WITHOUT ROWID
+    """
+V13_DDL = (
+    *V11_DDL,
+    *V12_EVIDENCE_DDL,
+    V13_FINGERPRINT_CONTENT_DDL,
+    V13_GENERATION_HEAD_DDL,
+    V13_SUCCESSOR_DDL,
+    V13_PLAN_HEAD_DDL,
+)
+CURRENT_DDL = V13_DDL
 
 # The first seven v9 statements own generation publication; later statements
 # are unchanged cache/plan objects shared with v6 and v7. Explicit legacy
@@ -418,3 +474,7 @@ def build_v10_schema(connection: sqlite3.Connection) -> None:
 
 def build_v11_schema(connection: sqlite3.Connection) -> None:
     execute_ddl(connection, V11_DDL)
+
+
+def build_v12_schema(connection: sqlite3.Connection) -> None:
+    execute_ddl(connection, V12_DDL)

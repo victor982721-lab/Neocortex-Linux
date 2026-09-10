@@ -92,7 +92,7 @@ def test_shared_client_routes_all_operations_without_state_paths(
 
     client.execute(ReadRequest("status", scope="personal"))
     client.execute(ReadRequest("search", scope="framework", query="  interruptor  ", limit=7))
-    client.execute(ReadRequest("ask", scope="all", query="aceite", limit=4))
+    client.execute(ReadRequest("ask", scope="all", query="aceite", limit=4, response_version=1))
     client.execute(ReadRequest("review", scope="personal", limit=12))
 
     assert [name for name, _args, _kwargs in calls] == [

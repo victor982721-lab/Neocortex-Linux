@@ -5,11 +5,13 @@ from __future__ import annotations
 import os
 import sqlite3
 from collections.abc import Iterable
+from dataclasses import replace
 from pathlib import Path
 
 from ..domain.errors import InventoryError
 from ..domain.models import FileSnapshot, InventoryCheckpoint
 from .repository_scans import ScanCheckpointRepositoryMixin
+from .generation import inventory_content_digest
 from .scan import id_blob as _id_blob
 
 
@@ -120,13 +122,33 @@ class ReconciliationRepositoryMixin(ScanCheckpointRepositoryMixin):
         path_rows = _reconciliation_path_rows(remove_paths, scan_id)
         identity_rows = _reconciliation_identity_rows(remove_identities, scan_id)
         with self._connection:
+            current_scan_id = self.current_scan_id(scan_id)
             if checkpoint is not None:
                 checkpoint = self._policy_bound_checkpoint(checkpoint)
+            if upsert_rows or path_rows or identity_rows:
+                current_scan_id = self._create_inventory_successor(
+                    current_scan_id,
+                    reason="incremental-reconciliation",
+                )
+                if checkpoint is not None:
+                    checkpoint = replace(checkpoint, scan_id=current_scan_id)
+            path_rows = [(path, current_scan_id) for path, _scan in path_rows]
+            identity_rows = [
+                (volume, file_id, current_scan_id)
+                for volume, file_id, _scan in identity_rows
+            ]
             _remove_reconciled_rows(self._connection, path_rows, identity_rows)
             for snapshot in upsert_rows:
-                _upsert_reconciled_snapshot(self._connection, scan_id, snapshot)
+                _upsert_reconciled_snapshot(self._connection, current_scan_id, snapshot)
+            if upsert_rows or path_rows or identity_rows:
+                digest = inventory_content_digest(self._connection, current_scan_id)
+                self._connection.execute(
+                    "UPDATE inventory_generation_heads SET content_digest=? "
+                    "WHERE scan_id=?",
+                    (digest, current_scan_id),
+                )
             if checkpoint is not None:
-                _refresh_reconciliation_aggregates(self._connection, scan_id)
+                _refresh_reconciliation_aggregates(self._connection, current_scan_id)
                 self._write_inventory_checkpoint(checkpoint)
 
 

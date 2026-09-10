@@ -2,8 +2,9 @@
 
 > Describe la arquitectura implementada en el checkout vigente; las entregas
 > futuras viven en [ROADMAP_90_DAYS.md](ROADMAP_90_DAYS.md). La release
-> `current` proviene de `source_sha=1567fe46821b923be5e90ba4223abdaf81a9924c` y
-> C0–C7 están aceptados sobre ese artefacto. Ninguna descripción aquí sustituye
+> `current` proviene de `source_sha=1567fe46821b923be5e90ba4223abdaf81a9924c`;
+> el checkout puede contener cambios post-0.13 aún no instalados. C0–C7 están
+> aceptados sobre ese artefacto. Ninguna descripción aquí sustituye
 > la evidencia de aceptación.
 
 ## Principios
@@ -62,10 +63,18 @@ inode. Catálogo v8 añade bindings y ámbito mediante migración aditiva con co
 consistente previa, preservando claves e identidades históricas. Las lecturas
 legacy ambiguas se abstienen de producir efectos y conservan el diagnóstico.
 
-Inventario v12 conserva evidencia por grupo/miembro y separa política solicitada,
+Catálogo v9 añade manifests de generación con source fence, raíz, política,
+digest de entrada y digest de filas, además de triggers que impiden mutar una
+generación publicada; el CAS compara identidad y digest del head.
+
+Inventario v13 conserva evidencia por grupo/miembro y separa política solicitada,
 verificación efectuada y cobertura del plan. La selección de keeper es explicable,
 las preferencias explícitas prevalecen y mtime no representa versión documental;
 aliases y bytes redundantes nominales no demuestran liberación física de espacio.
+
+Los sucesores copy-on-write y los digests de contenido impiden reutilizar un plan
+cuando cambia el contenido aunque `size` y `mtime` permanezcan iguales; los
+`scan_id` anteriores quedan históricos y no vuelven a ser el head vigente.
 
 `neocortex.deduplication` conserva snapshots, generaciones, fingerprints y
 planes no destructivos. Reduce candidatos por tamaño y huella, pero la igualdad
@@ -156,6 +165,18 @@ del pipeline, condición del archivo, contenido documentado y preferencia
 organizativa no son equivalentes. El diagnóstico consulta owners especializados,
 sin copiar sus datos a otro almacén monolítico.
 
+El envelope `neocortex.context-response/v2` proyecta, de forma bounded, entidades,
+relaciones, contradicciones, grafo y telemetría. `SharedReadClient`, GUI y
+conveniencias SDK solicitan v2; la fachada Python v1 permanece disponible sólo
+por compatibilidad explícita. `KnowledgeReadBudget` limita filas, vectores,
+temporales, deadline y cancelación sin escribir estado ni introducir caches sin
+invalidación por heads/fences.
+
+`neocortex.content-diagnostics/v2` federa los nueve owners de contenido mediante
+cursores ligados a raíz, filtros y snapshots, y conserva estados de ausencia,
+parcialidad, schema futuro, corrupción y bloqueo sin confundirlos con cero
+incidencias. La versión v1 sigue intacta.
+
 Archive distingue ZIP físico, documento lógico y componentes, incluido OTT
 exterior/anidado; MIME declarado, estructura e integridad pendiente se conservan
 separados. PDF informa el resultado publicado sin sumar como omisiones actuales
@@ -205,6 +226,13 @@ promoción KIO real y restore de escritorio siguen siendo gates posteriores. La
 conciliación append-only se expone mediante `reconcile_curation_actions` y no
 reintenta efectos. El contrato se describe en
 [FILE_INTELLIGENCE_AND_CURATION.md](FILE_INTELLIGENCE_AND_CURATION.md).
+
+La vista `neocortex.curation.read` permite consultar grants, intentos, receipts y
+recovery sin abrir el corpus ni crear estado; la GUI sólo presenta y copia esa
+información. El contrato `neocortex.authenticated-principal/v1` rechaza actores
+textuales y principals no atestados, pero no habilita todavía autorización MCP.
+La sincronización de caches para move/rename usa lock ordering explícito sólo en
+fixtures; `trash` conserva una política de invalidación separada.
 
 ### Code como contenido
 
@@ -259,7 +287,8 @@ Persistencia define el contrato; el procedimiento está en
 - **MCP:** servidor stdio local con consultas read-only y las escrituras de
   estado advisory `curation_review`/`curation_decide`; estas últimas declaran
   `readOnlyHint=false`, `destructiveHint=false` y no conceden autoridad. No
-  expone `authorize` mientras no exista un principal autenticado.
+  expone `authorize`, `apply`, `restore` ni conciliación escrita; el principal
+  autenticado sólo está definido como contrato de preparación.
 
 Las cuatro superficies deben conservar operación, scope, cobertura, epoch,
 errores y evidencia equivalentes. La salida estructurada es contrato; el texto
@@ -368,14 +397,14 @@ manifest y owner heads antes de publicar, y se abstiene fail-closed ante drift.
 
 ## Brechas vigentes
 
-- la deduplicación rápida puede ser evidencia insuficiente para disposición;
 - varias fuentes todavía tienen publicación no generacional;
-- la cobertura y precisión de localizadores siguen variando por formato, aunque
-  los recursos virtuales de Archive ya no exponen identidad física;
-- MCP expone plan/scan/verify y review/decide, pero no autorización con actor autenticado;
-- la ruta física y restore sólo están habilitados mediante backends inyectados y
-  fixtures;
-- faltan sincronización de caches y presentación GUI del grant/restore;
+- la cobertura de localizadores sigue variando cuando un productor no publica la
+  estructura requerida, y esos casos se mantienen como reference-only;
+- falta resolver y conectar un principal autenticado con una sesión MCP confiable;
+- la ruta física, restore de escritorio y KIO real siguen habilitados sólo mediante
+  backends inyectados y fixtures;
+- la sincronización de caches para `trash` y la promoción de efectos reales siguen
+  fuera de esta cohorte;
 
 La prioridad y los criterios de aceptación están en
 [ROADMAP_90_DAYS.md](ROADMAP_90_DAYS.md); seguridad y owners se detallan en

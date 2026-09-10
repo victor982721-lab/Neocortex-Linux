@@ -143,6 +143,58 @@ EXPECTED_KNOWLEDGE_ACTIONS = (
         None,
     ),
     (
+        ("--knowledge-budget-rows",),
+        "knowledge_budget_rows",
+        "_StoreAction",
+        None,
+        None,
+        None,
+        "int",
+        None,
+        "N",
+        False,
+        None,
+    ),
+    (
+        ("--knowledge-budget-vectors",),
+        "knowledge_budget_vectors",
+        "_StoreAction",
+        None,
+        None,
+        None,
+        "int",
+        None,
+        "N",
+        False,
+        None,
+    ),
+    (
+        ("--knowledge-budget-temporary-bytes",),
+        "knowledge_budget_temporary_bytes",
+        "_StoreAction",
+        None,
+        None,
+        None,
+        "int",
+        None,
+        "N",
+        False,
+        None,
+    ),
+    (
+        ("--knowledge-budget-seconds",),
+        "knowledge_budget_seconds",
+        "_StoreAction",
+        None,
+        None,
+        None,
+        "float",
+        None,
+        "S",
+        False,
+        None,
+    ),
+    (
         ("--knowledge-mode",),
         "knowledge_mode",
         "_StoreAction",
@@ -179,6 +231,10 @@ EXPECTED_KNOWLEDGE_HELP = (
     "                        maximum ContextBundle characters; defaults to 12000\n"
     "                        (allowed range: 1..1000000)\n"
     "  --knowledge-history\n"
+    "  --knowledge-budget-rows N\n"
+    "  --knowledge-budget-vectors N\n"
+    "  --knowledge-budget-temporary-bytes N\n"
+    "  --knowledge-budget-seconds S\n"
     "  --knowledge-mode {discovery,evidence}\n"
 )
 

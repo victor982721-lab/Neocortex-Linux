@@ -42,6 +42,10 @@ from neocortex.api.read_api_port import (
     search_code,
     validate_knowledge_asset_resource_id,
 )
+from neocortex.knowledge.knowledge_read_budget import (
+    KnowledgeReadBudget,
+    KnowledgeReadBudgetExceeded,
+)
 
 if TYPE_CHECKING:
     from neocortex.api.read_api_port import KnowledgeSearchService
@@ -559,6 +563,7 @@ def search_payload(
     include_history: bool = False,
     cancellation_check: CancellationCheck | None = None,
     request_id: str | None = None,
+    read_budget: KnowledgeReadBudget | None = None,
 ) -> dict[str, object]:
     """Search fixed scopes independently and preserve each ranking contract."""
 
@@ -567,6 +572,8 @@ def search_payload(
     bindings = scope_bindings(selected)
     bounded_limit = _validate_limit(limit)
     retrieval_mode = mode if isinstance(mode, RetrievalMode) else RetrievalMode(mode)
+    if read_budget is not None and not isinstance(read_budget, KnowledgeReadBudget):
+        raise ValueError("read_budget must be a KnowledgeReadBudget when provided")
     request = KnowledgeQuery(
         normalized,
         retrieval_mode=retrieval_mode,
@@ -579,6 +586,7 @@ def search_payload(
             result = _service(binding).search(
                 request,
                 cancellation_check=cancellation_check,
+                read_budget=read_budget,
             )
             entries.append(
                 {
@@ -589,6 +597,17 @@ def search_payload(
                     "result": result.to_dict(),
                 }
             )
+        except KnowledgeReadBudgetExceeded as exc:
+            entries.append({
+                "scope": binding.scope.value,
+                "state_directory": str(binding.state_directory),
+                "status": "partial",
+                "exit_code": int(KnowledgeExitCode.PARTIAL),
+                "error": {
+                    "code": exc.reason,
+                    "message": sanitize_untrusted_text(str(exc)),
+                },
+            })
         except (ModuleNotFoundError, OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
             entries.append(_error_entry(binding, exc))
     return _finalize_read_payload(
@@ -602,6 +621,7 @@ def search_payload(
             "mode": retrieval_mode.value,
             "include_history": include_history,
             "limit_per_scope": bounded_limit,
+            "read_budget": None if read_budget is None else read_budget.to_dict(),
             "exit_code": federated_exit_code(entries),
             "scopes": entries,
         },
@@ -628,17 +648,21 @@ def context_payload(
     request_id: str | None = None,
     response_version: int = 1,
     response_transport: str = "json",
+    read_budget: KnowledgeReadBudget | None = None,
 ) -> dict[str, object]:
     """Build citation-first contexts independently for each fixed scope."""
 
     if isinstance(response_version, bool) or response_version not in {1, 2}:
         raise ValueError("response_version must be 1 or 2")
+    if read_budget is not None and not isinstance(read_budget, KnowledgeReadBudget):
+        raise ValueError("read_budget must be a KnowledgeReadBudget when provided")
     if response_version == 2:
         return _context_payload_v2(
             query, scope, limit=limit, max_characters=max_characters,
             mode=mode, include_history=include_history,
             cancellation_check=cancellation_check, request_id=request_id,
             response_transport=response_transport,
+            read_budget=read_budget,
         )
 
     normalized = _validate_query(query)
@@ -661,6 +685,7 @@ def context_payload(
                 max_characters=bounded_characters,
                 max_hits=bounded_limit,
                 cancellation_check=cancellation_check,
+                read_budget=read_budget,
             )
             entries.append(
                 {
@@ -689,6 +714,7 @@ def context_payload(
             "include_history": include_history,
             "limit_per_scope": bounded_limit,
             "max_characters_per_scope": bounded_characters,
+            "read_budget": None if read_budget is None else read_budget.to_dict(),
             "exit_code": federated_exit_code(entries),
             "scopes": entries,
         },
@@ -707,7 +733,7 @@ def _context_payload_v2(
     query: str, scope: str | ReadScope, *, limit: int, max_characters: int,
     mode: str | RetrievalMode, include_history: bool,
     cancellation_check: CancellationCheck | None, request_id: str | None,
-    response_transport: str,
+    response_transport: str, read_budget: KnowledgeReadBudget | None,
 ) -> dict[str, object]:
     from neocortex.knowledge.knowledge_context_v2 import build_context_response_v2
     from neocortex.knowledge.knowledge_context_hydration import search_context_evidence
@@ -727,11 +753,13 @@ def _context_payload_v2(
             query=str(query), scope=str(scope), request_id=f"read-{uuid4().hex}",
             mode=str(mode), include_history=include_history, limit=limit,
             max_characters=max_characters, transport=response_transport,
+            read_budget=None if read_budget is None else read_budget.to_dict(),
         )
     minimum = build_context_response_v2(
         [], query=normalized, scope=selected.value, request_id=resolved_request_id,
         mode=retrieval_mode.value, include_history=include_history, limit=bounded_limit,
         max_characters=bounded_characters, transport=response_transport,
+        read_budget=None if read_budget is None else read_budget.to_dict(),
     )
     if minimum["exit_code"] == 2:
         return minimum
@@ -745,9 +773,19 @@ def _context_payload_v2(
             result, evidence_projection = search_context_evidence(
                 _service(binding), request, scope=binding.scope.value,
                 cancellation_check=cancellation_check,
+                read_budget=read_budget,
             )
             entries.append({"scope": binding.scope.value, "result": evidence_projection,
                             "exit_code": int(knowledge_search_exit_code(result))})
+        except KnowledgeReadBudgetExceeded as exc:
+            entries.append({
+                "scope": binding.scope.value,
+                "error": {
+                    "code": exc.reason,
+                    "message": sanitize_untrusted_text(str(exc)),
+                },
+                "exit_code": int(KnowledgeExitCode.PARTIAL),
+            })
         except (ModuleNotFoundError, OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
             entries.append({"scope": binding.scope.value, "error": {
                 "code": "owner_unavailable", "message": sanitize_untrusted_text(str(exc)),
@@ -756,6 +794,7 @@ def _context_payload_v2(
         entries, query=normalized, scope=selected.value, request_id=resolved_request_id,
         mode=retrieval_mode.value, include_history=include_history,
         limit=bounded_limit, max_characters=bounded_characters, transport=response_transport,
+        read_budget=None if read_budget is None else read_budget.to_dict(),
     )
 
 
@@ -932,11 +971,14 @@ def evidence_payload(
     evidence_ref: Mapping[str, object] | None = None,
     response_transport: str = "json",
     response_version: int = 1,
+    read_budget: KnowledgeReadBudget | None = None,
 ) -> dict[str, object]:
     """Resolve stable evidence from one fresh context without arbitrary file reads."""
 
     if isinstance(response_version, bool) or response_version not in {1, 2}:
         raise ValueError("response_version must be 1 or 2")
+    if read_budget is not None and not isinstance(read_budget, KnowledgeReadBudget):
+        raise ValueError("read_budget must be a KnowledgeReadBudget when provided")
 
     if source_ref is not None or evidence_ref is not None:
         return _direct_evidence_payload(
@@ -967,6 +1009,7 @@ def evidence_payload(
             request_id=request_id,
             response_version=2,
             response_transport=response_transport,
+            read_budget=read_budget,
         )
         return select_evidence_response_v2(
             context,
@@ -990,6 +1033,7 @@ def evidence_payload(
         limit=bounded_limit,
         max_characters=max_characters,
         request_id=normalized_request_id,
+        read_budget=read_budget,
     )
     scope_entries = context.get("scopes")
     if not isinstance(scope_entries, list):
@@ -1237,6 +1281,7 @@ __all__ = (
     "MAX_HUMAN_QUERY_CHARS",
     "MAX_HUMAN_RESULTS_PER_SCOPE",
     "READ_API_SCHEMA",
+    "KnowledgeReadBudget",
     "ReadScope",
     "ScopeBinding",
     "asset_health_payload",

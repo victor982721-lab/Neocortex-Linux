@@ -22,6 +22,7 @@ from neocortex.deduplication.persistence import initialize_inventory_schema
 from neocortex.knowledge import knowledge_exact as knowledge_exact_module
 from neocortex.code.code_schema import initialize_code_state
 from neocortex.documents.document_catalog import initialize_document_catalog
+from neocortex.documents.document_resource_binding import build_resource_binding
 from neocortex.foundation.file_identity import FileIdentity
 from neocortex.knowledge.knowledge_contracts import (
     KnowledgeSnapshot,
@@ -302,6 +303,66 @@ def _create_catalog(path: Path) -> None:
             path="C:/docs/new.pdf",
             references='[{"identifier":"IEC-99999"}]',
         )
+
+
+def test_catalog_exact_materializer_keeps_archive_and_unbound_code_virtual(
+    tmp_path: Path,
+) -> None:
+    archive_key = "archive:container!/member.txt"
+    archive_binding = build_resource_binding(
+        source_kind="archive",
+        file_key=archive_key,
+        path="/fixture/container.zip!/member.txt",
+        identity=None,
+        birthtime_ns=-1,
+        size=12,
+        mtime_ns=1,
+        representation_kind="archive_member",
+        archive_member={
+            "container_key": "container-key",
+            "container_path": "/fixture/container.zip",
+            "member_chain": "member.txt",
+        },
+    )
+    base = {
+        "generation_id": 1,
+        "path": "/fixture/container.zip!/member.txt",
+        "volume_id": "not-a-volume",
+        "file_id": "not-a-file",
+        "birthtime_ns": -1,
+        "size": 12,
+        "mtime_ns": 1,
+        "source_status": "indexed",
+        "processing_signature": "fixture-v1",
+        "classifier_signature": "classifier-v1",
+        "confidence": 0.9,
+        "uncertainty": "baja",
+        "standard_references_json": "[]",
+        "catalog_status": "classified",
+        "updated_ns": 1,
+        "last_seen_catalog_run_id": 1,
+    }
+    for source_kind, file_key, binding, path in (
+        ("archive", archive_key, json.dumps(archive_binding), "/fixture/container.zip!/member.txt"),
+        ("code", "code:42", None, "/fixture/module.py"),
+    ):
+        row = {
+            **base,
+            "source_kind": source_kind,
+            "file_key": file_key,
+            "path": path,
+            "resource_binding_json": binding,
+        }
+        match = knowledge_exact_module._catalog_row_match(
+            row,
+            ExactLookupTerm(ExactLookupKind.PATH, path),
+            1,
+        )
+        assert match.resource.resource_id == f"resource:{source_kind}:{file_key}"
+        assert match.resource.physical_identity is None
+        assert "physical_identity_unresolved" in match.warnings
+        if source_kind == "archive":
+            assert dict(match.evidence.identifiers)["member_chain"] == "member.txt"
 
 
 LOOKUP_ORCHESTRATION_FIXTURE = (

@@ -43,6 +43,23 @@ def _quiesce(path: Path) -> None:
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
 
+def _mutate_published_catalog(
+    path: Path,
+    statement: str,
+    parameters: tuple[object, ...] = (),
+) -> None:
+    """Build a deliberately inconsistent fixture without weakening production triggers."""
+
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute(
+            "UPDATE catalog_generations SET status='building' WHERE generation_id=1"
+        )
+        connection.execute(statement, parameters)
+        connection.execute(
+            "UPDATE catalog_generations SET status='published' WHERE generation_id=1"
+        )
+
+
 def _state_fingerprint(root: Path) -> dict[str, tuple[int, int, str]]:
     return {
         path.name: (
@@ -210,16 +227,17 @@ def test_identity_or_processing_signature_mismatch_never_cross_joins(
     mismatch: str,
 ) -> None:
     fixture = _create_health_fixture(tmp_path)
-    with closing(sqlite3.connect(fixture.paths.catalog)) as connection, connection:
-        if mismatch == "identity":
-            connection.execute(
-                "UPDATE catalog_generation_documents SET volume_id='99' WHERE generation_id=1"
-            )
-        else:
-            connection.execute(
-                """UPDATE catalog_generation_documents
-                SET processing_signature='different-signature' WHERE generation_id=1"""
-            )
+    if mismatch == "identity":
+        _mutate_published_catalog(
+            fixture.paths.catalog,
+            "UPDATE catalog_generation_documents SET volume_id='99' WHERE generation_id=1",
+        )
+    else:
+        _mutate_published_catalog(
+            fixture.paths.catalog,
+            """UPDATE catalog_generation_documents
+            SET processing_signature='different-signature' WHERE generation_id=1""",
+        )
     _quiesce(fixture.paths.catalog)
 
     report = inspect_knowledge_asset_health(fixture.paths, fixture.query)
@@ -302,13 +320,13 @@ def test_typed_statuses_drive_health_without_error_message_inference(
             (source_status,),
         )
     _quiesce(fixture.paths.text)
-    with closing(sqlite3.connect(fixture.paths.catalog)) as connection, connection:
-        connection.execute(
-            """UPDATE catalog_generation_documents
-            SET source_status=?,catalog_status=?,error_type='opaque-code',
-            error_message='words cannot classify health'""",
-            (source_status, catalog_status),
-        )
+    _mutate_published_catalog(
+        fixture.paths.catalog,
+        """UPDATE catalog_generation_documents
+        SET source_status=?,catalog_status=?,error_type='opaque-code',
+        error_message='words cannot classify health'""",
+        (source_status, catalog_status),
+    )
     _quiesce(fixture.paths.catalog)
 
     report = inspect_knowledge_asset_health(fixture.paths, fixture.query)

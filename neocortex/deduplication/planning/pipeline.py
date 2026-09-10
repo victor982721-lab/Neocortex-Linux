@@ -26,7 +26,12 @@ from ..domain.models import (
     PlanStatistics,
     VerificationMode,
 )
-from ..fingerprinting import FULL_ALGORITHM, PARTIAL_ALGORITHM, stat_matches_snapshot
+from ..fingerprinting import (
+    FULL_ALGORITHM,
+    PARTIAL_ALGORITHM,
+    full_fingerprint,
+    stat_matches_snapshot,
+)
 from ..inventory.index import DedupIndex
 from .keeper import KeeperRank, keeper_factors, keeper_rank, keeper_reason
 from neocortex.progress import ProgressCallback, ProgressEvent, emit_progress
@@ -40,7 +45,7 @@ FINGERPRINT_WRITE_BATCH_SIZE = 512
 MAX_REDUNDANT_MEMBERS_PER_GROUP = 1024
 MAX_EXACT_HASH_COLLISION_SETS = 128
 
-type FingerprintRow = tuple[FileSnapshot, bytes, bool]
+type FingerprintRow = tuple[FileSnapshot, bytes, bool, bytes | None]
 type SnapshotCapture = Callable[[str], FileSnapshot]
 type ExactMatcher = Callable[[FileSnapshot, FileSnapshot], bool]
 
@@ -225,15 +230,30 @@ def _store_fingerprints(index: DedupIndex, stage: str, batch: list[FingerprintRo
         return
     index.store_planning_fingerprints(
         stage,
-        ((snapshot, digest) for snapshot, digest, _computed in batch),
+        ((snapshot, digest) for snapshot, digest, _computed, _content in batch),
         computed_identities=frozenset(
-            snapshot.identity for snapshot, _digest, computed in batch if computed
+            snapshot.identity
+            for snapshot, _digest, computed, _content in batch
+            if computed
         ),
     )
-    computed_rows = [(snapshot, digest) for snapshot, digest, computed in batch if computed]
+    computed_rows = [
+        (snapshot, digest)
+        for snapshot, digest, computed, _content in batch
+        if computed
+    ]
     if computed_rows:
         algorithm = PARTIAL_ALGORITHM if stage == "partial" else FULL_ALGORITHM
-        index.store_fingerprints(algorithm, computed_rows)
+        content_digests = {
+            snapshot.identity: content
+            for snapshot, _digest, computed, content in batch
+            if computed and content is not None
+        }
+        index.store_fingerprints(
+            algorithm,
+            computed_rows,
+            content_digests=content_digests,
+        )
     batch.clear()
 
 
@@ -439,7 +459,10 @@ class PlanningSession:
                 self._counters.size_candidates += 1
                 digest, computed = self._fingerprint(snapshot, partial=partial)
                 self._count_fingerprint(partial=partial, computed=computed)
-                batch.append((snapshot, digest, computed))
+                content_digest = (
+                    full_fingerprint(snapshot) if partial and computed else digest
+                )
+                batch.append((snapshot, digest, computed, content_digest))
                 if len(batch) >= FINGERPRINT_WRITE_BATCH_SIZE:
                     _store_fingerprints(self._index, stage, batch)
             except (OSError, FileChangedError):
@@ -475,7 +498,7 @@ class PlanningSession:
             try:
                 digest, computed = self._fingerprint(snapshot, partial=False)
                 self._counters.full_count += computed
-                batch.append((snapshot, digest, computed))
+                batch.append((snapshot, digest, computed, digest if computed else None))
                 if len(batch) >= FINGERPRINT_WRITE_BATCH_SIZE:
                     _store_fingerprints(self._index, "full", batch)
             except FileChangedError:

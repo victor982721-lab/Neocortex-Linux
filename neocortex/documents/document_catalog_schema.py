@@ -1,6 +1,8 @@
 """Versioned SQLite schema and migrations for the document catalog."""
 
 from __future__ import annotations
+import hashlib
+import json
 import sqlite3
 import time
 from collections.abc import Callable
@@ -20,7 +22,7 @@ from neocortex.persistence.sqlite_schema_contract import (
 # region [01] Canonical schema
 
 
-CATALOG_SCHEMA_VERSION = 8
+CATALOG_SCHEMA_VERSION = 9
 _PATH_COLLATION = sqlite_path_collation()
 
 
@@ -288,11 +290,139 @@ def _binding_schema_statement(statement: str) -> str:
     return statement
 
 
-_CURRENT_SCHEMA_DDL = tuple(_binding_schema_statement(statement) for statement in _V7_SCHEMA_DDL)
+_V8_SCHEMA_DDL = tuple(_binding_schema_statement(statement) for statement in _V7_SCHEMA_DDL)
+
+# Publication evidence is kept in a separate manifest so v8 positional
+# document/generation inserts remain readable during migration.  A manifest
+# records both the source fence and the deterministic staged-row digest; the
+# publication pointer still advances only through the existing generation CAS.
+_V9_PUBLICATION_DDL = (
+    """CREATE TABLE IF NOT EXISTS catalog_generation_manifests(
+        generation_id INTEGER PRIMARY KEY,
+        source_kind TEXT NOT NULL,
+        source_path TEXT,
+        source_fence_json TEXT NOT NULL,
+        source_root TEXT,
+        source_root_identity_json TEXT,
+        input_policy_signature TEXT,
+        input_manifest_digest TEXT,
+        generation_digest TEXT,
+        created_ns INTEGER NOT NULL,
+        FOREIGN KEY(generation_id)
+            REFERENCES catalog_generations(generation_id)
+    ) WITHOUT ROWID""",
+    """CREATE INDEX IF NOT EXISTS catalog_generation_manifests_digest_idx
+        ON catalog_generation_manifests(source_kind,generation_digest,generation_id)""",
+    """CREATE TRIGGER IF NOT EXISTS catalog_generation_documents_immutable_update
+        BEFORE UPDATE ON catalog_generation_documents
+        WHEN EXISTS(
+            SELECT 1 FROM catalog_generations
+            WHERE generation_id=OLD.generation_id AND status='published'
+        )
+        BEGIN
+            SELECT RAISE(ABORT,'published catalog generation documents are immutable');
+        END""",
+    """CREATE TRIGGER IF NOT EXISTS catalog_generation_documents_immutable_delete
+        BEFORE DELETE ON catalog_generation_documents
+        WHEN EXISTS(
+            SELECT 1 FROM catalog_generations
+            WHERE generation_id=OLD.generation_id AND status='published'
+        )
+        BEGIN
+            SELECT RAISE(ABORT,'published catalog generation documents are immutable');
+        END""",
+    """CREATE TRIGGER IF NOT EXISTS catalog_generation_manifests_immutable_update
+        BEFORE UPDATE ON catalog_generation_manifests
+        WHEN EXISTS(
+            SELECT 1 FROM catalog_generations
+            WHERE generation_id=OLD.generation_id AND status='published'
+        )
+        BEGIN
+            SELECT RAISE(ABORT,'published catalog generation manifests are immutable');
+        END""",
+    """CREATE TRIGGER IF NOT EXISTS catalog_generation_manifests_immutable_delete
+        BEFORE DELETE ON catalog_generation_manifests
+        WHEN EXISTS(
+            SELECT 1 FROM catalog_generations
+            WHERE generation_id=OLD.generation_id AND status='published'
+        )
+        BEGIN
+            SELECT RAISE(ABORT,'published catalog generation manifests are immutable');
+        END""",
+)
+
+_GENERATION_DIGEST_COLUMNS = (
+    "source_kind", "file_key", "path", "volume_id", "file_id", "size", "mtime_ns",
+    "birthtime_ns", "source_status", "processing_signature", "text_fingerprint",
+    "classifier_signature", "primary_kind", "primary_subtype", "primary_authority",
+    "primary_organization", "primary_client", "primary_project", "primary_workstream",
+    "confidence", "uncertainty", "standard_references_json", "organizations_json",
+    "clients_json", "projects_json", "workstreams_json", "topics_json", "equipment_json",
+    "activities_json", "classification_json", "catalog_status", "error_type",
+    "error_message", "active", "resource_binding_json",
+)
+
+
+def catalog_generation_digest(
+    connection: sqlite3.Connection,
+    generation_id: int,
+) -> str:
+    """Hash every staged row and field in deterministic owner order."""
+
+    columns = ",".join(_GENERATION_DIGEST_COLUMNS)
+    digest = hashlib.sha256(b"NEOCORTEX_CATALOG_GENERATION_V1\0")
+    rows = connection.execute(
+        f"SELECT {columns} FROM catalog_generation_documents "
+        "WHERE generation_id=? ORDER BY source_kind,file_key",
+        (generation_id,),
+    )
+    count = 0
+    for row in rows:
+        count += 1
+        payload = repr(tuple(row)).encode("utf-8", "surrogatepass")
+        digest.update(len(payload).to_bytes(8, "big"))
+        digest.update(payload)
+    digest.update(count.to_bytes(8, "big"))
+    return digest.hexdigest()
+
+
+def catalog_input_manifest_digest(
+    *,
+    source_kind: str,
+    source_path: str | None,
+    source_fence_json: str,
+    source_root: str | None,
+    source_root_identity_json: str | None,
+    input_policy_signature: str | None,
+    generation_digest: str,
+) -> str:
+    """Derive a stable digest over source fence and staged generation identity."""
+
+    payload = {
+        "source_kind": source_kind,
+        "source_path": source_path,
+        "source_fence_json": source_fence_json,
+        "source_root": source_root,
+        "source_root_identity_json": source_root_identity_json,
+        "input_policy_signature": input_policy_signature,
+        "generation_digest": generation_digest,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+
+_CURRENT_SCHEMA_DDL = (*_V8_SCHEMA_DDL, *_V9_PUBLICATION_DDL)
 
 
 def _create_v7_schema(connection: sqlite3.Connection) -> None:
     for statement in _V7_SCHEMA_DDL:
+        connection.execute(statement)
+
+
+def _create_v8_schema(connection: sqlite3.Connection) -> None:
+    for statement in _V8_SCHEMA_DDL:
         connection.execute(statement)
 
 
@@ -307,6 +437,17 @@ def validate_v7_document_catalog_schema(connection: sqlite3.Connection) -> None:
     )
 
 
+@lru_cache(maxsize=1)
+def _v8_schema_contract() -> SQLiteSchemaContract:
+    return schema_contract_from_builder(_create_v8_schema)
+
+
+def validate_v8_document_catalog_schema(connection: sqlite3.Connection) -> None:
+    validate_sqlite_schema_contract(
+        connection, _v8_schema_contract(), label="document catalog v8", exact=True
+    )
+
+
 def create_document_catalog_schema(connection: sqlite3.Connection) -> None:
     """Create every object required by the current catalog contract."""
 
@@ -316,7 +457,7 @@ def create_document_catalog_schema(connection: sqlite3.Connection) -> None:
 
 @lru_cache(maxsize=1)
 def document_catalog_schema_contract() -> SQLiteSchemaContract:
-    """Return the immutable structural contract for schema v8."""
+    """Return the immutable structural contract for schema v9."""
 
     return schema_contract_from_builder(create_document_catalog_schema)
 
@@ -828,6 +969,57 @@ def _migrate_to_v8(connection: sqlite3.Connection) -> None:
         connection.execute(f"ALTER TABLE organization_plans ADD COLUMN {name} {definition}")
 
 
+def _migrate_to_v9(connection: sqlite3.Connection) -> None:
+    """Add source fences and immutable manifest rows without rewriting v8 data."""
+
+    validate_v8_document_catalog_schema(connection)
+    for statement in _V9_PUBLICATION_DDL[:2]:
+        connection.execute(statement)
+    now = time.time_ns()
+    generations = tuple(
+        (int(row[0]), str(row[1]), str(row[2]))
+        for row in connection.execute(
+            "SELECT generation_id,source_kind,status FROM catalog_generations "
+            "ORDER BY generation_id"
+        )
+    )
+    for generation_id, source_kind, _status in generations:
+        generation_digest = catalog_generation_digest(connection, generation_id)
+        fence = '{"legacy":true}'
+        input_digest = catalog_input_manifest_digest(
+            source_kind=source_kind,
+            source_path=None,
+            source_fence_json=fence,
+            source_root=None,
+            source_root_identity_json=None,
+            input_policy_signature=None,
+            generation_digest=generation_digest,
+        )
+        connection.execute(
+            "INSERT INTO catalog_generation_manifests("
+            "generation_id,source_kind,source_path,source_fence_json,source_root,"
+            "source_root_identity_json,input_policy_signature,input_manifest_digest,"
+            "generation_digest,created_ns) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                generation_id,
+                source_kind,
+                None,
+                fence,
+                None,
+                None,
+                None,
+                input_digest,
+                generation_digest,
+                now,
+            ),
+        )
+    for statement in _V9_PUBLICATION_DDL[2:]:
+        connection.execute(statement)
+    violation = connection.execute("PRAGMA foreign_key_check").fetchone()
+    if violation is not None:
+        raise RuntimeError("document catalog v8 to v9 migration violated foreign keys")
+
+
 def migrate_document_catalog_schema(
     connection: sqlite3.Connection,
     prior_version: int,
@@ -845,6 +1037,7 @@ def migrate_document_catalog_schema(
         6: lambda: _migrate_to_v6(connection),
         7: lambda: _migrate_to_v7(connection),
         8: lambda: _migrate_to_v8(connection),
+        9: lambda: _migrate_to_v9(connection),
     }
     for target_version in range(prior_version + 1, CATALOG_SCHEMA_VERSION + 1):
         migrations[target_version]()
@@ -857,10 +1050,13 @@ def migrate_document_catalog_schema(
 
 __all__ = [
     "CATALOG_SCHEMA_VERSION",
+    "catalog_generation_digest",
+    "catalog_input_manifest_digest",
     "create_document_catalog_schema",
     "document_catalog_schema_contract",
     "migrate_document_catalog_schema",
     "validate_v5_document_catalog_schema",
     "validate_v6_document_catalog_schema",
     "validate_v7_document_catalog_schema",
+    "validate_v8_document_catalog_schema",
 ]

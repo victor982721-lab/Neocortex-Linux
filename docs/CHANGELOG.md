@@ -4,6 +4,24 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## Post-0.13 — fuente en integración (no instalada)
+
+- Inventario/deduplicación v13 con sucesores copy-on-write, digests de contenido,
+  heads de plan y rechazo de reutilización stat-only ante drift.
+- Catálogo v9 con manifests/fences/digests/CAS y triggers de inmutabilidad;
+  Archive y Code conservan su identidad virtual en búsqueda exacta y catalogada.
+- Context v2 proyecta grafo, contradicciones, telemetría y localizadores
+  estructurales; Audio/Video/Image/Code tienen hydration bounded o declaran
+  `reference_only` cuando el owner no publica evidencia suficiente.
+- `content-diagnostics/v2` federa los nueve owners y `KnowledgeReadBudget`
+  limita filas, vectores, temporales, deadline y cancelación sin efectos.
+- Se añadió el contrato de principal autenticado, lectura fenced de curación,
+  sincronización de caches move/rename sólo en fixtures y panel GUI read-only;
+  no se habilitó autorización MCP, KIO real ni mutación del corpus.
+
+La aceptación y promoción de esta tranche quedan pendientes de una suite y
+release verificadas desde el SHA final.
+
 ## 0.13.0 — instalada y verificada (fuente `1567fe4`)
 
 Estas entradas describen el contrato y la integración del lifecycle durable de

@@ -15,7 +15,9 @@ from neocortex.knowledge.knowledge_evidence_lookup import EvidenceLookupError, l
 MAX_HYDRATION_REFERENCES = 20
 MAX_HYDRATION_CHARACTERS = 32768
 HYDRATION_DEADLINE_SECONDS = 10.0
-_HYDRATABLE_OWNERS = frozenset({"text", "pdf", "docx", "office", "archive"})
+_HYDRATABLE_OWNERS = frozenset(
+    {"text", "pdf", "docx", "office", "archive", "audio", "video", "image", "code"}
+)
 
 
 def _identity(evidence: dict[str, Any]) -> tuple[object, object, object]:
@@ -124,6 +126,7 @@ def search_context_evidence(
     service, query, *, scope: str,
     cancellation_check: Callable[[], None] | None = None,
     read_metrics_sink: Callable[[dict[str, object]], None] | None = None,
+    read_budget=None,
 ):
     """Use the same retrieval attempt and commit only coherent hydration."""
     if not callable(getattr(service, "_search_with_consumer", None)):
@@ -143,6 +146,7 @@ def search_context_evidence(
     result, consumed = service._search_with_consumer(
         query, consume, cancellation_check=cancellation_check,
         read_metrics_sink=read_metrics_sink,
+        read_budget=read_budget,
     )
     if consumed is None:
         data = result.to_dict()

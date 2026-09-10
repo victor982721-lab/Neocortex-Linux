@@ -27,6 +27,7 @@ from neocortex.knowledge.knowledge_contracts import (
     RevisionState,
 )
 from neocortex.knowledge.knowledge_snapshot import KnowledgeStatePaths
+from neocortex.documents.document_resource_binding import build_resource_binding
 
 
 PUBLIC_MODULE = "neocortex.knowledge.knowledge_search"
@@ -711,6 +712,69 @@ def test_catalog_materialization_preserves_exact_identity_and_provenance(
         "FETCH:QUERY",
     ]
     assert manager_events[-2:] == ["ENTER", "CLOSE"]
+
+
+@pytest.mark.parametrize(
+    ("source_kind", "file_key", "volume_id", "file_id"),
+    (
+        ("archive", "archive:container!/member.txt", "not-a-volume", "not-a-file"),
+        ("code", "code:42", "not-a-volume", "not-a-file"),
+    ),
+)
+def test_catalog_materializer_keeps_owner_virtual_identities_out_of_physical_namespace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source_kind: str,
+    file_key: str,
+    volume_id: str,
+    file_id: str,
+) -> None:
+    binding_json = None
+    if source_kind == "archive":
+        binding_json = json.dumps(
+            build_resource_binding(
+                source_kind="archive",
+                file_key=file_key,
+                path="/fixture/container.zip!/member.txt",
+                identity=None,
+                birthtime_ns=-1,
+                size=12,
+                mtime_ns=1,
+                representation_kind="archive_member",
+                archive_member={
+                    "container_key": "container-key",
+                    "container_path": "/fixture/container.zip",
+                    "member_chain": "member.txt",
+                },
+            )
+        )
+    row = _row(
+        source_kind=source_kind,
+        file_key=file_key,
+        path="/fixture/container.zip!/member.txt" if source_kind == "archive" else "/fixture/module.py",
+        volume_id=volume_id,
+        file_id=file_id,
+        resource_binding_json=binding_json,
+    )
+    connection = _CatalogConnection(
+        preflight_rows=(_head_row(source_kind, 1),),
+        candidate_rows=(row,),
+    )
+    _install_catalog_database(monkeypatch, connection)
+
+    candidates, _report = knowledge_search._catalog_ranking(
+        KnowledgeStatePaths.from_directory(tmp_path / "state"),
+        _plan(),
+        _snapshot((source_kind, 1)),
+    )
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.resource.resource_id == f"resource:{source_kind}:{file_key}"
+    assert candidate.resource.physical_identity is None
+    assert "physical_identity_unresolved" in candidate.warnings
+    if source_kind == "archive":
+        assert dict(candidate.evidence.identifiers)["member_chain"] == "member.txt"
 
 
 @pytest.mark.parametrize(

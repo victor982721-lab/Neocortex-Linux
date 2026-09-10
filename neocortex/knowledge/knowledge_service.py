@@ -28,6 +28,7 @@ from .knowledge_contracts import (
     SnapshotConsistency,
 )
 from .knowledge_planner import KnowledgePlan, KnowledgeQuery, plan_knowledge_query
+from .knowledge_read_budget import KnowledgeReadBudget
 from .knowledge_snapshot import (
     KnowledgeStatePaths,
     KnowledgeStateRootError,
@@ -440,6 +441,7 @@ class KnowledgeSearchService:
         *,
         cancellation_check: CancellationCheck | None = None,
         read_metrics_sink: ReadMetricsSink | None = None,
+        read_budget: KnowledgeReadBudget | None = None,
         _attempt_consumer: Callable[[KnowledgeSearchResult], object] | None = None,
         _consumer_commit: Callable[[object], None] | None = None,
     ) -> KnowledgeSearchResult:
@@ -447,13 +449,19 @@ class KnowledgeSearchService:
 
         if read_metrics_sink is not None and not callable(read_metrics_sink):
             raise ValueError("read_metrics_sink must be callable when provided")
+        if read_budget is not None and not isinstance(read_budget, KnowledgeReadBudget):
+            raise ValueError("read_budget must be a KnowledgeReadBudget when provided")
 
         clock_contract = self._clock_contract()
         clock = clock_contract.now_ns
         operation_started_ns = clock()
+        if read_budget is not None:
+            read_budget.checkpoint()
         _checkpoint(cancellation_check)
         planner_started_ns = clock()
         plan = self.query_planner(query)
+        if read_budget is not None:
+            read_budget.checkpoint()
         phase_timings: list[KnowledgePhaseTiming] = [
             KnowledgePhaseTiming(
                 KnowledgeTimingPhase.PLANNER,
@@ -464,6 +472,8 @@ class KnowledgeSearchService:
 
         first_view_changed = False
         for service_attempt in (1, 2):
+            if read_budget is not None:
+                read_budget.checkpoint()
             snapshot_started_ns = clock()
             before = self._collect_snapshot(cancellation_check)
             phase_timings.append(
@@ -506,6 +516,19 @@ class KnowledgeSearchService:
                             plan,
                             before,
                             cancellation_check=cancellation_check,
+                        )
+                    if read_budget is not None:
+                        peak_temporary = read_context.metrics.get("peak_temporary_bytes", 0)
+                        read_budget.checkpoint(
+                            rows=max(0, int(result.rows_scanned)),
+                            vectors=max(0, int(result.vectors_scanned)),
+                            temporary_bytes=max(
+                                0,
+                                peak_temporary
+                                if isinstance(peak_temporary, int)
+                                and not isinstance(peak_temporary, bool)
+                                else 0,
+                            ),
                         )
                     if _attempt_consumer is not None:
                         consumed = _attempt_consumer(result)
@@ -557,6 +580,8 @@ class KnowledgeSearchService:
                     )
                 )
             _checkpoint(cancellation_check)
+            if read_budget is not None:
+                read_budget.checkpoint()
             snapshot_started_ns = clock()
             after = self._collect_snapshot(cancellation_check)
             phase_timings.append(
@@ -637,6 +662,7 @@ class KnowledgeSearchService:
         *,
         cancellation_check: CancellationCheck | None = None,
         read_metrics_sink: ReadMetricsSink | None = None,
+        read_budget: KnowledgeReadBudget | None = None,
     ) -> tuple[KnowledgeSearchResult, object | None]:
         """Commit a detached projection only after the owning attempt is stable."""
         committed: list[object] = []
@@ -644,6 +670,7 @@ class KnowledgeSearchService:
             query,
             cancellation_check=cancellation_check,
             read_metrics_sink=read_metrics_sink,
+            read_budget=read_budget,
             _attempt_consumer=consumer,
             _consumer_commit=committed.append,
         )
@@ -657,6 +684,7 @@ class KnowledgeSearchService:
         max_hits: int | None = None,
         cancellation_check: CancellationCheck | None = None,
         read_metrics_sink: ReadMetricsSink | None = None,
+        read_budget: KnowledgeReadBudget | None = None,
     ) -> ContextBundle:
         """Search a stable view and compile a bounded context from its hits."""
 
@@ -674,13 +702,18 @@ class KnowledgeSearchService:
         clock = clock_contract.now_ns
         operation_started_ns = clock()
         result = (
-            self.search(query, cancellation_check=cancellation_check)
+            self.search(query, cancellation_check=cancellation_check, read_budget=read_budget)
             if read_metrics_sink is None
             else self.search(
-                query, cancellation_check=cancellation_check, read_metrics_sink=read_metrics_sink
+                query,
+                cancellation_check=cancellation_check,
+                read_metrics_sink=read_metrics_sink,
+                read_budget=read_budget,
             )
         )
         _checkpoint(cancellation_check)
+        if read_budget is not None:
+            read_budget.checkpoint()
         builder = self.context_builder or _default_context_builder
         context_started_ns = clock()
         bundle = builder(

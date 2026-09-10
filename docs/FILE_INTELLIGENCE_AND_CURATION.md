@@ -73,9 +73,10 @@ evidencia de procedencia, no nombres o extensiones aislados.
 
 ## Estado actual
 
-La fuente `0.12.0` aporta inventario, extracción multimodal, catálogos, búsqueda,
+La fuente `0.13.0` aporta inventario, extracción multimodal, catálogos, búsqueda,
 Knowledge, Semantic, Code como contenido, planes de duplicados/organización,
-Review, receipts y recuperación parcial.
+Review, receipts y recuperación parcial. El checkout añade una tranche
+post-0.13 todavía no instalada.
 
 - **CURRENT:** `curate scan`, `curate plan`, `curation_scan`, `curation_plan` y
   `--curation-preview` consultan el plan local paginado sin escribir estado o
@@ -101,17 +102,22 @@ Review, receipts y recuperación parcial.
   selecciona automáticamente desde la CLI instalada.
 - **IMPLEMENTED (recovery):** `reconcile_curation_actions` clasifica y registra
   observaciones bounded, append-only e idempotentes, sin reintentar efectos.
+- **SOURCE-ONLY post-0.13:** inventario/deduplicación v13 y catálogo v9 fijan
+  digests, heads, fences y publicaciones inmutables; Knowledge v2 conserva
+  localizadores/hydration por owner, y la lectura fenced de curación proyecta
+  grants, intentos, receipts y recovery sin crear estado.
 
 Las brechas principales son:
 
 - la promoción del backend físico real y el restore de escritorio siguen fuera
   de la cohorte; el restore no-replace ya está disponible para receipts de
   fixtures con confirmación separada;
-- varios formatos pierden localizadores estructurales al llegar a búsqueda;
+- varios formatos aún carecen de localizadores estructurales publicados y se
+  mantienen como `reference_only`;
 - igualdad, versión, procedencia, valor y disposición no tienen una proyección
   pública unificada;
-- MCP expone plan, scan, verify y las escrituras advisory `curation_review` y
-  `curation_decide`, pero no `authorize`: falta un principal autenticado;
+- MCP mantiene fuera `authorize`, `apply`, `restore` y conciliación escrita:
+  falta enlazar el principal autenticado con una sesión confiable;
 - la CLI ordinaria no selecciona un backend físico; movimientos y restore se
   validan sólo con inyección explícita sobre fixtures;
 - progreso, cancelación y replay no son uniformes en todos los productores.
@@ -288,6 +294,20 @@ mantiene separada de `curate verify`, que conserva su checkpoint page-level.
 
 No existe una interfaz de exportación ni un paquete ZIP de curación. `--json`
 serializa la respuesta de una operación; no crea un artefacto durable.
+
+**SOURCE-ONLY — lectura y diagnóstico post-0.13:**
+
+```text
+API/SDK: content_diagnostics_v2_payload, KnowledgeReadBudget
+MCP: content_diagnostics_v2
+GUI: vista read-only de grants, intentos, receipts y recovery
+```
+
+Estas superficies conservan snapshots y cursores bounded, no escanean el corpus
+ni conceden autoridad. El contrato `neocortex.authenticated-principal/v1`
+rechaza actores textuales o principals no atestados; no habilita autorización
+MCP. La promoción física de KIO, restore de escritorio y sincronización de
+`trash` permanecen fuera del alcance.
 
 ## Separación de Code y desarrollo
 

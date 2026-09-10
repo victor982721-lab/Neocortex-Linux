@@ -17,11 +17,16 @@ from contextlib import AbstractContextManager
 from types import TracebackType
 from typing import Protocol
 
+from neocortex.documents.document_resource_binding import (
+    ResourceBindingError,
+    parse_resource_binding,
+)
 from neocortex.foundation.file_identity import FileIdentity, FileIdentityEncoding
 from .knowledge_contracts import (
     EvidenceMethod,
     EvidenceRef,
     KnowledgeSnapshot,
+    PhysicalIdentityRef,
     RankingSignal,
     ResourceRef,
     RevisionRef,
@@ -265,7 +270,8 @@ def _read_catalog_rows(
                 d.classifier_signature,d.primary_kind,d.primary_subtype,
                 d.primary_project,d.confidence,d.uncertainty,
                 d.standard_references_json,d.source_status,d.catalog_status,
-                d.updated_ns,d.last_seen_catalog_run_id,g.generation_id
+                d.updated_ns,d.last_seen_catalog_run_id,d.resource_binding_json,
+                g.generation_id
                 FROM expected e JOIN catalog_generations g
                 ON g.generation_id=e.generation_id
                 JOIN catalog_generation_documents d
@@ -315,20 +321,72 @@ def _materialize_candidate(
 ) -> tuple[KnowledgeCandidate, bool]:
     source_kind = str(row["source_kind"])
     file_key = str(row["file_key"])
-    identity = file_identity_type(
-        decimal_identity_value_fn(row["volume_id"]),
-        decimal_identity_value_fn(row["file_id"]),
-    )
-    if file_identity_type.decode(file_key, encoding=file_identity_encoding) != identity:
-        raise ValueError("catalog file_key disagrees with neutral identity fields")
-    resource, identity_warnings = direct_resource_ref_fn(
-        source_kind=source_kind,
-        owner="catalog",
-        source_identity=file_key,
-        identity=identity,
-        birthtime_ns=row["birthtime_ns"],
-        path=str(row["path"]),
-    )
+    path = str(row["path"])
+    identity_warnings: tuple[str, ...] = ()
+    raw_binding = _row_value(row, "resource_binding_json")
+    binding: Mapping[str, object] | None = None
+    if raw_binding is not None:
+        try:
+            parsed = parse_resource_binding(raw_binding)
+        except ResourceBindingError as exc:
+            raise ValueError("catalog resource binding is invalid") from exc
+        if parsed.get("source_kind") != source_kind or parsed.get("file_key") != file_key:
+            raise ValueError("catalog resource binding does not match its row")
+        binding = parsed
+
+    if source_kind in {"archive", "code"}:
+        # Archive members and unbound Code owner records are logical references,
+        # not filesystem identities.  In particular, never reinterpret the
+        # owner key or the denormalized volume/file columns as decimal or hex
+        # merely because they happen to contain numeric-looking text.
+        if binding is None:
+            resource = ResourceRef(
+                f"resource:{source_kind}:{file_key}",
+                source_kind,
+                source_kind,
+                current_path=path,
+            )
+            identity_warnings = ("physical_identity_unresolved",)
+        else:
+            ref = binding.get("resource_ref")
+            if not isinstance(ref, Mapping):
+                raise ValueError("catalog resource binding resource_ref is invalid")
+            physical_value = ref.get("physical_identity")
+            physical = None
+            if isinstance(physical_value, Mapping):
+                try:
+                    physical = PhysicalIdentityRef(
+                        str(physical_value["scheme"]),
+                        str(physical_value["value"]),
+                        int(physical_value["identity_version"]),
+                    )
+                except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                    raise ValueError("catalog resource binding physical identity is invalid") from exc
+            resource = ResourceRef(
+                str(ref["resource_id"]),
+                str(ref["source_kind"]),
+                str(ref["owner"]),
+                physical,
+                str(ref.get("current_path") or path),
+                None,
+                (None if ref.get("canonical_resource_id") is None else str(ref["canonical_resource_id"])),
+            )
+            identity_warnings = () if physical is not None else ("physical_identity_unresolved",)
+    else:
+        identity = file_identity_type(
+            decimal_identity_value_fn(row["volume_id"]),
+            decimal_identity_value_fn(row["file_id"]),
+        )
+        if file_identity_type.decode(file_key, encoding=file_identity_encoding) != identity:
+            raise ValueError("catalog file_key disagrees with neutral identity fields")
+        resource, identity_warnings = direct_resource_ref_fn(
+            source_kind=source_kind,
+            owner="catalog",
+            source_identity=file_key,
+            identity=identity,
+            birthtime_ns=row["birthtime_ns"],
+            path=path,
+        )
     revision_payload = {
         "source_kind": source_kind,
         "file_key": file_key,
@@ -336,6 +394,8 @@ def _materialize_candidate(
         "size": int(str(row["size"])),
         "mtime_ns": int(str(row["mtime_ns"])),
     }
+    if binding is not None:
+        revision_payload["resource_binding"] = dict(binding)
     revision_fingerprint = fingerprint_text_fn(canonical_json_fn(revision_payload))
     revision_id = f"revision:catalog:{revision_fingerprint.xxh3_128}"
     generation = int(str(row["generation_id"]))
@@ -356,6 +416,15 @@ def _materialize_candidate(
         revision_state_type.PARTIAL if partial else revision_state_type.CURRENT,
     )
     identifiers = catalog_identifiers_fn(row["standard_references_json"])
+    if binding is not None and source_kind == "archive":
+        member = binding.get("archive_member")
+        if isinstance(member, Mapping):
+            archive_identifiers = tuple(
+                (name, str(member[name]))
+                for name in ("container_key", "container_path", "member_chain")
+                if member.get(name) is not None and str(member[name])
+            )
+            identifiers = tuple(dict.fromkeys((*identifiers, *archive_identifiers)))
     snippet_parts = [f"kind={row['primary_kind']}"]
     if row["primary_subtype"] is not None:
         snippet_parts.append(f"subtype={row['primary_subtype']}")

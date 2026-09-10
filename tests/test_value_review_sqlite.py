@@ -53,6 +53,23 @@ def _blob(value: int) -> bytes:
     return value.to_bytes(16, "little", signed=False)
 
 
+def _mutate_published_catalog(
+    path: Path,
+    statement: str,
+    parameters: tuple[object, ...] = (),
+) -> None:
+    """Mutate only an unpublished fixture generation for inconsistency tests."""
+
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE catalog_generations SET status='building' WHERE generation_id=1"
+        )
+        connection.execute(statement, parameters)
+        connection.execute(
+            "UPDATE catalog_generations SET status='published' WHERE generation_id=1"
+        )
+
+
 def _fixture_files() -> tuple[dict[str, object], ...]:
     return (
         {"id": 1, "path": "/corpus/docs/keeper.txt", "size": 100},
@@ -634,12 +651,18 @@ def test_value_review_reopens_until_source_change_but_not_permanent(
             )
 
     with sqlite3.connect(paths.catalog) as connection:
+        connection.execute(
+            "UPDATE catalog_generations SET status='building' WHERE generation_id=1"
+        )
         for record in records:
             assert record.source.resource is not None
             connection.execute(
                 "UPDATE catalog_generation_documents SET mtime_ns=mtime_ns+1 WHERE path=?",
                 (record.source.resource.current_path,),
             )
+        connection.execute(
+            "UPDATE catalog_generations SET status='published' WHERE generation_id=1"
+        )
 
     refreshed = refresh_value_review_tasks(
         framework,
@@ -789,8 +812,10 @@ def test_catalog_row_mismatch_is_durable_partial_evidence_not_ready(
 ) -> None:
     root = tmp_path / "state"
     paths = _create_state(root)
-    with sqlite3.connect(paths.catalog) as connection:
-        connection.execute("UPDATE catalog_generation_documents SET size=size+1 WHERE file_id='4'")
+    _mutate_published_catalog(
+        paths.catalog,
+        "UPDATE catalog_generation_documents SET size=size+1 WHERE file_id='4'",
+    )
 
     framework = root / "framework.sqlite3"
     refreshed = refresh_value_review_tasks(
@@ -1619,6 +1644,9 @@ def test_partial_and_encrypted_rows_are_protected(tmp_path: Path) -> None:
     paths = _create_state(tmp_path / "state")
     with sqlite3.connect(paths.catalog) as connection:
         connection.execute(
+            "UPDATE catalog_generations SET status='building' WHERE generation_id=1"
+        )
+        connection.execute(
             """UPDATE catalog_generation_documents
             SET source_status='partial' WHERE file_id='4'"""
         )
@@ -1626,6 +1654,9 @@ def test_partial_and_encrypted_rows_are_protected(tmp_path: Path) -> None:
             """UPDATE catalog_generation_documents
             SET catalog_status='error',error_type='EncryptedFile',
             error_message='password required' WHERE file_id='5'"""
+        )
+        connection.execute(
+            "UPDATE catalog_generations SET status='published' WHERE generation_id=1"
         )
 
     report = preview_value_review(
@@ -1640,11 +1671,11 @@ def test_partial_and_encrypted_rows_are_protected(tmp_path: Path) -> None:
 
 def test_catalog_snapshot_mismatch_protects_the_affected_file(tmp_path: Path) -> None:
     paths = _create_state(tmp_path / "state")
-    with sqlite3.connect(paths.catalog) as connection:
-        connection.execute(
-            """UPDATE catalog_generation_documents
-            SET size=size+1 WHERE file_id='4'"""
-        )
+    _mutate_published_catalog(
+        paths.catalog,
+        """UPDATE catalog_generation_documents
+        SET size=size+1 WHERE file_id='4'""",
+    )
 
     report = preview_value_review(
         paths,

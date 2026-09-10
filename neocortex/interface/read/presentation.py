@@ -320,6 +320,11 @@ def _add_warnings(lines: _Lines, value: object) -> None:
 
 
 def _render_ask(payload: Mapping[str, object], lines: _Lines) -> tuple[str, str]:
+    if payload.get("schema") in {
+        "neocortex.context-response/v2",
+        "neocortex.evidence-response/v2",
+    }:
+        return _render_ask_v2(payload, lines)
     query = _safe_line(payload.get("query"), limit=MAX_QUERY_CHARACTERS)
     lines.add(f"Evidencia citada para responder: {query}")
     lines.add("NeoCortex prepara contexto local; no inventa una respuesta sin evidencia.\n")
@@ -331,6 +336,69 @@ def _render_ask(payload: Mapping[str, object], lines: _Lines) -> tuple[str, str]
     return (
         "Respuesta sustentada",
         _count_label(total_hits, "cita recuperada", "citas recuperadas"),
+    )
+
+
+def _render_ask_v2(
+    payload: Mapping[str, object], lines: _Lines
+) -> tuple[str, str]:
+    """Render the compact v2 context without manufacturing a v1 hit object."""
+
+    query = _safe_line(payload.get("query"), limit=MAX_QUERY_CHARACTERS)
+    lines.add(f"Evidencia citada para responder: {query}")
+    lines.add("NeoCortex prepara contexto local; no inventa una respuesta sin evidencia.\n")
+    sources = {
+        str(source.get("source_id")): source
+        for source in _rows(payload.get("sources"))
+        if source.get("source_id") is not None
+    }
+    citations = _rows(payload.get("citations"))
+    displayed = 0
+    for citation in citations:
+        if displayed >= MAX_PRESENTATION_ROWS:
+            break
+        source = sources.get(str(citation.get("source_id")), {})
+        path = _safe_line(
+            source.get("path") or source.get("resource_id") or "sin ruta", limit=800
+        )
+        label = Path(path).name or path
+        locator = citation.get("locator")
+        locator_text = _locator(locator) if isinstance(locator, Mapping) else "ubicación estructurada"
+        citation_id = _safe_line(citation.get("citation_id") or f"K{displayed + 1}", limit=80)
+        lines.add(f"[{citation_id}] {label}  ·  {locator_text}")
+        lines.add(f"   Ruta: {path}")
+        excerpt = _safe_line(citation.get("excerpt"), limit=1_200)
+        if excerpt:
+            lines.add(f"   Evidencia: {excerpt}")
+        lines.add(f"   ID: {_safe_line(citation.get('evidence_id') or '-', limit=200)}")
+        displayed += 1
+        lines.add()
+    if not citations:
+        error = payload.get("error")
+        if isinstance(error, Mapping):
+            lines.add(f"   No hay evidencia suficiente ({_safe_line(error.get('code'))}).\n")
+        else:
+            lines.add("   No hay evidencia suficiente para responder.\n")
+    contradictions = _rows(payload.get("contradictions"))
+    if contradictions:
+        lines.add("Contradicciones estructuradas detectadas:")
+        for item in contradictions[:20]:
+            lines.add("   - " + _safe_line(item.get("summary"), limit=800))
+    coverage = payload.get("coverage")
+    if isinstance(coverage, Mapping):
+        presentation = coverage.get("presentation")
+        if isinstance(presentation, Mapping) and presentation.get("reasons"):
+            raw_reasons = presentation.get("reasons")
+            reasons = (
+                ", ".join(_safe_line(value, limit=180) for value in raw_reasons[:20])
+                if isinstance(raw_reasons, list)
+                else ""
+            )
+            if reasons:
+                lines.add("   Límites: " + reasons)
+    return (
+        "Respuesta sustentada",
+        _count_label(len(citations), "cita recuperada", "citas recuperadas"),
     )
 
 

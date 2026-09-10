@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from neocortex.deduplication import DedupIndex, InventoryError
+from neocortex.deduplication import persistence as inventory_schema_module
 from neocortex.deduplication.persistence.ddl import build_v11_schema
 from neocortex.deduplication.persistence.lifecycle import initialize_inventory_schema
 from neocortex.deduplication.persistence.migrations import v11_to_v12
@@ -40,7 +41,9 @@ def test_v11_migration_preserves_legacy_evidence_without_inference(tmp_path: Pat
         assert all(member.alias_count is None for member in group.member_proofs)
     with sqlite3.connect(database) as connection:
         assert v11_to_v12._legacy_plan_digest(connection) == before
-        assert connection.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone() == ("12",)
+        assert connection.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone() == (
+            str(inventory_schema_module.SCHEMA_VERSION),
+        )
         assert connection.execute(
             "SELECT verification_mode,requested_policy,coverage,exact_comparisons,"
             "changed_or_unreadable_files FROM duplicate_plan_summaries"

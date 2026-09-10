@@ -698,10 +698,6 @@ def test_materialization_wrapper_resolves_current_lower_helpers_and_constants(
         "physical",
         "birthtime_ns",
         "revision",
-        "start_line",
-        "end_line",
-        "start_ms",
-        "end_ms",
     ]
 
 

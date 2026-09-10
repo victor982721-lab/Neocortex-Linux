@@ -52,6 +52,19 @@ def _quiesce(path: Path) -> None:
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
 
+def _mutate_published_catalog(path: Path, statement: str) -> None:
+    """Create an inconsistent fixture through an unpublished generation window."""
+
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute(
+            "UPDATE catalog_generations SET status='building' WHERE generation_id=1"
+        )
+        connection.execute(statement)
+        connection.execute(
+            "UPDATE catalog_generations SET status='published' WHERE generation_id=1"
+        )
+
+
 def _state_fingerprint(root: Path) -> dict[str, tuple[int, int, str]]:
     return {
         path.name: (
@@ -299,11 +312,11 @@ def test_pdf_empty_bounded_and_partial_projections_have_typed_health(
                 (partial.file_key, page_number, zlib.compress(b"x")),
             )
     _quiesce(partial.paths.pdf)
-    with closing(sqlite3.connect(partial.paths.catalog)) as connection, connection:
-        connection.execute(
-            """UPDATE catalog_generation_documents SET source_status='partial'
-            WHERE source_kind='pdf'"""
-        )
+    _mutate_published_catalog(
+        partial.paths.catalog,
+        """UPDATE catalog_generation_documents SET source_status='partial'
+        WHERE source_kind='pdf'""",
+    )
     _quiesce(partial.paths.catalog)
     partial_report = inspect_knowledge_asset_health(partial.paths, partial.query)
     assert partial_report.health is KnowledgeAssetHealthState.DEGRADED
@@ -416,11 +429,11 @@ def test_pdf_projection_recovery_and_terminal_inconsistencies_fail_closed(
             (inconsistent.file_key,),
         )
     _quiesce(inconsistent.paths.pdf)
-    with closing(sqlite3.connect(inconsistent.paths.catalog)) as connection, connection:
-        connection.execute(
-            """UPDATE catalog_generation_documents
-            SET processing_signature='different-signature' WHERE source_kind='pdf'"""
-        )
+    _mutate_published_catalog(
+        inconsistent.paths.catalog,
+        """UPDATE catalog_generation_documents
+        SET processing_signature='different-signature' WHERE source_kind='pdf'""",
+    )
     _quiesce(inconsistent.paths.catalog)
 
     inconsistent_report = inspect_knowledge_asset_health(

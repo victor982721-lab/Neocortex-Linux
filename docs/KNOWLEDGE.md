@@ -95,6 +95,13 @@ archivo monopolice el contexto. La salida conserva consultas, fuentes, hits,
 omisiones y cobertura suficiente para que un agente decida si puede responder o
 debe pedir más evidencia.
 
+La proyección `neocortex.context-response/v2` añade entidades, relaciones,
+contradicciones, presupuesto del grafo y telemetría bounded, sin cambiar la
+frontera de confianza ni evaluar `answer_sufficiency`. La función Python de bajo
+nivel conserva v1 por compatibilidad explícita; GUI, SDK y MCP solicitan v2.
+`KnowledgeReadBudget` permite limitar filas, vectores, temporales, deadline y
+cancelación sin escribir estado.
+
 ## Interfaces
 
 ```bash
@@ -109,6 +116,9 @@ API Python y MCP proyectan los mismos contratos; `curation_plan` añade la vista
 read-only paginada de propuestas sin conceder autoridad y la evidencia acepta
 IDs estables con snapshot esperado. No deben parsear la salida humana. Los
 detalles de argumentos están en [CLI.md](CLI.md).
+
+`content-diagnostics/v2` federa los nueve owners de contenido con cursores
+ligados a raíz, filtros y snapshots; `content_diagnostics` v1 permanece legible.
 
 `operational_query` y las preguntas operacionales de `ask` consultan directamente
 los diagnósticos publicados por sus owners, conservan snapshot y cursor, y

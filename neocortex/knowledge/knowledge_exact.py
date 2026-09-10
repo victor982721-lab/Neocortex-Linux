@@ -29,6 +29,10 @@ from neocortex.platform.policy import (
 
 from neocortex.code.ingestion.code_detection import LANGUAGE_EXTENSIONS
 from neocortex.code.code_schema import readonly_code_database
+from neocortex.documents.document_resource_binding import (
+    ResourceBindingError,
+    parse_resource_binding,
+)
 from neocortex.foundation.file_identity import FileIdentity, FileIdentityError
 from .knowledge_contracts import (
     EvidenceMethod,
@@ -1121,6 +1125,85 @@ def _catalog_identity(row: sqlite3.Row) -> FileIdentity:
     return identity
 
 
+def _catalog_resource(
+    row: sqlite3.Row,
+) -> tuple[ResourceRef, tuple[str, ...], Mapping[str, object] | None]:
+    """Materialize a catalog row through its owner binding when available.
+
+    Archive members and unbound Code rows are logical owner references.  Their
+    denormalized ``volume_id``/``file_id`` columns are retained for legacy
+    reporting but are not identity evidence.  A physical resource is accepted
+    only when the catalog stored and validated an explicit resource binding;
+    this prevents a name/radix/path coincidence from creating an inventory
+    join.
+    """
+
+    source_kind = str(row["source_kind"])
+    file_key = str(row["file_key"])
+    path = str(row["path"])
+    raw_binding = row["resource_binding_json"] if "resource_binding_json" in row.keys() else None
+    binding: Mapping[str, object] | None = None
+    if raw_binding is not None:
+        try:
+            parsed = parse_resource_binding(raw_binding)
+        except ResourceBindingError as exc:
+            raise ValueError("catalog resource binding is invalid") from exc
+        if parsed.get("source_kind") != source_kind or parsed.get("file_key") != file_key:
+            raise ValueError("catalog resource binding does not match its row")
+        binding = parsed
+
+    if source_kind in {"archive", "code"}:
+        if binding is None:
+            return (
+                ResourceRef(
+                    f"resource:{source_kind}:{file_key}",
+                    source_kind,
+                    source_kind,
+                    current_path=path,
+                ),
+                ("physical_identity_unresolved",),
+                None,
+            )
+        ref = binding.get("resource_ref")
+        if not isinstance(ref, Mapping):
+            raise ValueError("catalog resource binding resource_ref is invalid")
+        physical_payload = ref.get("physical_identity")
+        physical = None
+        if isinstance(physical_payload, Mapping):
+            try:
+                physical = PhysicalIdentityRef(
+                    str(physical_payload["scheme"]),
+                    str(physical_payload["value"]),
+                    int(physical_payload["identity_version"]),
+                )
+            except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("catalog resource binding physical identity is invalid") from exc
+        return (
+            ResourceRef(
+                str(ref["resource_id"]),
+                str(ref["source_kind"]),
+                str(ref["owner"]),
+                physical,
+                str(ref.get("current_path") or path),
+                None,
+                None if ref.get("canonical_resource_id") is None else str(ref["canonical_resource_id"]),
+            ),
+            () if physical is not None else ("physical_identity_unresolved",),
+            binding,
+        )
+
+    identity = _catalog_identity(row)
+    resource, warnings = _physical_resource(
+        source_kind=source_kind,
+        owner="catalog",
+        source_identity=file_key,
+        identity=identity,
+        birthtime_ns=row["birthtime_ns"],
+        path=path,
+    )
+    return resource, warnings, binding
+
+
 def _code_revision(
     row: sqlite3.Row,
     resource_id: str,
@@ -2107,7 +2190,22 @@ _CATALOG_SELECT = """SELECT d.generation_id,d.source_kind,d.file_key,d.path,
 d.volume_id,d.file_id,d.birthtime_ns,d.size,d.mtime_ns,d.source_status,
 d.processing_signature,d.classifier_signature,d.confidence,d.uncertainty,
 d.standard_references_json,d.catalog_status,d.updated_ns,
-d.last_seen_catalog_run_id"""
+d.last_seen_catalog_run_id,d.resource_binding_json"""
+
+
+def _catalog_select_for_connection(connection: sqlite3.Connection) -> str:
+    """Keep legacy v6 fixtures readable while projecting the new binding column."""
+
+    columns = {
+        str(row[1])
+        for row in connection.execute("PRAGMA table_info(catalog_generation_documents)")
+    }
+    if "resource_binding_json" in columns:
+        return _CATALOG_SELECT
+    return _CATALOG_SELECT.replace(
+        "d.last_seen_catalog_run_id,d.resource_binding_json",
+        "d.last_seen_catalog_run_id,NULL AS resource_binding_json",
+    )
 
 
 def _catalog_valid_heads(
@@ -2246,7 +2344,7 @@ def _catalog_term_rows(
         rows, used = control.query(
             connection,
             f"""WITH expected(source_kind,generation_id) AS (VALUES {expected})
-            {_CATALOG_SELECT} FROM expected e
+            {_catalog_select_for_connection(connection)} FROM expected e
             JOIN catalog_generation_documents d
             ON d.generation_id=e.generation_id AND d.source_kind=e.source_kind
             WHERE d.active=1 AND {predicate}{source_clause}{path_clause}
@@ -2272,17 +2370,8 @@ def _catalog_row_match(
     term: ExactLookupTerm,
     rank: int,
 ) -> ExactEvidenceMatch:
-    identity = _catalog_identity(row)
-    file_key = str(row["file_key"])
     source_kind = str(row["source_kind"])
-    resource, identity_warnings = _physical_resource(
-        source_kind=source_kind,
-        owner="catalog",
-        source_identity=file_key,
-        identity=identity,
-        birthtime_ns=row["birthtime_ns"],
-        path=str(row["path"]),
-    )
+    resource, identity_warnings, binding = _catalog_resource(row)
     revision = _catalog_revision(row, resource.resource_id)
     generation = int(row["generation_id"])
     if term.kind is ExactLookupKind.IDENTIFIER:
@@ -2323,6 +2412,14 @@ def _catalog_row_match(
         section_id = observed_path
         snippet = None
         reason = "published catalog path matched exactly"
+    if binding is not None and source_kind == "archive":
+        member = binding.get("archive_member")
+        if isinstance(member, Mapping):
+            identifiers.extend(
+                (name, str(member[name]))
+                for name in ("container_key", "container_path", "member_chain")
+                if member.get(name) is not None and str(member[name])
+            )
     evidence = EvidenceRef(
         _stable_exact_evidence_id(
             owner="catalog",

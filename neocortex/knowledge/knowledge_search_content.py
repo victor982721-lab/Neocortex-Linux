@@ -11,6 +11,7 @@ dependency back to knowledge_search and captures no mutable facade defaults.
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
+import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
@@ -369,6 +370,36 @@ def _evidence_from_resolved(
     extracted_method: EvidenceMethod,
 ) -> EvidenceRef:
     provenance = resolved.section_provenance
+    nested_locator = provenance.get("locator")
+    locator = nested_locator if isinstance(nested_locator, Mapping) else {}
+
+    def locator_value(name: str) -> object:
+        value = provenance.get(name)
+        return value if value is not None else locator.get(name)
+
+    def locator_int(name: str) -> int | None:
+        value = locator_value(name)
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    def locator_text(name: str) -> str | None:
+        value = locator_value(name)
+        return value.strip() if isinstance(value, str) and value.strip() else None
+
+    def locator_box() -> tuple[float, float, float, float] | None:
+        value = locator_value("bounding_box")
+        if not isinstance(value, (list, tuple)) or len(value) != 4:
+            return None
+        try:
+            box = tuple(float(item) for item in value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not all(math.isfinite(item) for item in box):
+            return None
+        left, top, right, bottom = box
+        if right <= left or bottom <= top:
+            return None
+        return (left, top, right, bottom)
+
     page: int | None = None
     if (
         resolved.source_kind == "pdf"
@@ -382,13 +413,15 @@ def _evidence_from_resolved(
     if resolved.source_kind == "pdf" and page is not None:
         section_kind = "pdf_page"
         section_id = str(page)
-    start_line = int_provenance_fn(provenance, "start_line")
-    end_line = int_provenance_fn(provenance, "end_line")
-    start_ms = int_provenance_fn(provenance, "start_ms")
-    end_ms = int_provenance_fn(provenance, "end_ms")
-    symbol = provenance.get("symbol")
-    if not isinstance(symbol, str) or not symbol.strip():
-        symbol = None
+    start_line = locator_int("start_line")
+    end_line = locator_int("end_line")
+    start_ms = locator_int("start_ms")
+    end_ms = locator_int("end_ms")
+    symbol = locator_text("symbol")
+    sheet = locator_text("sheet")
+    cell_range = locator_text("cell_range")
+    coordinate_space = locator_text("coordinate_space")
+    bounding_box = locator_box()
     identifiers: list[tuple[str, str]] = [
         ("source_identity", resolved.source_identity),
         ("retrieval_entity_id", resolved.hit.entity_id),
@@ -396,13 +429,16 @@ def _evidence_from_resolved(
     if resolved.source_kind == "archive":
         identifiers.append(("inside_zip", "1"))
         for key in (
+            "container_key",
             "container_path",
             "member_chain",
             "member_path",
             "archive_depth",
             "content_kind",
+            "media_type",
+            "container_status",
         ):
-            value = provenance.get(key)
+            value = locator_value(key)
             if value is None:
                 continue
             identifiers.append(
@@ -412,10 +448,33 @@ def _evidence_from_resolved(
                 )
             )
     elif resolved.source_kind == "video":
-        timestamp = provenance.get("timestamp")
-        if not isinstance(timestamp, str) or not timestamp:
+        # The Video source adapter publishes ``locator.timestamp_ms`` while
+        # the legacy lexical adapter published a preformatted ``timestamp``.
+        # Accept either without deriving a time from the frame ordinal.
+        timestamp = locator_text("timestamp") or locator_text("timestamp_text")
+        timestamp_ms = locator_int("timestamp_ms")
+        locator_kind = locator_text("kind")
+        if locator_kind != "audio_segment" and timestamp_ms is not None:
+            if start_ms is None:
+                start_ms = timestamp_ms
+            if end_ms is None:
+                end_ms = timestamp_ms + 1
+        if timestamp is None and timestamp_ms is not None:
+            hours, remainder = divmod(max(0, timestamp_ms), 3_600_000)
+            minutes, remainder = divmod(remainder, 60_000)
+            seconds, milliseconds = divmod(remainder, 1000)
+            timestamp = f"{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+        if timestamp is None and start_ms is not None:
+            hours, remainder = divmod(max(0, start_ms), 3_600_000)
+            minutes, remainder = divmod(remainder, 60_000)
+            seconds, milliseconds = divmod(remainder, 1000)
+            timestamp = f"{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+        if not timestamp:
             raise ValueError("video frame evidence is missing its timestamp identifier")
-        identifiers = [("neocortex.video.timestamp", timestamp)]
+        if locator_kind == "audio_segment":
+            identifiers = [("neocortex.video.audio_segment", str(resolved.section_id or ""))]
+        else:
+            identifiers = [("neocortex.video.timestamp", timestamp)]
     return evidence_ref_type(
         evidence_id=f"evidence:{resolved.source_kind}:{resolved.hit.entity_id}",
         resource_id=resource_id,
@@ -424,8 +483,12 @@ def _evidence_from_resolved(
         page=page,
         start_line=start_line,
         end_line=end_line,
+        sheet=sheet,
+        cell_range=cell_range,
         start_ms=start_ms,
         end_ms=end_ms,
+        bounding_box=bounding_box,
+        coordinate_space=coordinate_space,
         start_char=resolved.start_char,
         end_char=resolved.end_char,
         symbol=symbol,

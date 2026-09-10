@@ -11,7 +11,7 @@ import importlib.metadata
 import os
 import sqlite3
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 from uuid import uuid4
@@ -65,9 +65,13 @@ from .read_api import (
 from .lifecycle_read_api import lifecycle_status_payload
 from .content_diagnostics_api import (
     CONTENT_DIAGNOSTICS_SCHEMA,
+    CONTENT_DIAGNOSTICS_V2_SCHEMA,
     content_diagnostics_error_payload,
     content_diagnostics_payload,
+    content_diagnostics_v2_error_payload,
+    content_diagnostics_v2_payload,
 )
+from neocortex.knowledge.knowledge_read_budget import KnowledgeReadBudget
 from neocortex.platform.policy import default_corpus_root
 from neocortex.runtime.config.app_paths import default_state_directory
 
@@ -127,6 +131,17 @@ _MCP_STDIO_BRIDGE_VERSIONS = frozenset({"1.23.3", "1.29.0"})
 
 _Scope = Literal["personal", "framework", "all"]
 _ContentDiagnosticOwner = Literal["pdf", "text", "archive"]
+_ContentDiagnosticV2Owner = Literal[
+    "pdf",
+    "docx",
+    "office",
+    "archive",
+    "text",
+    "audio",
+    "video",
+    "image",
+    "code",
+]
 _Query = Annotated[
     str,
     _pydantic_field(min_length=1, max_length=4_096, pattern=r"(?s).*\S.*"),
@@ -259,6 +274,12 @@ if BaseModel is not None:
         status: str
         coverage: dict[str, Any]
         budget: dict[str, Any]
+        entities: list[dict[str, Any]] = []
+        relations: list[dict[str, Any]] = []
+        contradictions: list[dict[str, Any]] = []
+        graph_budget: dict[str, Any] = {}
+        telemetry: dict[str, Any] | None = None
+        read_budget: dict[str, Any] | None = None
         sources: list[dict[str, Any]]
         citations: list[dict[str, Any]]
         error: dict[str, Any] | None
@@ -519,6 +540,36 @@ if BaseModel is not None:
         truncated: bool | None
         next_cursor: str | None
         coverage: dict[str, Any]
+
+    class MCPContentDiagnosticsV2Output(BaseModel):
+        """Federated content-diagnostics/v2 response over fixed configured roots."""
+
+        model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True)
+
+        schema_: Literal["neocortex.content-diagnostics/v2"] = _pydantic_field(alias="schema")
+        response_version: Literal[2]
+        operation: Literal["content-diagnostics"]
+        owner: str
+        owners: list[str]
+        read_only: Literal[True]
+        advisory_only: Literal[True]
+        mutation_authorized: Literal[False]
+        status: str
+        requested_root: str | None
+        state_directory: str | None
+        filters: dict[str, Any]
+        limit: int
+        items: list[dict[str, Any]]
+        count: int
+        matched_count: int | None
+        truncated: bool | None
+        next_cursor: str | None
+        snapshot_id: str | None
+        snapshots: dict[str, Any]
+        owner_states: dict[str, Any]
+        coverage: dict[str, Any]
+        metrics: dict[str, Any]
+        error: dict[str, Any] | None
 
     class MCPCurationPlanOutput(BaseModel):
         """Strict agent response for one fixed-root curation-plan page."""
@@ -870,6 +921,7 @@ else:  # pragma: no cover - minimal install fallback
     MCPAssetHealthOutput = cast(Any, AssetHealthOutput)  # type: ignore[misc]
     MCPLifecycleStatusOutput = cast(Any, dict[str, object])  # type: ignore[misc]
     MCPContentDiagnosticsOutput = cast(Any, dict[str, object])  # type: ignore[misc]
+    MCPContentDiagnosticsV2Output = cast(Any, dict[str, object])  # type: ignore[misc]
     MCPCurationPlanOutput = cast(Any, CurationPlanOutput)  # type: ignore[misc]
     MCPCurationReviewOutput = cast(Any, dict[str, object])  # type: ignore[misc]
     MCPCurationDecisionOutput = cast(Any, dict[str, object])  # type: ignore[misc]
@@ -1063,6 +1115,7 @@ def _structured_compact_read_payload(
         value = producer()
     except ReadContractError:
         return failure(ReadExitCode.SCHEMA_INCOMPATIBLE, "schema_incompatible")
+
     except (TypeError, ValueError):
         return failure(ReadExitCode.USAGE, "invalid_request")
     except (ModuleNotFoundError, OSError, RuntimeError, sqlite3.Error):
@@ -1083,6 +1136,14 @@ def _structured_compact_read_payload(
         return payload
     except (ReadContractError, TypeError, ValueError, KeyError, AttributeError):
         return failure(ReadExitCode.SCHEMA_INCOMPATIBLE, "schema_incompatible")
+
+
+def _mcp_knowledge_read_budget(value: Mapping[str, Any] | None) -> KnowledgeReadBudget | None:
+    """Parse one optional bounded read budget at the MCP boundary."""
+
+    if value is None:
+        return None
+    return KnowledgeReadBudget.from_mapping(value)
 
 
 def _structured_content_diagnostics_payload(
@@ -1164,6 +1225,93 @@ def _structured_content_diagnostics_payload(
                 raise ValueError("content diagnostics page status is inconsistent")
         elif payload["error"] is None or items:
             raise ValueError("failed content diagnostics must not publish an apparently valid page")
+        return payload
+    except (ReadContractError, TypeError, ValueError, KeyError, AttributeError) as exc:
+        return failure("adapter_contract_error", str(exc))
+
+
+def _structured_content_diagnostics_v2_payload(
+    owner: Literal[
+        "all",
+        "pdf",
+        "docx",
+        "office",
+        "archive",
+        "text",
+        "audio",
+        "video",
+        "image",
+        "code",
+    ] = "all",
+    *,
+    limit: int = 20,
+    cursor: str | None = None,
+    file_key: str | None = None,
+    path_fragment: str | None = None,
+    reason: str | None = None,
+    status: str | None = None,
+    budget: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Expose the additive v2 diagnostic envelope without accepting paths."""
+
+    source_root: Path | None = None
+    state_directory: Path | None = None
+    filters = {
+        "file_key": file_key,
+        "path_fragment": path_fragment,
+        "reason": reason,
+        "status": status,
+    }
+
+    def failure(kind: str, message: str, *, error_status: str = "error") -> dict[str, Any]:
+        return content_diagnostics_v2_error_payload(
+            owner,
+            source_root,
+            state_directory=state_directory,
+            kind=kind,
+            message=sanitize_untrusted_text(message, limit=1_000),
+            status=error_status,
+            limit=limit,
+            filters=filters,
+        )
+
+    try:
+        source_root = default_corpus_root()
+        state_directory = default_state_directory()
+        budget_object = KnowledgeReadBudget.from_mapping(budget)
+        raw = content_diagnostics_v2_payload(
+            owner,
+            state_directory,
+            source_root,
+            limit,
+            cursor=cursor,
+            file_key=file_key,
+            path_fragment=path_fragment,
+            reason=reason,
+            status=status,
+            budget=budget_object,
+        )
+    except (TypeError, ValueError) as exc:
+        return failure("invalid_request", str(exc))
+    except (ModuleNotFoundError, OSError, RuntimeError, sqlite3.Error) as exc:
+        return failure("owner_state_unavailable", str(exc), error_status="blocked")
+
+    try:
+        payload = sanitize_untrusted_payload(raw, budget=[40_000 + 512 * limit])
+        if not isinstance(payload, dict):
+            raise ValueError("content diagnostics v2 response must be an object")
+        if BaseModel is not None:
+            MCPContentDiagnosticsV2Output.model_validate(payload)
+        if (
+            payload.get("schema") != CONTENT_DIAGNOSTICS_V2_SCHEMA
+            or payload.get("response_version") != 2
+            or payload.get("operation") != "content-diagnostics"
+            or payload.get("limit") != limit
+            or payload.get("filters") != sanitize_untrusted_payload(filters)
+            or payload.get("requested_root") != os.path.normpath(str(source_root))
+            or payload.get("state_directory") != os.path.normpath(str(state_directory))
+        ):
+            raise ValueError("content diagnostics v2 response does not match its request")
         return payload
     except (ReadContractError, TypeError, ValueError, KeyError, AttributeError) as exc:
         return failure("adapter_contract_error", str(exc))
@@ -1294,6 +1442,51 @@ def create_server() -> Any:
         )  # type: ignore[return-value]
 
     @server.tool(
+        name="content_diagnostics_v2",
+        title="Inspect federated persisted diagnostics",
+        description=(
+            "Read a bounded content-diagnostics/v2 page for all supported format owners "
+            "from the configured state and corpus roots. Results retain owner state, "
+            "snapshot-bound cursors and read metrics; no files are scanned or changed."
+        ),
+        annotations=read_only,
+        structured_output=True,
+    )
+    def content_diagnostics_v2(
+        owner: Literal[
+            "all",
+            "pdf",
+            "docx",
+            "office",
+            "archive",
+            "text",
+            "audio",
+            "video",
+            "image",
+            "code",
+        ] = "all",
+        limit: Annotated[int, _pydantic_field(ge=1, le=1_000)] = 20,
+        cursor: Annotated[str | None, _pydantic_field(min_length=1, max_length=8_192)] = None,
+        file_key: Annotated[str | None, _pydantic_field(min_length=1, max_length=2_048)] = None,
+        path_fragment: Annotated[
+            str | None, _pydantic_field(min_length=1, max_length=2_048)
+        ] = None,
+        reason: Annotated[str | None, _pydantic_field(min_length=1, max_length=256)] = None,
+        status: Annotated[str | None, _pydantic_field(min_length=1, max_length=256)] = None,
+        budget: dict[str, Any] | None = None,
+    ) -> MCPContentDiagnosticsV2Output:
+        return _structured_content_diagnostics_v2_payload(
+            owner,
+            limit=limit,
+            cursor=cursor,
+            file_key=file_key,
+            path_fragment=path_fragment,
+            reason=reason,
+            status=status,
+            budget=budget,
+        )  # type: ignore[return-value]
+
+    @server.tool(
         name="search",
         title="Search NeoCortex evidence",
         description=(
@@ -1309,6 +1502,7 @@ def create_server() -> Any:
         limit: _Limit = 10,
         mode: _SearchMode = "evidence",
         include_history: bool = False,
+        budget: dict[str, Any] | None = None,
     ) -> MCPSearchOutput:
         return _structured_read_payload(
             lambda: search_payload(
@@ -1317,6 +1511,7 @@ def create_server() -> Any:
                 limit=limit,
                 mode=mode,
                 include_history=include_history,
+                read_budget=_mcp_knowledge_read_budget(budget),
             ),
             ReadOperation.SEARCH,
             scope=scope,
@@ -1341,6 +1536,7 @@ def create_server() -> Any:
         mode: _SearchMode = "evidence",
         include_history: bool = False,
         response_version: Literal[1, 2] = 2,
+        budget: dict[str, Any] | None = None,
     ) -> MCPNegotiatedContextOutput:
         if response_version == 2:
             from neocortex.knowledge.knowledge_context_v2 import serialize_context_response
@@ -1355,6 +1551,7 @@ def create_server() -> Any:
                     include_history=include_history,
                     response_version=2,
                     response_transport="mcp",
+                    read_budget=_mcp_knowledge_read_budget(budget),
                 ),
                 "context",
                 scope=scope,
@@ -1381,6 +1578,7 @@ def create_server() -> Any:
                 mode=mode,
                 include_history=include_history,
                 response_version=1,
+                read_budget=_mcp_knowledge_read_budget(budget),
             ),
             ReadOperation.CONTEXT,
             scope=scope,
@@ -1445,6 +1643,7 @@ def create_server() -> Any:
         source_ref: dict[str, Any] | None = None,
         evidence_ref: dict[str, Any] | None = None,
         response_version: Literal[1, 2] = 2,
+        budget: dict[str, Any] | None = None,
     ) -> MCPNegotiatedEvidenceOutput:
         if response_version == 2 or source_ref is not None or evidence_ref is not None:
             from neocortex.knowledge.knowledge_context_v2 import serialize_context_response
@@ -1462,6 +1661,7 @@ def create_server() -> Any:
                     evidence_ref=evidence_ref,
                     response_transport="mcp",
                     response_version=response_version,
+                    read_budget=_mcp_knowledge_read_budget(budget),
                 ),
                 "evidence",
                 scope=scope,

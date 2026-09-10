@@ -81,6 +81,23 @@ def _query(args: argparse.Namespace, value: str) -> KnowledgeQuery:
     )
 
 
+def _read_budget(args: argparse.Namespace):
+    max_rows = getattr(args, "knowledge_budget_rows", None)
+    max_vectors = getattr(args, "knowledge_budget_vectors", None)
+    max_temporary_bytes = getattr(args, "knowledge_budget_temporary_bytes", None)
+    deadline_seconds = getattr(args, "knowledge_budget_seconds", None)
+    if all(value is None for value in (max_rows, max_vectors, max_temporary_bytes, deadline_seconds)):
+        return None
+    from neocortex.knowledge.knowledge_read_budget import KnowledgeReadBudget
+
+    return KnowledgeReadBudget(
+        max_rows=max_rows,
+        max_vectors=max_vectors,
+        max_temporary_bytes=max_temporary_bytes,
+        deadline_seconds=deadline_seconds,
+    )
+
+
 def _snapshot_exit_code(snapshot: KnowledgeSnapshot) -> KnowledgeExitCode:
     states = {owner.state for owner in snapshot.owners}
     if OwnerAvailability.CORRUPT in states:
@@ -285,6 +302,7 @@ def run_knowledge_search(args: argparse.Namespace) -> int:
             lambda checkpoint: _service(args).search(
                 query,
                 cancellation_check=checkpoint,
+                read_budget=_read_budget(args),
             )
         )
     except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
@@ -318,6 +336,7 @@ def _run_knowledge_context_v2(args: argparse.Namespace) -> int:
                 query,
                 scope=binding_scope,
                 cancellation_check=checkpoint,
+                read_budget=_read_budget(args),
             )
         )
         entries = [{"scope": binding_scope, "result": evidence_projection,
@@ -367,6 +386,7 @@ def run_knowledge_context(args: argparse.Namespace) -> int:
                 max_characters=args.knowledge_context_characters,
                 max_hits=args.knowledge_limit,
                 cancellation_check=checkpoint,
+                read_budget=_read_budget(args),
             )
         )
     except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:

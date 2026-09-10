@@ -6,16 +6,30 @@ auditorías y scripts improvisados por un flujo reproducible que conserve
 identidad, evidencia, incertidumbre y trazabilidad.
 
 La fuente vigente declara `0.13.0`. La última integración verificó
-`HEAD == main == origin/main == 1567fe46821b923be5e90ba4223abdaf81a9924c` y
-árbol limpio. El ejecutable `current` es
+`HEAD == main == origin/main == 4c5d43059cb6faecf76d9dfb03b8af3255561235` y
+árbol limpio. El ejecutable `current` sigue siendo
 `0.13.0-1567fe46821b-cp314-linux-x86_64`, construido desde ese `source_sha`; el
 rollback inmediato es `0.13.0-42115cd060f3-cp314-linux-x86_64` y `.staging` está
-vacío. El estado instalado y el estado del checkout se comprueban por separado.
+vacío. El estado instalado y el estado del checkout se comprueban por separado;
+la tranche post-0.13 del checkout aún no está instalada.
 
 La aceptación C0–C7 de 0.13 está confirmada sobre el SHA final: 6917 pasadas,
 68 omitidas, 42 subtests, calidad estática sin errores/hallazgos bloqueantes,
 build reproducible, smoke/replay instalado y piloto de 37 fixtures sin cambios
 en sus bytes.
+
+## Tranche post-0.13 en el checkout
+
+La fuente incorpora, todavía como `SOURCE-ONLY`, publicaciones inmutables de
+inventario/catálogo, digest de contenido contra reescrituras con el mismo
+`size/mtime`, materialización segura de recursos Archive/Code virtuales,
+localizadores y hydration ampliados, Context v2 con grafo/telemetría,
+`content-diagnostics/v2`, `KnowledgeReadBudget`, lectura fenced de grants y
+recovery, sincronización de caches sólo sobre fixtures y un contrato de
+principal autenticado que aún no habilita autorización MCP.
+
+La promoción a `current` exige validación completa desde el SHA final, sin abrir
+el corpus personal ni ejecutar KIO real.
 
 ## Qué resuelve hoy
 
@@ -64,6 +78,7 @@ Neocortex curate plan --limit 20
 Neocortex --pdf-diagnostics 20 --diagnostics-json
 Neocortex --text-errors 20 --diagnostics-json
 Neocortex --archive-issues 20 --diagnostics-json
+Neocortex --root "$Root" --content-diagnostics 20 --diagnostics-owner all --diagnostics-json
 ```
 
 Las preguntas explícitas sobre estado del corpus, por ejemplo
@@ -76,14 +91,17 @@ read-only.
 `ask`, `ask --json`, `--knowledge-context` y la herramienta MCP `context` usan
 el contexto compacto v2: fuentes sin repetición, fragmentos citables y cobertura
 explícita, con presupuesto para la respuesta completa. `ask --response-version 1`
-o `--knowledge-response-version 1` conservan el contrato anterior; Python/SDK y
-la GUI mantienen v1 mientras su consumidor no solicite v2. Un resultado completo
-de búsqueda no prueba que la pregunta tenga respuesta ni autoriza acciones.
+o `--knowledge-response-version 1` conservan el contrato anterior;
+`SharedReadClient`, la GUI y las conveniencias SDK solicitan v2 por defecto,
+mientras la función Python de bajo nivel conserva v1 hasta una deprecación
+explícita. Un resultado completo de búsqueda no prueba que la pregunta tenga
+respuesta ni autoriza acciones.
 
 Las consultas de diagnóstico respetan `--root` (o el corpus predeterminado),
 distinguen cero resultados de owner ausente/error y exponen cursores ligados a
-su ámbito. MCP ofrece la misma lectura mediante `content_diagnostics`. Una
-recomendación declara evidencia y comprobaciones faltantes, no permiso de borrar.
+su ámbito. MCP conserva `content_diagnostics` v1 y añade
+`content_diagnostics_v2` para la vista federada. Una recomendación declara
+evidencia y comprobaciones faltantes, no permiso de borrar.
 
 Si el estado no tiene cobertura, prueba una sola ruta sobre una raíz que ya
 contenga únicamente 20–50 archivos autorizados.

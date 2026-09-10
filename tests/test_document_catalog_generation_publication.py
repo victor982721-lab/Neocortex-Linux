@@ -7,16 +7,22 @@ from __future__ import annotations
 
 import sqlite3
 import zlib
+import json
+import os
 from pathlib import Path
 
 import pytest
 
 import neocortex.documents.document_catalog as catalog_module
 from neocortex.documents.document_catalog import (
+    CatalogSourceDrift,
     document_catalog_database,
     list_catalog_documents,
+    read_catalog_publication_manifest,
+    validate_catalog_publication_scope,
     update_document_catalog_source,
 )
+from neocortex.documents.document_catalog_schema import catalog_generation_digest
 from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
 from neocortex.capabilities.formats.docx.state import initialize_docx_state
 from neocortex.documents.document_organization_models import _begin_organization_run
@@ -485,6 +491,125 @@ def test_publish_handles_add_modify_delete_and_rename(tmp_path: Path) -> None:
         plan_status = connection.execute("SELECT status FROM organization_plans").fetchone()[0]
     assert stale == 0
     assert plan_status == "superseded"
+
+
+def test_published_catalog_records_replayable_manifest_and_digest(tmp_path: Path) -> None:
+    source_database = tmp_path / "docx.sqlite3"
+    source = tmp_path / "a-ieee.docx"
+    source.write_bytes(b"first")
+    _upsert_docx_source(
+        source_database,
+        source,
+        title="IEEE C37.20.2",
+        text="IEEE switchgear standard",
+        signature="v1",
+    )
+    catalog = tmp_path / "document_catalog.sqlite3"
+    update_document_catalog_source(
+        catalog,
+        source_database,
+        "docx",
+        verify_source_paths=False,
+        source_root=tmp_path,
+    )
+
+    with document_catalog_database(catalog, readonly=True) as connection:
+        manifest = read_catalog_publication_manifest(connection, "docx")
+        actual_digest = catalog_generation_digest(connection, manifest.generation_id)
+        assert manifest.generation_digest == actual_digest
+        assert manifest.source_path == str(source_database.absolute())
+        fence = json.loads(manifest.source_fence_json)
+        assert fence["path"] == str(source_database.absolute())
+        assert manifest.input_manifest_digest is not None
+        scoped = validate_catalog_publication_scope(connection, "docx", tmp_path)
+        assert scoped.generation_id == manifest.generation_id
+        generation_status = connection.execute(
+            "SELECT status FROM catalog_generations WHERE generation_id=?",
+            (manifest.generation_id,),
+        ).fetchone()[0]
+    assert generation_status == "published"
+
+    # A replay creates a successor generation with the same logical content
+    # digest, while its source fence/input manifest remains independently bound.
+    update_document_catalog_source(
+        catalog,
+        source_database,
+        "docx",
+        verify_source_paths=False,
+        source_root=tmp_path,
+    )
+    with document_catalog_database(catalog, readonly=True) as connection:
+        replay = read_catalog_publication_manifest(connection, "docx")
+    assert replay.generation_id != manifest.generation_id
+    assert replay.generation_digest == manifest.generation_digest
+
+
+def test_catalog_source_drift_aborts_build_and_keeps_previous_head(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_database = tmp_path / "docx.sqlite3"
+    source = tmp_path / "a-ieee.docx"
+    source.write_bytes(b"first")
+    _upsert_docx_source(
+        source_database,
+        source,
+        title="IEEE C37.20.2",
+        text="IEEE switchgear standard",
+        signature="v1",
+    )
+    catalog = tmp_path / "document_catalog.sqlite3"
+    update_document_catalog_source(catalog, source_database, "docx", verify_source_paths=False)
+    before = _published_kinds(catalog)
+    _upsert_docx_source(
+        source_database,
+        source,
+        title="Factura proveedor",
+        text="Factura compra",
+        signature="v2",
+    )
+    original = catalog_module.classify_document
+
+    def drift_source(*args: object, **kwargs: object):
+        result = original(*args, **kwargs)
+        metadata = source_database.stat()
+        os.utime(source_database, ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 1))
+        return result
+
+    monkeypatch.setattr(catalog_module, "classify_document", drift_source)
+    with pytest.raises(CatalogSourceDrift, match="changed"):
+        update_document_catalog_source(catalog, source_database, "docx", verify_source_paths=False)
+
+    assert _published_kinds(catalog) == before
+    with document_catalog_database(catalog, readonly=True) as connection:
+        latest = connection.execute(
+            "SELECT status FROM catalog_generations ORDER BY generation_id DESC LIMIT 1"
+        ).fetchone()[0]
+    assert latest == "failed"
+
+
+def test_published_catalog_generation_rows_are_immutable(tmp_path: Path) -> None:
+    source_database = tmp_path / "docx.sqlite3"
+    source = tmp_path / "a-ieee.docx"
+    source.write_bytes(b"first")
+    _upsert_docx_source(
+        source_database,
+        source,
+        title="IEEE C37.20.2",
+        text="IEEE switchgear standard",
+        signature="v1",
+    )
+    catalog = tmp_path / "document_catalog.sqlite3"
+    update_document_catalog_source(catalog, source_database, "docx", verify_source_paths=False)
+    with document_catalog_database(catalog) as connection:
+        generation_id = connection.execute(
+            "SELECT generation_id FROM catalog_publications WHERE source_kind='docx'"
+        ).fetchone()[0]
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            connection.execute(
+                "UPDATE catalog_generation_documents SET path=? WHERE generation_id=?",
+                (str(tmp_path / "tampered.docx"), generation_id),
+            )
 
 
 # endregion [02]

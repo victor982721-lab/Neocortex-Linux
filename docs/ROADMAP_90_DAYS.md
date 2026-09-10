@@ -287,6 +287,29 @@ manifest/wheel/launcher, smoke/replay desde el artefacto instalado, piloto
 aislado y corpus intacto. Los gates físicos, Semantic 17 y reservas R1–R4
 siguen separados.
 
+## Post-0.13 — SOURCE-ONLY en integración
+
+La siguiente tranche ya está implementada en el checkout, pero todavía no se
+promueve a `current`. Incluye:
+
+- inventario/deduplicación v13 con sucesores copy-on-write, digest de contenido,
+  heads de plan y rechazo de cache stat-only ante reescrituras ambiguas;
+- catálogo v9 con manifest de generación, source fence, digest, CAS y triggers
+  de inmutabilidad, además de materialización binding-aware para Archive/Code;
+- localizadores y hydration bounded para Audio, Video, Image y Code, Context v2
+  con entidades, relaciones, contradicciones y telemetría, y v1 explícito;
+- `content-diagnostics/v2` para los nueve owners, cursores ligados a snapshot y
+  `KnowledgeReadBudget` con deadline, filas, vectores, temporales y cancelación;
+- contrato `neocortex.authenticated-principal/v1`, lectura fenced de grants y
+  recovery, sincronización de caches move/rename sólo sobre fixtures y panel GUI
+  read-only; MCP no recibe autorización ni aplicación.
+
+El gate restante es la integración final: suite completa, calidad estática,
+fixture heterogénea con replay/drift/ausencias, build reproducible, smoke desde
+el artefacto instalado, receipt y conciliación de `HEAD`, remoto, `current` y
+rollback. Semantic 17, R1–R4, KIO real, corpus personal y poda permanecen
+fuera de esta tranche.
+
 ## Orden inmediato
 
 El plan funcional autorizado prioriza identidad/ámbito y evidencia verificable,

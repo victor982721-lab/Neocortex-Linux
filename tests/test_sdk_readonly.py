@@ -93,10 +93,23 @@ CURATION_EXPORTS = (
     "curation_checkpoint_status_payload",
 )
 
+DIAGNOSTIC_EXPORTS = (
+    "CONTENT_DIAGNOSTICS_SCHEMA",
+    "CONTENT_DIAGNOSTICS_V2_SCHEMA",
+)
+
+BUDGET_EXPORTS = (
+    "KNOWLEDGE_READ_BUDGET_SCHEMA",
+    "KnowledgeReadBudget",
+    "KnowledgeReadBudgetExceeded",
+)
+
 READ_EXPORTS = (
     "status_payload",
     "search_payload",
     "context_payload",
+    "content_diagnostics_payload",
+    "content_diagnostics_v2_payload",
     "evidence_payload",
     "operational_query_payload",
     "asset_health_payload",
@@ -119,7 +132,9 @@ EXPECTED_EXPORTS = (
     "CURATION_CHECKPOINT_CREATE_API_SCHEMA",
     "CURATION_CHECKPOINT_RESUME_API_SCHEMA",
     "CURATION_CHECKPOINT_STATUS_API_SCHEMA",
-    *LEGACY_EXPORTS[:9],
+    *LEGACY_EXPORTS[:1],
+    *DIAGNOSTIC_EXPORTS,
+    *LEGACY_EXPORTS[1:9],
     "CurationApplyOutput",
     "CurationPlanOutput",
     "CurationPlanPage",
@@ -128,7 +143,9 @@ EXPECTED_EXPORTS = (
     "CurationScanOutput",
     "CurationSourceHead",
     "CurationVerifyOutput",
-    *LEGACY_EXPORTS[9:-1],
+    *LEGACY_EXPORTS[9:17],
+    *BUDGET_EXPORTS,
+    *LEGACY_EXPORTS[17:-1],
     "LIFECYCLE_ENVELOPE_SCHEMA",
     "LIFECYCLE_STATUS_KIND",
     "LIFECYCLE_STATUS_OPERATION",

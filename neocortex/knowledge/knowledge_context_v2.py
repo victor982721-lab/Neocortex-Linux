@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import re
 import unicodedata
 from collections.abc import Mapping, Sequence
 from typing import Any
+
+from neocortex.semantic.semantic_models import canonical_json, fingerprint_text
 
 CONTEXT_RESPONSE_SCHEMA = "neocortex.context-response/v2"
 EVIDENCE_RESPONSE_SCHEMA = "neocortex.evidence-response/v2"
@@ -26,6 +29,25 @@ _MAX_CANDIDATES = 200
 _MIN_EXCERPT = 240
 _COMPACT_EVIDENCE_TARGET = 6_000
 _TRUNCATED = " …[truncated]"
+_MAX_GRAPH_ENTITIES = 256
+_MAX_GRAPH_RELATIONS = 256
+_MAX_GRAPH_IDENTIFIERS_PER_EVIDENCE = 64
+_MAX_GRAPH_PROVENANCE = 16
+_MAX_GRAPH_PROVENANCE_CHARS = 4_096
+_CODE_RELATION_FAMILIES = {"reference": "code_references", "dependency": "dependencies"}
+_ARCHIVE_IDENTIFIER_NAMES = frozenset(
+    {
+        "inside_zip",
+        "container_key",
+        "container_path",
+        "member_chain",
+        "member_path",
+        "archive_depth",
+        "content_kind",
+        "media_type",
+        "container_status",
+    }
+)
 _LOCATORS = (
     "page",
     "start_line",
@@ -95,6 +117,18 @@ def render_context_response(payload: Mapping[str, Any]) -> str:
     lines.append("query=" + serialize_context_response({"text": payload.get("query", "")}))
     lines.append("COVERAGE " + serialize_context_response(payload["coverage"]))
     lines.append("BUDGET " + serialize_context_response(payload["budget"]))
+    if payload.get("read_budget") is not None:
+        lines.append("READ_BUDGET " + serialize_context_response(payload["read_budget"]))
+    if payload.get("graph_budget") is not None:
+        lines.append("GRAPH_BUDGET " + serialize_context_response(payload["graph_budget"]))
+    if payload.get("entities"):
+        lines.append("ENTITIES " + serialize_context_response(payload["entities"]))
+    if payload.get("relations"):
+        lines.append("RELATIONS " + serialize_context_response(payload["relations"]))
+    if payload.get("contradictions"):
+        lines.append("CONTRADICTIONS " + serialize_context_response(payload["contradictions"]))
+    if payload.get("telemetry") is not None:
+        lines.append("TELEMETRY " + serialize_context_response(payload["telemetry"]))
     for source in payload.get("sources", []):
         lines.append("SOURCE " + serialize_context_response(source))
     for citation in payload.get("citations", []):
@@ -330,6 +364,570 @@ def _source(hit: Mapping[str, Any], scope: str, snapshot: Mapping[str, Any]) -> 
     if semantic.get("publications"):
         source["retrieval_publication"] = semantic["publications"]
     return source
+
+
+def _bounded_identifier_pairs(evidence: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
+    """Return the owner's structured identifiers without trusting their shape.
+
+    The Knowledge contract validates identifiers before they reach this
+    projection, but v2 is also used by compatibility adapters and test
+    producers.  Keep the projection bounded and ignore malformed records
+    rather than turning arbitrary nested values into graph edges.
+    """
+
+    raw = evidence.get("identifiers")
+    if not isinstance(raw, list):
+        return ()
+    pairs: list[tuple[str, str]] = []
+    for item in raw[:_MAX_GRAPH_IDENTIFIERS_PER_EVIDENCE]:
+        if not isinstance(item, Mapping):
+            continue
+        namespace, value = item.get("namespace"), item.get("value")
+        if not isinstance(namespace, str) or not namespace.strip():
+            continue
+        if not isinstance(value, str) or not value.strip():
+            continue
+        pairs.append((namespace[:512], value[:512]))
+    return tuple(dict.fromkeys(pairs))
+
+
+def _graph_stable_id(prefix: str, identity: Mapping[str, object]) -> str:
+    fingerprint = fingerprint_text(canonical_json(identity))
+    return (
+        f"{prefix}-v1:{fingerprint.xxh3_128}:"
+        f"{fingerprint.byte_count}:{fingerprint.xxh3_64_guard}"
+    )
+
+
+def _graph_entity(
+    *,
+    entity_kind: str,
+    label: str,
+    evidence_id: str,
+    resource_ids: Sequence[str],
+) -> tuple[tuple[str, str, tuple[str, ...]], dict[str, Any]]:
+    resources = tuple(dict.fromkeys(str(value) for value in resource_ids if str(value)))
+    key = (entity_kind, label, resources)
+    entity_id = _graph_stable_id(
+        "context-entity",
+        {
+            "entity_kind": entity_kind,
+            "label": label,
+            "resource_ids": sorted(resources),
+        },
+    )
+    return key, {
+        "schema_version": 1,
+        "kind": "context_entity_ref",
+        "entity_id": entity_id,
+        "entity_kind": entity_kind,
+        "label": label,
+        "evidence_ids": [evidence_id],
+        "resource_ids": list(resources),
+    }
+
+
+def _append_graph_entity(
+    entities: dict[tuple[str, str, tuple[str, ...]], dict[str, Any]],
+    *,
+    entity_kind: str,
+    label: str,
+    evidence_id: str,
+    resource_ids: Sequence[str],
+) -> tuple[str, str, tuple[str, ...]] | None:
+    if not isinstance(label, str) or not label.strip():
+        return None
+    key, entity = _graph_entity(
+        entity_kind=entity_kind,
+        label=label[:4_096],
+        evidence_id=evidence_id,
+        resource_ids=resource_ids,
+    )
+    prior = entities.get(key)
+    if prior is None:
+        if len(entities) >= _MAX_GRAPH_ENTITIES:
+            return None
+        entities[key] = entity
+    else:
+        evidence_ids = prior["evidence_ids"]
+        if evidence_id not in evidence_ids:
+            evidence_ids.append(evidence_id)
+    return key
+
+
+def _mapping_method(value: object) -> str | None:
+    if isinstance(value, str) and value in {
+        "structural",
+        "extracted",
+        "inferred",
+        "human_confirmed",
+        "ambiguous",
+    }:
+        return value
+    return None
+
+
+def _published_relation_candidate(
+    entry: Mapping[str, Any],
+    hit: Mapping[str, Any],
+    *,
+    family: str,
+) -> bool:
+    """Require a relation-bearing owner result to be published and current.
+
+    A v2 context may contain a partial result because an unrelated owner is
+    unavailable.  That must not erase a separately published Code relation,
+    but neither may a malformed fixture or an unresolved ranking become a
+    graph edge.  The relation's own current revision and completed ranking are
+    the only admissible positive signals; no path/name join is inferred here.
+    """
+
+    result = entry.get("result")
+    if not isinstance(result, Mapping):
+        return False
+    evidence = hit.get("evidence")
+    revision = hit.get("revision")
+    if not isinstance(evidence, Mapping) or not isinstance(revision, Mapping):
+        return False
+    if revision.get("state") != "current":
+        return False
+    rankings = result.get("rankings")
+    expected = "code_structural" if family in _CODE_RELATION_FAMILIES else "inventory_duplicate_plan"
+    if isinstance(rankings, list):
+        for ranking in rankings:
+            if not isinstance(ranking, Mapping) or ranking.get("name") != expected:
+                continue
+            return bool(ranking.get("available") is True and ranking.get("complete") is True)
+    # Directly supplied, current structural evidence remains usable when a
+    # caller has already filtered rankings out of the detached projection.
+    return family in _CODE_RELATION_FAMILIES and evidence.get("method") == "structural"
+
+
+def _code_relation_payload(
+    entry: Mapping[str, Any],
+    hit: Mapping[str, Any],
+    *,
+    evidence_id: str,
+    citation_id: str,
+    entities: dict[tuple[str, str, tuple[str, ...]], dict[str, Any]],
+) -> dict[str, Any] | None:
+    evidence = hit.get("evidence")
+    resource = hit.get("resource")
+    if not isinstance(evidence, Mapping) or not isinstance(resource, Mapping):
+        return None
+    if evidence.get("section_kind") != "code_relation":
+        return None
+    identifiers = dict(_bounded_identifier_pairs(evidence))
+    required = (
+        "code_relation_id",
+        "code_relation_family",
+        "code_relation_kind",
+        "code_relation_name",
+        "code_relation_source_resource",
+        "code_relation_target_resource",
+        "code_relation_resolved",
+        "code_relation_confirmed",
+        "code_relation_confidence",
+        "code_relation_provenance",
+    )
+    if any(name not in identifiers for name in required):
+        return None
+    family = identifiers["code_relation_family"]
+    source_table, separator, source_row = identifiers["code_relation_id"].partition(":")
+    if (
+        family not in _CODE_RELATION_FAMILIES
+        or separator != ":"
+        or source_table != _CODE_RELATION_FAMILIES[family]
+        or not source_row.isdecimal()
+        or int(source_row) < 1
+        or source_row != str(int(source_row))
+        or evidence.get("section_id") != identifiers["code_relation_id"]
+        or identifiers["code_relation_resolved"].casefold() != "true"
+        or identifiers["code_relation_confirmed"].casefold() != "true"
+        or not _published_relation_candidate(entry, hit, family=family)
+    ):
+        return None
+    try:
+        confidence = float(identifiers["code_relation_confidence"])
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
+        return None
+    method = _mapping_method(evidence.get("method"))
+    if method != "structural":
+        return None
+    source_label = identifiers["code_relation_source_resource"]
+    target_label = identifiers["code_relation_target_resource"]
+    if source_label == target_label:
+        return None
+    resource_id = resource.get("resource_id")
+    if not isinstance(resource_id, str) or not resource_id.strip():
+        return None
+    source_key = _append_graph_entity(
+        entities,
+        entity_kind="resource",
+        label=source_label,
+        evidence_id=evidence_id,
+        resource_ids=(resource_id,),
+    )
+    target_key = _append_graph_entity(
+        entities,
+        entity_kind="resource_reference",
+        label=target_label,
+        evidence_id=evidence_id,
+        resource_ids=(target_label,),
+    )
+    if source_key is None or target_key is None:
+        return None
+    provenance = [
+        f"code:{source_table}:{source_row}",
+        f"analyzer:{identifiers['code_relation_provenance']}",
+        f"name:{identifiers['code_relation_name']}",
+    ]
+    for name in ("code_relation_scope", "code_relation_version_spec"):
+        if name in identifiers:
+            provenance.append(f"{name}:{identifiers[name]}")
+    provenance = provenance[:_MAX_GRAPH_PROVENANCE]
+    relation_id = _graph_stable_id(
+        "context-relation",
+        {
+            "relation_kind": f"code_{family}:{identifiers['code_relation_kind']}",
+            "method": method,
+            "provenance": provenance,
+            "confidence": confidence,
+            "source_entity_id": entities[source_key]["entity_id"],
+            "target_entity_id": entities[target_key]["entity_id"],
+        },
+    )
+    return {
+        "schema_version": 1,
+        "kind": "context_relation_ref",
+        "relation_id": relation_id,
+        "source_entity_id": entities[source_key]["entity_id"],
+        "target_entity_id": entities[target_key]["entity_id"],
+        "relation_kind": f"code_{family}:{identifiers['code_relation_kind']}",
+        "method": method,
+        "provenance": provenance,
+        "evidence_ids": [evidence_id],
+        "confidence": confidence,
+        "citation_ids": [citation_id],
+    }
+
+
+def _graph_projection(
+    entries: Sequence[Mapping[str, Any]],
+    citation_ids: Mapping[str, str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """Project only selected, current, owner-backed graph records.
+
+    ``citation_ids`` maps evidence identity to the v2 citation identity.  The
+    map is deliberately supplied by the packing loop so omitted citations do
+    not leak entities, relations or contradictions into the emitted context.
+    """
+
+    entities: dict[tuple[str, str, tuple[str, ...]], dict[str, Any]] = {}
+    relation_values: dict[str, dict[str, Any]] = {}
+    claims: dict[str, dict[str, tuple[str, set[str]]]] = {}
+    identifiers_considered = 0
+    identifiers_omitted = 0
+    for entry in entries:
+        result = entry.get("result")
+        if not isinstance(result, Mapping):
+            continue
+        for hit in result.get("hits", ()):
+            if not isinstance(hit, Mapping):
+                continue
+            containers: list[Mapping[str, Any]] = [hit]
+            for signal in hit.get("signals", ()):
+                if isinstance(signal, Mapping) and isinstance(signal.get("evidence"), Mapping):
+                    containers.append(signal)
+            for container in containers:
+                evidence = container.get("evidence")
+                if not isinstance(evidence, Mapping):
+                    continue
+                evidence_id = evidence.get("evidence_id")
+                if not isinstance(evidence_id, str) or evidence_id not in citation_ids:
+                    continue
+                identifiers = _bounded_identifier_pairs(evidence)
+                raw_identifiers = evidence.get("identifiers")
+                if isinstance(raw_identifiers, list):
+                    identifiers_considered += min(len(raw_identifiers), _MAX_GRAPH_IDENTIFIERS_PER_EVIDENCE)
+                    identifiers_omitted += max(0, len(raw_identifiers) - _MAX_GRAPH_IDENTIFIERS_PER_EVIDENCE)
+                resource = hit.get("resource")
+                if not isinstance(resource, Mapping):
+                    continue
+                resource_id = resource.get("resource_id")
+                if not isinstance(resource_id, str) or not resource_id.strip():
+                    continue
+                if evidence.get("symbol") is not None:
+                    _append_graph_entity(
+                        entities,
+                        entity_kind="code_symbol",
+                        label=str(evidence["symbol"])[:1_024],
+                        evidence_id=evidence_id,
+                        resource_ids=(resource_id,),
+                    )
+                relation = _code_relation_payload(
+                    entry,
+                    {**hit, "evidence": evidence},
+                    evidence_id=evidence_id,
+                    citation_id=citation_ids[evidence_id],
+                    entities=entities,
+                )
+                if relation is not None:
+                    relation_values.setdefault(str(relation["relation_id"]), relation)
+                planned_value = next(
+                    (value for namespace, value in identifiers if namespace.casefold() == "planned_duplicate_of"),
+                    None,
+                )
+                if planned_value is not None and _published_relation_candidate(
+                    entry, {**hit, "evidence": evidence}, family="inventory"
+                ):
+                    source_key = _append_graph_entity(
+                        entities,
+                        entity_kind="resource",
+                        label=resource_id,
+                        evidence_id=evidence_id,
+                        resource_ids=(resource_id,),
+                    )
+                    target_key = _append_graph_entity(
+                        entities,
+                        entity_kind="resource_reference",
+                        label=planned_value,
+                        evidence_id=evidence_id,
+                        resource_ids=(planned_value,),
+                    )
+                    if source_key is not None and target_key is not None:
+                        relation_id = _graph_stable_id(
+                            "context-relation",
+                            {
+                                "relation_kind": "planned_duplicate_of",
+                                "method": _mapping_method(evidence.get("method")) or "ambiguous",
+                                "provenance": ["inventory:planned_duplicate_plan"],
+                                "source_entity_id": entities[source_key]["entity_id"],
+                                "target_entity_id": entities[target_key]["entity_id"],
+                            },
+                        )
+                        relation_values.setdefault(
+                            relation_id,
+                            {
+                                "schema_version": 1,
+                                "kind": "context_relation_ref",
+                                "relation_id": relation_id,
+                                "source_entity_id": entities[source_key]["entity_id"],
+                                "target_entity_id": entities[target_key]["entity_id"],
+                                "relation_kind": "planned_duplicate_of",
+                                "method": _mapping_method(evidence.get("method")) or "ambiguous",
+                                "provenance": ["inventory:planned_duplicate_plan"],
+                                "evidence_ids": [evidence_id],
+                                "citation_ids": [citation_ids[evidence_id]],
+                            },
+                        )
+                for namespace, value in identifiers:
+                    lowered = namespace.casefold()
+                    if lowered.startswith("code_relation_") or lowered == "planned_duplicate_of":
+                        continue
+                    if lowered in _ARCHIVE_IDENTIFIER_NAMES and not (
+                        resource.get("owner") == "archive"
+                        or resource.get("source_kind") == "archive"
+                    ):
+                        # Some legacy fixtures carry archive-like diagnostic
+                        # labels on ordinary documents.  They are not graph
+                        # entities unless the owner actually published an
+                        # archive member; archive provenance remains in the
+                        # citation identifiers above.
+                        continue
+                    if lowered in {"source_identity", "retrieval_entity_id"}:
+                        # These two bindings are already first-class source /
+                        # citation fields.  Re-emitting them as graph nodes
+                        # consumes the compact evidence budget without adding
+                        # a relationship or a user-meaningful entity.
+                        continue
+                    if lowered.startswith("claim:"):
+                        topic = namespace.partition(":")[2].strip().casefold()
+                        claim_value = value.strip()
+                        if topic and claim_value:
+                            values = claims.setdefault(topic, {})
+                            display, citations = values.setdefault(
+                                claim_value.casefold(), (claim_value, set())
+                            )
+                            citations.add(citation_ids[evidence_id])
+                            values[claim_value.casefold()] = (display, citations)
+                        continue
+                    _append_graph_entity(
+                        entities,
+                        entity_kind=f"identifier:{namespace}",
+                        label=value,
+                        evidence_id=evidence_id,
+                        resource_ids=(resource_id,),
+                    )
+
+    contradictions: list[dict[str, Any]] = []
+    for topic in sorted(claims):
+        values = claims[topic]
+        if len(values) < 2:
+            continue
+        cited = tuple(
+            dict.fromkeys(
+                citation_id
+                for _display, citation_set in values.values()
+                for citation_id in citation_set
+            )
+        )
+        if len(cited) < 2:
+            continue
+        displayed = tuple(sorted((display for display, _set in values.values()), key=str.casefold))
+        contradiction_id = _graph_stable_id(
+            "context-contradiction",
+            {"contradiction_kind": "conflicting_structured_claim", "topic": topic, "values": displayed},
+        )
+        summary = f'Structured claim "{topic}" has conflicting values: ' + ", ".join(
+            f'"{value}"' for value in displayed
+        ) + "."
+        contradictions.append(
+            {
+                "schema_version": 1,
+                "kind": "context_contradiction_ref",
+                "contradiction_id": contradiction_id,
+                "contradiction_kind": "conflicting_structured_claim",
+                "topic": topic,
+                "values": list(displayed),
+                "summary": summary,
+                "citation_ids": list(cited),
+            }
+        )
+    entities_out = sorted(entities.values(), key=lambda item: str(item["entity_id"]))
+    relations_out = sorted(relation_values.values(), key=lambda item: str(item["relation_id"]))
+    omitted_entities = max(0, len(entities) - len(entities_out))
+    omitted_relations = max(0, len(relation_values) - len(relations_out))
+    graph_budget = {
+        "identifiers_considered": identifiers_considered,
+        "entities_included": len(entities_out),
+        "relations_included": len(relations_out),
+        "omitted_identifiers": identifiers_omitted,
+        "omitted_entities": omitted_entities,
+        "omitted_relations": omitted_relations,
+        "identifier_limit_per_evidence": _MAX_GRAPH_IDENTIFIERS_PER_EVIDENCE,
+        "measurement_scope": "selected_evidence_graph",
+    }
+    return entities_out, relations_out, contradictions, graph_budget
+
+
+def _telemetry_projection(entries: Sequence[Mapping[str, Any]], scope: str) -> dict[str, Any] | None:
+    """Expose bounded per-scope search telemetry without fusing scopes."""
+
+    records: list[dict[str, Any]] = []
+    for entry in entries:
+        result = entry.get("result")
+        if not isinstance(result, Mapping):
+            continue
+        telemetry = result.get("telemetry")
+        if not isinstance(telemetry, Mapping):
+            continue
+        # Search telemetry is already validated by KnowledgeSearchResult.  Use
+        # a deep copy so later sanitation/packing cannot mutate the owner
+        # result, and keep one record per fixed scope.
+        value = copy.deepcopy(dict(telemetry))
+        value["scope"] = _text(entry.get("scope", scope), 32)
+        records.append(value)
+    records.sort(key=lambda item: str(item.get("scope", "")))
+    if not records:
+        return None
+    if len(records) == 1 and scope != "all":
+        return records[0]
+    return {
+        "schema_version": 1,
+        "kind": "knowledge_context_telemetry",
+        "operation": "context",
+        "scope_aggregation": "independent_scopes",
+        "scopes": records,
+    }
+
+
+def _compact_telemetry(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep MCP telemetry useful without crowding out cited evidence.
+
+    MCP carries both ``content`` and ``structuredContent``.  A full per-owner
+    phase trace can therefore consume the response budget twice.  Retain the
+    timing identity and a bounded phase summary; JSON/CLI responses continue
+    to expose the complete telemetry projection.
+    """
+
+    def compact_record(record: Mapping[str, Any]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for name in ("schema_version", "kind", "operation", "scope", "clock_signature", "total_duration_ns"):
+            if name in record:
+                result[name] = record[name]
+        phases = record.get("phases")
+        if isinstance(phases, list):
+            summary: dict[str, dict[str, Any]] = {}
+            for phase in phases:
+                if not isinstance(phase, Mapping):
+                    continue
+                name = str(phase.get("phase", "unknown"))
+                item = summary.setdefault(name, {"count": 0, "duration_ns": 0, "executed": 0})
+                item["count"] += 1
+                duration = phase.get("duration_ns")
+                if isinstance(duration, int) and not isinstance(duration, bool) and duration >= 0:
+                    item["duration_ns"] += duration
+                if phase.get("executed") is True:
+                    item["executed"] += 1
+            result["phase_summary"] = [
+                {"phase": name, **summary[name]} for name in sorted(summary)
+            ]
+        return result
+
+    if isinstance(value.get("scopes"), list):
+        return {
+            "schema_version": value.get("schema_version", 1),
+            "kind": value.get("kind", "knowledge_context_telemetry"),
+            "operation": value.get("operation", "context"),
+            "scope_aggregation": value.get("scope_aggregation", "independent_scopes"),
+            "scopes": [
+                compact_record(item)
+                for item in value["scopes"]
+                if isinstance(item, Mapping)
+            ],
+        }
+    return compact_record(value)
+
+
+def _refresh_graph_projection(
+    payload: dict[str, Any], entries: Sequence[Mapping[str, Any]]
+) -> None:
+    citation_ids = {
+        str(citation["evidence_id"]): str(citation["citation_id"])
+        for citation in payload.get("citations", [])
+        if isinstance(citation, Mapping)
+        and isinstance(citation.get("evidence_id"), str)
+        and isinstance(citation.get("citation_id"), str)
+    }
+    entities, relations, contradictions, graph_budget = _graph_projection(entries, citation_ids)
+    if not entities and not relations and not contradictions:
+        # Keep the common text-only compact profile small.  Graph keys are
+        # optional in v2 and are emitted as soon as an owner supplies a
+        # structured entity/relation/claim; an empty graph carries no evidence.
+        for name in ("entities", "relations", "contradictions", "graph_budget"):
+            payload.pop(name, None)
+        if isinstance(payload.get("coverage"), dict):
+            payload["coverage"].pop("graph", None)
+        return
+    else:
+        payload["entities"] = entities
+        payload["relations"] = relations
+        payload["contradictions"] = contradictions
+        payload["graph_budget"] = graph_budget
+    coverage = payload.get("coverage")
+    if not isinstance(coverage, dict):
+        return
+    graph_reasons: list[str] = []
+    if graph_budget["omitted_identifiers"]:
+        graph_reasons.append(f"omitted_identifiers:{graph_budget['omitted_identifiers']}")
+    if graph_budget["omitted_entities"]:
+        graph_reasons.append(f"omitted_entities:{graph_budget['omitted_entities']}")
+    if graph_budget["omitted_relations"]:
+        graph_reasons.append(f"omitted_relations:{graph_budget['omitted_relations']}")
+    coverage["graph"] = _facet("partial" if graph_reasons else "complete", graph_reasons)
 
 
 def _fold_term(value: str) -> str:
@@ -580,6 +1178,14 @@ def _candidates(
                 for name in ("source_identity", "retrieval_entity_id"):
                     if name in identifiers:
                         citation[name] = identifiers[name]
+                if source.get("owner") == "archive" or source.get("source_kind") == "archive":
+                    archive_identifiers = [
+                        {"namespace": namespace, "value": value}
+                        for namespace, value in identifiers.items()
+                        if namespace.casefold() in _ARCHIVE_IDENTIFIER_NAMES
+                    ]
+                    if archive_identifiers:
+                        citation["identifiers"] = archive_identifiers
                 if signal:
                     support = signal.get("query_support") or {}
                     citation["retrieval_support"] = {
@@ -802,8 +1408,9 @@ def _set_status(
     coverage["presentation"] = _facet("partial" if reasons else "complete", reasons)
     witness_missing = coverage["witness_checks"]["status"] == "missing"
     partial = witness_missing or any(
-        coverage[name]["status"] == "partial"
-        for name in ("retrieval", "relations", "evidence", "presentation")
+        isinstance(coverage.get(name), Mapping)
+        and coverage[name]["status"] == "partial"
+        for name in ("retrieval", "relations", "evidence", "presentation", "graph")
     )
     payload["status"] = "partial" if partial else ("ok" if citations else "empty")
     payload["exit_code"] = 4 if partial else (0 if citations else 3)
@@ -848,6 +1455,7 @@ def build_context_response_v2(
     max_characters: int = 12000,
     transport: str = "json",
     operation: str = "context",
+    read_budget: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Compile immutable search results; no implicit lookup, synthesis or state."""
     if transport not in {"json", "text", "mcp"}:
@@ -879,6 +1487,19 @@ def build_context_response_v2(
         "read_only": True,
         "trust_boundary": _TRUST,
         "coverage": _coverage(entries),
+        "entities": [],
+        "relations": [],
+        "contradictions": [],
+        "graph_budget": {
+            "identifiers_considered": 0,
+            "entities_included": 0,
+            "relations_included": 0,
+            "omitted_identifiers": 0,
+            "omitted_entities": 0,
+            "omitted_relations": 0,
+            "identifier_limit_per_evidence": _MAX_GRAPH_IDENTIFIERS_PER_EVIDENCE,
+            "measurement_scope": "selected_evidence_graph",
+        },
         "sources": [],
         "citations": [],
         "status": "empty",
@@ -892,6 +1513,13 @@ def build_context_response_v2(
             "within_limit": True,
         },
     }
+    telemetry = _telemetry_projection(entries, payload["scope"])
+    if telemetry is not None:
+        payload["telemetry"] = (
+            _compact_telemetry(telemetry) if transport == "mcp" else telemetry
+        )
+    if read_budget is not None:
+        payload["read_budget"] = dict(read_budget)
     assessment_cache: dict[tuple[str, str], tuple[dict[str, Any], list[dict[str, Any]]]] = {}
     candidates, projection_capped = (
         _candidates(entries, limit, query=payload["query"])
@@ -931,6 +1559,7 @@ def build_context_response_v2(
     candidates.sort(key=lambda item: _budget_candidate_priority(item, payload["query"]))
     if projection_capped:
         payload["budget"]["input_candidates_capped"] = True
+    _refresh_graph_projection(payload, entries)
     _set_status(payload, len(candidates), assessment_cache)
     if not valid_limit or not valid_budget or not valid_metadata:
         message = (
@@ -1032,6 +1661,7 @@ def build_context_response_v2(
             raw_citation, citation_id=f"K{len(proposal['citations']) + 1}", source_id=source_id
         )
         proposal["citations"].append(citation)
+        _refresh_graph_projection(proposal, entries)
         _set_status(proposal, len(candidates), assessment_cache, compact=compact_profile)
         cost = _measure(proposal)
         # A cheap prefix must not erase counter-witnesses already observed in
@@ -1055,6 +1685,7 @@ def build_context_response_v2(
             shortened["citations"][-1].update(
                 excerpt=snippet[:protected_end] + _TRUNCATED, fragment_state="truncated"
             )
+            _refresh_graph_projection(shortened, entries)
             _set_status(shortened, len(candidates), assessment_cache, compact=compact_profile)
             short_cost = _measure(shortened)
             # A truncation marker + partial envelope can cost MORE than a
@@ -1094,12 +1725,14 @@ def build_context_response_v2(
                 excerpt=snippet[:count] + (_TRUNCATED if count < len(snippet) else ""),
                 fragment_state="truncated" if count < len(snippet) else "full",
             )
+            _refresh_graph_projection(proposal, entries)
             _set_status(proposal, len(candidates), assessment_cache, compact=compact_profile)
             if _measure(proposal) <= max_characters:
                 payload = proposal
                 changed = True
         if not changed:
             break
+    _refresh_graph_projection(payload, entries)
     _set_status(payload, len(candidates), assessment_cache, compact=compact_profile)
     _measure(payload)
     return validate_context_response(payload)
@@ -1149,6 +1782,30 @@ def validate_context_response(value: object) -> dict[str, Any]:
         payload.get("budget"), Mapping
     ):
         raise ValueError("context response needs coverage and budget")
+    for name in ("entities", "relations", "contradictions"):
+        value = payload.get(name, [])
+        if not isinstance(value, list) or not all(isinstance(item, Mapping) for item in value):
+            raise ValueError(f"context {name} must be a list of records")
+    graph_budget = payload.get("graph_budget", {})
+    if not isinstance(graph_budget, Mapping):
+        raise ValueError("context graph_budget must be an object")
+    for name in (
+        "identifiers_considered",
+        "entities_included",
+        "relations_included",
+        "omitted_identifiers",
+        "omitted_entities",
+        "omitted_relations",
+    ):
+        value = graph_budget.get(name, 0)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError("context graph budget counters must be nonnegative integers")
+    telemetry = payload.get("telemetry")
+    if telemetry is not None and not isinstance(telemetry, Mapping):
+        raise ValueError("context telemetry must be an object when present")
+    read_budget = payload.get("read_budget")
+    if read_budget is not None and not isinstance(read_budget, Mapping):
+        raise ValueError("context read_budget must be an object when present")
     sources = payload.get("sources", [])
     if not isinstance(sources, list) or not all(isinstance(item, Mapping) for item in sources):
         raise ValueError("context sources must be a list of records")

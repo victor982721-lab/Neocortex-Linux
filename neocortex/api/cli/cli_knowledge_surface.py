@@ -91,6 +91,10 @@ def register_knowledge_arguments(parser: argparse.ArgumentParser) -> None:
         help=("maximum ContextBundle characters; defaults to 12000 (allowed range: 1..1000000)"),
     )
     knowledge.add_argument("--knowledge-history", action="store_true")
+    knowledge.add_argument("--knowledge-budget-rows", type=int, metavar="N")
+    knowledge.add_argument("--knowledge-budget-vectors", type=int, metavar="N")
+    knowledge.add_argument("--knowledge-budget-temporary-bytes", type=int, metavar="N")
+    knowledge.add_argument("--knowledge-budget-seconds", type=float, metavar="S")
     knowledge.add_argument(
         "--knowledge-mode",
         choices=("discovery", "evidence"),
@@ -131,6 +135,17 @@ def validate_knowledge_arguments(args: argparse.Namespace) -> None:
         raise SystemExit("--knowledge-limit must be between 1 and 100 for --knowledge-context")
     if not 1 <= args.knowledge_context_characters <= 1_000_000:
         raise SystemExit("--knowledge-context-characters must be between 1 and 1000000")
+    try:
+        from neocortex.knowledge.knowledge_read_budget import KnowledgeReadBudget
+
+        KnowledgeReadBudget(
+            max_rows=getattr(args, "knowledge_budget_rows", None),
+            max_vectors=getattr(args, "knowledge_budget_vectors", None),
+            max_temporary_bytes=getattr(args, "knowledge_budget_temporary_bytes", None),
+            deadline_seconds=getattr(args, "knowledge_budget_seconds", None),
+        )
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
     if "knowledge_context_characters" in explicit and args.knowledge_context is None:
         raise SystemExit("--knowledge-context-characters requires --knowledge-context")
     if "knowledge_response_version" in explicit and args.knowledge_context is None:
@@ -145,11 +160,23 @@ def validate_knowledge_arguments(args: argparse.Namespace) -> None:
         "knowledge_limit",
         "knowledge_history",
         "knowledge_mode",
+        "knowledge_budget_rows",
+        "knowledge_budget_vectors",
+        "knowledge_budget_temporary_bytes",
+        "knowledge_budget_seconds",
     }
     if not operations and optional.intersection(explicit):
         raise SystemExit("Knowledge options require one Knowledge direct action")
     query_selected = args.knowledge_search is not None or args.knowledge_context is not None
-    query_only = {"knowledge_limit", "knowledge_history", "knowledge_mode"}
+    query_only = {
+        "knowledge_limit",
+        "knowledge_history",
+        "knowledge_mode",
+        "knowledge_budget_rows",
+        "knowledge_budget_vectors",
+        "knowledge_budget_temporary_bytes",
+        "knowledge_budget_seconds",
+    }
     if query_only.intersection(explicit) and not query_selected:
         raise SystemExit("Knowledge limit, history and mode require search or context")
     if operations and args.apply:

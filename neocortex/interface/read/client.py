@@ -55,7 +55,22 @@ def _sanitize_result_sections(payload: Mapping[str, object]) -> dict[str, object
 
     result = dict(payload)
     budget = [MAX_SANITIZED_PAYLOAD_NODES]
-    for key in ("result", "scopes", "error", "observed_epoch"):
+    for key in (
+        "result",
+        "scopes",
+        "error",
+        "observed_epoch",
+        "coverage",
+        "budget",
+        "sources",
+        "citations",
+        "entities",
+        "relations",
+        "contradictions",
+        "graph_budget",
+        "telemetry",
+        "read_budget",
+    ):
         if key in result:
             result[key] = _sanitize_nested(result[key], budget=budget)
     return result
@@ -113,7 +128,7 @@ class SharedReadClient:
             limit=request.limit,
             max_characters=12_000,
             mode="evidence",
-            response_version=1,
+            response_version=request.response_version,
         )
 
 
@@ -124,10 +139,28 @@ def _validated_payload(request: ReadRequest, value: object) -> dict[str, object]
             if request.operation == "ask"
             else ReadOperation(request.operation)
         )
-        legacy_payload = not (
+        compact_v2 = (
+            isinstance(value, Mapping)
+            and value.get("schema") in {
+                "neocortex.context-response/v2",
+                "neocortex.evidence-response/v2",
+            }
+        )
+        complete_v1 = (
             isinstance(value, Mapping)
             and _COMPLETE_ENVELOPE_FIELDS.issubset(value)
         )
+        legacy_payload = not (compact_v2 or complete_v1)
+        if request.operation == "ask":
+            expected_schema = (
+                "neocortex.context-response/v2"
+                if request.response_version == 2
+                else "neocortex.read-api/v1"
+            )
+            if isinstance(value, Mapping) and value.get("schema") != expected_schema:
+                raise ReadClientError(
+                    "La versión de respuesta no coincide con la versión solicitada."
+                )
         if not isinstance(value, Mapping):
             raise ReadClientError("El read API devolvió una respuesta no estructurada.")
         if "observed_epoch" in value and not isinstance(value.get("observed_epoch"), Mapping):
@@ -166,7 +199,7 @@ def _validated_payload(request: ReadRequest, value: object) -> dict[str, object]
             ),
             strict_echo=not legacy_payload,
         )
-        if not legacy_payload:
+        if complete_v1:
             _validate_outcome_consistency(validated)
         return _sanitize_result_sections(validated)
     except (ReadContractError, TypeError, ValueError) as exc:

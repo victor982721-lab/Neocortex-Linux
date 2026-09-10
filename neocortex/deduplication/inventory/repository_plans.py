@@ -18,6 +18,8 @@ from ..domain.models import (
 from ..domain.evidence import DedupPolicy, PlanCoverage, DuplicateMemberProof
 from ..planning.keeper import KeeperRank
 from .plan_evidence import decode_group_proof, decode_member_proof, encode_proof
+from .generation import duplicate_plan_digest
+from .repository_scans import resolve_scan_id
 from .scan import id_blob as _id_blob
 
 
@@ -201,6 +203,7 @@ class PlanRepositoryMixin:
     def begin_duplicate_plan(self, scan_id: int) -> None:
         """Discard any incomplete prior plan for this scan."""
 
+        scan_id = resolve_scan_id(self._connection, scan_id)
         with self._connection:
             scan = self._connection.execute(
                 "SELECT status FROM scans WHERE scan_id=?", (scan_id,),
@@ -218,10 +221,15 @@ class PlanRepositoryMixin:
             self._connection.execute(
                 "DELETE FROM duplicate_plan_summaries WHERE scan_id=?", (scan_id,)
             )
+            self._connection.execute(
+                "UPDATE duplicate_plan_heads SET status='superseded' WHERE scan_id=?",
+                (scan_id,),
+            )
 
     def store_duplicate_groups(self, scan_id: int, groups: Iterable[DuplicateGroup]) -> None:
         """Persist a bounded group batch and its immutable file snapshots."""
 
+        scan_id = resolve_scan_id(self._connection, scan_id)
         with self._connection:
             for group in groups:
                 members = (group.keep, *group.redundant)
@@ -307,6 +315,7 @@ class PlanRepositoryMixin:
             "legacy_unknown", "complete", "partial"
         }:
             raise InventoryError("dedup inventory plan policy or coverage is invalid")
+        scan_id = resolve_scan_id(self._connection, scan_id)
         with self._connection:
             # Publication is the last owner transaction, never a configured
             # policy masquerading as completed evidence.  Incomplete batches
@@ -387,10 +396,32 @@ class PlanRepositoryMixin:
                     changed_or_unreadable_files,
                 ),
             )
+            self._connection.execute(
+                "INSERT OR REPLACE INTO duplicate_plan_heads("
+                "scan_id,inventory_content_digest,plan_digest,status,completed_ns) "
+                "VALUES(?,?,?,?,?)",
+                (
+                    scan_id,
+                    self._inventory_content_digest_for_plan(scan_id),
+                    duplicate_plan_digest(self._connection, scan_id),
+                    "published",
+                    time.time_ns(),
+                ),
+            )
+
+    def _inventory_content_digest_for_plan(self, scan_id: int) -> bytes:
+        row = self._connection.execute(
+            "SELECT content_digest FROM inventory_generation_heads WHERE scan_id=?",
+            (scan_id,),
+        ).fetchone()
+        if row is None:
+            raise InventoryError("duplicate plan requires an inventory content identity")
+        return bytes(row[0])
 
     def iter_duplicate_groups(self, scan_id: int) -> Iterator[DuplicateGroup]:
         """Stream a persisted plan in descending reclaimable-byte order."""
 
+        scan_id = resolve_scan_id(self._connection, scan_id)
         rows = self._connection.execute(
             "SELECT g.group_id,g.size,g.full_fingerprint,g.verification_mode,g.proof_json,"
             "m.member_order,m.path,"
@@ -398,7 +429,11 @@ class PlanRepositoryMixin:
             "FROM planned_duplicate_groups g JOIN planned_duplicate_members m "
             "ON m.group_id=g.group_id "
             "JOIN duplicate_plan_summaries s ON s.scan_id=g.scan_id "
+            "LEFT JOIN duplicate_plan_heads h ON h.scan_id=g.scan_id "
             "WHERE g.scan_id=? "
+            "AND (h.scan_id IS NULL OR (h.status='published' "
+            "AND h.inventory_content_digest=(SELECT content_digest "
+            "FROM inventory_generation_heads WHERE scan_id=g.scan_id))) "
             f"ORDER BY g.reclaimable_bytes DESC,g.keep_path COLLATE {_PATH_COLLATION},"
             "g.group_id,m.member_order",
             (scan_id,),

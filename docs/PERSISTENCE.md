@@ -55,6 +55,12 @@ posee clasificaciones y planes documentales. Inventory posee observaciones,
 generaciones y evidencia de duplicados. Knowledge es una vista en memoria y no
 tiene `knowledge.sqlite3`.
 
+La tranche post-0.13 usa Inventory schema v13 para heads de generación, sucesores
+copy-on-write, digests de contenido y heads de plan. Catalog schema v9 añade
+manifests de generación con source fence, raíz, política y digests, con triggers
+que bloquean UPDATE/DELETE sobre generaciones publicadas. Las migraciones son
+aditivas y conservan lectura de v12/v8.
+
 ## Lectura segura
 
 No abras una base viva con `sqlite3.connect(...mode=ro...)` como si fuera
@@ -86,6 +92,11 @@ el fence al cerrar. Health incluye sidecars huérfanos de owners desconocidos y
 aplica un presupuesto cooperativo a SQL y a las etapas de comprobación; no
 promete interrumpir de forma forzosa una llamada de filesystem o Python
 bloqueada.
+
+Las consultas Knowledge pueden recibir un `KnowledgeReadBudget` en memoria para
+limitar filas, vectores, bytes temporales, deadline monotónico y cancelación.
+Su agotamiento sólo produce cobertura parcial; no crea owners, checkpoints,
+cache de resultados ni efectos sobre el corpus.
 
 ## Transacciones y publicación
 

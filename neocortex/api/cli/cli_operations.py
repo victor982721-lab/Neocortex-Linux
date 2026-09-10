@@ -122,6 +122,14 @@ DIRECT_OPERATIONS: tuple[DirectOperation, ...] = (
         SelectionMode.NOT_NONE, module_name=".cli_content_diagnostics",
     ),
     DirectOperation(
+        "content_diagnostics", "run_content_diagnostics", _CONTENT_DIAGNOSTICS,
+        SelectionMode.NOT_NONE, module_name=".cli_content_diagnostics",
+    ),
+    DirectOperation(
+        "content_diagnostics_v2", "run_content_diagnostics", _CONTENT_DIAGNOSTICS,
+        SelectionMode.NOT_NONE, module_name=".cli_content_diagnostics",
+    ),
+    DirectOperation(
         "doctor_capabilities",
         "run_doctor_capabilities",
         _CAPABILITIES,

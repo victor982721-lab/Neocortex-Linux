@@ -69,6 +69,12 @@ if TYPE_CHECKING:
         search_payload as search_payload,
         status_payload as status_payload,
     )
+    from neocortex.api.content_diagnostics_api import (
+        CONTENT_DIAGNOSTICS_SCHEMA as CONTENT_DIAGNOSTICS_SCHEMA,
+        CONTENT_DIAGNOSTICS_V2_SCHEMA as CONTENT_DIAGNOSTICS_V2_SCHEMA,
+        content_diagnostics_payload as content_diagnostics_payload,
+        content_diagnostics_v2_payload as content_diagnostics_v2_payload,
+    )
     from neocortex.curation.preview import CurationPlanPage as CurationPlanPage
     from neocortex.curation.preview import CurationSourceHead as CurationSourceHead
     from neocortex.runtime.config.application_config import ApplicationConfig as ApplicationConfig
@@ -129,6 +135,11 @@ if TYPE_CHECKING:
         KnowledgeTelemetryOperation as KnowledgeTelemetryOperation,
     )
     from neocortex.knowledge.knowledge_contracts import KnowledgeTimingPhase as KnowledgeTimingPhase
+    from neocortex.knowledge.knowledge_read_budget import (
+        KNOWLEDGE_READ_BUDGET_SCHEMA as KNOWLEDGE_READ_BUDGET_SCHEMA,
+        KnowledgeReadBudget as KnowledgeReadBudget,
+        KnowledgeReadBudgetExceeded as KnowledgeReadBudgetExceeded,
+    )
     from neocortex.knowledge.knowledge_contracts import ResourceRef as ResourceRef
     from neocortex.knowledge.knowledge_contracts import RevisionRef as RevisionRef
     from neocortex.knowledge.knowledge_planner import KnowledgePlan as KnowledgePlan
@@ -203,6 +214,8 @@ __all__ = [  # noqa: RUF022
     "CURATION_CHECKPOINT_CREATE_API_SCHEMA",
     "CURATION_CHECKPOINT_RESUME_API_SCHEMA",
     "CURATION_CHECKPOINT_STATUS_API_SCHEMA",
+    "CONTENT_DIAGNOSTICS_SCHEMA",
+    "CONTENT_DIAGNOSTICS_V2_SCHEMA",
     "CurationPlanOutput",
     "CurationApplyOutput",
     "CurationReconcileOutput",
@@ -287,6 +300,8 @@ __all__ = [  # noqa: RUF022
     "status_payload",
     "search_payload",
     "context_payload",
+    "content_diagnostics_payload",
+    "content_diagnostics_v2_payload",
     "evidence_payload",
     "operational_query_payload",
     "asset_health_payload",
@@ -305,6 +320,9 @@ __all__ = [  # noqa: RUF022
     "KnowledgePlan",
     "KnowledgeQuery",
     "KnowledgeQueryTelemetry",
+    "KNOWLEDGE_READ_BUDGET_SCHEMA",
+    "KnowledgeReadBudget",
+    "KnowledgeReadBudgetExceeded",
     "KnowledgeSearchResult",
     "KnowledgeSearchService",
     "KnowledgeStateRootError",
@@ -471,6 +489,22 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "list_projects": ("neocortex.code.ingestion.code_projects", "list_projects"),
     "reconstruct_project": ("neocortex.code.ingestion.code_projects", "reconstruct_project"),
     "search_code": ("neocortex.code.search.code_search", "search_code"),
+    "CONTENT_DIAGNOSTICS_SCHEMA": (
+        "neocortex.api.content_diagnostics_api",
+        "CONTENT_DIAGNOSTICS_SCHEMA",
+    ),
+    "CONTENT_DIAGNOSTICS_V2_SCHEMA": (
+        "neocortex.api.content_diagnostics_api",
+        "CONTENT_DIAGNOSTICS_V2_SCHEMA",
+    ),
+    "content_diagnostics_payload": (
+        "neocortex.api.content_diagnostics_api",
+        "content_diagnostics_payload",
+    ),
+    "content_diagnostics_v2_payload": (
+        "neocortex.api.content_diagnostics_api",
+        "content_diagnostics_v2_payload",
+    ),
     "curation_plan_payload": ("neocortex.api.curation_api", "curation_plan_payload"),
     "curation_review_payload": (
         "neocortex.api.curation_lifecycle_api",
@@ -573,6 +607,18 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "KnowledgeQueryTelemetry": (
         "neocortex.knowledge.knowledge_contracts",
         "KnowledgeQueryTelemetry",
+    ),
+    "KNOWLEDGE_READ_BUDGET_SCHEMA": (
+        "neocortex.knowledge.knowledge_read_budget",
+        "KNOWLEDGE_READ_BUDGET_SCHEMA",
+    ),
+    "KnowledgeReadBudget": (
+        "neocortex.knowledge.knowledge_read_budget",
+        "KnowledgeReadBudget",
+    ),
+    "KnowledgeReadBudgetExceeded": (
+        "neocortex.knowledge.knowledge_read_budget",
+        "KnowledgeReadBudgetExceeded",
     ),
     "KnowledgeSearchResult": ("neocortex.knowledge.knowledge_search", "KnowledgeSearchResult"),
     "KnowledgeSearchService": ("neocortex.knowledge.knowledge_service", "KnowledgeSearchService"),

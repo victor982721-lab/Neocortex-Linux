@@ -51,6 +51,9 @@ from .document_catalog_schema import (
     validate_v5_document_catalog_schema,
     validate_v6_document_catalog_schema,
     validate_v7_document_catalog_schema,
+    validate_v8_document_catalog_schema,
+    catalog_generation_digest,
+    catalog_input_manifest_digest,
 )
 from .document_resource_binding import (
     ResourceBindingError,
@@ -185,10 +188,104 @@ class CatalogBuild:
     generation_id: int
     source_kind: SourceKind
     base_generation_id: int | None
+    source_path: str | None = None
+    source_fence_json: str = '{"direct":true}'
+    source_root: str | None = None
+    source_root_identity_json: str | None = None
+    input_policy_signature: str | None = None
+    base_generation_digest: str | None = None
 
 
 class CatalogPublicationConflict(RuntimeError):
     """A later builder cannot replace a publication based on an older pointer."""
+
+
+class CatalogSourceDrift(RuntimeError):
+    """The source owner changed while a catalog generation was being built."""
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogPublicationManifest:
+    """Source fence and content digest for one published catalog generation."""
+
+    source_kind: str
+    generation_id: int
+    published_ns: int
+    source_path: str | None
+    source_fence_json: str
+    source_root: str | None
+    source_root_identity_json: str | None
+    input_policy_signature: str | None
+    input_manifest_digest: str | None
+    generation_digest: str | None
+
+
+CATALOG_INPUT_POLICY = "catalog-source-root/v1"
+
+
+def _source_stat_fence(path: Path) -> dict[str, object]:
+    """Capture a non-following source-owner fence for one SQLite cache."""
+
+    absolute = Path(os.path.abspath(path))
+    metadata = absolute.stat(follow_symlinks=False)
+    sidecars: dict[str, object] = {}
+    for suffix in ("-wal", "-shm"):
+        sidecar = Path(f"{absolute}{suffix}")
+        try:
+            sidecar_stat = sidecar.stat(follow_symlinks=False)
+        except OSError:
+            sidecars[suffix] = None
+        else:
+            sidecars[suffix] = {
+                "size": sidecar_stat.st_size,
+                "mtime_ns": sidecar_stat.st_mtime_ns,
+                "birthtime_ns": stat_birthtime_ns(sidecar_stat),
+            }
+    return {
+        "path": str(absolute),
+        "volume_id": metadata.st_dev,
+        "file_id": metadata.st_ino,
+        "size": metadata.st_size,
+        "mtime_ns": metadata.st_mtime_ns,
+        "birthtime_ns": stat_birthtime_ns(metadata),
+        "sidecars": sidecars,
+    }
+
+
+def _source_fence_json(path: Path) -> str:
+    absolute = Path(os.path.abspath(path))
+    try:
+        payload = _source_stat_fence(absolute)
+    except OSError:
+        payload = {"path": str(absolute), "missing": True}
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def _source_fence_matches(path: Path, raw: str) -> bool:
+    try:
+        expected = json.loads(raw)
+        if not isinstance(expected, dict) or expected.get("legacy"):
+            return True
+        if expected.get("missing"):
+            return not path.exists()
+        observed = _source_stat_fence(path)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return expected == observed
+
+
+def _root_identity_json(identity: tuple[int, int, int] | None) -> str | None:
+    if identity is None:
+        return None
+    return json.dumps(
+        {
+            "volume_id": identity[0],
+            "file_id": identity[1],
+            "birthtime_ns": identity[2],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -316,6 +413,85 @@ def initialize_document_catalog(path: Path) -> None:
                 connection.commit()
 
 
+def read_catalog_publication_manifest(
+    connection: sqlite3.Connection,
+    source_kind: str,
+    *,
+    verify_generation_digest: bool = True,
+) -> CatalogPublicationManifest:
+    """Read and optionally revalidate the currently published source manifest."""
+
+    row = connection.execute(
+        """SELECT p.source_kind,p.generation_id,p.published_ns,g.status,
+        g.source_kind,m.source_path,m.source_fence_json,m.source_root,
+        m.source_root_identity_json,m.input_policy_signature,
+        m.input_manifest_digest,m.generation_digest
+        FROM catalog_publications p
+        JOIN catalog_generations g ON g.generation_id=p.generation_id
+        LEFT JOIN catalog_generation_manifests m ON m.generation_id=p.generation_id
+        WHERE p.source_kind=?""",
+        (source_kind,),
+    ).fetchone()
+    if row is None or str(row[3]) != "published" or str(row[4]) != str(row[0]):
+        raise CatalogPublicationConflict("catalog publication head is not published")
+    if row[6] is None or row[11] is None:
+        raise CatalogPublicationConflict("catalog publication manifest is incomplete")
+    generation_digest = str(row[11])
+    if verify_generation_digest and catalog_generation_digest(connection, int(row[1])) != generation_digest:
+        raise CatalogPublicationConflict("catalog publication generation digest changed")
+    return CatalogPublicationManifest(
+        source_kind=str(row[0]),
+        generation_id=int(row[1]),
+        published_ns=int(row[2]),
+        source_path=None if row[5] is None else str(row[5]),
+        source_fence_json=str(row[6]),
+        source_root=None if row[7] is None else str(row[7]),
+        source_root_identity_json=None if row[8] is None else str(row[8]),
+        input_policy_signature=None if row[9] is None else str(row[9]),
+        input_manifest_digest=None if row[10] is None else str(row[10]),
+        generation_digest=generation_digest,
+    )
+
+
+def validate_catalog_publication_scope(
+    connection: sqlite3.Connection,
+    source_kind: str,
+    root: Path,
+    *,
+    input_policy_signature: str | None = None,
+) -> CatalogPublicationManifest:
+    """Fail closed unless a published manifest still names the same root head."""
+
+    manifest = read_catalog_publication_manifest(connection, source_kind)
+    canonical_root = Path(os.path.abspath(root))
+    if manifest.source_root != str(canonical_root):
+        raise CatalogPublicationConflict("catalog publication source root changed")
+    if input_policy_signature is not None and manifest.input_policy_signature != input_policy_signature:
+        raise CatalogPublicationConflict("catalog publication input policy changed")
+    if manifest.source_root_identity_json is None:
+        raise CatalogPublicationConflict("catalog publication root identity is missing")
+    try:
+        expected = json.loads(manifest.source_root_identity_json)
+        observed = canonical_root.lstat()
+        if (
+            not isinstance(expected, dict)
+            or set(expected) != {"birthtime_ns", "file_id", "volume_id"}
+            or not stat.S_ISDIR(observed.st_mode)
+            or canonical_root.resolve(strict=True) != canonical_root
+            or int(expected["volume_id"]) != observed.st_dev
+            or int(expected["file_id"]) != observed.st_ino
+            or int(expected["birthtime_ns"]) != stat_birthtime_ns(observed)
+        ):
+            raise CatalogPublicationConflict("catalog publication root identity changed")
+    except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        raise CatalogPublicationConflict("catalog publication root identity is invalid") from exc
+    if manifest.source_path is None or not _source_fence_matches(
+        Path(manifest.source_path), manifest.source_fence_json
+    ):
+        raise CatalogPublicationConflict("catalog publication source fence changed")
+    return manifest
+
+
 def _read_catalog_version(path: Path) -> int | None:
     if not path.is_file():
         return None
@@ -339,6 +515,8 @@ def _read_catalog_version(path: Path) -> int | None:
             validate_v6_document_catalog_schema(connection)
         elif version == 7:
             validate_v7_document_catalog_schema(connection)
+        elif version == 8:
+            validate_v8_document_catalog_schema(connection)
     return version
 
 
@@ -348,8 +526,13 @@ def _backup_catalog_before_migration(path: Path, prior: int) -> Path:
     The caller already holds BEGIN IMMEDIATE. The sidecar-safe read kernel sees
     exactly that committed base without opening a second ordinary owner reader.
     """
+
+    # Preserve the historical per-step backup naming even when the caller
+    # upgrades across more than one schema in a single transaction.  Existing
+    # operators and receipts use ``pre-v7-to-v8`` for that first boundary.
+    target_version = prior + 1
     destination = path.with_name(
-        f"{path.name}.pre-v{prior}-to-v{CATALOG_SCHEMA_VERSION}-{time.time_ns()}.sqlite3"
+        f"{path.name}.pre-v{prior}-to-v{target_version}-{time.time_ns()}.sqlite3"
     )
     descriptor = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
     os.close(descriptor)
@@ -383,7 +566,7 @@ def _backup_catalog_before_migration(path: Path, prior: int) -> Path:
                     "source": str(path.absolute()),
                     "backup": str(destination.absolute()),
                     "prior_schema": prior,
-                    "target_schema": CATALOG_SCHEMA_VERSION,
+                    "target_schema": target_version,
                     "sha256": digest,
                     "bytes": destination.stat().st_size,
                 },
@@ -593,6 +776,9 @@ def update_document_catalog_source(
             catalog,
             source_kind=source_kind,
             framework_run_id=framework_run_id,
+            source_path=source_path,
+            source_root=scoped_root,
+            source_root_identity=root_identity,
         )
         if not source_path.is_file():
             summary = CatalogUpdateSummary(
@@ -727,6 +913,8 @@ def update_document_catalog_source(
                 errors=errors,
                 source_stale=source_stale,
             )
+            if not _source_fence_matches(source_path, build.source_fence_json):
+                raise CatalogSourceDrift("catalog source changed before publication")
             if scoped_root is not None and _catalog_input_root(scoped_root)[1] != root_identity:
                 raise RuntimeError("catalog input root identity changed before publication")
             summary = _publish_catalog_build(catalog, build, summary)
@@ -892,8 +1080,22 @@ def _begin_catalog_run(
     *,
     source_kind: SourceKind,
     framework_run_id: int | None,
+    source_path: Path | None = None,
+    source_root: Path | None = None,
+    source_root_identity: tuple[int, int, int] | None = None,
 ) -> CatalogBuild:
     now = time.time_ns()
+    canonical_source_path = (
+        None if source_path is None else str(Path(os.path.abspath(source_path)))
+    )
+    source_fence = (
+        '{"direct":true}'
+        if source_path is None
+        else _source_fence_json(source_path)
+    )
+    canonical_source_root = None if source_root is None else str(source_root)
+    root_identity_json = _root_identity_json(source_root_identity)
+    input_policy_signature = CATALOG_INPUT_POLICY if source_root is not None else None
     cursor = connection.execute(
         """INSERT INTO catalog_runs(
         framework_run_id,source_kind,mode,status,started_ns)
@@ -905,11 +1107,14 @@ def _begin_catalog_run(
         raise RuntimeError("catalog run insert did not return an identifier")
     catalog_run_id = int(cursor.lastrowid)
     published = connection.execute(
-        """SELECT generation_id FROM catalog_publications
-        WHERE source_kind=?""",
+        """SELECT p.generation_id,m.generation_digest
+        FROM catalog_publications p
+        LEFT JOIN catalog_generation_manifests m ON m.generation_id=p.generation_id
+        WHERE p.source_kind=?""",
         (source_kind,),
     ).fetchone()
     base_generation_id = None if published is None else int(published[0])
+    base_generation_digest = None if published is None or published[1] is None else str(published[1])
     generation = connection.execute(
         """INSERT INTO catalog_generations(
         catalog_run_id,source_kind,base_generation_id,status,started_ns)
@@ -919,12 +1124,35 @@ def _begin_catalog_run(
     if generation.lastrowid is None:
         connection.rollback()
         raise RuntimeError("catalog generation insert did not return an identifier")
+    generation_id = int(generation.lastrowid)
+    connection.execute(
+        "INSERT INTO catalog_generation_manifests("
+        "generation_id,source_kind,source_path,source_fence_json,source_root,"
+        "source_root_identity_json,input_policy_signature,created_ns) "
+        "VALUES(?,?,?,?,?,?,?,?)",
+        (
+            generation_id,
+            source_kind,
+            canonical_source_path,
+            source_fence,
+            canonical_source_root,
+            root_identity_json,
+            input_policy_signature,
+            now,
+        ),
+    )
     connection.commit()
     return CatalogBuild(
         catalog_run_id=catalog_run_id,
-        generation_id=int(generation.lastrowid),
+        generation_id=generation_id,
         source_kind=source_kind,
         base_generation_id=base_generation_id,
+        source_path=canonical_source_path,
+        source_fence_json=source_fence,
+        source_root=canonical_source_root,
+        source_root_identity_json=root_identity_json,
+        input_policy_signature=input_policy_signature,
+        base_generation_digest=base_generation_digest,
     )
 
 
@@ -994,12 +1222,20 @@ def _publish_catalog_build(
     connection.execute("BEGIN IMMEDIATE")
     try:
         published = connection.execute(
-            """SELECT generation_id FROM catalog_publications
-            WHERE source_kind=?""",
+            """SELECT p.generation_id,m.generation_digest
+            FROM catalog_publications p
+            LEFT JOIN catalog_generation_manifests m ON m.generation_id=p.generation_id
+            WHERE p.source_kind=?""",
             (build.source_kind,),
         ).fetchone()
         current_generation_id = None if published is None else int(published[0])
-        if current_generation_id != build.base_generation_id:
+        current_generation_digest = (
+            None if published is None or published[1] is None else str(published[1])
+        )
+        if (
+            current_generation_id != build.base_generation_id
+            or current_generation_digest != build.base_generation_digest
+        ):
             now = time.time_ns()
             connection.execute(
                 """UPDATE catalog_generations SET status='superseded',completed_ns=?,
@@ -1018,8 +1254,27 @@ def _publish_catalog_build(
             connection.commit()
             raise CatalogPublicationConflict(
                 f"catalog {build.source_kind} publication advanced from "
-                f"{build.base_generation_id!r} to {current_generation_id!r}"
+                f"{build.base_generation_id!r}/{build.base_generation_digest!r} to "
+                f"{current_generation_id!r}/{current_generation_digest!r}"
             )
+        generation_digest = catalog_generation_digest(connection, build.generation_id)
+        input_manifest_digest = catalog_input_manifest_digest(
+            source_kind=build.source_kind,
+            source_path=build.source_path,
+            source_fence_json=build.source_fence_json,
+            source_root=build.source_root,
+            source_root_identity_json=build.source_root_identity_json,
+            input_policy_signature=build.input_policy_signature,
+            generation_digest=generation_digest,
+        )
+        manifest_update = connection.execute(
+            """UPDATE catalog_generation_manifests
+            SET input_manifest_digest=?,generation_digest=?
+            WHERE generation_id=?""",
+            (input_manifest_digest, generation_digest, build.generation_id),
+        )
+        if manifest_update.rowcount != 1:
+            raise CatalogPublicationConflict("catalog generation manifest is missing")
         stale = int(
             connection.execute(
                 """SELECT COUNT(*) FROM documents AS published_document
@@ -1149,7 +1404,19 @@ def _readonly_source(path: Path):
     try:
         mode = preferred_sqlite_read_mode(path)
         with sqlite_read_session(path, mode=mode, timeout_seconds=60.0) as connection:
-            yield connection
+            before_stat = _source_fence_json(path)
+            before_data_version = int(connection.execute("PRAGMA data_version").fetchone()[0])
+            try:
+                yield connection
+            finally:
+                after_data_version = int(
+                    connection.execute("PRAGMA data_version").fetchone()[0]
+                )
+                if (
+                    before_data_version != after_data_version
+                    or not _source_fence_matches(path, before_stat)
+                ):
+                    raise CatalogSourceDrift("catalog source changed during read")
     except CancellationRequested:
         # Cancellation is a control signal, not a source-reader failure;
         # preserve it so the surrounding catalog transaction can roll back

@@ -24,6 +24,13 @@ reutiliza con otra consulta, scope o raíz, o si un owner cambia de snapshot
 durante la continuación. La respuesta no mezcla la página nueva con hechos de
 una página anterior cuando detecta ese cambio.
 
+La extensión `content-diagnostics/v2` ofrece la misma lectura con selección
+explícita de owner (`pdf`, `docx`, `office`, `archive`, `text`, `audio`, `video`,
+`image`, `code` o `all`), filtros bounded, estados tipados y cursor ligado a
+raíz/filtros/snapshots. `KnowledgeReadBudget` puede limitar filas, vectores,
+bytes temporales, deadline y cancelación; el agotamiento conserva cobertura
+parcial y no escribe estado.
+
 ## Intenciones y owners
 
 | Intención | Owner consultado | Clase principal |

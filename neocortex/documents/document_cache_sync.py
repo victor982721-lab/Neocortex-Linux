@@ -1,15 +1,19 @@
 """Idempotent path synchronization after an authorized document move."""
 
 from __future__ import annotations
+
+from contextlib import contextmanager
 import json
 import os
 import sqlite3
+import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 from neocortex.platform.policy import sqlite_path_collation
+from neocortex.runtime.control.locking import FrameworkRunLock
 
 from neocortex.semantic.semantic_schema import SEMANTIC_SCHEMA_VERSION
 from neocortex.persistence.sqlite_paths import existing_sqlite_uri
@@ -70,6 +74,281 @@ _MIN_COMPATIBLE_SEMANTIC_SCHEMA = 1
 _MAX_COMPATIBLE_SEMANTIC_SCHEMA = SEMANTIC_SCHEMA_VERSION
 _PENDING_ACTION_SYNC_BATCH_SIZE = 256
 _PATH_COLLATION = sqlite_path_collation()
+
+
+# Curation effects are not allowed to opt into the broad document-organization
+# mutator implicitly.  The preparation seam below is deliberately restricted
+# to move/rename transitions on disposable temporary fixtures.  Its lock order
+# is part of the contract: the framework execution lock is acquired first,
+# ``record_state_publication`` acquires the publication lock second, and each
+# owner connection is opened last.
+CURATION_CACHE_SYNC_SCHEMA = "neocortex.curation-cache-sync/v1"
+CURATION_CACHE_SYNC_LOCK_ORDER = (
+    "framework.lock",
+    "state-publication.lock",
+    "owner.sqlite3",
+)
+CURATION_CACHE_SYNC_ACTIONS = frozenset({"move", "rename"})
+CURATION_CACHE_SYNC_TEMP_ROOT = Path(tempfile.gettempdir()).resolve()
+CurationCacheSyncStatus = Literal[
+    "complete",
+    "moved_cache_pending",
+    "recovery_required",
+    "blocked",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class CurationCachePolicy:
+    """Explicit cache policy for one curation action kind.
+
+    ``trash`` is intentionally an invalidation policy, not a path transition.
+    It is described here so callers cannot silently route a trash effect
+    through ``synchronize_moved_document`` while its owner-level invalidation
+    semantics remain a separate, gated tranche.
+    """
+
+    action: str
+    strategy: Literal["path_transition", "invalidation_separate"]
+    supported: bool
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class CurationCacheSyncResult:
+    """Bounded fixture-only cache-sync outcome after a curation move/rename."""
+
+    action: str
+    policy: CurationCachePolicy
+    status: CurationCacheSyncStatus
+    source_kind: str | None = None
+    file_key: str | None = None
+    old_path: str | None = None
+    new_path: str | None = None
+    updated_rows: int = 0
+    publication_epoch: int = 0
+    publication_status: str = "not_started"
+    detail: str | None = None
+    databases: tuple[CacheDatabaseSync, ...] = ()
+
+    @property
+    def retryable(self) -> bool:
+        return self.status == "moved_cache_pending"
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema": CURATION_CACHE_SYNC_SCHEMA,
+            "schema_version": 1,
+            "action": self.action,
+            "policy": {
+                "action": self.policy.action,
+                "strategy": self.policy.strategy,
+                "supported": self.policy.supported,
+                "reason": self.policy.reason,
+            },
+            "status": self.status,
+            "source_kind": self.source_kind,
+            "file_key": self.file_key,
+            "old_path": self.old_path,
+            "new_path": self.new_path,
+            "updated_rows": self.updated_rows,
+            "publication_epoch": self.publication_epoch,
+            "publication_status": self.publication_status,
+            "retryable": self.retryable,
+            "detail": self.detail,
+            "databases": [asdict(item) for item in self.databases],
+            "read_only": False,
+            "effects": {
+                "state": "cache_sync_publication",
+                "corpus": "none",
+                "external": "none",
+            },
+        }
+
+
+def curation_cache_policy(action: str) -> CurationCachePolicy:
+    """Return the explicit cache policy without performing any work."""
+
+    if action in CURATION_CACHE_SYNC_ACTIONS:
+        return CurationCachePolicy(
+            action=action,
+            strategy="path_transition",
+            supported=True,
+            reason="move/rename updates current owner paths after the physical effect",
+        )
+    if action == "trash":
+        return CurationCachePolicy(
+            action=action,
+            strategy="invalidation_separate",
+            supported=False,
+            reason=(
+                "trash requires a separate owner invalidation policy; "
+                "path synchronization is not applicable"
+            ),
+        )
+    raise ValueError(f"unsupported curation cache action: {action}")
+
+
+def _fixture_path(path: str | Path, *, fixture_root: Path, role: str) -> Path:
+    candidate = Path(os.path.abspath(os.fspath(path)))
+    try:
+        relative = candidate.relative_to(fixture_root)
+    except ValueError as exc:
+        raise ValueError(f"{role} escapes the disposable fixture root") from exc
+    if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+        raise ValueError(f"{role} has an unsafe fixture-relative path")
+    if candidate.resolve(strict=False) != candidate:
+        raise ValueError(f"{role} traverses a symbolic link")
+    return candidate
+
+
+def _validate_curation_fixture(
+    fixture_root: str | Path,
+    state_directory: str | Path,
+    old_path: str,
+    new_path: str,
+) -> tuple[Path, Path, Path, Path]:
+    root = Path(os.path.abspath(os.fspath(fixture_root)))
+    if not root.is_absolute() or not root.is_dir() or root.is_symlink():
+        raise ValueError("fixture_root must be an existing real directory")
+    if root.resolve(strict=True) != root:
+        raise ValueError("fixture_root traverses a symbolic link")
+    try:
+        root.relative_to(CURATION_CACHE_SYNC_TEMP_ROOT)
+    except ValueError as exc:
+        raise ValueError("curation cache synchronization is limited to temporary fixtures") from exc
+    state = _fixture_path(state_directory, fixture_root=root, role="state directory")
+    if not state.is_dir():
+        raise ValueError("state directory must be an existing fixture directory")
+    old = _fixture_path(old_path, fixture_root=root, role="source path")
+    new = _fixture_path(new_path, fixture_root=root, role="destination path")
+    if old == new:
+        raise ValueError("curation cache synchronization requires distinct paths")
+    return root, state, old, new
+
+
+@contextmanager
+def _ordered_curation_cache_lock(state_directory: Path, *, framework_lock_held: bool):
+    """Acquire the framework lock before publication and owner locks."""
+
+    if framework_lock_held:
+        yield
+        return
+    with FrameworkRunLock(state_directory / "framework.lock"):
+        yield
+
+
+def synchronize_curation_move_fixture(
+    state_directory: Path,
+    *,
+    fixture_root: Path,
+    action: str,
+    source_kind: str,
+    file_key: str,
+    old_path: str,
+    new_path: str,
+    volume_id: str,
+    file_id: str,
+    effect_applied: bool = True,
+    framework_lock_held: bool = False,
+) -> CurationCacheSyncResult:
+    """Prepare cache synchronization for one already-contained fixture effect.
+
+    Only ``move`` and ``rename`` are routed to the existing path-transition
+    engine.  ``trash`` returns a separate, explicit invalidation result and
+    never attempts to rewrite a cache path.  The function itself never moves a
+    corpus file; callers must provide the post-effect paths and may only use
+    it with temporary fixtures.  A normal owner failure is resumable as
+    ``moved_cache_pending``.  An exception after the physical effect crossed
+    the boundary is conservatively classified as ``recovery_required``.
+    """
+
+    if type(effect_applied) is not bool:
+        raise TypeError("effect_applied must be boolean")
+    if type(framework_lock_held) is not bool:
+        raise TypeError("framework_lock_held must be boolean")
+    policy = curation_cache_policy(action)
+    root = Path(os.path.abspath(os.fspath(fixture_root)))
+    if not policy.supported:
+        return CurationCacheSyncResult(
+            action=action,
+            policy=policy,
+            status="recovery_required" if effect_applied else "blocked",
+            source_kind=source_kind,
+            file_key=file_key,
+            old_path=old_path,
+            new_path=new_path,
+            detail=policy.reason,
+        )
+    try:
+        _root, state, old, new = _validate_curation_fixture(
+            root,
+            state_directory,
+            old_path,
+            new_path,
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        return CurationCacheSyncResult(
+            action=action,
+            policy=policy,
+            status="recovery_required" if effect_applied else "blocked",
+            source_kind=source_kind,
+            file_key=file_key,
+            old_path=old_path,
+            new_path=new_path,
+            detail=str(exc),
+        )
+    try:
+        with _ordered_curation_cache_lock(
+            state,
+            framework_lock_held=framework_lock_held,
+        ):
+            result = synchronize_moved_document(
+                state,
+                source_kind=source_kind,
+                file_key=file_key,
+                old_path=os.fspath(old),
+                new_path=os.fspath(new),
+                volume_id=volume_id,
+                file_id=file_id,
+            )
+    except BaseException as exc:
+        return CurationCacheSyncResult(
+            action=action,
+            policy=policy,
+            status="recovery_required" if effect_applied else "blocked",
+            source_kind=source_kind,
+            file_key=file_key,
+            old_path=os.fspath(old),
+            new_path=os.fspath(new),
+            detail=f"cache synchronization boundary is uncertain: {type(exc).__name__}: {exc}",
+        )
+    if result.complete:
+        status: CurationCacheSyncStatus = "complete"
+        detail = None
+    elif result.publication_status == "failed":
+        # A failed publication after the physical move can leave owner-local
+        # paths and the publication journal at different boundaries.  It is a
+        # manual recovery gate, not a blind retry of the effect.
+        status = "recovery_required" if effect_applied else "blocked"
+        detail = result.error_message or "cache publication requires reconciliation"
+    else:
+        status = "moved_cache_pending" if effect_applied else "blocked"
+        detail = result.error_message or "one or more owner cache transitions remain pending"
+    return CurationCacheSyncResult(
+        action=action,
+        policy=policy,
+        status=status,
+        source_kind=source_kind,
+        file_key=file_key,
+        old_path=os.fspath(old),
+        new_path=os.fspath(new),
+        updated_rows=result.updated_rows,
+        publication_epoch=result.publication_epoch,
+        publication_status=result.publication_status,
+        detail=detail,
+        databases=result.databases,
+    )
 
 
 def synchronize_moved_document(

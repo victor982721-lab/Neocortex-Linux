@@ -65,6 +65,8 @@ if TYPE_CHECKING:
     )
     from neocortex.api.public import (
         CapabilityFailure as CapabilityFailure,
+        CONTENT_DIAGNOSTICS_SCHEMA as CONTENT_DIAGNOSTICS_SCHEMA,
+        CONTENT_DIAGNOSTICS_V2_SCHEMA as CONTENT_DIAGNOSTICS_V2_SCHEMA,
         ContextBundle as ContextBundle,
         ContextContradictionRef as ContextContradictionRef,
         ContextEntityRef as ContextEntityRef,
@@ -81,6 +83,9 @@ if TYPE_CHECKING:
         KnowledgePlan as KnowledgePlan,
         KnowledgeQuery as KnowledgeQuery,
         KnowledgeQueryTelemetry as KnowledgeQueryTelemetry,
+        KNOWLEDGE_READ_BUDGET_SCHEMA as KNOWLEDGE_READ_BUDGET_SCHEMA,
+        KnowledgeReadBudget as KnowledgeReadBudget,
+        KnowledgeReadBudgetExceeded as KnowledgeReadBudgetExceeded,
         KnowledgeSearchResult as KnowledgeSearchResult,
         KnowledgeSearchService as KnowledgeSearchService,
         KnowledgeSnapshot as KnowledgeSnapshot,
@@ -114,6 +119,8 @@ if TYPE_CHECKING:
         asset_health_payload as asset_health_payload,
         code_search_payload as code_search_payload,
         context_payload as context_payload,
+        content_diagnostics_payload as content_diagnostics_payload,
+        content_diagnostics_v2_payload as content_diagnostics_v2_payload,
         evidence_payload as evidence_payload,
         lineage_payload as lineage_payload,
         operational_query_payload as operational_query_payload,
@@ -139,6 +146,8 @@ __all__ = (  # noqa: RUF022
     "CURATION_CHECKPOINT_RESUME_API_SCHEMA",
     "CURATION_CHECKPOINT_STATUS_API_SCHEMA",
     "DERIVATION_CONTRACT_SCHEMA_VERSION",
+    "CONTENT_DIAGNOSTICS_SCHEMA",
+    "CONTENT_DIAGNOSTICS_V2_SCHEMA",
     "CapabilityFailure",
     "ContextBundle",
     "ContextContradictionRef",
@@ -163,6 +172,9 @@ __all__ = (  # noqa: RUF022
     "KnowledgePlan",
     "KnowledgeQuery",
     "KnowledgeQueryTelemetry",
+    "KNOWLEDGE_READ_BUDGET_SCHEMA",
+    "KnowledgeReadBudget",
+    "KnowledgeReadBudgetExceeded",
     "KnowledgeSearchResult",
     "KnowledgeSearchService",
     "KnowledgeSnapshot",
@@ -204,6 +216,8 @@ __all__ = (  # noqa: RUF022
     "status_payload",
     "search_payload",
     "context_payload",
+    "content_diagnostics_payload",
+    "content_diagnostics_v2_payload",
     "evidence_payload",
     "operational_query_payload",
     "asset_health_payload",
@@ -352,6 +366,22 @@ _CURATION_EXPORTS: Final[dict[str, tuple[str, str]]] = {
 }
 
 _READ_EXPORTS: Final[dict[str, tuple[str, str]]] = {
+    "CONTENT_DIAGNOSTICS_SCHEMA": (
+        "neocortex.api.content_diagnostics_api",
+        "CONTENT_DIAGNOSTICS_SCHEMA",
+    ),
+    "CONTENT_DIAGNOSTICS_V2_SCHEMA": (
+        "neocortex.api.content_diagnostics_api",
+        "CONTENT_DIAGNOSTICS_V2_SCHEMA",
+    ),
+    "content_diagnostics_payload": (
+        "neocortex.api.content_diagnostics_api",
+        "content_diagnostics_payload",
+    ),
+    "content_diagnostics_v2_payload": (
+        "neocortex.api.content_diagnostics_api",
+        "content_diagnostics_v2_payload",
+    ),
     "status_payload": ("neocortex.api.read_api", "status_payload"),
     "search_payload": ("neocortex.api.read_api", "search_payload"),
     "context_payload": ("neocortex.api.read_api", "context_payload"),
@@ -363,6 +393,21 @@ _READ_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "asset_health_payload": ("neocortex.api.read_api", "asset_health_payload"),
     "code_search_payload": ("neocortex.api.read_api", "code_search_payload"),
     "lineage_payload": ("neocortex.api.read_api", "lineage_payload"),
+}
+
+_KNOWLEDGE_READ_EXPORTS: Final[dict[str, tuple[str, str]]] = {
+    "KNOWLEDGE_READ_BUDGET_SCHEMA": (
+        "neocortex.knowledge.knowledge_read_budget",
+        "KNOWLEDGE_READ_BUDGET_SCHEMA",
+    ),
+    "KnowledgeReadBudget": (
+        "neocortex.knowledge.knowledge_read_budget",
+        "KnowledgeReadBudget",
+    ),
+    "KnowledgeReadBudgetExceeded": (
+        "neocortex.knowledge.knowledge_read_budget",
+        "KnowledgeReadBudgetExceeded",
+    ),
 }
 
 _LIFECYCLE_EXPORTS: Final[dict[str, tuple[str, str]]] = {
@@ -407,6 +452,7 @@ def __getattr__(name: str) -> Any:
     target = (
         _CURATION_EXPORTS.get(name)
         or _READ_EXPORTS.get(name)
+        or _KNOWLEDGE_READ_EXPORTS.get(name)
         or _LIFECYCLE_EXPORTS.get(name)
     )
     if target is None:

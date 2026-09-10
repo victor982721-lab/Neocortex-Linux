@@ -55,13 +55,35 @@ def _observe_owner(connection: sqlite3.Connection, owner: str) -> dict[str, Any]
 
 
 def _owner_revision(row: sqlite3.Row, owner: str) -> dict[str, object]:
-    revision: dict[str, object] = {name: row[name] for name in (
-        "size", "mtime_ns", "birthtime_ns", "processing_signature", "last_seen_run_id",
-    )}
+    revision: dict[str, object] = {
+        name: row[name]
+        for name in ("size", "mtime_ns", "birthtime_ns", "processing_signature", "last_seen_run_id")
+        if name in row.keys()
+    }
     if owner == "text" and row["revision_id"] is not None:
         revision["revision_id"] = row["revision_id"]
     if owner == "pdf":
         revision["is_partial"] = bool(row["is_partial"])
+    if owner == "video":
+        for name in (
+            "frame_count",
+            "ocr_frame_count",
+            "ocr_text_chars",
+            "audio_file_key",
+            "audio_processing_signature",
+            "audio_status",
+        ):
+            if name in row.keys():
+                revision[name] = row[name]
+    if owner == "image":
+        if "ocr_text_chars" in row.keys():
+            revision["ocr_text_chars"] = row["ocr_text_chars"]
+        if "ocr_text_truncated" in row.keys():
+            revision["ocr_text_truncated"] = bool(row["ocr_text_truncated"])
+        if "processing_signature" in row.keys():
+            revision["processing_signature"] = row["processing_signature"] or "unprocessed"
+    if owner == "code" and "version_id" in row.keys():
+        revision["version_id"] = row["version_id"]
     return revision
 
 
@@ -71,6 +93,9 @@ def _owner_record(
     statuses = {
         "text": {"complete"}, "pdf": {"done", "partial"},
         "docx": {"complete", "partial"}, "office": {"complete"}, "archive": {"indexed"},
+        "audio": {"complete", "no_speech"}, "video": {"complete", "partial"},
+        "image": {"done", "partial"},
+        "code": {"current"},
     }
     if owner == "archive":
         rows = connection.execute(
@@ -81,6 +106,24 @@ def _owner_record(
                FROM documents d JOIN containers c ON c.container_key=d.container_key
                WHERE d.file_key=? LIMIT 2""", (file_key,),
         ).fetchall()
+    elif owner == "image":
+        rows = connection.execute(
+            "SELECT * FROM images WHERE file_key=? LIMIT 2", (file_key,),
+        ).fetchall()
+    elif owner == "code":
+        volume, separator, physical_file = file_key.partition(":")
+        if not separator or not volume or not physical_file:
+            raise EvidenceLookupError("invalid_evidence_reference")
+        rows = connection.execute(
+            """SELECT f.volume_id,f.physical_file_id,f.current_path AS path,
+                      f.status,f.last_seen_run_id,v.version_id,v.size,v.mtime_ns,
+                      v.birthtime_ns,v.processing_signature,v.analysis_status,
+                      v.text_chars,v.language
+               FROM files f JOIN file_versions v ON v.version_id=f.current_version_id
+               WHERE f.volume_id=? AND f.physical_file_id=? AND f.status='current'
+                 AND v.invalidated_ns IS NULL LIMIT 2""",
+            (volume, physical_file),
+        ).fetchall()
     else:
         rows = connection.execute(
             "SELECT * FROM documents WHERE file_key=? LIMIT 2", (file_key,),
@@ -89,6 +132,14 @@ def _owner_record(
         raise EvidenceLookupError("published_evidence_absent_or_ambiguous")
     row = rows[0]
     if owner == "office" and row["format"] != source_kind:
+        raise EvidenceLookupError("owner_revision_changed")
+    if owner == "audio" and source_kind != "audio":
+        raise EvidenceLookupError("owner_revision_changed")
+    if owner == "video" and source_kind != "video":
+        raise EvidenceLookupError("owner_revision_changed")
+    if owner == "image" and source_kind not in {"image", "image_ocr"}:
+        raise EvidenceLookupError("owner_revision_changed")
+    if owner == "code" and source_kind != "code":
         raise EvidenceLookupError("owner_revision_changed")
     if owner == "archive":
         if row["container_status"] not in {"complete", "partial"}:
@@ -125,6 +176,78 @@ def _validate_owner_locator(
         resolved.section_kind != "archive_member" or resolved.section_id != row["member_chain"]
     ):
         raise EvidenceLookupError("evidence_locator_changed")
+    elif owner == "audio":
+        if resolved.section_kind != "audio_segment" or resolved.section_id is None:
+            raise EvidenceLookupError("unsupported_evidence_lookup")
+        try:
+            segment_index = int(resolved.section_id)
+        except (TypeError, ValueError):
+            raise EvidenceLookupError("invalid_evidence_reference") from None
+        segment = connection.execute(
+            "SELECT start_ms,end_ms,text FROM segments "
+            "WHERE file_key=? AND segment_index=? LIMIT 2",
+            (row["file_key"], segment_index),
+        ).fetchall()
+        if len(segment) != 1:
+            raise EvidenceLookupError("evidence_locator_changed")
+        actual = segment[0]
+        provenance = resolved.section_provenance
+        locator = provenance.get("locator") if isinstance(provenance, Mapping) else None
+        locator = locator if isinstance(locator, Mapping) else {}
+        for name in ("start_ms", "end_ms"):
+            expected = actual[name]
+            supplied = provenance.get(name, locator.get(name))
+            if supplied is not None and supplied != expected:
+                raise EvidenceLookupError("evidence_locator_changed")
+    elif owner == "video":
+        if resolved.section_kind != "video_frame_ocr" or resolved.section_id is None:
+            # Linked audio transcripts are owned by the audio database and are
+            # not replayable through a video owner reference.
+            raise EvidenceLookupError("unsupported_evidence_lookup")
+        try:
+            frame_index = int(resolved.section_id)
+        except (TypeError, ValueError):
+            raise EvidenceLookupError("invalid_evidence_reference") from None
+        rows = connection.execute(
+            "SELECT timestamp_ms,content_xxh3_128,ocr_available,ocr_text "
+            "FROM frames WHERE file_key=? AND frame_index=? LIMIT 2",
+            (row["file_key"], frame_index),
+        ).fetchall()
+        if len(rows) != 1 or not bool(rows[0]["ocr_available"]):
+            raise EvidenceLookupError("published_evidence_absent_or_ambiguous")
+        actual = rows[0]
+        provenance = resolved.section_provenance
+        locator = provenance.get("locator") if isinstance(provenance, Mapping) else None
+        locator = locator if isinstance(locator, Mapping) else {}
+        supplied_timestamp = provenance.get("timestamp_ms", locator.get("timestamp_ms"))
+        if supplied_timestamp is not None and supplied_timestamp != actual["timestamp_ms"]:
+            raise EvidenceLookupError("evidence_locator_changed")
+        if provenance.get("content_xxh3_128") is not None and (
+            provenance.get("content_xxh3_128") != actual["content_xxh3_128"]
+        ):
+            raise EvidenceLookupError("evidence_locator_changed")
+    elif owner == "image":
+        if resolved.section_kind != "image_ocr" or resolved.section_id != "ocr":
+            raise EvidenceLookupError("unsupported_evidence_lookup")
+        if row["ocr_text_zlib"] is None or row["ocr_text_chars"] is None:
+            raise EvidenceLookupError("published_evidence_absent_or_ambiguous")
+    elif owner == "code":
+        if not resolved.section_kind or not resolved.section_kind.startswith("code_"):
+            raise EvidenceLookupError("unsupported_evidence_lookup")
+        if resolved.section_id is None or not resolved.section_id.isdecimal():
+            raise EvidenceLookupError("invalid_evidence_reference")
+        rows = connection.execute(
+            """SELECT start_line,end_line,symbol_id,text FROM code_chunks
+               WHERE version_id=? AND chunk_index=? LIMIT 2""",
+            (row["version_id"], int(resolved.section_id)),
+        ).fetchall()
+        if len(rows) != 1:
+            raise EvidenceLookupError("evidence_locator_changed")
+        actual = rows[0]
+        provenance = resolved.section_provenance
+        for name in ("start_line", "end_line"):
+            if provenance.get(name) is not None and provenance.get(name) != actual[name]:
+                raise EvidenceLookupError("evidence_locator_changed")
 
 
 def _semantic_fragment(
@@ -155,6 +278,28 @@ def _semantic_fragment(
         ("page", page), ("section_kind", section_kind), ("section_id", resolved.section_id),
     )):
         raise EvidenceLookupError("evidence_locator_changed")
+    actual_provenance = resolved.section_provenance
+    nested_provenance = actual_provenance.get("locator")
+    nested_provenance = nested_provenance if isinstance(nested_provenance, Mapping) else {}
+    for name in (
+        "start_line",
+        "end_line",
+        "sheet",
+        "cell_range",
+        "start_ms",
+        "end_ms",
+        "symbol",
+        "coordinate_space",
+        "bounding_box",
+    ):
+        if name not in locator:
+            continue
+        actual = actual_provenance.get(name, nested_provenance.get(name))
+        supplied = locator.get(name)
+        if name == "bounding_box" and isinstance(actual, tuple):
+            actual = list(actual)
+        if supplied != actual:
+            raise EvidenceLookupError("evidence_locator_changed")
     full_chunk_requested = (requested_start, requested_end) == (chunk_start, chunk_end)
     # Chunks collapse whitespace: their normalized text need not share the
     # source section's character coordinates. Never invent that missing map.
@@ -185,7 +330,13 @@ def _lexical_range(
     total: int,
 ) -> tuple[int, int]:
     """Return a source-backed lexical range, never an arbitrary prefix."""
-    expected_kind = "pdf_page" if owner == "pdf" else "document"
+    expected_kind = (
+        "pdf_page"
+        if owner == "pdf"
+        else "transcript"
+        if owner == "audio"
+        else "document"
+    )
     expected_id = str(page) if owner == "pdf" else "fulltext"
     if locator.get("section_kind") != expected_kind or locator.get("section_id") != expected_id:
         raise EvidenceLookupError("evidence_locator_changed")
@@ -321,12 +472,16 @@ def lookup_owner_evidence(
     """Return one ordinary Knowledge result from a bound owner record."""
     owner = source.get("owner")
     source_kind = source.get("source_kind")
-    if not isinstance(owner, str) or owner not in {"text", "pdf", "docx", "office", "archive"}:
+    if not isinstance(owner, str) or owner not in {
+        "text", "pdf", "docx", "office", "archive", "audio", "video", "image", "code",
+    }:
         raise EvidenceLookupError("unsupported_evidence_lookup")
     allowed_kinds = (
         _LEXICAL_OWNER_FORMATS["office"].intersection(TEXT_SOURCE_KINDS)
         if owner == "office" else {owner}
     )
+    if owner == "image":
+        allowed_kinds = {"image", "image_ocr"}
     if not isinstance(source_kind, str) or source_kind not in allowed_kinds:
         raise EvidenceLookupError("unsupported_evidence_lookup")
     file_key = citation.get("source_identity")
@@ -341,11 +496,20 @@ def lookup_owner_evidence(
         isinstance(page, bool) or not isinstance(page, int) or not 0 <= page <= _SQLITE_MAX_INTEGER
     ):
         raise EvidenceLookupError("invalid_evidence_reference")
-    section = str(page) if owner == "pdf" else "fulltext"
-    lexical_entity_id = (
-        f"lexical:pdf:{file_key}:page:{section}" if owner == "pdf"
-        else f"lexical:{owner}:{file_key}:fulltext" if owner in {"text", "docx"} else None
-    )
+    if owner == "pdf":
+        section = str(page)
+        lexical_entity_id = f"lexical:pdf:{file_key}:page:{section}"
+    elif owner in {"text", "docx", "audio"}:
+        section = "fulltext"
+        lexical_entity_id = f"lexical:{owner}:{file_key}:fulltext"
+    elif owner == "video":
+        section = str(locator.get("section_id", ""))
+        if not section.isdecimal():
+            raise EvidenceLookupError("invalid_evidence_reference")
+        lexical_entity_id = f"lexical:video:{file_key}:frame:{section}"
+    else:
+        section = "fulltext"
+        lexical_entity_id = None
     entity_id = citation.get("retrieval_entity_id")
     if not isinstance(entity_id, str) or not entity_id or len(entity_id) > 4096:
         raise EvidenceLookupError("invalid_evidence_reference")
@@ -397,6 +561,111 @@ def lookup_owner_evidence(
                 (start_char, end_char - start_char, file_key,
                  "complete", "partial" if owner == "docx" else "complete"),
             ).fetchall()
+        elif owner == "audio":
+            rows = connection.execute(
+                """SELECT d.*,length(f.body) AS evidence_total_chars,
+                          (SELECT COUNT(*) FROM segments s
+                           WHERE s.file_key=d.file_key) AS evidence_segment_count,
+                          (SELECT s.start_ms FROM segments s
+                           WHERE s.file_key=d.file_key ORDER BY s.segment_index LIMIT 1)
+                           AS evidence_start_ms,
+                          (SELECT s.end_ms FROM segments s
+                           WHERE s.file_key=d.file_key ORDER BY s.segment_index LIMIT 1)
+                           AS evidence_end_ms
+                   FROM documents d JOIN transcript_fts f ON f.file_key=d.file_key
+                   WHERE d.file_key=? AND d.status IN ('complete','no_speech')
+                   LIMIT 2""",
+                (file_key,),
+            ).fetchall()
+            if len(rows) != 1:
+                raise EvidenceLookupError("published_evidence_absent_or_ambiguous")
+            # Lexical Audio historically publishes one aggregate transcript
+            # reference.  Segment timing is retained when there is exactly one
+            # segment; multiple segments remain a bounded document excerpt
+            # rather than an invented segment binding.
+            if locator.get("section_kind") not in {"transcript", "audio_segment"}:
+                raise EvidenceLookupError("evidence_locator_changed")
+            if any(name in locator for name in ("start_ms", "end_ms")):
+                if int(rows[0]["evidence_segment_count"] or 0) != 1 or any(
+                    locator.get(name) != rows[0][f"evidence_{name}"]
+                    for name in ("start_ms", "end_ms")
+                ):
+                    raise EvidenceLookupError("evidence_locator_changed")
+            audio_range_locator = {
+                "section_kind": "transcript",
+                "section_id": "fulltext",
+                **{
+                    name: locator[name]
+                    for name in ("start_char", "end_char")
+                    if name in locator
+                },
+            }
+            start_char, end_char = _lexical_range(
+                owner, audio_range_locator, page=page, total=int(rows[0]["evidence_total_chars"]),
+            )
+            rows = connection.execute(
+                """SELECT d.*,substr(f.body,?+1,?) AS evidence_text,
+                          length(f.body) AS evidence_total_chars,
+                          (SELECT COUNT(*) FROM segments s
+                           WHERE s.file_key=d.file_key) AS evidence_segment_count,
+                          (SELECT s.start_ms FROM segments s
+                           WHERE s.file_key=d.file_key ORDER BY s.segment_index LIMIT 1)
+                           AS evidence_start_ms,
+                          (SELECT s.end_ms FROM segments s
+                           WHERE s.file_key=d.file_key ORDER BY s.segment_index LIMIT 1)
+                           AS evidence_end_ms
+                   FROM documents d JOIN transcript_fts f ON f.file_key=d.file_key
+                   WHERE d.file_key=? AND d.status IN ('complete','no_speech')
+                   LIMIT 2""",
+                (start_char, end_char - start_char, file_key),
+            ).fetchall()
+        elif owner == "video":
+            frame = locator.get("section_id")
+            if isinstance(frame, bool) or not isinstance(frame, str) or not frame.isdecimal():
+                raise EvidenceLookupError("invalid_evidence_reference")
+            rows = connection.execute(
+                """SELECT d.*,fr.timestamp_ms AS evidence_timestamp_ms,
+                          fr.content_xxh3_128 AS evidence_content_xxh3_128,
+                          fr.ocr_available,fr.ocr_text AS evidence_text,
+                          length(fr.ocr_text) AS evidence_total_chars
+                   FROM documents d JOIN frames fr ON fr.file_key=d.file_key
+                   WHERE d.file_key=? AND fr.frame_index=?
+                     AND d.status IN ('complete','partial') AND fr.ocr_available=1
+                   LIMIT 2""",
+                (file_key, int(frame)),
+            ).fetchall()
+            if len(rows) != 1:
+                raise EvidenceLookupError("published_evidence_absent_or_ambiguous")
+            if any(
+                locator.get(name) != rows[0][f"evidence_{name}"]
+                for name in ("start_ms", "end_ms")
+                if name in locator
+            ):
+                raise EvidenceLookupError("evidence_locator_changed")
+            start_char, end_char = _lexical_range(
+                "text",
+                {
+                    "section_kind": "document",
+                    "section_id": "fulltext",
+                    **{
+                        name: locator[name]
+                        for name in ("start_char", "end_char")
+                        if name in locator
+                    },
+                },
+                page=None, total=int(rows[0]["evidence_total_chars"] or 0),
+            )
+            rows = connection.execute(
+                """SELECT d.*,fr.timestamp_ms AS evidence_timestamp_ms,
+                          fr.content_xxh3_128 AS evidence_content_xxh3_128,
+                          fr.ocr_available,substr(fr.ocr_text,?+1,?) AS evidence_text,
+                          length(fr.ocr_text) AS evidence_total_chars
+                   FROM documents d JOIN frames fr ON fr.file_key=d.file_key
+                   WHERE d.file_key=? AND fr.frame_index=?
+                     AND d.status IN ('complete','partial') AND fr.ocr_available=1
+                   LIMIT 2""",
+                (start_char, end_char - start_char, file_key, int(frame)),
+            ).fetchall()
         else:
             rows = connection.execute(
                 """SELECT d.*,length(f.text) AS evidence_total_chars
@@ -420,15 +689,47 @@ def lookup_owner_evidence(
             if len(rows) != 1:
                 raise EvidenceLookupError("published_evidence_absent_or_ambiguous")
             row = rows[0]
+            if owner == "pdf":
+                resolved_section_kind = "pdf_page"
+            elif owner == "audio":
+                resolved_section_kind = "transcript"
+            elif owner == "video":
+                resolved_section_kind = "video_frame_ocr"
+            else:
+                resolved_section_kind = "document"
+            section_provenance: dict[str, object] = {}
+            if owner == "audio" and int(row["evidence_segment_count"] or 0) == 1:
+                section_provenance.update(
+                    {
+                        "start_ms": int(row["evidence_start_ms"]),
+                        "end_ms": int(row["evidence_end_ms"]),
+                    }
+                )
+            elif owner == "video":
+                timestamp_ms = int(row["evidence_timestamp_ms"])
+                hours, remainder = divmod(max(0, timestamp_ms), 3_600_000)
+                minutes, remainder = divmod(remainder, 60_000)
+                seconds, milliseconds = divmod(remainder, 1000)
+                section_provenance.update(
+                    {
+                        "start_ms": timestamp_ms,
+                        "end_ms": timestamp_ms + 1,
+                        "timestamp": f"{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}",
+                        "frame_index": int(section),
+                        "content_xxh3_128": str(row["evidence_content_xxh3_128"]),
+                    }
+                )
             resolved = ResolvedSearchHit(
                 hit=SearchHit(ref_id=0, entity_id=entity_id, item_id=f"item:{owner}:{file_key}",
                               indexed_model_signature="owner-evidence-direct-v1",
                               vector_space="owner:evidence:text:v1", modality=EmbeddingModality.TEXT,
                               score=0.0, generation_id=0),
                 path=str(row["path"]), source_kind=owner, source_identity=file_key,
-                section_kind="pdf_page" if owner == "pdf" else "document", section_id=section,
+                section_kind=resolved_section_kind, section_id=section,
                 start_char=start_char, end_char=end_char, snippet=str(row["evidence_text"] or ""),
-                source_revision=_owner_revision(row, owner), source_status=str(row["status"]),
+                source_revision=_owner_revision(row, owner),
+                section_provenance=section_provenance,
+                source_status=str(row["status"]),
             )
             extent = _lexical_extent(
                 row, owner, resolved.snippet or "", page,

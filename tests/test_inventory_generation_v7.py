@@ -466,7 +466,11 @@ def test_incremental_checkpoint_and_aggregates_commit_or_rollback_together(
         assert committed.files_seen == 2
         assert committed.bytes_seen == len(b"first") + len(b"second-file")
         assert index.file_count(scan.scan_id) == 2
-        assert index.inventory_checkpoint(root) == advanced
+        committed_checkpoint = index.inventory_checkpoint(root)
+        assert committed_checkpoint is not None
+        assert committed_checkpoint.next_usn == advanced.next_usn
+        assert committed_checkpoint.scan_id == index.current_scan_id(scan.scan_id)
+        assert committed_checkpoint.scan_id != scan.scan_id
 
 
 # endregion [02]

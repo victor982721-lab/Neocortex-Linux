@@ -262,6 +262,9 @@ Las comprobaciones tienen alcance explícito y no convierten lo omitido en sano:
 Neocortex --state-health --state-health-scope compatibility --state-health-json
 Neocortex --state-health --state-health-owner semantic --state-health-timeout 180 --state-health-json
 Neocortex --archive-issues 20 --diagnostics-reason archive_member_count_limit --diagnostics-json
+Neocortex --root /ruta/muestra --content-diagnostics 20 --diagnostics-owner all --diagnostics-json
+Neocortex --root /ruta/muestra --content-diagnostics 20 --diagnostics-owner text \
+  --diagnostics-budget-rows 500 --diagnostics-deadline-seconds 5 --diagnostics-json
 Neocortex --review-candidates 20 --review-json
 Neocortex --action-recovery-status --action-recovery-json
 ```
@@ -273,8 +276,8 @@ snapshot. Las páginas vacías explican disponibilidad y cobertura; JSONL legacy
 se solicita explícitamente con `--review-json-lines` o
 `--action-recovery-json-lines`, junto a su selector JSON.
 
-Los presupuestos de snapshots se comprueban antes de copiar y pueden agotarse;
-eso no demuestra corrupción. Retención sigue siendo diagnóstico/planificación,
+Los presupuestos de snapshots y `KnowledgeReadBudget` se comprueban antes de
+copiar o continuar y pueden agotarse; eso no demuestra corrupción. Retención sigue siendo diagnóstico/planificación,
 no compactación ni garantía de liberar espacio. Una nueva ejecución y sus
 recibos son compatibles con replay, pero no justifican rehacer derivados sin
 cambio de entrada. Un piloto detenido a los 15 minutos queda pendiente con su
@@ -295,7 +298,9 @@ manifest/digest presentado, detén writers y sigue [RECOVERY.md](RECOVERY.md).
 La release activa comprobada es
 `0.13.0-1567fe46821b-cp314-linux-x86_64` (`source_sha=1567fe4...`), con rollback
 inmediato `0.13.0-42115cd060f3-cp314-linux-x86_64` y `.staging` vacío. La última
-integración verificó `HEAD == main == origin/main == 1567fe4...` y árbol limpio.
+integración de fuente verificó `HEAD == main == origin/main == 4c5d430...`; la
+tranche post-0.13 del checkout requiere una nueva release antes de ejecutarse
+desde el launcher.
 
 La [instalación ordinaria offline](LINUX_KUBUNTU.md#instalación-ordinaria-desde-una-extracción)
 en venv CPython 3.13 no promueve una release ni requiere Git. El procedimiento

@@ -23,16 +23,22 @@ class ReadClientError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class ReadRequest:
-    """One bounded desktop request over a fixed published-state scope."""
+    """One bounded desktop request over a fixed published-state scope.
+
+    Context reads default to the compact v2 contract.  The v1 context envelope
+    remains available only by setting ``response_version=1`` explicitly.
+    """
 
     operation: ReadOperation
     scope: str = "all"
     query: str = ""
     limit: int = 10
+    response_version: int = 2
 
     def validated(self) -> ReadRequest:
         self._validate_choices()
         self._validate_limit()
+        self._validate_response_version()
         query = self.query.strip()
         self._validate_query(query)
         return ReadRequest(
@@ -40,6 +46,7 @@ class ReadRequest:
             scope=self.scope,
             query=query,
             limit=self.limit,
+            response_version=self.response_version,
         )
 
     def _validate_choices(self) -> None:
@@ -53,6 +60,14 @@ class ReadRequest:
             raise ValueError("limit must be an integer")
         if not 1 <= self.limit <= MAX_RESULTS_PER_SCOPE:
             raise ValueError(f"limit must be between 1 and {MAX_RESULTS_PER_SCOPE} per scope")
+
+    def _validate_response_version(self) -> None:
+        if (
+            isinstance(self.response_version, bool)
+            or not isinstance(self.response_version, int)
+            or self.response_version not in {1, 2}
+        ):
+            raise ValueError("response_version must be 1 or 2")
 
     def _validate_query(self, query: str) -> None:
         if self.operation in {"search", "ask"} and not query:

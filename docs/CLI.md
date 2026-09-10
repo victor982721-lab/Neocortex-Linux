@@ -5,6 +5,31 @@ exacta vive en `neocortex/api/cli/cli_parser.py` y en los subparsers de
 `neocortex.api.cli.human`; este documento organiza su uso, no sustituye
 `Neocortex --help`.
 
+## Diagnósticos federados v2
+
+La vista aditiva `content-diagnostics/v2` consulta únicamente estado publicado,
+sin escanear el corpus ni crear owners. Acepta un owner o `all`, filtros y un
+cursor ligado a raíz, filtros y snapshots; distingue owner ausente, parcial,
+futuro, corrupto, bloqueado y no disponible de cero incidencias.
+
+```bash
+Neocortex --root "$Root" --content-diagnostics 20 \
+  --diagnostics-owner all --diagnostics-json
+Neocortex --root "$Root" --content-diagnostics 20 \
+  --diagnostics-owner text --diagnostics-budget-rows 500 \
+  --diagnostics-deadline-seconds 5 --diagnostics-json
+```
+
+`--pdf-diagnostics`, `--text-errors` y `--archive-issues` conservan el
+contrato v1. La API/SDK exponen `content_diagnostics_v2_payload`; MCP conserva
+`content_diagnostics` v1 y añade `content_diagnostics_v2`. Todas las variantes
+son read-only y no conceden autoridad.
+
+Las consultas Knowledge admiten límites opcionales de lectura (`--knowledge-budget-rows`,
+`--knowledge-budget-vectors`, `--knowledge-budget-temporary-bytes` y
+`--knowledge-budget-seconds`); el agotamiento devuelve cobertura parcial y una
+razón tipada, sin reintento ciego ni cache de resultados.
+
 ## Estado del lifecycle de curación
 
 **CURRENT — consulta:** `curate plan` consulta la raíz de estado canónica, no
@@ -226,7 +251,7 @@ NeoCortex se abstiene antes de crear estado y muestra cómo usar
 `--all` selecciona todas las rutas registradas, incluida Code. No ejecuta código
 del corpus ni produce evidencia de validación del repositorio.
 
-### Lifecycle durable de `--all` (0.13 en desarrollo)
+### Lifecycle durable de `--all` (0.13 instalado)
 
 Una corrida amplia puede fijar un presupuesto global opcional para todo el
 lifecycle, no sólo para una ruta o un documento:

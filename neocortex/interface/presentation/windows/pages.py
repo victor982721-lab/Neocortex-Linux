@@ -469,6 +469,50 @@ def build_consultation_page(window: Any) -> QWidget:
     result_actions.addWidget(window.consult_copy_button)
     result_layout.addLayout(result_actions)
     layout.addWidget(result_panel)
+
+    curation_panel = QFrame()
+    curation_panel.setObjectName("Panel")
+    curation_layout = QVBoxLayout(curation_panel)
+    curation_layout.setContentsMargins(22, 20, 22, 22)
+    curation_layout.setSpacing(10)
+    curation_heading = QHBoxLayout()
+    curation_heading.addWidget(
+        window._section_heading(
+            "Curación y recovery",
+            "Grants, intentos, receipts y observaciones durables en solo lectura",
+        ),
+        1,
+    )
+    window.curation_status = StatusPill("idle")
+    window.curation_status.setText("Solo lectura")
+    curation_heading.addWidget(window.curation_status)
+    curation_layout.addLayout(curation_heading)
+    curation_actions = QHBoxLayout()
+    window.curation_refresh_button = QPushButton("Actualizar vista")
+    window.curation_refresh_button.clicked.connect(window._refresh_curation_view)
+    window.curation_copy_button = QPushButton("Copiar vista")
+    window.curation_copy_button.setEnabled(False)
+    window.curation_copy_button.clicked.connect(window._copy_curation_result)
+    curation_actions.addStretch(1)
+    curation_actions.addWidget(window.curation_refresh_button)
+    curation_actions.addWidget(window.curation_copy_button)
+    curation_layout.addLayout(curation_actions)
+    window.curation_result_summary = QLabel(
+        "La vista durable no ejecuta apply, restore ni ninguna mutación."
+    )
+    window.curation_result_summary.setObjectName("SectionCaption")
+    window.curation_result_summary.setWordWrap(True)
+    window.curation_result = QPlainTextEdit()
+    window.curation_result.setObjectName("CurationResult")
+    window.curation_result.setReadOnly(True)
+    window.curation_result.setMaximumBlockCount(2_000)
+    window.curation_result.setMinimumHeight(240)
+    window.curation_result.setPlainText(
+        "NeoCortex mostrará aquí el estado de grants, intentos y recovery sin crear efectos."
+    )
+    curation_layout.addWidget(window.curation_result_summary)
+    curation_layout.addWidget(window.curation_result)
+    layout.addWidget(curation_panel)
     layout.addStretch(1)
 
     window.consult_operation.currentIndexChanged.connect(window._consult_operation_changed)

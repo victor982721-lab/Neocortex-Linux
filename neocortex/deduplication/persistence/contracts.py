@@ -15,6 +15,7 @@ from .ddl import (
     build_v9_schema,
     build_v10_schema,
     build_v11_schema,
+    build_v12_schema,
 )
 
 
@@ -58,3 +59,8 @@ def inventory_v10_schema_contract() -> SQLiteSchemaContract:
 @lru_cache(maxsize=1)
 def inventory_v11_schema_contract() -> SQLiteSchemaContract:
     return schema_contract_from_builder(build_v11_schema)
+
+
+@lru_cache(maxsize=1)
+def inventory_v12_schema_contract() -> SQLiteSchemaContract:
+    return schema_contract_from_builder(build_v12_schema)
