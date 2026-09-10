@@ -1,21 +1,21 @@
 # Handoff operativo vigente — NeoCortex
 
-**Última verificación:** 2026-09-09T22:22:00-06:00, `America/Mexico_City`
+**Última verificación:** 2026-09-10T07:38:26-06:00, `America/Mexico_City`
 **Checkout:** `/home/winterboss/Neocortex/Repository`
 **Fuente de verdad:** estado vivo de `main`/`origin/main`,
 `PENDIENTES.md`, `HISTORIAL.md` y receipts canónicos fechados
 
 **Estado vivo:** la verificación de integración confirma `HEAD == main ==
 origin/main` y árbol limpio. `current` apunta a
-`0.13.0-38283df08491-cp314-linux-x86_64`
-(`source_sha=38283df08491ae00619b17139bd277dea719187f`), el rollback inmediato es
-`0.13.0-5b1873294ba7-cp314-linux-x86_64` y `.staging` está vacío. Los commits
+`0.13.0-c2066dcbd967-cp314-linux-x86_64`
+(`source_sha=c2066dcbd967e8804df559f1fc9d15abdbd783bc`), el rollback inmediato es
+`0.13.0-38283df08491-cp314-linux-x86_64` y `.staging` está vacío. Los commits
 posteriores al SHA ejecutable son documentales; no se reescribió historia.
 
 ## Alcance actual
 
 La tranche post-0.13 quedó implementada, publicada e instalada en el artefacto
-activo desde `38283df08491ae00619b17139bd277dea719187f`; mantiene las nueve rutas
+activo desde `c2066dcbd967e8804df559f1fc9d15abdbd783bc`; mantiene las nueve rutas
 (`pdf`, `docx`, `office`, `archive`, `text`, `audio`, `video`, `image`, `code`),
 inventario, catalogación/deduplicación, Semantic y Code bajo el lifecycle
 Framework reanudable, con manifest, stages, checkpoints, presupuesto global,
@@ -33,25 +33,22 @@ autenticado. MCP no recibe autorización, aplicación ni conciliación escrita.
 La tranche incorpora los límites compartidos de `KnowledgeReadBudget` para
 curación `scan/verify/apply` y la proyección pública estable de evidencia
 Knowledge v1 con exports API/SDK. Sus focales pasaron y el artefacto instalado
-corresponde al SHA documental final `38283df`.
+corresponde al SHA final `c2066dc`.
 
 La suite integral anterior terminó con **6959 pasadas, 67 omitidas y 42
 subtests**. Para la nueva tranche, los focales fueron **42** pasadas de curación
 y **202** de Knowledge/API; Ruff quedó limpio y Pyright terminó sin errores en
-el foco. La suite completa desde el checkout final produjo **6984 pasadas, 59
-omitidas y 42 subtests**, con un único fallo temporal en
-`test_global_budget_covers_route_semantic_and_final_deadline_gate` (el deadline
-de 1 ms ganó a la aserción de items); la repetición aislada inmediata pasó. El
-receipt integral no se presenta como limpio hasta estabilizar esa barrera
-flaky.
+el foco. Tras la corrección determinista del reloj, la suite completa desde el
+checkout final terminó **6984 pasadas, 60 omitidas y 42 subtests**, sin fallos.
+El test de deadline corregido pasó **20/20**.
 
 La release activa verificó manifest, árbol, launcher y procedencia. Sus hashes son:
 
-- manifest `ea52172b62bc5fbb031a2c767c9ab94aa6c871b5d36bf1baae92f78736a7e9ef`;
-- árbol `1c8e83888a21601d2922ae45dca8dd292000a9e3b55d910dbe7d53ed2c7c8620`;
-- launcher `1aa9549679d1a3ee2e4156f3f51779d03359304eacea6170b7513314e7069299`;
+- manifest `2f071256ead3f78b4dd3ce6e1758abe7c8cc1474d7de3e67995a6507362e9418`;
+- árbol `73854c3b95d96a43c79c460ecbcabc0e990410dd7acfa16d6e035ac01631ef1a`;
+- launcher `59186ce96555fd8d43a795c30337b92e3ce3aa2bfb43d4717ecc750094ea3a1a`;
 - wheel `7d2fe292a55e6c49d43363f18011907ff79b6781c116bc44dea791395d1d8c40`;
-- manifest de fuente `1bdc362314ee2fa5cc34b35ffc32c2481b021ed447e6d0c68d35cff6a3f3c693`.
+- manifest de fuente `19f2cce725bb9a7d1a60e05a75b3cb4d3401f1f35309d9bf4abb7bd2c517e1b9`.
 
 La release final quedó promovida al namespace canónico después de cerrar los
 `agent serve` idle de las releases históricas; `agent serve` quedó en cero, no se
@@ -68,11 +65,10 @@ El primer smoke con cache de modelos aislado, `RC1=2`/`RC2=2` por
 
 ## Gates y siguiente paso
 
-1. Conservar `current` en `0.13.0-38283df08491-cp314-linux-x86_64` y el rollback
-   inmediato `0.13.0-5b1873294ba7-cp314-linux-x86_64`; no retirar el rollback.
-2. Resolver o caracterizar de forma estable el único fallo temporal del full
-   suite antes de cerrar `NEO-CUR-007` y `NEO-EVO-007`; los focales y la release
-   instalada ya están verificados.
+1. Conservar `current` en `0.13.0-c2066dcbd967-cp314-linux-x86_64` y el rollback
+   inmediato `0.13.0-38283df08491-cp314-linux-x86_64`; no retirar el rollback.
+2. Preparar la siguiente tranche de interfaces Knowledge/API read-only con
+   ownership separado; no conectar `agent_server.py` ni MCP en esta etapa.
 3. Mantener `NEO-FUN-002` en `ESPERA_TERCERO`: CA-12 sigue `PARTIAL` y CA-15
    conserva 33.1% de excerpt, sin reabrir R1–R4 ni hacer tuning.
 4. Mantener `NEO-AUTH-001` en `EN_CURSO`: falta principal autenticado confiable
@@ -104,7 +100,7 @@ el cierre de 0.13:
   `.staging` quedó vacío.
 
 Estas observaciones son históricas y permanecen separadas de la aceptación
-vigente del lifecycle 0.13, que corresponde al SHA `38283df08491` y su artefacto
+vigente del lifecycle 0.13, que corresponde al SHA `c2066dcbd967` y su artefacto
 instalado.
 
 ## Gates y siguiente paso
