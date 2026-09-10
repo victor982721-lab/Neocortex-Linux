@@ -1,63 +1,81 @@
 # Handoff operativo vigente — NeoCortex
 
-**Última verificación:** 2026-09-09, `America/Mexico_City`
+**Última verificación:** 2026-09-09T19:46:13-06:00, `America/Mexico_City`
 **Checkout:** `/home/winterboss/Neocortex/Repository`
 **Fuente de verdad:** estado vivo de `main`/`origin/main`,
 `PENDIENTES.md`, `HISTORIAL.md` y receipts canónicos fechados
 
-**Estado vivo:** la última verificación de integración confirmó `HEAD == main ==
-origin/main == 1567fe46821b923be5e90ba4223abdaf81a9924c` y árbol limpio antes de
-esta actualización documental, que es docs-only. `current` apunta a
-`0.13.0-1567fe46821b-cp314-linux-x86_64` (`source_sha=1567fe46821b923be5e90ba4223abdaf81a9924c`),
-el rollback inmediato es `0.13.0-42115cd060f3-cp314-linux-x86_64` y `.staging`
-está vacío.
+**Estado vivo:** la verificación de integración y publicación confirma `HEAD ==
+main == origin/main == c6d3985f7a45fc3120bd03e9561195674f2b8ac2` y árbol limpio.
+`current` apunta a `0.13.0-c6d3985f7a45-cp314-linux-x86_64`
+(`source_sha=c6d3985f7a45fc3120bd03e9561195674f2b8ac2`), el rollback inmediato es
+`0.13.0-1567fe46821b-cp314-linux-x86_64` y `.staging` está vacío.
 
 ## Alcance actual
 
-El artefacto de NeoCortex 0.13.0 está instalado en `current` y contiene el
-lifecycle durable de `--all`. El objetivo coordina las nueve rutas (`pdf`,
-`docx`, `office`, `archive`, `text`, `audio`, `video`, `image`, `code`),
-inventario, catalogación/deduplicación, Semantic y Code bajo un run Framework
-reanudable, con manifest, stages, checkpoints, presupuesto global, replay
-idempotente y publicación staged/CAS. Code sigue siendo contenido no ejecutable.
+La candidata post-0.13 quedó implementada, publicada e instalada. El artefacto
+activo mantiene las nueve rutas (`pdf`, `docx`, `office`, `archive`, `text`,
+`audio`, `video`, `image`, `code`), inventario, catalogación/deduplicación,
+Semantic y Code bajo el lifecycle Framework reanudable, con manifest, stages,
+checkpoints, presupuesto global, replay idempotente y publicación staged/CAS.
+Code sigue siendo contenido no ejecutable.
 
-La aceptación integral C0–C7 queda confirmada exactamente sobre
-`source_sha=1567fe46821b923be5e90ba4223abdaf81a9924c`: la suite final registró
-**6917 pasadas, 68 omitidas y 42 subtests**, y los dos tests de empaquetado se
-repitieron después de retirar una ruta privada del changelog. Ruff, Mypy,
-Pyright y Semgrep terminaron sin errores/hallazgos bloqueantes; las advertencias
-Pyright existentes permanecen clasificadas. Esta evidencia no se transfiere a
-otros SHAs.
+La tranche añade sucesores copy-on-write e identidad por digest de contenido,
+catalogación v9 con manifest/fence/CAS y triggers inmutables, materialización
+binding-aware de Archive/Code, localizadores e hidratación bounded, Context v2
+con entidades/relaciones/contradicciones/telemetría, `content-diagnostics/v2`,
+`KnowledgeReadBudget`, lectura fenced de curación, sincronización de caches
+move/rename sólo en fixtures, panel GUI read-only y el contrato de principal
+autenticado. MCP no recibe autorización, aplicación ni conciliación escrita.
 
-La fuente contiene el vertical de contratos `neocortex.run-manifest/v1`,
-`neocortex.run-budget/v1`, `neocortex.lifecycle-stage/v1` y
-`neocortex.lifecycle-envelope/v1`, además de lecturas bounded de estado. La
-evidencia histórica de `source_sha=1bb73907d9ab...` permanece separada; la
-aceptación vigente corresponde al receipt de validación y al expediente E2E
-fechados del SHA `1567fe4`.
+La suite integral desde este SHA terminó con **6959 pasadas, 67 omitidas y 42
+subtests**. Ruff y Mypy quedaron limpios; Pyright terminó con 0 errores y 123
+warnings clasificados; Semgrep terminó con 0 hallazgos en 7 reglas. La
+validación focal adicional de los contratos nuevos permanece cubierta por sus
+regresiones y no sustituye la suite integral.
 
-La release canónica se construyó desde `1567fe4`, verificó manifest, árbol,
-launcher y procedencia, y pasó `tools/release_linux.py verify` con corpus de
-smoke vacío. El receipt de instalación del artefacto es
-`/home/winterboss/.local/state/Neocortex/state/installation-receipts/20260909T215132.124961Z-install-0.13.0-1567fe46821b-cp314-linux-x86_64.json`;
-el expediente E2E final está en
-`/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-09-knowledge-tranche-1567fe4/`.
+La release verificó manifest, árbol, launcher y procedencia. Sus hashes son:
 
-El piloto instalado sobre 37 fixtures aisladas pasó dos corridas (`RC1=0`,
-`RC2=0`), nueve rutas, Semantic `completed`, replay con cachés y bytes de
-fixtures sin cambios. La tranche de Knowledge verificó que los miembros ZIP
-son virtuales, conservan localizadores y no exponen identidad física; el límite
-de cursores MCP operacionales quedó alineado a 8 KiB.
+- manifest `6f2a44f6e7ab937a3b92fac3f71be196cbffa707eddb21c7fac58972b7823b84`;
+- árbol `6e67d6c6314268dacab90a69e17d755b7c9caa164301987b30b52a42706196be`;
+- launcher `18d4bbee8d79045f9749ee27cc5f5a8cad13d91a53148ef139518c64f484eff1`;
+- wheel `7e7a73eb30c7ceaa026c2d70a21f0e218abd08151a608db74e7ba74185f479aa`;
+- manifest de fuente `a5d3e05123eb4a7fe3bb4a742eecc3eb3c8e85cdc0a5dc8eb0fe6de5f6b8d50f`.
 
-Semantic se registra dentro del mismo lifecycle, pero el Semantic pesado es
-opt-in. Archive, Code y Video son fuentes Semantic explícitas; `--all` coordina
-sus rutas de contenido sin inferir una indexación Semantic pesada. Ausencias de
-modelos, herramientas o rutas producen `unavailable`/`blocked` e `incomplete`,
-nunca éxito vacío ni skip silencioso.
+`tools/release_linux.py verify --corpus-root /tmp/neocortex-post013-release-corpus`
+terminó `verified=true`. El receipt de instalación es
+`/home/winterboss/.local/state/Neocortex/state/installation-receipts/20260910T014132.624563Z-install-0.13.0-c6d3985f7a45-cp314-linux-x86_64.json`.
+La verificación de modelos existentes quedó `runtime_verified=false`; no se
+adquirieron modelos nuevos.
 
-Linux/Kubuntu es la única plataforma activa. No se usa GitHub Actions,
-proveedores remotos, KIO real, MCP escrito ni el corpus personal durante el
-piloto. La autoridad física permanece fuera de este alcance.
+El smoke instalado sobre 23 fixtures temporales terminó `RC1=0` y `RC2=0` en
+nueve rutas, con Semantic completo usando modelos locales existentes, Archive y
+Text con `cache_hits` en replay y `action_mode=dry-run`; el alcance Code
+`projects` excluyó el archivo fuera de un proyecto configurado, sin ejecutarlo.
+Los hashes de bytes de las fixtures y del estado temporal permanecieron
+estables entre las dos corridas. El primer smoke con cache de modelos aislado,
+que terminó `RC1=2`/`RC2=2` por `SemanticModelUnavailableError`, permanece
+registrado como intento incompleto y no se cuenta como éxito.
+
+## Gates y siguiente paso
+
+1. Mantener `current` y el rollback inmediato; cualquier cambio de
+   código/configuración/build exige resolver un SHA final nuevo y repetir el
+   procedimiento de release desde el artefacto.
+2. Mantener `NEO-FUN-002` en `ESPERA_TERCERO`: CA-12 sigue `PARTIAL` y CA-15
+   conserva 33.1% de excerpt, sin reabrir R1–R4 ni hacer tuning.
+3. Mantener `NEO-AUTH-001` en `EN_CURSO`: falta principal autenticado confiable
+   para ampliar MCP; KIO/desktop y cualquier efecto físico conservan su gate
+   humano separado.
+4. Mantener `NEO-SEM-002` en `ESPERA_VICTOR`: la generación 17 y la política de
+   retención no se reanudan, borran ni compactan por inferencia.
+5. No abrir corpus personal, SQLite productiva, KIO real, MCP mutante ni
+   GitHub Actions durante esta tranche; el contrato preparado de fixtures no
+   acredita promoción física.
+
+El cierre de esta implementación se limita a código, documentación, SSOT y
+release candidata verificable; las decisiones y gates anteriores siguen siendo
+pendientes independientes.
 
 ## Evidencia previa y límites de interpretación
 

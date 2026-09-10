@@ -4,7 +4,7 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
-## Post-0.13 — fuente en integración (no instalada)
+## Post-0.13 — instalada y verificada
 
 - Inventario/deduplicación v13 con sucesores copy-on-write, digests de contenido,
   heads de plan y rechazo de reutilización stat-only ante drift.
@@ -19,8 +19,23 @@ fuera de `docs/`.
   sincronización de caches move/rename sólo en fixtures y panel GUI read-only;
   no se habilitó autorización MCP, KIO real ni mutación del corpus.
 
-La aceptación y promoción de esta tranche quedan pendientes de una suite y
-release verificadas desde el SHA final.
+La suite integral desde `c6d3985f7a45fc3120bd03e9561195674f2b8ac2` terminó con
+**6959 pasadas, 67 omitidas y 42 subtests**; Ruff y Mypy quedaron limpios,
+Pyright terminó sin errores (sus advertencias existentes permanecen
+clasificadas) y Semgrep no encontró hallazgos. La release
+`0.13.0-c6d3985f7a45-cp314-linux-x86_64` se construyó, instaló y verificó desde
+ese mismo SHA, con `current`, rollback inmediato y staging conciliados. El
+receipt de instalación vive fuera de `docs/` en el estado canónico.
+
+El smoke instalado sobre 23 fixtures temporales terminó `RC1=0` y `RC2=0` en
+nueve rutas, con Semantic completo usando modelos locales ya presentes,
+`cache_hits` en el replay de Archive/Text y `action_mode=dry-run`; el alcance
+Code por defecto excluyó el archivo fuera de un proyecto configurado, sin
+ejecutarlo ni convertirlo en evidencia de repositorio. No se modificaron los
+bytes de las fixtures, el corpus personal ni el estado productivo.
+
+Semantic 17, R1–R4, KIO real, MCP mutante, corpus personal y poda de estado
+siguen siendo gates independientes y no forman parte de esta promoción.
 
 ## 0.13.0 — instalada y verificada (fuente `1567fe4`)
 

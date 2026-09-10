@@ -73,10 +73,11 @@ evidencia de procedencia, no nombres o extensiones aislados.
 
 ## Estado actual
 
-La fuente `0.13.0` aporta inventario, extracción multimodal, catálogos, búsqueda,
-Knowledge, Semantic, Code como contenido, planes de duplicados/organización,
-Review, receipts y recuperación parcial. El checkout añade una tranche
-post-0.13 todavía no instalada.
+La fuente y la release `0.13.0-c6d3985f7a45-cp314-linux-x86_64` aportan
+inventario, extracción multimodal, catálogos, búsqueda, Knowledge, Semantic,
+Code como contenido, planes de duplicados/organización, Review, receipts y
+recuperación parcial. La tranche post-0.13 está instalada; su procedencia es
+`source_sha=c6d3985f7a45fc3120bd03e9561195674f2b8ac2`.
 
 - **CURRENT:** `curate scan`, `curate plan`, `curation_scan`, `curation_plan` y
   `--curation-preview` consultan el plan local paginado sin escribir estado o
@@ -102,7 +103,7 @@ post-0.13 todavía no instalada.
   selecciona automáticamente desde la CLI instalada.
 - **IMPLEMENTED (recovery):** `reconcile_curation_actions` clasifica y registra
   observaciones bounded, append-only e idempotentes, sin reintentar efectos.
-- **SOURCE-ONLY post-0.13:** inventario/deduplicación v13 y catálogo v9 fijan
+- **IMPLEMENTED post-0.13:** inventario/deduplicación v13 y catálogo v9 fijan
   digests, heads, fences y publicaciones inmutables; Knowledge v2 conserva
   localizadores/hydration por owner, y la lectura fenced de curación proyecta
   grants, intentos, receipts y recovery sin crear estado.
@@ -295,7 +296,7 @@ mantiene separada de `curate verify`, que conserva su checkpoint page-level.
 No existe una interfaz de exportación ni un paquete ZIP de curación. `--json`
 serializa la respuesta de una operación; no crea un artefacto durable.
 
-**SOURCE-ONLY — lectura y diagnóstico post-0.13:**
+**Lectura y diagnóstico post-0.13:**
 
 ```text
 API/SDK: content_diagnostics_v2_payload, KnowledgeReadBudget

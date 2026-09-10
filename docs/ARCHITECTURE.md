@@ -1,11 +1,11 @@
 # Arquitectura de NeoCortex
 
-> Describe la arquitectura implementada en el checkout vigente; las entregas
-> futuras viven en [ROADMAP_90_DAYS.md](ROADMAP_90_DAYS.md). La release
-> `current` proviene de `source_sha=1567fe46821b923be5e90ba4223abdaf81a9924c`;
-> el checkout puede contener cambios post-0.13 aún no instalados. C0–C7 están
-> aceptados sobre ese artefacto. Ninguna descripción aquí sustituye
-> la evidencia de aceptación.
+> Describe la arquitectura implementada en el checkout vigente y en la release
+> post-0.13 activa. La release `current` proviene de
+> `source_sha=c6d3985f7a45fc3120bd03e9561195674f2b8ac2`; el rollback inmediato
+> conserva el artefacto 0.13 anterior. C0–C7 y la tranche post-0.13 están
+> aceptados sólo sobre sus respectivos artefactos y receipts. Ninguna
+> descripción aquí sustituye la evidencia de aceptación.
 
 ## Principios
 
@@ -98,9 +98,10 @@ un único run Framework: `pdf`, `docx`, `office`, `archive`, `text`, `audio`,
 extrae y publica relaciones, pero nunca ejecuta el código del corpus ni lo
 convierte en una herramienta de validación del repositorio.
 
-El artefacto instalado `0.13.0-1567fe46821b-cp314-linux-x86_64` contiene este
+El artefacto base `0.13.0-1567fe46821b-cp314-linux-x86_64` contiene este
 contrato y fue aceptado con C0–C7, suite integral, calidad estática, smoke,
-replay y piloto aislado sobre el mismo `source_sha`.
+replay y piloto aislado sobre el mismo `source_sha`; la release activa añade la
+tranche post-0.13 descrita en las capas de Knowledge, diagnóstico y curación.
 
 El lifecycle ordena las fronteras `preflight → inventory → catalog/dedup →
 routes → semantic → publication → finalize`. El manifest inmutable

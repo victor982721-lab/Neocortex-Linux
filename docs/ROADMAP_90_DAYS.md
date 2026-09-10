@@ -38,7 +38,7 @@ incierta, pero no cuenta como funcionalidad entregada para los casos soportados.
 | Mutación Linux | `curate apply` usa backends POSIX/KIO inyectados y ledger/recovery; `--apply`/`--organization-apply` genéricos siguen absteniéndose |
 | Backup/restore/purge | Implementados mediante `Neocortex databases` |
 | MCP | **IMPLEMENTED:** plan/scan/verify/review/decide; authorize se omite hasta resolver un principal autenticado |
-| Lifecycle durable de `--all` | **IMPLEMENTED INSTALADO:** `current` es `0.13.0-1567fe46821b-cp314-linux-x86_64`; C0–C7 están aceptados sobre su `source_sha` |
+| Lifecycle durable de `--all` | **IMPLEMENTED INSTALADO:** `current` es `0.13.0-c6d3985f7a45-cp314-linux-x86_64`; C0–C7 y la tranche post-0.13 están aceptados sobre sus `source_sha` |
 
 ## 0.10.0 — Evidencia y plan de curación
 
@@ -287,10 +287,12 @@ manifest/wheel/launcher, smoke/replay desde el artefacto instalado, piloto
 aislado y corpus intacto. Los gates físicos, Semantic 17 y reservas R1–R4
 siguen separados.
 
-## Post-0.13 — SOURCE-ONLY en integración
+## Post-0.13 — IMPLEMENTED: candidata instalada y verificada
 
-La siguiente tranche ya está implementada en el checkout, pero todavía no se
-promueve a `current`. Incluye:
+La tranche quedó implementada en `main` y promovida a `current` desde
+`c6d3985f7a45fc3120bd03e9561195674f2b8ac2`. El artefacto activo es
+`0.13.0-c6d3985f7a45-cp314-linux-x86_64`; el rollback inmediato es
+`0.13.0-1567fe46821b-cp314-linux-x86_64` y `.staging` está vacío. Incluye:
 
 - inventario/deduplicación v13 con sucesores copy-on-write, digest de contenido,
   heads de plan y rechazo de cache stat-only ante reescrituras ambiguas;
@@ -304,11 +306,11 @@ promueve a `current`. Incluye:
   recovery, sincronización de caches move/rename sólo sobre fixtures y panel GUI
   read-only; MCP no recibe autorización ni aplicación.
 
-El gate restante es la integración final: suite completa, calidad estática,
-fixture heterogénea con replay/drift/ausencias, build reproducible, smoke desde
-el artefacto instalado, receipt y conciliación de `HEAD`, remoto, `current` y
-rollback. Semantic 17, R1–R4, KIO real, corpus personal y poda permanecen
-fuera de esta tranche.
+La integración y release quedaron aceptadas con **6959 pasadas, 67 omitidas y
+42 subtests**, calidad estática individual sin errores bloqueantes, build
+reproducible, verificación de manifest/árbol/launcher y smoke/replay instalado
+`RC1=0`/`RC2=0` sobre 23 fixtures temporales y nueve rutas. Semantic 17, R1–R4,
+KIO real, corpus personal y poda permanecen fuera de esta tranche.
 
 ## Orden inmediato
 

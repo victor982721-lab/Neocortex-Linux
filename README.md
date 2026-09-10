@@ -6,21 +6,21 @@ auditorías y scripts improvisados por un flujo reproducible que conserve
 identidad, evidencia, incertidumbre y trazabilidad.
 
 La fuente vigente declara `0.13.0`. La última integración verificó
-`HEAD == main == origin/main == 4c5d43059cb6faecf76d9dfb03b8af3255561235` y
-árbol limpio. El ejecutable `current` sigue siendo
-`0.13.0-1567fe46821b-cp314-linux-x86_64`, construido desde ese `source_sha`; el
-rollback inmediato es `0.13.0-42115cd060f3-cp314-linux-x86_64` y `.staging` está
+`HEAD == main == origin/main == c6d3985f7a45fc3120bd03e9561195674f2b8ac2` y
+árbol limpio. El ejecutable `current` es
+`0.13.0-c6d3985f7a45-cp314-linux-x86_64`, construido desde ese `source_sha`; el
+rollback inmediato es `0.13.0-1567fe46821b-cp314-linux-x86_64` y `.staging` está
 vacío. El estado instalado y el estado del checkout se comprueban por separado;
-la tranche post-0.13 del checkout aún no está instalada.
+la tranche post-0.13 ya está instalada y verificada desde el mismo SHA.
 
 La aceptación C0–C7 de 0.13 está confirmada sobre el SHA final: 6917 pasadas,
 68 omitidas, 42 subtests, calidad estática sin errores/hallazgos bloqueantes,
 build reproducible, smoke/replay instalado y piloto de 37 fixtures sin cambios
 en sus bytes.
 
-## Tranche post-0.13 en el checkout
+## Tranche post-0.13 instalada y verificada
 
-La fuente incorpora, todavía como `SOURCE-ONLY`, publicaciones inmutables de
+La fuente y el artefacto activo incorporan publicaciones inmutables de
 inventario/catálogo, digest de contenido contra reescrituras con el mismo
 `size/mtime`, materialización segura de recursos Archive/Code virtuales,
 localizadores y hydration ampliados, Context v2 con grafo/telemetría,
@@ -28,8 +28,15 @@ localizadores y hydration ampliados, Context v2 con grafo/telemetría,
 recovery, sincronización de caches sólo sobre fixtures y un contrato de
 principal autenticado que aún no habilita autorización MCP.
 
-La promoción a `current` exige validación completa desde el SHA final, sin abrir
-el corpus personal ni ejecutar KIO real.
+La validación desde el SHA final terminó con 6,959 pruebas aprobadas, 67 omitidas
+y 42 subtests, y la promoción a `current` conservó el corpus personal cerrado y
+no ejecutó KIO real.
+
+La release tiene manifest `6f2a44f6e7ab937a3b92fac3f71be196cbffa707eddb21c7fac58972b7823b84`,
+árbol `6e67d6c6314268dacab90a69e17d755b7c9caa164301987b30b52a42706196be`,
+wheel `7e7a73eb30c7ceaa026c2d70a21f0e218abd08151a608db74e7ba74185f479aa` y
+receipt de instalación en
+`/home/winterboss/.local/state/Neocortex/state/installation-receipts/20260910T014132.624563Z-install-0.13.0-c6d3985f7a45-cp314-linux-x86_64.json`.
 
 ## Qué resuelve hoy
 
