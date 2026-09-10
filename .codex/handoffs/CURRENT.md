@@ -83,6 +83,12 @@ operativo antes/después fue idéntico: `8cb8e590a53541e2e890db44c675ce7e11b6a8c
 La verificación canónica del artefacto activo terminó `verified=true` con corpus
 efímero, launcher, manifest y rollback comprobados; el receipt final conserva
 `models_prepared=false` porque no se adquirieron modelos nuevos.
+El launcher instalado ejecutó además `--knowledge-search relay --knowledge-projection
+--knowledge-json` fuera del checkout, sin `PYTHONPATH`, con schema
+`neocortex.knowledge-evidence-projection/v1`, `scope=personal`, `items=0` y
+`coverage.status=partial` esperado para estado vacío; exit code `4` corresponde a
+la cobertura parcial. Receipt de smoke:
+`/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-10-evo008-cee69f3-candidate/INSTALLED_PROJECTION_SMOKE.json`.
 La evidencia de smoke/replay aislado de 23 fixtures y nueve rutas de la candidata
 anterior permanece conservada por separado; el alcance Code `projects`
 excluyó el archivo fuera de un proyecto configurado, sin ejecutarlo. Los hashes
