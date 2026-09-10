@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from argparse import Namespace
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +35,7 @@ from neocortex.persistence.framework_state_writer import (
     FrameworkState,
     RunBudgetExceeded,
 )
+from neocortex.persistence import framework_state_writer
 from neocortex.persistence.state_publication import (
     StateOwnerHead,
     StatePublicationConflictError,
@@ -429,8 +429,11 @@ def test_unavailable_route_keeps_independent_route_result_and_cause(
 
 def test_global_budget_covers_route_semantic_and_final_deadline_gate(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = _make_source_fixture(tmp_path)
+    clock = [100_000_000_000]
+    monkeypatch.setattr(framework_state_writer.time, "time_ns", lambda: clock[0])
     with FrameworkState(source.database) as state:
         run_id = state.begin_operational_run(
             source.root,
@@ -472,7 +475,8 @@ def test_global_budget_covers_route_semantic_and_final_deadline_gate(
         assert snapshot is not None
         assert snapshot["consumed_items"] == 2
         assert snapshot["remaining_items"] == 0
-        time.sleep(0.01)
+        assert snapshot["expired"] is False
+        clock[0] += 1_000_001
         with pytest.raises(RunBudgetExceeded, match="time"):
             state.complete_operational_run(run_id)
         assert state.cancel_initial_run(run_id)
