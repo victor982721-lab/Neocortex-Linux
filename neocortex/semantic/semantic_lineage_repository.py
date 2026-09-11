@@ -6,7 +6,7 @@ import math
 import platform
 import re
 import sqlite3
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -91,6 +91,11 @@ _MAX_CONFIGURATION_VALUE_CHARS = 4_000
 MAX_LINEAGE_ROWS = 1_000
 _MAX_MANIFEST_INPUTS = 256
 _MAX_OUTBOX_PAGE_BYTES = 8 * 1024 * 1024
+_RECEIPT_LOOKUP_BATCH = 250
+_RECEIPT_LOOKUP_TABLE = "_semantic_receipt_output_lookup"
+_RECEIPT_LOOKUP_STATE_TABLE = "_semantic_receipt_output_lookup_state"
+_RECEIPT_LOOKUP_INDEX = "_semantic_receipt_output_lookup_materialization_idx"
+_RECEIPT_LOOKUP_SAVEPOINT = "semantic_receipt_output_lookup_refresh"
 _SAFE_FAILURE_REASON_CODES = frozenset(
     {
         "deadline_cancelled",
@@ -1698,6 +1703,151 @@ def _renamed_binding(
     return renamed
 
 
+def _receipt_output_candidates_uncached(
+    connection: sqlite3.Connection,
+    materialization_ids: Sequence[str],
+) -> Iterator[sqlite3.Row]:
+    """Preserve the original global lookup for query-only connections."""
+
+    selected_ids = tuple(dict.fromkeys(str(value) for value in materialization_ids))
+    for offset in range(0, len(selected_ids), _RECEIPT_LOOKUP_BATCH):
+        batch = selected_ids[offset : offset + _RECEIPT_LOOKUP_BATCH]
+        if not batch:
+            continue
+        placeholders = ",".join("?" for _ in batch)
+        yield from connection.execute(
+            f"""SELECT receipt.receipt_id,receipt.status,
+                output.id AS output_ordinal,
+                json_extract(output.value,
+                    '$.materialization.materialization_id') AS materialization_id,
+                json_extract(output.value,'$.fingerprint') AS fingerprint,
+                json_extract(output.value,'$.fingerprint_algorithm')
+                    AS fingerprint_algorithm
+            FROM semantic_work_receipts receipt
+            JOIN json_each(receipt.receipt_json,'$.outputs') output
+              ON TRUE
+            WHERE json_extract(
+                output.value,'$.materialization.materialization_id'
+            ) IN ({placeholders})
+            ORDER BY receipt.receipt_id,output.id""",
+            batch,
+        )
+
+
+def _refresh_receipt_output_lookup(connection: sqlite3.Connection) -> None:
+    """Refresh the connection-local output index through a receipt watermark.
+
+    The TEMP rows and their watermark are updated inside the caller's
+    transaction (and a nested savepoint for refresh failures); this helper
+    never commits the owner database.  ``semantic_work_receipts`` is append-only
+    and its integer receipt id is therefore a safe incremental boundary.
+    """
+
+    connection.execute(
+        f"""CREATE TEMP TABLE IF NOT EXISTS {_RECEIPT_LOOKUP_TABLE}(
+            receipt_id INTEGER NOT NULL,
+            output_ordinal INTEGER NOT NULL,
+            materialization_id TEXT,
+            status TEXT NOT NULL,
+            fingerprint TEXT,
+            fingerprint_algorithm TEXT,
+            PRIMARY KEY(receipt_id,output_ordinal)
+        )"""
+    )
+    connection.execute(
+        f"""CREATE INDEX IF NOT EXISTS {_RECEIPT_LOOKUP_INDEX}
+        ON {_RECEIPT_LOOKUP_TABLE}(materialization_id,receipt_id,output_ordinal)"""
+    )
+    connection.execute(
+        f"""CREATE TEMP TABLE IF NOT EXISTS {_RECEIPT_LOOKUP_STATE_TABLE}(
+            singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+            watermark_receipt_id INTEGER NOT NULL CHECK(watermark_receipt_id>=0)
+        )"""
+    )
+    connection.execute(
+        f"""INSERT OR IGNORE INTO {_RECEIPT_LOOKUP_STATE_TABLE}(
+            singleton,watermark_receipt_id) VALUES(1,0)"""
+    )
+    state = connection.execute(
+        f"""SELECT watermark_receipt_id
+        FROM {_RECEIPT_LOOKUP_STATE_TABLE} WHERE singleton=1"""
+    ).fetchone()
+    if state is None:
+        raise SemanticStateError("semantic receipt lookup watermark is unavailable")
+    watermark = int(state[0])
+    high_watermark = int(
+        connection.execute(
+            "SELECT COALESCE(MAX(receipt_id),0) FROM semantic_work_receipts"
+        ).fetchone()[0]
+    )
+    if high_watermark <= watermark:
+        return
+    connection.execute(f"SAVEPOINT {_RECEIPT_LOOKUP_SAVEPOINT}")
+    try:
+        connection.execute(
+            f"""INSERT INTO {_RECEIPT_LOOKUP_TABLE}(
+                receipt_id,output_ordinal,materialization_id,status,
+                fingerprint,fingerprint_algorithm)
+            SELECT receipt.receipt_id,output.id,
+                json_extract(output.value,
+                    '$.materialization.materialization_id'),
+                receipt.status,
+                json_extract(output.value,'$.fingerprint'),
+                json_extract(output.value,'$.fingerprint_algorithm')
+            FROM semantic_work_receipts receipt
+            JOIN json_each(receipt.receipt_json,'$.outputs') output
+              ON TRUE
+            WHERE receipt.receipt_id>? AND receipt.receipt_id<=?
+            ORDER BY receipt.receipt_id,output.id""",
+            (watermark, high_watermark),
+        )
+        connection.execute(
+            f"""UPDATE {_RECEIPT_LOOKUP_STATE_TABLE}
+            SET watermark_receipt_id=? WHERE singleton=1""",
+            (high_watermark,),
+        )
+        connection.execute(f"RELEASE SAVEPOINT {_RECEIPT_LOOKUP_SAVEPOINT}")
+    except BaseException:
+        try:
+            connection.execute(f"ROLLBACK TO SAVEPOINT {_RECEIPT_LOOKUP_SAVEPOINT}")
+            connection.execute(f"RELEASE SAVEPOINT {_RECEIPT_LOOKUP_SAVEPOINT}")
+        except sqlite3.Error:
+            pass
+        raise
+
+
+def _receipt_output_candidates_for_materializations(
+    connection: sqlite3.Connection,
+    materialization_ids: Sequence[str],
+) -> Iterator[sqlite3.Row]:
+    """Return all-status output candidates using one connection-local index.
+
+    Query-only consumers cannot create TEMP state and retain the original
+    bounded global query.  Writer rebinds build the TEMP index once, then only
+    scan receipt ids newer than its append-only watermark.
+    """
+
+    selected_ids = tuple(dict.fromkeys(str(value) for value in materialization_ids))
+    if not selected_ids:
+        return
+    query_only = int(connection.execute("PRAGMA query_only").fetchone()[0]) == 1
+    if query_only:
+        yield from _receipt_output_candidates_uncached(connection, selected_ids)
+        return
+    _refresh_receipt_output_lookup(connection)
+    for offset in range(0, len(selected_ids), _RECEIPT_LOOKUP_BATCH):
+        batch = selected_ids[offset : offset + _RECEIPT_LOOKUP_BATCH]
+        placeholders = ",".join("?" for _ in batch)
+        yield from connection.execute(
+            f"""SELECT receipt_id,status,output_ordinal,
+                materialization_id,fingerprint,fingerprint_algorithm
+            FROM {_RECEIPT_LOOKUP_TABLE}
+            WHERE materialization_id IN ({placeholders})
+            ORDER BY receipt_id,output_ordinal""",
+            batch,
+        )
+
+
 def _producer_receipts_for_embedding_members(
     connection: sqlite3.Connection,
     member_ids: Sequence[int],
@@ -1742,38 +1892,42 @@ def _producer_receipts_for_embedding_members(
                 fingerprint,
                 fingerprint_algorithm,
             )
-        materialization_ids = tuple(expected_by_materialization)
-        placeholders = ",".join("?" for _ in materialization_ids)
-        rows = connection.execute(
-            f"""SELECT receipt.receipt_id,
-            json_extract(output.value,'$.materialization.materialization_id')
-              AS materialization_id,
-            json_extract(output.value,'$.fingerprint') AS fingerprint,
-            json_extract(output.value,'$.fingerprint_algorithm')
-              AS fingerprint_algorithm
-            FROM semantic_work_receipts receipt,
-                 json_each(receipt.receipt_json,'$.outputs') output
-            WHERE receipt.status='succeeded'
-              AND json_extract(
-                  output.value,'$.materialization.materialization_id'
-              ) IN ({placeholders})
-            ORDER BY receipt.receipt_id""",
-            materialization_ids,
-        ).fetchall()
+        rows = _receipt_output_candidates_for_materializations(
+            connection,
+            tuple(expected_by_materialization),
+        )
         matching_receipts: dict[int, set[int]] = {member_id: set() for member_id in batch}
-        for row in rows:
-            materialization_id = str(row["materialization_id"])
-            expected = expected_by_materialization.get(materialization_id)
-            if expected is None:  # pragma: no cover - protected by the SQL predicate
-                continue
-            member_id, fingerprint, fingerprint_algorithm = expected
-            if (
-                str(row["fingerprint"]) != fingerprint
-                or str(row["fingerprint_algorithm"]) != fingerprint_algorithm
-            ):
-                continue
-            receipt_id = int(row["receipt_id"])
-            matching_receipts[member_id].add(receipt_id)
+        try:
+            for row in rows:
+                if str(row["status"]) != "succeeded":
+                    continue
+                materialization_id = str(row["materialization_id"])
+                expected = expected_by_materialization.get(materialization_id)
+                if expected is None:  # pragma: no cover - protected by the SQL predicate
+                    continue
+                member_id, fingerprint, fingerprint_algorithm = expected
+                if (
+                    str(row["fingerprint"]) != fingerprint
+                    or str(row["fingerprint_algorithm"]) != fingerprint_algorithm
+                ):
+                    continue
+                receipt_id = int(row["receipt_id"])
+                exact_receipts = matching_receipts[member_id]
+                exact_receipts.add(receipt_id)
+                if len(exact_receipts) > 1:
+                    raise SemanticStateError(
+                        "semantic source embedding member has multiple exact producer receipts"
+                    )
+        finally:
+            close = getattr(rows, "close", None)
+            if close is not None:
+                close()
+        selected_receipt_ids = {
+            next(iter(receipt_ids))
+            for receipt_ids in matching_receipts.values()
+            if receipt_ids
+        }
+        _validated_semantic_receipts(connection, selected_receipt_ids)
         for member_id in batch:
             exact_receipts = matching_receipts[member_id]
             if not exact_receipts:

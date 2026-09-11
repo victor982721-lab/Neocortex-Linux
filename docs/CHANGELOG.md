@@ -21,6 +21,15 @@ fuera de `docs/`.
   sin copiar la base que modifica el heartbeat. Las lecturas públicas conservan
   sus fences; un snapshot cuyo sidecar desaparece recibe un reintento acotado
   con fence fresca, sin confundirlo con una base principal inexistente.
+- La validación de caché XLSX compara la proyección con la normalización de
+  espacios usada por el texto extraído; no vuelve a extraer hojas válidas por
+  espacios múltiples, tabulaciones o saltos de línea. Conserva los valores
+  originales de las celdas y la reparación de derivados ausentes o corruptos.
+- La reutilización de embeddings indexa temporalmente las salidas de recibos
+  en la conexión del writer, en vez de recorrer todo el historial por lote.
+  Incorpora recibos nuevos sin ocultar productores ambiguos por sus columnas
+  normalizadas; conserva cancelación y rollback, y descarta el índice temporal
+  al cerrar la conexión.
 
 ## 2026-09-11 — Oleada funcional C1–C5 (registro histórico de implementación)
 

@@ -13,6 +13,7 @@ from .semantic_lineage_repository import (
     _embedding_member_binding_by_id,
     _payload_causation_receipts,
     _producer_receipts_for_embedding_members,
+    _receipt_output_candidates_for_materializations,
     _record_discarded_embedding_execution,
     _record_embedding_clone_batch,
     _record_embedding_attempt_failure,
@@ -1349,30 +1350,19 @@ def _rebind_causations(
     cross_generation = tuple(
         member_id for member_id in unique_ids if member_id not in same_generation_set
     )
-    attributed: set[int] = set()
-    for offset in range(0, len(cross_generation), 250):
-        batch = cross_generation[offset : offset + 250]
-        materialization_to_member = {
-            f"materialization:semantic:embedding-member:{member_id}": member_id
-            for member_id in batch
-        }
-        if not materialization_to_member:
-            continue
-        placeholders = ",".join("?" for _ in materialization_to_member)
-        receipt_rows = connection.execute(
-            f"""SELECT DISTINCT
-                json_extract(output.value,'$.materialization.materialization_id')
-                  AS materialization_id
-            FROM semantic_work_receipts receipt,
-                 json_each(receipt.receipt_json,'$.outputs') output
-            WHERE json_extract(
-                output.value,'$.materialization.materialization_id'
-            ) IN ({placeholders})""",
-            tuple(materialization_to_member),
-        ).fetchall()
-        attributed.update(
-            materialization_to_member[str(row["materialization_id"])] for row in receipt_rows
-        )
+    materialization_to_member = {
+        f"materialization:semantic:embedding-member:{member_id}": member_id
+        for member_id in cross_generation
+    }
+    receipt_rows = _receipt_output_candidates_for_materializations(
+        connection,
+        tuple(materialization_to_member),
+    )
+    attributed = {
+        materialization_to_member[str(row["materialization_id"])]
+        for row in receipt_rows
+        if str(row["materialization_id"]) in materialization_to_member
+    }
     unattributed_legacy = tuple(
         member_id
         for member_id in cross_generation

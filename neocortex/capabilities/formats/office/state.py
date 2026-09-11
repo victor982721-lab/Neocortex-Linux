@@ -465,6 +465,16 @@ def _path_basename(value: object) -> str:
     return str(value).replace("\\", "/").rsplit("/", 1)[-1]
 
 
+def _normalize_projection_text(value: object) -> str:
+    """Match the canonical whitespace normalization used by Office text."""
+
+    return " ".join(str(value).split())
+
+
+def _normalize_projection_optional(value: object) -> str | None:
+    return None if value is None else _normalize_projection_text(value)
+
+
 def _cached_xlsx_cells_are_valid(
     connection: sqlite3.Connection,
     key: str,
@@ -496,13 +506,13 @@ def _cached_xlsx_cells_are_valid(
         )
         expected.append(
             (
-                str(projection["workbook"]),
-                str(projection["sheet"]),
-                str(projection["a1"]),
-                str(projection["type"]),
-                str(projection["value"]),
-                values[0],
-                values[1],
+                _normalize_projection_text(projection["workbook"]),
+                _normalize_projection_text(projection["sheet"]),
+                _normalize_projection_text(projection["a1"]),
+                _normalize_projection_text(projection["type"]),
+                _normalize_projection_text(projection["value"]),
+                _normalize_projection_optional(values[0]),
+                _normalize_projection_optional(values[1]),
             )
         )
     if not expected:
@@ -514,13 +524,13 @@ def _cached_xlsx_cells_are_valid(
     ).fetchall()
     actual = [
         (
-            _path_basename(row["workbook"]),
-            str(row["sheet"]),
-            str(row["cell_reference"]),
-            str(row["cell_type"]),
-            str(row["value"]),
-            None if row["formula"] is None else str(row["formula"]),
-            None if row["cached_value"] is None else str(row["cached_value"]),
+            _normalize_projection_text(_path_basename(row["workbook"])),
+            _normalize_projection_text(row["sheet"]),
+            _normalize_projection_text(row["cell_reference"]),
+            _normalize_projection_text(row["cell_type"]),
+            _normalize_projection_text(row["value"]),
+            _normalize_projection_optional(row["formula"]),
+            _normalize_projection_optional(row["cached_value"]),
         )
         for row in rows
     ]
