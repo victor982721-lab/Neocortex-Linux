@@ -41,7 +41,7 @@ __all__ = [
 
 _INTEGRATED_START_METADATA_TIMEOUT_SECONDS = 60.0
 _INTEGRATED_START_SNAPSHOT_BYTES = 256 * 1024 * 1024
-_INTEGRATED_FRAMEWORK_SNAPSHOT_TIMEOUT_SECONDS = 1.0
+_INTEGRATED_FRAMEWORK_CONTROL_READ_TIMEOUT_SECONDS = 1.0
 
 # region [01] Multimodal semantic index
 
@@ -669,7 +669,10 @@ def _integrated_semantic_budget(args: argparse.Namespace, run_id: int | None):
     """Share explicit limits across all scopes and sample durable cancellation."""
 
     from neocortex.persistence.framework_state_writer import FrameworkState, RunBudgetExceeded
-    from neocortex.semantic.semantic_work_budget import SemanticWorkBudget
+    from neocortex.semantic.semantic_work_budget import (
+        SemanticIndexDeadlineExceeded,
+        SemanticWorkBudget,
+    )
 
     max_items = args.semantic_max_items
     max_jobs = args.semantic_max_new_jobs
@@ -703,8 +706,8 @@ def _integrated_semantic_budget(args: argparse.Namespace, run_id: int | None):
                     duration = remaining if duration is None else min(duration, remaining)
     # Do not ask the SemanticWorkBudget for its remaining time from its own
     # cancellation callback: ``remaining_seconds()`` invokes that callback and
-    # would recurse while a Framework snapshot is being prepared.  This local
-    # deadline is only a bounded preparation guard; the actual work budget is
+    # would recurse while a Framework control read is being prepared.  This
+    # local deadline is only a bounded preparation guard; the actual work budget is
     # still created below and remains authoritative for Semantic admission.
     semantic_deadline = (
         None if duration is None else time.monotonic() + float(duration)
@@ -713,6 +716,18 @@ def _integrated_semantic_budget(args: argparse.Namespace, run_id: int | None):
     cancellation: Callable[[], bool | None] | None = getattr(
         args, "_semantic_cancellation_check", None
     )
+
+    def framework_control_checkpoint() -> None:
+        """Check only external cancellation and fixed invocation deadlines."""
+
+        if callable(cancellation) and cancellation() is True:
+            raise KeyboardInterrupt("Semantic indexing was cancelled")
+        if global_deadline_ns is not None and time.time_ns() >= global_deadline_ns:
+            raise RunBudgetExceeded("time", lifecycle_snapshot)
+        if semantic_deadline is not None and time.monotonic() >= semantic_deadline:
+            raise SemanticIndexDeadlineExceeded(
+                "semantic indexing exhausted its time budget"
+            )
 
     def check_cancellation() -> bool:
         nonlocal last_check
@@ -724,7 +739,9 @@ def _integrated_semantic_budget(args: argparse.Namespace, run_id: int | None):
             # whole Framework owner on every SQL progress callback is both
             # expensive and unnecessary; only the append-only cancel signal
             # can change while this Semantic stage owns the run budget.
-            from neocortex.persistence.framework_connection import connect_existing_framework
+            from neocortex.persistence.framework_connection import (
+                _read_framework_cancellation_requested,
+            )
 
             remaining: float | None = None
             if global_deadline_ns is not None:
@@ -744,28 +761,18 @@ def _integrated_semantic_budget(args: argparse.Namespace, run_id: int | None):
                     if remaining is None
                     else min(remaining, semantic_remaining)
                 )
-            timeout_seconds = _INTEGRATED_FRAMEWORK_SNAPSHOT_TIMEOUT_SECONDS
+            timeout_seconds = _INTEGRATED_FRAMEWORK_CONTROL_READ_TIMEOUT_SECONDS
             if remaining is not None:
                 timeout_seconds = min(timeout_seconds, remaining)
-            connection = connect_existing_framework(
+            cancelled = _read_framework_cancellation_requested(
                 args.state_directory / "framework.sqlite3",
-                readonly=True,
+                run_id,
                 timeout_seconds=timeout_seconds,
-                force_snapshot=True,
-                cancellation_check=cancellation,
+                control_checkpoint=framework_control_checkpoint,
             )
-            try:
-                cancelled = connection.execute(
-                    """SELECT 1 FROM run_events WHERE run_id=? AND phase='lifecycle-budget'
-                    AND message='Run cancellation requested' LIMIT 1""",
-                    (run_id,),
-                ).fetchone() is not None
-            finally:
-                connection.close()
-            # Charge the complete detached-read interval to the throttle.  A
-            # four-megabyte Framework snapshot can exceed 100 ms; retaining
-            # the pre-open timestamp would immediately repeat the same read
-            # on the next Semantic checkpoint.
+            # Charge the complete owner-coordinated read interval to the
+            # throttle.  Retaining the pre-open timestamp would immediately
+            # repeat the same read on the next Semantic checkpoint.
             last_check = time.monotonic()
             if cancelled:
                 return True

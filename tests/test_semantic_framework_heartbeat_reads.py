@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
+import os
+import time
 from argparse import Namespace
 from pathlib import Path
 from types import SimpleNamespace
@@ -109,7 +111,38 @@ def test_framework_reader_does_not_relabel_nonowner_enoent_as_missing_main(
     assert raised.value.filename == sidecar
 
 
-def test_integrated_budget_forces_snapshot_and_preserves_external_cancellation(
+def test_framework_control_read_fails_closed_if_owner_identity_is_replaced(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database, run_id = _framework_fixture(tmp_path)
+    original_validate = framework_connection._validate_existing_owner
+    calls = 0
+
+    def replace_before_final_validation(path: Path) -> tuple[int, int]:
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            replacement = path.with_name("framework-replacement.sqlite3")
+            replacement.write_bytes(path.read_bytes())
+            os.replace(replacement, path)
+        return original_validate(path)
+
+    monkeypatch.setattr(
+        framework_connection,
+        "_validate_existing_owner",
+        replace_before_final_validation,
+    )
+    with pytest.raises(sqlite3.OperationalError, match="identity changed"):
+        framework_connection._read_framework_cancellation_requested(
+            database,
+            run_id,
+            timeout_seconds=0.5,
+        )
+    assert calls == 3
+
+
+def test_integrated_budget_uses_owner_control_read_and_preserves_external_cancellation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -120,21 +153,32 @@ def test_integrated_budget_forces_snapshot_and_preserves_external_cancellation(
     def external_cancellation() -> bool:
         return cancelled
 
-    original = framework_connection.connect_existing_framework
+    original = framework_connection._read_framework_cancellation_requested
 
-    def observe(path: Path, **kwargs: Any) -> sqlite3.Connection:
+    def observe(path: Path, run: int, **kwargs: Any) -> bool:
         calls.append(dict(kwargs))
-        return original(path, **kwargs)
+        return original(path, run, **kwargs)
 
-    monkeypatch.setattr(framework_connection, "connect_existing_framework", observe)
+    def forbidden_snapshot(*_args: object, **_kwargs: object) -> sqlite3.Connection:
+        raise AssertionError("owner-coordinated cancellation must not create a snapshot")
+
+    monkeypatch.setattr(
+        framework_connection,
+        "_read_framework_cancellation_requested",
+        observe,
+    )
+    monkeypatch.setattr(
+        framework_connection,
+        "open_sidecar_safe_sqlite_connection",
+        forbidden_snapshot,
+    )
     args = _budget_args(tmp_path, external_cancellation)
     budget = cli_semantic._integrated_semantic_budget(args, run_id)
 
     assert budget.cancellation_check is not None
     assert budget.cancellation_check() is False
     assert len(calls) == 1
-    assert calls[0]["force_snapshot"] is True
-    assert calls[0]["cancellation_check"] is external_cancellation
+    assert callable(calls[0]["control_checkpoint"])
     assert calls[0]["timeout_seconds"] == pytest.approx(1.0)
 
     cancelled = True
@@ -144,7 +188,118 @@ def test_integrated_budget_forces_snapshot_and_preserves_external_cancellation(
     assert len(calls) == 1
 
 
-def test_integrated_budget_throttle_starts_after_snapshot_close(
+def test_framework_control_read_reuses_owner_without_snapshot_io_under_heartbeat(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database, run_id = _framework_fixture(tmp_path)
+    with FrameworkState(database, existing_only=True) as state:
+        before_events = state._connection.execute(
+            "SELECT COUNT(*) FROM run_events WHERE run_id=?",
+            (run_id,),
+        ).fetchone()[0]
+
+    snapshot_calls: list[object] = []
+
+    def forbidden_snapshot(*args: object, **kwargs: object) -> sqlite3.Connection:
+        snapshot_calls.append((args, kwargs))
+        raise AssertionError("Framework control probes must not create snapshots")
+
+    monkeypatch.setattr(
+        framework_connection,
+        "open_sidecar_safe_sqlite_connection",
+        forbidden_snapshot,
+    )
+    from neocortex.runtime.control.locking import FrameworkRunLock
+    from neocortex.runtime.orchestration.run_lifecycle import RunHeartbeat
+
+    def no_cancel() -> None:
+        return None
+
+    with FrameworkRunLock(tmp_path / "framework.lock"):
+        heartbeat = RunHeartbeat(
+            database,
+            run_id,
+            interval_seconds=0.002,
+        ).start()
+        try:
+            probes: list[bool] = []
+            for _ in range(12):
+                probes.append(
+                    framework_connection._read_framework_cancellation_requested(
+                        database,
+                        run_id,
+                        timeout_seconds=0.5,
+                        control_checkpoint=no_cancel,
+                    )
+                )
+                time.sleep(0.004)
+        finally:
+            heartbeat.stop()
+        assert probes == [False] * len(probes)
+
+        with FrameworkState(database) as state:
+            assert state.request_run_cancellation(run_id, "manual") is True
+
+        assert framework_connection._read_framework_cancellation_requested(
+            database,
+            run_id,
+            timeout_seconds=0.5,
+            control_checkpoint=no_cancel,
+        ) is True
+
+    with FrameworkState(database, existing_only=True) as state:
+        after_events = state._connection.execute(
+            "SELECT COUNT(*) FROM run_events WHERE run_id=?",
+            (run_id,),
+        ).fetchone()[0]
+    assert after_events >= before_events + 1
+    assert snapshot_calls == []
+
+
+def test_framework_control_read_rejects_updates_on_the_real_connection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database, run_id = _framework_fixture(tmp_path)
+    real_connect = framework_connection.connect_existing_framework
+    connections: list[sqlite3.Connection] = []
+    attempted = False
+
+    def capture_connect(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
+        connection = real_connect(path, **kwargs)
+        connections.append(connection)
+        return connection
+
+    def reject_write() -> None:
+        nonlocal attempted
+        connection = connections[0]
+        if attempted or not connection.in_transaction:
+            return
+        attempted = True
+        assert connection.execute("PRAGMA query_only").fetchone()[0] == 1
+        before = connection.execute(
+            "SELECT heartbeat_ns FROM initial_runs WHERE run_id=?", (run_id,)
+        ).fetchone()[0]
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            connection.execute(
+                "UPDATE initial_runs SET heartbeat_ns=1 WHERE run_id=?", (run_id,)
+            )
+        assert connection.execute(
+            "SELECT heartbeat_ns FROM initial_runs WHERE run_id=?", (run_id,)
+        ).fetchone()[0] == before
+
+    monkeypatch.setattr(framework_connection, "connect_existing_framework", capture_connect)
+    assert framework_connection._read_framework_cancellation_requested(
+        database, run_id, timeout_seconds=0.5, control_checkpoint=reject_write
+    ) is False
+    assert attempted
+    assert len(connections) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        connections[0].execute("SELECT 1")
+
+
+def test_integrated_budget_throttle_starts_after_control_read_close(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -156,19 +311,35 @@ def test_integrated_budget_throttle_starts_after_snapshot_close(
         return False
 
     class _Cursor:
-        def fetchone(self) -> None:
-            return None
+        def __init__(self, value: tuple[int, ...] | None = None) -> None:
+            self.value = value
+
+        def fetchone(self) -> tuple[int, ...] | None:
+            return self.value
 
     class _Connection:
+        in_transaction = False
+
         def execute(self, *_args: object, **_kwargs: object) -> _Cursor:
+            statement = str(_args[0]) if _args else ""
+            if statement == "PRAGMA query_only=ON" or statement == "PRAGMA query_only":
+                return _Cursor((1,))
+            if statement == "BEGIN":
+                self.in_transaction = True
             return _Cursor()
+
+        def set_progress_handler(self, _callback: object, _instructions: int) -> None:
+            return None
+
+        def rollback(self) -> None:
+            self.in_transaction = False
 
         def close(self) -> None:
             return None
 
     def fake_connect(_path: Path, **_kwargs: object) -> _Connection:
         calls.append(clock[0])
-        # Model a snapshot that takes longer than the 100 ms polling interval.
+        # Model a control read that takes longer than the 100 ms polling interval.
         clock[0] += 0.2
         return _Connection()
 
@@ -183,7 +354,7 @@ def test_integrated_budget_throttle_starts_after_snapshot_close(
     assert budget.cancellation_check() is False
     assert calls == [100.0]
     # The second checkpoint follows the close at t=100.2 and must not reopen
-    # the same Framework snapshot merely because the old interval elapsed.
+    # the same Framework control read merely because the old interval elapsed.
     assert budget.cancellation_check() is False
     assert calls == [100.0]
 
@@ -192,7 +363,76 @@ def test_integrated_budget_throttle_starts_after_snapshot_close(
     assert calls == [100.0, pytest.approx(100.31)]
 
 
-def test_integrated_budget_caps_snapshot_to_remaining_global_and_rejects_expiry(
+def test_framework_control_read_preserves_keyboard_interrupt_from_sql_progress(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database, run_id = _framework_fixture(tmp_path)
+    progress_handlers: list[tuple[object, int]] = []
+    control_calls = 0
+
+    class _Cursor:
+        def __init__(self, value: tuple[int, ...] | None = None) -> None:
+            self.value = value
+
+        def fetchone(self) -> tuple[int, ...] | None:
+            return self.value
+
+    class _Connection:
+        in_transaction = False
+        closed = False
+        progress: object | None = None
+
+        def execute(self, *args: object, **_kwargs: object) -> _Cursor:
+            statement = str(args[0]) if args else ""
+            if statement in {"PRAGMA query_only=ON", "PRAGMA query_only"}:
+                return _Cursor((1,))
+            if statement == "BEGIN":
+                self.in_transaction = True
+                return _Cursor()
+            if statement.startswith("SELECT 1 FROM run_events"):
+                assert callable(self.progress)
+                if self.progress() == 1:
+                    raise sqlite3.OperationalError("interrupted")
+            return _Cursor()
+
+        def set_progress_handler(self, callback: object, instructions: int) -> None:
+            self.progress = callback
+            progress_handlers.append((callback, instructions))
+
+        def rollback(self) -> None:
+            self.in_transaction = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    connection = _Connection()
+
+    def fake_connect(_path: Path, **_kwargs: object) -> _Connection:
+        return connection
+
+    def control_checkpoint() -> None:
+        nonlocal control_calls
+        control_calls += 1
+        if control_calls >= 3:
+            raise KeyboardInterrupt("manual cancellation")
+
+    monkeypatch.setattr(framework_connection, "connect_existing_framework", fake_connect)
+    with pytest.raises(KeyboardInterrupt, match="manual cancellation"):
+        framework_connection._read_framework_cancellation_requested(
+            database,
+            run_id,
+            timeout_seconds=0.5,
+            control_checkpoint=control_checkpoint,
+        )
+    assert control_calls == 3
+    assert progress_handlers[0][1] == 1_000
+    assert progress_handlers[-1] == (None, 0)
+    assert connection.closed
+    assert not connection.in_transaction
+
+
+def test_integrated_budget_caps_control_read_to_remaining_global_and_rejects_expiry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -205,12 +445,28 @@ def test_integrated_budget_caps_snapshot_to_remaining_global_and_rejects_expiry(
     calls: list[dict[str, object]] = []
 
     class _Cursor:
-        def fetchone(self) -> None:
-            return None
+        def __init__(self, value: tuple[int, ...] | None = None) -> None:
+            self.value = value
+
+        def fetchone(self) -> tuple[int, ...] | None:
+            return self.value
 
     class _Connection:
+        in_transaction = False
+
         def execute(self, *_args: object, **_kwargs: object) -> _Cursor:
+            statement = str(_args[0]) if _args else ""
+            if statement == "PRAGMA query_only=ON" or statement == "PRAGMA query_only":
+                return _Cursor((1,))
+            if statement == "BEGIN":
+                self.in_transaction = True
             return _Cursor()
+
+        def set_progress_handler(self, _callback: object, _instructions: int) -> None:
+            return None
+
+        def rollback(self) -> None:
+            self.in_transaction = False
 
         def close(self) -> None:
             return None
@@ -234,7 +490,8 @@ def test_integrated_budget_caps_snapshot_to_remaining_global_and_rejects_expiry(
     )
     assert budget.cancellation_check is not None
     assert budget.cancellation_check() is False
-    assert calls[0]["force_snapshot"] is True
+    assert calls[0]["readonly"] is False
+    assert "force_snapshot" not in calls[0]
     timeout = calls[0]["timeout_seconds"]
     assert isinstance(timeout, (int, float))
     assert 0.49 <= float(timeout) <= 0.51

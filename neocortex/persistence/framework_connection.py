@@ -186,5 +186,124 @@ def connect_existing_framework(
     return connection
 
 
+def _read_framework_cancellation_requested(
+    path: str | Path,
+    run_id: int,
+    *,
+    timeout_seconds: float,
+    control_checkpoint: Callable[[], None] | None = None,
+) -> bool:
+    """Read the lifecycle cancellation event through the Framework owner.
+
+    The integrated Semantic stage calls this only while its
+    :class:`FrameworkRunLock` is held.  Unlike a public owner read, this
+    control-plane probe deliberately opens the existing Framework owner through
+    its read-write URI, enables connection-local ``query_only``, and performs
+    one rollback-only read transaction.  The heartbeat and this probe therefore
+    share SQLite's owner-coordinated view without copying a database whose WAL
+    is changing between fences.
+
+    ``control_checkpoint`` is an invocation-local callback.  It may raise
+    ``KeyboardInterrupt`` for external cancellation or the caller's typed
+    deadline exception; it must not consult a SemanticWorkBudget whose own
+    cancellation callback is currently executing.
+    """
+
+    if control_checkpoint is not None and not callable(control_checkpoint):
+        raise TypeError("control_checkpoint must be callable or None")
+    selected = Path(os.path.abspath(os.fspath(path)))
+    expected_identity = _validate_existing_owner(selected)
+
+    from neocortex.persistence.sqlite_cancellation import (
+        SQLiteCancellationBridge,
+        sqlite_cancellation_scope,
+    )
+
+    connection = connect_existing_framework(
+        selected,
+        readonly=False,
+        timeout_seconds=timeout_seconds,
+    )
+    bridge = SQLiteCancellationBridge(control_checkpoint)
+    primary_error: BaseException | None = None
+    cleanup_error: BaseException | None = None
+    try:
+        connection.execute("PRAGMA query_only=ON")
+        if int(connection.execute("PRAGMA query_only").fetchone()[0]) != 1:
+            raise RuntimeError("framework cancellation probe is not query-only")
+        with sqlite_cancellation_scope(connection, bridge):
+            bridge.checkpoint()
+            connection.execute("BEGIN")
+            bridge.checkpoint()
+            cancelled = connection.execute(
+                """SELECT 1 FROM run_events WHERE run_id=?
+                AND phase='lifecycle-budget'
+                AND message='Run cancellation requested' LIMIT 1""",
+                (run_id,),
+            ).fetchone() is not None
+            bridge.checkpoint()
+        return cancelled
+    except BaseException as exc:
+        primary_error = exc
+        raise
+    finally:
+        try:
+            if connection.in_transaction:
+                connection.rollback()
+        except BaseException as exc:
+            if primary_error is None:
+                cleanup_error = exc
+            else:
+                primary_error.add_note(
+                    "Framework cancellation probe rollback failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+        try:
+            connection.close()
+        except BaseException as exc:
+            if primary_error is None:
+                if cleanup_error is None:
+                    cleanup_error = exc
+                else:
+                    cleanup_error.add_note(
+                        "Framework cancellation probe close failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+            else:
+                primary_error.add_note(
+                    "Framework cancellation probe close failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+        try:
+            observed_identity = _validate_existing_owner(selected)
+            if observed_identity != expected_identity:
+                identity_error = sqlite3.OperationalError(
+                    "framework SQLite owner identity changed during cancellation probe"
+                )
+                if primary_error is None:
+                    if cleanup_error is None:
+                        cleanup_error = identity_error
+                    else:
+                        cleanup_error.add_note(str(identity_error))
+                else:
+                    primary_error.add_note(str(identity_error))
+        except BaseException as exc:
+            if primary_error is None and cleanup_error is None:
+                cleanup_error = exc
+            elif primary_error is not None:
+                primary_error.add_note(
+                    "Framework cancellation probe final owner check failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+            else:
+                assert cleanup_error is not None
+                cleanup_error.add_note(
+                    "Framework cancellation probe final owner check failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+        if primary_error is None and cleanup_error is not None:
+            raise cleanup_error
+
+
 __all__ = ["connect_existing_framework"]
 # endregion [02]

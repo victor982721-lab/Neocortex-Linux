@@ -178,12 +178,18 @@ reanudación explícita por defaults ni se ocultan parciales.
 GUI y grabadores consumen el mismo evento. En Linux los procesos externos usan
 sesión/grupo propios; la cancelación alcanza el árbol y registra el estado final.
 
-Durante el stage Semantic, Framework mantiene su heartbeat escritor. La lectura
-de cancelación usa un snapshot temporal detached aun cuando WAL/SHM no sean
-visibles entre pulsos; no supone que ese owner activo sea inmutable. Si un
-sidecar capturado desaparece antes de copiarlo, se descarta ese candidato y se
-recaptura la fence completa dentro de los mismos intentos, deadline y
-cancelación. No se omite WAL ni se confunde esa carrera con un main ausente.
+Durante el stage Semantic, Framework mantiene su heartbeat escritor. Su consulta
+interna de cancelación participa en el lifecycle de ese owner: abre sólo la base
+existente, verifica `query_only`, lee en una transacción SQLite y revierte/cierra.
+Revalida la identidad física antes y después, limita espera por deadline y
+conserva la cancelación externa sin recursión. No copia el owner por cada pulso
+ni presume que `FrameworkRunLock` serialice el hilo de heartbeat.
+
+Las lecturas públicas mantienen sus fences byte-neutral. En un snapshot temporal,
+si un sidecar capturado desaparece antes de copiarlo, se descarta ese candidato y
+se recaptura la fence completa dentro de los mismos intentos y presupuesto. No
+se omite WAL ni se confunde esa carrera con un main ausente; tampoco se promete
+obtener un snapshot de un owner que cambia continuamente durante la copia.
 
 ### Catálogo, Semantic y Knowledge
 
