@@ -507,7 +507,7 @@ def _print_catalog_reports(result) -> None:
               f"candidates={candidates if candidates is not None else 'no_verificado'} "
               f"cache_hits={cache_hits if cache_hits is not None else 'no_verificado'} "
               f"new_work={new_work if new_work is not None else 'no_verificado'} evidence={replay_evidence}")
-        issues = {name: value for name in STRICT_ROUTE_ERROR_FIELDS
+        issues = {name: value for name in _strict_route_error_fields(route, summary)
                   for value in (_optional_counter(summary, name),) if value}
         if issues:
             print(f"ROUTE_COVERAGE route={sanitize_untrusted_text(route, limit=32)} complete=0 "
@@ -593,6 +593,39 @@ def _field_value(summary: object, field: str) -> tuple[bool, object]:
 def _optional_counter(summary: object, field: str) -> int | None:
     present, value = _field_value(summary, field)
     return _counter_value(value) if present else None
+
+
+def _archive_all_complete(summary: object) -> bool:
+    """Recognize the Archive coverage contract before ignoring raw issue totals."""
+
+    required = (
+        "processed",
+        "containers_complete",
+        "containers_partial",
+        "errors",
+        "cached_errors",
+    )
+    values: dict[str, int] = {}
+    for field in required:
+        present, value = _field_value(summary, field)
+        if not present or type(value) is not int or value < 0:
+            return False
+        values[field] = value
+    return (
+        values["processed"] > 0
+        and values["containers_complete"] == values["processed"]
+        and values["containers_partial"] == 0
+        and values["errors"] == 0
+        and values["cached_errors"] == 0
+    )
+
+
+def _strict_route_error_fields(route_name: str, summary: object) -> tuple[str, ...]:
+    """Use owner-authoritative Archive coverage while retaining raw visibility."""
+
+    if route_name == "archive" and _archive_all_complete(summary):
+        return tuple(field for field in STRICT_ROUTE_ERROR_FIELDS if field != "safety_issues")
+    return STRICT_ROUTE_ERROR_FIELDS
 
 
 def _has_valid_counters(summary: object, fields: Iterable[str]) -> bool:
@@ -1294,8 +1327,8 @@ STRICT_ROUTE_ERROR_FIELDS = (
 def has_strict_route_errors(result) -> bool:
     """Return whether any completed route reported incomplete content work."""
 
-    for summary in result.route_results.values():
-        for field in STRICT_ROUTE_ERROR_FIELDS:
+    for route_name, summary in result.route_results.items():
+        for field in _strict_route_error_fields(route_name, summary):
             value = (
                 summary.get(field, 0)
                 if isinstance(summary, Mapping)

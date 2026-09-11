@@ -34,6 +34,10 @@ fuera de `docs/`.
   búsqueda léxica con una sección `archive_document/body`, sin inventar un
   miembro ZIP. Knowledge revalida ese localizador contra el owner; los miembros
   anidados conservan su identidad y procedencia anteriores.
+- Las incidencias de identificación de Archive siguen visibles, pero no se
+  convierten en falta de cobertura cuando el owner confirma todos los
+  contenedores procesados completos y sin errores. Parciales y resúmenes sin
+  esa clasificación conservan la salida estricta de incompleto.
 
 ## 2026-09-11 — Oleada funcional C1–C5 (registro histórico de implementación)
 
