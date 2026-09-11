@@ -16,6 +16,10 @@ fuera de `docs/`.
   Los verificadores del commit no reparan ni ocultan cambios concurrentes.
 - CLI y GUI comparten el preflight; se conserva el alcance de owners y los
   presupuestos actuales, mientras la reanudación explícita sigue siendo estricta.
+- La consulta de cancelación de Semantic convive con el heartbeat Framework
+  mediante snapshots detached. Una desaparición de sidecar durante su copia
+  recibe un reintento acotado con fence fresca, sin tratarla como base principal
+  inexistente ni elegir una lectura inmutable sobre un escritor activo.
 
 ## 2026-09-11 — Oleada funcional C1–C5 (registro histórico de implementación)
 

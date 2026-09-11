@@ -41,6 +41,7 @@ __all__ = [
 
 _INTEGRATED_START_METADATA_TIMEOUT_SECONDS = 60.0
 _INTEGRATED_START_SNAPSHOT_BYTES = 256 * 1024 * 1024
+_INTEGRATED_FRAMEWORK_SNAPSHOT_TIMEOUT_SECONDS = 1.0
 
 # region [01] Multimodal semantic index
 
@@ -674,6 +675,8 @@ def _integrated_semantic_budget(args: argparse.Namespace, run_id: int | None):
     max_jobs = args.semantic_max_new_jobs
     duration = args.semantic_time_budget_seconds
     active_run = False
+    lifecycle_snapshot = None
+    global_deadline_ns: int | None = None
     if run_id is not None:
         with FrameworkState(args.state_directory / "framework.sqlite3", existing_only=True) as state:
             row = state._connection.execute(
@@ -682,6 +685,7 @@ def _integrated_semantic_budget(args: argparse.Namespace, run_id: int | None):
             active_run = row is not None and row[0] == "running"
             snapshot = state.read_run_budget(run_id)
             if active_run and snapshot is not None:
+                lifecycle_snapshot = dict(snapshot)
                 if snapshot.get("cancel_requested"):
                     raise KeyboardInterrupt("Semantic run was cancelled")
                 snapshot = state.check_run_budget(run_id)
@@ -692,12 +696,23 @@ def _integrated_semantic_budget(args: argparse.Namespace, run_id: int | None):
                     max_items = remaining_items if max_items is None else min(max_items, remaining_items)
                 deadline_ns = snapshot.get("deadline_ns")
                 if deadline_ns is not None:
+                    global_deadline_ns = int(deadline_ns)
                     remaining = (deadline_ns - time.time_ns()) / 1_000_000_000
                     if remaining <= 0:
                         raise RunBudgetExceeded("time", snapshot)
                     duration = remaining if duration is None else min(duration, remaining)
+    # Do not ask the SemanticWorkBudget for its remaining time from its own
+    # cancellation callback: ``remaining_seconds()`` invokes that callback and
+    # would recurse while a Framework snapshot is being prepared.  This local
+    # deadline is only a bounded preparation guard; the actual work budget is
+    # still created below and remains authoritative for Semantic admission.
+    semantic_deadline = (
+        None if duration is None else time.monotonic() + float(duration)
+    )
     last_check = 0.0
-    cancellation = getattr(args, "_semantic_cancellation_check", None)
+    cancellation: Callable[[], bool | None] | None = getattr(
+        args, "_semantic_cancellation_check", None
+    )
 
     def check_cancellation() -> bool:
         nonlocal last_check
@@ -711,8 +726,33 @@ def _integrated_semantic_budget(args: argparse.Namespace, run_id: int | None):
             # can change while this Semantic stage owns the run budget.
             from neocortex.persistence.framework_connection import connect_existing_framework
 
+            remaining: float | None = None
+            if global_deadline_ns is not None:
+                remaining = (global_deadline_ns - time.time_ns()) / 1_000_000_000
+                if remaining <= 0:
+                    raise RunBudgetExceeded("time", lifecycle_snapshot)
+            if semantic_deadline is not None:
+                semantic_remaining = semantic_deadline - time.monotonic()
+                if semantic_remaining <= 0:
+                    # Let the SemanticWorkBudget's own checkpoint report its
+                    # typed deadline after this callback returns.  In
+                    # particular, do not turn a Semantic-only deadline into a
+                    # durable Framework cancellation.
+                    return False
+                remaining = (
+                    semantic_remaining
+                    if remaining is None
+                    else min(remaining, semantic_remaining)
+                )
+            timeout_seconds = _INTEGRATED_FRAMEWORK_SNAPSHOT_TIMEOUT_SECONDS
+            if remaining is not None:
+                timeout_seconds = min(timeout_seconds, remaining)
             connection = connect_existing_framework(
-                args.state_directory / "framework.sqlite3", readonly=True, timeout_seconds=0.1
+                args.state_directory / "framework.sqlite3",
+                readonly=True,
+                timeout_seconds=timeout_seconds,
+                force_snapshot=True,
+                cancellation_check=cancellation,
             )
             try:
                 cancelled = connection.execute(
@@ -722,7 +762,11 @@ def _integrated_semantic_budget(args: argparse.Namespace, run_id: int | None):
                 ).fetchone() is not None
             finally:
                 connection.close()
-            last_check = now
+            # Charge the complete detached-read interval to the throttle.  A
+            # four-megabyte Framework snapshot can exceed 100 ms; retaining
+            # the pre-open timestamp would immediately repeat the same read
+            # on the next Semantic checkpoint.
+            last_check = time.monotonic()
             if cancelled:
                 return True
         return False
@@ -860,6 +904,8 @@ def _semantic_index_failure(
     *,
     print_output: bool,
 ) -> int:
+    from neocortex.semantic.semantic_config import SemanticModelUnavailableError
+
     if print_output:
         for scope, result in execution.results:
             _print_semantic_index_result(scope, result)
@@ -874,7 +920,10 @@ def _semantic_index_failure(
     return _semantic_failure(
         "semantic-index",
         exc,
-        offline=True,
+        # A Framework/SQLite or source-owner failure is not a model
+        # provisioning problem.  Only the typed local-model prerequisite
+        # failure may suggest an offline model snapshot.
+        offline=isinstance(exc, SemanticModelUnavailableError),
         print_output=print_output,
     )
 

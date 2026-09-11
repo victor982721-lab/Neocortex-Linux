@@ -17,6 +17,7 @@ read-only class; a writer must supply its own transaction/lock owner.
 """
 
 from __future__ import annotations
+import errno
 import sqlite3
 import stat
 import os
@@ -37,6 +38,10 @@ from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
 
 class ImmutableSQLiteUnavailable(RuntimeError):
     """A database cannot be proven safe for an immutable read."""
+
+
+class _SQLiteSnapshotSidecarRace(ImmutableSQLiteUnavailable):
+    """A captured sidecar disappeared before its bounded copy completed."""
 
 
 class SQLiteSnapshotBudgetExceeded(ImmutableSQLiteUnavailable):
@@ -1084,11 +1089,25 @@ class SQLiteReadSession:
                 temporary_database = Path(temporary_directory.name) / self.path.name
                 _copy_regular_file_budgeted(self.path, temporary_database, budget_state)
                 for suffix, _identity in source_fence.sidecars:
-                    _copy_regular_file_budgeted(
-                        Path(f"{self.path}{suffix}"),
-                        Path(f"{temporary_database}{suffix}"),
-                        budget_state,
-                    )
+                    source_sidecar = Path(f"{self.path}{suffix}")
+                    try:
+                        _copy_regular_file_budgeted(
+                            source_sidecar,
+                            Path(f"{temporary_database}{suffix}"),
+                            budget_state,
+                        )
+                    except FileNotFoundError as exc:
+                        if exc.errno != errno.ENOENT or exc.filename != os.fspath(source_sidecar):
+                            raise
+                        # A sidecar may disappear after the preflight fence
+                        # (for example, a writer checkpoints its WAL).  Do
+                        # not let the caller misclassify that normal race as
+                        # a missing main database: discard this candidate and
+                        # recapture a fresh fence on the bounded retry.
+                        raise _SQLiteSnapshotSidecarRace(
+                            "SQLite owner sidecar disappeared while creating "
+                            f"a temporary snapshot: {source_sidecar.name}"
+                        ) from exc
                 if source_fence != capture_sqlite_read_fence(self.path):
                     raise ImmutableSQLiteUnavailable(
                         f"SQLite owner changed while creating temporary snapshot: {self.path}"
@@ -1142,9 +1161,12 @@ class SQLiteReadSession:
                 # Retry only a fence race.  An active WAL, a symlink, an
                 # invalid owner, and every other deterministic safety failure
                 # must retain its actionable reason on the first attempt.
-                if isinstance(exc, ImmutableSQLiteUnavailable) and (
-                    "changed before immutable read" in str(exc)
-                    or "changed while creating temporary snapshot" in str(exc)
+                if isinstance(exc, _SQLiteSnapshotSidecarRace) or (
+                    isinstance(exc, ImmutableSQLiteUnavailable)
+                    and (
+                        "changed before immutable read" in str(exc)
+                        or "changed while creating temporary snapshot" in str(exc)
+                    )
                 ):
                     time.sleep(0.01)
                     continue
@@ -1238,6 +1260,7 @@ def open_sidecar_safe_sqlite_connection(
     budget: SQLiteSnapshotBudget | None = None,
     max_temporary_bytes: int | None = None,
     cancellation_check: Callable[[], bool | None] | None = None,
+    force_snapshot: bool = False,
 ) -> sqlite3.Connection:
     """Return a bare connection while retaining safe snapshot ownership.
 
@@ -1245,11 +1268,19 @@ def open_sidecar_safe_sqlite_connection(
     Strict owners retain their final fence on close; any sidecars are copied to a
     temporary owner and the returned connection closes that session together
     with its own SQLite handle.  New code should prefer ``sqlite_read_session``
-    when it can own the context explicitly.
+    when it can own the context explicitly.  ``force_snapshot`` keeps a
+    caller that knows an owner may change between coordination heartbeats on
+    the detached snapshot path even when no sidecar is visible at selection.
     """
 
+    if not isinstance(force_snapshot, bool):
+        raise TypeError("force_snapshot must be a boolean")
     selected = Path(path)
-    mode = preferred_sqlite_read_mode(selected)
+    mode = (
+        SQLiteReadMode.SNAPSHOT_TEMP
+        if force_snapshot
+        else preferred_sqlite_read_mode(selected)
+    )
     if mode is SQLiteReadMode.IMMUTABLE_STRICT:
         # Reuse the same session kernel for strict owners so cancellation and
         # the preparation deadline cannot be bypassed by the legacy bare-

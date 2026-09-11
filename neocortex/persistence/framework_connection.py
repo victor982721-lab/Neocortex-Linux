@@ -10,6 +10,7 @@ import sqlite3
 import errno
 import os
 import stat
+from collections.abc import Callable
 from pathlib import Path
 
 from neocortex.persistence.sqlite_immutable import open_sidecar_safe_sqlite_connection
@@ -97,11 +98,21 @@ def connect_existing_framework(
     *,
     readonly: bool,
     timeout_seconds: float = 60.0,
+    force_snapshot: bool = False,
+    cancellation_check: Callable[[], bool | None] | None = None,
 ) -> sqlite3.Connection:
     """Open existing framework state without ever creating a replacement file."""
 
     if isinstance(timeout_seconds, bool) or timeout_seconds <= 0:
         raise ValueError("framework SQLite timeout must be positive")
+    if type(force_snapshot) is not bool:
+        raise TypeError("force_snapshot must be a boolean")
+    if force_snapshot and not readonly:
+        raise ValueError("force_snapshot is only valid for readonly framework connections")
+    if cancellation_check is not None and not callable(cancellation_check):
+        raise TypeError("cancellation_check must be callable or None")
+    if cancellation_check is not None and not readonly:
+        raise ValueError("cancellation_check is only valid for readonly framework connections")
     selected = Path(os.path.abspath(os.fspath(path)))
     try:
         expected_identity: tuple[int, int] | None = _validate_existing_owner(selected)
@@ -113,11 +124,27 @@ def connect_existing_framework(
         expected_identity = None
     if readonly:
         try:
-            connection = open_sidecar_safe_sqlite_connection(
-                selected,
-                timeout_seconds=timeout_seconds,
-            )
+            if force_snapshot or cancellation_check is not None:
+                connection = open_sidecar_safe_sqlite_connection(
+                    selected,
+                    timeout_seconds=timeout_seconds,
+                    force_snapshot=force_snapshot,
+                    cancellation_check=cancellation_check,
+                )
+            else:
+                # Keep the long-standing injected opener seam source-compatible
+                # for embedders that still expose only the original arguments.
+                connection = open_sidecar_safe_sqlite_connection(
+                    selected,
+                    timeout_seconds=timeout_seconds,
+                )
         except FileNotFoundError as exc:
+            # Only an ENOENT for the authenticated main owner is a missing
+            # Framework database.  A snapshot sidecar or temporary destination
+            # can disappear during a bounded retry and must retain its own
+            # provenance instead of being reported as a missing main owner.
+            if exc.errno != errno.ENOENT or exc.filename != os.fspath(selected):
+                raise
             raise sqlite3.OperationalError(f"unable to open database file: {selected}") from exc
     else:
         uri = existing_sqlite_uri(selected)

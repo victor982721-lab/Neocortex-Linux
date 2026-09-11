@@ -144,7 +144,8 @@ publicados; abandona el intento pendiente sin fingir rollback y establece un
 checkpoint coherente antes del procesamiento. Los budgets explícitos pertenecen
 a la nueva petición y se mantienen acumulados dentro de ella, incluyendo el
 tiempo del preflight. Se reutiliza lo válido y se reconstruyen los derivados
-necesarios, sin mover originales, copiar bases ni promover generaciones parciales.
+necesarios, sin mover originales, exigir copias de recuperación de las bases ni
+promover generaciones parciales.
 Un enlace Code obsoleto tras una interrupción o cambio de archivo se desactiva
 una sola vez y se reconstruye en el flujo normal. Schema futuro, manifest ajeno
 o corrupto y drift real no se convierten en éxito.

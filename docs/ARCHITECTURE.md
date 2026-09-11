@@ -178,6 +178,13 @@ reanudación explícita por defaults ni se ocultan parciales.
 GUI y grabadores consumen el mismo evento. En Linux los procesos externos usan
 sesión/grupo propios; la cancelación alcanza el árbol y registra el estado final.
 
+Durante el stage Semantic, Framework mantiene su heartbeat escritor. La lectura
+de cancelación usa un snapshot temporal detached aun cuando WAL/SHM no sean
+visibles entre pulsos; no supone que ese owner activo sea inmutable. Si un
+sidecar capturado desaparece antes de copiarlo, se descarta ese candidato y se
+recaptura la fence completa dentro de los mismos intentos, deadline y
+cancelación. No se omite WAL ni se confunde esa carrera con un main ausente.
+
 ### Catálogo, Semantic y Knowledge
 
 Catálogo y Semantic son proyecciones reconstruibles con heads publicados.
