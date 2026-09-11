@@ -4,7 +4,20 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
-## 2026-09-11 — Oleada funcional C1–C5 (implementación; aceptación pendiente)
+## 2026-09-11 — Nuevo `--all` después de una corrida incompleta
+
+- Separa un arranque nuevo de `--resume-run`: la falta de presupuesto/stage
+  Semantic legacy ya no obliga a reanudar ese intento antes de procesar.
+- Introduce un checkpoint de heads publicados con abandono explícito del intento
+  viejo, sin rollback ni promoción de generaciones parciales. Conserva el journal
+  anterior byte a byte y expone ambos eventos mediante un único reemplazo atómico.
+- Los enlaces Code obsoletos por una versión nueva o un head Semantic avanzado
+  se desactivan con deadline/cancelación y se reconstruyen en el flujo normal.
+  Los verificadores del commit no reparan ni ocultan cambios concurrentes.
+- CLI y GUI comparten el preflight; se conserva el alcance de owners y los
+  presupuestos actuales, mientras la reanudación explícita sigue siendo estricta.
+
+## 2026-09-11 — Oleada funcional C1–C5 (registro histórico de implementación)
 
 - `--all` conserva las nueve rutas (`pdf`, `docx`, `office`, `archive`, `text`,
   `audio`, `video`, `image`, `code`) y usa alcance `broad` para Code dentro de la
@@ -29,7 +42,7 @@ fuera de `docs/`.
 
 Esta entrada registra implementación y focos locales, no una aceptación completa:
 no declara recuperación real de la generación 17, release final instalada ni
-cierre C0–C7. La validación continúa desde una copia y el SHA final, conforme a
+cierre C0–C7. La validación de esta entrada usó fixtures y fuente aislada, conforme a
 [desarrollo y release](subprojects/development-release.md).
 
 ## Post-0.13 — histórico, aceptado en su SHA

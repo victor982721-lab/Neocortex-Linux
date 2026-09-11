@@ -104,7 +104,7 @@ def _semantic_stage_details(args: argparse.Namespace) -> dict[str, object]:
     """Capture Semantic configuration before Framework workers start."""
 
     selected_sources = tuple(getattr(args, "semantic_source", None) or ())
-    return {
+    details: dict[str, object] = {
         "selected_sources": list(selected_sources),
         "selection_pending": getattr(args, "semantic_source", None) is None,
         "complete_all": bool(getattr(args, "_semantic_complete_all", False)),
@@ -124,6 +124,10 @@ def _semantic_stage_details(args: argparse.Namespace) -> dict[str, object]:
         "semantic_threads": getattr(args, "semantic_threads", None),
         "semantic_no_ocr": bool(getattr(args, "semantic_no_ocr", False)),
     }
+    publication_owners = getattr(args, "_semantic_publication_owners", None)
+    if publication_owners is not None:
+        details["publication_owners"] = list(publication_owners)
+    return details
 
 
 def _emit_unsuccessful_execution(
@@ -430,7 +434,6 @@ def main(arguments: Sequence[str] | None = None) -> int:
         from .cli_semantic import run_integrated_all_semantic_index
 
         semantic_attempted = True
-        semantic_stage_details = _semantic_stage_details(args)
 
         def run_semantic_stage(run_id: int) -> object:
             nonlocal semantic_exit_code
@@ -453,9 +456,14 @@ def main(arguments: Sequence[str] | None = None) -> int:
         with reporter as progress:
             try:
                 if args.all or args.resume_run is not None:
-                    from .cli_semantic import recover_pending_integrated_semantic
+                    from .cli_semantic import prepare_integrated_semantic_start
 
-                    recover_pending_integrated_semantic(args, progress=progress)
+                    prepare_integrated_semantic_start(args, progress=progress)
+                if semantic_stage_runner is not None:
+                    # The fresh-start preflight may consume part of an explicit
+                    # time cap; persist the effective remainder, not the
+                    # preflight-free value captured before the dispatcher.
+                    semantic_stage_details = _semantic_stage_details(args)
                 supports_lifecycle_hook = (
                     "lifecycle_stage_runner" in inspect.signature(run_framework).parameters
                 )

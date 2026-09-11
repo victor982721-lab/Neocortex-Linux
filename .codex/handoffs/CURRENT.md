@@ -13,11 +13,12 @@ reintentos tipados, límites acumulados, recuperación compatible y paridad GUI/
 Las propuestas son advisory. `--all` no aplica cambios a originales ni crea un
 autoanalizador del repositorio.
 
-La aceptación de código, publicación, instalación y recuperación canónica se
-registra por separado en los dos documentos enlazados. **No inferir que gen17
-fue recuperada por tener código o release nuevos**: la copia de estado y su
-promoción conservan el gate explícito registrado. Retención/poda, R1–R4,
-principal autenticado, KIO, modelos y cualquier efecto físico no se amplían.
+La aceptación de código, publicación e instalación se registra en esos destinos,
+incluyendo el arranque efectivo del comando tras una corrida incompleta. Víctor
+retiró la preservación/recuperación de generaciones experimentales como requisito:
+una nueva `--all` usa una petición nueva y derivados reconstruibles; no exige
+rescatar gen17. Los originales, R1–R4, principal autenticado, KIO, modelos y
+cualquier efecto físico conservan sus límites.
 
 ## Evidencia de entregas anteriores (histórica)
 

@@ -3,10 +3,12 @@
 from __future__ import annotations
 import argparse
 import json
+import math
 import sqlite3
 import sys
 import time
 from collections.abc import Callable, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -14,13 +16,16 @@ from typing import TYPE_CHECKING
 from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
 from neocortex.persistence.state_publication import StatePublicationRecoveryRequired
 from neocortex.api.read_contract import sanitize_untrusted_text
+from neocortex.platform.policy import stat_birthtime_ns
 
 if TYPE_CHECKING:
+    from neocortex.persistence.state_publication import StateOwnerHead
     from neocortex.semantic.semantic_models import EmbeddingModelSpec
     from neocortex.semantic.semantic_service_contracts import SemanticIndexResult
     from neocortex.semantic.semantic_work_budget import SemanticWorkBudget
 
 __all__ = [
+    "prepare_integrated_semantic_start",
     "recover_pending_integrated_semantic",
     "run_integrated_all_semantic_index",
     "run_semantic_classify",
@@ -33,6 +38,9 @@ __all__ = [
     "run_semantic_status",
     "semantic_resume_available",
 ]
+
+_INTEGRATED_START_METADATA_TIMEOUT_SECONDS = 60.0
+_INTEGRATED_START_SNAPSHOT_BYTES = 256 * 1024 * 1024
 
 # region [01] Multimodal semantic index
 
@@ -162,6 +170,168 @@ class _SemanticIndexExecution:
     code_link_statuses: list[tuple[int, str, int, int]] = field(default_factory=list)
     scope_timings: list[tuple[str, int]] = field(default_factory=list)
     unavailable_scopes: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingIntegratedMetadata:
+    """Bounded metadata needed to restart one stale integrated checkpoint."""
+
+    event_id: str
+    expected_epoch: int
+    pending_owners: tuple[str, ...]
+    previous_owners: tuple[str, ...]
+    manifest: Mapping[str, object] | None
+
+
+class _IntegratedStartReadBudget:
+    """One cooperative budget for the fresh-start metadata preflight."""
+
+    def __init__(
+        self,
+        args: argparse.Namespace,
+        *,
+        cancellation_check: Callable[[], bool | None] | None,
+        clock: Callable[[], float],
+        metadata_timeout_seconds: float | None,
+    ) -> None:
+        if not callable(clock):
+            raise TypeError("preflight clock must be callable")
+        if cancellation_check is not None and not callable(cancellation_check):
+            raise TypeError("preflight cancellation check must be callable")
+        timeout = (
+            _INTEGRATED_START_METADATA_TIMEOUT_SECONDS
+            if metadata_timeout_seconds is None
+            else metadata_timeout_seconds
+        )
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not math.isfinite(float(timeout))
+            or float(timeout) <= 0.0
+        ):
+            raise ValueError("preflight metadata timeout must be finite and positive")
+        caps = [float(timeout)]
+        for name in ("run_time_budget_seconds", "semantic_time_budget_seconds"):
+            value = getattr(args, name, None)
+            if value is None:
+                continue
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or float(value) <= 0.0
+            ):
+                raise ValueError(f"{name} must be finite and positive")
+            caps.append(float(value))
+        self.clock = clock
+        self.cancellation_check = cancellation_check
+        self.started = clock()
+        self.deadline = self.started + min(caps)
+
+    def check(self) -> None:
+        if self.cancellation_check is not None:
+            decision = self.cancellation_check()
+            if decision is True:
+                raise KeyboardInterrupt("Semantic start preflight was cancelled")
+            if decision is not None and decision is not False:
+                raise KeyboardInterrupt("Semantic start preflight was cancelled")
+        if self.clock() >= self.deadline:
+            from neocortex.persistence.framework_state_writer import RunBudgetExceeded
+
+            raise RunBudgetExceeded("time")
+
+    def remaining_seconds(self) -> float:
+        self.check()
+        remaining = self.deadline - self.clock()
+        if remaining <= 0.0:
+            from neocortex.persistence.framework_state_writer import RunBudgetExceeded
+
+            raise RunBudgetExceeded("time")
+        return remaining
+
+    def snapshot_budget(self):
+        from neocortex.persistence.sqlite_immutable import SQLiteSnapshotBudget
+
+        remaining = self.remaining_seconds()
+        return SQLiteSnapshotBudget(
+            max_temporary_bytes=_INTEGRATED_START_SNAPSHOT_BYTES,
+            prepare_timeout_seconds=min(
+                _INTEGRATED_START_METADATA_TIMEOUT_SECONDS,
+                remaining,
+            ),
+            cancellation_check=self._snapshot_checkpoint,
+            monotonic_clock=self.clock,
+        )
+
+    def _snapshot_checkpoint(self) -> bool:
+        self.check()
+        return False
+
+    def apply_elapsed_to_explicit_caps(self, args: argparse.Namespace) -> None:
+        """Charge preflight time without consuming item/job metadata budgets."""
+
+        self.check()
+        elapsed = max(0.0, self.clock() - self.started)
+        for name in ("run_time_budget_seconds", "semantic_time_budget_seconds"):
+            value = getattr(args, name, None)
+            if value is None:
+                continue
+            remaining = float(value) - elapsed
+            if remaining <= 0.0:
+                from neocortex.persistence.framework_state_writer import RunBudgetExceeded
+
+                raise RunBudgetExceeded("time")
+            setattr(args, name, remaining)
+
+
+@contextmanager
+def _bounded_framework_metadata_read(
+    database: Path,
+    controls: _IntegratedStartReadBudget,
+):
+    """Read Framework metadata through the fenced SQLite kernel."""
+
+    controls.check()
+    if not database.is_file():
+        raise StatePublicationRecoveryRequired("original Framework manifest is unavailable")
+    from neocortex.persistence.sqlite_immutable import (
+        SQLiteReadSession,
+        preferred_sqlite_read_mode,
+    )
+
+    timeout = min(_INTEGRATED_START_METADATA_TIMEOUT_SECONDS, controls.remaining_seconds())
+    session = SQLiteReadSession(
+        database,
+        mode=preferred_sqlite_read_mode(database),
+        timeout_seconds=timeout,
+        max_attempts=2,
+        budget=controls.snapshot_budget(),
+    )
+    with session as connection:
+        controls.check()
+        failure: BaseException | None = None
+
+        def progress() -> int:
+            nonlocal failure
+            try:
+                controls.check()
+            except BaseException as exc:
+                failure = exc
+                return 1
+            return 0
+
+        connection.set_progress_handler(progress, 1_000)
+        try:
+            yield connection
+        except sqlite3.OperationalError as exc:
+            if failure is not None:
+                raise failure from exc
+            raise
+        finally:
+            connection.set_progress_handler(None, 0)
+        if failure is not None:
+            raise failure
+        controls.check()
 
 
 def run_semantic_status(args: argparse.Namespace) -> int:
@@ -448,21 +618,49 @@ def _validate_integrated_publication_token(args: argparse.Namespace) -> None:
         raise StatePublicationRecoveryRequired(view.reason or view.status)
 
 
-def _observe_integrated_heads(state_directory: Path, *, include_code: bool, work_budget=None):
+def _observe_integrated_heads(
+    state_directory: Path, *, include_code: bool, work_budget=None,
+    repair_stale_code_links: bool = False,
+):
+    from neocortex.code.search.code_semantic_links import CodeSemanticLinkError
     from neocortex.semantic.semantic_publication_heads import (
         PublicationHeadsError,
+        PublicationHeadsRepairRequired,
         observe_integrated_owner_heads,
+        observe_semantic_generation_heads,
     )
 
     try:
         remaining = None if work_budget is None else work_budget.remaining_seconds()
-        return observe_integrated_owner_heads(
-            state_directory,
-            include_code=include_code,
-            deadline_monotonic=None if remaining is None else time.monotonic() + remaining,
-            cancellation_check=None if work_budget is None else work_budget.cancellation_check,
-        )
-    except PublicationHeadsError as exc:
+        deadline = None if remaining is None else time.monotonic() + remaining
+        cancellation = None if work_budget is None else work_budget.cancellation_check
+
+        def observe():
+            return observe_integrated_owner_heads(
+                state_directory, include_code=include_code,
+                deadline_monotonic=deadline, cancellation_check=cancellation,
+            )
+
+        try:
+            return observe()
+        except PublicationHeadsRepairRequired:
+            if not include_code or not repair_stale_code_links:
+                raise
+            # Code extraction can invalidate old links before Semantic starts,
+            # not only when a previous run was interrupted. Reconcile that
+            # derived projection before capturing the new prepare baseline.
+            from neocortex.code.search.code_semantic_links import deactivate_stale_code_embedding_links
+
+            published_heads = observe_semantic_generation_heads(
+                state_directory, deadline_monotonic=deadline,
+                cancellation_check=cancellation,
+            )
+            deactivate_stale_code_embedding_links(
+                state_directory, published_heads=published_heads,
+                deadline_monotonic=deadline, cancellation_check=cancellation,
+            )
+            return observe()
+    except (PublicationHeadsError, CodeSemanticLinkError) as exc:
         raise StatePublicationRecoveryRequired(str(exc)) from exc
 
 
@@ -827,6 +1025,12 @@ def _semantic_stage_for_resume(
     details = semantic.get("details")
     if not isinstance(details, Mapping):
         raise RuntimeError(f"run {source_run_id} Semantic stage details are invalid")
+    publication_owners = None
+    if "publication_owners" in details:
+        publication_owners = _stored_publication_owners(
+            details.get("publication_owners"),
+            label=f"run {source_run_id} Semantic publication owners",
+        )
     raw_sources = details.get("selected_sources")
     selection_pending = details.get("selection_pending", False)
     if not isinstance(selection_pending, bool):
@@ -873,6 +1077,7 @@ def _semantic_stage_for_resume(
         "max_items": max_items,
         "max_new_jobs": max_new_jobs,
         "time_budget_seconds": time_budget_value,
+        "publication_owners": publication_owners,
     }
 
 
@@ -901,6 +1106,7 @@ def _semantic_resume_args(
     max_items = spec.get("max_items")
     max_new_jobs = spec.get("max_new_jobs")
     time_budget_seconds = spec.get("time_budget_seconds")
+    publication_owners = spec.get("publication_owners")
     details = spec.get("details")
     if (
         not isinstance(selected_sources, tuple)
@@ -911,6 +1117,10 @@ def _semantic_resume_args(
         or (max_new_jobs is not None and type(max_new_jobs) is not int)
         or (time_budget_seconds is not None and (
             isinstance(time_budget_seconds, bool) or not isinstance(time_budget_seconds, (int, float))
+        ))
+        or (publication_owners is not None and (
+            not isinstance(publication_owners, tuple)
+            or any(not isinstance(value, str) for value in publication_owners)
         ))
         or not isinstance(details, Mapping)
     ):
@@ -947,7 +1157,420 @@ def _semantic_resume_args(
     effective._semantic_resume_source_run_id = source_run_id
     effective._semantic_resume_image_available = image_available
     effective._semantic_complete_all = bool(details.get("complete_all", False))
+    if publication_owners is None:
+        effective._semantic_publication_owners = None
+    else:
+        effective._semantic_publication_owners = publication_owners
     return effective
+
+
+_INTEGRATED_PUBLICATION_OWNER_ORDER = ("semantic", "code")
+
+
+def _stored_publication_owners(
+    raw: object,
+    *,
+    label: str,
+) -> tuple[str, ...]:
+    """Validate the additive owner scope carried by a Semantic stage."""
+
+    if not isinstance(raw, (list, tuple)) or not raw:
+        raise RuntimeError(f"{label} is invalid")
+    owners = tuple(raw)
+    if (
+        any(
+            not isinstance(owner, str)
+            or owner not in _INTEGRATED_PUBLICATION_OWNER_ORDER
+            for owner in owners
+        )
+        or len(set(owners)) != len(owners)
+        or "semantic" not in owners
+    ):
+        raise RuntimeError(f"{label} is invalid")
+    return tuple(owner for owner in _INTEGRATED_PUBLICATION_OWNER_ORDER if owner in owners)
+
+
+def _integrated_publication_owners(
+    args: argparse.Namespace,
+    selected_sources: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Keep an explicit checkpoint scope while retaining the legacy fallback."""
+
+    raw = getattr(args, "_semantic_publication_owners", None)
+    if raw is None:
+        owners = {"semantic"}
+    else:
+        owners = set(_stored_publication_owners(raw, label="Semantic publication owners"))
+    if "code" in selected_sources:
+        owners.add("code")
+    return tuple(owner for owner in _INTEGRATED_PUBLICATION_OWNER_ORDER if owner in owners)
+
+
+def _validate_integrated_manifest_root(
+    args: argparse.Namespace,
+    manifest: Mapping[str, object],
+    controls: _IntegratedStartReadBudget,
+) -> None:
+    """Revalidate the producer root identity without opening any SQLite owner."""
+
+    root_value = manifest.get("root")
+    root_identity = manifest.get("root_identity")
+    if (
+        not isinstance(root_value, str)
+        or not root_value
+        or not isinstance(root_identity, list)
+        or len(root_identity) != 3
+        or any(type(value) is not int for value in root_identity)
+    ):
+        raise StatePublicationRecoveryRequired("original Framework root identity is invalid")
+    try:
+        root = Path(root_value)
+        requested_root = getattr(args, "root", root)
+        if requested_root is not None and Path(requested_root).resolve() != root.resolve():
+            raise StatePublicationRecoveryRequired(
+                "original Semantic recovery belongs to another corpus root"
+            )
+        metadata = root.stat()
+    except StatePublicationRecoveryRequired:
+        raise
+    except (OSError, RuntimeError) as exc:
+        raise StatePublicationRecoveryRequired("original corpus root is unavailable") from exc
+    observed_identity = (
+        int(metadata.st_dev),
+        int(metadata.st_ino),
+        int(stat_birthtime_ns(metadata)),
+    )
+    if list(observed_identity) != root_identity:
+        raise StatePublicationRecoveryRequired("original corpus root identity changed")
+    controls.check()
+
+
+def _read_pending_integrated_metadata(
+    args: argparse.Namespace,
+    controls: _IntegratedStartReadBudget,
+) -> _PendingIntegratedMetadata | None:
+    """Read the authenticated old manifest without rehydrating its producer."""
+
+    from neocortex.persistence.state_publication import read_state_publication_state
+    from neocortex.runtime.orchestration.run_manifest import verify_event_payload
+
+    controls.check()
+    view = read_state_publication_state(args.state_directory)
+    controls.check()
+    if view.status in {"absent", "complete"}:
+        return None
+    if view.status != "blocked":
+        raise StatePublicationRecoveryRequired(view.reason or "state publication is not complete")
+    if len(view.pending) != 1:
+        raise StatePublicationRecoveryRequired("pending publication is ambiguous")
+    pending = view.pending[0]
+    if pending.operation != "framework-all-semantic":
+        raise StatePublicationRecoveryRequired("pending publication is not an integrated Semantic run")
+    if pending.epoch != view.epoch.epoch:
+        raise StatePublicationRecoveryRequired("pending publication epoch is detached")
+    allowed_owners = {"semantic", "code"}
+    if not pending.owners or any(owner not in allowed_owners for owner in pending.owners):
+        raise StatePublicationRecoveryRequired("pending publication owner scope is unavailable")
+    previous_owners = set(view.epoch.owners)
+    if view.publication is not None:
+        previous_owners.update(view.publication.owners)
+    historical_head_owners = {
+        head.owner
+        for head in (
+            *pending.owner_heads,
+            *view.epoch.owner_heads,
+            *(() if view.publication is None else view.publication.owner_heads),
+        )
+    }
+    if any(owner not in allowed_owners for owner in historical_head_owners):
+        raise StatePublicationRecoveryRequired("historical owner-head scope is unavailable")
+    previous_owners.update(historical_head_owners)
+    if any(owner not in allowed_owners for owner in previous_owners):
+        raise StatePublicationRecoveryRequired("previous publication owner scope is unavailable")
+
+    if pending.manifest_sha256 is None:
+        if view.epoch.epoch != 0 or view.publication is not None or pending.owner_heads:
+            raise StatePublicationRecoveryRequired("original publication manifest is unavailable")
+        return _PendingIntegratedMetadata(
+            event_id=pending.event_id,
+            expected_epoch=view.epoch.epoch,
+            pending_owners=tuple(pending.owners),
+            previous_owners=tuple(sorted(previous_owners)),
+            manifest=None,
+        )
+
+    manifest_sha256 = pending.manifest_sha256
+    database = args.state_directory / "framework.sqlite3"
+    try:
+        with _bounded_framework_metadata_read(database, controls) as connection:
+            rows = connection.execute(
+                """SELECT run_id,details_json FROM run_events
+                WHERE phase='lifecycle-manifest' AND message='Run manifest published'
+                AND json_valid(details_json)
+                AND json_extract(details_json,'$.digest')=? LIMIT 2""",
+                ("sha256:" + manifest_sha256,),
+            ).fetchall()
+            controls.check()
+            if len(rows) != 1:
+                raise StatePublicationRecoveryRequired(
+                    "original Framework manifest is absent or ambiguous"
+                )
+            run_id = int(rows[0]["run_id"])
+            manifest = verify_event_payload(json.loads(rows[0]["details_json"]))
+            if manifest.get("run_id") != run_id or manifest.get("digest") != (
+                "sha256:" + manifest_sha256
+            ):
+                raise StatePublicationRecoveryRequired("original Framework manifest is detached")
+    except StatePublicationRecoveryRequired:
+        raise
+    except (OSError, sqlite3.Error, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise StatePublicationRecoveryRequired(
+            f"original Semantic contract cannot be read: {type(exc).__name__}: {exc}"
+        ) from exc
+
+    _validate_integrated_manifest_root(args, manifest, controls)
+    return _PendingIntegratedMetadata(
+        event_id=pending.event_id,
+        expected_epoch=view.epoch.epoch,
+        pending_owners=tuple(pending.owners),
+        previous_owners=tuple(sorted(previous_owners)),
+        manifest=manifest,
+    )
+
+
+def _integrated_checkpoint_needs_code(
+    metadata: _PendingIntegratedMetadata,
+    args: argparse.Namespace,
+) -> bool:
+    """Select Code only when old, previous, or new integrated scope includes it."""
+
+    if "code" in metadata.pending_owners or "code" in metadata.previous_owners:
+        return True
+    current_sources = getattr(args, "semantic_source", None)
+    if bool(getattr(args, "all", False)) and current_sources is None:
+        # Owner coherence is not an extra processing capability: the default
+        # full source selection includes Code whenever its owner is applicable.
+        return True
+    return isinstance(current_sources, (list, tuple)) and "code" in current_sources
+
+
+def _is_publication_head_repair_required(error: BaseException) -> bool:
+    """Recognize only the typed stale-Code-projection repair boundary."""
+
+    from neocortex.semantic.semantic_publication_heads import PublicationHeadsRepairRequired
+
+    return isinstance(error, PublicationHeadsRepairRequired) or isinstance(
+        error.__cause__, PublicationHeadsRepairRequired
+    )
+
+
+def _observe_fresh_integrated_heads(
+    state_directory: Path,
+    *,
+    include_code: bool,
+    controls: _IntegratedStartReadBudget,
+) -> tuple[StateOwnerHead, ...]:
+    """Observe heads once, with one typed stale-Code repair opportunity."""
+
+    from neocortex.code.search.code_semantic_links import deactivate_stale_code_embedding_links
+    from neocortex.semantic.semantic_publication_heads import (
+        observe_integrated_owner_heads,
+        observe_semantic_generation_heads,
+    )
+
+    def observe_once() -> tuple[StateOwnerHead, ...]:
+        return observe_integrated_owner_heads(
+            state_directory,
+            include_code=include_code,
+            snapshot_budget=controls.snapshot_budget(),
+            deadline_monotonic=controls.deadline,
+            cancellation_check=controls._snapshot_checkpoint,
+        )
+
+    try:
+        return observe_once()
+    except BaseException as exc:
+        if not include_code or not _is_publication_head_repair_required(exc):
+            raise
+        controls.check()
+        published_heads = observe_semantic_generation_heads(
+            state_directory,
+            snapshot_budget=controls.snapshot_budget(),
+            deadline_monotonic=controls.deadline,
+            cancellation_check=controls._snapshot_checkpoint,
+        )
+        controls.check()
+        # This is deliberately one repair attempt. A second typed failure from
+        # the final observer remains blocked and is not turned into a loop.
+        deactivate_stale_code_embedding_links(
+            state_directory,
+            published_heads=published_heads,
+            deadline_monotonic=controls.deadline,
+            cancellation_check=controls._snapshot_checkpoint,
+        )
+        controls.check()
+        return observe_once()
+
+
+def _fresh_integrated_checkpoint(
+    args: argparse.Namespace,
+    *,
+    controls: _IntegratedStartReadBudget,
+    print_output: bool,
+    pre_checkpoint_hook: Callable[..., object] | None = None,
+) -> None:
+    """Restart a stale integrated marker without resuming its Semantic producer."""
+
+    from neocortex.runtime.control.locking import FrameworkRunLock
+    from neocortex.persistence.state_publication import read_state_publication_state
+
+    try:
+        args.state_directory.lstat()
+    except FileNotFoundError:
+        return
+    controls.check()
+    initial_view = read_state_publication_state(args.state_directory)
+    if initial_view.status in {"absent", "complete"}:
+        if "semantic" in initial_view.epoch.owners and set(initial_view.epoch.owners) <= {"semantic", "code"}:
+            args._semantic_publication_owners = initial_view.epoch.owners
+        controls.apply_elapsed_to_explicit_caps(args)
+        return
+    # This path can now write a lock, the publication journal, Framework
+    # metadata, or a stale Code projection before the normal orchestrator.
+    from neocortex.integrations.inventory.inventory_boundary import state_sqlite_mutation_paths
+
+    _validate_semantic_state_write(
+        args.state_directory,
+        database=True,
+        extra_paths=(
+            *state_sqlite_mutation_paths(args.state_directory / "framework.sqlite3"),
+            *state_sqlite_mutation_paths(args.state_directory / "code.sqlite3"),
+            args.state_directory / "state-publication.lock",
+            args.state_directory / "state-publication-journal.jsonl",
+            args.state_directory / "state-epoch.json",
+        ),
+    )
+    with FrameworkRunLock(args.state_directory / "framework.lock"):
+        controls.check()
+        current_view = read_state_publication_state(args.state_directory)
+        current_owners = current_view.epoch.owners
+        if (
+            current_view.status == "complete"
+            and "semantic" in current_owners
+            and set(current_owners) <= {"semantic", "code"}
+        ):
+            # A later healthy --all must not forget Code merely because it
+            # currently has no Semantic input candidates.
+            args._semantic_publication_owners = current_owners
+        metadata = _read_pending_integrated_metadata(args, controls)
+        if metadata is None:
+            controls.apply_elapsed_to_explicit_caps(args)
+            return
+        if metadata.manifest is None:
+            _recover_pending_integrated_publication(args.state_directory)
+            controls.apply_elapsed_to_explicit_caps(args)
+            return
+        manifest = metadata.manifest
+
+        if pre_checkpoint_hook is not None:
+            pre_checkpoint_hook(args, metadata, controls)
+            controls.check()
+        include_code = _integrated_checkpoint_needs_code(metadata, args)
+        initial_heads = _observe_fresh_integrated_heads(
+            args.state_directory,
+            include_code=include_code,
+            controls=controls,
+        )
+        controls.check()
+        args._semantic_publication_owners = (
+            "semantic",
+            "code",
+        ) if include_code else ("semantic",)
+
+        from neocortex.persistence.state_publication import restart_state_publication_checkpoint
+
+        def verify_owner_heads() -> tuple[StateOwnerHead, ...]:
+            _validate_integrated_manifest_root(args, manifest, controls)
+            # Repair only once, before sealing the checkpoint. A verifier at
+            # the commit boundary observes drift; it must never repair it.
+            from neocortex.semantic.semantic_publication_heads import observe_integrated_owner_heads
+
+            return observe_integrated_owner_heads(
+                args.state_directory,
+                include_code=include_code,
+                snapshot_budget=controls.snapshot_budget(),
+                deadline_monotonic=controls.deadline,
+                cancellation_check=controls._snapshot_checkpoint,
+            )
+
+        checkpoint = restart_state_publication_checkpoint(
+            args.state_directory,
+            event_id=metadata.event_id,
+            expected_epoch=metadata.expected_epoch,
+            owner_heads=initial_heads,
+            verify_owner_heads=verify_owner_heads,
+        )
+        args._semantic_publication_owners = _stored_publication_owners(
+            checkpoint.owners,
+            label="fresh Semantic checkpoint owners",
+        )
+        controls.check()
+        if print_output:
+            _print_console_line(
+                "SEMANTIC_CHECKPOINT status=restarted "
+                f"epoch={checkpoint.epoch}"
+            )
+        controls.apply_elapsed_to_explicit_caps(args)
+
+
+def prepare_integrated_semantic_start(
+    args: argparse.Namespace,
+    *,
+    progress: ProgressCallback | None = None,
+    print_output: bool = True,
+    cancellation_check: Callable[[], bool | None] | None = None,
+    metadata_timeout_seconds: float | None = None,
+    clock: Callable[[], float] = time.monotonic,
+    pre_checkpoint_hook: Callable[..., object] | None = None,
+) -> int:
+    """Prepare a fresh integrated start or preserve strict explicit resume."""
+
+    if getattr(args, "resume_run", None) is not None:
+        return recover_pending_integrated_semantic(
+            args,
+            progress=progress,
+            print_output=print_output,
+        )
+    if not bool(getattr(args, "all", False)):
+        return 0
+    if pre_checkpoint_hook is None:
+        candidate_hook = getattr(args, "_semantic_pre_checkpoint_hook", None)
+        if candidate_hook is not None and not callable(candidate_hook):
+            raise TypeError("Semantic pre-checkpoint hook must be callable")
+        pre_checkpoint_hook = candidate_hook
+    controls = _IntegratedStartReadBudget(
+        args,
+        cancellation_check=(
+            cancellation_check
+            if cancellation_check is not None
+            else getattr(args, "_semantic_cancellation_check", None)
+        ),
+        clock=clock,
+        metadata_timeout_seconds=metadata_timeout_seconds,
+    )
+    from neocortex.code.search.code_semantic_links import CodeSemanticLinkError
+    from neocortex.semantic.semantic_publication_heads import PublicationHeadsError
+
+    try:
+        _fresh_integrated_checkpoint(
+            args,
+            controls=controls,
+            print_output=print_output,
+            pre_checkpoint_hook=pre_checkpoint_hook,
+        )
+    except (PublicationHeadsError, CodeSemanticLinkError) as exc:
+        raise StatePublicationRecoveryRequired(str(exc)) from exc
+    return 0
 
 
 def _pending_integrated_source_run(state_directory: Path) -> int | None:
@@ -1029,13 +1652,23 @@ def _pending_integrated_source_run(state_directory: Path) -> int | None:
                 or not isinstance(images, bool)
             ):
                 raise StatePublicationRecoveryRequired("original Semantic source selection is unavailable")
+            if "publication_owners" in details:
+                try:
+                    publication_owners = _stored_publication_owners(
+                        details.get("publication_owners"),
+                        label="original Semantic publication owners",
+                    )
+                except RuntimeError as exc:
+                    raise StatePublicationRecoveryRequired(str(exc)) from exc
+            else:
+                publication_owners = None
         # The original raw key, not the already-hashed journal key, binds the
         # producer. This is a metadata-only transaction rehydration, not abort.
         resume_state_publication(
             state_directory,
             event_id=pending.event_id,
             operation="framework-all-semantic",
-            owners=("semantic", "code") if "code" in sources else ("semantic",),
+            owners=publication_owners or (("semantic", "code") if "code" in sources else ("semantic",)),
             idempotency_key=publication_idempotency_key(
                 "framework-all-semantic", run_id, tuple(sources), images
             ),
@@ -1325,6 +1958,16 @@ def _integrated_stage_details(
         "publication": _publication_observation(args.state_directory),
         "recovery_required": recovery_required,
     }
+    publication_owners = getattr(args, "_semantic_publication_owners", None)
+    if publication_owners is None and "code" in selected_sources:
+        publication_owners = ("semantic", "code")
+    if publication_owners is not None:
+        details["publication_owners"] = list(
+            _stored_publication_owners(
+                publication_owners,
+                label="Semantic publication owners",
+            )
+        )
     if semantic_exit_code is not None:
         details["semantic_exit_code"] = semantic_exit_code
     if error is not None:
@@ -1380,7 +2023,8 @@ def _begin_integrated_publication(
     source_run_id = getattr(
         args, "_semantic_publication_source_run_id", getattr(args, "_semantic_resume_source_run_id", None)
     )
-    owners = ("semantic", "code") if "code" in selected_sources else ("semantic",)
+    owners = _integrated_publication_owners(args, selected_sources)
+    args._semantic_publication_owners = owners
     if view.status == "blocked" and type(source_run_id) is int:
         with FrameworkState(args.state_directory / "framework.sqlite3", existing_only=True) as state:
             source_manifest = state.read_run_manifest(source_run_id)
@@ -1416,6 +2060,7 @@ def _begin_integrated_publication(
     baseline_heads = _observe_integrated_heads(
         args.state_directory, include_code="code" in owners,
         work_budget=getattr(args, "_semantic_work_budget", None),
+        repair_stale_code_links=True,
     )
     previous = {head.owner: head for head in view.epoch.owner_heads}
     if any(
@@ -1448,6 +2093,7 @@ def _final_publication_owner_heads(
         observe_semantic_generation_heads,
     )
 
+    publication_owners = _integrated_publication_owners(args, selected_sources)
     generations: dict[str, int] = {}
     text_models: set[str] = set()
     for scope, value in captured_results:
@@ -1482,7 +2128,7 @@ def _final_publication_owner_heads(
         raise StatePublicationRecoveryRequired(str(exc)) from exc
     if any(observed_generations.get(model) != generation for model, generation in generations.items()):
         raise StatePublicationRecoveryRequired("Semantic results do not match all published model heads")
-    if "code" in selected_sources:
+    if "code" in publication_owners:
         from neocortex.code.search.code_semantic_links import synchronize_code_embedding_links
 
         for model_signature in sorted(text_models):
@@ -1492,7 +2138,7 @@ def _final_publication_owner_heads(
                 model_signature=model_signature,
             )
     return _observe_integrated_heads(
-        args.state_directory, include_code="code" in selected_sources,
+        args.state_directory, include_code="code" in publication_owners,
         work_budget=getattr(args, "_semantic_work_budget", None),
     )
 
@@ -1875,12 +2521,16 @@ def run_integrated_all_semantic_index(
                 captured_results,
                 selected_sources=selected_sources,
             )
+            publication_owners = _integrated_publication_owners(
+                integrated_args,
+                selected_sources,
+            )
             integrated_args._semantic_work_budget.checkpoint()
             publication.commit(
                 final_heads,
                 verify_owner_heads=lambda: _observe_integrated_heads(
                     integrated_args.state_directory,
-                    include_code="code" in selected_sources,
+                    include_code="code" in publication_owners,
                     work_budget=integrated_args._semantic_work_budget,
                 ),
             )

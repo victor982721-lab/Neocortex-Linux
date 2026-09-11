@@ -520,10 +520,20 @@ def _prepare_framework(
     budget.start()
     try:
         if bool(getattr(parsed, "all", False)) or getattr(parsed, "resume_run", None) is not None:
-            from neocortex.api.cli.cli_semantic import recover_pending_integrated_semantic
+            from neocortex.api.cli.cli_semantic import prepare_integrated_semantic_start
 
-            recover_pending_integrated_semantic(parsed, progress=_progress, print_output=False)
+            prepare_integrated_semantic_start(parsed, progress=_progress, print_output=False)
             orchestrator.config = framework_config_from_args(parsed)
+            if semantic_state.requested:
+                # The dispatcher may charge fresh-start metadata preflight
+                # against an explicit time cap before this lifecycle stage is
+                # published. Keep the durable stage details aligned with the
+                # effective arguments that the orchestrator will execute.
+                effective_stage_details = _semantic_stage_details(parsed)
+                assert lifecycle_stage_details is not None
+                lifecycle_stage_details.clear()
+                lifecycle_stage_details.update(effective_stage_details)
+                orchestrator._lifecycle_stage_details = dict(lifecycle_stage_details)
     except BaseException:
         heartbeat.stop()
         budget.stop()

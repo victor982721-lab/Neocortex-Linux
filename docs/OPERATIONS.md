@@ -4,13 +4,13 @@ Esta guía contiene procedimientos. Los argumentos exactos están en
 [CLI.md](CLI.md), los owners en [PERSISTENCE.md](PERSISTENCE.md) y la recuperación
 en [RECOVERY.md](RECOVERY.md).
 
-## Estado de esta oleada
+## Estado e instalación
 
-La integración funcional C1–C5 está en curso. Los focos locales no certifican una
-recuperación real de la generación 17, una release final instalada ni la
-aceptación completa C0–C7; para eso se requieren una copia de fuente, pruebas,
-manifest, launcher y gates revalidados desde el SHA final. No uses valores
-históricos de `current`, rollback o receipts como estado vivo.
+Los focos locales no certifican que el comando instalado funcione sobre su
+estado efectivo. Verifica manifest, launcher, resultados útiles y relanzamiento
+desde el SHA final; no uses valores históricos de `current`, rollback o receipts
+como estado vivo. Las generaciones experimentales no necesitan rescatarse para
+iniciar una nueva `--all`; los originales del corpus permanecen protegidos.
 
 ## Preflight
 
@@ -132,11 +132,22 @@ Antes de publicar se revalidan root/identidad, política, snapshot, manifest,
 modelo, herramienta y owner heads. Cualquier drift, publicación parcial,
 capacidad no reanudable o ambigüedad queda `blocked`/`recovery_required`; no se
 reinicia por inferencia ni se marca `complete` por haber terminado otras rutas.
-Si el pendiente corresponde a una publicación Semantic posterior a epoch 0, la
-recuperación conserva el mismo productor, manifest, heads de todos los modelos y
-presupuesto restante; no resetea generaciones ni crea una ventana nueva.
+Si se solicitó `--resume-run` y el pendiente corresponde a Semantic, se conserva
+el mismo productor, manifest, heads de todos los modelos y presupuesto restante;
+no se inventa un presupuesto legacy ausente.
 Dos reanudaciones consecutivas deben ser idempotentes y conservar candidatos,
 errores y presupuesto restante.
+
+En cambio, repetir **`Neocortex --all`** inicia una petición nueva: no requiere
+rescatar la corrida incompleta. El preflight valida raíz/manifest y heads
+publicados; abandona el intento pendiente sin fingir rollback y establece un
+checkpoint coherente antes del procesamiento. Los budgets explícitos pertenecen
+a la nueva petición y se mantienen acumulados dentro de ella, incluyendo el
+tiempo del preflight. Se reutiliza lo válido y se reconstruyen los derivados
+necesarios, sin mover originales, copiar bases ni promover generaciones parciales.
+Un enlace Code obsoleto tras una interrupción o cambio de archivo se desactiva
+una sola vez y se reconstruye en el flujo normal. Schema futuro, manifest ajeno
+o corrupto y drift real no se convierten en éxito.
 
 ## Watcher
 

@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 import json
+import math
 import sqlite3
+import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..code_schema import (
+    CODE_SCHEMA_VERSION,
+    _read_version,
     checkpoint_code_wal,
     code_database,
     remove_checkpointed_code_sidecars,
@@ -14,12 +19,18 @@ from ..code_schema import (
 )
 from neocortex.semantic.semantic_models import canonical_json
 from neocortex.semantic.semantic_schema import SEMANTIC_SCHEMA_VERSION, semantic_database
+from neocortex.persistence.sqlite_cancellation import (
+    SQLiteCancellationBridge,
+    sqlite_cancellation_scope,
+)
 
 
 CODE_SEMANTIC_LINK_PROTOCOL = "code-semantic-link-v1"
 _MAX_SOURCE_REVISION_JSON_BYTES = 1_048_576
 _MAX_SEMANTIC_CHUNKS_PER_CODE_CHUNK = 100_000
 _SQLITE_MAX_INTEGER = 9_223_372_036_854_775_807
+_MAX_PUBLISHED_SEMANTIC_HEADS = 1_024
+_REPAIR_PROGRESS_INSTRUCTIONS = 1_000
 
 
 class CodeSemanticLinkError(RuntimeError):
@@ -394,6 +405,159 @@ def _remove_checkpointed_code_sidecars(code_path: Path) -> None:
     )
 
 
+def _repair_published_heads(
+    published_heads: Sequence[tuple[str, int]],
+) -> tuple[tuple[str, int], ...]:
+    if not isinstance(published_heads, Sequence):
+        raise TypeError("published_heads must be a sequence of (model_signature, generation_id)")
+    if len(published_heads) > _MAX_PUBLISHED_SEMANTIC_HEADS:
+        raise ValueError("published_heads exceed their bound")
+    values = tuple(published_heads)
+    if len(values) > _MAX_PUBLISHED_SEMANTIC_HEADS:
+        raise ValueError("published_heads exceed their bound")
+    normalized: list[tuple[str, int]] = []
+    for value in values:
+        if not isinstance(value, (tuple, list)) or len(value) != 2:
+            raise ValueError("published_heads contain an invalid entry")
+        model_signature, generation_id = value
+        if (
+            not isinstance(model_signature, str)
+            or not model_signature
+            or model_signature.strip() != model_signature
+            or len(model_signature.encode("utf-8")) > 4_096
+        ):
+            raise ValueError("published head model_signature is invalid")
+        if (
+            isinstance(generation_id, bool)
+            or not isinstance(generation_id, int)
+            or not 0 < generation_id <= _SQLITE_MAX_INTEGER
+        ):
+            raise ValueError("published head generation_id is invalid")
+        normalized.append((model_signature, generation_id))
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("published_heads contain duplicates")
+    return tuple(sorted(normalized))
+
+
+def _repair_checkpoint(
+    *,
+    deadline_monotonic: float | None,
+    cancellation_check: Callable[[], bool | None] | None,
+) -> Callable[[], None]:
+    if deadline_monotonic is not None and (
+        isinstance(deadline_monotonic, bool)
+        or not isinstance(deadline_monotonic, (int, float))
+        or not math.isfinite(float(deadline_monotonic))
+        or float(deadline_monotonic) < 0
+    ):
+        raise ValueError("deadline_monotonic must be finite and non-negative")
+    if cancellation_check is not None and not callable(cancellation_check):
+        raise TypeError("cancellation_check must be callable")
+    deadline = None if deadline_monotonic is None else float(deadline_monotonic)
+
+    def checkpoint() -> None:
+        if cancellation_check is not None:
+            decision = cancellation_check()
+            if decision is not None and decision is not False:
+                raise CodeSemanticLinkError("Code Semantic link repair was cancelled")
+        if deadline is not None and time.monotonic() >= deadline:
+            raise CodeSemanticLinkError("Code Semantic link repair deadline exceeded")
+
+    return checkpoint
+
+
+def deactivate_stale_code_embedding_links(
+    state_directory: Path,
+    *,
+    published_heads: Sequence[tuple[str, int]],
+    deadline_monotonic: float | None = None,
+    cancellation_check: Callable[[], bool | None] | None = None,
+) -> int:
+    """Deactivate only stale Code-to-Semantic projection links.
+
+    The caller owns the enclosing ``FrameworkRunLock`` and supplies a fresh,
+    validated complete Semantic head set.  This repair never deletes or
+    rewrites Code chunks, files, generations, or Semantic state; it only flips
+    ``active`` to zero for links whose model/generation is no longer in that
+    set or whose source Code chunk is no longer current.
+    """
+
+    selected_heads = _repair_published_heads(published_heads)
+    code_path = Path(state_directory) / "code.sqlite3"
+    if not code_path.is_file():
+        raise FileNotFoundError(code_path)
+    checkpoint = _repair_checkpoint(
+        deadline_monotonic=deadline_monotonic,
+        cancellation_check=cancellation_check,
+    )
+    bridge = SQLiteCancellationBridge(checkpoint if (deadline_monotonic is not None or cancellation_check is not None) else None)
+    changed = 0
+    try:
+        checkpoint()
+        with code_database(code_path, create=False) as code:
+            with sqlite_cancellation_scope(
+                code,
+                bridge,
+                instructions=_REPAIR_PROGRESS_INSTRUCTIONS,
+            ):
+                checkpoint()
+                if _read_version(code) != CODE_SCHEMA_VERSION:
+                    raise CodeSemanticLinkError(
+                        f"Code schema must be {CODE_SCHEMA_VERSION} for link repair"
+                    )
+                validate_code_schema(code)
+                checkpoint()
+                code.execute("BEGIN IMMEDIATE")
+                try:
+                    code.execute(
+                        """CREATE TEMP TABLE repair_published_heads(
+                        model_signature TEXT PRIMARY KEY,
+                        generation_id INTEGER NOT NULL
+                        ) WITHOUT ROWID"""
+                    )
+                    code.executemany(
+                        "INSERT INTO repair_published_heads(model_signature,generation_id) VALUES(?,?)",
+                        selected_heads,
+                    )
+                    checkpoint()
+                    changed = int(
+                        code.execute(
+                            """UPDATE embedding_links AS link SET active=0
+                            WHERE link.active=1 AND (
+                                NOT EXISTS(
+                                    SELECT 1 FROM repair_published_heads published
+                                    WHERE published.model_signature=link.model_signature
+                                      AND published.generation_id=link.generation_id
+                                ) OR NOT EXISTS(
+                                    SELECT 1
+                                    FROM code_chunks chunk
+                                    JOIN file_versions version
+                                      ON version.version_id=chunk.version_id
+                                    JOIN files file
+                                      ON file.current_version_id=version.version_id
+                                    WHERE chunk.chunk_id=link.chunk_id
+                                      AND file.status='current'
+                                      AND version.invalidated_ns IS NULL
+                                )
+                            )"""
+                        ).rowcount
+                    )
+                    checkpoint()
+                    code.commit()
+                except BaseException:
+                    code.rollback()
+                    raise
+        return changed
+    except CodeSemanticLinkError:
+        raise
+    except Exception as exc:
+        if bridge.captured_exception is not None:
+            raise bridge.captured_exception from exc
+        raise CodeSemanticLinkError(
+            f"Code Semantic link repair could not complete: {type(exc).__name__}"
+        ) from exc
+
+
 def synchronize_code_embedding_links(
     state_directory: Path,
     *,
@@ -652,5 +816,6 @@ __all__ = [  # noqa: RUF022
     "CodeSemanticLinkSummary",
     "current_code_embedding_link_counts",
     "code_semantic_search_availability",
+    "deactivate_stale_code_embedding_links",
     "synchronize_code_embedding_links",
 ]

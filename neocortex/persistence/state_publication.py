@@ -19,7 +19,7 @@ import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, cast
 
@@ -48,7 +48,7 @@ class StatePublicationConflictError(StatePublicationError):
 
 
 class StatePublicationRecoveryRequired(StatePublicationError):
-    """An interrupted publication needs its producer, not another inventory."""
+    """An interrupted publication needs owner-aware reconciliation before writes."""
 
     error_code = "recovery_required"
 
@@ -585,7 +585,7 @@ def read_state_epoch(state_directory: str | Path) -> StateEpoch:
     if pointer_epoch.epoch > journal_epoch.epoch:
         raise StatePublicationError("publication epoch pointer is ahead of the complete journal")
     if pointer_epoch.epoch == journal_epoch.epoch:
-        if pointer_epoch.event_id != journal_epoch.event_id:
+        if replace(pointer_epoch, source="journal") != journal_epoch:
             raise StatePublicationError(
                 "publication epoch pointer disagrees with the complete journal"
             )
@@ -1455,6 +1455,202 @@ def reconcile_unbound_state_publication(
         return failed
 
 
+def restart_state_publication_checkpoint(
+    state_directory: str | Path,
+    *,
+    event_id: str,
+    expected_epoch: int,
+    owner_heads: Sequence[StateOwnerHead],
+    verify_owner_heads: Callable[[], Sequence[StateOwnerHead]],
+) -> StatePublication:
+    """Abandon interrupted Semantic work and checkpoint only published heads.
+
+    A *new* full execution need not resume the old producer's work contract.
+    Its coordinator must hold FrameworkRunLock and authenticate the old
+    manifest/root first. This function does not open SQLite, promote building
+    generations, claim a rollback, or declare the interrupted run successful.
+
+    The two logical appends are exposed with one journal replacement. Readers
+    therefore see either the old unresolved prepare or the new authenticated
+    checkpoint, never the old epoch after its recovery fence was removed.
+    The complete original journal prefix is preserved byte for byte.
+    A revision-zero head is an explicitly verified empty/absent owner, not
+    permission to omit that owner or to promote an unfinished generation.
+    """
+
+    selected = _required_state_directory(state_directory)
+    event_id = _required_text(event_id, label="event_id", maximum=256)
+    if type(expected_epoch) is not int or expected_epoch < 0:
+        raise ValueError("expected_epoch must be a non-negative integer")
+    heads = _owner_heads(owner_heads)
+    owners = _owners(tuple(head.owner for head in heads))
+    if "semantic" not in owners or not set(owners) <= {"semantic", "code"}:
+        raise ValueError("restart checkpoint requires Semantic and optional Code heads")
+    operation = "framework-all-restart-checkpoint"
+    digest = _idempotency_digest(
+        operation,
+        owners,
+        publication_idempotency_key(event_id, expected_epoch, [head.as_payload() for head in heads]),
+    )
+    with _publication_lock(selected):
+        view = read_state_publication_state(selected)
+        journal = _read_journal(selected)
+        replay = next(
+            (item for item in reversed(journal) if item.idempotency_key == digest), None
+        )
+        if not view.pending and replay is not None and replay.status == "complete":
+            if (
+                view.status != "complete"
+                or view.publication != replay
+                or view.epoch.epoch != replay.epoch
+                or view.epoch.event_id != replay.event_id
+            ):
+                raise StatePublicationConflictError("restart replay is no longer the current complete checkpoint")
+            _read_content_manifest_for_publication(selected, replay)
+            return replay
+        if (
+            view.epoch.epoch != expected_epoch
+            or len(view.pending) != 1
+            or view.pending[0].event_id != event_id
+            or view.pending[0].epoch != expected_epoch
+            or view.pending[0].operation != "framework-all-semantic"
+        ):
+            raise StatePublicationConflictError("restart requires one exact pending Semantic publication")
+        pending = view.pending[0]
+        if pending.owner_heads and {head.owner for head in pending.owner_heads} != set(pending.owners):
+            raise StatePublicationConflictError("restart pending baseline does not cover its owners exactly")
+        required_owners = set(pending.owners)
+        if view.publication is not None:
+            required_owners.update(view.publication.owners)
+            _read_content_manifest_for_publication(selected, view.publication)
+            if (
+                view.epoch.event_id != view.publication.event_id
+                or view.epoch.owner_heads != view.publication.owner_heads
+                or view.epoch.manifest_sha256 != view.publication.manifest_sha256
+                or view.epoch.content_manifest_sha256 != view.publication.content_manifest_sha256
+                or view.epoch.content_manifest_name != view.publication.content_manifest_name
+            ):
+                raise StatePublicationConflictError("restart publication pointer differs from its journal")
+        elif expected_epoch != 0:
+            raise StatePublicationConflictError("restart has no authenticated previous publication")
+        if not required_owners <= set(owners):
+            raise StatePublicationConflictError("restart cannot reduce the published owner scope")
+        if _owner_heads(tuple(verify_owner_heads())) != heads:
+            raise StatePublicationConflictError("owner heads changed before restart preparation")
+
+        path = _journal_path(selected)
+        before = path.lstat()
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_size > MAX_PUBLICATION_JOURNAL_BYTES
+        ):
+            raise StatePublicationError("restart journal is not a bounded regular file")
+
+        def fingerprint(value: os.stat_result) -> tuple[int, ...]:
+            return (
+                value.st_dev, value.st_ino, value.st_mode, value.st_size,
+                value.st_mtime_ns, value.st_ctime_ns,
+            )
+
+        def captured_prefix() -> bytes:
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+            descriptor = os.open(path, flags)
+            with os.fdopen(descriptor, "rb") as stream:
+                if fingerprint(os.fstat(stream.fileno())) != fingerprint(before):
+                    raise StatePublicationConflictError("restart journal identity changed")
+                raw = stream.read(MAX_PUBLICATION_JOURNAL_BYTES + 1)
+                if fingerprint(os.fstat(stream.fileno())) != fingerprint(before):
+                    raise StatePublicationConflictError("restart journal changed during read")
+                return raw
+
+        prefix = captured_prefix()
+        if len(prefix) != before.st_size or len(prefix) > MAX_PUBLICATION_JOURNAL_BYTES:
+            raise StatePublicationConflictError("restart journal changed during capture")
+        created_ns = time.time_ns()
+        failed = StatePublication(
+            event_id=f"epoch:{expected_epoch}:abandoned:{created_ns}",
+            epoch=expected_epoch,
+            operation=pending.operation,
+            owners=pending.owners,
+            status="failed",
+            created_ns=created_ns,
+            idempotency_key=pending.idempotency_key,
+            manifest_sha256=pending.manifest_sha256,
+            detail="interrupted work abandoned for a new full execution; rollback_claimed=false",
+            owner_heads=tuple(head for head in heads if head.owner in pending.owners),
+        )
+        checkpoint = StatePublication(
+            event_id=f"epoch:{expected_epoch + 1}:restart:{created_ns}",
+            epoch=expected_epoch + 1,
+            operation=operation,
+            owners=owners,
+            status="complete",
+            created_ns=created_ns + 1,
+            idempotency_key=digest,
+            detail="checkpoint of currently published heads only; interrupted_work_completed=false; rollback_claimed=false",
+            owner_heads=heads,
+        )
+        name, manifest_digest = _write_content_manifest(selected, checkpoint)
+        checkpoint = replace(
+            checkpoint, content_manifest_name=name, content_manifest_sha256=manifest_digest
+        )
+        records = (_canonical_json_bytes(failed.as_payload()), _canonical_json_bytes(checkpoint.as_payload()))
+        if any(len(record) > MAX_PUBLICATION_RECORD_BYTES for record in records):
+            raise StatePublicationError("restart publication record exceeds its bound")
+        separator = b"" if not prefix or prefix.endswith(b"\n") else b"\n"
+        encoded = prefix + separator + b"".join(records)
+        if len(encoded) > MAX_PUBLICATION_JOURNAL_BYTES:
+            raise StatePublicationError("restart journal would exceed its bound")
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.restart-", dir=selected)
+        temporary = Path(temporary_name)
+        replace_started = False
+        journal_durable = False
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                os.fchmod(stream.fileno(), 0o600)
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            if _owner_heads(tuple(verify_owner_heads())) != heads:
+                raise StatePublicationConflictError("owner heads changed before restart checkpoint")
+            after = path.lstat()
+            if fingerprint(before) != fingerprint(after) or captured_prefix() != prefix:
+                raise StatePublicationConflictError("restart journal changed before checkpoint")
+            if read_state_epoch(selected) != view.epoch:
+                raise StatePublicationConflictError("restart epoch changed before checkpoint")
+            replace_started = True
+            os.replace(temporary, path)
+            _fsync_directory(selected)
+            journal_durable = True
+            # The already-durable journal is authoritative if this convenience
+            # pointer write is interrupted; the ordinary reader falls forward.
+            _atomic_write_json(
+                _epoch_path(selected),
+                {
+                    "schema": STATE_PUBLICATION_SCHEMA,
+                    "epoch": checkpoint.epoch,
+                    "event_id": checkpoint.event_id,
+                    "operation": checkpoint.operation,
+                    "owners": list(checkpoint.owners),
+                    "manifest_sha256": checkpoint.manifest_sha256,
+                    "owner_heads": [head.as_payload() for head in checkpoint.owner_heads],
+                    "content_manifest_sha256": checkpoint.content_manifest_sha256,
+                    "content_manifest_name": checkpoint.content_manifest_name,
+                },
+            )
+            return checkpoint
+        except (OSError, StatePublicationError) as exc:
+            if replace_started:
+                raise StatePublicationCommitError(
+                    "restart checkpoint replacement may be visible; reread the publication state",
+                    checkpoint,
+                    durable=journal_durable,
+                ) from exc
+            raise
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
 def publication_idempotency_key(*parts: object) -> str:
     """Build a deterministic bounded key for one cross-owner operation."""
 
@@ -1496,5 +1692,6 @@ __all__ = [
     "reconcile_unbound_state_publication",
     "record_state_publication",
     "require_complete_state_epoch",
+    "restart_state_publication_checkpoint",
     "resume_state_publication",
 ]

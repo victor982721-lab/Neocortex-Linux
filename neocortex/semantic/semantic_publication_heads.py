@@ -86,6 +86,10 @@ class PublicationHeadsDriftError(PublicationHeadsError):
     """An owner changed while its fresh observation was being assembled."""
 
 
+class PublicationHeadsRepairRequired(PublicationHeadsError):
+    """A normal interrupted projection needs the bounded Code repair pass."""
+
+
 # Keep descriptive aliases available to callers that name the Semantic bridge
 # or the integrated boundary explicitly.  They intentionally share one base
 # contract so a caller can catch either the focused or aggregate error.
@@ -890,9 +894,12 @@ def _read_current_code_links(
         if key in seen:
             raise PublicationHeadsSchemaError("Code Semantic links are not unique")
         seen.add(key)
+        provenance = _canonical_object(
+            row["provenance_json"], label="Code Semantic link provenance"
+        )
         expected_space = expected.get((model_signature, generation_id))
         if expected_space is None:
-            raise PublicationHeadsSchemaError(
+            raise PublicationHeadsRepairRequired(
                 "active Code Semantic link has no matching published Semantic head"
             )
         if vector_space != expected_space:
@@ -900,12 +907,9 @@ def _read_current_code_links(
                 "active Code Semantic link vector space differs from its Semantic head"
             )
         if _required_integer(row["is_current"], label="Code Semantic current flag") != 1:
-            raise PublicationHeadsSchemaError(
+            raise PublicationHeadsRepairRequired(
                 "active Code Semantic link does not resolve to a current Code chunk"
             )
-        provenance = _canonical_object(
-            row["provenance_json"], label="Code Semantic link provenance"
-        )
         result.append(
             _CodeLink(
                 chunk_id,
@@ -1084,6 +1088,7 @@ __all__ = [
     "IntegratedOwnerHeadsError",
     "PublicationHeadsDriftError",
     "PublicationHeadsError",
+    "PublicationHeadsRepairRequired",
     "PublicationHeadsSchemaError",
     "PublicationHeadsStateError",
     "SemanticPublicationHeadsError",

@@ -2,10 +2,9 @@
 
 > Describe la arquitectura implementada en el checkout de esta oleada. El
 > estado de `current`, el rollback, `HEAD == main == origin/main` y cualquier
-> receipt se verifica por separado. C1–C5 siguen en validación: esta descripción
-> no certifica recuperación real de la generación 17, release instalada ni
-> aceptación completa C0–C7. Ninguna descripción aquí sustituye la evidencia de
-> aceptación.
+> receipt se verifica por separado. Esta descripción no certifica una instalación
+> ni que todos los resultados de un corpus sean correctos o útiles. Ninguna
+> descripción aquí sustituye la evidencia de aceptación.
 
 ## Principios
 
@@ -157,11 +156,21 @@ misma selección, presupuesto, estados y stage Semantic que la CLI: el perfil
 completo usa `--all`, el piloto mantiene límites acotados y una selección guardada
 no se amplía por inferencia.
 
-Una publicación Semantic pendiente posterior a epoch 0 se recupera mediante el
-mismo productor, manifest y heads de todos los modelos, sin resetear generaciones
-ni crear una ventana de presupuesto nueva. Si la compatibilidad no se demuestra,
-la frontera queda `recovery_required`; no se presenta como C1 aceptada hasta
-validar el caso real.
+Una nueva ejecución `--all` no es una reanudación obligatoria del intento
+anterior. Si queda un pendiente Semantic, valida su manifest/raíz y los heads
+publicados de todos los modelos y Code, registra el intento anterior como
+fallido y publica un checkpoint nuevo mediante una sustitución atómica que
+preserva el prefijo del journal. Ese checkpoint no promueve generaciones
+`building`, no declara éxito del intento anterior y no copia SQLite. El nuevo
+trabajo usa la petición y los presupuestos actuales. Los enlaces Code obsoletos
+por cambio de versión o avance del head Semantic se desactivan acotadamente
+antes de capturar el baseline; la sincronización ordinaria reconstruye sus
+derivados. La verificación junto al commit es sólo observación, nunca reparación.
+
+`--resume-run` explícito conserva productor, manifest, selección y presupuesto
+originales. Raíz ajena, schemas futuros, evidencia alterada o cambios concurrentes
+siguen causando abstención en su frontera; no se sustituyen contratos de una
+reanudación explícita por defaults ni se ocultan parciales.
 
 ### Progreso y cancelación
 
