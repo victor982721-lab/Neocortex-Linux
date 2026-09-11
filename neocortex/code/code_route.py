@@ -127,7 +127,7 @@ class _CodeRouteRun:
             counters={
                 field: 0
                 for field in CodeRouteSummary.__dataclass_fields__
-                if field != "processing_signature"
+                if field not in {"processing_signature", "catalog_complete"}
             },
             elapsed_nanoseconds={
                 "read": 0,
@@ -378,6 +378,7 @@ class CodeRoute:
     ) -> None:
         status = AnalysisStatus(cached.status)
         counters["cache_hits"] += 1
+        counters["fts_rows_repaired"] += cached.fts_rows_repaired
         counters["generated"] += int(cached.generated)
         counters["vendored"] += int(cached.vendored)
         counters["symbols"] += cached.symbols
@@ -535,6 +536,7 @@ class CodeRoute:
                 self.processing_signature,
                 self.framework_run_id,
                 retry_errors=self.config.retry_errors,
+                retry_recoverable_errors=self.config.retry_recoverable_errors,
                 resolve_analyzer_identity=self._resolve_analyzer_identity,
                 commit=False,
                 elapsed_nanoseconds=elapsed_nanoseconds,
@@ -589,6 +591,7 @@ class CodeRoute:
                         self.processing_signature,
                         self.framework_run_id,
                         retry_errors=self.config.retry_errors,
+                        retry_recoverable_errors=self.config.retry_recoverable_errors,
                         raw_xxh3_128=raw_fingerprint.xxh3_128,
                         raw_xxh3_64_guard=raw_fingerprint.xxh3_64_guard,
                         resolve_analyzer_identity=self._resolve_analyzer_identity,
@@ -630,12 +633,17 @@ class CodeRoute:
                 raise
             except (FileChangedError, OSError, UnicodeError, ValueError) as exc:
                 classification = classify_artifact(snapshot.path, "")
+                provenance: dict[str, object] = {
+                    "transient": isinstance(exc, FileChangedError),
+                }
+                if isinstance(exc, FileChangedError):
+                    provenance.update({"retryable": True, "recommendation": "retry"})
                 result = self._skipped_observation(
                     snapshot,
                     classification,
                     AnalysisStatus.ERROR,
                     _diagnostic(type(exc).__name__, str(exc)),
-                    provenance={"transient": isinstance(exc, FileChangedError)},
+                    provenance=provenance,
                 )
                 if isinstance(exc, FileChangedError):
                     counters["stale_inventory"] += 1
@@ -828,6 +836,7 @@ class CodeRoute:
         self.cancellation.checkpoint()
         summary = CodeRouteSummary(
             processing_signature=self.processing_signature,
+            catalog_complete=None,
             **run.counters,
         )
         payload = asdict(summary)

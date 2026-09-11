@@ -1,6 +1,12 @@
 """Read-only, streaming adapters from durable route caches to semantic items."""
 
 from __future__ import annotations
+
+from .semantic_source_budget import (
+    install_source_progress,
+    source_read_checkpoint,
+    source_snapshot_budget,
+)
 import hashlib
 import os
 import json
@@ -65,6 +71,7 @@ TEXT_SOURCE_KINDS = (
     "archive",
     "text",
     "code",
+    "video",
 )
 IMAGE_SOURCE_KIND = "image"
 VIDEO_SOURCE_KIND = "video"
@@ -373,8 +380,10 @@ def _readonly_database(
             path,
             mode=mode,
             timeout_seconds=60.0,
+            budget=source_snapshot_budget(),
         )
         with session as connection:
+            install_source_progress(connection)
             if expected_fence is not None and session.source_fence != expected_fence:
                 raise SemanticSourceError("source_changed_before_head_snapshot")
             yield connection
@@ -410,8 +419,9 @@ def _attached_readonly_database(
     primary_error: BaseException | None = None
     try:
         mode = preferred_sqlite_read_mode(path)
-        session = SQLiteReadSession(path, mode=mode, timeout_seconds=60.0)
+        session = SQLiteReadSession(path, mode=mode, timeout_seconds=60.0, budget=source_snapshot_budget())
         session.open()
+        install_source_progress(session.connection)
         if expected_fence is not None and session.source_fence != expected_fence:
             raise SemanticSourceError("source_changed_before_head_snapshot")
         attached_path = session.temporary_database or path
@@ -1269,6 +1279,7 @@ def _source_head_query(
 
 
 def _update_head_digest(hasher: _DigestWriter, value: object) -> None:
+    source_read_checkpoint()
     if value is None:
         payload = b"n"
     elif isinstance(value, bytes):
@@ -1420,10 +1431,9 @@ def iter_text_source_records(
     """Yield one selected source incrementally without scanning source files."""
 
     # Video frame OCR is text evidence, but its owner schema and locator
-    # contract are deliberately maintained by ``video_source``.  Keep the
-    # ordinary text-cache set unchanged for planner defaults while allowing
-    # explicit consumers to use this common source-record entry point.
-    if source_kind not in TEXT_SOURCE_KINDS and source_kind != VIDEO_SOURCE_KIND:
+    # contract are deliberately maintained by ``video_source``.  It belongs
+    # to the default textual source set while retaining its dedicated adapter.
+    if source_kind not in TEXT_SOURCE_KINDS:
         raise ValueError(f"unsupported semantic text source: {source_kind}")
     database = semantic_source_database(state_directory, source_kind)
     if not database.is_file():

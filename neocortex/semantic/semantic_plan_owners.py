@@ -328,6 +328,15 @@ def _validate_source_schema(
                 exact=True,
             ),
         )
+    if source_kind == "video":
+        from neocortex.capabilities.formats.video import state as video_state
+
+        return _require_current_schema(
+            connection,
+            label="video",
+            expected_version=video_state.VIDEO_SCHEMA_VERSION,
+            validator=video_state.validate_video_schema,
+        )
     if source_kind == "archive":
         from neocortex.capabilities.formats.archive import state as archive_state
 

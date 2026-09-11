@@ -274,6 +274,7 @@ class CodeRouteConfig:
     max_documents: int | None = None
     chunk_chars: int = 12_000
     retry_errors: bool = False
+    retry_recoverable_errors: bool = field(default=False, kw_only=True)
     cache_validation: Literal["metadata", "full"] = "metadata"
     candidate_scope: Literal["projects", "broad"] = "broad"
     include_generated: bool = True
@@ -291,6 +292,8 @@ class CodeRouteConfig:
             raise ValueError("code max_text_chars must be at least 1024")
         if self.max_documents is not None and self.max_documents < 1:
             raise ValueError("code max_documents must be positive")
+        if not isinstance(self.retry_recoverable_errors, bool):
+            raise ValueError("code retry_recoverable_errors must be a boolean")
         if self.cache_validation not in {"metadata", "full"}:
             raise ValueError("code cache_validation must be metadata or full")
         if self.candidate_scope not in {"projects", "broad"}:
@@ -356,6 +359,17 @@ class CodeRouteSummary:
     cache_update_milliseconds: int = 0
     cache_commit_milliseconds: int = 0
     graph_milliseconds: int = 0
+    fts_rows_repaired: int = 0
+    # Appended keyword-only fields keep older positional consumers compatible.
+    catalog_candidates: int = field(default=0, kw_only=True)
+    catalog_classified: int = field(default=0, kw_only=True)
+    catalog_cache_hits: int = field(default=0, kw_only=True)
+    catalog_review_required: int = field(default=0, kw_only=True)
+    catalog_errors: int = field(default=0, kw_only=True)
+    catalog_source_stale: int = field(default=0, kw_only=True)
+    catalog_stale_marked: int = field(default=0, kw_only=True)
+    catalog_source_missing: int = field(default=0, kw_only=True)
+    catalog_complete: bool | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)

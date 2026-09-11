@@ -4,7 +4,38 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
-## Post-0.13 — instalada y verificada
+## 2026-09-11 — Oleada funcional C1–C5 (implementación; aceptación pendiente)
+
+- `--all` conserva las nueve rutas (`pdf`, `docx`, `office`, `archive`, `text`,
+  `audio`, `video`, `image`, `code`) y usa alcance `broad` para Code dentro de la
+  raíz elegida, sin ejecutar el contenido observado.
+- El selector Semantic integrado considera Archive, Code y Video cuando sus
+  owners, heads y dependencias están disponibles; una ausencia degrada sólo la
+  frontera afectada y deja `unavailable`/`blocked` con cobertura
+  `partial`/`incomplete`.
+- El catálogo se actualiza después de cada productor y serializa su generación/CAS
+  sin serializar la extracción. FTS y derivados válidos se reparan desde caché;
+  los reintentos requieren evidencia estructurada `retryable` y se limitan a una
+  vez por archivo y corrida.
+- PDF `protected`, Audio `no_speech`/`no_audio` y Archive `metadata_only` siguen
+  siendo observaciones consultables de cobertura parcial, sin texto inventado.
+  Los fallos y parciales del catálogo quedan en la fase `catalog` y su evento.
+- La GUI proyecta la misma selección y estados que la CLI; el perfil completo usa
+  `--all`, el piloto conserva límites acotados y las propuestas de organización
+  siguen siendo advisory sin requerir `--apply`.
+- Una publicación Semantic pendiente posterior a epoch 0 conserva productor,
+  manifest, heads de todos los modelos y presupuesto restante. No se resetea el
+  estado; incompatibilidad significa `recovery_required`.
+
+Esta entrada registra implementación y focos locales, no una aceptación completa:
+no declara recuperación real de la generación 17, release final instalada ni
+cierre C0–C7. La validación continúa desde una copia y el SHA final, conforme a
+[desarrollo y release](subprojects/development-release.md).
+
+## Post-0.13 — histórico, aceptado en su SHA
+
+Las líneas siguientes preservan evidencia de una entrega anterior; no certifican
+el checkout ni la oleada funcional del 2026-09-11.
 
 - Inventario/deduplicación v13 con sucesores copy-on-write, digests de contenido,
   heads de plan y rechazo de reutilización stat-only ante drift.
@@ -37,7 +68,7 @@ bytes de las fixtures, el corpus personal ni el estado productivo.
 Semantic 17, R1–R4, KIO real, MCP mutante, corpus personal y poda de estado
 siguen siendo gates independientes y no forman parte de esta promoción.
 
-## 0.13.0 — instalada y verificada (fuente `1567fe4`)
+## 0.13.0 — histórico, aceptado en su SHA `1567fe4`
 
 Estas entradas describen el contrato y la integración del lifecycle durable de
 `--all`. La release `0.13.0-1567fe46821b-cp314-linux-x86_64` quedó instalada y

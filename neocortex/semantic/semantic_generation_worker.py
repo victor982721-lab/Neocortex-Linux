@@ -708,6 +708,8 @@ def _run_generation_batch(
     *,
     worker_id: str,
     heartbeat_jobs: Callable[..., int],
+    work_budget: SemanticWorkBudget | None = None,
+    progress: ProgressCallback | None = None,
 ) -> tuple[int, int, bool] | None:
     leases = claim_embedding_jobs(
         database,
@@ -730,6 +732,31 @@ def _run_generation_batch(
             requests=requests,
             heartbeat_jobs=heartbeat_jobs,
         )
+        if work_budget is not None and work_budget.retry_recoverable_errors:
+            retry_indices = tuple(
+                index for index, exc in embedding_failures
+                if isinstance(exc, OSError) and not isinstance(exc, SourceRevisionMismatchError)
+            )
+            if retry_indices:
+                work_budget.checkpoint()
+                emit_progress(progress, ProgressEvent(
+                    "semantic", "retry", "Reintento único de inferencia local recuperable",
+                    0, len(retry_indices), "trabajos",
+                ))
+                retry_successes, retry_failures = embed_requests_with_heartbeat(
+                    database, tuple(leases[index] for index in retry_indices),
+                    worker_id=worker_id, backend=backend,
+                    requests=tuple(requests[index] for index in retry_indices),
+                    heartbeat_jobs=heartbeat_jobs,
+                )
+                successes = tuple(sorted((
+                    *successes,
+                    *((retry_indices[index], output) for index, output in retry_successes),
+                ), key=lambda value: value[0]))
+                retry_set = set(retry_indices)
+                embedding_failures = tuple(
+                    (index, exc) for index, exc in embedding_failures if index not in retry_set
+                ) + tuple((retry_indices[index], exc) for index, exc in retry_failures)
         batch_failed += _record_embedding_failures(
             database,
             leases,
@@ -800,6 +827,7 @@ def run_generation(
     reused = 0
     embedded = failed = 0
     worker_id = f"semantic-worker:{os.getpid()}:{generation_id}"
+    stop_reason: str | None = None
     while True:
         summary = generation_summary(database, generation_id, writer_coordinated=True)
         _emit_generation_progress(
@@ -830,8 +858,11 @@ def run_generation(
             backend,
             worker_id=worker_id,
             heartbeat_jobs=heartbeat_jobs,
+            work_budget=budget,
+            progress=progress,
         )
         if batch is None:
+            stop_reason = "no_progress"
             break
         batch_embedded, batch_failed, batch_deadline_expired = batch
         embedded += batch_embedded
@@ -839,12 +870,28 @@ def run_generation(
         if batch_deadline_expired:
             budget.mark_truncated("time_budget")
             break
+        if batch_embedded == batch_failed == 0:
+            stop_reason = "no_progress"
+            break
+        if batch_failed and budget.retry_recoverable_errors:
+            # A persistent failure stays durable/retryable, but must not be
+            # claimed again after its backoff within this same invocation.
+            # Other models retain the unspent shared budget.
+            current = generation_summary(database, generation_id, writer_coordinated=True)
+            stop_reason = "review_required" if current.errors else "retry_required"
+            break
+
+    if stop_reason is not None:
+        emit_progress(progress, ProgressEvent(
+            "semantic", "blocked", "Modelo incompleto; se conserva el avance para reanudación",
+            0, None, "trabajos", metrics=(ProgressMetric("reason", stop_reason),),
+        ))
 
     summary, deadline_expired = _finish_generation(
         database,
         generation_id,
         budget=budget,
-        publish_if_complete=publish_if_complete,
+        publish_if_complete=publish_if_complete and stop_reason != "no_progress",
     )
     _emit_generation_progress(
         progress,
@@ -856,7 +903,7 @@ def run_generation(
         finished=True,
         truncated=budget.truncated or deadline_expired,
     )
-    return GenerationWorkResult(summary, queued, reused, embedded, failed)
+    return GenerationWorkResult(summary, queued, reused, embedded, failed, stop_reason=stop_reason)
 
 
 # endregion [03]

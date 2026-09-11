@@ -61,6 +61,7 @@ def _run_framework_with_progress(
         lifecycle_stage_runner=lifecycle_stage_runner,
         lifecycle_stage_details=lifecycle_stage_details,
     )
+    args._semantic_cancellation_check = lambda: orchestrator._cancellation.is_cancelled
     with ConsoleCancellationBridge(orchestrator.request_cancellation):
         return orchestrator.run()
 
@@ -106,6 +107,8 @@ def _semantic_stage_details(args: argparse.Namespace) -> dict[str, object]:
     return {
         "selected_sources": list(selected_sources),
         "selection_pending": getattr(args, "semantic_source", None) is None,
+        "complete_all": bool(getattr(args, "_semantic_complete_all", False)),
+        "semantic_budget_version": 2,
         "image_available": False,
         "semantic_budget": {
             "max_items": getattr(args, "semantic_max_items", None),
@@ -399,6 +402,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
     from neocortex.api.read_contract import sanitize_untrusted_text
     from neocortex.deduplication import InventoryError
     from neocortex.persistence.sqlite_immutable import ImmutableSQLiteUnavailable
+    from neocortex.persistence.state_publication import StatePublicationError
+    from neocortex.persistence.framework_state_writer import RunBudgetExceeded
     from neocortex.runtime.orchestration.orchestrator import RouteExecutionError
 
     from .cli_reporting import (
@@ -447,6 +452,10 @@ def main(arguments: Sequence[str] | None = None) -> int:
         )
         with reporter as progress:
             try:
+                if args.all or args.resume_run is not None:
+                    from .cli_semantic import recover_pending_integrated_semantic
+
+                    recover_pending_integrated_semantic(args, progress=progress)
                 supports_lifecycle_hook = (
                     "lifecycle_stage_runner" in inspect.signature(run_framework).parameters
                 )
@@ -480,9 +489,13 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 # The public entrypoint owns exit 130; direct callers retain
                 # KeyboardInterrupt and the orchestrator's cancellation contract.
                 raise
-            except (InventoryError, RouteExecutionError, ImmutableSQLiteUnavailable) as exc:
+            except (InventoryError, RouteExecutionError, ImmutableSQLiteUnavailable, StatePublicationError, RunBudgetExceeded) as exc:
                 error_code = (
-                    "route_execution_failed"
+                    "budget_exhausted"
+                    if isinstance(exc, RunBudgetExceeded)
+                    else "recovery_required"
+                    if isinstance(exc, StatePublicationError)
+                    else "route_execution_failed"
                     if isinstance(exc, RouteExecutionError)
                     else "sqlite_snapshot_unavailable"
                     if isinstance(exc, ImmutableSQLiteUnavailable)
@@ -498,6 +511,21 @@ def main(arguments: Sequence[str] | None = None) -> int:
                     else (),
                 )
                 raise
+    except RunBudgetExceeded as exc:
+        print(
+            "ERROR budget_exhausted completion=incomplete: "
+            + sanitize_untrusted_text(exc, limit=800),
+            file=sys.stderr,
+        )
+        return 2
+    except StatePublicationError as exc:
+        print(
+            "ERROR recovery_required status=failed completion=incomplete: "
+            + sanitize_untrusted_text(exc, limit=800),
+            file=sys.stderr,
+        )
+        print("El avance se conserva; la publicación pendiente requiere recuperación compatible.", file=sys.stderr)
+        return 2
     except InventoryError as exc:
         print(
             f"ERROR corpus_unavailable: {sanitize_untrusted_text(exc, limit=800)}", file=sys.stderr
@@ -548,11 +576,13 @@ def main(arguments: Sequence[str] | None = None) -> int:
     else:
         print_reports(result, args)
     actions = getattr(result, "actions", None)
+    if getattr(result, "route_failures", None):
+        return 2
     if (actions is not None and actions.errors) or has_organization_errors(result):
         return 2
     if semantic_exit_code != 0:
         return 2
-    if args.strict_exit_codes and has_strict_route_errors(result):
+    if (args.all or args.strict_exit_codes) and has_strict_route_errors(result):
         return 2
     return 0
 

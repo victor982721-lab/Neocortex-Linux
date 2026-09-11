@@ -16,6 +16,7 @@ from .pdf_cache import binary_fingerprint
 from .pdf_route_models import (
     PDF_PAGE_SEQUENCE_ERROR_LIMIT,
     CacheDecision,
+    PdfExtractionCoverage,
     PdfRouteConfig,
 )
 from .pdf_state import UNKNOWN_BIRTHTIME_NS, pdf_database
@@ -36,6 +37,97 @@ PDF_CACHE_SCOPE_SAMPLE = 512
 _PATH_COLLATION = sqlite_path_collation()
 # Compatibility name retained for the storage mixin and older integrations.
 RETRYABLE_PAGE_ERROR_SQL = PDF_RETRYABLE_PAGE_ERROR_SQL
+# Current document-level outcomes whose type itself is the durable retry
+# evidence.  Do not inspect arbitrary error-message text for automatic work.
+_EXPLICIT_RECOVERABLE_DOCUMENT_ERRORS = frozenset(
+    {
+        "PdfChildProcessError",
+        "PdfChildExitError",
+        "PdfDocumentTimeout",
+        "InterruptedPdfProcessing",
+        "MemoryBudgetExceeded",
+        "MemoryHeadroomTimeout",
+        "PdfResourceError",
+        "MemoryError",
+        "PermissionError",
+    }
+)
+_EXPLICIT_RECOVERABLE_PAGE_ERRORS = frozenset(
+    {
+        "PermissionError",
+        "MemoryError",
+        "MemoryBudgetExceeded",
+        "MemoryHeadroomTimeout",
+    }
+)
+
+
+def inspect_pdf_extraction_coverage(
+    state_path,
+    run_id: int,
+    processing_signature: str,
+) -> PdfExtractionCoverage:
+    """Compare the live PDF inventory with its durable extraction rows.
+
+    The inventory is the source-run expectation.  A completed phase cannot be
+    resumed as a no-op when its document owner disappeared or when its durable
+    page layer no longer contains the number of pages it published.  This
+    probe reads only the isolated fixture/state owner and never opens a PDF.
+    """
+
+    with pdf_database(state_path, readonly=True) as connection:
+        row = connection.execute(
+            """WITH inventory AS (
+                SELECT i.file_key AS inventory_key,
+                       i.size AS inventory_size,
+                       i.mtime_ns AS inventory_mtime_ns,
+                       i.birthtime_ns AS inventory_birthtime_ns,
+                       d.file_key AS document_key,
+                       d.size AS document_size,
+                       d.mtime_ns AS document_mtime_ns,
+                       d.birthtime_ns AS document_birthtime_ns,
+                       d.processing_signature AS document_signature,
+                       d.status AS document_status,
+                       d.page_count,
+                       d.completed_pages,
+                       (SELECT COUNT(*) FROM pages p
+                        WHERE p.file_key=i.file_key) AS persisted_pages,
+                       CASE WHEN d.file_key IS NOT NULL
+                              AND d.size=i.size
+                              AND d.mtime_ns=i.mtime_ns
+                              AND (d.birthtime_ns=i.birthtime_ns OR d.birthtime_ns=?)
+                              AND d.processing_signature=?
+                            THEN 1 ELSE 0 END AS identity_matches
+                FROM pdf_inventory i
+                LEFT JOIN documents d ON d.file_key=i.file_key
+                WHERE i.last_seen_run_id=?
+            )
+            SELECT COUNT(*) AS inventory_documents,
+                   COALESCE(SUM(CASE WHEN identity_matches=0 THEN 1 ELSE 0 END),0)
+                       AS missing_documents,
+                   COALESCE(SUM(CASE WHEN identity_matches=1
+                                      AND document_status IN ('done','partial')
+                                      AND ((page_count IS NULL
+                                            AND (completed_pages<>persisted_pages
+                                                 OR persisted_pages>0))
+                                           OR (page_count IS NOT NULL
+                                               AND completed_pages<>persisted_pages))
+                                     THEN 1 ELSE 0 END),0)
+                       AS documents_with_missing_pages,
+                   COALESCE(SUM(CASE WHEN identity_matches=1
+                                      AND document_status IN ('done','partial')
+                                      AND completed_pages>persisted_pages
+                                     THEN completed_pages-persisted_pages ELSE 0 END),0)
+                       AS missing_pages
+            FROM inventory""",
+            ( -1, processing_signature, run_id),
+        ).fetchone()
+    return PdfExtractionCoverage(
+        inventory_documents=int(row["inventory_documents"] or 0),
+        missing_documents=int(row["missing_documents"] or 0),
+        documents_with_missing_pages=int(row["documents_with_missing_pages"] or 0),
+        missing_pages=int(row["missing_pages"] or 0),
+    )
 CACHE_QUERY = f"""SELECT size,mtime_ns,birthtime_ns,processing_signature,status,
     binary_xxh3_128,page_count,completed_pages,page_errors_count,error_type,
     error_message,metadata_json,transient_retry_count,next_retry_ns,
@@ -67,6 +159,19 @@ class PdfRouteCacheMixin:
     run_id: int
 
     # endregion [01]
+
+    def _claim_recoverable_retry(self, snapshot: FileSnapshot) -> bool:
+        """Claim the single automatic retry slot for one PDF in this run."""
+
+        claimed = getattr(self, "_recoverable_retry_keys", None)
+        if claimed is None:
+            claimed = set()
+            self._recoverable_retry_keys = claimed
+        key = file_key(snapshot)
+        if key in claimed:
+            return False
+        claimed.add(key)
+        return True
 
     # region [02] Bounded stale-state pruning
 
@@ -539,7 +644,58 @@ class PdfRouteCacheMixin:
             return invalid
         if touch:
             self._touch_cache_snapshot(snapshot, connection)
-        return self._cached_status_decision(row, prior_status, retry_pages)
+        decision = self._cached_status_decision(row, prior_status, retry_pages)
+        if (
+            not decision
+            and not self.config.retry_recoverable_errors
+            and not self.config.retry_errors
+            and not self.config.selection.force_incomplete_retry
+            and self._cached_document_automatic_retry_required(
+                row,
+                prior_status,
+                str(row["error_type"] or ""),
+            )
+        ):
+            # Keep the historical private policy observable while making the
+            # new recoverable retry behavior opt-in at the route boundary.
+            return self._cache_hit_with_review_evidence(
+                row,
+                prior_status,
+                retry_pages,
+            )
+        if not decision and self._cached_automatic_retry_required(
+            row,
+            prior_status,
+            str(row["error_type"] or ""),
+            str(row["error_message"] or ""),
+        ):
+            if self._claim_recoverable_retry(snapshot):
+                return decision
+            # A duplicate inventory row must not submit a second automatic
+            # attempt for this file during the same route run.
+            return self._cache_hit_with_review_evidence(
+                row,
+                prior_status,
+                retry_pages,
+            )
+        return decision
+
+    @staticmethod
+    def _cached_document_automatic_retry_required(
+        row,
+        status: str,
+        error_type: str,
+    ) -> bool:
+        """Return whether a typed document error would consume auto-retry."""
+
+        return (
+            status in {"error", "partial"}
+            and error_type in _EXPLICIT_RECOVERABLE_DOCUMENT_ERRORS
+            and automatic_retry_due(
+                int(row["transient_retry_count"]),
+                None if row["next_retry_ns"] is None else int(row["next_retry_ns"]),
+            )
+        )
 
     def _read_cache_row(self, snapshot: FileSnapshot, connection):
         if connection is None:
@@ -697,24 +853,42 @@ class PdfRouteCacheMixin:
             row["page_count"]
         )
 
-    @staticmethod
     def _cached_automatic_retry_required(
+        self,
         row,
         status: str,
         error_type: str,
         error_message: str,
     ) -> bool:
-        retry_due = automatic_retry_due(
-            int(row["transient_retry_count"]),
-            None if row["next_retry_ns"] is None else int(row["next_retry_ns"]),
+        # Persistence may record more than one bounded worker attempt in a
+        # single run.  Keep the existing durable retry budget while the
+        # per-run claim below still limits automatic work to one attempt for
+        # this file in the current run.
+        retry_count = int(row["transient_retry_count"])
+        retry_due = (
+            retry_count < 3
+            if self.config.retry_recoverable_errors
+            else automatic_retry_due(
+                retry_count,
+                None if row["next_retry_ns"] is None else int(row["next_retry_ns"]),
+            )
         )
         if not retry_due:
             return False
         if status == "partial" and bool(row["has_retryable_page_error"]):
-            return True
-        return status in {"error", "partial"} and is_retryable_pdf_document_error(
-            error_type,
-            error_message,
+            if not self.config.retry_recoverable_errors:
+                # Preserve the older structural/page policy for callers that
+                # exercise the private cache seam.  The new opt-in path below
+                # accepts only page error types that carry explicit durable
+                # retry evidence rather than legacy/message heuristics.
+                return True
+            return str(row["latest_page_error_type"] or "") in (
+                _EXPLICIT_RECOVERABLE_PAGE_ERRORS
+            )
+        # This path intentionally does not use a regex or a free-form message.
+        # Legacy child-reported rows and manual-review rows remain cached.
+        return status in {"error", "partial"} and error_type in (
+            _EXPLICIT_RECOVERABLE_DOCUMENT_ERRORS
         )
 
     def _cached_policy_retry_required(
@@ -731,7 +905,7 @@ class PdfRouteCacheMixin:
         if self._cached_page_sequence_retry_required(row, status, error_type):
             # One bounded structural-repair pass. Legacy rows have no document
             # marker, but retain the exact consecutive page-error evidence.
-            return True
+            return not self.config.retry_recoverable_errors
         if self._cached_timeout_retry_required(
             row,
             status,
@@ -740,7 +914,14 @@ class PdfRouteCacheMixin:
         ):
             # Persisted durable progress and legacy unmarked partial progress
             # get another attempt; recorded no-progress uses bounded backoff.
-            return True
+            return (
+                not self.config.retry_recoverable_errors
+                or self._cached_document_automatic_retry_required(
+                    row,
+                    status,
+                    error_type,
+                )
+            )
         return self._cached_automatic_retry_required(
             row,
             status,

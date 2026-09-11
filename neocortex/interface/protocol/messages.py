@@ -28,6 +28,9 @@ MAX_TEXT_FIELD_LENGTH = 8_192
 MAX_TRACEBACK_LENGTH = 20_000
 MAX_PROGRESS_METRICS = 32
 MAX_HEARTBEAT_ITEMS = 24
+MAX_UNAVAILABLE_CAUSES = 9
+MAX_UNAVAILABLE_CAUSE_LENGTH = 800
+MAX_UNAVAILABLE_NAME_LENGTH = 64
 
 WorkerMessageType = Literal[
     "started",
@@ -86,12 +89,20 @@ class WorkerMessage(TypedDict, total=False):
     deadline_seconds: NotRequired[float]
     run_id: NotRequired[int]
     files_checked: NotRequired[int]
+    skipped_links: NotRequired[int]
+    excluded_directories: NotRequired[int]
     action_errors: NotRequired[int]
     route_errors: NotRequired[dict[str, int]]
     organization_errors: NotRequired[bool]
     issues: NotRequired[int]
     completion_status: NotRequired[str]
     exit_code: NotRequired[int]
+    semantic_status: NotRequired[str]
+    semantic_exit_code: NotRequired[int]
+    semantic_recovery_required: NotRequired[bool]
+    semantic_selected_sources: NotRequired[list[str]]
+    route_unavailable: NotRequired[dict[str, str]]
+    semantic_unavailable: NotRequired[dict[str, str]]
     detail: NotRequired[str]
     error_type: NotRequired[str]
     stage: NotRequired[str]
@@ -209,6 +220,35 @@ def _validate_progress_fields(record: Mapping[str, Any]) -> None:
     _validate_metrics(record.get("metrics"))
 
 
+def _validate_unavailable_mapping(record: Mapping[str, Any], field: str) -> None:
+    value = record.get(field)
+    if value is None:
+        return
+    if not isinstance(value, dict) or len(value) > MAX_UNAVAILABLE_CAUSES:
+        raise WorkerProtocolError(
+            f"worker completed {field} must be a bounded object"
+        )
+    for name, cause in value.items():
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or len(name) > MAX_UNAVAILABLE_NAME_LENGTH
+            or any(ord(character) < 0x20 for character in name)
+        ):
+            raise WorkerProtocolError(
+                f"worker completed {field} names must be bounded strings"
+            )
+        if (
+            not isinstance(cause, str)
+            or not cause.strip()
+            or len(cause) > MAX_UNAVAILABLE_CAUSE_LENGTH
+            or any(ord(character) < 0x20 for character in cause)
+        ):
+            raise WorkerProtocolError(
+                f"worker completed {field} causes must be bounded strings"
+            )
+
+
 def validate_message(record: Mapping[str, Any]) -> WorkerMessage:
     """Validate one complete worker record and return a typed mapping.
 
@@ -259,6 +299,8 @@ def validate_message(record: Mapping[str, Any]) -> WorkerMessage:
     elif message_type == "completed":
         _require_int(record, "run_id", maximum=2**63 - 1)
         _require_int(record, "files_checked", maximum=2**63 - 1)
+        _require_int(record, "skipped_links", maximum=2**63 - 1, required=False)
+        _require_int(record, "excluded_directories", maximum=2**63 - 1, required=False)
         _require_int(record, "action_errors", maximum=2**63 - 1)
         route_errors = record.get("route_errors")
         if not isinstance(route_errors, dict) or len(route_errors) > 64:
@@ -273,6 +315,42 @@ def validate_message(record: Mapping[str, Any]) -> WorkerMessage:
         _require_int(record, "issues", maximum=2**63 - 1)
         _require_text(record, "completion_status", limit=64)
         _require_int(record, "exit_code", maximum=255)
+        semantic_status = record.get("semantic_status")
+        if semantic_status is not None:
+            _require_text(record, "semantic_status", limit=32)
+            if semantic_status not in {
+                "not_requested",
+                "skipped",
+                "completed",
+                "partial",
+                "failed",
+                "interrupted",
+            }:
+                raise WorkerProtocolError("worker completed Semantic status is unsupported")
+        _require_int(record, "semantic_exit_code", maximum=255, required=False)
+        semantic_recovery_required = record.get("semantic_recovery_required")
+        if semantic_recovery_required is not None and not isinstance(
+            semantic_recovery_required,
+            bool,
+        ):
+            raise WorkerProtocolError(
+                "worker completed Semantic recovery flag must be boolean"
+            )
+        semantic_sources = record.get("semantic_selected_sources")
+        if semantic_sources is not None:
+            if not isinstance(semantic_sources, list) or len(semantic_sources) > 32:
+                raise WorkerProtocolError(
+                    "worker completed Semantic sources must be a bounded list"
+                )
+            if any(
+                not isinstance(source, str) or not source.strip() or len(source) > 128
+                for source in semantic_sources
+            ):
+                raise WorkerProtocolError(
+                    "worker completed Semantic sources must be bounded strings"
+                )
+        _validate_unavailable_mapping(record, "route_unavailable")
+        _validate_unavailable_mapping(record, "semantic_unavailable")
     elif message_type == "cancelled":
         _require_text(record, "detail", limit=MAX_TEXT_FIELD_LENGTH)
     elif message_type == "failed":

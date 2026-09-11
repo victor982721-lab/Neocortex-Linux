@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import shutil
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
@@ -12,7 +13,7 @@ from typing import Any, cast
 from neocortex.platform.policy import default_corpus_root
 
 from PySide6.QtCore import QSettings, Qt, QTimer
-from PySide6.QtGui import QCloseEvent, QColor, QTextCursor
+from PySide6.QtGui import QCloseEvent, QColor, QResizeEvent, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -53,7 +54,14 @@ from ...application.request import (
     ROUTE_ORDER,
     RunRequest,
 )
-from ...protocol.messages import WorkerProtocolError, sanitize_text, validate_message
+from ...protocol.messages import (
+    MAX_UNAVAILABLE_CAUSE_LENGTH,
+    MAX_UNAVAILABLE_CAUSES,
+    MAX_UNAVAILABLE_NAME_LENGTH,
+    WorkerProtocolError,
+    sanitize_text,
+    validate_message,
+)
 from ...read.client import SharedReadClient
 from ...read.curation import CurationReadRepository, present_curation_snapshot
 from ...read.models import (
@@ -170,6 +178,9 @@ class MainWindow(QMainWindow):
         self._nav_buttons: list[NavButton] = []
         self._progress_items: dict[tuple[str, str], ProgressItem] = {}
         self._last_status_error: str | None = None
+        self._semantic_stage_status = "not_requested"
+        self._semantic_recovery_required = False
+        self._semantic_unavailable: dict[str, str] = {}
 
         self._build_shell()
         self._connect_controller()
@@ -531,12 +542,23 @@ class MainWindow(QMainWindow):
             QApplication.clipboard().setText(text)
 
     def _refresh_curation_view(self) -> None:
-        """Refresh the bounded grant/action projection without mutation controls."""
+        """Refresh grants, recovery and the persisted plan without mutation controls."""
 
         try:
-            presentation = present_curation_snapshot(
-                self._curation_read_repository.read(limit=50)
-            )
+            snapshot = self._curation_read_repository.read(limit=50)
+            plan: Mapping[str, object]
+            try:
+                plan = self._curation_read_repository.read_plan(limit=50)
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                plan = {
+                    "coverage": "unavailable",
+                    "page": {"items": [], "items_total": 0},
+                    "error": {
+                        "code": "unavailable",
+                        "message": " ".join(str(exc).split())[:800],
+                    },
+                }
+            presentation = present_curation_snapshot(snapshot, plan=plan)
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             presentation = ReadPresentation(
                 title="Curación no disponible",
@@ -811,6 +833,11 @@ class MainWindow(QMainWindow):
             f"Iniciando perfil {request.profile} con hasta {request.max_items} elementos "
             f"y {request.deadline_seconds:g} s · "
             + ("modo Apply" if request.apply else "modo Análisis")
+            + (
+                " · lifecycle --all (incluye Semantic)"
+                if request.uses_all_lifecycle
+                else " · selección de rutas personalizada"
+            )
         )
         try:
             self._controller.start(request)
@@ -883,6 +910,10 @@ class MainWindow(QMainWindow):
         else:
             budget = ""
         self._append_log(f"Worker iniciado · PID {self._controller.process_id}{budget}")
+        if str(record.get("route", "")) == "all":
+            self._append_log(
+                "Lifecycle --all activo: las rutas y Semantic pertenecen a la misma corrida."
+            )
 
     def _worker_cancel_acknowledged(self, _record: dict[str, Any]) -> None:
         self._append_log("El motor reconoció la solicitud de cancelación.")
@@ -893,11 +924,72 @@ class MainWindow(QMainWindow):
         )
         issues = max(issues, int(record.get("issues", issues)))
         completed_with_issues = str(record.get("completion_status", "")) == "completed_with_issues"
-        has_issues = bool(issues or completed_with_issues or int(record.get("exit_code", 0)))
-        self.live_status.set_state("warning" if has_issues else "completed")
+        semantic_status = str(record.get("semantic_status", ""))
+        if semantic_status in {
+            "not_requested",
+            "skipped",
+            "completed",
+            "partial",
+            "failed",
+            "interrupted",
+        }:
+            self._semantic_stage_status = semantic_status
+        recovery_required = record.get("semantic_recovery_required")
+        if isinstance(recovery_required, bool):
+            self._semantic_recovery_required = recovery_required
+        semantic_exit_code = record.get("semantic_exit_code")
+        semantic_failed = isinstance(semantic_exit_code, int) and semantic_exit_code != 0
+        route_unavailable = self._bounded_unavailable(record.get("route_unavailable"))
+        semantic_unavailable = self._bounded_unavailable(
+            record.get("semantic_unavailable")
+        ) or dict(self._semantic_unavailable)
+        availability_issues = bool(route_unavailable or semantic_unavailable)
+        semantic_attention = self._semantic_visual_state()
+        has_issues = bool(
+            issues
+            or completed_with_issues
+            or int(record.get("exit_code", 0))
+            or semantic_failed
+            or semantic_attention == "failed"
+            or availability_issues
+        )
+        if semantic_attention is not None:
+            self.live_status.set_state(semantic_attention)
+            self.header_status.set_state(semantic_attention)
+        else:
+            self.live_status.set_state("warning" if has_issues else "completed")
+            self.header_status.set_state("warning" if has_issues else "completed")
+        completion_detail = f"Corrida #{record.get('run_id')} finalizada."
+        if self._semantic_stage_status == "partial":
+            completion_detail += " Semantic quedó con cobertura parcial y puede reanudarse."
+        elif self._semantic_recovery_required:
+            completion_detail += " Semantic requiere recuperación antes de reintentar."
+        if availability_issues:
+            completion_detail += " " + self._availability_detail(
+                route_unavailable,
+                semantic_unavailable,
+            )
+        scan_details = [
+            f"{label}: {format_count(value)}"
+            for field, label in (
+                ("excluded_directories", "directorios excluidos"),
+                ("skipped_links", "enlaces omitidos"),
+            )
+            for value in (record.get(field),)
+            if type(value) is int and value >= 0
+        ]
+        if scan_details:
+            completion_detail += " Inventario observado · " + " · ".join(scan_details) + "."
+        activity_title = (
+            "Cobertura incompleta"
+            if availability_issues
+            else "Finalizada con incidencias"
+            if has_issues
+            else "Ejecución completada"
+        )
         self._set_activity(
-            "Ejecución completada",
-            f"Corrida #{record.get('run_id')} finalizada.",
+            activity_title,
+            completion_detail,
             completed=1,
             total=1,
         )
@@ -909,6 +1001,7 @@ class MainWindow(QMainWindow):
 
     def _worker_cancelled(self, record: dict[str, Any]) -> None:
         self.live_status.set_state("cancelled")
+        self.header_status.set_state("cancelled")
         detail = sanitize_text(record.get("detail", ""))
         self._set_activity("Ejecución cancelada", detail)
         self._append_log(detail or "Ejecución cancelada")
@@ -918,7 +1011,17 @@ class MainWindow(QMainWindow):
             f"{sanitize_text(record.get('error_type', 'Error'), limit=256)}: "
             f"{sanitize_text(record.get('detail', ''))}"
         )
+        route_unavailable = self._bounded_unavailable(record.get("route_unavailable"))
+        semantic_unavailable = self._bounded_unavailable(
+            record.get("semantic_unavailable")
+        ) or dict(self._semantic_unavailable)
+        if route_unavailable or semantic_unavailable:
+            detail += " " + self._availability_detail(
+                route_unavailable,
+                semantic_unavailable,
+            )
         self.live_status.set_state("failed")
+        self.header_status.set_state("failed")
         self._set_activity("La ejecución falló", detail)
         self._append_log(detail)
 
@@ -933,7 +1036,106 @@ class MainWindow(QMainWindow):
             self.progress_layout.insertWidget(self.progress_layout.count() - 1, item)
         else:
             item.update_event(record)
+        self._observe_semantic_progress(record)
         self.progress_scroll.ensureWidgetVisible(item, 0, 20)
+
+    def _observe_semantic_progress(self, record: dict[str, Any]) -> None:
+        if str(record.get("operation", "")) != "semantic":
+            return
+        metrics = self._progress_metrics(record)
+        status = str(metrics.get("status", ""))
+        cause = metrics.get("cause")
+        if cause is not None:
+            scope = metrics.get("scope") or metrics.get("source") or metrics.get("owner")
+            scope = "semantic" if scope is None else scope
+            self._semantic_unavailable.update(
+                self._bounded_unavailable({scope: cause})
+            )
+        if status == "partial":
+            self._semantic_stage_status = "partial"
+        elif status in {"error", "failed"}:
+            self._semantic_stage_status = "failed"
+            self._semantic_recovery_required = True
+        elif status in {"interrumpido", "interrupted"}:
+            self._semantic_stage_status = "interrupted"
+            self._semantic_recovery_required = True
+        elif status == "ok" and bool(record.get("finished")):
+            self._semantic_stage_status = "completed"
+        semantic_visual = self._semantic_visual_state()
+        if semantic_visual is not None:
+            self.live_status.set_state(semantic_visual)
+            self.header_status.set_state(semantic_visual)
+
+    def _semantic_visual_state(self) -> str | None:
+        if self._semantic_stage_status == "failed":
+            return "failed"
+        if self._semantic_stage_status in {"partial", "interrupted"}:
+            return "warning"
+        if self._semantic_recovery_required:
+            return "warning"
+        return None
+
+    @staticmethod
+    def _bounded_unavailable(value: object) -> dict[str, str]:
+        if not isinstance(value, Mapping):
+            return {}
+        bounded: dict[str, str] = {}
+        for raw_name, raw_cause in value.items():
+            if not isinstance(raw_name, str) or not isinstance(raw_cause, str):
+                continue
+            name = sanitize_text(raw_name, limit=MAX_UNAVAILABLE_NAME_LENGTH)
+            cause = sanitize_text(raw_cause, limit=MAX_UNAVAILABLE_CAUSE_LENGTH)
+            if not name or not cause or name in bounded:
+                continue
+            bounded[name] = cause
+            if len(bounded) >= MAX_UNAVAILABLE_CAUSES:
+                break
+        return bounded
+
+    @staticmethod
+    def _availability_detail(
+        route_unavailable: Mapping[str, str],
+        semantic_unavailable: Mapping[str, str],
+    ) -> str:
+        sections: list[str] = []
+        if route_unavailable:
+            sections.append(
+                "Rutas no disponibles: "
+                + " · ".join(
+                    f"{name}: {cause}" for name, cause in route_unavailable.items()
+                )
+            )
+        if semantic_unavailable:
+            sections.append(
+                "Semantic no disponible: "
+                + " · ".join(
+                    f"{name}: {cause}"
+                    for name, cause in semantic_unavailable.items()
+                )
+            )
+        return (
+            "; ".join(sections)
+            + ". Siguiente acción: revisar dependencia local; "
+            "no se descargará nada automáticamente."
+        )
+
+    def _sync_activity_geometry(self) -> None:
+        """Keep the wrapped activity detail and its banner allocated together."""
+
+        detail = getattr(self, "activity_detail", None)
+        if not isinstance(detail, QLabel):
+            return
+        width = detail.width()
+        if detail.hasHeightForWidth() and width > 0:
+            detail.setMinimumHeight(detail.heightForWidth(width))
+        activity = detail.parentWidget()
+        if activity is None:
+            return
+        activity.setMinimumHeight(activity.minimumSizeHint().height())
+        live = activity.parentWidget()
+        live_layout = None if live is None else live.layout()
+        if live_layout is not None:
+            live_layout.activate()
 
     def _set_activity(
         self,
@@ -946,6 +1148,10 @@ class MainWindow(QMainWindow):
     ) -> None:
         self.activity_title.setText(title)
         self.activity_detail.setText(detail)
+        # QLabel recalculates its wrapped height lazily after setText().
+        # Activate the containing live layout now so a freshly emitted
+        # terminal record cannot be painted with the previous one-line height.
+        self._sync_activity_geometry()
         if indeterminate:
             self.activity_progress.setRange(0, 0)
             return
@@ -955,6 +1161,10 @@ class MainWindow(QMainWindow):
             return
         ratio = 1000 if total == 0 else int(1000 * completed / max(1, total))
         self.activity_progress.setValue(min(1000, max(0, ratio)))
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._sync_activity_geometry()
 
     def _update_activity_from_progress(
         self,
@@ -977,6 +1187,23 @@ class MainWindow(QMainWindow):
             elapsed_seconds=elapsed_seconds,
             active_count=active_count,
         )
+        if str(record.get("operation", "")) == "semantic" and finished:
+            semantic_status = str(metrics.get("status", ""))
+            if semantic_status == "partial":
+                detail_parts.append("cobertura parcial; etapa reanudable")
+            elif semantic_status in {"error", "failed", "interrumpido", "interrupted"}:
+                detail_parts.append("recuperación requerida")
+        cause = metrics.get("cause")
+        if isinstance(cause, str) and cause.strip():
+            detail_parts.append(
+                f"Causa: {sanitize_text(cause, limit=MAX_UNAVAILABLE_CAUSE_LENGTH)}"
+            )
+        next_action = metrics.get("next_action")
+        if isinstance(next_action, str) and next_action.strip():
+            detail_parts.append(
+                "Siguiente acción: "
+                + sanitize_text(next_action, limit=MAX_UNAVAILABLE_CAUSE_LENGTH)
+            )
         in_flight = max(0, int(metrics.get("in_flight", 0)))
         prefix = "Etapa completada: " if finished else "Ahora: "
         self._set_activity(
@@ -1064,6 +1291,10 @@ class MainWindow(QMainWindow):
             )
         self._append_log(f"Proceso finalizado con código {exit_code}.")
         self._refresh_data()
+        semantic_visual = self._semantic_visual_state()
+        if semantic_visual is not None:
+            self.live_status.set_state(semantic_visual)
+            self.header_status.set_state(semantic_visual)
 
     def _startup_failed(self, detail: str) -> None:
         self.live_status.set_state("failed")
@@ -1079,6 +1310,9 @@ class MainWindow(QMainWindow):
             self.progress_layout.removeWidget(item)
             item.deleteLater()
         self._progress_items.clear()
+        self._semantic_stage_status = "not_requested"
+        self._semantic_recovery_required = False
+        self._semantic_unavailable.clear()
         self.progress_placeholder.show()
         self.live_status.set_state("idle")
         self._set_activity(

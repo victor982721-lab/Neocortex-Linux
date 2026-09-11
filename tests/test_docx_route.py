@@ -687,7 +687,11 @@ class DocxRouteTests(unittest.TestCase):
                 side_effect=OSError("temporarily unavailable"),
             ):
                 failed = DocxRoute(DocxRouteConfig(database), state, 1).run()
-            recovered = DocxRoute(DocxRouteConfig(database), state, 2).run()
+            recovered = DocxRoute(
+                DocxRouteConfig(database, retry_recoverable_errors=True),
+                state,
+                2,
+            ).run()
 
             self.assertEqual(failed.retryable_errors, 1)
             self.assertEqual(recovered.retried_documents, 1)

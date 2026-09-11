@@ -108,7 +108,14 @@ EXPECTED_VISIBLE_SURFACE = {
 }
 
 EXPECTED_FIELDS = {
-    "GenerationWorkResult": ("summary", "queued", "reused", "embedded", "failed"),
+    "GenerationWorkResult": (
+        "summary",
+        "queued",
+        "reused",
+        "embedded",
+        "failed",
+        "stop_reason",
+    ),
     "SemanticIndexResult": (
         "semantic_database",
         "sources",
@@ -279,7 +286,7 @@ EXPECTED_FIELDS = {
 EXPECTED_SIGNATURES = {
     "GenerationWorkResult": (
         "(summary: 'GenerationSummary', queued: 'int', reused: 'int', "
-        "embedded: 'int', failed: 'int') -> None"
+        "embedded: 'int', failed: 'int', *, stop_reason: 'str | None' = None) -> None"
     ),
     "SemanticIndexResult": (
         "(semantic_database: 'Path', sources: 'tuple[str, ...]', "
@@ -619,7 +626,12 @@ def test_contract_signatures_fields_defaults_and_dataclass_shape_are_stable() ->
         assert str(inspect.signature(contract)) == EXPECTED_SIGNATURES[contract.__name__]
         assert tuple(item.name for item in fields(contract)) == expected_fields
         assert tuple(contract.__slots__) == expected_fields
-        assert contract.__match_args__ == expected_fields
+        expected_match_args = (
+            expected_fields[:-1]
+            if contract is GenerationWorkResult
+            else expected_fields
+        )
+        assert contract.__match_args__ == expected_match_args
         assert contract.__module__ == "neocortex.semantic.semantic_service_contracts"
         parameters = contract.__dataclass_params__
         assert parameters.frozen is True
@@ -627,6 +639,16 @@ def test_contract_signatures_fields_defaults_and_dataclass_shape_are_stable() ->
         assert parameters.kw_only is False
 
     plan_fields = {item.name: item for item in fields(SemanticPlan)}
+    generation_fields = {item.name: item for item in fields(GenerationWorkResult)}
+    assert generation_fields["stop_reason"].default is None
+    assert generation_fields["stop_reason"].kw_only is True
+    assert GenerationWorkResult.__match_args__ == (
+        "summary",
+        "queued",
+        "reused",
+        "embedded",
+        "failed",
+    )
     assert plan_fields["dry_run"].default is True
     assert plan_fields["jobs_created"].default == 0
     assert plan_fields["state_mutated"].default is False

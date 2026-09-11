@@ -94,6 +94,7 @@ class ArchiveRouteConfig:
     max_file_bytes: int | None = None
     max_documents: int | None = None
     retry_errors: bool = False
+    retry_recoverable_errors: bool = field(default=False, kw_only=True)
     selection: CandidateSelection = field(default_factory=CandidateSelection)
     max_depth: int = DEFAULT_MAX_DEPTH
     max_members: int = DEFAULT_MAX_MEMBERS
@@ -225,6 +226,10 @@ class ArchiveExtractionError(ValueError):
         super().__init__(message)
         self.code = code
         self.retryable = retryable
+
+
+class _ArchiveCacheInvalid(ValueError):
+    """Durable Archive representation cannot support a safe cache replay."""
 
 
 # endregion [01]
@@ -1653,7 +1658,7 @@ def _cached_container(
 ) -> sqlite3.Row | None:
     cached = connection.execute(
         """SELECT path,status,member_count,indexed_count,metadata_only_count,
-        nested_archive_count,issue_count,text_chars,max_depth
+        nested_archive_count,issue_count,text_chars,max_depth,retryable
         FROM containers WHERE container_key=? AND size=? AND mtime_ns=?
         AND birthtime_ns=? AND processing_signature=?""",
         (
@@ -1664,6 +1669,8 @@ def _cached_container(
             signature,
         ),
     ).fetchone()
+    if cached is not None and str(cached["status"]) not in {"complete", "partial", "error"}:
+        return None
     if (
         cached is not None
         and Path(cached["path"]).suffix.casefold() != Path(snapshot.path).suffix.casefold()
@@ -1680,11 +1687,175 @@ def _cached_container(
     return cached
 
 
+def _cached_archive_text(row: sqlite3.Row, *, max_text_chars: int) -> str:
+    """Load one persisted member representation without opening its ZIP source."""
+
+    compressed = row["text_zlib"]
+    try:
+        text_chars = int(row["text_chars"])
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise _ArchiveCacheInvalid(
+            f"Archive member {row['file_key']} text length is malformed"
+        ) from exc
+    if text_chars < 0 or text_chars > max_text_chars:
+        raise _ArchiveCacheInvalid(
+            f"Archive member {row['file_key']} text length exceeds the cache bound"
+        )
+    digest = row["text_xxh3_128"]
+    if compressed is None:
+        if str(row["status"]) == "indexed" or text_chars != 0 or digest is not None:
+            raise _ArchiveCacheInvalid(
+                f"Archive member {row['file_key']} has an incomplete text representation"
+            )
+        return ""
+    try:
+        decoder = zlib.decompressobj()
+        output_limit = text_chars * 4 + 1
+        encoded = decoder.decompress(bytes(compressed), output_limit)
+        if decoder.unconsumed_tail or decoder.unused_data or not decoder.eof:
+            raise ValueError("compressed representation exceeded its recorded bound")
+        text = encoded.decode("utf-8")
+    except (TypeError, UnicodeError, ValueError, OverflowError, zlib.error) as exc:
+        raise _ArchiveCacheInvalid(
+            f"Archive member {row['file_key']} text representation is unreadable: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    if len(text) != text_chars or digest is None:
+        raise _ArchiveCacheInvalid(
+            f"Archive member {row['file_key']} text representation metadata is inconsistent"
+        )
+    if str(digest) != xxhash.xxh3_128_hexdigest(encoded):
+        raise _ArchiveCacheInvalid(
+            f"Archive member {row['file_key']} text representation fingerprint changed"
+        )
+    return text
+
+
+def _cached_archive_fts_rows(
+    connection: sqlite3.Connection,
+    container_key: str,
+    *,
+    max_text_chars: int = DEFAULT_MAX_TEXT_CHARS,
+) -> tuple[tuple[str, str, str, str, str, str, str], ...]:
+    """Materialize expected FTS rows from durable Archive member records."""
+
+    container = connection.execute(
+        """SELECT status,member_count,indexed_count,metadata_only_count
+        FROM containers WHERE container_key=?""",
+        (container_key,),
+    ).fetchone()
+    if container is None:
+        raise _ArchiveCacheInvalid(f"Archive container {container_key} disappeared")
+    rows = connection.execute(
+        """SELECT file_key,path,container_path,member_chain,content_kind,status,
+        text_zlib,text_chars,text_xxh3_128 FROM documents
+        WHERE container_key=? ORDER BY member_chain COLLATE NOCASE,file_key""",
+        (container_key,),
+    ).fetchall()
+    if str(container["status"]) in {"complete", "partial"}:
+        try:
+            member_count = int(container["member_count"])
+            indexed_count = int(container["indexed_count"])
+            metadata_only_count = int(container["metadata_only_count"])
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise _ArchiveCacheInvalid(
+                f"Archive container {container_key} counters are malformed"
+            ) from exc
+        member_documents = sum(str(row["member_chain"]) != "" for row in rows)
+        if (
+            member_documents != member_count
+            or indexed_count + metadata_only_count != member_count
+        ):
+            raise _ArchiveCacheInvalid(
+                f"Archive container {container_key} durable member set is incomplete"
+            )
+    expected: list[tuple[str, str, str, str, str, str, str]] = []
+    for row in rows:
+        file_key = str(row["file_key"])
+        container_path = str(row["container_path"])
+        member_chain = str(row["member_chain"])
+        path = str(row["path"])
+        if path != _virtual_path(container_path, member_chain):
+            raise _ArchiveCacheInvalid(
+                f"Archive member {file_key} virtual path is inconsistent"
+            )
+        expected.append(
+            (
+                file_key,
+                path,
+                container_path,
+                Path(container_path).name,
+                member_chain,
+                str(row["content_kind"]),
+                _cached_archive_text(row, max_text_chars=max_text_chars),
+            )
+        )
+    return tuple(expected)
+
+
+def _repair_cached_container_fts(
+    connection: sqlite3.Connection,
+    container_key: str,
+    *,
+    max_text_chars: int = DEFAULT_MAX_TEXT_CHARS,
+) -> int:
+    """Repair only a damaged Archive FTS projection from durable member text."""
+
+    expected = _cached_archive_fts_rows(
+        connection,
+        container_key,
+        max_text_chars=max_text_chars,
+    )
+    expected_by_key = {row[0]: row for row in expected}
+    actual_rows = connection.execute(
+        """SELECT file_key,path,container_path,container_name,member_chain,
+        content_kind,body FROM document_fts WHERE file_key IN(
+            SELECT file_key FROM documents WHERE container_key=?
+        )""",
+        (container_key,),
+    ).fetchall()
+    actual_by_key: dict[str, list[tuple[object, ...]]] = {}
+    for row in actual_rows:
+        actual_by_key.setdefault(str(row["file_key"]), []).append(
+            (
+                str(row["file_key"]),
+                str(row["path"]),
+                str(row["container_path"]),
+                str(row["container_name"]),
+                str(row["member_chain"]),
+                str(row["content_kind"]),
+                str(row["body"]),
+            )
+        )
+    complete = len(actual_rows) == len(expected) and all(
+        actual_by_key.get(file_key) == [expected_row]
+        for file_key, expected_row in expected_by_key.items()
+    )
+    if complete:
+        return 0
+
+    connection.execute(
+        """DELETE FROM document_fts WHERE file_key IN(
+            SELECT file_key FROM documents WHERE container_key=?
+        )""",
+        (container_key,),
+    )
+    connection.executemany(
+        """INSERT INTO document_fts(
+        file_key,path,container_path,container_name,member_chain,content_kind,body)
+        VALUES(?,?,?,?,?,?,?)""",
+        expected,
+    )
+    return len(expected)
+
+
 def _refresh_cached_container(
     connection: sqlite3.Connection,
     snapshot: FileSnapshot,
     run_id: int,
-) -> None:
+    *,
+    max_text_chars: int = DEFAULT_MAX_TEXT_CHARS,
+) -> int:
     container_key = file_key_from_snapshot(snapshot)
     conflict = connection.execute(
         "SELECT container_key FROM containers WHERE path=? AND container_key<>?",
@@ -1709,14 +1880,10 @@ def _refresh_cached_container(
         WHERE container_key=?""",
         (snapshot.path, snapshot.path, run_id, now, container_key),
     )
-    connection.execute(
-        """UPDATE document_fts SET
-            path=(SELECT path FROM documents WHERE documents.file_key=document_fts.file_key),
-            container_path=?,container_name=?
-        WHERE file_key IN (
-            SELECT file_key FROM documents WHERE container_key=?
-        )""",
-        (snapshot.path, Path(snapshot.path).name, container_key),
+    return _repair_cached_container_fts(
+        connection,
+        container_key,
+        max_text_chars=max_text_chars,
     )
 
 
@@ -1779,6 +1946,8 @@ class ArchiveRoute:
         self.cancellation = cancellation or CancellationToken()
 
     def _validate(self) -> None:
+        if not isinstance(self.config.retry_recoverable_errors, bool):
+            raise ValueError("archive retry_recoverable_errors must be a boolean")
         positive = {
             "max_depth": self.config.max_depth,
             "max_members": self.config.max_members,
@@ -1927,6 +2096,7 @@ class ArchiveRoute:
         candidate_pool, eligible, selected_count = self._selected_counts()
         processed = cache_hits = cached_errors = complete = partial = errors = 0
         members = indexed = metadata_only = nested = text_chars = issues = 0
+        fts_rows_repaired = 0
 
         def report(*, finished: bool = False) -> None:
             emit_progress(
@@ -1969,31 +2139,58 @@ class ArchiveRoute:
                     snapshot,
                     self.config.processing_signature,
                 )
+                retryable_error = (
+                    cached is not None
+                    and str(cached["status"]) == "error"
+                    and type(cached["retryable"]) is int
+                    and cached["retryable"] == 1
+                )
                 if cached is not None and not (
-                    str(cached["status"]) == "error" and self.config.retry_errors
+                    str(cached["status"]) == "error"
+                    and (
+                        self.config.retry_errors
+                        or (self.config.retry_recoverable_errors and retryable_error)
+                    )
                 ):
                     connection.execute("BEGIN IMMEDIATE")
+                    repaired: int | None = None
                     try:
-                        _refresh_cached_container(connection, snapshot, self.run_id)
+                        repaired_count = _refresh_cached_container(
+                            connection,
+                            snapshot,
+                            self.run_id,
+                            max_text_chars=self.config.max_text_chars,
+                        )
+                    except _ArchiveCacheInvalid:
+                        # A missing/corrupt derived projection is repairable,
+                        # but a corrupt durable representation must go through
+                        # the normal bounded extraction path.
+                        connection.rollback()
+                        cached = None
                     except BaseException:
                         connection.rollback()
                         raise
                     else:
                         connection.commit()
-                    cache_hits += 1
-                    status_value = str(cached["status"])
-                    cached_errors += int(status_value == "error")
-                    complete += int(status_value == "complete")
-                    partial += int(status_value == "partial")
-                    members += int(cached["member_count"])
-                    indexed += int(cached["indexed_count"])
-                    metadata_only += int(cached["metadata_only_count"])
-                    nested += int(cached["nested_archive_count"])
-                    issues += int(cached["issue_count"])
-                    text_chars += int(cached["text_chars"])
-                    processed += 1
-                    report()
-                    continue
+                        repaired = repaired_count
+                    if repaired is not None:
+                        if cached is None:
+                            raise RuntimeError("Archive cache row disappeared after refresh")
+                        fts_rows_repaired += repaired
+                        cache_hits += 1
+                        status_value = str(cached["status"])
+                        cached_errors += int(status_value == "error")
+                        complete += int(status_value == "complete")
+                        partial += int(status_value == "partial")
+                        members += int(cached["member_count"])
+                        indexed += int(cached["indexed_count"])
+                        metadata_only += int(cached["metadata_only_count"])
+                        nested += int(cached["nested_archive_count"])
+                        issues += int(cached["issue_count"])
+                        text_chars += int(cached["text_chars"])
+                        processed += 1
+                        report()
+                        continue
 
                 connection.execute("BEGIN IMMEDIATE")
                 try:
@@ -2058,6 +2255,7 @@ class ArchiveRoute:
             skipped_by_count=eligible - selected_count,
             processed=processed,
             cache_hits=cache_hits,
+            fts_rows_repaired=fts_rows_repaired,
             cached_errors=cached_errors,
             containers_complete=complete,
             containers_partial=partial,

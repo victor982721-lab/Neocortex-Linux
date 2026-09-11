@@ -665,6 +665,18 @@ def _fail_empty_superseded_generations(
             raise SemanticStateError("empty embedding generation changed while being superseded")
 
 
+def has_building_embedding_generation(path: Path, *, model_signature: str) -> bool:
+    """Read a bounded recovery hint without creating an absent owner."""
+
+    if not path.is_file():
+        return False
+    with semantic_database(path, readonly=True) as connection:
+        return connection.execute(
+            "SELECT 1 FROM embedding_generations WHERE model_signature=? AND status='building' LIMIT 1",
+            (model_signature,),
+        ).fetchone() is not None
+
+
 def start_embedding_generation(
     path: Path,
     *,
@@ -690,6 +702,26 @@ def start_embedding_generation(
         connection.execute("BEGIN IMMEDIATE")
         _load_model(connection, model_signature)
         base_generation_id = _published_head_id(connection, model_signature)
+        if work_budget is not None and work_budget.preserve_existing_generations:
+            candidates = connection.execute(
+                """SELECT generation_id,processing_signature,provenance_json,base_generation_id
+                FROM embedding_generations WHERE model_signature=? AND status='building'
+                ORDER BY generation_id DESC LIMIT 2""",
+                (model_signature,),
+            ).fetchall()
+            if len(candidates) > 1:
+                raise SemanticStateError("recovery requires one compatible building generation")
+            if candidates:
+                candidate = candidates[0]
+                candidate_base = candidate["base_generation_id"]
+                if (
+                    candidate["processing_signature"] != processing_signature
+                    or candidate["provenance_json"] != provenance_json
+                    or candidate_base != base_generation_id
+                ):
+                    raise SemanticStateError(
+                        "recovery generation is incompatible; its state and jobs were preserved"
+                    )
         _fail_empty_superseded_generations(
             connection,
             model_signature=model_signature,

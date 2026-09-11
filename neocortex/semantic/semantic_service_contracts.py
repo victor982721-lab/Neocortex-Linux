@@ -59,6 +59,7 @@ class GenerationWorkResult:
     reused: int
     embedded: int
     failed: int
+    stop_reason: str | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)

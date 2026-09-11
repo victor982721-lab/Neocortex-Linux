@@ -633,6 +633,20 @@ def test_semantic_only_resume_reuses_source_selection_and_budget(
     )
 
     def fake_index(args, *, result_sink, **kwargs):
+        from neocortex.semantic.semantic_models import EmbeddingModality
+        from neocortex.semantic.semantic_schema import initialize_semantic_state
+        from neocortex.semantic.semantic_state import register_embedding_model
+        from tests.test_functional_defaults_publication_heads import _empty_generation, _model
+
+        semantic_database = args.state_directory / "semantic.sqlite3"
+        model = _model("fixture-model", EmbeddingModality.TEXT)
+        initialize_semantic_state(semantic_database)
+        register_embedding_model(semantic_database, model, allow_test_provider=True)
+        generation_id = _empty_generation(
+            semantic_database, model, processing_signature="fixture-published", started_ns=100
+        )
+        fake_result.generations[0].summary.generation_id = generation_id
+        fake_result.generations[0].summary.model_signature = model.model_signature
         observed.update(
             {
                 "semantic_source": tuple(args.semantic_source),

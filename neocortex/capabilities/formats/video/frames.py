@@ -191,6 +191,16 @@ def _interval_timestamps(
         )
         end_guard_ms = max(end_guard_ms, frame_guard_ms)
     final = max(0, duration_ms - end_guard_ms)
+    if frame_rate is not None:
+        # A container duration can include an audio tail or muxing/padding
+        # beyond the final video frame.  Keep the interval endpoint below the
+        # last frame-rate-aligned slot that can start before that duration.
+        # This is a seek upper bound, not an invented PTS; scene/keyframe
+        # observations remain untouched and extraction failures stay warnings.
+        frame_slots = math.floor(duration_seconds * frame_rate + 0.5)
+        if frame_slots > 0:
+            aligned_end = math.floor((frame_slots - 1) * 1000 / frame_rate)
+            final = min(final, max(0, aligned_end))
     interval_ms = max(1, round(interval_seconds * 1000))
     values = list(range(0, final + 1, interval_ms))
     if not values or final - values[-1] >= min(interval_ms // 2, 1000):

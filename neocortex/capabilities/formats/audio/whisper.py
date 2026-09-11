@@ -13,6 +13,7 @@ from typing import Any, Mapping
 from neocortex.platform.policy import default_whisper_model_cache
 from .models import (
     AudioProcessingError,
+    AudioRuntimeUnavailableError,
     AudioRouteConfig,
     TranscriptResult,
     TranscriptSegment,
@@ -25,6 +26,9 @@ from neocortex.runtime.control.isolated_process import (
     isolated_spawn_process,
     terminate_isolated_process,
 )
+
+
+_RUNTIME_UNAVAILABLE_PREFIX = "[audio-runtime-unavailable] "
 
 
 # region [01] Runtime discovery without model loading
@@ -54,7 +58,7 @@ def _whisper_environment() -> tuple[str, str, int]:
         ctranslate2_version = importlib.metadata.version("ctranslate2")
         import ctranslate2  # type: ignore[import-untyped]
     except (ImportError, OSError, importlib.metadata.PackageNotFoundError) as exc:
-        raise WhisperRuntimeError(
+        raise AudioRuntimeUnavailableError(
             "the audio route requires an importable faster-whisper/CTranslate2 runtime; "
             f"{type(exc).__name__}: {exc}"
         ) from exc
@@ -72,7 +76,7 @@ def _resolve_whisper_device(device: str, cuda_devices: int) -> str:
     if resolved_device == "auto":
         resolved_device = "cpu"
     if resolved_device == "cuda" and cuda_devices < 1:
-        raise WhisperRuntimeError(
+        raise AudioRuntimeUnavailableError(
             "Whisper device 'cuda' was requested but CTranslate2 found no CUDA device"
         )
     return resolved_device
@@ -152,7 +156,7 @@ def local_whisper_model(
             name for name in WHISPER_REQUIRED_FILES
             if not (candidate / name).is_file() or not (candidate / name).stat().st_size
         ]
-        raise WhisperRuntimeError(
+        raise AudioRuntimeUnavailableError(
             f"Whisper local model {candidate} is incomplete: {', '.join(missing)}; "
             "offline transcription will not download weights or a tokenizer"
         )
@@ -167,7 +171,7 @@ def local_whisper_model(
         try:
             from faster_whisper.utils import _MODELS  # type: ignore[import-untyped]
         except (ImportError, OSError) as exc:
-            raise WhisperRuntimeError(
+            raise AudioRuntimeUnavailableError(
                 f"faster-whisper is required to resolve model alias {model_name!r}; "
                 "provide a canonical repository ID or a complete local directory"
             ) from exc
@@ -177,7 +181,7 @@ def local_whisper_model(
     cache = default_whisper_model_cache() if cache_directory is None else cache_directory
     snapshot = None if cache is None else _whisper_snapshot_directory(cache, model_id)
     if snapshot is None:
-        raise WhisperRuntimeError(
+        raise AudioRuntimeUnavailableError(
             f"Whisper model {model_id} is not complete in {cache}; required local files: "
             f"{', '.join(WHISPER_REQUIRED_FILES)}; offline transcription will not download them"
         )
@@ -314,7 +318,13 @@ def _whisper_worker(task_channel, result_channel, settings: Mapping[str, object]
                 model_name, None if download_root is None else Path(download_root),
             )
             model_name = str(snapshot)
-        from faster_whisper import WhisperModel  # type: ignore[import-untyped]
+        try:
+            from faster_whisper import WhisperModel  # type: ignore[import-untyped]
+        except (ImportError, OSError) as exc:
+            raise AudioRuntimeUnavailableError(
+                "the audio route requires an importable faster-whisper runtime; "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
 
         runtime = resolve_whisper_runtime(str(settings["device"]), str(settings["compute_type"]))
         model = WhisperModel(
@@ -324,6 +334,18 @@ def _whisper_worker(task_channel, result_channel, settings: Mapping[str, object]
             download_root=download_root,
             local_files_only=bool(settings["local_models_only"]),
         )
+    except AudioRuntimeUnavailableError as exc:
+        # Keep the established three-field startup protocol.  The private
+        # prefix lets the parent restore the narrower typed exception without
+        # breaking callers that inspect ``("init_error", "WhisperRuntimeError", ...)``.
+        result_channel.put(
+            (
+                "init_error",
+                "WhisperRuntimeError",
+                f"{_RUNTIME_UNAVAILABLE_PREFIX}{str(exc)[:4000]}",
+            )
+        )
+        return
     except BaseException as exc:
         result_channel.put(("init_error", type(exc).__name__, str(exc)[:4000]))
         return
@@ -465,7 +487,13 @@ class WhisperTranscriber:
                     )
                 return
             if len(message) == 3 and message[0] == "init_error":
-                raise WhisperRuntimeError(f"{message[1]}: {message[2]}")
+                detail = str(message[2])
+                if detail.startswith(_RUNTIME_UNAVAILABLE_PREFIX):
+                    detail = detail.removeprefix(_RUNTIME_UNAVAILABLE_PREFIX)
+                    raise AudioRuntimeUnavailableError(f"{message[1]}: {detail}")
+                raise WhisperRuntimeError(f"{message[1]}: {detail}")
+            if len(message) == 3 and message[0] == "runtime_unavailable":
+                raise AudioRuntimeUnavailableError(f"{message[1]}: {message[2]}")
             raise WhisperRuntimeError("invalid Whisper worker startup response")
         except BaseException:
             self._discard_worker(terminate=True)

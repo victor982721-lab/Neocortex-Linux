@@ -36,6 +36,7 @@ class ImageRouteConfig:
     max_file_bytes: int | None = None
     max_documents: int | None = None
     retry_errors: bool = False
+    retry_recoverable_errors: bool = False
     selection: CandidateSelection = field(default_factory=CandidateSelection)
     memory_budget_bytes: int = 512 * 1024 * 1024
     min_free_memory_bytes: int = 1024 * 1024 * 1024
@@ -155,3 +156,13 @@ class ImageRouteSummary:
     full_fingerprints_computed: int = 0
     processing_provenance: dict[str, Any] | None = None
     summary_schema: str = ROUTE_SUMMARY_SCHEMA
+    # Appended keyword-only fields keep older positional consumers compatible.
+    catalog_candidates: int = field(default=0, kw_only=True)
+    catalog_classified: int = field(default=0, kw_only=True)
+    catalog_cache_hits: int = field(default=0, kw_only=True)
+    catalog_review_required: int = field(default=0, kw_only=True)
+    catalog_errors: int = field(default=0, kw_only=True)
+    catalog_source_stale: int = field(default=0, kw_only=True)
+    catalog_stale_marked: int = field(default=0, kw_only=True)
+    catalog_source_missing: int = field(default=0, kw_only=True)
+    catalog_complete: bool | None = field(default=None, kw_only=True)

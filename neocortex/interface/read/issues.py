@@ -14,14 +14,22 @@ _ADDITIVE_FIELDS = (
     "cached_errors",
     "profile_errors",
     "catalog_errors",
+    "catalog_source_stale",
+    "catalog_source_missing",
     "safety_issues",
+    "protected",
+    "retryable_errors",
+    "manual_review_errors",
+    "source_missing",
 )
 
-# A partial document can contribute page errors and a timeout at the same time.
-# Use the strongest count in that family instead of reporting the same degraded
-# document three times.
+# These counters are alternate views of partial route coverage.  The same
+# degraded document/container may be represented by more than one of them, so
+# use the strongest observed count instead of adding the same finding twice.
 _PARTIAL_RESULT_FIELDS = (
     "partial_documents",
+    "partial",
+    "containers_partial",
     "page_errors",
     "document_timeouts",
 )

@@ -17,7 +17,7 @@ import os
 import stat
 import tempfile
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,6 +45,16 @@ class StatePublicationError(RuntimeError):
 
 class StatePublicationConflictError(StatePublicationError):
     """The caller's expected epoch no longer matches the durable epoch."""
+
+
+class StatePublicationRecoveryRequired(StatePublicationError):
+    """An interrupted publication needs its producer, not another inventory."""
+
+    error_code = "recovery_required"
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(f"state publication recovery_required: {reason}")
 
 
 class StatePublicationCommitError(StatePublicationError):
@@ -221,6 +231,7 @@ class StatePublicationTransaction:
         *,
         manifest_sha256: str | None = None,
         detail: str | None = None,
+        verify_owner_heads: Callable[[], Sequence[StateOwnerHead]] | None = None,
     ) -> StatePublication:
         return record_state_publication(
             self.state_directory,
@@ -232,6 +243,10 @@ class StatePublicationTransaction:
             manifest_sha256=self.manifest_sha256 if manifest_sha256 is None else manifest_sha256,
             detail=detail,
             owner_heads=owner_heads,
+            verify_owner_heads=verify_owner_heads,
+            expected_pending_event_id=(
+                self.prepared.event_id if self.prepared.status == "partial" else None
+            ),
         )
 
     def abort(
@@ -965,6 +980,8 @@ def record_state_publication(
     manifest_sha256: str | None = None,
     detail: str | None = None,
     owner_heads: Sequence[StateOwnerHead] | None = None,
+    verify_owner_heads: Callable[[], Sequence[StateOwnerHead]] | None = None,
+    expected_pending_event_id: str | None = None,
 ) -> StatePublication:
     """Append one publication event and advance the epoch only on success.
 
@@ -985,6 +1002,12 @@ def record_state_publication(
     idempotency_key = _required_text(idempotency_key, label="idempotency_key", maximum=256)
     manifest_sha256 = _optional_sha256(manifest_sha256)
     normalized_owner_heads = () if owner_heads is None else _owner_heads(tuple(owner_heads))
+    if expected_pending_event_id is not None:
+        expected_pending_event_id = _required_text(expected_pending_event_id, label="pending event")
+        if status != "complete":
+            raise ValueError("a pending-event commit guard requires complete status")
+    if verify_owner_heads is not None and (status != "complete" or not callable(verify_owner_heads)):
+        raise ValueError("owner revalidation belongs to a complete publication")
     if normalized_owner_heads and {item.owner for item in normalized_owner_heads} != set(
         selected_owners
     ):
@@ -1006,11 +1029,19 @@ def record_state_publication(
                 )
             journal = _read_journal(selected)
             latest_by_key = {item.idempotency_key: item for item in journal}
+            if expected_pending_event_id is not None:
+                active = latest_by_key.get(digest)
+                if active is None or active.status != "partial" or active.event_id != expected_pending_event_id:
+                    raise StatePublicationConflictError("prepared event changed before publication commit")
             if any(
                 item.status == "partial" and item.idempotency_key != digest
                 for item in latest_by_key.values()
             ):
                 raise StatePublicationConflictError("another publication is pending recovery")
+            if verify_owner_heads is not None:
+                observed = _owner_heads(tuple(verify_owner_heads()))
+                if observed != normalized_owner_heads:
+                    raise StatePublicationConflictError("owner heads changed before publication commit")
             latest_complete = next(
                 (item for item in reversed(journal) if item.status == "complete"), None
             )
@@ -1229,6 +1260,61 @@ def abort_state_publication(
         return failed
 
 
+def resume_state_publication(
+    state_directory: str | Path,
+    *,
+    event_id: str,
+    operation: str,
+    owners: Sequence[str],
+    idempotency_key: str,
+    manifest_sha256: str,
+    expected_epoch: int,
+) -> StatePublicationTransaction:
+    """Rehydrate one exact pending producer transaction without changing it.
+
+    The producer supplies the original (unhashed) transaction key and input
+    manifest. A stored journal key is not interchangeable with that key.
+    Resumption keeps readers blocked until the producer commits its verified
+    final heads; it does not abort an ambiguous owner-local change.
+    """
+
+    selected = _required_state_directory(state_directory)
+    selected_owners = _owners(tuple(owners))
+    operation = _required_text(operation, label="operation")
+    event_id = _required_text(event_id, label="event_id", maximum=256)
+    manifest_sha256 = _required_sha256(manifest_sha256, label="manifest digest")
+    idempotency_key = _required_text(idempotency_key, label="idempotency_key", maximum=256)
+    if type(expected_epoch) is not int or expected_epoch < 0:
+        raise ValueError("expected_epoch must be a non-negative integer")
+    digest = _idempotency_digest(operation, selected_owners, idempotency_key)
+    with _publication_lock(selected):
+        view = read_state_publication_state(selected)
+        if view.epoch.epoch != expected_epoch:
+            raise StatePublicationConflictError("publication epoch changed before resume")
+        if len(view.pending) != 1 or view.pending[0].event_id != event_id:
+            raise StatePublicationConflictError("publication resume requires one exact pending event")
+        prepared = view.pending[0]
+        if (
+            prepared.operation != operation
+            or prepared.owners != selected_owners
+            or prepared.idempotency_key != digest
+            or prepared.manifest_sha256 != manifest_sha256
+            or prepared.epoch != expected_epoch
+        ):
+            raise StatePublicationConflictError("publication resume input contract changed")
+        if view.publication is not None:
+            _read_content_manifest_for_publication(selected, view.publication)
+        return StatePublicationTransaction(
+            state_directory=selected,
+            prepared=prepared,
+            operation=operation,
+            owners=selected_owners,
+            idempotency_key=idempotency_key,
+            expected_epoch=expected_epoch,
+            manifest_sha256=manifest_sha256,
+        )
+
+
 def abort_unbound_state_publication(
     state_directory: str | Path,
     *,
@@ -1293,6 +1379,79 @@ def abort_unbound_state_publication(
             owner_heads=(),
         )
         _append_journal(_journal_path(selected), failed)
+    return failed
+
+
+def reconcile_unbound_state_publication(
+    state_directory: str | Path,
+    *,
+    event_id: str,
+    expected_epoch: int,
+    expected_publication_event_id: str,
+    verify_owner_heads: Callable[[], Sequence[StateOwnerHead]],
+) -> StatePublication:
+    """Resolve a legacy Semantic marker after an owner-aware verification.
+
+    Unlike the epoch-zero invalidation, this operation has a previous complete
+    publication to preserve. The producer must supply a fresh, legacy-aware
+    observation while the publication lock is held. The callback must not
+    simply return heads copied from the journal: only the owner can prove that
+    its local publication still has that identity. No owner rollback is
+    performed or claimed, and the previous complete epoch is never advanced.
+    """
+
+    selected = _required_state_directory(state_directory)
+    event_id = _required_text(event_id, label="event_id", maximum=256)
+    expected_publication_event_id = _required_text(
+        expected_publication_event_id, label="publication event_id", maximum=256
+    )
+    if type(expected_epoch) is not int or expected_epoch < 1:
+        raise ValueError("legacy reconciliation requires a positive expected epoch")
+    if not callable(verify_owner_heads):
+        raise TypeError("legacy reconciliation requires an owner verification callback")
+    with _publication_lock(selected):
+        view = read_state_publication_state(selected)
+        if (
+            view.epoch.epoch != expected_epoch
+            or view.publication is None
+            or view.publication.event_id != expected_publication_event_id
+        ):
+            raise StatePublicationConflictError("legacy publication epoch or event changed")
+        # A blocked view deliberately delays content-manifest inspection. It
+        # must be authenticated here before that blocked marker is removed.
+        _read_content_manifest_for_publication(selected, view.publication)
+        if len(view.pending) != 1 or view.pending[0].event_id != event_id:
+            raise StatePublicationConflictError("legacy reconciliation requires one exact pending event")
+        pending = view.pending[0]
+        if (
+            pending.operation != "framework-all-semantic"
+            or pending.owner_heads
+            or pending.epoch != expected_epoch
+            or pending.owners != view.publication.owners
+            or pending.manifest_sha256 is None
+            or not view.epoch.owner_heads
+        ):
+            raise StatePublicationConflictError("legacy pending publication has no compatible scope")
+        observed = _owner_heads(tuple(verify_owner_heads()))
+        if observed != view.epoch.owner_heads:
+            raise StatePublicationConflictError("fresh owner heads do not match the legacy publication")
+        created_ns = time.time_ns()
+        failed = StatePublication(
+            event_id=f"epoch:{expected_epoch}:recovery:{created_ns}",
+            epoch=expected_epoch,
+            operation=pending.operation,
+            owners=pending.owners,
+            status="failed",
+            created_ns=created_ns,
+            idempotency_key=pending.idempotency_key,
+            manifest_sha256=pending.manifest_sha256,
+            detail=(
+                "Legacy Semantic prepare reconciled against unchanged published owners; "
+                f"publication_event={expected_publication_event_id}; rollback_claimed=false"
+            ),
+            owner_heads=(),
+        )
+        _append_journal(_journal_path(selected), failed)
         return failed
 
 
@@ -1324,6 +1483,7 @@ __all__ = [
     "StatePublicationCommitError",
     "StatePublicationConflictError",
     "StatePublicationError",
+    "StatePublicationRecoveryRequired",
     "StatePublicationTransaction",
     "StatePublicationView",
     "abort_state_publication",
@@ -1333,6 +1493,8 @@ __all__ = [
     "read_state_epoch",
     "read_state_publication_state",
     "read_state_publications",
+    "reconcile_unbound_state_publication",
     "record_state_publication",
     "require_complete_state_epoch",
+    "resume_state_publication",
 ]

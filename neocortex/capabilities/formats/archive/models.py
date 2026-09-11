@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from neocortex.foundation.processing_provenance import ROUTE_SUMMARY_SCHEMA
@@ -33,6 +33,18 @@ class ArchiveRouteSummary:
     processing_signature: str | None = None
     processing_provenance: dict[str, Any] | None = None
     summary_schema: str = ROUTE_SUMMARY_SCHEMA
+    fts_rows_repaired: int = 0
+    # Catalog counters are appended and keyword-only to preserve the stable
+    # positional summary contract while exposing the post-route projection.
+    catalog_candidates: int = field(default=0, kw_only=True)
+    catalog_classified: int = field(default=0, kw_only=True)
+    catalog_cache_hits: int = field(default=0, kw_only=True)
+    catalog_review_required: int = field(default=0, kw_only=True)
+    catalog_errors: int = field(default=0, kw_only=True)
+    catalog_source_stale: int = field(default=0, kw_only=True)
+    catalog_stale_marked: int = field(default=0, kw_only=True)
+    catalog_source_missing: int = field(default=0, kw_only=True)
+    catalog_complete: bool | None = field(default=None, kw_only=True)
 
 
 for _defined_value in tuple(globals().values()):

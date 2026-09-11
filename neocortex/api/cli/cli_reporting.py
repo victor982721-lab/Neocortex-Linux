@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, cast
 
 from neocortex.deduplication.domain.models import DuplicateGroup
 from neocortex.runtime.orchestration.replay_metrics import route_replay_metrics
+from neocortex.api.read_contract import sanitize_untrusted_text
 
 if TYPE_CHECKING:
     from neocortex.runtime.control.watcher import (
@@ -25,6 +26,7 @@ def _print_inventory_report(result) -> None:
         f"run_id={result.run_id} "
         f"files={result.scan.files_seen} "
         f"excluded_directories={result.scan.excluded_directories} "
+        f"skipped_links={getattr(result.scan, 'skipped_links', 'no_verificado')} "
         f"inventory_errors={result.scan.errors}"
     )
 
@@ -318,11 +320,16 @@ def _print_dedup_report(result) -> None:
 
 def _print_action_report(result, dedup_policy: str) -> None:
     actions = result.actions
+    action_counts = _action_counts(actions)
     print(
         f"action_mode={'apply' if actions.apply_actions else 'dry-run'} "
         f"dedup_policy={dedup_policy} "
         f"duplicate_candidates={actions.duplicate_candidates} "
         f"duplicates_trashed={actions.duplicates_trashed} "
+        f"planned={action_counts['planned']} "
+        f"applied={action_counts['applied']} "
+        f"action_candidates={action_counts['candidates']} "
+        f"action_skips={action_counts['skips']} "
         f"files_checked={actions.files_checked} "
         f"types_detected={actions.types_detected} "
         f"unknown_types={actions.unknown_types} "
@@ -384,6 +391,10 @@ def _print_code_report(result) -> None:
         f"code_diagnostics={summary.diagnostics} "
         f"code_projects={summary.projects} "
         f"code_errors={summary.errors} "
+        f"code_partial={getattr(summary, 'partial', 'no_verificado')} "
+        f"code_text_only={getattr(summary, 'text_only', 'no_verificado')} "
+        f"code_skipped_limit={getattr(summary, 'skipped_limit', 'no_verificado')} "
+        f"code_stale_inventory={getattr(summary, 'stale_inventory', 'no_verificado')} "
         f"code_bytes_read={summary.bytes_read} "
         f"code_read_ms={summary.read_milliseconds} "
         f"code_analyze_ms={summary.analyze_milliseconds} "
@@ -455,6 +466,7 @@ def _print_duplicate_groups(
 
 
 def print_reports(result, args: argparse.Namespace) -> None:
+    _print_catalog_reports(result)
     if hasattr(result, "source_run_id"):
         print(f"run_id={result.run_id} mode=route-only source_run_id={result.source_run_id}")
         _print_pdf_report(result)
@@ -484,6 +496,35 @@ def print_reports(result, args: argparse.Namespace) -> None:
     _print_action_report(result, args.dedup_policy)
     _print_organization_report(result)
     _print_duplicate_groups(result, args.show_groups)
+
+
+def _print_catalog_reports(result) -> None:
+    """Expose observed catalog consumers independently of extraction counters."""
+
+    for route, summary in getattr(result, "route_results", {}).items():
+        candidates, cache_hits, new_work, replay_evidence = _route_replay_view(route, summary)
+        print(f"ROUTE_REPLAY route={sanitize_untrusted_text(route, limit=32)} "
+              f"candidates={candidates if candidates is not None else 'no_verificado'} "
+              f"cache_hits={cache_hits if cache_hits is not None else 'no_verificado'} "
+              f"new_work={new_work if new_work is not None else 'no_verificado'} evidence={replay_evidence}")
+        issues = {name: value for name in STRICT_ROUTE_ERROR_FIELDS
+                  for value in (_optional_counter(summary, name),) if value}
+        if issues:
+            print(f"ROUTE_COVERAGE route={sanitize_untrusted_text(route, limit=32)} complete=0 "
+                  f"issues={json.dumps(issues, sort_keys=True, separators=(',', ':'))} "
+                  "next_action=inspect_owner_diagnostics_in_same_state")
+        observed = _field_value(summary, "catalog_complete")
+        if not observed[0] or observed[1] is None:
+            continue
+        counters = " ".join(
+            f"{name}={_optional_counter(summary, name)}"
+            for name in _CATALOG_FIELDS
+            if _optional_counter(summary, name) is not None
+        )
+        print(f"ROUTE_CATALOG route={route} complete={int(bool(observed[1]))} {counters}")
+    for route, reason in getattr(result, "route_failures", {}).items():
+        print(f"ROUTE_UNAVAILABLE route={sanitize_untrusted_text(route, limit=32)} "
+              f"reason={json.dumps(sanitize_untrusted_text(reason, limit=800), ensure_ascii=True)}")
 
 
 def _human_count(value: int | float) -> str:
@@ -518,27 +559,306 @@ def _human_bytes(value: int) -> str:
     raise AssertionError("unreachable")
 
 
+def _counter_value(value: object) -> int | None:
+    """Return a non-negative counter, preserving an absent/invalid value."""
+
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        return int(value) if value.is_integer() and value >= 0 else None
+    if isinstance(value, str):
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return parsed if parsed >= 0 else None
+    return None
+
+
+def _field_value(summary: object, field: str) -> tuple[bool, object]:
+    """Read a summary field without converting missing data into zero."""
+
+    if isinstance(summary, Mapping):
+        if field not in summary:
+            return False, None
+        return True, summary[field]
+    try:
+        return True, getattr(summary, field)
+    except AttributeError:
+        return False, None
+
+
+def _optional_counter(summary: object, field: str) -> int | None:
+    present, value = _field_value(summary, field)
+    return _counter_value(value) if present else None
+
+
+def _has_valid_counters(summary: object, fields: Iterable[str]) -> bool:
+    return all(_optional_counter(summary, field) is not None for field in fields)
+
+
+def _action_counts(actions: object) -> dict[str, int]:
+    """Normalize action counters without presenting a dry-run as an effect."""
+
+    candidates = sum(
+        _optional_counter(actions, field) or 0
+        for field in (
+            "duplicate_candidates",
+            "rename_candidates",
+            "empty_directory_candidates",
+        )
+    )
+    skips = sum(
+        _optional_counter(actions, field) or 0
+        for field in (
+            "duplicate_skips",
+            "rename_skips",
+            "empty_directory_skips",
+        )
+    )
+    applied = sum(
+        _optional_counter(actions, field) or 0
+        for field in (
+            "duplicates_trashed",
+            "files_renamed",
+            "empty_directories_trashed",
+        )
+    )
+    apply_requested = bool(_field_value(actions, "apply_actions")[1])
+    return {
+        "candidates": candidates,
+        "skips": skips,
+        "planned": 0 if apply_requested else max(0, candidates - skips),
+        "applied": applied,
+    }
+
+
 def _route_issue_count(summary: object) -> int:
+    partial = max(
+        _optional_counter(summary, "partial_documents") or 0,
+        _optional_counter(summary, "partial") or 0,
+        _optional_counter(summary, "containers_partial") or 0,
+        _optional_counter(summary, "page_errors") or 0,
+        _optional_counter(summary, "document_timeouts") or 0,
+    )
     fields = (
         "errors",
         "cached_errors",
         "profile_errors",
-        "page_errors",
-        "partial_documents",
-        "partial",
-        "document_timeouts",
         "catalog_errors",
+        "catalog_source_stale",
+        "catalog_source_missing",
         "safety_issues",
+        "protected",
+        "retryable_errors",
+        "manual_review_errors",
     )
-    return sum(int(getattr(summary, field, 0) or 0) for field in fields)
+    return partial + sum(_optional_counter(summary, field) or 0 for field in fields)
 
 
 def _route_review_count(summary: object) -> int:
     direct = max(
-        int(getattr(summary, "review_candidates", 0) or 0),
-        int(getattr(summary, "review_candidates_stored", 0) or 0),
+        _optional_counter(summary, "review_candidates") or 0,
+        _optional_counter(summary, "review_candidates_stored") or 0,
     )
-    return direct + int(getattr(summary, "catalog_review_required", 0) or 0)
+    return direct + (_optional_counter(summary, "catalog_review_required") or 0)
+
+
+def _route_review_value(summary: object) -> int | None:
+    """Return review work only when the route summary exposes its counters."""
+
+    fields = (
+        "review_candidates",
+        "review_candidates_stored",
+        "catalog_review_required",
+    )
+    if not any(_optional_counter(summary, field) is not None for field in fields):
+        return None
+    return _route_review_count(summary)
+
+
+def _route_issue_details(label: str, summary: object) -> tuple[str, ...]:
+    """Describe typed route findings without treating benign outcomes as errors."""
+
+    fields: list[tuple[str, str]] = [
+        ("partial_documents", "parciales"),
+        ("partial", "parciales"),
+        ("containers_partial", "parciales"),
+        ("protected", "protected"),
+        ("safety_issues", "seguridad"),
+        ("page_errors", "errores_pagina"),
+        ("profile_errors", "errores_perfil"),
+        ("document_timeouts", "timeouts"),
+        ("errors", "errores"),
+        ("cached_errors", "errores_cache"),
+        ("catalog_source_stale", "catalogo_obsoleto"),
+        ("catalog_source_missing", "owner_catalogo_ausente"),
+        ("catalog_errors", "errores_catalogo"),
+        ("retryable_errors", "reintentos"),
+        ("manual_review_errors", "revision_manual"),
+    ]
+    if label == "Audio":
+        # no_speech/no_audio are terminal observations, not extraction errors;
+        # retain them as typed detail instead of silently collapsing them into OK.
+        fields = [
+            ("no_speech", "no_speech"),
+            ("no_audio", "no_audio"),
+            *fields,
+        ]
+    details: list[str] = []
+    for field, label_text in fields:
+        value = _optional_counter(summary, field)
+        if value:
+            details.append(f"{label_text}={value}")
+    return tuple(dict.fromkeys(details))
+
+
+_CATALOG_FIELDS = (
+    "catalog_candidates",
+    "catalog_classified",
+    "catalog_cache_hits",
+    "catalog_review_required",
+    "catalog_errors",
+    "catalog_source_stale",
+    "catalog_source_missing",
+    "catalog_stale_marked",
+)
+_FTS_FIELDS = (
+    "fts_pages_indexed",
+    "fts_documents_indexed",
+    "fts_rows_repaired",
+)
+_DERIVED_ZERO_FIELDS = (*_FTS_FIELDS, "profiles_built")
+_REPLAY_FIELDS = ("candidates", "processed", "cache_hits", "cached_errors", "new_work")
+_ROUTE_NAMES = {
+    "PDF": "pdf",
+    "DOCX": "docx",
+    "Office": "office",
+    "ZIP": "archive",
+    "Texto": "text",
+    "Audio": "audio",
+    "Video": "video",
+    "Imágenes": "image",
+    "Código": "code",
+}
+
+
+def _route_replay_view(
+    route_name: str,
+    summary: object,
+) -> tuple[int | None, int | None, int | None, str]:
+    """Return replay counters plus a truthful evidence status."""
+
+    candidates = _optional_counter(summary, "candidates")
+    cache_hits = _optional_counter(summary, "cache_hits")
+    cached_errors = _optional_counter(summary, "cached_errors")
+    if candidates is None:
+        return None, None, None, "no_verificado"
+    if candidates == 0:
+        # Zero candidates is an observed empty selection, not complete coverage.
+        return candidates, cache_hits, 0, "sin_candidatos"
+    if route_name == "code" and _has_valid_counters(summary, ("candidates", "processed", "cache_hits")):
+        # Code counts cache misses in processed, and includes cached errors in
+        # cache_hits/errors. It has no separate cached_errors counter; requiring
+        # one would hide known replay work from this built-in owner.
+        work = _optional_counter(summary, "processed")
+        observed = work is not None and cache_hits is not None and work + cache_hits > 0
+        return candidates, cache_hits, work, "observado" if observed else "no_verificado"
+    explicit_new_work = _optional_counter(summary, "new_work")
+    new_work: int | None
+    if explicit_new_work is not None:
+        new_work = explicit_new_work
+    elif _has_valid_counters(summary, _REPLAY_FIELDS[:4]):
+        new_work = _counter_value(route_replay_metrics(route_name, summary).get("new_work"))
+    else:
+        new_work = None
+    if (
+        cache_hits is None
+        or cached_errors is None
+        or new_work is None
+        or not _has_valid_counters(summary, _REPLAY_FIELDS[:4])
+    ):
+        return candidates, cache_hits, new_work, "no_verificado"
+    if new_work + cache_hits + cached_errors == 0:
+        # A positive candidate count with no observed work/reuse is not a
+        # successful zero-work replay; it lacks route coverage evidence.
+        return candidates, cache_hits, new_work, "no_verificado"
+    return candidates, cache_hits, new_work, "observado"
+
+
+def _route_coverage_notes(
+    summary: object,
+    *,
+    candidates: int | None,
+    replay_status: str,
+) -> tuple[str, ...]:
+    """Surface absent owner/catalog/index evidence instead of printing false zeroes."""
+
+    notes: list[str] = []
+    catalog_complete = _field_value(summary, "catalog_complete")
+    if catalog_complete[0] and catalog_complete[1] is False:
+        notes.append("catalogo=incompleto; revisar owner/errores antes de consultar")
+    catalog_candidates = _optional_counter(summary, "catalog_candidates")
+    if catalog_complete == (True, None) or not any(
+        _optional_counter(summary, field) is not None for field in _CATALOG_FIELDS
+    ):
+        notes.append("catalogo=no_verificado")
+    elif (
+        candidates is not None
+        and candidates > 0
+        and catalog_candidates is not None
+        and catalog_candidates != candidates
+    ):
+        notes.append(f"catalogo={catalog_candidates}/{candidates}")
+    candidate_pool = _optional_counter(summary, "candidate_pool")
+    if (
+        candidates is not None
+        and candidate_pool is not None
+        and candidate_pool != candidates
+    ):
+        notes.append(f"candidatos={candidates}/{candidate_pool}")
+    fts_values = {field: _optional_counter(summary, field) for field in _FTS_FIELDS}
+    if not any(value is not None for value in fts_values.values()):
+        notes.append("fts=no_verificado")
+    else:
+        notes.extend(
+            f"{field}={value}"
+            for field, value in fts_values.items()
+            if value is not None and (value == 0 or candidates == 0)
+        )
+    notes.extend(
+        f"{field}={value}"
+        for field in _DERIVED_ZERO_FIELDS
+        if field not in fts_values
+        for value in (_optional_counter(summary, field),)
+        if value is not None and (value == 0 or candidates == 0)
+    )
+    notes.extend(
+        f"{field}={value}"
+        for field in (
+            "skipped_by_size",
+            "skipped_by_count",
+            "cache_refreshes",
+            "recovered_decodes",
+            "cache_documents_pruned",
+            "cache_rows_pruned",
+        )
+        for value in (_optional_counter(summary, field),)
+        if value
+    )
+    if replay_status == "no_verificado":
+        notes.append("replay=no_verificado")
+    elif replay_status == "sin_candidatos":
+        notes.append("replay=sin_candidatos")
+    owner_evidence = (
+        _field_value(summary, "processing_provenance"),
+        _field_value(summary, "processing_signature"),
+    )
+    if not any(present and value not in (None, "") for present, value in owner_evidence):
+        notes.append("owner=no_verificado")
+    return tuple(notes)
 
 
 def _professional_route_rows(result) -> tuple[tuple[str, object], ...]:
@@ -574,8 +894,10 @@ def _semantic_totals(
         "stale": 0,
         "incomplete": 0,
         "truncated": 0,
+        "scopes_incomplete": 0,
     }
     for _scope, result in semantic_results:
+        totals["scopes_incomplete"] += int(getattr(result, "complete", None) is not True)
         totals["items"] += int(getattr(result, "items_staged", 0))
         totals["chunks"] += int(getattr(result, "chunks_staged", 0))
         totals["new_jobs"] += int(getattr(result, "new_jobs_staged", 0))
@@ -612,8 +934,19 @@ def print_professional_summary(
 
     console = Console()
     route_rows = _professional_route_rows(result)
+    route_failures = getattr(result, "route_failures", {})
+    catalog_unknown = not getattr(args, "no_document_catalog", False) and any(
+        _field_value(summary, "catalog_complete") == (True, None)
+        and (_optional_counter(summary, "candidates") or 0) > 0
+        for _, summary in route_rows
+    )
     route_issues = sum(_route_issue_count(summary) for _, summary in route_rows)
-    action_errors = int(getattr(getattr(result, "actions", None), "errors", 0) or 0)
+    route_replay_unknown = any(
+        _route_replay_view(_ROUTE_NAMES.get(label, label.casefold()), summary)[3]
+        == "no_verificado"
+        for label, summary in route_rows
+    )
+    action_errors = _optional_counter(getattr(result, "actions", None), "errors") or 0
     semantic_totals = _semantic_totals(semantic_results)
     semantic_issues = (
         semantic_exit_code != 0
@@ -621,9 +954,16 @@ def print_professional_summary(
         or semantic_totals["stale"] > 0
         or semantic_totals["incomplete"] > 0
         or semantic_totals["truncated"] > 0
+        or semantic_totals["scopes_incomplete"] > 0
     )
     has_attention = bool(
-        route_issues or action_errors or semantic_issues or has_organization_errors(result)
+        route_issues
+        or route_failures
+        or catalog_unknown
+        or route_replay_unknown
+        or action_errors
+        or semantic_issues
+        or has_organization_errors(result)
     )
     status = Text(
         "COMPLETADA CON INCIDENCIAS" if has_attention else "COMPLETADA",
@@ -658,34 +998,71 @@ def print_professional_summary(
     routes.add_column("Trabajo real", justify="right")
     routes.add_column("Incidencias", justify="right")
     routes.add_column("Revisión", justify="right")
+    coverage_notes: list[str] = []
     for label, summary in route_rows:
-        route_name = {
-            "PDF": "pdf",
-            "DOCX": "docx",
-            "Office": "office",
-            "ZIP": "archive",
-            "Texto": "text",
-            "Audio": "audio",
-            "Video": "video",
-            "Imágenes": "image",
-            "Código": "code",
-        }.get(label, label.casefold())
-        metrics = route_replay_metrics(route_name, summary)
-        candidates = _route_metric_count(metrics, "candidates")
-        cache_hits = _route_metric_count(metrics, "cache_hits")
-        work = _route_metric_count(metrics, "new_work")
+        route_name = _ROUTE_NAMES.get(label, label.casefold())
+        candidates, cache_hits, work, replay_status = _route_replay_view(
+            route_name,
+            summary,
+        )
         issues = _route_issue_count(summary)
-        review = _route_review_count(summary)
+        review = _route_review_value(summary)
+        issue_details = _route_issue_details(label, summary)
+        issue_text = _human_count(issues)
+        if issue_details:
+            issue_text += f" ({', '.join(issue_details)})"
+        if candidates is None:
+            route_status = "NO VERIFICADO"
+        elif issues:
+            route_status = "ATENCIÓN"
+        elif candidates == 0:
+            route_status = "SIN CANDIDATOS"
+        elif replay_status == "no_verificado":
+            route_status = "NO VERIFICADO"
+        elif _field_value(summary, "catalog_complete") == (True, None) and not getattr(args, "no_document_catalog", False):
+            route_status = "NO VERIFICADO"
+        else:
+            route_status = "OK"
+        coverage_notes.extend(
+            f"{label}: {note}" for note in _route_coverage_notes(
+                summary,
+                candidates=candidates,
+                replay_status=replay_status,
+            )
+        )
+        if issue_details:
+            coverage_notes.append(f"{label}: " + ", ".join(issue_details))
         routes.add_row(
             label,
-            Text("ATENCIÓN" if issues else "OK", style="yellow" if issues else "green"),
-            _human_count(candidates),
-            _human_count(cache_hits),
-            _human_count(work),
-            Text(_human_count(issues), style="yellow" if issues else "green"),
-            Text(_human_count(review), style="yellow" if review else "bright_black"),
+            Text(
+                route_status,
+                style="yellow" if route_status != "OK" else "green",
+            ),
+            "no_verificado" if candidates is None else _human_count(candidates),
+            "no_verificado" if cache_hits is None else _human_count(cache_hits),
+            "no_verificado" if work is None else _human_count(work),
+            Text(issue_text, style="yellow" if issues else "bright_black"),
+            (
+                "no_verificado"
+                if review is None
+                else Text(_human_count(review), style="yellow" if review else "bright_black")
+            ),
         )
+    for name, reason in route_failures.items():
+        label = next((label for label, route in _ROUTE_NAMES.items() if route == name), name)
+        routes.add_row(label, Text("NO DISPONIBLE", style="yellow"),
+                       "no_verificado", "no_verificado", "no_verificado", "1", "pendiente")
+        coverage_notes.append(f"{label}: {sanitize_untrusted_text(reason, limit=800)}. "
+                              "Revisar la dependencia local; el resto de rutas se conserva.")
     console.print(routes)
+    if coverage_notes:
+        console.print(
+            Panel(
+                Text("\n".join(coverage_notes)),
+                title="Límites de cobertura",
+                border_style="yellow",
+            )
+        )
 
     if semantic_results:
         semantic_ok = not semantic_issues and semantic_totals["pending"] == 0
@@ -739,6 +1116,14 @@ def print_professional_summary(
             )
         )
 
+    unavailable_models = getattr(args, "_semantic_scope_unavailable", {})
+    if unavailable_models:
+        console.print(Panel(Text("\n".join(
+            f"{sanitize_untrusted_text(scope, limit=32)}: {sanitize_untrusted_text(reason, limit=800)}"
+            for scope, reason in tuple(unavailable_models.items())[:2]
+        ) + "\nVerificar el modelo local requerido; no se descarga automáticamente."),
+            title="Dependencias Semantic", border_style="yellow"))
+
     details: list[Text] = []
     scan = getattr(result, "scan", None)
     if scan is not None:
@@ -749,6 +1134,10 @@ def print_professional_summary(
                 " archivos · ",
                 _human_count(scan.errors),
                 " errores",
+                " · exclusiones: directorios=",
+                str(getattr(scan, "excluded_directories", "no_verificado")),
+                ", enlaces=",
+                str(getattr(scan, "skipped_links", "no_verificado")),
             )
         )
     plan = getattr(result, "dedup_plan", None)
@@ -764,18 +1153,18 @@ def print_professional_summary(
         )
     actions = getattr(result, "actions", None)
     if actions is not None:
-        changed = (
-            int(getattr(actions, "duplicates_trashed", 0) or 0)
-            + int(getattr(actions, "files_renamed", 0) or 0)
-            + int(getattr(actions, "empty_directories_trashed", 0) or 0)
-        )
+        action_counts = _action_counts(actions)
         details.append(
             Text.assemble(
                 ("Acciones: ", "bold"),
                 ("aplicadas" if getattr(actions, "apply_actions", False) else "simulación segura"),
                 " · ",
-                _human_count(changed),
-                " cambios en archivos",
+                _human_count(action_counts["planned"]),
+                " planeadas · ",
+                _human_count(action_counts["applied"]),
+                " aplicadas · ",
+                _human_count(action_counts["skips"]),
+                " omitidas",
             )
         )
         details.append(
@@ -892,6 +1281,13 @@ STRICT_ROUTE_ERROR_FIELDS = (
     "partial",
     "document_timeouts",
     "catalog_errors",
+    "catalog_source_stale",
+    "catalog_source_missing",
+    "containers_partial",
+    "protected",
+    "safety_issues",
+    "retryable_errors",
+    "manual_review_errors",
 )
 
 

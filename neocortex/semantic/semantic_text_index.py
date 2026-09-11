@@ -20,6 +20,7 @@ from .semantic_config import (
 from .semantic_generation_repository import (
     _enqueue_text_chunk_batch_bounded,
     find_exact_published_generation,
+    has_building_embedding_generation,
     invalidate_embedding_generations_for_source_change,
     merge_source_head_ledger,
     published_source_head_ledger,
@@ -65,7 +66,7 @@ from .semantic_sources import (
     semantic_text_processing_signature,
     require_readable_source_heads,
 )
-from .semantic_schema import semantic_database
+from .semantic_schema import SemanticStateError, semantic_database
 from .semantic_state import (
     generation_summary,
     prepare_embedding_generation,
@@ -839,7 +840,10 @@ def index_text_embeddings(
     }
     replay_scope = "text:" + ",".join(selected_sources)
     content_compatible_replay = False
-    if all(head.complete for head in source_heads):
+    if all(head.complete for head in source_heads) and not (
+        budget.preserve_existing_generations
+        and has_building_embedding_generation(database, model_signature=selected_model.model_signature)
+    ):
         def source_head_compatibility(
             connection: sqlite3.Connection,
             generation_id: int,
@@ -970,6 +974,7 @@ def index_text_embeddings(
             "completed_sources": [],
         },
         materialize_base=False,
+        work_budget=budget,
     )
     if published_delta is not None and _candidate_base_generation_id(
         database,
@@ -1093,6 +1098,8 @@ def index_text_embeddings(
     if enumeration_complete:
         confirmed_heads = semantic_source_heads(state_directory, selected_sources)
         if confirmed_heads != source_heads:
+            if budget.preserve_existing_generations:
+                raise SemanticStateError("source changed during recovery; generation was kept unpublished")
             invalidate_embedding_generations_for_source_change(
                 database,
                 (generation_id,),

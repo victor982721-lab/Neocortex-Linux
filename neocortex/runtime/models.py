@@ -65,6 +65,7 @@ class FrameworkConfig:
     run_max_items: int | None = field(default=None, kw_only=True)
     run_max_bytes: int | None = field(default=None, kw_only=True)
     run_time_budget_seconds: float | None = field(default=None, kw_only=True)
+    retry_recoverable_errors: bool = field(default=False, kw_only=True)
     selection: CandidateSelection = field(default_factory=CandidateSelection)
     heartbeat_interval_seconds: float = 5.0
     document_catalog_enabled: bool = True
@@ -304,6 +305,7 @@ class InitialRunResult:
     global_resources: GlobalResourceSummary | None = None
     organization_plan: OrganizationPlanSummary | None = None
     organization_apply: OrganizationApplySummary | None = None
+    route_failures: dict[str, str] = field(default_factory=dict, kw_only=True)
 
     @property
     def journal_usn_span(self) -> int | None:
@@ -319,6 +321,7 @@ class RouteOnlyRunResult:
     run_id: int
     source_run_id: int
     route_results: dict[str, object] = field(default_factory=dict)
+    route_failures: dict[str, str] = field(default_factory=dict, kw_only=True)
     global_resources: GlobalResourceSummary | None = None
     pdf: PdfRouteSummary | None = None
     docx: DocxRouteSummary | None = None

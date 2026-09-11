@@ -8,12 +8,15 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
+from neocortex.runtime.orchestration.route_selection import BUILTIN_ROUTE_ORDER
+
 
 # region [01] Request schema
 
-# Keep this explicit and stable so the UI cannot silently enable new mutation
-# surfaces merely because the canonical CLI gains another route.
-ROUTE_ORDER = ("pdf", "docx", "office", "archive", "text", "audio", "image", "code")
+# Keep the UI selection in the same canonical order as the CLI.  A route is
+# still opt-in in the UI: loading an older saved subset does not add a newly
+# registered route to that subset.
+ROUTE_ORDER = BUILTIN_ROUTE_ORDER
 
 ExecutionProfile = Literal["pilot", "full"]
 
@@ -38,6 +41,7 @@ _ROUTE_LIMIT_FLAGS = {
     "archive": "--archive-max-count",
     "text": "--text-max-count",
     "audio": "--audio-max-count",
+    "video": "--video-max-count",
     "image": "--image-max-count",
     "code": "--code-max-count",
 }
@@ -134,16 +138,34 @@ class RunRequest:
             raise ValueError("El identificador de ejecución no es válido")
         return request_id
 
+    @property
+    def uses_all_lifecycle(self) -> bool:
+        """Whether this request can use the canonical integrated ``--all`` run."""
+
+        return (
+            self.profile == "full"
+            and not self.route_only
+            and self.routes == ROUTE_ORDER
+        )
+
     def cli_arguments(self) -> list[str]:
         request = self.validated()
         arguments = [
             "--root",
             str(request.root),
         ]
-        selected = ",".join(request.routes) or "none"
-        arguments.extend(("--route", selected))
-        for route in request.routes:
-            arguments.extend((_ROUTE_LIMIT_FLAGS[route], str(request.max_items)))
+        if request.uses_all_lifecycle:
+            # ``--all`` is more than a route alias: the CLI attaches the
+            # integrated Semantic stage and durable lifecycle stages to it.
+            # Keep the UI's explicit budget visible to that same lifecycle.
+            arguments.append("--all")
+            arguments.extend(("--run-max-items", str(request.max_items)))
+            arguments.extend(("--run-time-budget-seconds", str(request.deadline_seconds)))
+        else:
+            selected = ",".join(request.routes) or "none"
+            arguments.extend(("--route", selected))
+            for route in request.routes:
+                arguments.extend((_ROUTE_LIMIT_FLAGS[route], str(request.max_items)))
         if request.route_only:
             arguments.append("--route-only")
         if request.apply:

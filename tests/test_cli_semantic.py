@@ -724,7 +724,9 @@ def test_integrated_semantic_forwards_outer_lock_ownership(
         ]
     )
     validate_arguments(args)
-    (tmp_path / "pdf.sqlite3").touch()
+    from tests.test_semantic_source_heads import _pdf_state
+
+    _pdf_state(tmp_path / "pdf.sqlite3")
     observed: dict[str, object] = {}
 
     def fake_index(_args, **kwargs):
@@ -738,7 +740,7 @@ def test_integrated_semantic_forwards_outer_lock_ownership(
             print_output=False,
             framework_lock_held=True,
         )
-        == 0
+        == 2  # no generation receipt was supplied by this lock-only test double
     )
     assert observed["framework_lock_held"] is True
 
@@ -782,6 +784,9 @@ def test_semantic_index_preserves_preparation_execution_and_publication_order(
             max_new_jobs: int | None = None,
             time_budget_seconds: float | None = None,
             clock: Callable[[], float] = time.monotonic,
+            cancellation_check: Callable[[], bool | None] | None = None,
+            preserve_existing_generations: bool = False,
+            retry_recoverable_errors: bool = False,
         ) -> RecordingBudget:
             events.append("budget")
             assert time_budget_seconds is not None
@@ -790,6 +795,9 @@ def test_semantic_index_preserves_preparation_execution_and_publication_order(
                 max_new_jobs=max_new_jobs,
                 time_budget_seconds=time_budget_seconds,
                 clock=clock,
+                cancellation_check=cancellation_check,
+                preserve_existing_generations=preserve_existing_generations,
+                retry_recoverable_errors=retry_recoverable_errors,
             )
             assert isinstance(budget, RecordingBudget)
             return budget
@@ -1052,35 +1060,37 @@ def test_semantic_index_reports_budget_truncation_as_nonzero(
     assert "truncation_reason=max_items" in output
 
 
-def test_all_advances_physical_semantic_without_broad_archive_or_code_by_default(
+def test_all_includes_broad_archive_and_code_without_hidden_semantic_ceiling(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    (tmp_path / "pdf.sqlite3").touch()
-    (tmp_path / "archive.sqlite3").touch()
-    (tmp_path / "text.sqlite3").touch()
-    (tmp_path / "code.sqlite3").touch()
+    from tests.test_semantic_sources import _create_archive_text_state, _create_code_text_state
+    from tests.test_semantic_source_heads import _pdf_state
+
+    _pdf_state(tmp_path / "pdf.sqlite3")
+    _create_archive_text_state(tmp_path)
+    _create_code_text_state(tmp_path)
     args = build_parser().parse_args(["--all", "--state-directory", str(tmp_path)])
     validate_arguments(args)
     with patch(
         "neocortex.semantic.semantic_service.index_text_embeddings",
         return_value=_index_result(
             tmp_path,
-            ("pdf", "text"),
+            ("pdf", "archive", "code"),
             pending=1,
             truncated=True,
             truncation_reason="time_budget",
         ),
     ) as operation:
-        assert run_integrated_all_semantic_index(args) == 0
+        assert run_integrated_all_semantic_index(args) == 2
 
     kwargs = operation.call_args.kwargs
-    assert kwargs["source_kinds"] == ("pdf", "text")
-    assert kwargs["work_budget"].max_items == 100_000
-    assert kwargs["work_budget"].max_new_jobs == 1_000_000
+    assert kwargs["source_kinds"] == ("pdf", "archive", "code")
+    assert kwargs["work_budget"].max_items is None
+    assert kwargs["work_budget"].max_new_jobs is None
     output = capsys.readouterr().out
-    assert "SEMANTIC_ALL status=starting sources=pdf,text" in output
-    assert "code_explicit=0" in output
+    assert "SEMANTIC_ALL status=starting sources=pdf,archive,code" in output
+    assert "code_explicit=1" in output
     assert "truncated=1" in output
 
 
@@ -1089,8 +1099,9 @@ def test_all_semantic_uses_shared_progress_and_captures_structured_result(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     from neocortex.progress import RecordingProgress
+    from tests.test_semantic_source_heads import _pdf_state
 
-    (tmp_path / "pdf.sqlite3").touch()
+    _pdf_state(tmp_path / "pdf.sqlite3")
     args = build_parser().parse_args(["--all", "--state-directory", str(tmp_path)])
     validate_arguments(args)
     result = _index_result(tmp_path, ("pdf",))
@@ -1122,7 +1133,9 @@ def test_all_semantic_uses_shared_progress_and_captures_structured_result(
 
 
 def test_all_accepts_explicit_code_semantic_selection(tmp_path: Path) -> None:
-    (tmp_path / "code.sqlite3").touch()
+    from tests.test_semantic_sources import _create_code_text_state
+
+    _create_code_text_state(tmp_path)
     args = build_parser().parse_args(
         [
             "--all",
@@ -1152,7 +1165,9 @@ def test_all_accepts_explicit_code_semantic_selection(tmp_path: Path) -> None:
 
 
 def test_all_accepts_explicit_archive_semantic_selection(tmp_path: Path) -> None:
-    (tmp_path / "archive.sqlite3").touch()
+    from tests.test_semantic_sources import _create_archive_text_state
+
+    _create_archive_text_state(tmp_path)
     args = build_parser().parse_args(
         [
             "--all",

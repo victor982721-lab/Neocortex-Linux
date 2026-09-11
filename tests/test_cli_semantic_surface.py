@@ -188,6 +188,7 @@ EXPECTED_SEMANTIC_ACTIONS = (
             "archive",
             "text",
             "code",
+            "video",
         ),
         help_text=("repeat to select durable text caches for text/all planning or indexing"),
         action_name="_AppendAction",
@@ -295,7 +296,7 @@ EXPECTED_SEMANTIC_HELP = (
     "  --semantic-evidence-limit N\n"
     "                        maximum advisory evidence rows to display; truncation\n"
     "                        is reported\n"
-    "  --semantic-source {pdf,docx,xlsx,pptx,odt,audio,archive,text,code}\n"
+    "  --semantic-source {pdf,docx,xlsx,pptx,odt,audio,archive,text,code,video}\n"
     "                        repeat to select durable text caches for text/all\n"
     "                        planning or indexing\n"
     "  --semantic-text-profile {quality,compact}\n"

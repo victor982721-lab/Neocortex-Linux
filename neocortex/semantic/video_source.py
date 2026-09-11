@@ -3,11 +3,13 @@
 Video is not a text route, but its durable frame OCR is text evidence.  This
 adapter exposes that evidence as ordinary ``TextSourceRecord`` values while
 retaining the frame/timestamp locator and the owner coverage status.  The
-adapter is intentionally independent from the Semantic planner so it can be
-introduced and tested before a planner rollout selects video by default.
+adapter remains independent from the Semantic planner while the common source
+contract can select Video explicitly or through the default textual source set.
 """
 
 from __future__ import annotations
+
+from .semantic_source_budget import install_source_progress, source_read_checkpoint, source_snapshot_budget
 
 import hashlib
 import json
@@ -33,7 +35,7 @@ from neocortex.persistence.sqlite_immutable import (
 
 
 VIDEO_SOURCE_KIND = "video"
-VIDEO_SOURCE_DATABASE_NAME = "video.sqlite3"
+VIDEO_SOURCE_DATABASE_NAME = content_capability_for_source(VIDEO_SOURCE_KIND).state_database
 VIDEO_SOURCE_ADAPTER_VERSION = "semantic-video-source-v1"
 VIDEO_SOURCE_HEAD_SCHEMA = "neocortex.semantic-video-source-head/v1"
 
@@ -169,8 +171,10 @@ def _readonly_video_database(
             path,
             mode=SQLiteReadMode.IMMUTABLE_STRICT,
             timeout_seconds=60.0,
+            budget=source_snapshot_budget(),
         )
         with session as connection:
+            install_source_progress(connection)
             if expected_fence is not None and session.source_fence != expected_fence:
                 raise VideoSourceBlocked("video owner changed before head snapshot")
             yield connection
@@ -198,8 +202,9 @@ def _readonly_audio_database(
 
     try:
         mode = preferred_sqlite_read_mode(path)
-        session = SQLiteReadSession(path, mode=mode, timeout_seconds=60.0)
+        session = SQLiteReadSession(path, mode=mode, timeout_seconds=60.0, budget=source_snapshot_budget())
         with session as connection:
+            install_source_progress(connection)
             if expected_fence is not None and session.source_fence != expected_fence:
                 raise VideoSourceBlocked("audio owner changed before dependency snapshot")
             yield connection
@@ -441,13 +446,21 @@ def _video_rows(connection: sqlite3.Connection) -> Iterator[sqlite3.Row]:
         d.processing_signature,d.status,d.title,d.duration_seconds,d.frame_count,
         d.ocr_frame_count,d.ocr_text_chars,d.audio_streams,d.audio_file_key,
         d.audio_processing_signature,d.audio_status,
-        fr.frame_index,f.timestamp_ms,f.body,0 AS ocr_text_truncated
+        fr.frame_index,fr.ocr_text AS frame_ocr_text,
+        f.timestamp_ms,f.body,0 AS ocr_text_truncated
         FROM documents d JOIN frame_fts f ON f.file_key=d.file_key
         JOIN frames fr ON fr.file_key=f.file_key AND fr.timestamp_ms=f.timestamp_ms
         WHERE d.status IN ('complete','partial') AND trim(f.body)<>''
         ORDER BY d.file_key,f.timestamp_ms,fr.frame_index"""
     )
-    yield from rows
+    for row in rows:
+        # ``frame_fts`` is a durable index copy of ``frames.ocr_text``.  Do
+        # not silently feed stale text to Semantic if one owner was updated
+        # without the other; a blocked projection is safer than a false
+        # fresh result.
+        if str(row["body"]) != str(row["frame_ocr_text"]):
+            raise VideoSourceBlocked("video frame OCR projection is inconsistent")
+        yield row
 
 
 def iter_video_source_records(
@@ -505,11 +518,19 @@ def iter_video_source_records(
                             },
                         ),
                     )
-                for segment in audio_dependency.segments.get(file_key, ()):
-                    yield TextSourceRecord(
-                        current_item,
-                        _audio_section(segment, coverage=coverage),
-                    )
+                if int(row["audio_streams"] or 0) > 0 and row["audio_file_key"]:
+                    # The linked Audio owner normally shares the physical
+                    # file identity, but that is not a contract: a route may
+                    # publish a distinct dependency key.  Resolve the
+                    # dependency by the durable link, never by the Video
+                    # document key, and do not project a stale link when the
+                    # owner says the stream is absent.
+                    audio_key = str(row["audio_file_key"])
+                    for segment in audio_dependency.segments.get(audio_key, ()):
+                        yield TextSourceRecord(
+                            current_item,
+                            _audio_section(segment, coverage=coverage),
+                        )
             assert current_item is not None
             yield TextSourceRecord(
                 current_item,
@@ -565,6 +586,7 @@ def video_source_head(state_directory: Path) -> VideoSourceHead:
                 # carries the publication guard.
                 if row_reason is not None and row_reason != "video_source_status_partial":
                     coverage_reasons.add(row_reason)
+                source_read_checkpoint()
                 digest.update(
                     json.dumps(
                         {key: row[key] for key in row.keys()},
@@ -575,6 +597,7 @@ def video_source_head(state_directory: Path) -> VideoSourceHead:
                     ).encode("utf-8")
                     + b"\n"
                 )
+                source_read_checkpoint()
                 digest.update(
                     json.dumps(
                         {
@@ -603,6 +626,23 @@ def video_source_head(state_directory: Path) -> VideoSourceHead:
                     + b"\n"
                 )
                 row_count += 1
+            # The document row carries aggregate OCR counts, but not the
+            # actual indexed frame text or frame locator.  Include the exact
+            # bounded projection consumed by ``iter_video_source_records`` in
+            # the head digest so a same-size OCR rewrite, locator change, or
+            # FTS/frame divergence cannot be mistaken for an exact replay.
+            for frame_row in _video_rows(connection):
+                source_read_checkpoint()
+                digest.update(
+                    json.dumps(
+                        {key: frame_row[key] for key in frame_row.keys()},
+                        ensure_ascii=True,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    ).encode("utf-8")
+                    + b"\n"
+                )
         _assert_owner_fence_unchanged(path, before_fence, owner="video")
     except (OSError, sqlite3.Error, TypeError, ValueError, VideoSourceBlocked) as exc:
         coverage = "blocked"

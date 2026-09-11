@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping
 
 from neocortex.foundation.processing_provenance import ROUTE_SUMMARY_SCHEMA
@@ -64,6 +64,12 @@ class VideoProcessingError(RuntimeError):
         self.evidence = dict(evidence or {})
 
 
+class VideoRuntimeUnavailableError(FileNotFoundError):
+    """A required FFmpeg/FFprobe executable is unavailable at route startup."""
+
+    capability_unavailable = True
+
+
 @dataclass(frozen=True, slots=True)
 class VideoRouteSummary:
     candidate_pool: int = 0
@@ -97,6 +103,16 @@ class VideoRouteSummary:
     processing_signature: str | None = None
     processing_provenance: dict[str, Any] | None = None
     summary_schema: str = ROUTE_SUMMARY_SCHEMA
+    # Appended keyword-only fields keep older positional consumers compatible.
+    catalog_candidates: int = field(default=0, kw_only=True)
+    catalog_classified: int = field(default=0, kw_only=True)
+    catalog_cache_hits: int = field(default=0, kw_only=True)
+    catalog_review_required: int = field(default=0, kw_only=True)
+    catalog_errors: int = field(default=0, kw_only=True)
+    catalog_source_stale: int = field(default=0, kw_only=True)
+    catalog_stale_marked: int = field(default=0, kw_only=True)
+    catalog_source_missing: int = field(default=0, kw_only=True)
+    catalog_complete: bool | None = field(default=None, kw_only=True)
 
 
 __all__ = (
@@ -105,6 +121,7 @@ __all__ = (
     "VideoMediaProbe",
     "VideoProcessingError",
     "VideoRouteSummary",
+    "VideoRuntimeUnavailableError",
     "VideoStreamProbe",
 )
 

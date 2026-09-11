@@ -65,6 +65,7 @@ class CachedCodeVersion:
     symbols: int
     references: int
     diagnostics: int
+    fts_rows_repaired: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +207,62 @@ def _project_identity_keys(
         )
     ).xxh3_128
     return family_key, instance_key
+
+
+_RETRY_RECOMMENDATIONS = frozenset({"retry", "retry_source", "retryable"})
+_CODE_CHUNKING_ALGORITHM = "searchable_chunks-v1"
+_CODE_EXCERPT_CHUNKING_ALGORITHM = "bounded_excerpt-v1"
+_CODE_CHUNKING_ALGORITHMS = frozenset(
+    {_CODE_CHUNKING_ALGORITHM, _CODE_EXCERPT_CHUNKING_ALGORITHM}
+)
+
+
+def _explicit_retryable_marker(value: object) -> bool:
+    """Accept only structured retry evidence, never free-form error text."""
+
+    if not isinstance(value, Mapping):
+        return False
+    return value.get("retryable") is True or (
+        isinstance(value.get("recommendation"), str)
+        and value["recommendation"] in _RETRY_RECOMMENDATIONS
+    )
+
+
+def _with_chunk_contract(
+    provenance: Mapping[str, object],
+    chunk_count: int,
+    algorithm: str,
+) -> dict[str, object]:
+    """Persist the expected durable chunk cardinality beside analyzer evidence."""
+
+    return {
+        **provenance,
+        "code_chunk_count": chunk_count,
+        "code_chunking_algorithm": algorithm,
+    }
+
+
+def _cached_chunk_contract(value: object) -> tuple[int, str] | None:
+    """Read the optional chunk contract; absent legacy evidence stays readable."""
+
+    try:
+        payload = json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return (-1, "invalid")
+    if not isinstance(payload, dict):
+        return (-1, "invalid")
+    if "code_chunk_count" not in payload and "code_chunking_algorithm" not in payload:
+        return None
+    count = payload.get("code_chunk_count")
+    algorithm = payload.get("code_chunking_algorithm")
+    if (
+        type(count) is not int
+        or count < 0
+        or not isinstance(algorithm, str)
+        or algorithm not in _CODE_CHUNKING_ALGORITHMS
+    ):
+        return (-1, "invalid")
+    return count, algorithm
 
 
 # endregion [01]
@@ -529,6 +586,240 @@ class CodeState:
                 diagnostics,
             )
 
+    def _cached_code_fts_rows(
+        self,
+        version_id: int,
+        *,
+        validate_coverage: bool = True,
+    ) -> tuple[tuple[int, int, str, str, str | None, str, str, str], ...] | None:
+        """Build the expected FTS projection from durable Code rows only.
+
+        A cache replay must never need to read or analyze the source again just
+        because the rebuildable FTS table lost rows.  The file representation
+        and bounded chunks remain the authoritative durable inputs.  Returning
+        ``None`` means that one of those inputs is incomplete or malformed, so
+        the route must fall back to normal bounded ingestion.  ``validate_coverage``
+        may be skipped for a current state carrying the durable chunk contract,
+        but an unmarked legacy state always requires the canonical extent proof
+        before it can be treated as a cache hit.
+        """
+
+        version = self.connection.execute(
+            """SELECT analysis_status,size,text_zlib,text_chars,text_xxh3_128,
+            text_xxh3_64_guard,provenance_json FROM file_versions
+            WHERE version_id=? AND invalidated_ns IS NULL""",
+            (version_id,),
+        ).fetchone()
+        if version is None:
+            return None
+        try:
+            text_chars = int(version["text_chars"])
+            source_bytes = int(version["size"])
+        except (TypeError, ValueError, OverflowError):
+            return None
+        # Code text is decoded from the physically bounded source bytes; its
+        # character count cannot exceed that source byte count. Do not let
+        # corrupt cache metadata turn the decompression bound into an allocation
+        # chosen by the damaged owner row.
+        if text_chars < 0 or source_bytes < 0 or text_chars > source_bytes:
+            return None
+        canonical_bytes = b""
+        if text_chars:
+            payload = version["text_zlib"]
+            if payload is None:
+                return None
+            try:
+                decoder = zlib.decompressobj()
+                output_limit = text_chars * 4 + 1
+                decoded = decoder.decompress(bytes(payload), output_limit)
+                if decoder.unconsumed_tail or decoder.unused_data or not decoder.eof:
+                    return None
+                text = decoded.decode("utf-8")
+            except (TypeError, UnicodeError, ValueError, OverflowError, zlib.error):
+                return None
+            fingerprint = fingerprint_text(text)
+            if (
+                len(text) != text_chars
+                or version["text_xxh3_128"] is None
+                or version["text_xxh3_64_guard"] is None
+                or str(version["text_xxh3_128"]) != fingerprint.xxh3_128
+                or str(version["text_xxh3_64_guard"]) != fingerprint.xxh3_64_guard
+            ):
+                return None
+            canonical_bytes = text.encode("utf-8")
+        elif version["text_zlib"] is not None:
+            # ``_insert_version`` stores no compressed payload for an empty
+            # representation; accepting an unexpected blob would hide a
+            # damaged durable state behind a cache hit.
+            return None
+
+        rows = self.connection.execute(
+            """SELECT c.chunk_id,c.version_id,c.chunk_index,c.start_byte,c.end_byte,
+            f.current_path,
+            COALESCE((SELECT p.name FROM project_memberships m
+                JOIN projects p ON p.project_id=m.project_id
+                WHERE m.version_id=c.version_id
+                AND m.relation IN('under_manifest_root','inferred_root','manifest')
+                ORDER BY CASE m.relation
+                    WHEN 'under_manifest_root' THEN 0
+                    WHEN 'inferred_root' THEN 1 ELSE 2 END,
+                    m.project_id LIMIT 1),'') AS project,
+            v.language,COALESCE(s.qualified_name,'') AS symbol,
+            COALESCE(s.signature,'') AS signature,c.text,c.text_xxh3_128
+            FROM code_chunks c
+            JOIN file_versions v ON v.version_id=c.version_id
+            JOIN files f ON f.current_version_id=v.version_id AND f.status='current'
+            LEFT JOIN symbols s ON s.symbol_id=c.symbol_id
+                AND s.version_id=c.version_id
+            WHERE c.version_id=? AND v.invalidated_ns IS NULL
+            ORDER BY c.chunk_index,c.chunk_id""",
+            (version_id,),
+        ).fetchall()
+        contract = _cached_chunk_contract(version["provenance_json"])
+        if contract is not None and (contract[0] < 0 or contract[0] != len(rows)):
+            return None
+        if contract is None:
+            validate_coverage = True
+        if validate_coverage and text_chars and not rows:
+            return None
+
+        expected: list[tuple[int, int, str, str, str | None, str, str, str]] = []
+        cursor = 0
+        for row in rows:
+            try:
+                text = str(row["text"])
+                if str(row["text_xxh3_128"]) != fingerprint_text(text).xxh3_128:
+                    return None
+                chunk_index = int(row["chunk_index"])
+                start_byte = int(row["start_byte"])
+                end_byte = int(row["end_byte"])
+                if validate_coverage:
+                    encoded = text.encode("utf-8")
+                    if (
+                        chunk_index != len(expected)
+                        or start_byte != cursor
+                        or end_byte < start_byte
+                        or end_byte > len(canonical_bytes)
+                        or encoded != canonical_bytes[start_byte:end_byte]
+                    ):
+                        return None
+                    cursor = end_byte
+                language = None if row["language"] is None else str(row["language"])
+                expected.append(
+                    (
+                        int(row["chunk_id"]),
+                        int(row["version_id"]),
+                        str(row["current_path"]),
+                        str(row["project"]),
+                        language,
+                        str(row["symbol"]),
+                        str(row["signature"]),
+                        text,
+                    )
+                )
+            except (TypeError, ValueError, OverflowError):
+                return None
+        if validate_coverage and cursor != len(canonical_bytes):
+            return None
+        return tuple(expected)
+
+    def _repair_cached_fts(self, version_id: int) -> int | None:
+        """Rebuild one Code FTS projection from valid durable chunks.
+
+        The operation is intentionally scoped to one immutable version and is
+        part of the caller's writer transaction.  No source bytes, analyzer or
+        execution-capable tooling is involved.
+        """
+
+        expected = self._cached_code_fts_rows(version_id, validate_coverage=False)
+        if expected is None:
+            # Re-run the canonical extent proof when the durable chunk
+            # contract itself is missing or inconsistent.  This keeps the
+            # fallback explicitly tied to the full representation rather than
+            # accepting an unproven remainder as a cache result.
+            self._cached_code_fts_rows(version_id, validate_coverage=True)
+            return None
+        actual_rows = self.connection.execute(
+            """SELECT chunk_id,version_id,path,project,language,symbol,signature,body
+            FROM code_fts WHERE version_id=? OR chunk_id IN(
+                SELECT chunk_id FROM code_chunks WHERE version_id=?
+            )""",
+            (version_id, version_id),
+        ).fetchall()
+        actual_by_chunk: dict[int, list[tuple[object, ...]]] = {}
+        malformed = False
+        for row in actual_rows:
+            try:
+                chunk_id = int(row["chunk_id"])
+                actual = (
+                    chunk_id,
+                    int(row["version_id"]),
+                    str(row["path"]),
+                    str(row["project"]),
+                    None if row["language"] is None else str(row["language"]),
+                    str(row["symbol"]),
+                    str(row["signature"]),
+                    str(row["body"]),
+                )
+            except (TypeError, ValueError, OverflowError):
+                malformed = True
+                continue
+            actual_by_chunk.setdefault(chunk_id, []).append(actual)
+        expected_by_chunk = {row[0]: row for row in expected}
+        complete = not malformed and len(actual_rows) == len(expected) and all(
+            actual_by_chunk.get(chunk_id) == [expected_row]
+            for chunk_id, expected_row in expected_by_chunk.items()
+        )
+        if complete:
+            # An empty FTS projection can mask a completely missing chunk set;
+            # prove the canonical extent in that case before accepting it.
+            if expected or actual_rows:
+                return 0
+            complete_expected = self._cached_code_fts_rows(
+                version_id,
+                validate_coverage=True,
+            )
+            return 0 if complete_expected == () else None
+
+        expected = self._cached_code_fts_rows(version_id, validate_coverage=True)
+        if expected is None:
+            return None
+
+        self.connection.execute(
+            """DELETE FROM code_fts WHERE version_id=? OR chunk_id IN(
+                SELECT chunk_id FROM code_chunks WHERE version_id=?
+            )""",
+            (version_id, version_id),
+        )
+        self.connection.executemany(
+            """INSERT INTO code_fts(
+            chunk_id,version_id,path,project,language,symbol,signature,body)
+            VALUES(?,?,?,?,?,?,?,?)""",
+            expected,
+        )
+        return max(len(actual_rows), len(expected))
+
+    def _cached_error_is_retryable(self, version_id: int, provenance_json: object) -> bool:
+        """Read an explicit retry marker from durable structured error evidence."""
+
+        try:
+            provenance = json.loads(str(provenance_json))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            provenance = None
+        if _explicit_retryable_marker(provenance):
+            return True
+        for row in self.connection.execute(
+            "SELECT metadata_json FROM diagnostics WHERE version_id=?",
+            (version_id,),
+        ):
+            try:
+                metadata = json.loads(str(row[0]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if _explicit_retryable_marker(metadata):
+                return True
+        return False
+
     def reuse_cached(
         self,
         snapshot: FileSnapshot,
@@ -536,6 +827,7 @@ class CodeState:
         framework_run_id: int,
         *,
         retry_errors: bool,
+        retry_recoverable_errors: bool = False,
         raw_xxh3_128: str | None = None,
         raw_xxh3_64_guard: str | None = None,
         resolve_analyzer_identity: (Callable[[str | None, bool], tuple[str, str]] | None) = None,
@@ -555,7 +847,8 @@ class CodeState:
             """SELECT f.file_id,f.current_path,v.version_id,v.analysis_status,
             v.generated,v.vendored,v.size,v.mtime_ns,v.birthtime_ns,v.language,
             v.analyzer_id,v.analyzer_version,v.text_truncated,
-            v.processing_signature,v.raw_xxh3_128,v.raw_xxh3_64_guard
+            v.processing_signature,v.raw_xxh3_128,v.raw_xxh3_64_guard,
+            v.provenance_json
             FROM files f JOIN file_versions v ON v.version_id=f.current_version_id
             WHERE f.volume_id=? AND f.physical_file_id=? AND f.status='current'
             AND v.invalidated_ns IS NULL""",
@@ -603,14 +896,23 @@ class CodeState:
                 str(row["analyzer_version"]),
             ):
                 return None
+        version_id = int(row["version_id"])
         status = str(row["analysis_status"])
         if retry_errors and status in {AnalysisStatus.ERROR, AnalysisStatus.PARTIAL}:
             return None
-        version_id = int(row["version_id"])
+        if (
+            retry_recoverable_errors
+            and status == AnalysisStatus.ERROR
+            and self._cached_error_is_retryable(version_id, row["provenance_json"])
+        ):
+            return None
         counts_started = time.perf_counter_ns()
         symbol_count, reference_count, diagnostic_count = self._version_counts(version_id)
         if elapsed_nanoseconds is not None:
             elapsed_nanoseconds["cache_lookup"] += time.perf_counter_ns() - counts_started
+        fts_rows_repaired = self._repair_cached_fts(version_id)
+        if fts_rows_repaired is None:
+            return None
         update_started = time.perf_counter_ns()
 
         def update_observation() -> None:
@@ -648,6 +950,7 @@ class CodeState:
             symbol_count,
             reference_count,
             diagnostic_count,
+            fts_rows_repaired,
         )
 
     # endregion [02]
@@ -784,7 +1087,11 @@ class CodeState:
                 normalized_xxh3_128=analysis.normalized_xxh3_128,
                 token_xxh3_128=analysis.token_xxh3_128,
                 structure_xxh3_128=analysis.structure_xxh3_128,
-                provenance=analysis.provenance,
+                provenance=_with_chunk_contract(
+                    analysis.provenance,
+                    len(analysis.chunks),
+                    _CODE_CHUNKING_ALGORITHM,
+                ),
                 framework_run_id=framework_run_id,
             )
             self.connection.execute(
@@ -857,7 +1164,11 @@ class CodeState:
                 normalized_xxh3_128=None,
                 token_xxh3_128=None,
                 structure_xxh3_128=None,
-                provenance=observation.provenance or {},
+                provenance=_with_chunk_contract(
+                    observation.provenance or {},
+                    int(bool(observation.text_excerpt)),
+                    _CODE_EXCERPT_CHUNKING_ALGORITHM,
+                ),
                 framework_run_id=framework_run_id,
             )
             self.connection.execute(

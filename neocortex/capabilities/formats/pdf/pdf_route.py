@@ -34,7 +34,12 @@ from neocortex.progress import (
 
 from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
 from .pdf_cache import binary_fingerprint
-from .pdf_derived import PdfDerivedIndexer, PdfDerivedSummary
+from .pdf_derived import (
+    PdfDerivedCoverage,
+    PdfDerivedIndexer,
+    PdfDerivedSummary,
+    inspect_pdf_derived_coverage,
+)
 from .pdf_isolation import (
     PdfChildProcessError,
     PdfChildReportedError,
@@ -53,6 +58,7 @@ from .pdf_route_models import (
     PDF_PAGE_SEQUENCE_ERROR_LIMIT,
     CacheDecision,
     DocumentResult,
+    PdfExtractionCoverage,
     PdfRouteConfig,
     PdfRouteSummary,
     FAILURE_DETECTOR_VERSION,
@@ -65,6 +71,7 @@ from .pdf_route_cache import (
     PDF_CACHE_TOUCH_BATCH,
     PdfRouteCacheMixin,
     file_key as _file_key,
+    inspect_pdf_extraction_coverage,
 )
 from .pdf_route_storage import (
     PROMOTION_BATCH_BYTES,
@@ -162,6 +169,10 @@ class _PdfRunPlan:
     eligible_candidates: int
     expected_total: int
     candidates: Iterator[FileSnapshot]
+    derived_repair_required: bool = False
+    derived_coverage: PdfDerivedCoverage | None = None
+    extraction_repair_required: bool = False
+    extraction_coverage: PdfExtractionCoverage | None = None
 
 
 @dataclass(slots=True)
@@ -762,6 +773,11 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
             self._persist_review_reconciliations(batch)
 
     def run(self) -> PdfRouteSummary:
+        retry_keys = getattr(self, "_recoverable_retry_keys", None)
+        if retry_keys is None:
+            self._recoverable_retry_keys = set()
+        else:
+            retry_keys.clear()
         plan = self._prepare_run()
         extraction = self._run_extraction_phase(plan)
         text_dedup = self._run_text_dedup_phase(plan.skip_text_dedup)
@@ -786,6 +802,11 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         skip_extraction = "extraction" in completed_source_phases
         skip_text_dedup = "text_dedup" in completed_source_phases
         skip_derived = "derived" in completed_source_phases
+        extraction_repair_required = False
+        extraction_coverage: PdfExtractionCoverage | None = None
+        derived_repair_required = False
+        derived_coverage: PdfDerivedCoverage | None = None
+        self._extraction_repair_required = False
         self._stage_pdf_inventory()
         recovered_cache_rows = self._reconcile_legacy_recovered_documents()
         if recovered_cache_rows:
@@ -806,6 +827,34 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
             )
         if skip_extraction:
             self._adopt_resumed_inventory()
+            extraction_coverage = inspect_pdf_extraction_coverage(
+                self.config.state_path,
+                self.run_id,
+                self.config.processing_signature,
+            )
+            if not extraction_coverage.complete:
+                skip_extraction = False
+                extraction_repair_required = True
+                self._extraction_repair_required = True
+                # Recovered source pages can introduce text duplicates and
+                # invalidate every derivative that was published by the
+                # source run.  Revisit those phases, but keep the bounded
+                # candidate stream and cache hits for unaffected documents.
+                skip_text_dedup = False
+                skip_derived = False
+                derived_repair_required = True
+        if skip_derived:
+            # A completed source phase is not sufficient evidence when a
+            # derived row was removed after that run.  Inspect durable rows
+            # before honoring resume; the repair path below consumes cached
+            # pages/representation and never schedules extraction or OCR.
+            derived_coverage = inspect_pdf_derived_coverage(
+                self.config.state_path,
+                self.run_id,
+            )
+            if not derived_coverage.complete:
+                skip_derived = False
+                derived_repair_required = True
         candidate_pool, eligible_candidates = self._candidate_counts()
         expected_total = (
             0
@@ -826,6 +875,10 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
             eligible_candidates=eligible_candidates,
             expected_total=expected_total,
             candidates=candidates,
+            derived_repair_required=derived_repair_required,
+            derived_coverage=derived_coverage,
+            extraction_repair_required=extraction_repair_required,
+            extraction_coverage=extraction_coverage,
         )
 
     def _run_extraction_phase(self, plan: _PdfRunPlan) -> _ExtractionStats:
@@ -1177,6 +1230,17 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
                 "mupdf_warnings": stats.mupdf_warnings,
                 "effective_worker_memory_bytes": self._worker_memory_reservation,
                 "job_memory_limit_bytes": self._job_memory_limit,
+                "cache_repair_required": plan.extraction_repair_required,
+                "cache_missing_documents": (
+                    0
+                    if plan.extraction_coverage is None
+                    else plan.extraction_coverage.missing_documents
+                ),
+                "cache_missing_pages": (
+                    0
+                    if plan.extraction_coverage is None
+                    else plan.extraction_coverage.missing_pages
+                ),
             },
         )
         extraction_phase_summary: dict[str, object] = {
@@ -1187,6 +1251,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
             "partial_documents": stats.partial_documents,
             "document_timeouts": stats.document_timeouts,
             "resumed_skip": plan.skip_extraction,
+            "cache_repair_required": plan.extraction_repair_required,
         }
         if not plan.skip_extraction:
             self._complete_phase("extraction", extraction_phase_summary)
@@ -1289,6 +1354,8 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
     ) -> PdfRouteSummary:
         groups, text_candidates, trashed, skips = text_dedup
         processing_provenance = self.config.processing_provenance
+        coverage = plan.derived_coverage
+        extraction_coverage = plan.extraction_coverage
         return PdfRouteSummary(
             processing_signature=processing_provenance.signature,
             processing_provenance=processing_provenance.manifest,
@@ -1335,6 +1402,21 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
             resumed_from_run_id=self.config.resume_source_run_id,
             extraction_phase_skipped=plan.skip_extraction,
             text_dedup_phase_skipped=plan.skip_text_dedup,
+            derived_phase_skipped=plan.skip_derived,
+            derived_cache_repair_required=plan.derived_repair_required,
+            derived_missing_fts_pages=0 if coverage is None else coverage.missing_fts_pages,
+            derived_missing_profile_pages=(
+                0 if coverage is None else coverage.missing_profile_pages
+            ),
+            extraction_cache_repair_required=plan.extraction_repair_required,
+            extraction_missing_documents=(
+                0
+                if extraction_coverage is None
+                else extraction_coverage.missing_documents
+            ),
+            extraction_missing_pages=(
+                0 if extraction_coverage is None else extraction_coverage.missing_pages
+            ),
         )
 
     def _adopt_resumed_inventory(self) -> None:
@@ -1527,6 +1609,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         selection = self.config.selection
         return (
             self.config.max_documents is None
+            and not getattr(self, "_extraction_repair_required", False)
             and not self.config.retry_errors
             and not selection.force_incomplete_retry
             and not selection.statuses

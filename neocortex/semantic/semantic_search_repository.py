@@ -32,7 +32,7 @@ from .semantic_repository_common import (
     _load_model,
 )
 from .semantic_schema import SemanticStateError, semantic_database
-from .semantic_sources import SEMANTIC_TITLE_SECTION_KIND
+from .semantic_sources import SEMANTIC_TITLE_POLICY, SEMANTIC_TITLE_SECTION_KIND
 
 TextEmbeddingScope = Literal["all", "content", "title"]
 
@@ -190,8 +190,14 @@ def _search_sql(
     if modality is EmbeddingModality.TEXT:
         scope_clause = {
             "all": "",
-            "content": (f" AND c.section_kind<>'{SEMANTIC_TITLE_SECTION_KIND}'"),
-            "title": f" AND c.section_kind='{SEMANTIC_TITLE_SECTION_KIND}'",
+            "content": (
+                " AND c.section_kind NOT IN "
+                f"('{SEMANTIC_TITLE_SECTION_KIND}','video_metadata_title')"
+            ),
+            "title": (
+                " AND c.section_kind IN "
+                f"('{SEMANTIC_TITLE_SECTION_KIND}','video_metadata_title')"
+            ),
         }[text_scope]
         return f"""WITH selected(model_signature,generation_id) AS
             (VALUES {selected})
@@ -967,6 +973,27 @@ def _resolved_text_search_hit(
         row["section_provenance_json"],
         error="semantic section provenance is not a JSON object",
     )
+    section_kind = str(row["section_kind"])
+    legacy_locator = section_provenance.get("locator")
+    if (
+        str(row["source_kind"]) == "video"
+        and section_kind == "video_metadata_title"
+        and str(row["section_id"]) == "title"
+        and isinstance(legacy_locator, dict)
+        and legacy_locator.get("kind") == "video_title"
+    ):
+        # Older Video generations used the owner-native section name.  Keep
+        # those bytes searchable as title metadata without re-OCR or reset,
+        # while exposing the canonical advisory title contract to consumers.
+        section_provenance = {
+            **section_provenance,
+            "policy_signature": SEMANTIC_TITLE_POLICY,
+            "basis": "durable_source_title",
+            "mutable_metadata": True,
+            "advisory_only": True,
+            "legacy_section_kind": "video_metadata_title",
+        }
+        section_kind = SEMANTIC_TITLE_SECTION_KIND
     fingerprint = _fingerprint_from_row(row)
     text = _decode_chunk_text(bytes(row["text_zlib"]), fingerprint)
     snippet, excerpt = query_centered_snippet(text, query, max_chars=snippet_chars)
@@ -981,7 +1008,7 @@ def _resolved_text_search_hit(
         path=None if row["path"] is None else str(row["path"]),
         source_kind=str(row["source_kind"]),
         source_identity=str(row["source_identity"]),
-        section_kind=str(row["section_kind"]),
+        section_kind=section_kind,
         section_id=str(row["section_id"]),
         start_char=int(row["start_char"]),
         end_char=int(row["end_char"]),

@@ -1,11 +1,11 @@
 # Arquitectura de NeoCortex
 
-> Describe la arquitectura implementada en el checkout vigente y en la release
-> post-0.13 activa. La release `current` proviene de
-> `source_sha=c6d3985f7a45fc3120bd03e9561195674f2b8ac2`; el rollback inmediato
-> conserva el artefacto 0.13 anterior. C0–C7 y la tranche post-0.13 están
-> aceptados sólo sobre sus respectivos artefactos y receipts. Ninguna
-> descripción aquí sustituye la evidencia de aceptación.
+> Describe la arquitectura implementada en el checkout de esta oleada. El
+> estado de `current`, el rollback, `HEAD == main == origin/main` y cualquier
+> receipt se verifica por separado. C1–C5 siguen en validación: esta descripción
+> no certifica recuperación real de la generación 17, release instalada ni
+> aceptación completa C0–C7. Ninguna descripción aquí sustituye la evidencia de
+> aceptación.
 
 ## Principios
 
@@ -90,7 +90,7 @@ Las implementaciones no tienen la misma riqueza: algunos formatos publican
 localizadores estructurales y otros sólo texto o archivo completo. Esa brecha se
 expone como cobertura, no se rellena con localizadores inventados.
 
-### Lifecycle durable de `--all` (0.13 instalado y aceptado)
+### Lifecycle durable de `--all` (implementado; aceptación en curso)
 
 `--all` selecciona exactamente las nueve rutas registradas y las coordina bajo
 un único run Framework: `pdf`, `docx`, `office`, `archive`, `text`, `audio`,
@@ -98,10 +98,10 @@ un único run Framework: `pdf`, `docx`, `office`, `archive`, `text`, `audio`,
 extrae y publica relaciones, pero nunca ejecuta el código del corpus ni lo
 convierte en una herramienta de validación del repositorio.
 
-El artefacto base `0.13.0-1567fe46821b-cp314-linux-x86_64` contiene este
-contrato y fue aceptado con C0–C7, suite integral, calidad estática, smoke,
-replay y piloto aislado sobre el mismo `source_sha`; la release activa añade la
-tranche post-0.13 descrita en las capas de Knowledge, diagnóstico y curación.
+Los artefactos 0.13 y post-0.13 anteriores conservan su evidencia histórica en
+receipts separados; no se usan aquí para declarar aceptado o instalado el
+checkout de esta oleada. La validación de este cambio debe repetir los gates
+desde su SHA final.
 
 El lifecycle ordena las fronteras `preflight → inventory → catalog/dedup →
 routes → semantic → publication → finalize`. El manifest inmutable
@@ -128,11 +128,40 @@ bounded y emitir checkpoints cooperativos, sin reservar de antemano todo un
 snapshot que luego filtre candidatos.
 
 Semantic y Code quedan ligados al mismo run, no como una operación posterior
-sin identidad. `--all` coordina las rutas de contenido; el Semantic pesado
-continúa siendo opt-in. Archive, Code y Video son fuentes Semantic explícitas,
-por lo que no se infieren por el solo hecho de seleccionar `--all`; si una
-fuente, modelo o herramienta falta, el stage conserva `unavailable` o `blocked`
-y la corrida queda `incomplete`, sin éxito vacío ni skip silencioso.
+sin identidad. `--all` coordina las nueve rutas y, en su selección integrada,
+considera Archive, Code y Video junto con los demás owners Semantic cuando sus
+fuentes, heads y dependencias están disponibles. Una selección explícita puede
+acotar fuentes; no se introducen techos globales implícitos y los límites
+expresados por el usuario siguen siendo acumulativos. Si una fuente, modelo o
+herramienta falta, el stage conserva `unavailable` o `blocked` y la corrida
+queda `partial`/`incomplete`, sin éxito vacío ni skip silencioso.
+
+La integración de catálogo se ejecuta después de cada productor y serializa
+únicamente la generación/CAS del owner compartido; la extracción permanece
+paralela. Las observaciones `protected`, `no_speech`, `no_audio` y
+`metadata_only` siguen consultables con cobertura parcial. FTS y derivados se
+reparan desde representaciones durables válidas; un reintento exige evidencia
+estructurada `retryable` y sólo se intenta una vez por archivo y corrida. Un
+fallo o parcialidad queda en la fase `catalog` y en su evento tipado. Los nueve
+summaries exponen contadores `catalog_*` y `catalog_complete`; `None` conserva
+el estado no observado y no se interpreta como cero trabajo publicado.
+
+Los títulos de Video son metadata para descubrimiento, no evidencia de un
+fotograma. La lectura compatible de títulos legacy conserva esa separación sin
+crear timestamps, modificar el cache ni repetir OCR o embeddings. Un localizador
+malformado deja su ranking parcial, sin anular rankings independientes.
+
+Las propuestas de organización son advisory y no requieren `--apply`; no
+conceden permiso para mover, renombrar o borrar originales. La GUI proyecta la
+misma selección, presupuesto, estados y stage Semantic que la CLI: el perfil
+completo usa `--all`, el piloto mantiene límites acotados y una selección guardada
+no se amplía por inferencia.
+
+Una publicación Semantic pendiente posterior a epoch 0 se recupera mediante el
+mismo productor, manifest y heads de todos los modelos, sin resetear generaciones
+ni crear una ventana de presupuesto nueva. Si la compatibilidad no se demuestra,
+la frontera queda `recovery_required`; no se presenta como C1 aceptada hasta
+validar el caso real.
 
 ### Progreso y cancelación
 

@@ -358,6 +358,29 @@ def _generation_from_resolved(
     return None
 
 
+def _legacy_video_title_provenance(
+    resolved: ResolvedSearchHit,
+) -> dict[str, object] | None:
+    """Recognize the owner-native Video title without treating it as a frame."""
+
+    if resolved.source_kind != "video" or resolved.section_kind != "video_metadata_title":
+        return None
+    if resolved.section_id != "title":
+        return None
+    provenance = dict(resolved.section_provenance)
+    locator = provenance.get("locator")
+    if not isinstance(locator, Mapping) or locator.get("kind") != "video_title":
+        return None
+    return {
+        **provenance,
+        "policy_signature": SEMANTIC_TITLE_POLICY,
+        "basis": "durable_source_title",
+        "mutable_metadata": True,
+        "advisory_only": True,
+        "legacy_section_kind": "video_metadata_title",
+    }
+
+
 def _evidence_from_resolved(
     resolved: ResolvedSearchHit,
     *,
@@ -448,6 +471,11 @@ def _evidence_from_resolved(
                 )
             )
     elif resolved.source_kind == "video":
+        if (
+            resolved.section_kind in {"video_metadata_title", SEMANTIC_TITLE_SECTION_KIND}
+            or locator_text("kind") == "video_title"
+        ):
+            raise ValueError("video metadata title is advisory-only, not frame evidence")
         # The Video source adapter publishes ``locator.timestamp_ms`` while
         # the legacy lexical adapter published a preformatted ``timestamp``.
         # Accept either without deriving a time from the frame ordinal.
@@ -617,9 +645,15 @@ def resource_discovery_signal_from_resolved(
 ) -> ResourceDiscoverySignal:
     """Materialize a resource prior without ever constructing EvidenceRef."""
 
-    provenance = resolved.section_provenance
+    legacy_provenance = _legacy_video_title_provenance(resolved)
+    provenance = legacy_provenance or dict(resolved.section_provenance)
+    title_section_kind = (
+        SEMANTIC_TITLE_SECTION_KIND
+        if legacy_provenance is not None
+        else resolved.section_kind
+    )
     if (
-        resolved.section_kind != SEMANTIC_TITLE_SECTION_KIND
+        title_section_kind != SEMANTIC_TITLE_SECTION_KIND
         or provenance.get("policy_signature") != SEMANTIC_TITLE_POLICY
         or provenance.get("basis")
         not in {
@@ -1273,6 +1307,15 @@ def _execute_semantic_step(
             vector_budget,
             include_title=include_title,
         )
+        _append_semantic_step_result(
+            context,
+            output,
+            result,
+            step,
+            discovery_step,
+            started_ns,
+            include_title=include_title,
+        )
     except (OSError, RuntimeError, context.sqlite_error_type, ValueError) as exc:
         context.reraise_captured_cancellation(context.cancellation, exc)
         _append_semantic_failure_reports(
@@ -1285,15 +1328,6 @@ def _execute_semantic_step(
             include_title=include_title,
         )
         return
-    _append_semantic_step_result(
-        context,
-        output,
-        result,
-        step,
-        discovery_step,
-        started_ns,
-        include_title=include_title,
-    )
 
 
 def semantic_rankings(

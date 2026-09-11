@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -129,6 +130,7 @@ def build_execution_page(window: Any) -> QWidget:
         "archive": "ZIP",
         "text": "Texto y correo",
         "audio": "Audio",
+        "video": "Video",
         "image": "Imágenes",
         "code": "Código",
     }
@@ -149,7 +151,7 @@ def build_execution_page(window: Any) -> QWidget:
     window.profile_combo = QComboBox()
     window.profile_combo.setObjectName("ExecutionProfile")
     window.profile_combo.addItem("Piloto acotado (recomendado)", "pilot")
-    window.profile_combo.addItem("Completo con límites", "full")
+    window.profile_combo.addItem("Completo (--all) con límites", "full")
     window.profile_combo.currentIndexChanged.connect(window._profile_changed)
     profile_options.addWidget(window.profile_combo)
     budget_row.addLayout(profile_options, 1)
@@ -243,6 +245,10 @@ def build_execution_page(window: Any) -> QWidget:
     live_layout.addLayout(live_header)
     activity = QFrame()
     activity.setObjectName("ActivityBanner")
+    activity.setSizePolicy(
+        QSizePolicy.Policy.Preferred,
+        QSizePolicy.Policy.Minimum,
+    )
     activity_layout = QVBoxLayout(activity)
     activity_layout.setContentsMargins(16, 12, 16, 12)
     activity_layout.setSpacing(7)
@@ -251,6 +257,13 @@ def build_execution_page(window: Any) -> QWidget:
     window.activity_detail = QLabel("La etapa actual y su tiempo activo aparecerán aquí.")
     window.activity_detail.setObjectName("ActivityDetail")
     window.activity_detail.setWordWrap(True)
+    # The live panel may be compressed while the page is scrolled.  Keep the
+    # wrapped C5 terminal detail at its height-for-width minimum instead of
+    # allowing the label to collapse to one line and clip causes/actions.
+    window.activity_detail.setSizePolicy(
+        QSizePolicy.Policy.Preferred,
+        QSizePolicy.Policy.Minimum,
+    )
     window.activity_progress = QProgressBar()
     window.activity_progress.setTextVisible(False)
     window.activity_progress.setRange(0, 1000)
@@ -479,7 +492,7 @@ def build_consultation_page(window: Any) -> QWidget:
     curation_heading.addWidget(
         window._section_heading(
             "Curación y recovery",
-            "Grants, intentos, receipts y observaciones durables en solo lectura",
+            "Planes, grants, intentos, receipts y observaciones durables en solo lectura",
         ),
         1,
     )
@@ -498,7 +511,8 @@ def build_consultation_page(window: Any) -> QWidget:
     curation_actions.addWidget(window.curation_copy_button)
     curation_layout.addLayout(curation_actions)
     window.curation_result_summary = QLabel(
-        "La vista durable no ejecuta apply, restore ni ninguna mutación."
+        "La vista durable muestra propuestas y recovery, pero no ejecuta apply, restore "
+        "ni ninguna mutación."
     )
     window.curation_result_summary.setObjectName("SectionCaption")
     window.curation_result_summary.setWordWrap(True)
@@ -508,7 +522,7 @@ def build_consultation_page(window: Any) -> QWidget:
     window.curation_result.setMaximumBlockCount(2_000)
     window.curation_result.setMinimumHeight(240)
     window.curation_result.setPlainText(
-        "NeoCortex mostrará aquí el estado de grants, intentos y recovery sin crear efectos."
+        "NeoCortex mostrará aquí planes, grants, intentos y recovery sin crear efectos."
     )
     curation_layout.addWidget(window.curation_result_summary)
     curation_layout.addWidget(window.curation_result)

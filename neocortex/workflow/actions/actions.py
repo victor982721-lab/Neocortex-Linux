@@ -29,7 +29,7 @@ from neocortex.deduplication.inventory.index import (
     InventoryExclusionPolicy,
     validate_inventory_root,
 )
-from neocortex.progress import ProgressCallback, ProgressEvent, emit_progress
+from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
 from neocortex.workflow.actions.action_policy import (
     corrected_path as _corrected_path,
     path_key as _path_key,
@@ -682,6 +682,7 @@ class FrameworkActions:
         candidates = self._index.file_count_by_size(plan.scan_id, 0)
         if not candidates:
             return summary
+        skips_before_phase = summary.duplicate_skips
         summary = replace(
             summary,
             duplicate_candidates=summary.duplicate_candidates + candidates,
@@ -751,6 +752,17 @@ class FrameworkActions:
                 candidates,
                 "archivos",
                 True,
+                (
+                    ProgressMetric(
+                        "planned",
+                        (
+                            max(0, candidates - (summary.duplicate_skips - skips_before_phase))
+                            if not self._apply
+                            else 0
+                        ),
+                    ),
+                    ProgressMetric("applied", summary.duplicates_trashed),
+                ),
             ),
         )
         return summary
@@ -773,7 +785,22 @@ class FrameworkActions:
             ),
         )
         completed = 0
+        applied_before_phase = summary.duplicates_trashed
+        skips_before_phase = summary.duplicate_skips
         pending: list[tuple[str, str, FileSnapshot, FileSnapshot]] = []
+
+        def progress_metrics() -> tuple[ProgressMetric, ...]:
+            skipped = max(0, summary.duplicate_skips - skips_before_phase)
+            return (
+                ProgressMetric(
+                    "planned",
+                    max(0, candidates - skipped) if not self._apply else 0,
+                ),
+                ProgressMetric(
+                    "applied",
+                    max(0, summary.duplicates_trashed - applied_before_phase),
+                ),
+            )
 
         def report() -> None:
             emit_progress(
@@ -785,6 +812,7 @@ class FrameworkActions:
                     completed,
                     candidates,
                     "archivos",
+                    metrics=progress_metrics(),
                 ),
             )
 
@@ -880,6 +908,7 @@ class FrameworkActions:
                 candidates,
                 "archivos",
                 True,
+                progress_metrics(),
             ),
         )
         return summary
@@ -899,11 +928,22 @@ class FrameworkActions:
         return current, None
 
     def _validate_extensions(self, plan: DedupPlan, summary: ActionSummary) -> ActionSummary:
+        # The inventory is the physical source of truth for this pass.  A
+        # dry-run only records proposed actions; it does not remove any
+        # inventory member from the route input set.  In particular, a
+        # planned duplicate is still a real file and must retain its identity
+        # and content-type coverage until an effect is actually observed.
+        # Applied runs may read the same immutable inventory snapshot because
+        # the admission check below rejects sources that were really removed
+        # (or changed) before route publication.
+        # Empty files have their own explicit, planned ``trash_empty_file``
+        # record and are not content-route inputs.  Keep them out of this
+        # content-type denominator, but never subtract proposed duplicate
+        # files: unlike an observed effect, a dry-run proposal leaves those
+        # physical sources available for extraction.
         total = self._index.file_count(self._scan_id) - self._index.file_count_by_size(
             self._scan_id, 0
         )
-        if not self._apply:
-            total = max(0, total - plan.redundant_files)
         emit_progress(
             self._progress,
             ProgressEvent(
@@ -948,11 +988,7 @@ class FrameworkActions:
         # paths after successful actions. This avoids loading the full corpus
         # into memory or observing a renamed row twice.
         with DedupIndex(self._index.path) as read_index:
-            snapshots = (
-                read_index.snapshots(self._scan_id)
-                if self._apply
-                else read_index.snapshots_excluding_planned_redundant(self._scan_id)
-            )
+            snapshots = read_index.snapshots(self._scan_id)
             for planned in snapshots:
                 if planned.size == 0:
                     continue

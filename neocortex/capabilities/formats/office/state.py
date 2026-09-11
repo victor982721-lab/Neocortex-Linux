@@ -5,8 +5,10 @@ from __future__ import annotations
 import sqlite3
 import time
 import zlib
+from collections import Counter
 from contextlib import contextmanager
 from functools import lru_cache
+import json
 from pathlib import Path
 
 import xxhash
@@ -30,7 +32,11 @@ from neocortex.persistence.sqlite_schema_contract import (
     schema_contract_from_builder,
     validate_sqlite_schema_contract,
 )
-from .models import ExtractedOfficeDocument, OfficeExtractionError
+from .models import (
+    MAX_TOTAL_UNCOMPRESSED_BYTES,
+    ExtractedOfficeDocument,
+    OfficeExtractionError,
+)
 
 
 # region [01] Connections and schema
@@ -361,9 +367,14 @@ def _cached_document(
     connection: sqlite3.Connection,
     snapshot: FileSnapshot,
     processing_signature: str,
+    *,
+    format_name: str | None = None,
+    max_text_chars: int | None = None,
 ) -> sqlite3.Row | None:
-    return connection.execute(
-        """SELECT status,error_type,error_message,retryable,review_disposition
+    row = connection.execute(
+        """SELECT file_key,format,path,size,mtime_ns,birthtime_ns,processing_signature,
+        status,title,author,subject,text_zlib,text_chars,text_xxh3_128,part_count,
+        error_type,error_message,retryable,review_disposition
         FROM documents WHERE file_key=? AND size=?
         AND mtime_ns=? AND birthtime_ns=? AND processing_signature=?""",
         (
@@ -374,6 +385,146 @@ def _cached_document(
             processing_signature,
         ),
     ).fetchone()
+    if row is None or (format_name is not None and str(row["format"]) != format_name):
+        return None
+    if row["status"] != "complete":
+        return row
+    text = _cached_office_representation(
+        row,
+        max_chars=max_text_chars if max_text_chars is not None else MAX_TOTAL_UNCOMPRESSED_BYTES,
+    )
+    if text is None:
+        return None
+    if row["format"] == "xlsx" and not _cached_xlsx_cells_are_valid(
+        connection,
+        str(row["file_key"]),
+        text,
+    ):
+        return None
+    return row
+
+
+def _decode_cached_text(
+    payload: object,
+    expected_chars: object,
+    *,
+    max_chars: int,
+) -> str | None:
+    """Decode bounded durable Office text without reopening the source file."""
+
+    if isinstance(expected_chars, int):
+        chars = expected_chars
+    elif isinstance(expected_chars, str):
+        try:
+            chars = int(expected_chars)
+        except ValueError:
+            return None
+    else:
+        return None
+    if chars < 0 or chars > max_chars or not isinstance(payload, (bytes, bytearray, memoryview)):
+        return None
+    decoder = zlib.decompressobj()
+    try:
+        # ``text_chars`` counts Unicode code points while zlib bounds bytes;
+        # four bytes is the maximum UTF-8 width of one code point.
+        decoded = decoder.decompress(bytes(payload), chars * 4 + 1)
+    except (ValueError, zlib.error):
+        return None
+    if (
+        len(decoded) > chars * 4
+        or decoder.unconsumed_tail
+        or decoder.unused_data
+        or not decoder.eof
+    ):
+        return None
+    try:
+        text = decoded.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    return text if len(text) == chars else None
+
+
+def _cached_office_representation(row: sqlite3.Row, *, max_chars: int) -> str | None:
+    text = _decode_cached_text(row["text_zlib"], row["text_chars"], max_chars=max_chars)
+    if text is None:
+        return None
+    fingerprint = row["text_xxh3_128"]
+    if not isinstance(fingerprint, str):
+        return None
+    if fingerprint != xxhash.xxh3_128_hexdigest(text.encode("utf-8")):
+        return None
+    try:
+        if int(row["part_count"]) < 0:
+            return None
+    except (TypeError, ValueError):
+        return None
+    return text
+
+
+def _path_basename(value: object) -> str:
+    return str(value).replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def _cached_xlsx_cells_are_valid(
+    connection: sqlite3.Connection,
+    key: str,
+    text: str,
+) -> bool:
+    """Use the durable XLSX text projections to detect missing typed cells."""
+
+    expected: list[tuple[str, str, str, str, str, str | None, str | None]] = []
+    for line in text.splitlines():
+        if not line.startswith("XLSX_CELL "):
+            continue
+        try:
+            projection = json.loads(line[len("XLSX_CELL ") :])
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(projection, dict) or not {
+            "workbook",
+            "sheet",
+            "a1",
+            "type",
+            "value",
+            "formula",
+            "cached_value",
+        } <= projection.keys():
+            continue
+        values = tuple(
+            None if projection[name] is None else str(projection[name])
+            for name in ("formula", "cached_value")
+        )
+        expected.append(
+            (
+                str(projection["workbook"]),
+                str(projection["sheet"]),
+                str(projection["a1"]),
+                str(projection["type"]),
+                str(projection["value"]),
+                values[0],
+                values[1],
+            )
+        )
+    if not expected:
+        return True
+    rows = connection.execute(
+        """SELECT workbook,sheet,cell_reference,cell_type,value,formula,cached_value
+        FROM xlsx_cells WHERE file_key=?""",
+        (key,),
+    ).fetchall()
+    actual = [
+        (
+            _path_basename(row["workbook"]),
+            str(row["sheet"]),
+            str(row["cell_reference"]),
+            str(row["cell_type"]),
+            str(row["value"]),
+            None if row["formula"] is None else str(row["formula"]),
+            None if row["cached_value"] is None else str(row["cached_value"]),
+        )
+        for row in rows
+    ]
+    return Counter(expected) == Counter(actual)
 
 
 def _remove_path_conflict(
@@ -394,17 +545,51 @@ def _refresh_cached_path(
     snapshot: FileSnapshot,
     format_name: str,
     run_id: int,
-) -> None:
+    *,
+    max_text_chars: int | None = None,
+) -> bool | None:
     _remove_path_conflict(connection, snapshot)
     connection.execute(
         """UPDATE documents SET format=?,path=?,last_seen_run_id=?,updated_ns=?
         WHERE file_key=?""",
         (format_name, snapshot.path, run_id, time.time_ns(), _file_key(snapshot)),
     )
-    connection.execute(
-        "UPDATE document_fts SET path=?,format=? WHERE file_key=?",
-        (snapshot.path, format_name, _file_key(snapshot)),
+    row = connection.execute(
+        """SELECT file_key,format,path,title,author,text_zlib,text_chars,text_xxh3_128,
+        part_count,status FROM documents WHERE file_key=?""",
+        (_file_key(snapshot),),
+    ).fetchone()
+    if row is None or row["status"] != "complete":
+        if row is not None:
+            # Error caches have no durable text representation.  Remove any
+            # orphaned index row rather than allowing a stale search hit.
+            connection.execute("DELETE FROM document_fts WHERE file_key=?", (_file_key(snapshot),))
+        return False
+    text = _cached_office_representation(
+        row,
+        max_chars=max_text_chars if max_text_chars is not None else MAX_TOTAL_UNCOMPRESSED_BYTES,
     )
+    if text is None:
+        return None
+    expected = (
+        snapshot.path,
+        str(row["title"] or ""),
+        str(row["author"] or ""),
+        text,
+    )
+    fts_rows = connection.execute(
+        "SELECT format,path,title,author,body FROM document_fts WHERE file_key=?",
+        (_file_key(snapshot),),
+    ).fetchall()
+    if len(fts_rows) == 1 and tuple(fts_rows[0])[1:] == (format_name, *expected):
+        return False
+    connection.execute("DELETE FROM document_fts WHERE file_key=?", (_file_key(snapshot),))
+    connection.execute(
+        """INSERT INTO document_fts(file_key,format,path,title,author,body)
+        VALUES(?,?,?,?,?,?)""",
+        (_file_key(snapshot), format_name, *expected),
+    )
+    return True
 
 
 def _store_success(

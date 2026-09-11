@@ -27,6 +27,7 @@ from neocortex.workflow.actions.action_policy import same_snapshot
 from .models import (
     AUDIO_ROUTE_VERSION,
     AudioProcessingError,
+    AudioRuntimeUnavailableError,  # noqa: F401 - stable route-level exception export
     AudioRouteConfig,
     AudioRouteSummary,
     MediaProbe,
@@ -271,6 +272,7 @@ class AudioRoute:
         self.runtime_resolver = runtime_resolver
         self.transcriber_factory = transcriber_factory
         self.media_probe = media_probe
+        self._recoverable_retry_keys: set[str] = set()
         self.memory_gate = (
             memory_gate
             if memory_gate is not None
@@ -307,6 +309,7 @@ class AudioRoute:
 
     def run(self) -> AudioRouteSummary:
         self.cancellation.checkpoint()
+        self._recoverable_retry_keys.clear()
         self._validate()
         initialize_audio_state(self.config.state_path)
         ordered_mimes = self._ordered_mimes()
@@ -442,9 +445,27 @@ class AudioRoute:
             return False
         status = str(cached["status"])
         benign_statuses = {"complete", "no_speech", "no_audio"}
-        if status not in benign_statuses and self.config.retry_errors:
+        if status == "error":
+            if self.config.retry_errors:
+                return False
+            if self._claim_recoverable_retry(cached, snapshot):
+                return False
+        elif status not in benign_statuses:
             return False
         _refresh_cached_path(connection, snapshot, mime, self.run_id)
+        if not _repair_cached_audio_derivatives(connection, snapshot):
+            # A cache row without its durable segment source is not reusable.
+            # Let the normal processing boundary rebuild it from the source.
+            return False
+        refreshed = _cached_document(
+            connection,
+            snapshot,
+            str(cached["processing_signature"]),
+        )
+        if refreshed is None:
+            return False
+        cached = refreshed
+        status = str(cached["status"])
         metrics.cache_hits += 1
         if status in benign_statuses:
             reviews.queue_success(
@@ -460,6 +481,29 @@ class AudioRoute:
             metrics.deletion_candidates += int(failure.recommendation == "deletion_candidate")
             metrics.retryable_errors += int(failure.retryable)
         metrics.processed += 1
+        return True
+
+    def _claim_recoverable_retry(
+        self,
+        cached: sqlite3.Row,
+        snapshot: FileSnapshot,
+    ) -> bool:
+        """Claim one explicit retryable cached error for this route run."""
+
+        if not self.config.retry_recoverable_errors:
+            return False
+        key = _file_key(snapshot)
+        if key in self._recoverable_retry_keys:
+            return False
+        # Only the persisted route recommendation and strict integer flag are
+        # an explicit retry grant.  Legacy/unknown values and protected/manual
+        # dispositions remain cacheable rather than becoming blind retries.
+        retryable = cached["retryable"]
+        if not _is_explicit_retryable(retryable):
+            return False
+        if str(cached["review_disposition"] or "") != "retry":
+            return False
+        self._recoverable_retry_keys.add(key)
         return True
 
     def _transcribe_candidate(
@@ -730,7 +774,7 @@ def _cached_document(
     processing_signature: str,
 ) -> sqlite3.Row | None:
     return connection.execute(
-        """SELECT status,duration_seconds,speech_duration_seconds,text_chars,
+        """SELECT processing_signature,status,duration_seconds,speech_duration_seconds,text_chars,
         segment_count,error_type,error_message,retryable,review_disposition
         FROM documents WHERE file_key=? AND size=? AND mtime_ns=?
         AND birthtime_ns=? AND processing_signature=?""",
@@ -742,6 +786,245 @@ def _cached_document(
             processing_signature,
         ),
     ).fetchone()
+
+
+def _audio_fts_matches(
+    connection: sqlite3.Connection,
+    key: str,
+    path: str,
+    title: str,
+    text: str,
+) -> bool:
+    rows = connection.execute(
+        "SELECT file_key,path,title,body FROM transcript_fts WHERE file_key=?",
+        (key,),
+    ).fetchall()
+    if len(rows) != 1:
+        return False
+    row = rows[0]
+    return (
+        str(row["file_key"]) == key
+        and str(row["path"]) == path
+        and str(row["title"]) == title
+        and str(row["body"]) == text
+    )
+
+
+def _repair_cached_audio_derivatives(
+    connection: sqlite3.Connection,
+    snapshot: FileSnapshot,
+) -> bool:
+    """Validate a cached result and repair projections from durable segments.
+
+    ``segments`` is the owner-local durable source for the transcript text.
+    The compressed representation, counters and FTS row are projections and may
+    therefore be recreated during a replay without invoking Whisper again.
+    """
+
+    key = _file_key(snapshot)
+    row = connection.execute(
+        """SELECT status,title,text_zlib,text_chars,text_xxh3_128,
+        segment_count,speech_duration_seconds,media_metadata_json
+        FROM documents WHERE file_key=?""",
+        (key,),
+    ).fetchone()
+    if row is None:
+        return False
+    status = str(row["status"])
+    title = Path(snapshot.path).stem
+
+    if status == "complete":
+        segment_rows = connection.execute(
+            """SELECT segment_index,start_ms,end_ms,text
+            FROM segments WHERE file_key=? ORDER BY segment_index""",
+            (key,),
+        ).fetchall()
+        if not segment_rows:
+            return False
+        text_parts: list[str] = []
+        speech_seconds = 0.0
+        for expected_index, segment in enumerate(segment_rows):
+            try:
+                segment_index = int(segment["segment_index"])
+                start_ms = int(segment["start_ms"])
+                end_ms = int(segment["end_ms"])
+            except (TypeError, ValueError, OverflowError):
+                return False
+            text_value = segment["text"]
+            if (
+                segment_index != expected_index
+                or start_ms < 0
+                or end_ms < start_ms
+                or not isinstance(text_value, str)
+            ):
+                return False
+            text_parts.append(text_value)
+            speech_seconds += (end_ms - start_ms) / 1000.0
+        if not _audio_segment_extent_matches(row["media_metadata_json"], len(segment_rows)):
+            return False
+        text = " ".join(text_parts)
+        if not text:
+            return False
+        encoded = text.encode("utf-8")
+        fingerprint = xxhash.xxh3_128_hexdigest(encoded)
+        current_text: str | None = None
+        if row["text_zlib"] is not None:
+            try:
+                current_text = zlib.decompress(bytes(row["text_zlib"])).decode("utf-8", "strict")
+            except (TypeError, UnicodeError, zlib.error):
+                current_text = None
+        # A valid existing representation is an independent completeness
+        # witness.  Never replace it with a reconstruction that became
+        # shorter because a durable segment disappeared.
+        if current_text is not None and current_text != text:
+            return False
+        hash_value = row["text_xxh3_128"]
+        hash_matches = isinstance(hash_value, str) and hash_value == fingerprint
+        if current_text is None and not hash_matches:
+            # Both durable validators are absent or unusable; the remaining
+            # segments cannot prove that the transcript is complete.
+            return False
+        try:
+            stored_text_chars: int | None = (
+                0 if row["text_chars"] is None else int(row["text_chars"])
+            )
+        except (TypeError, ValueError, OverflowError):
+            stored_text_chars = None
+        try:
+            stored_segment_count: int | None = (
+                0 if row["segment_count"] is None else int(row["segment_count"])
+            )
+        except (TypeError, ValueError, OverflowError):
+            stored_segment_count = None
+        try:
+            stored_speech_seconds: float | None = (
+                0.0
+                if row["speech_duration_seconds"] is None
+                else float(row["speech_duration_seconds"])
+            )
+        except (TypeError, ValueError, OverflowError):
+            stored_speech_seconds = None
+        if (
+            stored_segment_count != len(segment_rows)
+            or stored_speech_seconds is None
+            or not math.isclose(
+                stored_speech_seconds,
+                speech_seconds,
+                rel_tol=0.0,
+                abs_tol=1e-9,
+            )
+        ):
+            # Segment extent and timing are coverage validators, not values to
+            # shrink to the rows that happened to survive.
+            return False
+        document_needs_repair = (
+            str(row["title"] or "") != title
+            or current_text is None
+            or stored_text_chars != len(text)
+            or not hash_matches
+        )
+        if document_needs_repair:
+            connection.execute(
+                """UPDATE documents SET title=?,text_zlib=?,text_chars=?,
+                text_xxh3_128=?,segment_count=?,speech_duration_seconds=?
+                WHERE file_key=?""",
+                (
+                    title,
+                    zlib.compress(encoded, 6),
+                    len(text),
+                    fingerprint,
+                    len(segment_rows),
+                    speech_seconds,
+                    key,
+                ),
+            )
+        if not _audio_fts_matches(connection, key, snapshot.path, title, text):
+            connection.execute("DELETE FROM transcript_fts WHERE file_key=?", (key,))
+            connection.execute(
+                "INSERT INTO transcript_fts(file_key,path,title,body) VALUES(?,?,?,?)",
+                (key, snapshot.path, title, text),
+            )
+        return True
+
+    if status in {"no_speech", "no_audio"}:
+        # These terminal outcomes are coverage distinctions, not an empty
+        # successful transcript.  They must never acquire a synthetic FTS row.
+        if connection.execute(
+            "SELECT 1 FROM segments WHERE file_key=? LIMIT 1", (key,)
+        ).fetchone() is not None:
+            return False
+        fts_exists = connection.execute(
+            "SELECT 1 FROM transcript_fts WHERE file_key=? LIMIT 1", (key,)
+        ).fetchone() is not None
+        try:
+            stored_text_chars = 0 if row["text_chars"] is None else int(row["text_chars"])
+        except (TypeError, ValueError, OverflowError):
+            stored_text_chars = None
+        try:
+            stored_segment_count = (
+                0 if row["segment_count"] is None else int(row["segment_count"])
+            )
+        except (TypeError, ValueError, OverflowError):
+            stored_segment_count = None
+        try:
+            stored_speech_seconds = (
+                0.0
+                if row["speech_duration_seconds"] is None
+                else float(row["speech_duration_seconds"])
+            )
+        except (TypeError, ValueError, OverflowError):
+            stored_speech_seconds = None
+        needs_repair = (
+            str(row["title"] or "") != title
+            or row["text_zlib"] is not None
+            or stored_text_chars != 0
+            or row["text_xxh3_128"] is not None
+            or stored_segment_count != 0
+            or stored_speech_seconds is None
+            or not math.isclose(
+                stored_speech_seconds or 0.0,
+                0.0,
+                rel_tol=0.0,
+                abs_tol=1e-9,
+            )
+        )
+        if needs_repair:
+            connection.execute(
+                """UPDATE documents SET title=?,text_zlib=NULL,text_chars=0,
+                text_xxh3_128=NULL,segment_count=0,speech_duration_seconds=0.0
+                WHERE file_key=?""",
+                (title, key),
+            )
+        if fts_exists:
+            connection.execute("DELETE FROM transcript_fts WHERE file_key=?", (key,))
+        return True
+
+    # Cached failures are intentionally reusable when retry_errors is false.
+    # They are not transcript projections and therefore need no reconstruction.
+    return status == "error"
+
+
+def _audio_segment_extent_matches(raw_metadata: object, segment_count: int) -> bool:
+    try:
+        metadata = json.loads(str(raw_metadata))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    if not isinstance(metadata, dict):
+        return False
+    stored_count = metadata.get("segment_count")
+    stored_extent = metadata.get("segment_index_extent")
+    return (
+        type(stored_count) is int
+        and stored_count == segment_count
+        and isinstance(stored_extent, list)
+        and stored_extent == [0, segment_count - 1]
+    )
+
+
+def _is_explicit_retryable(value: object) -> bool:
+    """Accept only the current integer retry marker from durable state."""
+
+    return type(value) is int and value == 1
 
 
 def _record_cached_success(metrics: _AudioRunMetrics, cached: sqlite3.Row) -> None:
@@ -827,6 +1110,10 @@ def _store_success(
     status = "complete" if result.text else "no_speech"
     metadata = _probe_metadata(probe)
     metadata["transcription_duration_seconds"] = result.duration_seconds
+    metadata["segment_count"] = len(result.segments)
+    metadata["segment_index_extent"] = (
+        [0, len(result.segments) - 1] if result.segments else []
+    )
     connection.execute(
         """INSERT INTO documents(
         file_key,path,mime,size,mtime_ns,birthtime_ns,processing_signature,status,
@@ -1012,7 +1299,7 @@ def _cached_failure(row: sqlite3.Row) -> AudioProcessingError:
         str(row["error_type"] or "audio_cached_error"),
         str(row["error_message"] or "cached audio error"),
         recommendation=recommendation,
-        retryable=bool(row["retryable"]),
+        retryable=_is_explicit_retryable(row["retryable"]),
     )
 
 

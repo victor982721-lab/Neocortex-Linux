@@ -119,7 +119,18 @@ def register_semantic_arguments(parser: argparse.ArgumentParser) -> None:
     semantic.add_argument(
         "--semantic-source",
         action="append",
-        choices=("pdf", "docx", "xlsx", "pptx", "odt", "audio", "archive", "text", "code"),
+        choices=(
+            "pdf",
+            "docx",
+            "xlsx",
+            "pptx",
+            "odt",
+            "audio",
+            "archive",
+            "text",
+            "code",
+            "video",
+        ),
         help="repeat to select durable text caches for text/all planning or indexing",
     )
     semantic.add_argument(
@@ -194,11 +205,20 @@ def _validate_semantic_values(args: argparse.Namespace) -> None:
         raise SystemExit("--semantic-max-vectors must be between 1 and 10000000")
     if args.semantic_threads is not None and args.semantic_threads < 1:
         raise SystemExit("--semantic-threads must be positive")
-    if not 1 <= args.semantic_max_items <= 10_000_000:
+    if args.semantic_max_items is None:
+        if not args.all:
+            raise SystemExit("unlimited Semantic items require --all")
+    elif not 1 <= args.semantic_max_items <= 10_000_000:
         raise SystemExit("--semantic-max-items must be between 1 and 10000000")
-    if not 1 <= args.semantic_max_new_jobs <= 100_000_000:
+    if args.semantic_max_new_jobs is None:
+        if not args.all:
+            raise SystemExit("unlimited Semantic jobs require --all")
+    elif not 1 <= args.semantic_max_new_jobs <= 100_000_000:
         raise SystemExit("--semantic-max-new-jobs must be between 1 and 100000000")
-    if (
+    if args.semantic_time_budget_seconds is None:
+        if not args.all:
+            raise SystemExit("unlimited Semantic time requires --all")
+    elif (
         not math.isfinite(args.semantic_time_budget_seconds)
         or not 0.001 <= args.semantic_time_budget_seconds <= 172_800.0
     ):

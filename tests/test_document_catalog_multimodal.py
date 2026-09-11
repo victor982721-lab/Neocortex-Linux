@@ -6,9 +6,13 @@ the catalog boundary without opening or modifying the user's durable state.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import sqlite3
-import zlib
+import threading
+import time
 from pathlib import Path
+from types import SimpleNamespace
+import zlib
 
 from neocortex.documents.document_catalog import (
     SourceDocument,
@@ -16,6 +20,10 @@ from neocortex.documents.document_catalog import (
     initialize_document_catalog,
     update_document_catalog,
     update_document_catalog_source,
+)
+from neocortex.runtime.orchestration.route_registry import (
+    RouteExecutionContext,
+    _update_document_catalog_after_route,
 )
 
 
@@ -116,7 +124,14 @@ def _make_image_owner(path: Path, source: Path, *, truncated: bool = False) -> N
         )
 
 
-def _make_archive_owner(path: Path, source: Path, *, container_status: str) -> None:
+def _make_archive_owner(
+    path: Path,
+    source: Path,
+    *,
+    container_status: str,
+    member_status: str = "indexed",
+    text: str | None = "Reporte técnico de aceite",
+) -> None:
     with sqlite3.connect(path) as connection:
         connection.executescript(
             """
@@ -154,15 +169,95 @@ def _make_archive_owner(path: Path, source: Path, *, container_status: str) -> N
                 source.stat().st_mtime_ns,
                 -1,
                 "archive-fixture-v1",
-                "indexed",
-                _compressed("Reporte técnico de aceite"),
-                27,
-                "archive-text-hash",
+                member_status,
+                None if text is None else _compressed(text),
+                0 if text is None else len(text),
+                None if text is None else "archive-text-hash",
             ),
         )
 
 
-def _make_code_owner(path: Path, source: Path, *, truncated: bool = False) -> None:
+def _make_pdf_owner(path: Path, source: Path, *, status: str) -> None:
+    volume_id, file_id = _file_identity(source)
+    stat = source.stat()
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE documents(
+                file_key TEXT PRIMARY KEY, path TEXT, size INTEGER,
+                mtime_ns INTEGER, birthtime_ns INTEGER, status TEXT,
+                processing_signature TEXT, normalized_text_xxh3_128 TEXT,
+                metadata_json TEXT, page_count INTEGER
+            );
+            CREATE TABLE pages(
+                file_key TEXT, page_number INTEGER, source TEXT,
+                text_zlib BLOB, text_chars INTEGER
+            );
+            """
+        )
+        key = f"{volume_id}:{file_id}"
+        connection.execute(
+            "INSERT INTO documents VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                key,
+                str(source),
+                stat.st_size,
+                stat.st_mtime_ns,
+                -1,
+                status,
+                "pdf-fixture-v1",
+                None,
+                '{"title":"Protected technical source"}',
+                1,
+            ),
+        )
+
+
+def _make_audio_owner(path: Path, sources: tuple[tuple[Path, str], ...]) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """CREATE TABLE documents(
+                file_key TEXT PRIMARY KEY, path TEXT, size INTEGER,
+                mtime_ns INTEGER, birthtime_ns INTEGER, status TEXT,
+                processing_signature TEXT, text_xxh3_128 TEXT, title TEXT,
+                language TEXT, duration_seconds REAL, speech_duration_seconds REAL,
+                model_name TEXT, backend_version TEXT, media_metadata_json TEXT,
+                text_zlib BLOB
+            )"""
+        )
+        for source, status in sources:
+            volume_id, file_id = _file_identity(source)
+            stat = source.stat()
+            connection.execute(
+                "INSERT INTO documents VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    f"{volume_id}:{file_id}",
+                    str(source),
+                    stat.st_size,
+                    stat.st_mtime_ns,
+                    -1,
+                    status,
+                    "audio-fixture-v1",
+                    None,
+                    source.stem,
+                    "es",
+                    3.0,
+                    0.0,
+                    "fixture",
+                    "fixture",
+                    "{}",
+                    None,
+                ),
+            )
+
+
+def _make_code_owner(
+    path: Path,
+    source: Path,
+    *,
+    truncated: bool = False,
+    hex_identity: bool = False,
+) -> None:
     volume_id, physical_file_id = _file_identity(source)
     with sqlite3.connect(path) as connection:
         connection.executescript(
@@ -186,9 +281,26 @@ def _make_code_owner(path: Path, source: Path, *, truncated: bool = False) -> No
             """
         )
         stat = source.stat()
+        if hex_identity:
+            connection.execute(
+                "CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            )
+            connection.execute("INSERT INTO metadata VALUES('schema_version','7')")
+            stored_volume_id = f"{int(volume_id):x}"
+            stored_physical_file_id = f"{int(physical_file_id):x}"
+        else:
+            stored_volume_id = volume_id
+            stored_physical_file_id = physical_file_id
         connection.execute(
             "INSERT INTO files VALUES(?,?,?,?,?,?)",
-            (1, volume_id, physical_file_id, str(source), 1, "current"),
+            (
+                1,
+                stored_volume_id,
+                stored_physical_file_id,
+                str(source),
+                1,
+                "current",
+            ),
         )
         connection.execute(
             """INSERT INTO file_versions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
@@ -259,6 +371,7 @@ def test_multimodal_catalog_adapters_preserve_owner_and_coverage(tmp_path: Path)
 
     assert [summary.candidates for summary in summaries] == [1, 1, 1, 1]
     assert all(summary.classified == 1 for summary in summaries)
+    assert [summary.review_required for summary in summaries] == [1, 1, 1, 1]
     with document_catalog_database(catalog, readonly=True) as connection:
         rows = connection.execute(
             """SELECT source_kind,file_key,path,source_status,catalog_status
@@ -294,6 +407,192 @@ def test_complete_multimodal_assets_can_be_classified(tmp_path: Path) -> None:
             "SELECT source_status,catalog_status FROM documents WHERE source_kind='video'"
         ).fetchone()
     assert tuple(status) == ("complete", "classified")
+
+
+def test_partial_and_protected_facts_remain_queryable_without_fabricated_text(
+    tmp_path: Path,
+) -> None:
+    catalog = tmp_path / "document_catalog.sqlite3"
+    initialize_document_catalog(catalog)
+
+    protected_pdf = tmp_path / "protected.pdf"
+    metadata_only_archive = tmp_path / "metadata-only.zip"
+    no_speech_audio = tmp_path / "no-speech.mp3"
+    no_audio_media = tmp_path / "no-audio.webm"
+    for source in (
+        protected_pdf,
+        metadata_only_archive,
+        no_speech_audio,
+        no_audio_media,
+    ):
+        source.write_bytes(b"fixture")
+
+    _make_pdf_owner(tmp_path / "pdf.sqlite3", protected_pdf, status="protected")
+    _make_archive_owner(
+        tmp_path / "archive.sqlite3",
+        metadata_only_archive,
+        container_status="complete",
+        member_status="metadata_only",
+        text=None,
+    )
+    _make_audio_owner(
+        tmp_path / "audio.sqlite3",
+        ((no_speech_audio, "no_speech"), (no_audio_media, "no_audio")),
+    )
+
+    summaries = (
+        update_document_catalog_source(
+            catalog,
+            tmp_path / "pdf.sqlite3",
+            "pdf",
+            verify_source_paths=True,
+        ),
+        update_document_catalog_source(
+            catalog,
+            tmp_path / "archive.sqlite3",
+            "archive",
+            verify_source_paths=True,
+        ),
+        update_document_catalog_source(
+            catalog,
+            tmp_path / "audio.sqlite3",
+            "audio",
+            verify_source_paths=True,
+        ),
+    )
+
+    assert [summary.candidates for summary in summaries] == [1, 1, 2]
+    assert all(summary.classified == summary.candidates for summary in summaries)
+    with document_catalog_database(catalog, readonly=True) as connection:
+        rows = connection.execute(
+            """SELECT source_kind,source_status,catalog_status,text_fingerprint
+            FROM documents WHERE active=1 ORDER BY source_kind,source_status"""
+        ).fetchall()
+
+    assert [(str(row[0]), str(row[1])) for row in rows] == [
+        ("archive", "metadata_only"),
+        ("audio", "no_audio"),
+        ("audio", "no_speech"),
+        ("pdf", "protected"),
+    ]
+    assert all(str(row[2]) == "review" for row in rows)
+    assert all(row[3] is None for row in rows)
+
+
+def test_independent_multimodal_catalog_producers_serialize_and_replay(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    catalog = tmp_path / "document_catalog.sqlite3"
+    initialize_document_catalog(catalog)
+    source_by_kind = {
+        "archive": tmp_path / "bundle.zip",
+        "image": tmp_path / "plate.png",
+        "video": tmp_path / "clip.mkv",
+        "code": tmp_path / "module.py",
+    }
+    for source in source_by_kind.values():
+        source.write_bytes(b"fixture")
+
+    _make_archive_owner(
+        tmp_path / "archive.sqlite3",
+        source_by_kind["archive"],
+        container_status="complete",
+    )
+    _make_image_owner(tmp_path / "image.sqlite3", source_by_kind["image"])
+    _make_video_owner(tmp_path / "video.sqlite3", source_by_kind["video"])
+    _make_code_owner(
+        tmp_path / "code.sqlite3",
+        source_by_kind["code"],
+        hex_identity=True,
+    )
+
+    config = SimpleNamespace(
+        document_catalog_enabled=True,
+        document_catalog_database=catalog,
+        document_taxonomy_path=None,
+        document_classification_max_chars=1024,
+        resume_run_id=None,
+        archive_database=tmp_path / "archive.sqlite3",
+        image_database=tmp_path / "image.sqlite3",
+        video_database=tmp_path / "video.sqlite3",
+        code_database=tmp_path / "code.sqlite3",
+    )
+
+    class LifecycleProbe:
+        def begin_route_phase(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+        def complete_route_phase(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+        def fail_route_phase(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+        def record_event(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+    contexts = {
+        kind: RouteExecutionContext(
+            config=config,  # type: ignore[arg-type]
+            root=tmp_path,
+            framework_state=LifecycleProbe(),  # type: ignore[arg-type]
+            run_id=index + 1,
+            scan_id=100 + index,
+            progress=None,
+            resource_coordinator=None,
+            cancellation=None,  # type: ignore[arg-type]
+        )
+        for index, kind in enumerate(source_by_kind)
+    }
+
+    import neocortex.documents.document_catalog as catalog_module
+
+    original_update = catalog_module.update_document_catalog_source
+    active = 0
+    max_active = 0
+    activity_lock = threading.Lock()
+
+    def recording_update(*args: object, **kwargs: object):
+        nonlocal active, max_active
+        with activity_lock:
+            active += 1
+            max_active = max(max_active, active)
+        try:
+            # This sleep is outside the catalog module's own lock.  It makes
+            # an orchestration-level race observable if route_registry does
+            # not serialize the complete generation/CAS call.
+            time.sleep(0.02)
+            return original_update(*args, **kwargs)
+        finally:
+            with activity_lock:
+                active -= 1
+
+    monkeypatch.setattr(catalog_module, "update_document_catalog_source", recording_update)
+
+    def run_kind(kind: str):
+        return _update_document_catalog_after_route(contexts[kind], kind)  # type: ignore[arg-type]
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        first = tuple(executor.map(run_kind, source_by_kind))
+
+    assert max_active == 1
+    assert [summary.candidates for summaries in first for summary in summaries] == [1] * 4
+    with document_catalog_database(catalog, readonly=True) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM documents WHERE active=1").fetchone()[0] == 4
+        assert connection.execute("SELECT COUNT(*) FROM catalog_publications").fetchone()[0] == 4
+        assert connection.execute(
+            "SELECT COUNT(*) FROM catalog_generations WHERE status='published'"
+        ).fetchone()[0] == 4
+
+    active = 0
+    max_active = 0
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        replay = tuple(executor.map(run_kind, source_by_kind))
+
+    assert max_active == 1
+    assert [summary.cache_hits for summaries in replay for summary in summaries] == [1] * 4
+    assert [summary.classified for summaries in replay for summary in summaries] == [0] * 4
 
 
 def test_catalog_update_discovers_present_optional_owners(tmp_path: Path) -> None:

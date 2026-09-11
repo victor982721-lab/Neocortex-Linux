@@ -132,6 +132,18 @@ class OfficeRoute:
                 self.cancellation,
             )
         )
+        self._recoverable_retry_keys: set[str] = set()
+
+    def _claim_recoverable_retry(self, snapshot: FileSnapshot) -> bool:
+        claimed = getattr(self, "_recoverable_retry_keys", None)
+        if claimed is None:
+            claimed = set()
+            self._recoverable_retry_keys = claimed
+        key = _file_key(snapshot)
+        if key in claimed:
+            return False
+        claimed.add(key)
+        return True
 
     def _validate(self) -> None:
         if self.config.max_text_chars < 1:
@@ -199,7 +211,22 @@ class OfficeRoute:
         status = str(cached["status"])
         if status != "complete" and self.config.retry_errors:
             return False, False
-        _refresh_cached_path(connection, snapshot, format_name, self.run_id)
+        if (
+            status == "error"
+            and self.config.retry_recoverable_errors
+            and _cached_error_is_recoverable(cached)
+            and self._claim_recoverable_retry(snapshot)
+        ):
+            return False, False
+        fts_repaired = _refresh_cached_path(
+            connection,
+            snapshot,
+            format_name,
+            self.run_id,
+            max_text_chars=self.config.max_text_chars,
+        )
+        if fts_repaired is None:
+            return False, False
         if status == "complete":
             self._queue_success(
                 reconciliations,
@@ -297,6 +324,7 @@ class OfficeRoute:
 
     def run(self) -> OfficeRouteSummary:
         self.cancellation.checkpoint()
+        self._recoverable_retry_keys.clear()
         self._validate()
         initialize_office_state(self.config.state_path)
         metrics = _OfficeRunMetrics(*self._selected_counts())
@@ -365,7 +393,13 @@ class OfficeRoute:
         reconciliations: list[ReviewCandidateReconciliation],
     ) -> None:
         _store_inventory(connection, snapshot, format_name, self.run_id)
-        cached = _cached_document(connection, snapshot, self.config.processing_signature)
+        cached = _cached_document(
+            connection,
+            snapshot,
+            self.config.processing_signature,
+            format_name=format_name,
+            max_text_chars=self.config.max_text_chars,
+        )
         consumed, cached_error = self._consume_cached(
             connection,
             snapshot,
@@ -471,6 +505,20 @@ def _cached_office_failure(row: sqlite3.Row) -> OfficeExtractionError:
         recommendation=cast(ReviewRecommendation, recommendation),
         retryable=bool(row["retryable"]),
     )
+
+
+def _cached_error_is_recoverable(row: sqlite3.Row) -> bool:
+    """Accept typed retry evidence without interpreting error-message text."""
+
+    recommendation = str(row["review_disposition"] or "")
+    if recommendation in {
+        "manual_review",
+        "deletion_candidate",
+        "keep_protected",
+        "protected",
+    }:
+        return False
+    return recommendation == "retry" or bool(row["retryable"])
 
 
 def _review_candidate(

@@ -275,6 +275,7 @@ def test_run_code_passes_a_releasing_coordinator_gate(tmp_path: Path) -> None:
         code_max_documents=None,
         code_chunk_chars=1024,
         code_retry_errors=False,
+        document_catalog_enabled=False,  # this test isolates coordinator release, not catalog I/O
         code_cache_validation="metadata",
         code_project_roots=(),
         code_include_generated=True,

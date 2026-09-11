@@ -37,7 +37,7 @@ EXPECTED_PLANNER_ALL = [
 EXPECTED_PLANNER_SIGNATURE = (
     "(state_directory: 'Path', *, scope: 'str' = 'all', "
     "source_kinds: 'Sequence[str]' = ('pdf', 'docx', 'xlsx', 'pptx', 'odt', "
-    "'audio', 'archive', 'text', 'code'), text_model: "
+    "'audio', 'archive', 'text', 'code', 'video'), text_model: "
     "'EmbeddingModelSpec | None' = None, "
     "embed_ocr_text: 'bool' = True, chunking: 'TextChunkingConfig | None' = "
     "None, cost_calibrations: 'Sequence[SemanticCostCalibration]' = (), "

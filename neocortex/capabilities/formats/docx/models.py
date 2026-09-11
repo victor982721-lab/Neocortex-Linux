@@ -48,6 +48,7 @@ class DocxRouteConfig:
     max_documents: int | None = None
     max_text_chars: int = 20_000_000
     retry_errors: bool = False
+    retry_recoverable_errors: bool = False
     selection: CandidateSelection = field(default_factory=CandidateSelection)
     memory_budget_bytes: int = 512 * 1024 * 1024
     min_free_memory_bytes: int = 1024 * 1024 * 1024
@@ -115,6 +116,8 @@ class DocxRouteSummary:
     processing_signature: str | None = None
     processing_provenance: dict[str, Any] | None = None
     summary_schema: str = ROUTE_SUMMARY_SCHEMA
+    catalog_source_missing: int = field(default=0, kw_only=True)
+    catalog_complete: bool | None = field(default=None, kw_only=True)
 
 
 # endregion [01]

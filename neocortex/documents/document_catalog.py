@@ -868,7 +868,10 @@ def update_document_catalog_source(
                                 classification,
                             )
                             classified += 1
-                            if classification.uncertainty == "alta":
+                            if (
+                                classification.uncertainty == "alta"
+                                or document.coverage != "complete"
+                            ):
                                 review += 1
                         except (UnicodeError, ValueError, zlib.error) as exc:
                             _store_catalog_error(
@@ -943,13 +946,13 @@ def _source_document_count(
     """Count exactly the rows consumed by ``_iter_source_documents``."""
 
     if source_kind == "pdf":
-        predicate = "status IN ('done','partial')"
+        predicate = "status IN ('done','partial','protected')"
         parameters: tuple[str, ...] = ()
     elif source_kind == "docx":
         predicate = "status IN ('complete','partial')"
         parameters = ()
     elif source_kind == "audio":
-        predicate = "status='complete'"
+        predicate = "status IN ('complete','no_speech','no_audio')"
         parameters = ()
     elif source_kind == "text":
         predicate = "status='complete'"
@@ -1441,7 +1444,7 @@ def _iter_source_documents(
         rows = connection.execute(
             """SELECT file_key,path,size,mtime_ns,birthtime_ns,status,
             processing_signature,normalized_text_xxh3_128,metadata_json,page_count
-            FROM documents WHERE status IN ('done','partial') ORDER BY path"""
+            FROM documents WHERE status IN ('done','partial','protected') ORDER BY path"""
         )
         for row in rows:
             metadata = _json_mapping(row["metadata_json"])
@@ -1508,7 +1511,7 @@ def _iter_source_documents(
             processing_signature,text_xxh3_128,title,language,duration_seconds,
             speech_duration_seconds,model_name,backend_version,
             media_metadata_json FROM documents
-            WHERE status='complete' ORDER BY path"""
+            WHERE status IN ('complete','no_speech','no_audio') ORDER BY path"""
         )
         for row in rows:
             volume_id, file_id = _split_file_key(str(row["file_key"]))
@@ -1537,6 +1540,7 @@ def _iter_source_documents(
                 title=str(row["title"] or ""),
                 author="",
                 metadata=_metadata_text(metadata),
+                coverage=_source_coverage("audio", str(row["status"])),
             )
         return
     elif source_kind == "video":

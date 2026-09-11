@@ -79,10 +79,137 @@ class PdfDerivedSummary:
     fts_rows_repaired: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class PdfDerivedCoverage:
+    """Observable completeness of one PDF derived-cache generation.
+
+    The route uses this only to decide whether a source run's completed
+    ``derived`` phase is safe to skip.  Counts are based on durable page and
+    derived rows; no source PDF is opened and no extraction/OCR is attempted.
+    """
+
+    documents: int = 0
+    pages: int = 0
+    missing_fts_pages: int = 0
+    orphan_fts_rows: int = 0
+    missing_text_signatures: int = 0
+    missing_profile_pages: int = 0
+    missing_document_profiles: int = 0
+    missing_similarity_states: int = 0
+
+    @property
+    def complete(self) -> bool:
+        return not any(
+            (
+                self.missing_fts_pages,
+                self.orphan_fts_rows,
+                self.missing_text_signatures,
+                self.missing_profile_pages,
+                self.missing_document_profiles,
+                self.missing_similarity_states,
+            )
+        )
+
+
 @contextmanager
 def _database(path: Path):
     with pdf_database(path) as connection:
         yield connection
+
+
+def inspect_pdf_derived_coverage(state_path: Path, run_id: int) -> PdfDerivedCoverage:
+    """Inspect durable derived rows for ``run_id`` without touching source files."""
+
+    with pdf_database(state_path, readonly=True) as connection:
+        documents = int(
+            connection.execute(
+                """SELECT COUNT(*) FROM documents
+                WHERE status IN ('done','partial') AND last_seen_run_id=?""",
+                (run_id,),
+            ).fetchone()[0]
+        )
+        pages = int(
+            connection.execute(
+                """SELECT COUNT(*) FROM pages p JOIN documents d USING(file_key)
+                WHERE d.status IN ('done','partial') AND d.last_seen_run_id=?""",
+                (run_id,),
+            ).fetchone()[0]
+        )
+        missing_fts_pages = int(
+            connection.execute(
+                """SELECT COUNT(*) FROM pages p JOIN documents d USING(file_key)
+                WHERE d.status IN ('done','partial') AND d.last_seen_run_id=?
+                AND (NOT EXISTS(SELECT 1 FROM page_fts_state s
+                    WHERE s.file_key=p.file_key AND s.page_number=p.page_number)
+                OR NOT EXISTS(SELECT 1 FROM page_fts f
+                    WHERE f.file_key=p.file_key AND f.page_number=p.page_number))""",
+                (run_id,),
+            ).fetchone()[0]
+        )
+        orphan_fts_rows = int(
+            connection.execute(
+                """SELECT COUNT(*) FROM page_fts_state s
+                WHERE NOT EXISTS(SELECT 1 FROM pages p
+                    WHERE p.file_key=s.file_key AND p.page_number=s.page_number)"""
+            ).fetchone()[0]
+        )
+        missing_text_signatures = int(
+            connection.execute(
+                """SELECT COUNT(*) FROM documents d
+                WHERE d.status='done' AND d.is_partial=0 AND d.last_seen_run_id=?
+                AND EXISTS(SELECT 1 FROM pages p WHERE p.file_key=d.file_key)
+                AND NOT EXISTS(SELECT 1 FROM text_signatures s
+                    WHERE s.file_key=d.file_key AND s.algorithm_version=?)""",
+                (run_id, SIMILARITY_VERSION),
+            ).fetchone()[0]
+        )
+        derived_documents = """d.last_seen_run_id=? AND
+            (d.status='done' OR (d.status='partial'
+            AND COALESCE(d.error_type,'')<>'PdfDocumentTimeout'))"""
+        missing_profile_pages = int(
+            connection.execute(
+                f"""SELECT COUNT(*) FROM pages p JOIN documents d USING(file_key)
+                WHERE {derived_documents}
+                AND (p.profile_json IS NULL OR NOT EXISTS(
+                    SELECT 1 FROM page_layouts l WHERE l.file_key=p.file_key
+                    AND l.page_number=p.page_number AND l.algorithm_version=?))""",
+                (run_id, LAYOUT_VERSION),
+            ).fetchone()[0]
+        )
+        missing_document_profiles = int(
+            connection.execute(
+                f"""SELECT COUNT(*) FROM documents d
+                WHERE {derived_documents}
+                AND (COALESCE(d.profile_version,0)<>?
+                OR d.template_simhash64 IS NULL
+                OR NOT EXISTS(SELECT 1 FROM document_layouts dl
+                    WHERE dl.file_key=d.file_key AND dl.algorithm_version=?))""",
+                (run_id, PROFILE_VERSION, LAYOUT_VERSION),
+            ).fetchone()[0]
+        )
+        missing_similarity_states = int(
+            connection.execute(
+                """SELECT COUNT(*) FROM (
+                    SELECT 'text' AS signature_kind
+                    UNION ALL SELECT 'template'
+                    UNION ALL SELECT 'layout'
+                ) expected
+                WHERE NOT EXISTS(SELECT 1 FROM similarity_state s
+                    WHERE s.signature_kind=expected.signature_kind
+                    AND s.algorithm_version=?)""",
+                (SIMILARITY_VERSION,),
+            ).fetchone()[0]
+        )
+    return PdfDerivedCoverage(
+        documents=documents,
+        pages=pages,
+        missing_fts_pages=missing_fts_pages,
+        orphan_fts_rows=orphan_fts_rows,
+        missing_text_signatures=missing_text_signatures,
+        missing_profile_pages=missing_profile_pages,
+        missing_document_profiles=missing_document_profiles,
+        missing_similarity_states=missing_similarity_states,
+    )
 
 
 def _simhash(counters: list[int]) -> int:
@@ -546,6 +673,37 @@ class PdfDerivedIndexer:
         warning_count = 0
         warning_samples: tuple[str, ...] = ()
         try:
+            # A missing document-level profile can be finalized entirely from
+            # the already persisted page profile/layout representation.  Do
+            # not reopen the source (and therefore do not decode or OCR it)
+            # when no page-level profile work remains.
+            with _database(self.state_path) as connection:
+                page_numbers = tuple(
+                    int(row[0])
+                    for row in connection.execute(
+                        """SELECT p.page_number FROM pages p
+                        LEFT JOIN page_layouts l ON l.file_key=p.file_key
+                            AND l.page_number=p.page_number
+                            AND l.algorithm_version=?
+                        WHERE p.file_key=?
+                          AND (p.profile_json IS NULL OR l.file_key IS NULL)
+                        ORDER BY p.page_number""",
+                        (LAYOUT_VERSION, file_key),
+                    )
+                )
+
+            if not page_numbers:
+                stored = self._store_profiles(file_key, ())
+                self._store_profile_warnings(file_key, warning_count, warning_samples)
+                if stored:
+                    self._clear_profile_failure(file_key)
+                else:
+                    self._store_profile_failure(
+                        file_key,
+                        RuntimeError("persisted page profile set is incomplete"),
+                    )
+                return stored
+
             if self.profile_timeout_seconds is None:
                 import fitz  # type: ignore[import-untyped]
 
@@ -557,20 +715,9 @@ class PdfDerivedIndexer:
                     fitz.open(path) as document,
                     _database(self.state_path) as connection,
                 ):
-                    page_numbers = connection.execute(
-                        """SELECT p.page_number FROM pages p
-                        LEFT JOIN page_layouts l ON l.file_key=p.file_key
-                        AND l.page_number=p.page_number AND l.algorithm_version=?
-                        WHERE p.file_key=?
-                        AND (p.profile_json IS NULL OR l.file_key IS NULL)
-                        ORDER BY p.page_number""",
-                        (LAYOUT_VERSION, file_key),
-                    )
-
                     def local_profiles():
-                        for row in page_numbers:
+                        for page_number in page_numbers:
                             self.cancellation.checkpoint()
-                            page_number = int(row[0])
                             yield (
                                 page_number,
                                 _profile_page(document.load_page(page_number)),
@@ -593,20 +740,6 @@ class PdfDerivedIndexer:
             # spawning an isolated profiler.  The parent owns the PDF SQLite
             # writer during this phase, so a child immutable read would race
             # profile/layout writes and fail closed with an owner-drift error.
-            with _database(self.state_path) as connection:
-                page_numbers = tuple(
-                    int(row[0])
-                    for row in connection.execute(
-                        """SELECT p.page_number FROM pages p
-                        LEFT JOIN page_layouts l ON l.file_key=p.file_key
-                            AND l.page_number=p.page_number
-                            AND l.algorithm_version=?
-                        WHERE p.file_key=?
-                          AND (p.profile_json IS NULL OR l.file_key IS NULL)
-                        ORDER BY p.page_number""",
-                        (LAYOUT_VERSION, file_key),
-                    )
-                )
             messages = stream_isolated_profiles(
                 path,
                 page_numbers,

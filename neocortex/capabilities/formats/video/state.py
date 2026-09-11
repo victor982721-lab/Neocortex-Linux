@@ -414,7 +414,7 @@ def cached_video_document(
     processing_signature: str,
 ) -> sqlite3.Row | None:
     return connection.execute(
-        """SELECT status,error_type,error_message,retryable,review_disposition,
+        """SELECT processing_signature,status,error_type,error_message,retryable,review_disposition,
         frame_count,ocr_frame_count,ocr_text_chars,warnings_json,audio_status,
         audio_streams
         FROM documents WHERE file_key=? AND size=? AND mtime_ns=?
@@ -505,8 +505,289 @@ def refresh_cached_video(
     connection.execute("UPDATE frame_fts SET path=? WHERE file_key=?", (snapshot.path, key))
 
 
-def _probe_json(probe: VideoMediaProbe) -> str:
-    return json.dumps(asdict(probe), ensure_ascii=False, sort_keys=True, allow_nan=False)
+def _video_fts_matches(
+    connection: sqlite3.Connection,
+    key: str,
+    path: str,
+    title: str,
+    frames: tuple[sqlite3.Row, ...],
+) -> bool:
+    rows = connection.execute(
+        """SELECT file_key,path,title,timestamp_ms,body
+        FROM frame_fts WHERE file_key=? ORDER BY CAST(timestamp_ms AS INTEGER),rowid""",
+        (key,),
+    ).fetchall()
+    if len(rows) != len(frames):
+        return False
+    for fts, frame in zip(rows, frames, strict=True):
+        try:
+            timestamp_matches = int(fts["timestamp_ms"]) == int(frame["timestamp_ms"])
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if (
+            str(fts["file_key"]) != key
+            or str(fts["path"]) != path
+            or str(fts["title"]) != title
+            or not timestamp_matches
+            or str(fts["body"]) != str(frame["ocr_text"])
+        ):
+            return False
+    return True
+
+
+def repair_cached_video_derivatives(
+    connection: sqlite3.Connection,
+    snapshot: FileSnapshot,
+) -> bool:
+    """Validate and repair frame projections from durable frame evidence.
+
+    ``frames`` is the durable owner-local source.  Frame FTS and the document
+    frame/OCR counters are derived outputs, so an interrupted or externally
+    pruned FTS write can be repaired during a cache replay without invoking
+    FFmpeg or OCR again.
+    """
+
+    key = file_key_from_snapshot(snapshot)
+    document = connection.execute(
+        """SELECT status,title,frame_count,ocr_frame_count,ocr_text_chars,probe_json
+        FROM documents WHERE file_key=?""",
+        (key,),
+    ).fetchone()
+    if document is None:
+        return False
+    status = str(document["status"])
+    if status == "error":
+        return True
+    if status not in {"complete", "partial"}:
+        return False
+    frames = tuple(
+        connection.execute(
+            """SELECT frame_index,timestamp_ms,sampling_reasons_json,width,height,
+            content_xxh3_128,ocr_available,ocr_text,ocr_mean_confidence,
+            ocr_provenance,ocr_error_type,ocr_error_message
+            FROM frames WHERE file_key=? ORDER BY frame_index""",
+            (key,),
+        ).fetchall()
+    )
+    if not frames:
+        return False
+    if len(frames) > MAX_STORED_VIDEO_FRAMES:
+        return False
+    try:
+        timestamps: list[int] = []
+        for expected_index, frame in enumerate(frames):
+            if not _valid_stored_video_frame(frame, expected_index, timestamps):
+                return False
+        if len(set(timestamps)) != len(timestamps) or timestamps != sorted(timestamps):
+            return False
+        ocr_frame_count = sum(
+            bool(frame["ocr_available"]) and bool(frame["ocr_text"]) for frame in frames
+        )
+        ocr_text_chars = sum(len(str(frame["ocr_text"])) for frame in frames)
+    except (TypeError, ValueError, OverflowError, json.JSONDecodeError):
+        return False
+
+    title = Path(snapshot.path).stem
+    try:
+        stored_frame_count: int | None = (
+            0 if document["frame_count"] is None else int(document["frame_count"])
+        )
+    except (TypeError, ValueError, OverflowError):
+        stored_frame_count = None
+    if stored_frame_count != len(frames):
+        # The stored count is the original extent witness.  Never shrink it to
+        # match a subset of durable rows after a frame was lost.
+        return False
+    if not _valid_video_probe_metadata(document["probe_json"], len(frames)):
+        return False
+    try:
+        stored_ocr_frame_count: int | None = (
+            0
+            if document["ocr_frame_count"] is None
+            else int(document["ocr_frame_count"])
+        )
+    except (TypeError, ValueError, OverflowError):
+        stored_ocr_frame_count = None
+    try:
+        stored_ocr_text_chars: int | None = (
+            0
+            if document["ocr_text_chars"] is None
+            else int(document["ocr_text_chars"])
+        )
+    except (TypeError, ValueError, OverflowError):
+        stored_ocr_text_chars = None
+    if (
+        str(document["title"] or "") != title
+        or stored_ocr_frame_count != ocr_frame_count
+        or stored_ocr_text_chars != ocr_text_chars
+    ):
+        connection.execute(
+            """UPDATE documents SET title=?,frame_count=?,ocr_frame_count=?,
+            ocr_text_chars=? WHERE file_key=?""",
+            (title, len(frames), ocr_frame_count, ocr_text_chars, key),
+        )
+
+    if not _video_fts_matches(connection, key, snapshot.path, title, frames):
+        connection.execute("DELETE FROM frame_fts WHERE file_key=?", (key,))
+        connection.executemany(
+            """INSERT INTO frame_fts(file_key,path,title,timestamp_ms,body)
+            VALUES(?,?,?,?,?)""",
+            (
+                (
+                    key,
+                    snapshot.path,
+                    title,
+                    int(frame["timestamp_ms"]),
+                    str(frame["ocr_text"]),
+                )
+                for frame in frames
+            ),
+        )
+    return True
+
+
+def _valid_stored_video_frame(
+    frame: sqlite3.Row,
+    expected_index: int,
+    timestamps: list[int],
+) -> bool:
+    try:
+        frame_index = frame["frame_index"]
+        timestamp_ms = frame["timestamp_ms"]
+        width = frame["width"]
+        height = frame["height"]
+        ocr_available = frame["ocr_available"]
+        if (
+            type(frame_index) is not int
+            or frame_index != expected_index
+            or type(timestamp_ms) is not int
+            or timestamp_ms < 0
+            or type(width) is not int
+            or type(height) is not int
+            or width < 1
+            or height < 1
+            or width * height > MAX_STORED_VIDEO_FRAME_PIXELS
+            or type(ocr_available) is not int
+            or ocr_available not in {0, 1}
+        ):
+            return False
+        digest = frame["content_xxh3_128"]
+        if not isinstance(digest, str):
+            return False
+        _validate_frame_digest(digest)
+        reasons = json.loads(str(frame["sampling_reasons_json"]))
+        if (
+            not isinstance(reasons, list)
+            or not reasons
+            or any(type(reason) is not str for reason in reasons)
+            or not set(reasons) <= _FRAME_REASONS
+        ):
+            return False
+        ocr_text = frame["ocr_text"]
+        if not isinstance(ocr_text, str):
+            return False
+        if len(ocr_text.encode("utf-8")) > MAX_STORED_VIDEO_OCR_UTF8_BYTES:
+            return False
+        if ocr_available == 0 and ocr_text:
+            return False
+        confidence = frame["ocr_mean_confidence"]
+        if confidence is not None:
+            if isinstance(confidence, bool):
+                return False
+            confidence_value = float(confidence)
+            if not math.isfinite(confidence_value) or not 0 <= confidence_value <= 100:
+                return False
+        timestamps.append(timestamp_ms)
+        return True
+    except (TypeError, ValueError, OverflowError, json.JSONDecodeError):
+        return False
+
+
+def _valid_video_probe_metadata(raw_probe: object, frame_count: int) -> bool:
+    try:
+        probe = json.loads(str(raw_probe))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    if not isinstance(probe, dict):
+        return False
+    stored_count = probe.get("frame_count")
+    extent = probe.get("frame_index_extent")
+    if (
+        type(stored_count) is not int
+        or stored_count != frame_count
+        or not isinstance(extent, list)
+        or extent != [0, frame_count - 1]
+    ):
+        return False
+    duration = probe.get("duration_seconds")
+    if isinstance(duration, bool) or not isinstance(duration, (int, float)):
+        return False
+    if not math.isfinite(float(duration)) or float(duration) < 0:
+        return False
+    if not isinstance(probe.get("format_name"), str) or not probe["format_name"].strip():
+        return False
+    for field in ("audio_streams", "chapters"):
+        value = probe.get(field)
+        if type(value) is not int or value < 0:
+            return False
+    video_streams = probe.get("video")
+    if not isinstance(video_streams, list) or not video_streams:
+        return False
+    if not isinstance(probe.get("subtitles"), list):
+        return False
+    for stream in video_streams:
+        if not isinstance(stream, dict):
+            return False
+        width = stream.get("width")
+        height = stream.get("height")
+        index = stream.get("index")
+        if (
+            type(index) is not int
+            or index < 0
+            or type(width) is not int
+            or type(height) is not int
+            or width < 1
+            or height < 1
+        ):
+            return False
+        if not isinstance(stream.get("codec_name"), str) or not stream["codec_name"].strip():
+            return False
+        frame_rate = stream.get("frame_rate")
+        if frame_rate is not None and (
+            isinstance(frame_rate, bool)
+            or not isinstance(frame_rate, (int, float))
+            or not math.isfinite(float(frame_rate))
+            or float(frame_rate) <= 0
+        ):
+            return False
+        stream_duration = stream.get("duration_seconds")
+        if stream_duration is not None and (
+            isinstance(stream_duration, bool)
+            or not isinstance(stream_duration, (int, float))
+            or not math.isfinite(float(stream_duration))
+            or float(stream_duration) < 0
+        ):
+            return False
+    for subtitle in probe["subtitles"]:
+        if not isinstance(subtitle, dict):
+            return False
+        if (
+            type(subtitle.get("index")) is not int
+            or subtitle["index"] < 0
+            or not isinstance(subtitle.get("codec_name"), str)
+            or not subtitle["codec_name"].strip()
+        ):
+            return False
+        if subtitle.get("language") is not None and not isinstance(subtitle["language"], str):
+            return False
+    return True
+
+
+def _probe_json(probe: VideoMediaProbe, frame_count: int) -> str:
+    payload = asdict(probe)
+    payload["frame_count"] = frame_count
+    payload["frame_index_extent"] = [0, frame_count - 1]
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, allow_nan=False)
 
 
 def _validate_success_evidence(
@@ -642,7 +923,7 @@ def store_video_success(
             len(frames),
             ocr_frames,
             ocr_chars,
-            _probe_json(probe),
+            _probe_json(probe, len(frames)),
             json.dumps(normalized_warnings, ensure_ascii=True),
             None if audio_link is None else audio_link.file_key,
             None if audio_link is None else audio_link.processing_signature,
@@ -932,6 +1213,7 @@ __all__ = (
     "initialize_video_state",
     "prune_stale_video_documents",
     "refresh_cached_video",
+    "repair_cached_video_derivatives",
     "search_video_state",
     "store_video_error",
     "store_video_inventory",

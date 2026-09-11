@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from collections.abc import Callable
 from contextlib import AbstractContextManager
@@ -42,6 +43,7 @@ from .models import (
     VIDEO_ROUTE_VERSION,
     VideoMediaProbe,
     VideoProcessingError,
+    VideoRuntimeUnavailableError,
     VideoRouteSummary,
 )
 from .probe import probe_video, resolve_video_ffprobe
@@ -51,6 +53,7 @@ from .state import (
     find_published_audio_link,
     initialize_video_state,
     prune_stale_video_documents,
+    repair_cached_video_derivatives,
     refresh_cached_video,
     search_video_state,
     store_video_error,
@@ -215,6 +218,7 @@ class VideoRouteConfig:
     file_timeout_seconds: float = 300.0
     worker_memory_bytes: int = 2 * 1024 * 1024 * 1024
     retry_errors: bool = False
+    retry_recoverable_errors: bool = False
     ffmpeg_path: str | None = None
     ffprobe_path: str | None = None
     ocr_mode: Literal["auto", "never"] = "auto"
@@ -371,6 +375,7 @@ class VideoRoute:
         self.frame_sampler = frame_sampler
         self.ocr_runtime_resolver = ocr_runtime_resolver
         self.frame_ocr = frame_ocr
+        self._recoverable_retry_keys: set[str] = set()
 
     def _validate(self) -> None:
         self.config.frame_sampling_config().validate()
@@ -411,14 +416,40 @@ class VideoRoute:
 
     def run(self) -> VideoRouteSummary:
         self.cancellation.checkpoint()
+        self._recoverable_retry_keys.clear()
         self._validate()
-        # Resolve required native tools before creating owner state.
-        resolve_video_ffmpeg(self.config.ffmpeg_path)
-        resolve_video_ffprobe(self.config.ffprobe_path)
-        ocr_runtime = self.ocr_runtime_resolver(self.config)
-        processing = self.config.processing_provenance(ocr_runtime)
         initialize_video_state(self.config.state_path)
         metrics = self._plan()
+        # Candidate accounting is independent of native tool availability.  In
+        # particular, an empty selection must remain an observed zero rather
+        # than failing while probing FFmpeg before the route has counted it.
+        if not metrics.selected:
+            with video_database(self.config.state_path, create=False) as connection:
+                connection.commit()
+                if self._should_prune():
+                    metrics.pruned = prune_stale_video_documents(connection, self.run_id)
+                    connection.commit()
+            self._report(metrics, finished=True)
+            return VideoRouteSummary(
+                candidate_pool=metrics.candidate_pool,
+                candidates=metrics.selected,
+                skipped_by_size=metrics.candidate_pool - metrics.eligible,
+                skipped_by_count=metrics.eligible - metrics.selected,
+                processed=metrics.processed,
+                cache_documents_pruned=metrics.pruned,
+            )
+        # With candidates, retain the native dependency boundary.  The
+        # coordinator/root owns independence between a failed video route and
+        # other selected routes.
+        try:
+            resolve_video_ffmpeg(self.config.ffmpeg_path)
+            resolve_video_ffprobe(self.config.ffprobe_path)
+        except FileNotFoundError as exc:
+            if isinstance(exc, VideoRuntimeUnavailableError):
+                raise
+            raise VideoRuntimeUnavailableError(str(exc)) from exc
+        ocr_runtime = self.ocr_runtime_resolver(self.config)
+        processing = self.config.processing_provenance(ocr_runtime)
         with video_database(self.config.state_path, create=False) as connection:
             self._run_candidates(connection, processing.signature, ocr_runtime, metrics)
             connection.commit()
@@ -527,8 +558,8 @@ class VideoRoute:
         cached = cached_video_document(connection, snapshot, signature)
         if self._can_reuse_cached(cached, snapshot):
             assert cached is not None
-            self._consume_cached(connection, snapshot, mime, cached, metrics)
-            return
+            if self._consume_cached(connection, snapshot, mime, cached, metrics):
+                return
         self._process_candidate(
             connection,
             snapshot,
@@ -548,8 +579,11 @@ class VideoRoute:
             # Let the normal processing boundary record the typed retryable error.
             return False
         status = str(cached["status"])
-        return status in {"complete", "partial"} or (
-            status == "error" and not self.config.retry_errors
+        if status in {"complete", "partial"}:
+            return True
+        return status == "error" and (
+            not self.config.retry_errors
+            or self.config.retry_recoverable_errors
         )
 
     def _commit_batch(
@@ -569,10 +603,28 @@ class VideoRoute:
         mime: str,
         cached: sqlite3.Row,
         metrics: _VideoMetrics,
-    ) -> None:
+    ) -> bool:
         prior_audio = cached["audio_status"]
+        status = str(cached["status"])
+        if status == "partial" and self._claim_recoverable_partial_retry(cached, snapshot):
+            return False
+        if status == "error":
+            if self.config.retry_errors:
+                return False
+            if self._claim_recoverable_retry(cached, snapshot):
+                return False
         link = find_published_audio_link(self.config.audio_state_path, snapshot)
         refresh_cached_video(connection, snapshot, mime, self.run_id, link)
+        if not repair_cached_video_derivatives(connection, snapshot):
+            # The persisted frame source is required for a no-decode replay.
+            # A missing/corrupt source therefore falls through to normal
+            # inspection instead of claiming a cache hit.
+            return False
+        processing_signature = str(cached["processing_signature"])
+        refreshed = cached_video_document(connection, snapshot, processing_signature)
+        if refreshed is None:
+            return False
+        cached = refreshed
         metrics.cache_hits += 1
         status = str(cached["status"])
         if status == "error":
@@ -582,7 +634,7 @@ class VideoRoute:
             metrics.reviews += 1
             metrics.deletion_candidates += int(failure.recommendation == "deletion_candidate")
             metrics.retryable_errors += int(failure.retryable)
-            return
+            return True
         metrics.complete += int(status == "complete")
         metrics.partial += int(status == "partial")
         metrics.frames += int(cached["frame_count"])
@@ -603,6 +655,53 @@ class VideoRoute:
         warnings = tuple(json.loads(str(cached["warnings_json"])))
         metrics.reviews += sum(warning in VIDEO_REVIEW_REASON_CODES for warning in warnings)
         self._reconcile_success(snapshot, warnings)
+        return True
+
+    def _claim_recoverable_partial_retry(
+        self,
+        cached: sqlite3.Row,
+        snapshot: FileSnapshot,
+    ) -> bool:
+        """Claim one partial replay whose persisted warning is retryable."""
+
+        if not self.config.retry_recoverable_errors:
+            return False
+        key = file_key_from_snapshot(snapshot)
+        if key in self._recoverable_retry_keys:
+            return False
+        try:
+            warnings = json.loads(str(cached["warnings_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+        if (
+            not isinstance(warnings, list)
+            or not warnings
+            or any(type(warning) is not str for warning in warnings)
+            or not all(warning in VIDEO_RETRYABLE_WARNING_CODES for warning in warnings)
+        ):
+            return False
+        self._recoverable_retry_keys.add(key)
+        return True
+
+    def _claim_recoverable_retry(
+        self,
+        cached: sqlite3.Row,
+        snapshot: FileSnapshot,
+    ) -> bool:
+        """Claim one explicit retryable cached error for this route run."""
+
+        if not self.config.retry_recoverable_errors:
+            return False
+        key = file_key_from_snapshot(snapshot)
+        if key in self._recoverable_retry_keys:
+            return False
+        retryable = cached["retryable"]
+        if not _is_explicit_retryable(retryable):
+            return False
+        if str(cached["review_disposition"] or "") != "retry":
+            return False
+        self._recoverable_retry_keys.add(key)
+        return True
 
     def _process_candidate(
         self,
@@ -698,6 +797,13 @@ class VideoRoute:
                 probe.video,
                 key=lambda stream: (stream.width * stream.height, -stream.index),
             )
+            sampling_duration = probe.duration_seconds
+            if (
+                primary.duration_seconds is not None
+                and math.isfinite(primary.duration_seconds)
+                and primary.duration_seconds > 0
+            ):
+                sampling_duration = min(sampling_duration, primary.duration_seconds)
             warnings: list[str] = []
             with self.frame_sampler(
                 Path(snapshot.path),
@@ -705,7 +811,7 @@ class VideoRoute:
                 stream_index=primary.index,
                 source_width=primary.width,
                 source_height=primary.height,
-                duration_seconds=probe.duration_seconds,
+                duration_seconds=sampling_duration,
                 frame_rate=primary.frame_rate,
                 config=self.config.frame_sampling_config(),
                 cancellation=self.cancellation,
@@ -835,6 +941,12 @@ def _source_changed(phase: str) -> VideoProcessingError:
     )
 
 
+def _is_explicit_retryable(value: object) -> bool:
+    """Accept only the current integer retry marker from durable state."""
+
+    return type(value) is int and value == 1
+
+
 def _cached_failure(row: sqlite3.Row) -> VideoProcessingError:
     stored = str(row["review_disposition"])
     recommendation: Literal["retry", "manual_review", "deletion_candidate"]
@@ -848,7 +960,7 @@ def _cached_failure(row: sqlite3.Row) -> VideoProcessingError:
         str(row["error_type"] or "video_cached_error"),
         str(row["error_message"] or "cached video error"),
         recommendation=recommendation,
-        retryable=bool(row["retryable"]),
+        retryable=_is_explicit_retryable(row["retryable"]),
     )
 
 
@@ -883,6 +995,7 @@ __all__ = (
     "VideoRoute",
     "VideoRouteConfig",
     "VideoRouteSummary",
+    "VideoRuntimeUnavailableError",
     "search_video_state",
 )
 

@@ -4,6 +4,14 @@ Esta guía contiene procedimientos. Los argumentos exactos están en
 [CLI.md](CLI.md), los owners en [PERSISTENCE.md](PERSISTENCE.md) y la recuperación
 en [RECOVERY.md](RECOVERY.md).
 
+## Estado de esta oleada
+
+La integración funcional C1–C5 está en curso. Los focos locales no certifican una
+recuperación real de la generación 17, una release final instalada ni la
+aceptación completa C0–C7; para eso se requieren una copia de fuente, pruebas,
+manifest, launcher y gates revalidados desde el SHA final. No uses valores
+históricos de `current`, rollback o receipts como estado vivo.
+
 ## Preflight
 
 Antes de procesar contenido:
@@ -49,14 +57,12 @@ cache hits y throughput. Corrige el primer bloqueo antes de ampliar rutas.
 Ejecuta el mismo comando por segunda vez. El replay debe mostrar qué se reutilizó
 y qué trabajo nuevo quedó, sin ocultar una reejecución como incremental.
 
-### Piloto del lifecycle 0.13 (regresión reutilizable)
+### Piloto del lifecycle 0.13 (procedimiento reutilizable; aceptación pendiente)
 
-El artefacto instalado `0.13.0-1567fe46821b-cp314-linux-x86_64` ya tiene un
-piloto documentado sobre 37 fixtures aisladas, nueve rutas, dos corridas y
-replay. Este procedimiento queda como regresión reutilizable, no como primer
-recorrido pendiente. Usa una raíz temporal con 20–50 fixtures heterogéneas,
-sin abrir el corpus personal ni una SQLite cercada de producción. Fija un
-límite global y conserva los recibos fuera de `docs/`:
+Este procedimiento sirve para validar una integración desde una raíz temporal,
+no para transferir resultados históricos al checkout actual. Usa 20–50 fixtures
+heterogéneas, sin abrir el corpus personal ni una SQLite cercada de producción.
+Fija límites explícitos y conserva los recibos fuera de `docs/`:
 
 ```bash
 Pilot="$HOME/Documentos/NeoCortex/Pilot-013"
@@ -72,26 +78,37 @@ La corrida debe publicar el manifest antes de workers y mostrar los stages
 `finalize`. La ausencia de Audio/Whisper, FFmpeg, un modelo u otra herramienta
 se registra como `unavailable`/`blocked` y deja `incomplete`; no se corrige
 relajando fences ni se presenta como cobertura completa. El stage Semantic se
-coordina dentro del run, pero sus fuentes pesadas Archive, Code y Video se
-seleccionan explícitamente y no se activan por `--all`.
+coordina dentro del run y considera Archive, Code y Video cuando sus owners,
+heads y dependencias están disponibles; `--semantic-source` sigue permitiendo
+acotar explícitamente el conjunto. Una ausencia afecta la ruta dependiente sin
+ocultar las rutas independientes.
 
 ## Ampliación controlada
 
-Después de aprobar una ruta, añade otra explícitamente. `--all` es una operación
-amplia, no el primer smoke; selecciona todas las rutas registradas, incluida Code
-como contenido.
+Después de validar un foco, amplía sólo sobre la raíz temporal. `--all` es una
+operación amplia, no el primer smoke: selecciona todas las rutas registradas,
+incluida Code como contenido, y en esa modalidad usa alcance `broad` dentro de la
+raíz elegida.
 
 Para reproducir o regresionar el lifecycle 0.13, ejecuta la ampliación sólo
 sobre el piloto temporal y prueba las nueve rutas (`pdf`, `docx`, `office`,
 `archive`, `text`, `audio`, `video`, `image`, `code`) bajo el mismo presupuesto.
-Code no ejecuta el contenido observado. Semantic pesado sigue siendo opt-in,
-aunque el stage se registre y conserve su resultado en el lifecycle. La
-validación fuente-exacta C0–C7 del artefacto final ya está aceptada; cualquier
-cambio posterior requiere repetirla desde su SHA final.
+Code no ejecuta el contenido observado. El stage Semantic integrado se ejecuta
+con `--all`; sus fuentes pueden acotarse con `--semantic-source` y la preparación
+de modelos continúa siendo explícita. `--all` no añade techos globales implícitos;
+sus límites globales y los límites por formato son acumulativos cuando se
+expresan. La validación C0–C7 y la instalación deben repetirse desde el SHA final
+de esta oleada antes de declararse cerradas.
 
 Una corrida sin `--apply` no modifica originales, pero sí escribe inventario,
 cachés, planes y publicaciones. Distingue siempre consulta read-only, producción
 de estado y efecto sobre corpus.
+
+Las rutas reutilizan extracción válida para reparar FTS y derivados sin repetir
+OCR, transcripción o análisis íntegros. Los reintentos sólo proceden con
+evidencia estructurada `retryable` y una vez por archivo y corrida; el texto de
+un mensaje no es autorización. Las propuestas de organización son advisory y no
+requieren `--apply`.
 
 ## Reanudación
 
@@ -115,6 +132,9 @@ Antes de publicar se revalidan root/identidad, política, snapshot, manifest,
 modelo, herramienta y owner heads. Cualquier drift, publicación parcial,
 capacidad no reanudable o ambigüedad queda `blocked`/`recovery_required`; no se
 reinicia por inferencia ni se marca `complete` por haber terminado otras rutas.
+Si el pendiente corresponde a una publicación Semantic posterior a epoch 0, la
+recuperación conserva el mismo productor, manifest, heads de todos los modelos y
+presupuesto restante; no resetea generaciones ni crea una ventana nueva.
 Dos reanudaciones consecutivas deben ser idempotentes y conservar candidatos,
 errores y presupuesto restante.
 
@@ -133,13 +153,28 @@ su grupo antes de escalar; no mates procesos por nombre genérico.
 
 ## Recursos y progreso
 
+`ROUTE_REPLAY` separa trabajo nuevo de observaciones reutilizadas; por ejemplo,
+`transcribed` conserva su significado histórico de audios con transcripción y
+no implica llamadas nuevas al motor. `ROUTE_COVERAGE` identifica parciales y
+errores con el siguiente paso de diagnóstico. Code puede conservar contenido
+HTML mediante `generic-lexical-fallback` y declarar estructura parcial: no se
+eleva a análisis completo ni se añade un parser para ocultar esa limitación.
+
+Video acota el muestreo por la duración del stream y sus intervalos; un título
+no es un fotograma ni recibe un timestamp inventado. Las marcas de muestreo no
+afirman cobertura de cada fotograma del video. Los límites por formato y las
+fences de lectura/snapshot permanecen independientes de los límites globales
+de procesamiento. Una copia de estado grande o con WAL necesita el procedimiento
+consistente autorizado; no se amplían sus presupuestos ni se abren owners activos
+para sortear una abstención.
+
 Las rutas emiten `ProgressEvent` con fase, completado, total y métricas. La salida
 operativa debe mostrar al menos stage/ruta, elementos, bytes, errores, velocidad,
 tiempo, presupuesto restante, checkpoint y causa de recuperación. En 0.13 los
-límites globales (`--run-max-items`, `--run-max-bytes` y
+límites globales explícitos (`--run-max-items`, `--run-max-bytes` y
 `--run-time-budget-seconds`) cubren todo el lifecycle, incluidos inventario,
-workers, Semantic y publicación; los límites específicos de una ruta no los
-sustituyen.
+workers, Semantic y publicación; no se añade un techo global implícito y los
+límites específicos de una ruta no se sustituyen ni reinician.
 
 No ejecutes un recorrido largo sin máximo o deadline. Evita un proceso por
 archivo y commits SQLite por elemento; usa streaming y batches acotados.
@@ -185,10 +220,12 @@ Neocortex models prepare
 FFmpeg/FFprobe y otros binarios se detectan antes de iniciar la ruta;
 una ausencia se reporta como cobertura o bloqueo, no como éxito vacío.
 
-Semantic pesado no se prepara automáticamente durante `--all`. Si se solicita
-una fuente explícita, el modelo y su caché deben estar disponibles y ligados al
-manifest; Archive, Code y Video no se seleccionan por inferencia. La preparación
-de modelos sigue siendo una operación separada, explícita y autorizada.
+Semantic pesado no descarga modelos automáticamente durante `--all`. El selector
+integrado considera Archive, Code y Video cuando sus fuentes y heads están
+disponibles; `--semantic-source` puede acotar la selección. Un modelo o herramienta
+ausente produce `unavailable`/`blocked` y cobertura `partial`/`incomplete`, no
+éxito vacío. La preparación de modelos sigue siendo una operación separada,
+explícita y autorizada.
 
 ## Curación
 
@@ -295,13 +332,10 @@ manifest/digest presentado, detén writers y sigue [RECOVERY.md](RECOVERY.md).
 
 ## Instalación y release
 
-La release activa comprobada es
-`0.13.0-c6d3985f7a45-cp314-linux-x86_64`
-(`source_sha=c6d3985f7a45fc3120bd03e9561195674f2b8ac2`), con rollback inmediato
-`0.13.0-1567fe46821b-cp314-linux-x86_64` y `.staging` vacío. La última
-integración documental dejó `HEAD == main == origin/main`; el código de la
-tranche post-0.13 se ejecuta desde el launcher activo y proviene de
-`c6d3985f7a45fc3120bd03e9561195674f2b8ac2`.
+Esta oleada no declara una release publicada ni instalada. Antes de usar un
+launcher o `current`, comprueba en vivo el SHA de la fuente, manifest, artefacto,
+rollback, staging, launcher y árbol limpio; una versión histórica no acredita
+el checkout actual.
 
 La [instalación ordinaria offline](LINUX_KUBUNTU.md#instalación-ordinaria-desde-una-extracción)
 en venv CPython 3.13 no promueve una release ni requiere Git. El procedimiento
@@ -335,10 +369,9 @@ la semántica de instalación, overrides y verificación está en
 
 Una auditoría integral es excepcional. Registra estado vivo, HEAD, alcance,
 comando, exit, duración y evidencia; separa hechos, inferencias y no verificado.
-Un benchmark compara la misma carga y entorno. La tranche post-0.13 quedó
-aceptada desde el artefacto instalado `source_sha=c6d3985f`, con 6959 pasadas,
-67 omitidas, 42 subtests, calidad estática, smoke, replay y piloto aislado; el
-artefacto 0.13 previo conserva su aceptación histórica independiente.
+Un benchmark compara la misma carga y entorno. Las aceptaciones y releases
+anteriores son antecedentes históricos independientes; no certifican la oleada
+actual ni una recuperación real de la generación 17 hasta repetir sus gates.
 
 Los informes y salidas brutas viven fuera de la documentación canónica. El
 repositorio conserva sólo contratos actuales, roadmap y changelog.

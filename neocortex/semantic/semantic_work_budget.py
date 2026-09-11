@@ -27,6 +27,11 @@ class SemanticWorkBudget:
     max_items: int | None = None
     max_new_jobs: int | None = None
     deadline: float | None = None
+    cancellation_check: Callable[[], bool | None] | None = field(
+        default=None, repr=False, compare=False, kw_only=True
+    )
+    preserve_existing_generations: bool = field(default=False, kw_only=True)
+    retry_recoverable_errors: bool = field(default=False, kw_only=True)
     _clock: Callable[[], float] = field(
         default=time.monotonic,
         repr=False,
@@ -60,6 +65,12 @@ class SemanticWorkBudget:
             raise ValueError("deadline must be finite when present")
         if not callable(self._clock):
             raise TypeError("clock must be callable")
+        if self.cancellation_check is not None and not callable(self.cancellation_check):
+            raise TypeError("cancellation_check must be callable")
+        if not isinstance(self.preserve_existing_generations, bool):
+            raise TypeError("preserve_existing_generations must be a boolean")
+        if not isinstance(self.retry_recoverable_errors, bool):
+            raise TypeError("retry_recoverable_errors must be a boolean")
 
     @classmethod
     def from_time_budget(
@@ -69,6 +80,9 @@ class SemanticWorkBudget:
         max_new_jobs: int | None = None,
         time_budget_seconds: float | None = None,
         clock: Callable[[], float] = time.monotonic,
+        cancellation_check: Callable[[], bool | None] | None = None,
+        preserve_existing_generations: bool = False,
+        retry_recoverable_errors: bool = False,
     ) -> "SemanticWorkBudget":
         if time_budget_seconds is not None and (
             isinstance(time_budget_seconds, bool)
@@ -87,6 +101,9 @@ class SemanticWorkBudget:
             max_new_jobs=max_new_jobs,
             deadline=deadline,
             _clock=clock,
+            cancellation_check=cancellation_check,
+            preserve_existing_generations=preserve_existing_generations,
+            retry_recoverable_errors=retry_recoverable_errors,
         )
 
     @property
@@ -100,6 +117,7 @@ class SemanticWorkBudget:
             self.truncation_reason = reason
 
     def deadline_expired(self) -> bool:
+        self._check_cancellation()
         if self.deadline is None:
             return False
         expired = self._clock() >= self.deadline
@@ -108,6 +126,7 @@ class SemanticWorkBudget:
         return expired
 
     def remaining_seconds(self) -> float | None:
+        self._check_cancellation()
         if self.deadline is None:
             return None
         remaining = self.deadline - self._clock()
@@ -119,8 +138,14 @@ class SemanticWorkBudget:
         return remaining
 
     def checkpoint(self) -> None:
+        self._check_cancellation()
         if self.deadline is not None:
             self.remaining_seconds()
+
+    def _check_cancellation(self) -> None:
+        if self.cancellation_check is not None and self.cancellation_check() is True:
+            self.mark_truncated("cancelled")
+            raise KeyboardInterrupt("Semantic indexing was cancelled")
 
     def try_admit_item(self) -> bool:
         if self.truncated:

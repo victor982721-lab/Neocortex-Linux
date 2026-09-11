@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+import zlib
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -52,6 +53,7 @@ from .isolation import (
 )
 from .state import (
     EncodedOcrText,
+    _decode_ocr_text,
     candidate_counts,
     file_key,
     initialize_image_state,
@@ -231,6 +233,7 @@ class ImageRoute:
         self._worker_local = threading.local()
         self._supervisor_lock = threading.Lock()
         self._supervisors: set[ImageWorkerSupervisor] = set()
+        self._recoverable_retry_keys: set[str] = set()
         self.document_verifier = resolve_document_verifier(_document_verifier_config(config))
         if (
             config.document_ocr_mode != "never"
@@ -264,6 +267,19 @@ class ImageRoute:
         )
         initialize_image_state(config.state_path)
 
+    def _claim_recoverable_retry(self, snapshot: FileSnapshot) -> bool:
+        """Claim the single automatic retry slot for one image in this run."""
+
+        claimed = getattr(self, "_recoverable_retry_keys", None)
+        if claimed is None:
+            claimed = set()
+            self._recoverable_retry_keys = claimed
+        key = file_key(snapshot)
+        if key in claimed:
+            return False
+        claimed.add(key)
+        return True
+
     def _ensure_full_fingerprint(self, snapshot: FileSnapshot) -> None:
         """Persist the exact image bytes identity already required by Semantic."""
 
@@ -287,8 +303,10 @@ class ImageRoute:
         reconciliations: list[ReviewCandidateReconciliation],
     ) -> _ImageCounterDelta | None:
         signature_matches = row["processing_signature"] == self.processing_signature
+        snapshot = snapshot_from_row(row)
         if row["status"] == "done" and signature_matches:
-            snapshot = snapshot_from_row(row)
+            if not _cached_ocr_result_is_valid(row):
+                return None
             self._ensure_full_fingerprint(snapshot)
             cached_reviews = _cached_success_review_candidates(row, snapshot)
             review_batch.extend(cached_reviews)
@@ -309,9 +327,19 @@ class ImageRoute:
                 ),
                 recovered_decodes=int(row["decode_quality"] == "recovered_truncated"),
             )
+        if (
+            row["status"] == "error"
+            and signature_matches
+            and not retry_selected
+            and self.config.retry_recoverable_errors
+            and _cached_error_is_recoverable(row)
+            and self._claim_recoverable_retry(snapshot)
+        ):
+            # Automatic recovery is deliberately opt-in and typed.  The normal
+            # candidate path will execute this row exactly once for this run.
+            return None
         if row["status"] != "error" or not signature_matches or retry_selected:
             return None
-        snapshot = snapshot_from_row(row)
         failure = _cached_failure(row)
         review_batch.append(_error_review_candidate(snapshot, failure))
         return _ImageCounterDelta(
@@ -688,6 +716,11 @@ class ImageRoute:
 
     def run(self) -> ImageRouteSummary:
         self.cancellation.checkpoint()
+        retry_keys = getattr(self, "_recoverable_retry_keys", None)
+        if retry_keys is None:
+            self._recoverable_retry_keys = set()
+        else:
+            retry_keys.clear()
         self._stage_inventory()
         retry_selected = self.config.retry_errors or self.config.selection.force_incomplete_retry
         candidate_pool, eligible = candidate_counts(
@@ -1045,6 +1078,72 @@ def _cached_failure(row: Any) -> ImageFailure:
     )
 
 
+def _cached_error_is_recoverable(row: Any) -> bool:
+    """Accept only explicit durable retry evidence, never message text."""
+
+    disposition = str(row["error_disposition"] or "")
+    if disposition in {
+        "",
+        "unknown",
+        "none",
+        "manual_review",
+        "deletion_candidate",
+        "keep_protected",
+        "protected",
+    }:
+        return False
+    return disposition == "retry" or row["error_retryable"] in (1, True)
+
+
+def _cached_ocr_result_is_valid(row: Any) -> bool:
+    """Validate searchable OCR evidence without opening or decoding the image."""
+
+    payload = row["ocr_text_zlib"]
+    if payload is None:
+        if (
+            row["ocr_text_chars"] not in (None, 0)
+            or row["ocr_text_xxh3_128"] is not None
+            or bool(row["ocr_text_truncated"])
+        ):
+            return False
+        try:
+            evidence = json.loads(str(row["evidence_json"] or "{}"))
+        except (TypeError, ValueError):
+            return False
+        document_text = evidence.get("document_text")
+        if isinstance(document_text, dict) and bool(document_text.get("available")):
+            try:
+                return int(document_text.get("recognized_text_chars", 0)) == 0
+            except (TypeError, ValueError):
+                return False
+        return True
+    try:
+        decoded = _decode_ocr_text(row)
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError, zlib.error):
+        return False
+    try:
+        evidence = json.loads(str(row["evidence_json"] or "{}"))
+    except (TypeError, ValueError):
+        return False
+    document_text = evidence.get("document_text")
+    if not isinstance(document_text, dict):
+        return True
+    try:
+        expected_chars = int(
+            document_text.get("recognized_text_chars", decoded.characters)
+        )
+    except (TypeError, ValueError):
+        return False
+    expected_digest = document_text.get("recognized_text_xxh3_128")
+    expected_truncated = document_text.get("recognized_text_truncated")
+    return expected_chars == decoded.characters and (
+        expected_digest is None or str(expected_digest) == decoded.xxh3_128
+    ) and (
+        expected_truncated is None
+        or bool(expected_truncated) == decoded.truncated
+    )
+
+
 def _error_review_candidate(
     snapshot: FileSnapshot,
     failure: ImageFailure,
@@ -1171,6 +1270,8 @@ def _cached_features_from_row(row: Any) -> Features | None:
     """Rehydrate only feature schemas known to be decision-compatible."""
 
     if row["status"] != "done" or not cached_features_are_compatible(row["processing_signature"]):
+        return None
+    if not _cached_ocr_result_is_valid(row):
         return None
     payload = row["features_json"]
     if not payload:

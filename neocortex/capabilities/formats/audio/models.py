@@ -42,6 +42,7 @@ class AudioRouteConfig:
     worker_startup_timeout_seconds: float = 1800.0
     worker_memory_bytes: int = 4 * 1024 * 1024 * 1024
     retry_errors: bool = False
+    retry_recoverable_errors: bool = False
     ffprobe_path: str | None = None
     model_cache_directory: Path | None = None
     local_models_only: bool = field(default_factory=default_local_models_only)
@@ -226,6 +227,8 @@ class AudioRouteSummary:
     processing_signature: str | None = None
     processing_provenance: dict[str, Any] | None = None
     summary_schema: str = ROUTE_SUMMARY_SCHEMA
+    catalog_source_missing: int = field(default=0, kw_only=True)
+    catalog_complete: bool | None = field(default=None, kw_only=True)
 
 
 class AudioProcessingError(RuntimeError):
@@ -249,6 +252,12 @@ class AudioProcessingError(RuntimeError):
 
 class WhisperRuntimeError(RuntimeError):
     """The shared Whisper runtime could not start or remain available."""
+
+
+class AudioRuntimeUnavailableError(WhisperRuntimeError):
+    """An identifiable local model or speech-runtime dependency is absent."""
+
+    capability_unavailable = True
 
 
 # endregion [03]

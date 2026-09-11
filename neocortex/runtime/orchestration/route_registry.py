@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from dataclasses import asdict, dataclass, is_dataclass, replace
 import heapq
 from pathlib import Path
+from threading import RLock
 from typing import Any, Callable, Literal, Mapping, TYPE_CHECKING
 from neocortex.runtime.orchestration.route_selection import (
     BUILTIN_ROUTE_ORDER as BUILTIN_ROUTE_ORDER,
@@ -49,6 +50,12 @@ if TYPE_CHECKING:
 
 RouteLifecycleCapability = Literal["phase_resume", "safe_replay", "not_resumable"]
 RouteWorkload = tuple[int, int]
+
+# Route workers run concurrently, while all source kinds publish into the
+# same document-catalog owner.  Keep extraction parallel and serialize only
+# the catalog generation/CAS boundary; the catalog module's writer lock is a
+# second defense for callers outside orchestration, not the lifecycle gate.
+_CATALOG_UPDATE_LOCK = RLock()
 
 
 @dataclass(frozen=True, slots=True)
@@ -313,7 +320,7 @@ def _run_image(context: RouteExecutionContext) -> object:
         else CoordinatedMemoryGate(context.resource_coordinator, "image")
     )
     with DedupIndex(config.dedup_database) as dedup_index:
-        return ImageRoute(
+        summary = ImageRoute(
             image_route_config_from_framework(config, root=context.root),
             context.framework_state,
             context.run_id,
@@ -322,6 +329,10 @@ def _run_image(context: RouteExecutionContext) -> object:
             cancellation=context.cancellation,
             dedup_index=dedup_index,
         ).run()
+    catalog = _update_document_catalog_after_route(context, "image")
+    if catalog:
+        summary = _summary_with_catalog(summary, catalog)
+    return summary
 
 
 def docx_route_config_from_framework(config: "FrameworkConfig") -> "DocxRouteConfig":
@@ -414,7 +425,7 @@ def _run_archive(context: RouteExecutionContext) -> object:
         from neocortex.runtime.control.global_resources import CoordinatedMemoryGate
 
         gate = CoordinatedMemoryGate(context.resource_coordinator, "archive")
-    return ArchiveRoute(
+    summary = ArchiveRoute(
         archive_route_config_from_framework(context.config),
         context.framework_state,
         context.run_id,
@@ -422,6 +433,10 @@ def _run_archive(context: RouteExecutionContext) -> object:
         memory_gate=gate,
         cancellation=context.cancellation,
     ).run()
+    catalog = _update_document_catalog_after_route(context, "archive")
+    if catalog:
+        summary = _summary_with_catalog(summary, catalog)
+    return summary
 
 
 def text_route_config_from_framework(config: "FrameworkConfig") -> "TextRouteConfig":
@@ -514,7 +529,7 @@ def _run_video(context: RouteExecutionContext) -> object:
         if context.resource_coordinator is None
         else CoordinatedMemoryGate(context.resource_coordinator, "video")
     )
-    return VideoRoute(
+    summary = VideoRoute(
         video_route_config_from_framework(context.config, root=context.root),
         context.framework_state,
         context.run_id,
@@ -522,6 +537,10 @@ def _run_video(context: RouteExecutionContext) -> object:
         memory_gate=gate,
         cancellation=context.cancellation,
     ).run()
+    catalog = _update_document_catalog_after_route(context, "video")
+    if catalog:
+        summary = _summary_with_catalog(summary, catalog)
+    return summary
 
 
 def code_route_config_from_framework(config: "FrameworkConfig") -> "CodeRouteConfig":
@@ -546,7 +565,7 @@ def _run_code(context: RouteExecutionContext) -> object:
 
         gate = CoordinatedMemoryGate(context.resource_coordinator, "code")
     with DedupIndex(config.dedup_database) as dedup_index:
-        return CodeRoute(
+        summary = CodeRoute(
             code_route_config_from_framework(config),
             dedup_index,
             context.framework_state,
@@ -556,11 +575,25 @@ def _run_code(context: RouteExecutionContext) -> object:
             cancellation=context.cancellation,
             memory_gate=gate,
         ).run()
+    catalog = _update_document_catalog_after_route(context, "code")
+    if catalog:
+        summary = _summary_with_catalog(summary, catalog)
+    return summary
 
 
 def _update_document_catalog_after_route(
     context: RouteExecutionContext,
-    source_kind: Literal["pdf", "docx", "office", "text", "audio"],
+    source_kind: Literal[
+        "pdf",
+        "docx",
+        "office",
+        "text",
+        "audio",
+        "archive",
+        "image",
+        "video",
+        "code",
+    ],
 ) -> "tuple[CatalogUpdateSummary, ...]":
     """Classify only the source cache completed by this route."""
 
@@ -577,6 +610,14 @@ def _update_document_catalog_after_route(
         sources = ((context.config.audio_database, "audio"),)
     elif source_kind == "text":
         sources = ((context.config.text_database, "text"),)
+    elif source_kind == "archive":
+        sources = ((context.config.archive_database, "archive"),)
+    elif source_kind == "image":
+        sources = ((context.config.image_database, "image"),)
+    elif source_kind == "video":
+        sources = ((context.config.video_database, "video"),)
+    elif source_kind == "code":
+        sources = ((context.config.code_database, "code"),)
     else:
         sources = (
             (context.config.office_database, "xlsx"),
@@ -595,21 +636,26 @@ def _update_document_catalog_after_route(
             source_run_id=context.config.resume_run_id,
         )
     try:
-        summaries = tuple(
-            update_document_catalog_source(
-                context.config.document_catalog_database,
-                source_path,
-                document_kind,
-                framework_run_id=context.run_id,
-                taxonomy_path=context.config.document_taxonomy_path,
-                max_text_chars=context.config.document_classification_max_chars,
-                verify_source_paths=False,
-                progress=context.progress,
-                progress_operation=source_kind,
-                cancellation=context.cancellation,
+        # The lock covers the whole owner publication, not only the SQLite
+        # BEGIN IMMEDIATE section.  Otherwise independent route workers could
+        # build against the same catalog head concurrently and collide during
+        # generation/CAS even though extraction itself should remain parallel.
+        with _CATALOG_UPDATE_LOCK:
+            summaries = tuple(
+                update_document_catalog_source(
+                    context.config.document_catalog_database,
+                    source_path,
+                    document_kind,
+                    framework_run_id=context.run_id,
+                    taxonomy_path=context.config.document_taxonomy_path,
+                    max_text_chars=context.config.document_classification_max_chars,
+                    verify_source_paths=False,
+                    progress=context.progress,
+                    progress_operation=source_kind,
+                    cancellation=context.cancellation,
+                )
+                for source_path, document_kind in sources
             )
-            for source_path, document_kind in sources
-        )
     except BaseException as exc:
         if fail_phase is not None:
             fail_phase(context.run_id, source_kind, phase_name, exc)
@@ -621,9 +667,16 @@ def _update_document_catalog_after_route(
             phase_name,
             {"sources": [asdict(summary) for summary in summaries]},
         )
+    catalog_attention = any(
+        summary.errors
+        or summary.review_required
+        or summary.source_stale
+        or summary.source_missing
+        for summary in summaries
+    )
     context.framework_state.record_event(
         context.run_id,
-        "info" if not any(summary.errors for summary in summaries) else "warning",
+        "warning" if catalog_attention else "info",
         f"{source_kind}-catalog",
         "Catálogo técnico actualizado",
         {"sources": [asdict(summary) for summary in summaries]},
@@ -635,16 +688,44 @@ def _summary_with_catalog(
     summary: Any,
     catalogs: tuple["CatalogUpdateSummary", ...],
 ) -> Any:
-    return replace(
-        summary,
-        catalog_candidates=sum(catalog.candidates for catalog in catalogs),
-        catalog_classified=sum(catalog.classified for catalog in catalogs),
-        catalog_cache_hits=sum(catalog.cache_hits for catalog in catalogs),
-        catalog_review_required=sum(catalog.review_required for catalog in catalogs),
-        catalog_errors=sum(catalog.errors for catalog in catalogs),
-        catalog_source_stale=sum(catalog.source_stale for catalog in catalogs),
-        catalog_stale_marked=sum(catalog.stale_marked for catalog in catalogs),
+    # The original five route summaries expose catalog counters.  The
+    # multimodal summaries intentionally keep their own public contracts, so
+    # catalog integration must not force fields into them with dataclasses.replace.
+    # If a future/additive summary declares the counters, retain the projection.
+    if not is_dataclass(summary) or isinstance(summary, type):
+        return summary
+    summary_fields = getattr(type(summary), "__dataclass_fields__", {})
+    route_candidates = getattr(summary, "candidates", None)
+    has_route_candidates = type(route_candidates) is int and route_candidates > 0
+    source_missing = any(catalog.source_missing for catalog in catalogs)
+    # A route with no candidates has no catalog work to lose.  Keep the
+    # source-missing flag useful for real work only, so empty optional owners
+    # do not turn a harmless no-op into a strict failure.
+    missing_with_work = source_missing and has_route_candidates
+    effective_source_missing = int(missing_with_work)
+    # ``review_required`` is advisory classification state, not a catalog
+    # publication error; errors and stale source observations are the strict
+    # incomplete cases here.
+    catalog_complete = not (
+        missing_with_work
+        or any(catalog.errors or catalog.source_stale for catalog in catalogs)
     )
+    updates = {
+        field: value
+        for field, value in {
+            "catalog_candidates": sum(catalog.candidates for catalog in catalogs),
+            "catalog_classified": sum(catalog.classified for catalog in catalogs),
+            "catalog_cache_hits": sum(catalog.cache_hits for catalog in catalogs),
+            "catalog_review_required": sum(catalog.review_required for catalog in catalogs),
+            "catalog_errors": sum(catalog.errors for catalog in catalogs),
+            "catalog_source_stale": sum(catalog.source_stale for catalog in catalogs),
+            "catalog_stale_marked": sum(catalog.stale_marked for catalog in catalogs),
+            "catalog_source_missing": effective_source_missing,
+            "catalog_complete": catalog_complete,
+        }.items()
+        if field in summary_fields
+    }
+    return summary if not updates else replace(summary, **updates)
 
 
 def builtin_route_registry() -> dict[str, RouteAdapter]:

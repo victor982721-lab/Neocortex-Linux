@@ -13,7 +13,7 @@ import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from collections.abc import Callable, Mapping
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 from neocortex.platform.policy import stat_birthtime_ns
@@ -128,6 +128,7 @@ class _InitialWork:
     global_resources: GlobalResourceSummary | None
     organization_plan: OrganizationPlanSummary | None
     organization_apply: OrganizationApplySummary | None
+    route_failures: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +152,7 @@ class _RouteOnlyExecution:
     source_run_id: int
     route_results: dict[str, object]
     global_resources: GlobalResourceSummary | None
+    route_failures: dict[str, str] = field(default_factory=dict)
 
 
 class RouteExecutionError(RuntimeError):
@@ -176,6 +178,7 @@ class FrameworkOrchestrator:
         lifecycle_stage_details: Mapping[str, object] | None = None,
     ):
         self.config = config or FrameworkConfig()
+        self._unavailable_routes: dict[str, str] = {}
         if self.config.dedup_policy not in {"fast", "exact"}:
             raise ValueError("dedup_policy must be 'fast' or 'exact'")
         from .dedup_keeper import preflight_keeper_inputs, validate_keeper_configuration
@@ -477,13 +480,21 @@ class FrameworkOrchestrator:
         state: FrameworkState,
         run_id: int,
     ) -> tuple["OrganizationPlanSummary | None", "OrganizationApplySummary | None"]:
-        """Plan and consume every safe technical-document move under ``--apply``."""
+        """Produce advisory destinations without requiring authority to move."""
 
         if not (
-            self.config.apply_actions
-            and self.config.document_catalog_enabled
+            self.config.document_catalog_enabled
             and ORGANIZABLE_ROUTE_NAMES.intersection(self.selected_routes)
         ):
+            return None, None
+        if not self.config.document_catalog_database.is_file():
+            state.record_event(
+                run_id,
+                "warning",
+                "document-organization-plan",
+                "Plan no disponible: todavía no hay un catálogo durable",
+                {"reason": "catalog_unavailable", "effects": "none"},
+            )
             return None, None
         from neocortex.documents.document_organization import (
             apply_all_document_organization,
@@ -534,6 +545,8 @@ class FrameworkOrchestrator:
         )
         if self._cancellation.is_cancelled:
             raise KeyboardInterrupt
+        if not self.config.apply_actions:
+            return plan_summary, None
         state.set_run_phase(run_id, "organization_apply")
         apply_summary = apply_all_document_organization(
             self.config.document_catalog_database,
@@ -573,6 +586,7 @@ class FrameworkOrchestrator:
         run_id: int,
         scan_id: int,
     ) -> tuple[dict[str, object], GlobalResourceSummary | None]:
+        self._unavailable_routes = {}
         if not self.selected_routes:
             return {}, None
 
@@ -919,8 +933,23 @@ class FrameworkOrchestrator:
             run_id,
             coordinator,
         )
-        if failures:
+        self._unavailable_routes = {
+            name: f"{type(exc).__name__}: {exc}"
+            for name, exc in failures.items()
+            if getattr(type(exc), "capability_unavailable", False) is True
+        }
+        if any(name not in self._unavailable_routes for name in failures):
             raise RouteExecutionError(failures)
+        if self._unavailable_routes:
+            publish_stage = getattr(state, "publish_run_stage", None)
+            if callable(publish_stage):
+                publish_stage(
+                    run_id,
+                    "route-capabilities",
+                    "partial",
+                    details={"unavailable": self._unavailable_routes},
+                    idempotency_key="route-capabilities:partial",
+                )
         return results, resource_summary
 
     @staticmethod
@@ -1564,6 +1593,7 @@ class FrameworkOrchestrator:
             global_resources,
             organization_plan,
             organization_apply,
+            dict(getattr(self, "_unavailable_routes", {})),
         )
 
     @staticmethod
@@ -1603,13 +1633,14 @@ class FrameworkOrchestrator:
         )
         state.record_event(
             run_id,
-            "info",
+            "warning" if work.route_failures else "info",
             "run",
-            "Ejecución completada",
+            "Ejecución incompleta: capacidades no disponibles" if work.route_failures else "Ejecución completada",
             {
                 "inventory_mode": inventory.inventory_mode,
                 "scan_id": inventory.scan.scan_id,
                 "transient_route_rows_pruned": transient_rows_pruned,
+                "route_failures": work.route_failures,
             },
         )
 
@@ -1832,12 +1863,30 @@ class FrameworkOrchestrator:
             global_resources=work.global_resources,
             organization_plan=work.organization_plan,
             organization_apply=work.organization_apply,
+            route_failures=work.route_failures,
         )
+
+    def _require_publication_ready(self) -> None:
+        """Check cross-owner recovery before inventory or route owner writes."""
+
+        from neocortex.persistence.state_publication import (
+            StatePublicationRecoveryRequired,
+            read_state_publication_state,
+        )
+
+        try:
+            self.config.state_directory.lstat()
+        except FileNotFoundError:
+            return
+        view = read_state_publication_state(self.config.state_directory)
+        if view.status not in {"absent", "complete"}:
+            raise StatePublicationRecoveryRequired(view.reason or view.status)
 
     def _run_initial_locked(
         self,
         boundary: NormalInventoryBoundary,
     ) -> InitialRunResult:
+        self._require_publication_ready()
         excluded_paths = tuple(Path(path) for path in boundary.exclusion_policy.explicit_roots)
         journal_before, journal_error = self._prepare_initial_run(boundary)
         with FrameworkState(self.config.framework_database) as state:
@@ -2003,6 +2052,7 @@ class FrameworkOrchestrator:
         self,
         boundary: NormalInventoryBoundary,
     ) -> RouteOnlyRunResult:
+        self._require_publication_ready()
         boundary.verify()
         with FrameworkState(self.config.framework_database) as state:
             source = self._prepare_route_only_source(state, boundary)
@@ -2207,14 +2257,10 @@ class FrameworkOrchestrator:
         source: _RouteOnlySource,
     ) -> tuple[int, RunHeartbeat]:
         run_kind = "resume" if self.config.resume_run_id is not None else "route_only"
-        if not self.selected_routes and self.config.resume_run_id is not None:
-            # The Semantic stage has its own persisted budget and will be
-            # resumed by the CLI after this no-op Framework continuation.  Do
-            # not let an exhausted Framework route budget prevent that stage
-            # from being reached.
-            durable_budget, source_budget = RunBudget(), None
-        else:
-            durable_budget, source_budget = self._route_only_budget(state, source.run_id)
+        # Semantic belongs to the same run budget even when every physical
+        # route was already completed. A no-route continuation cannot renew
+        # an expired deadline or replenish the source run's item allowance.
+        durable_budget, source_budget = self._route_only_budget(state, source.run_id)
         boundary.verify()
         run_id = state.begin_operational_run(
             boundary.access_policy.root,
@@ -2414,6 +2460,7 @@ class FrameworkOrchestrator:
             source.run_id,
             route_results,
             global_resources,
+            dict(self._unavailable_routes),
         )
 
     def _run_route_only_lifecycle_stage(
@@ -2498,6 +2545,7 @@ class FrameworkOrchestrator:
             code=cast("CodeRouteSummary | None", routes.get("code")),
             route_results=routes,
             global_resources=execution.global_resources,
+            route_failures=execution.route_failures,
         )
 
 

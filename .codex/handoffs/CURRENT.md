@@ -1,5 +1,31 @@
 # Handoff operativo vigente — NeoCortex
 
+**Ronda actual:** `NEO-FUN-003` — funcional por defecto, C1–C6.
+**Actualización:** 2026-09-11T01:53:16-06:00.
+**Estado/artefacto vivos:** `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-10-functional-defaults-01a08e62/STATUS.md`
+y `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-10-functional-defaults-01a08e62/COVERAGE.json`,
+junto con `PENDIENTES.md`, Git y el manifest del `current` realmente instalado.
+Estos punteros evitan fijar aquí el propio SHA del commit que los contiene.
+
+La ronda integra nueve rutas, Code del corpus incluyendo archivos sueltos,
+catálogo y reparación de derivados, selección Semantic con Video/Archive/Code,
+reintentos tipados, límites acumulados, recuperación compatible y paridad GUI/CLI.
+Las propuestas son advisory. `--all` no aplica cambios a originales ni crea un
+autoanalizador del repositorio.
+
+La aceptación de código, publicación, instalación y recuperación canónica se
+registra por separado en los dos documentos enlazados. **No inferir que gen17
+fue recuperada por tener código o release nuevos**: la copia de estado y su
+promoción conservan el gate explícito registrado. Retención/poda, R1–R4,
+principal autenticado, KIO, modelos y cualquier efecto físico no se amplían.
+
+## Evidencia de entregas anteriores (histórica)
+
+El material siguiente se conserva como procedencia. Sus hashes, corridas,
+procesos y estados no son una comprobación viva de la ronda actual.
+
+### Handoff previo conservado
+
 **Última verificación:** 2026-09-10T13:29:51-06:00, `America/Mexico_City`
 **Checkout:** `/home/winterboss/Neocortex/Repository`
 **Fuente de verdad:** estado vivo de `main`/`origin/main`,

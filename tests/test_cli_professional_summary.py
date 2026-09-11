@@ -34,6 +34,7 @@ def test_professional_summary_includes_every_all_route_and_semantic(capsys) -> N
         stale=0,
     )
     semantic_result = SimpleNamespace(
+        complete=True,
         sources=("pdf", "docx", "audio"),
         items_staged=12,
         chunks_staged=20,

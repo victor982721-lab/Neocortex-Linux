@@ -21,7 +21,6 @@ from neocortex.deduplication import DedupIndex, FileSnapshot, InventoryCheckpoin
 from neocortex.enumeration import JournalCursor
 from neocortex.persistence.framework_state_writer import FrameworkState
 from neocortex.persistence.state_publication import (
-    StateOwnerHead,
     begin_state_publication,
     read_state_publication_state,
     record_state_publication,
@@ -366,7 +365,7 @@ def test_integrated_semantic_publication_gate_is_durable_and_fail_closed(tmp_pat
     )
     assert transaction is not None
     assert read_state_publication_state(state_directory).status == "blocked"
-    transaction.commit(())
+    transaction.commit(transaction.prepared.owner_heads)
     view = read_state_publication_state(state_directory)
     assert view.status == "complete"
     assert view.epoch.owners == ("semantic", "code")
@@ -380,7 +379,9 @@ def test_integrated_semantic_commits_authenticated_publication_head(
     root.mkdir()
     state_directory = tmp_path / "state"
     state_directory.mkdir()
-    (state_directory / "pdf.sqlite3").touch()
+    from tests.test_semantic_source_heads import _pdf_state
+
+    _pdf_state(state_directory / "pdf.sqlite3")
     database = state_directory / "framework.sqlite3"
     with FrameworkState(database) as state:
         run_id = state.begin_initial_run(root, None)
@@ -403,6 +404,20 @@ def test_integrated_semantic_commits_authenticated_publication_head(
     )
 
     def fake_index(args, *, result_sink, **_kwargs):
+        from neocortex.semantic.semantic_models import EmbeddingModality
+        from neocortex.semantic.semantic_schema import initialize_semantic_state
+        from neocortex.semantic.semantic_state import register_embedding_model
+        from tests.test_functional_defaults_publication_heads import _empty_generation, _model
+
+        database = args.state_directory / "semantic.sqlite3"
+        model = _model("fixture-model", EmbeddingModality.TEXT)
+        initialize_semantic_state(database)
+        register_embedding_model(database, model, allow_test_provider=True)
+        generation_id = _empty_generation(
+            database, model, processing_signature="fixture-published", started_ns=100
+        )
+        fake_result.generations[0].summary.generation_id = generation_id
+        fake_result.generations[0].summary.model_signature = model.model_signature
         result_sink("text", fake_result)
         return 0
 
@@ -410,11 +425,11 @@ def test_integrated_semantic_commits_authenticated_publication_head(
     args = Namespace(
         all=True,
         state_directory=state_directory,
-        semantic_source=None,
+        semantic_source=["pdf"],
         semantic_index="text",
         semantic_max_items=10,
         semantic_max_new_jobs=10,
-        semantic_time_budget_seconds=1.0,
+        semantic_time_budget_seconds=30.0,
     )
     assert run_integrated_all_semantic_index(args, print_output=False, run_id=run_id) == 0
     view = read_state_publication_state(state_directory)
@@ -462,13 +477,13 @@ def test_integrated_semantic_truncation_keeps_progress_without_publishing(
     args = Namespace(
         all=True,
         state_directory=state_directory,
-        semantic_source=None,
+        semantic_source=["pdf"],
         semantic_index="text",
         semantic_max_items=10,
         semantic_max_new_jobs=10,
         semantic_time_budget_seconds=1.0,
     )
-    assert run_integrated_all_semantic_index(args, print_output=False, run_id=run_id) == 0
+    assert run_integrated_all_semantic_index(args, print_output=False, run_id=run_id) == 2
     view = read_state_publication_state(state_directory)
     assert view.status == "absent"
     assert view.epoch.epoch == 0
@@ -551,7 +566,18 @@ def test_integrated_publication_captures_existing_owner_heads(tmp_path: Path) ->
     with FrameworkState(database) as state:
         run_id = state.begin_initial_run(root, None)
         state.publish_run_manifest(run_id, _manifest(run_id, root))
-    baseline = StateOwnerHead("semantic", 4, "a" * 64)
+    from neocortex.semantic.semantic_models import EmbeddingModality
+    from neocortex.semantic.semantic_schema import initialize_semantic_state
+    from neocortex.semantic.semantic_state import register_embedding_model
+    from neocortex.semantic.semantic_publication_heads import observe_integrated_owner_heads
+    from tests.test_functional_defaults_publication_heads import _empty_generation, _model
+
+    database = state_directory / "semantic.sqlite3"
+    initialize_semantic_state(database)
+    model = _model("existing-owner", EmbeddingModality.TEXT)
+    register_embedding_model(database, model, allow_test_provider=True)
+    _empty_generation(database, model, processing_signature="fixture-baseline", started_ns=100)
+    baseline = observe_integrated_owner_heads(state_directory)[0]
     record_state_publication(
         state_directory,
         operation="baseline",

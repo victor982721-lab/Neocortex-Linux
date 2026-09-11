@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 import argparse
-import hashlib
 import json
+import sqlite3
 import sys
 import time
 from collections.abc import Callable, Mapping
@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
+from neocortex.persistence.state_publication import StatePublicationRecoveryRequired
+from neocortex.api.read_contract import sanitize_untrusted_text
 
 if TYPE_CHECKING:
     from neocortex.semantic.semantic_models import EmbeddingModelSpec
@@ -19,6 +21,7 @@ if TYPE_CHECKING:
     from neocortex.semantic.semantic_work_budget import SemanticWorkBudget
 
 __all__ = [
+    "recover_pending_integrated_semantic",
     "run_integrated_all_semantic_index",
     "run_semantic_classify",
     "run_semantic_evidence",
@@ -143,7 +146,7 @@ def _print_semantic_index_result(scope: str, result) -> None:
             f"status={summary.status} model={summary.model_signature} "
             f"queued={work.queued} reused={work.reused} embedded={work.embedded} "
             f"failed={work.failed} pending={summary.pending} leased={summary.leased} "
-            f"errors={summary.errors} stale={summary.stale}"
+            f"errors={summary.errors} stale={summary.stale} stop_reason={getattr(work, 'stop_reason', None) or '-'}"
         )
 
 
@@ -158,6 +161,7 @@ class _SemanticIndexExecution:
     results: list[tuple[str, SemanticIndexResult]] = field(default_factory=list)
     code_link_statuses: list[tuple[int, str, int, int]] = field(default_factory=list)
     scope_timings: list[tuple[str, int]] = field(default_factory=list)
+    unavailable_scopes: dict[str, str] = field(default_factory=dict)
 
 
 def run_semantic_status(args: argparse.Namespace) -> int:
@@ -374,14 +378,22 @@ def run_semantic_index(
     from neocortex.runtime.control.locking import FrameworkRunLock
     from neocortex.semantic.semantic_service import index_image_embeddings, index_text_embeddings
     from neocortex.semantic.semantic_work_budget import SemanticWorkBudget
+    from neocortex.persistence.framework_state_writer import RunBudgetExceeded
 
     text_model = _semantic_text_model(args.semantic_text_profile)
     selected_sources = _selected_semantic_text_sources(args)
-    work_budget = SemanticWorkBudget.from_time_budget(
-        max_items=args.semantic_max_items,
-        max_new_jobs=args.semantic_max_new_jobs,
-        time_budget_seconds=args.semantic_time_budget_seconds,
-    )
+    work_budget = getattr(args, "_semantic_work_budget", None)
+    if work_budget is None:
+        work_budget = SemanticWorkBudget.from_time_budget(
+            max_items=args.semantic_max_items,
+            max_new_jobs=args.semantic_max_new_jobs,
+            time_budget_seconds=args.semantic_time_budget_seconds,
+            cancellation_check=getattr(args, "_semantic_cancellation_check", None),
+            preserve_existing_generations=bool(getattr(args, "_semantic_preserve_generations", False)),
+            retry_recoverable_errors=bool(getattr(args, "all", False)),
+        )
+    elif not isinstance(work_budget, SemanticWorkBudget):
+        raise TypeError("integrated Semantic work budget is invalid")
     execution = _SemanticIndexExecution(
         args=args,
         text_model=text_model,
@@ -396,16 +408,22 @@ def run_semantic_index(
             database=True,
         )
         def execute_scopes() -> None:
-            _execute_semantic_index_scopes(
-                execution,
-                text_operation=index_text_embeddings,
-                image_operation=index_image_embeddings,
-            )
+            from neocortex.semantic.semantic_source_budget import semantic_source_read_budget
+
+            _validate_integrated_publication_token(args)
+            with semantic_source_read_budget(work_budget):
+                _execute_semantic_index_scopes(
+                    execution,
+                    text_operation=index_text_embeddings,
+                    image_operation=index_image_embeddings,
+                )
         if framework_lock_held:
             execute_scopes()
         else:
             with FrameworkRunLock(args.state_directory / "framework.lock"):
                 execute_scopes()
+    except RunBudgetExceeded:
+        raise
     except Exception as exc:  # model runtimes expose backend-specific exceptions
         return _semantic_index_failure(execution, exc, print_output=print_output)
     return _complete_semantic_index_execution(
@@ -415,14 +433,140 @@ def run_semantic_index(
     )
 
 
+def _validate_integrated_publication_token(args: argparse.Namespace) -> None:
+    """Only the original producer may advance an unresolved publication."""
+
+    from neocortex.persistence.state_publication import read_state_publication_state
+
+    view = read_state_publication_state(args.state_directory)
+    event_id = getattr(args, "_semantic_publication_event_id", None)
+    if event_id is not None:
+        if len(view.pending) != 1 or view.pending[0].event_id != event_id:
+            raise StatePublicationRecoveryRequired("active Semantic publication changed")
+        return
+    if view.status not in {"absent", "complete"}:
+        raise StatePublicationRecoveryRequired(view.reason or view.status)
+
+
+def _observe_integrated_heads(state_directory: Path, *, include_code: bool, work_budget=None):
+    from neocortex.semantic.semantic_publication_heads import (
+        PublicationHeadsError,
+        observe_integrated_owner_heads,
+    )
+
+    try:
+        remaining = None if work_budget is None else work_budget.remaining_seconds()
+        return observe_integrated_owner_heads(
+            state_directory,
+            include_code=include_code,
+            deadline_monotonic=None if remaining is None else time.monotonic() + remaining,
+            cancellation_check=None if work_budget is None else work_budget.cancellation_check,
+        )
+    except PublicationHeadsError as exc:
+        raise StatePublicationRecoveryRequired(str(exc)) from exc
+
+
+def _integrated_semantic_budget(args: argparse.Namespace, run_id: int | None):
+    """Share explicit limits across all scopes and sample durable cancellation."""
+
+    from neocortex.persistence.framework_state_writer import FrameworkState, RunBudgetExceeded
+    from neocortex.semantic.semantic_work_budget import SemanticWorkBudget
+
+    max_items = args.semantic_max_items
+    max_jobs = args.semantic_max_new_jobs
+    duration = args.semantic_time_budget_seconds
+    active_run = False
+    if run_id is not None:
+        with FrameworkState(args.state_directory / "framework.sqlite3", existing_only=True) as state:
+            row = state._connection.execute(
+                "SELECT status FROM initial_runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+            active_run = row is not None and row[0] == "running"
+            snapshot = state.read_run_budget(run_id)
+            if active_run and snapshot is not None:
+                if snapshot.get("cancel_requested"):
+                    raise KeyboardInterrupt("Semantic run was cancelled")
+                snapshot = state.check_run_budget(run_id)
+                remaining_items = snapshot.get("remaining_items")
+                if remaining_items is not None:
+                    if remaining_items <= 0:
+                        raise RunBudgetExceeded("items", snapshot)
+                    max_items = remaining_items if max_items is None else min(max_items, remaining_items)
+                deadline_ns = snapshot.get("deadline_ns")
+                if deadline_ns is not None:
+                    remaining = (deadline_ns - time.time_ns()) / 1_000_000_000
+                    if remaining <= 0:
+                        raise RunBudgetExceeded("time", snapshot)
+                    duration = remaining if duration is None else min(duration, remaining)
+    last_check = 0.0
+    cancellation = getattr(args, "_semantic_cancellation_check", None)
+
+    def check_cancellation() -> bool:
+        nonlocal last_check
+        if callable(cancellation) and cancellation() is True:
+            return True
+        now = time.monotonic()
+        if active_run and run_id is not None and now - last_check >= 0.1:
+            # The manifest/schema was verified once above. Reinitializing the
+            # whole Framework owner on every SQL progress callback is both
+            # expensive and unnecessary; only the append-only cancel signal
+            # can change while this Semantic stage owns the run budget.
+            from neocortex.persistence.framework_connection import connect_existing_framework
+
+            connection = connect_existing_framework(
+                args.state_directory / "framework.sqlite3", readonly=True, timeout_seconds=0.1
+            )
+            try:
+                cancelled = connection.execute(
+                    """SELECT 1 FROM run_events WHERE run_id=? AND phase='lifecycle-budget'
+                    AND message='Run cancellation requested' LIMIT 1""",
+                    (run_id,),
+                ).fetchone() is not None
+            finally:
+                connection.close()
+            last_check = now
+            if cancelled:
+                return True
+        return False
+
+    return SemanticWorkBudget.from_time_budget(
+        max_items=max_items,
+        max_new_jobs=max_jobs,
+        time_budget_seconds=duration,
+        cancellation_check=check_cancellation,
+        preserve_existing_generations=bool(getattr(args, "_semantic_preserve_generations", False)),
+        retry_recoverable_errors=bool(getattr(args, "all", False)),
+    )
+
+
 def _execute_semantic_index_scopes(
     execution: _SemanticIndexExecution,
     *,
     text_operation: Callable[..., SemanticIndexResult],
     image_operation: Callable[..., SemanticIndexResult],
 ) -> None:
-    _execute_semantic_text_index(execution, text_operation)
-    _execute_semantic_image_index(execution, image_operation)
+    from neocortex.semantic.semantic_config import SemanticModelUnavailableError
+
+    for scope, operation in (
+        ("text", lambda: _execute_semantic_text_index(execution, text_operation)),
+        ("image", lambda: _execute_semantic_image_index(execution, image_operation)),
+    ):
+        try:
+            operation()
+        except SemanticModelUnavailableError as exc:
+            # Dependency failures are typed; arbitrary source/protocol errors
+            # must not be relabeled as absent models. Keep the independent
+            # visual model useful if the shared text/OCR model is unavailable.
+            execution.unavailable_scopes[scope] = sanitize_untrusted_text(exc, limit=800)
+            emit_progress(execution.progress, ProgressEvent(
+                "semantic", f"unavailable:{scope}",
+                f"Modelo local no disponible para {scope}; se conservan las capacidades independientes",
+                0, 1, "ámbitos", metrics=(
+                    ProgressMetric("completion_status", "partial"),
+                    ProgressMetric("cause", execution.unavailable_scopes[scope]),
+                    ProgressMetric("next_action", "Verificar el modelo local requerido; no se descarga automáticamente"),
+                ),
+            ))
 
 
 def _execute_semantic_text_index(
@@ -470,7 +614,7 @@ def _execute_semantic_image_index(
             model_cache=args.semantic_model_cache,
             local_files_only=True,
             threads=args.semantic_threads,
-            embed_ocr_text=not args.semantic_no_ocr,
+            embed_ocr_text=not args.semantic_no_ocr and "text" not in execution.unavailable_scopes,
             ocr_model=execution.text_model,
             work_budget=execution.work_budget,
             progress=execution.progress,
@@ -543,7 +687,11 @@ def _complete_semantic_index_execution(
     incomplete_is_error: bool,
     print_output: bool,
 ) -> int:
-    failed = False
+    failed = bool(execution.unavailable_scopes)
+    execution.args._semantic_scope_unavailable = dict(execution.unavailable_scopes)
+    if print_output:
+        for scope, reason in execution.unavailable_scopes.items():
+            print(f"SEMANTIC_UNAVAILABLE scope={scope} reason={json.dumps(reason, ensure_ascii=True)}")
     for scope, result in execution.results:
         if print_output:
             _print_semantic_index_result(scope, result)
@@ -695,18 +843,23 @@ def _semantic_stage_for_resume(
     max_items = raw_budget.get("max_items")
     max_new_jobs = raw_budget.get("max_new_jobs")
     time_budget = raw_budget.get("time_budget_seconds")
-    if (
-        type(max_items) is not int
-        or max_items < 1
-        or type(max_new_jobs) is not int
-        or max_new_jobs < 1
+    budget_version = details.get("semantic_budget_version", 1)
+    if budget_version not in {1, 2} or type(budget_version) is not int:
+        raise RuntimeError(f"run {source_run_id} Semantic budget version is unsupported")
+    if any(
+        not (budget_version == 2 and value is None)
+        and (type(value) is not int or value < 1)
+        for value in (max_items, max_new_jobs)
     ):
         raise RuntimeError(f"run {source_run_id} Semantic budget is invalid")
-    if isinstance(time_budget, bool) or not isinstance(time_budget, (int, float)):
+    if time_budget is None and budget_version == 2:
+        time_budget_value = None
+    elif isinstance(time_budget, bool) or not isinstance(time_budget, (int, float)):
         raise RuntimeError(f"run {source_run_id} Semantic budget is invalid")
-    time_budget_value = time_budget
-    if not 0.001 <= float(time_budget_value) <= 172_800.0:
-        raise RuntimeError(f"run {source_run_id} Semantic budget is invalid")
+    else:
+        time_budget_value = float(time_budget)
+        if not 0.001 <= time_budget_value <= 172_800.0:
+            raise RuntimeError(f"run {source_run_id} Semantic budget is invalid")
     image_available = details.get("image_available", False)
     if not isinstance(image_available, bool):
         raise RuntimeError(f"run {source_run_id} Semantic image availability is invalid")
@@ -719,7 +872,7 @@ def _semantic_stage_for_resume(
         "image_available": image_available,
         "max_items": max_items,
         "max_new_jobs": max_new_jobs,
-        "time_budget_seconds": float(time_budget_value),
+        "time_budget_seconds": time_budget_value,
     }
 
 
@@ -754,17 +907,18 @@ def _semantic_resume_args(
         or any(not isinstance(value, str) for value in selected_sources)
         or not isinstance(selection_pending, bool)
         or not isinstance(image_available, bool)
-        or type(max_items) is not int
-        or type(max_new_jobs) is not int
-        or isinstance(time_budget_seconds, bool)
-        or not isinstance(time_budget_seconds, (int, float))
+        or (max_items is not None and type(max_items) is not int)
+        or (max_new_jobs is not None and type(max_new_jobs) is not int)
+        or (time_budget_seconds is not None and (
+            isinstance(time_budget_seconds, bool) or not isinstance(time_budget_seconds, (int, float))
+        ))
         or not isinstance(details, Mapping)
     ):
         raise RuntimeError(f"run {source_run_id} Semantic resume specification is invalid")
     effective.semantic_source = None if selection_pending else list(selected_sources)
     effective.semantic_max_items = max_items
     effective.semantic_max_new_jobs = max_new_jobs
-    effective.semantic_time_budget_seconds = float(time_budget_seconds)
+    effective.semantic_time_budget_seconds = None if time_budget_seconds is None else float(time_budget_seconds)
     effective.semantic_index = (
         "all" if selected_sources and image_available else "text" if selected_sources else "image"
     )
@@ -791,7 +945,301 @@ def _semantic_resume_args(
         raise RuntimeError(f"run {source_run_id} Semantic model cache is invalid")
     effective.semantic_model_cache = None if raw_cache is None else Path(raw_cache)
     effective._semantic_resume_source_run_id = source_run_id
+    effective._semantic_resume_image_available = image_available
+    effective._semantic_complete_all = bool(details.get("complete_all", False))
     return effective
+
+
+def _pending_integrated_source_run(state_directory: Path) -> int | None:
+    """Find one original producer by authenticated manifest and stage data."""
+
+    from neocortex.persistence.sqlite_immutable import SQLiteReadSession, preferred_sqlite_read_mode
+    from neocortex.persistence.state_publication import (
+        publication_idempotency_key,
+        read_state_publication_state,
+        resume_state_publication,
+    )
+    from neocortex.runtime.orchestration.run_manifest import RUN_STAGE_SCHEMA, verify_event_payload
+
+    view = read_state_publication_state(state_directory)
+    if view.status in {"absent", "complete"}:
+        return None
+    if (
+        len(view.pending) != 1
+        or view.pending[0].operation != "framework-all-semantic"
+        or view.pending[0].manifest_sha256 is None
+    ):
+        raise StatePublicationRecoveryRequired("pending publication has no unique Semantic producer")
+    pending = view.pending[0]
+    manifest_sha256 = pending.manifest_sha256
+    if manifest_sha256 is None:
+        raise StatePublicationRecoveryRequired("original publication manifest is unavailable")
+    database = state_directory / "framework.sqlite3"
+    if not database.is_file():
+        raise StatePublicationRecoveryRequired("original Framework manifest is unavailable")
+    try:
+        with SQLiteReadSession(database, mode=preferred_sqlite_read_mode(database)) as connection:
+            started = time.monotonic()
+            connection.set_progress_handler(lambda: int(time.monotonic() - started > 10.0), 10_000)
+            rows = connection.execute(
+                """SELECT run_id,details_json FROM run_events
+                WHERE phase='lifecycle-manifest' AND message='Run manifest published'
+                AND json_valid(details_json)
+                AND json_extract(details_json,'$.digest')=? LIMIT 2""",
+                ("sha256:" + manifest_sha256,),
+            ).fetchall()
+            if len(rows) != 1:
+                raise StatePublicationRecoveryRequired("original Framework manifest is absent or ambiguous")
+            run_id = int(rows[0]["run_id"])
+            manifest = verify_event_payload(json.loads(rows[0]["details_json"]))
+            if manifest.get("run_id") != run_id:
+                raise StatePublicationRecoveryRequired("original Framework manifest has a different run")
+            stages = connection.execute(
+                """SELECT details_json FROM run_events WHERE run_id=?
+                AND phase='lifecycle-stage' AND message='Lifecycle stage transitioned'
+                ORDER BY event_id DESC LIMIT 65""",
+                (run_id,),
+            ).fetchall()
+            if len(stages) > 64:
+                raise StatePublicationRecoveryRequired("original Semantic stage exceeds its bound")
+            semantic = None
+            for row in stages:
+                stage = json.loads(row["details_json"])
+                if (
+                    not isinstance(stage, dict)
+                    or stage.get("schema") != RUN_STAGE_SCHEMA
+                    or stage.get("manifest_digest") != manifest["digest"]
+                    or stage.get("run_id") != run_id
+                ):
+                    raise StatePublicationRecoveryRequired("original Semantic stage is detached from its manifest")
+                if stage.get("stage") == "semantic":
+                    semantic = stage
+                    break
+            if semantic is None or semantic.get("status") in {"completed", "skipped"}:
+                raise StatePublicationRecoveryRequired("original Semantic producer is not resumable")
+            details = semantic.get("details")
+            if not isinstance(details, dict):
+                raise StatePublicationRecoveryRequired("original Semantic stage details are invalid")
+            sources = details.get("selected_sources")
+            images = details.get("image_available")
+            if (
+                not isinstance(sources, list)
+                or any(not isinstance(source, str) or not source for source in sources)
+                or len(sources) != len(set(sources))
+                or not isinstance(images, bool)
+            ):
+                raise StatePublicationRecoveryRequired("original Semantic source selection is unavailable")
+        # The original raw key, not the already-hashed journal key, binds the
+        # producer. This is a metadata-only transaction rehydration, not abort.
+        resume_state_publication(
+            state_directory,
+            event_id=pending.event_id,
+            operation="framework-all-semantic",
+            owners=("semantic", "code") if "code" in sources else ("semantic",),
+            idempotency_key=publication_idempotency_key(
+                "framework-all-semantic", run_id, tuple(sources), images
+            ),
+            manifest_sha256=manifest_sha256,
+            expected_epoch=view.epoch.epoch,
+        )
+    except (OSError, sqlite3.Error, ValueError, TypeError) as exc:
+        raise StatePublicationRecoveryRequired(f"original Semantic contract cannot be read: {exc}") from exc
+    return run_id
+
+
+def recover_pending_integrated_semantic(
+    args: argparse.Namespace,
+    *,
+    progress: ProgressCallback | None = None,
+    print_output: bool = True,
+) -> int:
+    """Recover the original producer, with typed failures for unavailable inputs."""
+
+    try:
+        return _recover_pending_integrated_semantic(
+            args, progress=progress, print_output=print_output
+        )
+    except (OSError, sqlite3.Error, ValueError, TypeError) as exc:
+        raise StatePublicationRecoveryRequired(
+            f"original recovery input is unavailable or incompatible: {type(exc).__name__}: {exc}"
+        ) from exc
+
+
+def _recover_pending_integrated_semantic(
+    args: argparse.Namespace,
+    *,
+    progress: ProgressCallback | None = None,
+    print_output: bool = True,
+) -> int:
+    """Roll the original producer forward before starting another inventory.
+
+    A pending marker stays durable throughout resumption. In particular, this
+    path never claims that a modern head vector proves a legacy rollback.
+    """
+
+    from neocortex.persistence.state_publication import read_state_publication_state
+    from neocortex.runtime.control.locking import FrameworkRunLock
+    from neocortex.persistence.framework_state_writer import FrameworkState
+    from neocortex.runtime.models import FrameworkConfig
+    from neocortex.runtime.orchestration.orchestrator import FrameworkOrchestrator
+    from neocortex.runtime.orchestration.run_lifecycle import RunHeartbeat
+    from neocortex.runtime.orchestration.run_manifest import RunManifest
+    from neocortex.platform.policy import stat_birthtime_ns
+
+    try:
+        args.state_directory.lstat()
+    except FileNotFoundError:
+        # A first invocation has no publication to recover. Do not create a
+        # state owner merely to perform the preflight, or confuse missing state
+        # with a malformed existing publication directory.
+        return 0
+    initial = read_state_publication_state(args.state_directory)
+    if initial.status in {"absent", "complete"}:
+        return 0
+    recovery_started = time.monotonic()
+    with FrameworkRunLock(args.state_directory / "framework.lock"):
+        current = read_state_publication_state(args.state_directory)
+        if (
+            current.epoch.epoch == 0 and current.publication is None
+            and len(current.pending) == 1
+            and current.pending[0].operation == "framework-all-semantic"
+            and current.pending[0].manifest_sha256 is None
+            and not current.pending[0].owner_heads
+        ):
+            # Preserve the established epoch-zero compatibility path only
+            # for a genuinely unbound initial marker. Later epochs always
+            # require the exact producer and cannot take this shortcut.
+            _recover_pending_integrated_publication(args.state_directory)
+            return 0
+        source_run_id = _pending_integrated_source_run(args.state_directory)
+        if source_run_id is None:
+            return 0
+        requested_run = getattr(args, "resume_run", None)
+        policy_run_id = source_run_id if requested_run is None else requested_run
+        with FrameworkState(args.state_directory / "framework.sqlite3", existing_only=True) as state:
+            source_manifest = state.read_run_manifest(source_run_id)
+            policy_manifest = state.read_run_manifest(policy_run_id)
+            if source_manifest is None or policy_manifest is None:
+                raise StatePublicationRecoveryRequired("original recovery manifest is unavailable")
+            if policy_run_id != source_run_id:
+                parent = policy_manifest
+                for _ in range(16):
+                    if any(parent.get(key) != source_manifest.get(key) for key in ("root", "root_identity")):
+                        raise StatePublicationRecoveryRequired("recovery lineage belongs to a different corpus")
+                    parent_id = parent.get("source_run_id")
+                    if parent_id == source_run_id:
+                        break
+                    if type(parent_id) is not int:
+                        raise StatePublicationRecoveryRequired("another run owns the pending Semantic publication")
+                    next_parent = state.read_run_manifest(parent_id)
+                    if next_parent is None:
+                        raise StatePublicationRecoveryRequired("recovery lineage is incomplete")
+                    parent = next_parent
+                else:
+                    raise StatePublicationRecoveryRequired("recovery lineage exceeds its bound")
+            root = Path(source_manifest["root"])
+            requested_root = getattr(args, "root", root)
+            if requested_root is not None and Path(requested_root).resolve() != root.resolve():
+                raise StatePublicationRecoveryRequired("pending Semantic recovery belongs to a different corpus root")
+            root_stat = root.stat()
+            identity = (root_stat.st_dev, root_stat.st_ino, stat_birthtime_ns(root_stat))
+            if list(identity) != source_manifest["root_identity"]:
+                raise StatePublicationRecoveryRequired("original corpus root identity changed")
+            # The outer FrameworkRunLock has excluded the former writer. Use
+            # the existing recovery transition before beginning its successor,
+            # including a process that died before marking its run terminal.
+            state.mark_abandoned_runs()
+            budget_owner = FrameworkOrchestrator(
+                FrameworkConfig(
+                    root=root,
+                    state_directory=args.state_directory,
+                    route_only=True,
+                    resume_run_id=policy_run_id,
+                    run_max_items=getattr(args, "run_max_items", None),
+                    run_max_bytes=getattr(args, "run_max_bytes", None),
+                    run_time_budget_seconds=getattr(args, "run_time_budget_seconds", None),
+                )
+            )
+            recovery_budget, _ = budget_owner._route_only_budget(state, policy_run_id)
+            recovery_run_id = state.begin_operational_run(
+                root, run_kind="resume", source_run_id=policy_run_id
+            )
+            manifest = RunManifest(
+                run_id=recovery_run_id,
+                run_kind="resume",
+                root=str(root),
+                root_identity=identity,
+                selected_routes=(),
+                source_run_id=policy_run_id,
+                configuration={
+                    "operation": "framework-all-semantic-recovery",
+                    "publication_source_run_id": source_run_id,
+                    "source_manifest_digest": source_manifest["digest"],
+                },
+                budget=recovery_budget.payload(),
+                input_snapshot=source_manifest.get("input_snapshot", {}),
+            )
+            try:
+                state.publish_run_manifest(recovery_run_id, manifest.event_payload())
+            except BaseException as exc:
+                state.abort_run_start(recovery_run_id, exc, cancelled=False)
+                raise
+        effective = argparse.Namespace(**vars(args))
+        effective._semantic_publication_source_run_id = source_run_id
+        effective._semantic_preserve_generations = True
+        if print_output:
+            _print_console_line(f"SEMANTIC_RECOVERY run_id={recovery_run_id} source_run_id={source_run_id} status=starting")
+        try:
+            with RunHeartbeat(args.state_directory / "framework.sqlite3", recovery_run_id):
+                result = run_integrated_all_semantic_index(
+                    effective,
+                    progress=progress,
+                    print_output=print_output,
+                    run_id=recovery_run_id,
+                    resume_source_run_id=source_run_id,
+                    framework_lock_held=True,
+                )
+                final = read_state_publication_state(args.state_directory)
+                if result != 0 or final.status != "complete":
+                    raise StatePublicationRecoveryRequired("original Semantic producer remains incomplete; progress was preserved")
+                with FrameworkState(args.state_directory / "framework.sqlite3", existing_only=True) as state:
+                    state.complete_operational_run(recovery_run_id)
+        except BaseException as exc:
+            with FrameworkState(args.state_directory / "framework.sqlite3", existing_only=True) as state:
+                if isinstance(exc, KeyboardInterrupt):
+                    state.request_run_cancellation(recovery_run_id, "user")
+                    state.cancel_initial_run(recovery_run_id)
+                else:
+                    state.fail_initial_run(recovery_run_id)
+            raise
+        with FrameworkState(args.state_directory / "framework.sqlite3", existing_only=True) as state:
+            state.record_event(
+                source_run_id,
+                "info",
+                "semantic-recovery",
+                "Pending Semantic publication completed",
+                {
+                    "recovery_run_id": recovery_run_id,
+                    "previous_epoch": initial.epoch.epoch,
+                    "published_epoch": final.epoch.epoch,
+                },
+            )
+            consumed = state.read_run_budget(recovery_run_id)
+        if consumed is not None:
+            if getattr(args, "run_max_items", None) is not None:
+                args.run_max_items = max(0, args.run_max_items - consumed["consumed_items"])
+            if getattr(args, "run_max_bytes", None) is not None:
+                args.run_max_bytes = max(0, args.run_max_bytes - consumed["consumed_bytes"])
+            if getattr(args, "run_time_budget_seconds", None) is not None:
+                remaining_duration = args.run_time_budget_seconds - (time.monotonic() - recovery_started)
+                if remaining_duration <= 0:
+                    from neocortex.persistence.framework_state_writer import RunBudgetExceeded
+
+                    raise RunBudgetExceeded("time", consumed)
+                args.run_time_budget_seconds = remaining_duration
+        if print_output:
+            _print_console_line(f"SEMANTIC_RECOVERY source_run_id={source_run_id} status=completed epoch={final.epoch.epoch}")
+        return 0
 
 
 def _recover_pending_integrated_publication(state_directory: Path) -> bool:
@@ -808,12 +1256,14 @@ def _recover_pending_integrated_publication(state_directory: Path) -> bool:
         return False
     pending = tuple(item for item in view.pending if item.operation == "framework-all-semantic")
     if len(pending) != 1 or len(pending) != len(view.pending):
-        raise RuntimeError("Semantic publication recovery_required: another publication is pending")
+        raise StatePublicationRecoveryRequired("another publication is pending")
     prepared = pending[0]
-    observed = view.epoch.owner_heads
     if prepared.owner_heads:
+        observed = _observe_integrated_heads(
+            state_directory, include_code="code" in prepared.owners
+        )
         if observed != prepared.owner_heads:
-            raise RuntimeError("Semantic publication recovery_required: owner-head drift")
+            raise StatePublicationRecoveryRequired("owner-head drift")
         abort_state_publication(
             state_directory,
             event_id=prepared.event_id,
@@ -823,8 +1273,8 @@ def _recover_pending_integrated_publication(state_directory: Path) -> bool:
         )
         return True
     if view.epoch.epoch != 0 or view.publication is not None:
-        raise RuntimeError(
-            "Semantic publication recovery_required: unbound prepare is not at epoch zero"
+        raise StatePublicationRecoveryRequired(
+            "unbound prepare requires resuming its original producer"
         )
     abort_unbound_state_publication(
         state_directory,
@@ -852,6 +1302,11 @@ def _integrated_stage_details(
     details: dict[str, object] = {
         "selected_sources": list(selected_sources[:32]),
         "selection_pending": False,
+        "complete_all": bool(getattr(args, "_semantic_complete_all", False)),
+        "semantic_budget_version": 2,
+        "source_unavailable": dict(getattr(args, "_semantic_source_unavailable", {})),
+        "model_unavailable": dict(getattr(args, "_semantic_scope_unavailable", {})),
+        "source_without_content": list(getattr(args, "_semantic_source_empty", ())),
         "image_available": image_available,
         "semantic_budget": {
             "max_items": getattr(args, "semantic_max_items", None),
@@ -913,21 +1368,42 @@ def _begin_integrated_publication(
 ):
     """Prepare the logical Semantic/Code publication gate for an ``--all`` run."""
 
-    if run_id is None:
-        return None
     from neocortex.persistence.framework_state_writer import FrameworkState
     from neocortex.persistence.state_publication import (
         begin_state_publication,
         publication_idempotency_key,
         read_state_publication_state,
+        resume_state_publication,
     )
 
+    view = read_state_publication_state(args.state_directory)
+    source_run_id = getattr(
+        args, "_semantic_publication_source_run_id", getattr(args, "_semantic_resume_source_run_id", None)
+    )
+    owners = ("semantic", "code") if "code" in selected_sources else ("semantic",)
+    if view.status == "blocked" and type(source_run_id) is int:
+        with FrameworkState(args.state_directory / "framework.sqlite3", existing_only=True) as state:
+            source_manifest = state.read_run_manifest(source_run_id)
+        if source_manifest is None or len(view.pending) != 1:
+            raise StatePublicationRecoveryRequired("original Semantic producer is unavailable")
+        return resume_state_publication(
+            args.state_directory,
+            event_id=view.pending[0].event_id,
+            operation="framework-all-semantic",
+            owners=owners,
+            idempotency_key=publication_idempotency_key(
+                "framework-all-semantic", source_run_id, selected_sources, image_available
+            ),
+            manifest_sha256=str(source_manifest["digest"])[len("sha256:"):],
+            expected_epoch=view.epoch.epoch,
+        )
     _recover_pending_integrated_publication(args.state_directory)
+    if run_id is None:
+        return None
     with FrameworkState(args.state_directory / "framework.sqlite3", existing_only=True) as state:
         manifest = state.read_run_manifest(run_id)
     if manifest is None:
         raise RuntimeError(f"run {run_id} has no manifest for Semantic publication")
-    owners = ("semantic", "code") if "code" in selected_sources else ("semantic",)
     key = publication_idempotency_key(
         "framework-all-semantic",
         run_id,
@@ -936,10 +1412,17 @@ def _begin_integrated_publication(
     )
     view = read_state_publication_state(args.state_directory)
     if view.status not in {"absent", "complete"}:
-        raise RuntimeError("Semantic publication recovery_required: state publication is not ready")
-    baseline_heads = tuple(head for head in view.epoch.owner_heads if head.owner in owners)
-    if {head.owner for head in baseline_heads} != set(owners):
-        baseline_heads = ()
+        raise StatePublicationRecoveryRequired("state publication is not ready")
+    baseline_heads = _observe_integrated_heads(
+        args.state_directory, include_code="code" in owners,
+        work_budget=getattr(args, "_semantic_work_budget", None),
+    )
+    previous = {head.owner: head for head in view.epoch.owner_heads}
+    if any(
+        head.revision == 0 and head.owner in previous and previous[head.owner].revision > 0
+        for head in baseline_heads
+    ):
+        raise StatePublicationRecoveryRequired("a previously published owner is now absent or empty")
     return begin_state_publication(
         args.state_directory,
         operation="framework-all-semantic",
@@ -947,7 +1430,8 @@ def _begin_integrated_publication(
         idempotency_key=key,
         manifest_sha256=str(manifest["digest"])[len("sha256:") :],
         detail="Semantic owner work is pending its terminal lifecycle publication",
-        owner_heads=baseline_heads or None,
+        owner_heads=baseline_heads,
+        expected_epoch=view.epoch.epoch,
     )
 
 
@@ -959,10 +1443,14 @@ def _final_publication_owner_heads(
 ):
     """Derive bounded owner-head identities from published Semantic results."""
 
-    from neocortex.persistence.state_publication import StateOwnerHead
+    from neocortex.semantic.semantic_publication_heads import (
+        PublicationHeadsError,
+        observe_semantic_generation_heads,
+    )
 
-    generations: list[tuple[int, str]] = []
-    for _scope, value in captured_results:
+    generations: dict[str, int] = {}
+    text_models: set[str] = set()
+    for scope, value in captured_results:
         if getattr(value, "complete", False) is not True:
             raise RuntimeError("Semantic publication requires complete generation results")
         for generation in getattr(value, "generations", ()):
@@ -977,56 +1465,36 @@ def _final_publication_owner_heads(
                 and getattr(summary, "errors", 0) == 0
                 and getattr(summary, "stale", 0) == 0
             ):
-                generations.append((generation_id, model_signature))
+                generations[model_signature] = generation_id
+                if scope == "text":
+                    text_models.add(model_signature)
     if not generations:
         raise RuntimeError("Semantic publication produced no owner generation")
-    generation_id, model_signature = max(generations)
-    semantic_payload = json.dumps(
-        {
-            "owner": "semantic",
-            "generation_id": generation_id,
-            "model_signature": model_signature,
-            "sources": list(selected_sources),
-        },
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    heads = [
-        StateOwnerHead(
-            owner="semantic",
-            revision=generation_id,
-            digest_sha256=hashlib.sha256(semantic_payload).hexdigest(),
-        )
-    ]
-    if "code" in selected_sources:
-        from neocortex.code.search.code_semantic_links import current_code_embedding_link_counts
-
-        active, current = current_code_embedding_link_counts(
+    try:
+        budget = getattr(args, "_semantic_work_budget", None)
+        remaining = None if budget is None else budget.remaining_seconds()
+        observed_generations = dict(observe_semantic_generation_heads(
             args.state_directory,
-            generation_id=generation_id,
-            model_signature=model_signature,
-        )
-        code_payload = json.dumps(
-            {
-                "owner": "code",
-                "generation_id": generation_id,
-                "model_signature": model_signature,
-                "active": active,
-                "current": current,
-            },
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        heads.append(
-            StateOwnerHead(
-                owner="code",
-                revision=generation_id,
-                digest_sha256=hashlib.sha256(code_payload).hexdigest(),
+            deadline_monotonic=None if remaining is None else time.monotonic() + remaining,
+            cancellation_check=None if budget is None else budget.cancellation_check,
+        ))
+    except PublicationHeadsError as exc:
+        raise StatePublicationRecoveryRequired(str(exc)) from exc
+    if any(observed_generations.get(model) != generation for model, generation in generations.items()):
+        raise StatePublicationRecoveryRequired("Semantic results do not match all published model heads")
+    if "code" in selected_sources:
+        from neocortex.code.search.code_semantic_links import synchronize_code_embedding_links
+
+        for model_signature in sorted(text_models):
+            synchronize_code_embedding_links(
+                args.state_directory,
+                generation_id=observed_generations[model_signature],
+                model_signature=model_signature,
             )
-        )
-    return tuple(heads)
+    return _observe_integrated_heads(
+        args.state_directory, include_code="code" in selected_sources,
+        work_budget=getattr(args, "_semantic_work_budget", None),
+    )
 
 
 def _semantic_results_ready(
@@ -1129,7 +1597,9 @@ def _resolve_integrated_publication_after_nonterminal(
     pending = tuple(item for item in view.pending if item.event_id == event_id)
     if len(pending) != 1:
         return False
-    observed = view.epoch.owner_heads
+    observed = _observe_integrated_heads(
+        state_directory, include_code="code" in getattr(prepared, "owners", ())
+    )
     if baseline:
         if observed != baseline:
             return False
@@ -1144,6 +1614,64 @@ def _resolve_integrated_publication_after_nonterminal(
     return True
 
 
+def _select_integrated_sources(args: argparse.Namespace, run_id: int | None):
+    """Keep independent readable sources usable and distinguish empty inputs."""
+
+    from neocortex.persistence.framework_state_writer import FrameworkState
+    from neocortex.platform.content_capability_manifest import content_capability_for_source
+    from neocortex.semantic.semantic_sources import (
+        TEXT_SOURCE_KINDS,
+        semantic_source_database,
+        semantic_source_heads,
+    )
+
+    route_states: dict[str, tuple[str, int]] = {}
+    if run_id is not None:
+        with FrameworkState(args.state_directory / "framework.sqlite3", existing_only=True) as state:
+            rows = state._connection.execute(
+                "SELECT route_name,status,summary_json FROM route_runs WHERE run_id=? LIMIT 32", (run_id,)
+            ).fetchall()
+            for route_name, status, summary_json in rows:
+                summary = {} if summary_json is None else json.loads(summary_json)
+                count = summary.get("candidates", 0) if isinstance(summary, dict) else 0
+                route_states[str(route_name)] = (str(status), count if type(count) is int else 0)
+    explicit = args.semantic_source is not None
+    requested = tuple(args.semantic_source) if explicit else TEXT_SOURCE_KINDS
+    selected: list[str] = []
+    empty: list[str] = []
+    blocked: dict[str, str] = {}
+
+    def available(source: str, *, inspect_content: bool) -> bool:
+        route = content_capability_for_source(source).route_name
+        status, candidates = route_states.get(route, ("unobserved", 0))
+        if status in {"failed", "cancelled", "interrupted"}:
+            blocked[source] = "route_unavailable"
+            return False
+        if not semantic_source_database(args.state_directory, source).is_file():
+            if (explicit and source != "image") or candidates > 0:
+                blocked[source] = "source_missing"
+            else:
+                empty.append(source)
+            return False
+        if inspect_content:
+            head = semantic_source_heads(args.state_directory, (source,))[0]
+            if not head.complete:
+                blocked[source] = head.reason or f"source_{head.coverage}"
+                return False
+            if head.row_count == 0:
+                empty.append(source)
+                return False
+        return True
+
+    for source in requested:
+        if available(source, inspect_content=True):
+            selected.append(source)
+    images = available("image", inspect_content=True)
+    args._semantic_source_unavailable = blocked
+    args._semantic_source_empty = tuple(empty)
+    return tuple(selected), images
+
+
 def run_integrated_all_semantic_index(
     args: argparse.Namespace,
     *,
@@ -1154,18 +1682,28 @@ def run_integrated_all_semantic_index(
     resume_source_run_id: int | None = None,
     framework_lock_held: bool = False,
 ) -> int:
-    """Advance bounded document and image embeddings after ``--all`` routes.
+    """Complete all applicable local sources, using one shared work budget.
 
-    Broad Archive and Code inventories can contain thousands or millions of
-    chunks, so both remain explicit ``--semantic-source`` choices.  The default
-    integrated stage advances physical document/audio caches and treats a
-    bounded truncation as resumable progress rather than as a failed framework
-    run.
+    Explicit limits remain effective across text, image and OCR. Empty sources
+    do not load models, and a partial generation is retained but never reported
+    as complete.
     """
 
     if not args.all and resume_source_run_id is None:
         raise ValueError("integrated Semantic indexing requires --all or a resumable --resume-run")
-    from neocortex.semantic.semantic_sources import TEXT_SOURCE_KINDS, semantic_source_database
+    if not framework_lock_held:
+        from neocortex.runtime.control.locking import FrameworkRunLock
+
+        _validate_semantic_state_write(args.state_directory, database=True)
+        args.state_directory.mkdir(parents=True, exist_ok=True)
+        with FrameworkRunLock(args.state_directory / "framework.lock"):
+            return run_integrated_all_semantic_index(
+                args, progress=progress, result_sink=result_sink, print_output=print_output,
+                run_id=run_id, resume_source_run_id=resume_source_run_id, framework_lock_held=True,
+            )
+    from neocortex.semantic.semantic_sources import semantic_source_database
+    from neocortex.semantic.semantic_source_budget import semantic_source_read_budget
+    from neocortex.semantic.semantic_work_budget import SemanticIndexDeadlineExceeded
 
     try:
         integrated_args = (
@@ -1179,52 +1717,69 @@ def run_integrated_all_semantic_index(
         return 2
     if integrated_args is None:
         return 0
+    integrated_args._semantic_work_budget = _integrated_semantic_budget(integrated_args, run_id)
     resume_source = resume_source_run_id
-    image_available = semantic_source_database(
+    image_cache_exists = semantic_source_database(
         integrated_args.state_directory,
         "image",
     ).is_file()
-    if args.semantic_source is None and (
-        resume_source is None or getattr(integrated_args, "_semantic_selection_pending", False)
-    ):
-        integrated_args.semantic_source = tuple(
-            source_kind
-            for source_kind in TEXT_SOURCE_KINDS
-            if source_kind not in {"archive", "code"}
-            and semantic_source_database(integrated_args.state_directory, source_kind).is_file()
-        )
+    image_available = (
+        bool(integrated_args._semantic_resume_image_available)
+        if resume_source is not None
+        else image_cache_exists
+    )
+    if image_available and not image_cache_exists:
+        raise StatePublicationRecoveryRequired("original image source is unavailable")
+    if resume_source is None or getattr(integrated_args, "_semantic_selection_pending", False):
+        try:
+            with semantic_source_read_budget(integrated_args._semantic_work_budget):
+                integrated_args.semantic_source, image_available = _select_integrated_sources(integrated_args, run_id)
+        except SemanticIndexDeadlineExceeded as exc:
+            _record_integrated_semantic_stage(
+                integrated_args, run_id, "partial",
+                details=_integrated_stage_details(
+                    integrated_args, selected_sources=(), image_available=False,
+                    error=exc, semantic_exit_code=2,
+                ),
+                idempotency_key="semantic:source-budget-exhausted",
+            )
+            return 2
     selected_sources = tuple(integrated_args.semantic_source or ())
     integrated_args.semantic_index = (
         "all" if selected_sources and image_available else "text" if selected_sources else "image"
     )
     if not selected_sources and not image_available:
+        unavailable = bool(getattr(integrated_args, "_semantic_source_unavailable", {}))
         _record_integrated_semantic_stage(
             integrated_args,
             run_id,
-            "skipped",
+            "partial" if unavailable else "skipped",
             details=_integrated_stage_details(
                 integrated_args,
                 selected_sources=selected_sources,
                 image_available=image_available,
                 resume_source_run_id=resume_source,
             ),
-            idempotency_key="semantic:skipped",
+            idempotency_key="semantic:unavailable" if unavailable else "semantic:skipped",
         )
         if print_output:
-            print("SEMANTIC_ALL status=skipped reason=no_durable_text_or_image_cache")
+            print(
+                "SEMANTIC_ALL status=partial reason=source_unavailable"
+                if unavailable else "SEMANTIC_ALL status=skipped reason=no_durable_text_or_image_cache"
+            )
         emit_progress(
             progress,
             ProgressEvent(
                 "semantic",
                 "integrated",
-                "Semantic omitido: no hay texto durable",
+                "Semantic incompleto: fuentes no disponibles" if unavailable else "Semantic sin contenido aplicable",
                 1,
                 1,
                 "fase",
                 True,
             ),
         )
-        return 0
+        return 2 if unavailable else 0
     _record_integrated_semantic_stage(
         integrated_args,
         run_id,
@@ -1244,6 +1799,8 @@ def run_integrated_all_semantic_index(
             selected_sources=selected_sources,
             image_available=image_available,
         )
+        if publication is not None:
+            integrated_args._semantic_publication_event_id = publication.prepared.event_id
     except BaseException as exc:
         _record_integrated_semantic_stage(
             integrated_args,
@@ -1266,7 +1823,7 @@ def run_integrated_all_semantic_index(
             f"sources={','.join(selected_sources)} "
             f"max_items={integrated_args.semantic_max_items} "
             f"max_new_jobs={integrated_args.semantic_max_new_jobs} "
-            f"time_budget_seconds={integrated_args.semantic_time_budget_seconds:g} "
+            f"time_budget_seconds={integrated_args.semantic_time_budget_seconds if integrated_args.semantic_time_budget_seconds is not None else 'unlimited'} "
             f"images={int(image_available)} "
             f"code_explicit={int('code' in selected_sources)}"
         )
@@ -1295,12 +1852,13 @@ def run_integrated_all_semantic_index(
     try:
         semantic_exit_code = run_semantic_index(
             integrated_args,
-            incomplete_is_error=False,
+            incomplete_is_error=True,
             progress=progress,
             result_sink=capture_result,
             print_output=print_output,
             framework_lock_held=framework_lock_held,
         )
+        args._semantic_scope_unavailable = dict(getattr(integrated_args, "_semantic_scope_unavailable", {}))
         _record_integrated_semantic_work(
             integrated_args,
             run_id,
@@ -1312,12 +1870,19 @@ def run_integrated_all_semantic_index(
             image_available=image_available,
         )
         if stage_complete and publication is not None:
+            final_heads = _final_publication_owner_heads(
+                integrated_args,
+                captured_results,
+                selected_sources=selected_sources,
+            )
+            integrated_args._semantic_work_budget.checkpoint()
             publication.commit(
-                _final_publication_owner_heads(
-                    integrated_args,
-                    captured_results,
-                    selected_sources=selected_sources,
-                )
+                final_heads,
+                verify_owner_heads=lambda: _observe_integrated_heads(
+                    integrated_args.state_directory,
+                    include_code="code" in selected_sources,
+                    work_budget=integrated_args._semantic_work_budget,
+                ),
             )
         elif publication is not None:
             try:
@@ -1329,6 +1894,10 @@ def run_integrated_all_semantic_index(
                 recovery_required = True
             if recovery_required:
                 semantic_exit_code = 2
+        if not stage_complete and semantic_exit_code == 0:
+            semantic_exit_code = 2
+        if getattr(integrated_args, "_semantic_source_unavailable", {}):
+            semantic_exit_code = 2
         terminal_status = "completed" if stage_complete and semantic_exit_code == 0 else "partial"
         _record_integrated_semantic_stage(
             integrated_args,

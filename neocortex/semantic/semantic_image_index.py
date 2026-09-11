@@ -17,8 +17,10 @@ from .semantic_config import (
     text_chunking_for_model,
 )
 from .semantic_generation_worker import GenerationRunner
+from .semantic_schema import SemanticStateError
 from .semantic_generation_repository import (
     find_exact_published_generation,
+    has_building_embedding_generation,
     invalidate_embedding_generations_for_source_change,
     merge_source_head_ledger,
     published_source_head_ledger,
@@ -222,6 +224,7 @@ def _start_image_generations(
     chunking: TextChunkingConfig,
     image_provenance: Mapping[str, object],
     ocr_provenance: Mapping[str, object],
+    work_budget: SemanticWorkBudget | None = None,
 ) -> tuple[int, int | None]:
     image_generation_id = start_embedding_generation(
         database,
@@ -232,6 +235,7 @@ def _start_image_generations(
         ),
         provenance=image_provenance,
         materialize_base=False,
+        work_budget=work_budget,
     )
     if not embed_ocr_text:
         return image_generation_id, None
@@ -251,6 +255,7 @@ def _start_image_generations(
             "text_quality_policy": SEMANTIC_TEXT_QUALITY_POLICY,
         },
         materialize_base=False,
+        work_budget=work_budget,
     )
     return image_generation_id, ocr_generation_id
 
@@ -267,6 +272,7 @@ def _prepare_image_index(
     backend_factory: BackendFactory,
     image_provenance: Mapping[str, object],
     ocr_provenance: Mapping[str, object],
+    work_budget: SemanticWorkBudget | None = None,
 ) -> _ImageIndexSetup:
     require_source_databases(state_directory, (IMAGE_SOURCE_KIND,))
     image_model = clip_image_model()
@@ -315,6 +321,7 @@ def _prepare_image_index(
         chunking=active_chunking,
         image_provenance=image_provenance,
         ocr_provenance=ocr_provenance,
+        work_budget=work_budget,
     )
     initial_cursor = {
         "protocol": "bounded-v1",
@@ -672,7 +679,13 @@ def index_image_embeddings(
         "text_quality_policy": SEMANTIC_TEXT_QUALITY_POLICY,
         "source_heads": source_head_payload,
     }
-    if all(head.complete for head in source_heads):
+    if all(head.complete for head in source_heads) and not (
+        budget.preserve_existing_generations
+        and any(
+            has_building_embedding_generation(database, model_signature=model.model_signature)
+            for model in ((image_model, text_model) if embed_ocr_text else (image_model,))
+        )
+    ):
         image_published = find_exact_published_generation(
             database,
             model_signature=image_model.model_signature,
@@ -762,6 +775,7 @@ def index_image_embeddings(
         state_directory,
         model_cache_override=model_cache_override,
         local_files_only=local_files_only,
+        work_budget=budget,
         threads=threads,
         embed_ocr_text=embed_ocr_text,
         ocr_model=ocr_model,
@@ -781,6 +795,8 @@ def index_image_embeddings(
     )
     confirmed_heads = semantic_source_heads(state_directory, (IMAGE_SOURCE_KIND,))
     if confirmed_heads != source_heads:
+        if budget.preserve_existing_generations:
+            raise SemanticStateError("source changed during recovery; generation was kept unpublished")
         invalidate_embedding_generations_for_source_change(
             setup.database,
             (setup.image_generation_id,)

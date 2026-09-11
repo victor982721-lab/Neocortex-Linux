@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import time
 import xml.etree.ElementTree as ET
@@ -12,6 +13,8 @@ from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator, cast
+
+import xxhash
 
 from neocortex.deduplication import (
     FileChangedError,
@@ -57,6 +60,7 @@ from .layout import (
     xml_text_and_layout as _xml_text_and_layout,
 )
 from .models import (
+    ALGORITHM_VERSION,
     DocxDiagnostic,
     DocxFailure,
     DocxIntegrityStatus,
@@ -139,6 +143,177 @@ _Extracted = ExtractedDocx
 
 class _LiveDocxCachePathConflict(RuntimeError):
     """A cached path is still associated with another live DOCX identity."""
+
+
+def _decode_cached_text(
+    payload: object,
+    expected_chars: object,
+    *,
+    max_chars: int,
+) -> str | None:
+    """Decode one bounded durable text representation without opening the source."""
+
+    if isinstance(expected_chars, int):
+        chars = expected_chars
+    elif isinstance(expected_chars, str):
+        try:
+            chars = int(expected_chars)
+        except ValueError:
+            return None
+    else:
+        return None
+    if chars < 0 or chars > max_chars or not isinstance(payload, (bytes, bytearray, memoryview)):
+        return None
+    decoder = zlib.decompressobj()
+    try:
+        # ``text_chars`` counts Unicode code points while zlib bounds bytes;
+        # four bytes is the maximum UTF-8 width of one code point.
+        decoded = decoder.decompress(bytes(payload), chars * 4 + 1)
+    except (zlib.error, ValueError):
+        return None
+    if (
+        len(decoded) > chars * 4
+        or decoder.unconsumed_tail
+        or decoder.unused_data
+        or not decoder.eof
+    ):
+        return None
+    try:
+        text = decoded.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    return text if len(text) == chars else None
+
+
+def _cached_layout_is_valid(row: Any) -> bool:
+    """Verify layout evidence before allowing a complete cache reuse."""
+
+    layout_json = row["layout_json"]
+    layout_signature = row["layout_signature"]
+    layout_class = row["layout_class"]
+    if not all(isinstance(value, str) and value for value in (
+        layout_json,
+        layout_signature,
+        layout_class,
+    )):
+        return False
+    try:
+        evidence = json.loads(layout_json)
+        canonical = json.dumps(
+            evidence,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        counts_match = (
+            int(row["paragraph_count"]) == int(evidence["paragraph_count"])
+            and int(row["table_count"]) == int(evidence["table_count"])
+            and int(row["image_count"]) == int(evidence["image_count"])
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (
+        isinstance(evidence, dict)
+        and evidence.get("algorithm") == ALGORITHM_VERSION
+        and evidence.get("page_class") is not None
+        and evidence.get("structure") is not None
+        and layout_class == f"{evidence['page_class']}:{evidence['structure']}"
+        and counts_match
+        and str(layout_signature) == xxhash.xxh3_128_hexdigest(canonical.encode("utf-8"))
+    )
+
+
+def _cached_docx_parts_are_valid(
+    connection: Any,
+    key: str,
+    document_text: str,
+    *,
+    max_chars: int,
+) -> bool:
+    """Validate the persisted part layer against the durable document text."""
+
+    rows = connection.execute(
+        """SELECT part_name,part_kind,ordinal,text_zlib,text_chars
+        FROM document_parts WHERE file_key=? ORDER BY ordinal,part_name""",
+        (key,),
+    ).fetchall()
+    if not rows:
+        return document_text == ""
+    valid_kinds = {"body", "header", "footer", "footnotes", "endnotes", "comments"}
+    reconstructed: list[str] = []
+    ordinals: list[int] = []
+    for row in rows:
+        part_name = row["part_name"]
+        part_kind = row["part_kind"]
+        if not isinstance(part_name, str) or not part_name or part_kind not in valid_kinds:
+            return False
+        try:
+            ordinal = int(row["ordinal"])
+        except (TypeError, ValueError):
+            return False
+        part_text = _decode_cached_text(
+            row["text_zlib"],
+            row["text_chars"],
+            max_chars=max_chars,
+        )
+        if part_text is None or not part_text:
+            return False
+        ordinals.append(ordinal)
+        reconstructed.append(part_text)
+    if ordinals != list(range(len(rows))):
+        return False
+    return "\n\n".join(reconstructed) == document_text
+
+
+def _cached_docx_representation(
+    connection: Any,
+    row: Any,
+    *,
+    max_chars: int,
+) -> str | None:
+    """Return durable text only when all cache-owned structural evidence is valid."""
+
+    document_text = _decode_cached_text(
+        row["text_zlib"],
+        row["text_chars"],
+        max_chars=max_chars,
+    )
+    if document_text is None:
+        return None
+    digest = row["text_xxh3_128"]
+    if not isinstance(digest, str) or digest != _normalized_text_digest(document_text):
+        return None
+    try:
+        counts_valid = all(
+            int(row[name]) >= 0
+            for name in ("paragraph_count", "table_count", "image_count", "section_count")
+        )
+    except (TypeError, ValueError):
+        return None
+    if not counts_valid or not _cached_layout_is_valid(row):
+        return None
+    if not _cached_docx_parts_are_valid(
+        connection,
+        str(row["file_key"]),
+        document_text,
+        max_chars=max_chars,
+    ):
+        return None
+    return document_text
+
+
+def _cached_error_is_recoverable(row: Any) -> bool:
+    """Accept only typed retry evidence, never a free-form error message."""
+
+    disposition = str(row["review_disposition"] or "")
+    if disposition in {
+        "manual_review",
+        "deletion_candidate",
+        "keep_protected",
+        "protected",
+    }:
+        return False
+    return disposition == "retry" or bool(row["retryable"])
 
 
 def _review_candidates(
@@ -843,6 +1018,7 @@ class _DocxCandidateOutcome:
     cache_hits: int = 0
     cached_errors: int = 0
     extracted: int = 0
+    fts_documents_indexed: int = 0
     errors: int = 0
     layouts: int = 0
     partial_documents: int = 0
@@ -887,7 +1063,19 @@ class DocxRoute:
                 self.cancellation,
             )
         )
+        self._recoverable_retry_keys: set[str] = set()
         initialize_docx_state(config.state_path)
+
+    def _claim_recoverable_retry(self, snapshot: FileSnapshot) -> bool:
+        claimed = getattr(self, "_recoverable_retry_keys", None)
+        if claimed is None:
+            claimed = set()
+            self._recoverable_retry_keys = claimed
+        key = _file_key(snapshot)
+        if key in claimed:
+            return False
+        claimed.add(key)
+        return True
 
     def _candidates(self, connection) -> Iterator[FileSnapshot]:
         """Yield bounded work with errors and degraded documents first."""
@@ -1056,8 +1244,10 @@ class DocxRoute:
 
     def _cache_status(self, connection, snapshot: FileSnapshot) -> str:
         row = connection.execute(
-            """SELECT size,mtime_ns,birthtime_ns,processing_signature,status,retryable,
-            failure_code
+            """SELECT file_key,size,mtime_ns,birthtime_ns,processing_signature,status,
+            retryable,failure_code,review_disposition,text_zlib,text_chars,text_xxh3_128,
+            paragraph_count,table_count,image_count,section_count,
+            layout_class,layout_signature,layout_json
             FROM documents WHERE file_key=?""",
             (_file_key(snapshot),),
         ).fetchone()
@@ -1068,6 +1258,12 @@ class DocxRoute:
             and int(row["birthtime_ns"]) == snapshot.birthtime_ns
             and row["processing_signature"] == self.config.processing_signature
         ):
+            return "miss"
+        if row["status"] in {"complete", "partial"} and _cached_docx_representation(
+            connection,
+            row,
+            max_chars=self.config.max_text_chars,
+        ) is None:
             return "miss"
         if row["status"] == "complete":
             return "complete"
@@ -1080,10 +1276,17 @@ class DocxRoute:
             return "partial"
         if (
             row["status"] == "error"
-            and not bool(row["retryable"])
-            and not self.config.retry_errors
-            and not force_retry
+            and (self.config.retry_errors or force_retry)
         ):
+            return "retry"
+        if (
+            row["status"] == "error"
+            and self.config.retry_recoverable_errors
+            and _cached_error_is_recoverable(row)
+            and self._claim_recoverable_retry(snapshot)
+        ):
+            return "retry"
+        if row["status"] == "error":
             return "cached_error"
         return "retry"
 
@@ -1092,7 +1295,7 @@ class DocxRoute:
         connection,
         snapshot: FileSnapshot,
         cache_status: str,
-    ) -> None:
+    ) -> int | None:
         """Refresh one hit after safely resolving a stale path owner."""
 
         key = _file_key(snapshot)
@@ -1143,11 +1346,53 @@ class DocxRoute:
                 key,
             ),
         )
-        if cache_status in {"complete", "partial"}:
+        # Preserve the narrow historical path-ownership seam used by callers
+        # that construct a route probe without a full route configuration.
+        if not hasattr(self, "config"):
             connection.execute(
                 "UPDATE document_fts SET path=? WHERE file_key=?",
                 (snapshot.path, key),
             )
+            return 0
+        if cache_status not in {"complete", "partial"}:
+            # Error caches have no durable text representation.  Remove any
+            # orphaned index row rather than allowing a stale search hit.
+            connection.execute("DELETE FROM document_fts WHERE file_key=?", (key,))
+            return 0
+        row = connection.execute(
+            """SELECT file_key,path,title,author,text_zlib,text_chars,text_xxh3_128,
+            paragraph_count,table_count,image_count,section_count,
+            layout_class,layout_signature,layout_json
+            FROM documents WHERE file_key=?""",
+            (key,),
+        ).fetchone()
+        if row is None:
+            return None
+        body = _cached_docx_representation(
+            connection,
+            row,
+            max_chars=self.config.max_text_chars,
+        )
+        if body is None:
+            return None
+        expected = (
+            snapshot.path,
+            str(row["title"] or ""),
+            str(row["author"] or ""),
+            body,
+        )
+        fts_rows = connection.execute(
+            "SELECT path,title,author,body FROM document_fts WHERE file_key=?",
+            (key,),
+        ).fetchall()
+        if len(fts_rows) == 1 and tuple(fts_rows[0]) == expected:
+            return 0
+        connection.execute("DELETE FROM document_fts WHERE file_key=?", (key,))
+        connection.execute(
+            "INSERT INTO document_fts(file_key,path,title,author,body) VALUES(?,?,?,?,?)",
+            (key, *expected),
+        )
+        return 1
 
     @staticmethod
     def _prior_reviewable(connection, snapshot: FileSnapshot) -> bool:
@@ -1590,7 +1835,9 @@ class DocxRoute:
     ) -> _DocxCandidateOutcome | None:
         if cache_status not in {"complete", "partial", "cached_error"}:
             return None
-        self._touch_cache_hit(connection, snapshot, cache_status)
+        fts_documents_indexed = self._touch_cache_hit(connection, snapshot, cache_status)
+        if fts_documents_indexed is None:
+            return None
         if cache_status == "complete":
             self._queue_diagnostic_reconciliation(
                 reconciliations,
@@ -1598,7 +1845,10 @@ class DocxRoute:
                 (),
                 "current DOCX cache has no degraded evidence",
             )
-            return _DocxCandidateOutcome(cache_hits=1)
+            return _DocxCandidateOutcome(
+                cache_hits=1,
+                fts_documents_indexed=fts_documents_indexed,
+            )
         (
             cached_status,
             integrity_status,
@@ -1627,6 +1877,7 @@ class DocxRoute:
             )
             return _DocxCandidateOutcome(
                 cache_hits=1,
+                fts_documents_indexed=fts_documents_indexed,
                 cached_partial_documents=1,
                 review_candidates=1,
                 deletion_candidates=int(disposition == "deletion_candidate"),
@@ -1670,7 +1921,11 @@ class DocxRoute:
                 (),
                 "DOCX extraction completed without degraded evidence",
             )
-            return _DocxCandidateOutcome(extracted=1, layouts=1)
+            return _DocxCandidateOutcome(
+                extracted=1,
+                fts_documents_indexed=1,
+                layouts=1,
+            )
         current_reviews = _review_candidates(
             snapshot,
             source_status=result.status,
@@ -1690,6 +1945,7 @@ class DocxRoute:
         )
         return _DocxCandidateOutcome(
             extracted=1,
+            fts_documents_indexed=1,
             layouts=1,
             partial_documents=1,
             review_candidates=1,
@@ -1724,8 +1980,10 @@ class DocxRoute:
 
     def run(self) -> DocxRouteSummary:
         self.cancellation.checkpoint()
+        self._recoverable_retry_keys.clear()
         total = eligible = selected_count = 0
         processed = cache_hits = cached_errors = extracted = errors = layouts = 0
+        fts_documents_indexed = 0
         new_documents = retried_documents = 0
         partial_documents = cached_partial_documents = 0
         review_candidates = deletion_candidates = retryable_errors = 0
@@ -1798,6 +2056,7 @@ class DocxRoute:
                     cache_hits += outcome.cache_hits
                     cached_errors += outcome.cached_errors
                     extracted += outcome.extracted
+                    fts_documents_indexed += outcome.fts_documents_indexed
                     errors += outcome.errors
                     layouts += outcome.layouts
                     partial_documents += outcome.partial_documents
@@ -1869,7 +2128,7 @@ class DocxRoute:
             retried_documents=retried_documents,
             extracted=extracted,
             errors=errors,
-            fts_documents_indexed=extracted,
+            fts_documents_indexed=fts_documents_indexed,
             layouts_classified=layouts,
             layout_groups=groups,
             pdf_matched=matched,

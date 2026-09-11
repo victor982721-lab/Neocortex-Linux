@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, Literal, NotRequired, Required, TYPE_CHECKING, TypedDict, cast
 from uuid import uuid4
 
@@ -650,7 +651,22 @@ def curation_plan_payload(
     request_id: str | None = None,
     budget: KnowledgeReadBudget | None = None,
 ) -> CurationPlanOutput:
-    """Return one bounded page from canonical published state without mutation."""
+    """Return a bounded read-only page from the fixed canonical state root."""
+
+    return _curation_plan_payload_for_state(
+        limit=limit, cursor=cursor, request_id=request_id, budget=budget,
+    )
+
+
+def _curation_plan_payload_for_state(
+    *,
+    limit: int = 50,
+    cursor: str | None = None,
+    request_id: str | None = None,
+    budget: KnowledgeReadBudget | None = None,
+    state_directory: Path | None = None,
+) -> CurationPlanOutput:
+    """Internal desktop adapter; public API/SDK roots remain non-configurable."""
 
     try:
         bounded_limit = _limit(limit)
@@ -689,10 +705,18 @@ def curation_plan_payload(
         _state_error, builder = _plan_contract()
         if budget is not None and not isinstance(budget, KnowledgeReadBudget):
             raise TypeError("budget must be a KnowledgeReadBudget")
-        builder_kwargs = {"limit": bounded_limit, "cursor": normalized_cursor}
+        builder_kwargs: dict[str, object] = {
+            "limit": bounded_limit,
+            "cursor": normalized_cursor,
+        }
         if budget is not None:
             builder_kwargs["budget"] = budget
-        page = builder(default_state_directory(), **builder_kwargs)
+        target_state_directory = (
+            default_state_directory()
+            if state_directory is None
+            else Path(state_directory)
+        )
+        page = builder(target_state_directory, **builder_kwargs)
         return _success_payload(page, request_id=normalized_request_id)
     except Exception as exc:
         # The producer contract is intentionally lazy and its state exception

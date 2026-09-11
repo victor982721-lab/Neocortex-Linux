@@ -58,6 +58,7 @@ class PdfRouteConfig:
     max_ocr_pages: int | None = None
     ocr_timeout_seconds: int = 120
     retry_errors: bool = False
+    retry_recoverable_errors: bool = False
     selection: CandidateSelection = field(default_factory=CandidateSelection)
     resume_source_run_id: int | None = None
     pdfminer_fallback: bool = True
@@ -261,6 +262,17 @@ class PdfRouteSummary:
     processing_signature: str | None = None
     processing_provenance: dict[str, Any] | None = None
     summary_schema: str = ROUTE_SUMMARY_SCHEMA
+    # Additive resume/coverage diagnostics are appended so existing positional
+    # construction of the stable summary contract retains its field order.
+    derived_phase_skipped: bool = False
+    derived_cache_repair_required: bool = False
+    derived_missing_fts_pages: int = 0
+    derived_missing_profile_pages: int = 0
+    extraction_cache_repair_required: bool = False
+    extraction_missing_documents: int = 0
+    extraction_missing_pages: int = 0
+    catalog_source_missing: int = field(default=0, kw_only=True)
+    catalog_complete: bool | None = field(default=None, kw_only=True)
 
 
 # endregion [02]
@@ -294,6 +306,20 @@ class CacheDecision:
 
     def __bool__(self) -> bool:
         return self.hit
+
+
+@dataclass(frozen=True, slots=True)
+class PdfExtractionCoverage:
+    """Durable extraction coverage observed against the current inventory."""
+
+    inventory_documents: int = 0
+    missing_documents: int = 0
+    documents_with_missing_pages: int = 0
+    missing_pages: int = 0
+
+    @property
+    def complete(self) -> bool:
+        return not self.missing_documents and not self.documents_with_missing_pages
 
 
 # endregion [03]

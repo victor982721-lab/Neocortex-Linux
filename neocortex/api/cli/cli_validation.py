@@ -45,15 +45,15 @@ from neocortex.runtime.orchestration.route_selection import (
 
 ALL_PRESET = {
     "route": "all",
+    "code_candidate_scope": "broad",
     "ocr": "auto",
     "pdf_cache_validation": "metadata",
     "image_document_ocr": "auto",
-    # One unattended run must leave useful Semantic progress instead of
-    # stopping after the historical 50-item pilot defaults.  The integrated
-    # stage still has a hard two-day ceiling and a durable job ceiling.
-    "semantic_max_items": 100_000,
-    "semantic_max_new_jobs": 1_000_000,
-    "semantic_time_budget_seconds": 172_800.0,
+    # The existing producer already streams bounded batches. An unattended
+    # full run has no hidden whole-run ceiling; explicit limits still win.
+    "semantic_max_items": None,
+    "semantic_max_new_jobs": None,
+    "semantic_time_budget_seconds": None,
 }
 
 def apply_all_preset(args: argparse.Namespace) -> None:
@@ -70,6 +70,13 @@ def apply_all_preset(args: argparse.Namespace) -> None:
     for name, value in ALL_PRESET.items():
         if name not in explicit:
             setattr(args, name, value)
+    # Preset ceilings bound an internal slice, not the whole unattended run.
+    # Explicit limits retain their original meaning and never reset per slice.
+    args._semantic_complete_all = not bool(
+        explicit.intersection(
+            {"semantic_max_items", "semantic_max_new_jobs", "semantic_time_budget_seconds"}
+        )
+    )
 
 
 

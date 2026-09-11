@@ -5,39 +5,48 @@ organizar archivos personales en Linux. Su objetivo es sustituir inventarios,
 auditorías y scripts improvisados por un flujo reproducible que conserve
 identidad, evidencia, incertidumbre y trazabilidad.
 
-La fuente vigente declara `0.13.0`. La última integración documental dejó
-`HEAD == main == origin/main` y árbol limpio. El ejecutable `current` es
-`0.13.0-c6d3985f7a45-cp314-linux-x86_64`, construido desde ese `source_sha`; el
-rollback inmediato es `0.13.0-1567fe46821b-cp314-linux-x86_64` y `.staging` está
-vacío. El estado instalado y el estado del checkout se comprueban por separado;
-el código de la tranche post-0.13 está instalado y verificado desde
-`c6d3985f7a45fc3120bd03e9561195674f2b8ac2`, mientras los commits posteriores
-son sólo documentales.
+La fuente vigente declara `0.13.0`. La integración funcional C1–C5 está en
+curso sobre el checkout de esta oleada. El estado de `HEAD`, `main`, `origin/main`,
+`current`, el launcher y el árbol se comprueba en vivo; este README no los
+presenta como alineados por inferencia.
 
-La aceptación C0–C7 de 0.13 está confirmada sobre el SHA final: 6917 pasadas,
-68 omitidas, 42 subtests, calidad estática sin errores/hallazgos bloqueantes,
-build reproducible, smoke/replay instalado y piloto de 37 fixtures sin cambios
-en sus bytes.
+Esta documentación distingue implementación de aceptación: no certifica una
+recuperación real de la generación 17, una release final instalada desde esta
+oleada ni el cierre completo C0–C7. Esas conclusiones requieren una copia de
+fuente y pruebas frescas, más los gates de [desarrollo y release](docs/subprojects/development-release.md).
 
-## Tranche post-0.13 instalada y verificada
+## Implementación funcional en curso
 
-La fuente y el artefacto activo incorporan publicaciones inmutables de
-inventario/catálogo, digest de contenido contra reescrituras con el mismo
-`size/mtime`, materialización segura de recursos Archive/Code virtuales,
-localizadores y hydration ampliados, Context v2 con grafo/telemetría,
-`content-diagnostics/v2`, `KnowledgeReadBudget`, lectura fenced de grants y
-recovery, sincronización de caches sólo sobre fixtures y un contrato de
-principal autenticado que aún no habilita autorización MCP.
+La ruta integrada conserva los owners y contratos existentes. `--all` selecciona
+las nueve rutas (`pdf`, `docx`, `office`, `archive`, `text`, `audio`, `video`,
+`image` y `code`); para esa modalidad Code usa el alcance `broad` dentro de la
+raíz elegida, sin ejecutar el código observado. Sus límites por formato
+permanecen efectivos y los límites globales sólo aparecen cuando se expresan de
+forma explícita: no se añade un techo global oculto y los flags repetibles siguen
+siendo acumulativos.
 
-La validación desde el SHA final terminó con 6,959 pruebas aprobadas, 67 omitidas
-y 42 subtests, y la promoción a `current` conservó el corpus personal cerrado y
-no ejecutó KIO real.
+El stage Semantic integrado considera también Archive, Code y Video cuando sus
+owners, heads y dependencias están disponibles. Una dependencia ausente degrada
+la ruta afectada y deja resultado `partial`/`incomplete` con causa tipada; no
+oculta el trabajo independiente. La actualización del catálogo ocurre después
+de cada productor y conserva `protected`, `no_speech`, `no_audio` y
+`metadata_only` como observaciones parciales, sin fabricar texto.
 
-La release tiene manifest `6f2a44f6e7ab937a3b92fac3f71be196cbffa707eddb21c7fac58972b7823b84`,
-árbol `6e67d6c6314268dacab90a69e17d755b7c9caa164301987b30b52a42706196be` y
-wheel `7e7a73eb30c7ceaa026c2d70a21f0e218abd08151a608db74e7ba74185f479aa`;
-el receipt de instalación se conserva en el estado canónico fuera del
-repositorio.
+Las rutas reparan FTS y derivados desde una representación durable válida sin
+repetir OCR, transcripción o análisis que ya sean íntegros. Un reintento sólo se
+admite con evidencia estructurada `retryable` y una vez por archivo y corrida;
+un mensaje que contenga la palabra «retry» no concede permiso. Las propuestas de
+organización son advisory y no requieren `--apply`; mover, renombrar o borrar
+originales sigue siendo una operación separada.
+
+La GUI usa la misma orden de rutas, estados y stage Semantic que la CLI: el perfil
+completo se traduce al lifecycle `--all`, mientras un subconjunto guardado no se
+expande por sorpresa y el perfil piloto mantiene límites acotados. Una publicación
+Semantic pendiente posterior a epoch 0 se recupera mediante el mismo productor,
+manifest y heads de todos los modelos; nunca se reinicia ni se resetea el estado.
+Si la compatibilidad no puede demostrarse, el resultado es
+`recovery_required` explicable. La implementación y sus focos siguen en
+validación; no implican aceptación real ni instalación publicada.
 
 ## Qué resuelve hoy
 

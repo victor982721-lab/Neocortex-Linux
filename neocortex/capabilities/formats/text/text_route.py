@@ -56,6 +56,7 @@ from neocortex.semantic.derivation_contracts import (
     StageDescriptor,
     WorkExecutionMode,
     WorkOutcome,
+    WorkReceipt,
 )
 from neocortex.foundation.file_identity import file_key_from_snapshot
 from neocortex.knowledge.knowledge_contracts import (
@@ -100,7 +101,7 @@ _TEXT_EXTRACT_STAGE_VERSION = "2"
 # hash; the source characterization requires updating it when those symbols
 # change, which in turn changes every affected processing signature.
 _TEXT_EXTRACTOR_CONTRACT_SHA256 = (
-    "sha256:e63a32920b161dfef5781c0f06427572451101b723f24d850a0b1c8c838a39f4"
+    "sha256:982a71b97ca4f1e5efed9a228874ddc461adda96df7798b7de178739cbf35e37"
 )
 _TEXT_IMPLEMENTATION_SCHEMA = "neocortex.text-implementation-contract/v1"
 _TEXT_DISTRIBUTION_NAME = "neocortex-framework"
@@ -193,6 +194,7 @@ class TextRouteConfig:
     worker_timeout_seconds: float = 60.0
     worker_memory_bytes: int = 1024 * 1024 * 1024
     retry_errors: bool = False
+    retry_recoverable_errors: bool = field(default=False, kw_only=True)
     selection: CandidateSelection = field(default_factory=CandidateSelection)
 
     @property
@@ -247,6 +249,8 @@ class TextRouteSummary:
     effective_processing_signatures: tuple[str, ...] = ()
     processing_provenance: dict[str, Any] | None = None
     summary_schema: str = ROUTE_SUMMARY_SCHEMA
+    catalog_source_missing: int = field(default=0, kw_only=True)
+    catalog_complete: bool | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -382,6 +386,8 @@ def _partial_input_binding(
 
 class TextCapabilityUnavailableError(RuntimeError):
     """No declared Text provider satisfies the exact workload and local policy."""
+
+    capability_unavailable = True
 
     def __init__(self, selection: CapabilitySelection) -> None:
         self.selection = selection
@@ -626,6 +632,13 @@ def _fts_fingerprint(file_key: str, extracted: _ExtractedText) -> str:
 
 def _redacted_failure_message(exc: BaseException) -> str:
     return f"{type(exc).__name__}: diagnostic detail redacted by Text owner policy."
+
+
+def _failure_retry_evidence(exc: BaseException) -> tuple[bool, str]:
+    """Classify only typed source failures for the bounded retry policy."""
+
+    retryable = isinstance(exc, (FileChangedError, OSError))
+    return retryable, "retry" if retryable else "manual_review"
 
 
 def _output_bindings(
@@ -882,6 +895,7 @@ class TextRoute:
         self.progress = progress
         self.memory_gate = memory_gate
         self.cancellation = cancellation or CancellationToken()
+        self._recoverable_retry_keys: set[str] = set()
 
     def _validate(self) -> None:
         if self.config.max_file_bytes is not None and self.config.max_file_bytes < 1:
@@ -892,6 +906,8 @@ class TextRoute:
             raise ValueError("text max_text_chars must be positive")
         if self.config.worker_timeout_seconds <= 0 or self.config.worker_memory_bytes < 1:
             raise ValueError("text worker limits must be positive")
+        if not isinstance(self.config.retry_recoverable_errors, bool):
+            raise ValueError("text retry_recoverable_errors must be a boolean")
 
     def _counts(self) -> tuple[int, int, int]:
         pool = eligible = 0
@@ -1120,6 +1136,58 @@ class TextRoute:
             connection.commit()
 
     @staticmethod
+    def _cached_failure_has_retry_evidence(
+        connection: sqlite3.Connection,
+        file_key: str,
+        receipt_id: str,
+    ) -> bool:
+        """Require both durable retryability and an explicit retry recommendation."""
+
+        document = connection.execute(
+            "SELECT retryable FROM documents WHERE file_key=? AND status='error'",
+            (file_key,),
+        ).fetchone()
+        if document is None or type(document["retryable"]) is not int:
+            return False
+        if document["retryable"] != 1:
+            return False
+        receipt_row = connection.execute(
+            "SELECT receipt_json FROM text_work_receipts WHERE receipt_id=?",
+            (receipt_id,),
+        ).fetchone()
+        if receipt_row is None:
+            return False
+        try:
+            receipt = WorkReceipt.from_json(str(receipt_row["receipt_json"]))
+        except (TypeError, ValueError):
+            return False
+        failure = receipt.failure
+        return (
+            receipt.outcome is WorkOutcome.FAILED
+            and failure is not None
+            and failure.retryable is True
+            and dict(failure.details).get("recommendation") == "retry"
+        )
+
+    def _claim_recoverable_retry(
+        self,
+        connection: sqlite3.Connection,
+        snapshot: FileSnapshot,
+        receipt_id: str,
+    ) -> bool:
+        """Claim at most one typed automatic retry for one file in this run."""
+
+        if not self.config.retry_recoverable_errors:
+            return False
+        file_key = file_key_from_snapshot(snapshot)
+        if file_key in self._recoverable_retry_keys:
+            return False
+        if not self._cached_failure_has_retry_evidence(connection, file_key, receipt_id):
+            return False
+        self._recoverable_retry_keys.add(file_key)
+        return True
+
+    @staticmethod
     def _delete_document(connection: sqlite3.Connection, key: str) -> None:
         connection.execute(
             "DELETE FROM text_materialization_heads WHERE materialization_owner='text' "
@@ -1230,7 +1298,7 @@ class TextRoute:
         if conflict is not None:
             self._delete_document(connection, str(conflict["file_key"]))
         self._delete_document(connection, key)
-        retryable = isinstance(exc, (FileChangedError, OSError))
+        retryable, _ = _failure_retry_evidence(exc)
         connection.execute(
             """INSERT INTO documents(
             file_key,path,size,mtime_ns,birthtime_ns,processing_signature,status,
@@ -1410,6 +1478,7 @@ class TextRoute:
                 work.stage.processing_signature,
                 exc,
             )
+            recommendation = "retry" if retryable else "manual_review"
             fail_text_derivation_attempt(
                 connection,
                 work.attempt_id,
@@ -1430,6 +1499,7 @@ class TextRoute:
                             _capability_rejections(work.capability_selection),
                         ),
                         ("selection", "|".join(work.capability_selection.explanation)),
+                        ("recommendation", recommendation),
                     ),
                 ),
                 document_file_key=file_key,
@@ -1507,6 +1577,7 @@ class TextRoute:
             return self._run_locked()
 
     def _run_locked(self) -> TextRouteSummary:
+        self._recoverable_retry_keys.clear()
         initialize_text_state(self.config.state_path)
         abandoned_ns = time.time_ns()
         while abandon_running_text_derivations(
@@ -1626,7 +1697,15 @@ class TextRoute:
                                 birthtime_ns=snapshot.birthtime_ns,
                             )
                         )
-                        if cached_failure is not None:
+                        automatic_retry = (
+                            cached_failure is not None
+                            and self._claim_recoverable_retry(
+                                connection,
+                                snapshot,
+                                cached_failure,
+                            )
+                        )
+                        if cached_failure is not None and not automatic_retry:
                             self._refresh_cached_error(
                                 connection,
                                 snapshot,
