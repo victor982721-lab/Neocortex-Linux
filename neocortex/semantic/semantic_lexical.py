@@ -833,6 +833,7 @@ _SPECS = {
         section_kind="archive_member",
         cjk_content_expression="f.body",
         sql="""SELECT f.rowid AS fts_rowid,f.file_key,f.path,
+        d.path AS owner_path,
         CASE WHEN d.text_chars>0
         THEN snippet(document_fts,6,'[',']',' ... ',24)
         ELSE d.member_chain END AS snippet,
@@ -840,12 +841,15 @@ _SPECS = {
         d.mtime_ns AS source_mtime_ns,d.birthtime_ns AS source_birthtime_ns,
         d.processing_signature AS source_processing_signature,
         d.last_seen_run_id AS source_last_seen_run_id,d.status AS source_status,
-        d.container_path,d.member_chain,d.member_path,d.archive_depth,d.content_kind
+        d.container_path,d.member_chain,d.member_path,d.archive_depth,d.content_kind,
+        {archive_optional_projection}
         FROM document_fts AS f JOIN documents AS d ON d.file_key=f.file_key
+        {archive_container_join}
         WHERE document_fts MATCH ?
         AND d.status IN ('indexed','metadata_only','archive')
         ORDER BY raw_bm25,f.path COLLATE NOCASE LIMIT ?""",
         cjk_sql="""SELECT f.rowid AS fts_rowid,f.file_key,f.path,
+        d.path AS owner_path,
         CASE WHEN d.text_chars>0
         THEN substr(f.body,max(1,instr(f.body,?)-80),240)
         ELSE d.member_chain END AS snippet,
@@ -853,8 +857,10 @@ _SPECS = {
         d.mtime_ns AS source_mtime_ns,d.birthtime_ns AS source_birthtime_ns,
         d.processing_signature AS source_processing_signature,
         d.last_seen_run_id AS source_last_seen_run_id,d.status AS source_status,
-        d.container_path,d.member_chain,d.member_path,d.archive_depth,d.content_kind
+        d.container_path,d.member_chain,d.member_path,d.archive_depth,d.content_kind,
+        {archive_optional_projection}
         FROM document_fts AS f JOIN documents AS d ON d.file_key=f.file_key
+        {archive_container_join}
         WHERE d.status IN ('indexed','metadata_only','archive') AND {conditions}
         ORDER BY length(f.body),f.path COLLATE NOCASE LIMIT ?""",
     ),
@@ -896,6 +902,196 @@ def _bounded_snippet(value: object) -> str | None:
     if len(snippet) <= MAX_SNIPPET_CHARS:
         return snippet
     return snippet[: MAX_SNIPPET_CHARS - 1] + "…"
+
+
+def _archive_section_contract(
+    row: sqlite3.Row,
+) -> tuple[str, str, dict[str, object]]:
+    """Resolve one Archive owner row as a physical root or ZIP member.
+
+    Archive's logical compound-document root is stored in the same owner table
+    as virtual members.  Its empty member fields are meaningful only together
+    with depth zero and an exact physical path match; otherwise the lexical
+    reader must abstain instead of manufacturing a ``!/body`` locator.
+    """
+
+    try:
+        file_key = row["file_key"]
+        path = row["path"]
+        owner_path = row["owner_path"]
+        container_path = row["container_path"]
+        member_chain = row["member_chain"]
+        member_path = row["member_path"]
+        archive_depth_raw = row["archive_depth"]
+        content_kind = row["content_kind"]
+        container_key = row["container_key"]
+        media_type = row["media_type"]
+        container_status = row["container_status"]
+        container_key_column_present = row["container_key_column_present"]
+        media_type_column_present = row["media_type_column_present"]
+        container_status_column_present = row["container_status_column_present"]
+        role = row["document_role"]
+        role_column_present = row["document_role_column_present"]
+        logical_chain = row["logical_document_chain"]
+        logical_chain_column_present = row["logical_chain_column_present"]
+    except (KeyError, IndexError) as exc:
+        raise sqlite3.DataError("archive lexical row is missing its section contract") from exc
+    if not all(
+        isinstance(value, str) and value.strip()
+        for value in (file_key, path, owner_path, container_path, content_kind)
+    ):
+        raise sqlite3.DataError("archive lexical row has a blank owner path or content kind")
+    if path != owner_path:
+        raise sqlite3.DataError("archive lexical FTS path is not owner-backed")
+    if not isinstance(member_chain, str) or not isinstance(member_path, str):
+        raise sqlite3.DataError("archive lexical row has a malformed member identity")
+    if type(role_column_present) is not int or role_column_present not in {0, 1}:
+        raise sqlite3.DataError("archive lexical row has an invalid role-column marker")
+    if type(logical_chain_column_present) is not int or logical_chain_column_present not in {0, 1}:
+        raise sqlite3.DataError("archive lexical row has an invalid logical-chain marker")
+    for marker, value, label in (
+        (container_key_column_present, container_key, "container key"),
+        (media_type_column_present, media_type, "media type"),
+        (container_status_column_present, container_status, "container status"),
+    ):
+        if type(marker) is not int or marker not in {0, 1}:
+            raise sqlite3.DataError(f"archive lexical row has an invalid {label} marker")
+        if marker and (not isinstance(value, str) or not value.strip()):
+            raise sqlite3.DataError(f"archive lexical row has a blank {label}")
+    if role_column_present and role is not None and not isinstance(role, str):
+        raise sqlite3.DataError("archive lexical row has a malformed document role")
+    if logical_chain_column_present and logical_chain is not None and not isinstance(
+        logical_chain, str
+    ):
+        raise sqlite3.DataError("archive lexical row has a malformed logical document chain")
+    if isinstance(archive_depth_raw, bool) or not isinstance(archive_depth_raw, (int, str)):
+        raise sqlite3.DataError("archive lexical row has an invalid archive depth")
+    try:
+        archive_depth = int(archive_depth_raw)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise sqlite3.DataError("archive lexical row has an invalid archive depth") from exc
+    if archive_depth < 0:
+        raise sqlite3.DataError("archive lexical row has a negative archive depth")
+
+    common = {
+        "inside_zip": False,
+        "container_path": container_path,
+        "member_chain": member_chain,
+        "member_path": member_path,
+        "archive_depth": archive_depth,
+        "content_kind": content_kind,
+    }
+    optional = {}
+    if container_key_column_present:
+        optional["container_key"] = container_key
+    if media_type_column_present:
+        optional["media_type"] = media_type
+    if container_status_column_present:
+        optional["container_status"] = container_status
+    if role_column_present:
+        optional["document_role"] = role
+    if logical_chain_column_present and logical_chain is not None:
+        optional["logical_document_chain"] = logical_chain
+    if (
+        member_chain == ""
+        and member_path == ""
+        and archive_depth == 0
+        and path == container_path
+        and (not role_column_present or role == "logical_document")
+        and (not logical_chain_column_present or logical_chain == "")
+    ):
+        return (
+            "archive_document",
+            "body",
+            {**common, **optional, "physical_root": True},
+        )
+
+    if not member_chain.strip():
+        raise sqlite3.DataError("archive lexical member has an empty member chain")
+    if not member_path.strip():
+        raise sqlite3.DataError("archive lexical member has an empty member path")
+    if archive_depth < 1:
+        raise sqlite3.DataError("archive lexical member has an invalid archive depth")
+    if role_column_present and role not in {
+        "archive_member",
+        "document_component",
+        "logical_document",
+    }:
+        raise sqlite3.DataError("archive lexical member has an unsupported document role")
+    expected_path = f"{container_path}!/{member_chain}"
+    if path != expected_path:
+        raise sqlite3.DataError("archive lexical member path is not owner-backed")
+    return (
+        "archive_member",
+        str(file_key),
+        {**common, "inside_zip": True},
+    )
+
+
+def _archive_source_spec(
+    spec: _SourceSpec,
+    connection: sqlite3.Connection,
+) -> _SourceSpec:
+    """Add optional role projections without breaking pre-role Archive readers."""
+
+    if spec.source_kind != "archive":
+        return spec
+    columns = {
+        str(row[1]) for row in connection.execute("PRAGMA table_info(documents)")
+    }
+
+    has_containers = (
+        connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='containers'"
+        ).fetchone()
+        is not None
+    )
+    has_container_relation = has_containers and "container_key" in columns
+
+    def projection(column: str, alias: str) -> str:
+        return (
+            f"d.{column} AS {alias},1 AS {alias}_column_present"
+            if column in columns
+            else f"NULL AS {alias},0 AS {alias}_column_present"
+        )
+
+    role_projection = (
+        "d.document_role AS document_role,1 AS document_role_column_present"
+        if "document_role" in columns
+        else "NULL AS document_role,0 AS document_role_column_present"
+    )
+    logical_chain_projection = (
+        "d.logical_document_chain AS logical_document_chain,"
+        "1 AS logical_chain_column_present"
+        if "logical_document_chain" in columns
+        else "NULL AS logical_document_chain,0 AS logical_chain_column_present"
+    )
+    optional_projection = ",".join(
+        (
+            projection("container_key", "container_key"),
+            projection("media_type", "media_type"),
+            (
+                "c.status AS container_status,1 AS container_status_column_present"
+                if has_container_relation
+                else "NULL AS container_status,0 AS container_status_column_present"
+            ),
+            role_projection,
+            logical_chain_projection,
+        )
+    )
+    container_join = (
+        "JOIN containers AS c ON c.container_key=d.container_key"
+        if has_container_relation
+        else ""
+    )
+    def project(sql: str) -> str:
+        return sql.replace("{archive_role_projection}", role_projection).replace(
+            "{archive_logical_chain_projection}", logical_chain_projection
+        ).replace("{archive_optional_projection}", optional_projection).replace(
+            "{archive_container_join}", container_join
+        )
+
+    return replace(spec, sql=project(spec.sql), cjk_sql=project(spec.cjk_sql))
 
 
 def _source_backed_excerpt(
@@ -955,6 +1151,16 @@ def _resolved_hit(
     if not math.isfinite(raw_bm25):
         raise sqlite3.DataError("FTS5 returned a non-finite BM25 score")
 
+    archive_section_kind: str | None = None
+    archive_section_id: str | None = None
+    archive_section_provenance: dict[str, object] = {}
+    if spec.source_kind == "archive":
+        (
+            archive_section_kind,
+            archive_section_id,
+            archive_section_provenance,
+        ) = _archive_section_contract(row)
+
     if spec.source_kind == "pdf":
         section_id = str(int(row["page_number"]))
         entity_id = f"lexical:pdf:{file_key}:page:{section_id}"
@@ -962,8 +1168,14 @@ def _resolved_hit(
         section_id = str(int(row["frame_index"]))
         entity_id = f"lexical:video:{file_key}:frame:{section_id}"
     elif spec.source_kind == "archive":
-        section_id = file_key
-        entity_id = f"lexical:archive:{file_key}:member"
+        assert archive_section_kind is not None
+        assert archive_section_id is not None
+        section_id = archive_section_id
+        entity_id = (
+            f"lexical:archive:{file_key}:document"
+            if archive_section_kind == "archive_document"
+            else f"lexical:archive:{file_key}:member"
+        )
     else:
         section_id = "fulltext"
         entity_id = f"lexical:{item_source_kind}:{file_key}:fulltext"
@@ -1050,14 +1262,8 @@ def _resolved_hit(
         source_revision["is_partial"] = bool(row["source_is_partial"])
     section_provenance: dict[str, object] = {}
     if spec.source_kind == "archive":
-        section_provenance = {
-            "inside_zip": True,
-            "container_path": str(row["container_path"]),
-            "member_chain": str(row["member_chain"]),
-            "member_path": str(row["member_path"]),
-            "archive_depth": int(row["archive_depth"]),
-            "content_kind": str(row["content_kind"]),
-        }
+        assert archive_section_kind is not None
+        section_provenance = archive_section_provenance
     elif spec.source_kind == "video":
         timestamp_ms = int(row["timestamp_ms"])
         section_provenance = {
@@ -1094,7 +1300,7 @@ def _resolved_hit(
         source_status=str(row["source_status"]),
         source_revision=source_revision,
         section_provenance=section_provenance,
-        section_kind=spec.section_kind,
+        section_kind=spec.section_kind if archive_section_kind is None else archive_section_kind,
         section_id=section_id,
         start_char=start_char,
         end_char=end_char,
@@ -1188,6 +1394,7 @@ def _search_compiled_source(
     from .semantic_schema import semantic_read_context
 
     rows: list[sqlite3.Row]
+    query_spec = spec
     with (
         semantic_read_context() as read_context,
         read_context.acquire(path, mode=preferred_sqlite_read_mode(path).value) as connection,
@@ -1200,14 +1407,15 @@ def _search_compiled_source(
             connection.execute("PRAGMA query_only=ON")
             if int(connection.execute("PRAGMA query_only").fetchone()[0]) != 1:
                 raise RuntimeError("lexical source reader is not query-only")
+            query_spec = _archive_source_spec(spec, connection)
             applied_query = query_plan.primary_query
             query_strategy = query_plan.primary_strategy
-            rows = connection.execute(spec.sql, (applied_query, limit)).fetchall()
+            rows = connection.execute(query_spec.sql, (applied_query, limit)).fetchall()
             for fallback_strategy, fallback_query in query_plan.fallbacks:
                 if rows:
                     break
                 cancellation.checkpoint()
-                rows = connection.execute(spec.sql, (fallback_query, limit)).fetchall()
+                rows = connection.execute(query_spec.sql, (fallback_query, limit)).fetchall()
                 if rows:
                     applied_query = fallback_query
                     query_strategy = fallback_strategy
@@ -1215,7 +1423,7 @@ def _search_compiled_source(
                 cancellation.checkpoint()
                 rows, cjk_scanned_rows = _search_cjk_substrings(
                     connection,
-                    spec,
+                    query_spec,
                     query_plan.cjk_substring_terms,
                     limit,
                 )
@@ -1237,7 +1445,7 @@ def _search_compiled_source(
             cancellation.checkpoint()
         hits.append(
             _resolved_hit(
-                spec,
+                query_spec,
                 path,
                 query_plan,
                 applied_query,

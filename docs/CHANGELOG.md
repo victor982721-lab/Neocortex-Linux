@@ -30,6 +30,10 @@ fuera de `docs/`.
   Incorpora recibos nuevos sin ocultar productores ambiguos por sus columnas
   normalizadas; conserva cancelación y rollback, y descarta el índice temporal
   al cerrar la conexión.
+- Los documentos lógicos raíz detectados por Archive llegan a Semantic y a
+  búsqueda léxica con una sección `archive_document/body`, sin inventar un
+  miembro ZIP. Knowledge revalida ese localizador contra el owner; los miembros
+  anidados conservan su identidad y procedencia anteriores.
 
 ## 2026-09-11 — Oleada funcional C1–C5 (registro histórico de implementación)
 

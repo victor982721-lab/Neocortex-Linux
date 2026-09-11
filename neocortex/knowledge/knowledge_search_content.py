@@ -290,11 +290,13 @@ def _resource_from_resolved(
     resource_ref_type: type[ResourceRef],
     physical_identity_ref_type: type[PhysicalIdentityRef],
 ) -> tuple[ResourceRef, tuple[str, ...]]:
-    # Archive members are virtual resources.  Their ``source_identity`` is a
-    # member key, not a filesystem identity, even when the key happens to look
-    # decodable by a provider's legacy codec.  Keep the virtual resource ID and
-    # member locators as evidence, but never expose that key as a physical
-    # identity (or allow inventory joins to treat it as one).
+    # Archive rows remain owner-scoped resources, including the physical-file
+    # backed logical compound-document root (OOXML/ODF/OTT).  Its
+    # ``source_identity`` is still an archive owner key, not a filesystem
+    # identity, even when the key happens to look
+    # decodable by a provider's legacy codec.  Keep the supplied owner path and
+    # section locators as evidence, but never expose that key as a physical
+    # identity (or synthesize a ``!/body`` path).
     if resolved.source_kind == "archive" or resolved.section_kind == "archive_member":
         resource = resource_ref_type(
             resource_id=f"resource:{resolved.source_kind}:{resolved.source_identity}",
@@ -450,7 +452,34 @@ def _evidence_from_resolved(
         ("retrieval_entity_id", resolved.hit.entity_id),
     ]
     if resolved.source_kind == "archive":
-        identifiers.append(("inside_zip", "1"))
+        # Archive's logical compound-document root (OOXML/ODF/OTT) is a
+        # physical-file-backed section, not a ZIP member.  The source identity
+        # remains the archive owner's opaque key, so never derive a physical
+        # identity from it; only the owner section contract decides the
+        # inside-ZIP marker.
+        if resolved.section_kind == "archive_document":
+            if resolved.section_id != "body":
+                raise ValueError("archive document evidence is missing its body section")
+            inside_zip = False
+        elif resolved.section_kind == "archive_member":
+            if not resolved.section_id:
+                raise ValueError("archive member evidence is missing its member chain")
+            inside_zip = True
+        else:
+            raise ValueError("archive evidence has an unsupported section kind")
+        supplied_inside_zip = locator_value("inside_zip")
+        if supplied_inside_zip is not None:
+            if isinstance(supplied_inside_zip, bool):
+                supplied_inside_zip_value = supplied_inside_zip
+            elif isinstance(supplied_inside_zip, int) and supplied_inside_zip in {0, 1}:
+                supplied_inside_zip_value = bool(supplied_inside_zip)
+            elif isinstance(supplied_inside_zip, str) and supplied_inside_zip in {"0", "1"}:
+                supplied_inside_zip_value = supplied_inside_zip == "1"
+            else:
+                raise ValueError("archive evidence inside_zip marker is invalid")
+            if supplied_inside_zip_value is not inside_zip:
+                raise ValueError("archive evidence inside_zip marker changed")
+        identifiers.append(("inside_zip", "1" if inside_zip else "0"))
         for key in (
             "container_key",
             "container_path",
@@ -462,7 +491,10 @@ def _evidence_from_resolved(
             "container_status",
         ):
             value = locator_value(key)
-            if value is None:
+            # Root logical-document rows intentionally have empty member
+            # fields; empty identifiers are not valid EvidenceRef components,
+            # so retain them only in owner provenance, not this identifier list.
+            if value in (None, ""):
                 continue
             identifiers.append(
                 (
