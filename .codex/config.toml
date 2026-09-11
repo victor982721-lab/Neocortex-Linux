@@ -1,5 +1,5 @@
 # NeoCortex-local Codex policy. Root model, provider, authentication and telemetry
-# inherit from the user configuration; bounded workers use the defaults below.
+# inherit from the user configuration; all internal agents use the defaults below.
 approval_policy = "on-request"
 default_permissions = "neocortex-main"
 approvals_reviewer = "auto_review"
@@ -18,8 +18,9 @@ En NeoCortex, aplica docs/subprojects/development-release.md#cobertura-por-ronda
 una tarea principal, matriz de contratos/riesgos afectados y ownership disjunto.
 La cobertura de la ronda, no el numero de actores, decide la finalizacion.
 Usa oleadas para cubrir todos los frentes independientes, revision critica
-independiente y un integrador. Selecciona explicitamente gpt-6-astra/max para
-coordinadores anidados; los defaults Luna/max son para hojas acotadas.
+independiente y un integrador. Todos los subagentes internos usan Luna/max,
+incluidos coordinadores y revisores. Si Luna no puede crear descendientes,
+la raiz recibe esos frentes y crea los agentes Luna/max adicionales.
 No crees tareas visibles como sustituto de una
 herramienta de subagentes ausente ni confundas instrucciones con aislamiento.
 """

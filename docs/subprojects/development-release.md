@@ -38,11 +38,14 @@ mientras avanza trabajo distinto en la ruta crítica.
   no un objetivo: no equivale a 16 validadores/OCR simultáneos. Ajusta admisión
   a memoria, I/O y cuota; ante fallos homogéneos reduce concurrencia y prueba
   una canaria. Si faltan slots, continúa en oleadas sin recortar la ronda.
-- El modelo de la raíz sigue la selección del usuario. Los workers acotados
-  tienen default `gpt-5.6-luna`/`max`; los coordinadores anidados y la revisión
-  crítica usan explícitamente `gpt-6-astra`/`max`, no el default de las hojas,
-  salvo selección distinta expresa del usuario. Verifica catálogo y herramientas
-  del actor antes de delegarle coordinación; no atribuyas capacidad por
+- El default global de la raíz es `gpt-6-astra`/`max`. Todos los subagentes
+  internos, incluidos coordinadores, revisores de código y descendientes, usan
+  `gpt-5.6-luna`/`max`, salvo selección distinta expresa posterior del usuario.
+  Esto no convierte a Luna en un actor V2: verifica catálogo y herramientas
+  antes de delegarle coordinación y devuelve a la raíz los frentes que el hijo
+  no pueda despachar. El guardián de permisos `auto_review` es un componente
+  distinto y no hereda el modelo de estos subagentes; no sustituyas su política
+  ni su modelo mediante claves no soportadas. No atribuyas capacidad por
   el título del actor. Una instrucción no cambia modelo/esfuerzo de un actor
   reanudado: comprueba metadata y, si no coincide, crea un reemplazo sin
   escritores simultáneos. No reduzcas MAX tácitamente para acelerar.
