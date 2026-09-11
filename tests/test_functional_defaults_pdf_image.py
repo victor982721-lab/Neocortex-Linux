@@ -102,6 +102,18 @@ def _write_pdf(path: Path, text: str) -> None:
     document.close()
 
 
+def _write_protected_pdf(path: Path) -> None:
+    document = fitz.open()
+    document.new_page()
+    document.save(
+        path,
+        encryption=fitz.PDF_ENCRYPT_AES_256,
+        owner_pw="owner-password",
+        user_pw="user-password",
+    )
+    document.close()
+
+
 def _pdf_config(path: Path, **overrides) -> PdfRouteConfig:
     values = {
         "ocr_mode": "never",
@@ -183,6 +195,34 @@ def test_pdf_resume_repairs_missing_derivatives_without_new_extraction_or_ocr(
         assert intact.fts_pages_indexed == 0
         assert intact.profiles_built == 0
         assert search_pdf_state(pdf_state, "Control")
+
+
+def test_pdf_cached_protected_replay_preserves_incomplete_coverage(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "password-protected.pdf"
+    _write_protected_pdf(source)
+    pdf_state = tmp_path / "pdf.sqlite3"
+
+    with DedupIndex(tmp_path / "dedup.sqlite3") as index:
+        scan = index.scan(tmp_path, excluded_paths=())
+        snapshots = list(index.snapshots(scan.scan_id))
+        state = _PdfState(snapshots)
+        config = _pdf_config(pdf_state)
+        first = PdfRoute(config, index, state, 1, scan.scan_id).run()
+        assert (first.new_documents, first.extracted, first.protected) == (1, 0, 1)
+
+        with (
+            patch.object(PdfRoute, "_process_document", side_effect=AssertionError("protected retry")),
+            patch.object(PdfRoute, "_ocr_page", side_effect=AssertionError("protected OCR")),
+        ):
+            replay = PdfRoute(config, index, state, 2, scan.scan_id).run()
+
+    assert replay.cache_hits == 1
+    assert replay.new_documents == 0
+    assert replay.extracted == 0
+    assert replay.protected == 1
+    assert replay.errors == 0
 
 
 def test_pdf_resume_repairs_missing_document_owner_with_bounded_extraction(

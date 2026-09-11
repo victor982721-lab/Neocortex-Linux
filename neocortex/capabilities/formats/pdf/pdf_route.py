@@ -995,6 +995,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         stats = runtime.stats
         stats.cache_hits += 1
         stats.cached_errors += int(decision.prior_status == "error")
+        stats.protected += int(decision.prior_status == "protected")
         active_cached_review = self._publish_cached_review(snapshot, decision)
         if decision.prior_status == "done" and not active_cached_review:
             self._reconcile_review(
