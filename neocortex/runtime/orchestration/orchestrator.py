@@ -33,6 +33,7 @@ from neocortex.workflow.actions.actions import FrameworkActions
 from neocortex.runtime.config.application_config_projections import (
     global_resource_limits_from_application,
 )
+from neocortex.runtime.config.runtime_cache import XDG_CACHE_HOME_ENVIRONMENT
 from neocortex.runtime.control.cancellation import CancellationToken
 from neocortex.safety.corpus_access import CorpusAccessPolicy
 from neocortex.runtime.control.global_resources import (
@@ -1082,6 +1083,7 @@ class FrameworkOrchestrator:
             "code_include_generated": self.config.code_include_generated,
             "code_include_vendored": self.config.code_include_vendored,
             "apply_actions": self.config.apply_actions,
+            "runtime_cache_home": os.environ.get(XDG_CACHE_HOME_ENVIRONMENT),
             "excluded_paths": [str(path) for path in excluded_paths],
             "inventory_exclusion_signature": boundary.exclusion_policy.signature,
             "internal_paths_signature": boundary.internal_paths_policy.signature,
@@ -2231,6 +2233,7 @@ class FrameworkOrchestrator:
             "route_input_sources": source.route_input_sources,
             "selected_routes": list(self.selected_routes),
             "resume": self.config.resume_run_id is not None,
+            "runtime_cache_home": os.environ.get(XDG_CACHE_HOME_ENVIRONMENT),
             "selection_active": self.config.selection.active,
             "document_catalog_enabled": self.config.document_catalog_enabled,
             "document_taxonomy_path": (

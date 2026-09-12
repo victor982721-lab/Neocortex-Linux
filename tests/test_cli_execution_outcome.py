@@ -12,6 +12,7 @@ from neocortex.interface.entrypoint import entrypoint
 from neocortex.persistence.sqlite_immutable import ImmutableSQLiteUnavailable
 from neocortex.progress import ProgressEvent
 from neocortex.runtime.orchestration.orchestrator import RouteExecutionError
+from neocortex.safety.protected_content import ProtectedContentError
 
 
 def _stream_events(stderr: str) -> list[dict[str, object]]:
@@ -110,6 +111,83 @@ def test_keyboard_interrupt_has_cancelled_terminal_event_and_exit_130(
     assert terminal["metrics"]["exit_code"] == 130
     assert terminal["metrics"]["errors"] == 0
     assert "route_execution_failed" not in output.err
+    assert "Traceback" not in output.err
+    assert output.out == ""
+
+
+def test_protected_content_failure_has_one_bounded_failed_terminal_event(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    protected_failure = ProtectedContentError(
+        "reserved protected path appeared\n\x1b[31m" + "x" * 3000
+    )
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("a protected-content boundary must not run Semantic or report success")
+
+    def run(_args, *, progress):
+        progress(ProgressEvent("framework", "prepare", "Preparando ejecución", 0, 1))
+        raise protected_failure
+
+    monkeypatch.setenv("NEOCORTEX_PROGRESS_STREAM", "1")
+    monkeypatch.setattr(cli_app, "run_framework", run)
+    monkeypatch.setattr(cli_semantic, "prepare_integrated_semantic_start", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli_semantic, "run_integrated_all_semantic_index", unexpected)
+    monkeypatch.setattr(cli_reporting, "print_reports", unexpected)
+    monkeypatch.setattr(cli_reporting, "print_professional_summary", unexpected)
+    state = tmp_path / "state"
+
+    assert entrypoint(["--all", "--state-directory", str(state)]) == 2
+
+    output = capsys.readouterr()
+    events = _stream_events(output.err)
+    terminal = [event for event in events if event["phase"] == "result"]
+    assert len(terminal) == 1
+    assert events[-1] == terminal[0]
+    assert terminal[0]["operation"] == "framework"
+    assert terminal[0]["finished"] is True
+    assert terminal[0]["completed"] == 0
+    assert terminal[0]["total"] is None
+    metrics = terminal[0]["metrics"]
+    assert metrics["status"] == "failed"
+    assert metrics["completion"] == "incomplete"
+    assert metrics["exit_code"] == 2
+    assert metrics["error_code"] == "protected_content_root"
+    assert metrics["errors"] == 1
+    assert metrics["failed_routes"] == ""
+    assert "protected_content_root" in metrics["cause"]
+    assert len(metrics["cause"]) <= 512
+    assert "\x1b" not in metrics["cause"]
+    assert "\n" not in metrics["cause"]
+    assert "Traceback" not in output.err
+    assert "COMPLETADA" not in output.err
+    assert "protected_content_root" in output.err
+    assert output.out == ""
+    assert not state.exists()
+
+
+def test_runtime_cache_configuration_failure_is_typed(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(home / ".cache"))
+    monkeypatch.setenv("NEOCORTEX_PROGRESS_STREAM", "1")
+
+    assert entrypoint(["--all", "--state-directory", str(tmp_path / "state")]) == 2
+
+    output = capsys.readouterr()
+    events = _stream_events(output.err)
+    terminal = [event for event in events if event["phase"] == "result"]
+    assert len(terminal) == 1
+    assert terminal[0]["metrics"]["error_code"] == "runtime_cache_configuration"
+    assert terminal[0]["metrics"]["status"] == "failed"
+    assert terminal[0]["metrics"]["completion"] == "incomplete"
     assert "Traceback" not in output.err
     assert output.out == ""
 

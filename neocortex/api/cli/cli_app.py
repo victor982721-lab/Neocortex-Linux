@@ -409,6 +409,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
     from neocortex.persistence.state_publication import StatePublicationError
     from neocortex.persistence.framework_state_writer import RunBudgetExceeded
     from neocortex.runtime.orchestration.orchestrator import RouteExecutionError
+    from neocortex.runtime.config.runtime_cache import RuntimeCacheConfigurationError
+    from neocortex.safety.protected_content import ProtectedContentError
 
     from .cli_reporting import (
         has_organization_errors,
@@ -456,8 +458,10 @@ def main(arguments: Sequence[str] | None = None) -> int:
         with reporter as progress:
             try:
                 if args.all or args.resume_run is not None:
+                    from neocortex.runtime.config.runtime_cache import configure_runtime_cache
                     from .cli_semantic import prepare_integrated_semantic_start
 
+                    configure_runtime_cache(args.state_directory)
                     prepare_integrated_semantic_start(args, progress=progress)
                 if semantic_stage_runner is not None:
                     # The fresh-start preflight may consume part of an explicit
@@ -497,12 +501,24 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 # The public entrypoint owns exit 130; direct callers retain
                 # KeyboardInterrupt and the orchestrator's cancellation contract.
                 raise
-            except (InventoryError, RouteExecutionError, ImmutableSQLiteUnavailable, StatePublicationError, RunBudgetExceeded) as exc:
+            except (
+                InventoryError,
+                RouteExecutionError,
+                ImmutableSQLiteUnavailable,
+                StatePublicationError,
+                RunBudgetExceeded,
+                RuntimeCacheConfigurationError,
+                ProtectedContentError,
+            ) as exc:
                 error_code = (
                     "budget_exhausted"
                     if isinstance(exc, RunBudgetExceeded)
                     else "recovery_required"
                     if isinstance(exc, StatePublicationError)
+                    else "protected_content_root"
+                    if isinstance(exc, ProtectedContentError)
+                    else "runtime_cache_configuration"
+                    if isinstance(exc, RuntimeCacheConfigurationError)
                     else "route_execution_failed"
                     if isinstance(exc, RouteExecutionError)
                     else "sqlite_snapshot_unavailable"
@@ -546,6 +562,20 @@ def main(arguments: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
         print(_SQLITE_FAILURE_NEXT_STEP, file=sys.stderr)
+        return 2
+    except RuntimeCacheConfigurationError as exc:
+        print(
+            "ERROR runtime_cache_configuration status=failed completion=incomplete: "
+            + sanitize_untrusted_text(exc, limit=800),
+            file=sys.stderr,
+        )
+        return 2
+    except ProtectedContentError as exc:
+        print(
+            "ERROR protected_content_root status=failed completion=incomplete: "
+            + sanitize_untrusted_text(exc, limit=800),
+            file=sys.stderr,
+        )
         return 2
     except RouteExecutionError as exc:
         # The owners have already recorded the failed routes.  Present that
