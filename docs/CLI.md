@@ -409,13 +409,21 @@ estos valores:
 |---|---|---|
 | `runs` | Ledger de ejecución de Framework y sus datos de lifecycle expresamente ligados a ese ledger | Owners SQLite de contenido, caches y metadata de publicación no ligada |
 | `runs-and-caches` | `runs` más todos los owners SQLite derivados registrados, incluidos sus WAL/SHM/journal, y la metadata de publicación necesaria para que el estado quede coherente | Artefactos no-SQLite gestionados por `all`, archivos desconocidos y backups externos |
-| `all` | `runs-and-caches` más los artefactos no-SQLite gestionados del directorio de estado | Corpus, releases, modelos y backups externos |
+| `all` | `runs-and-caches` más los artefactos no-SQLite gestionados del directorio de estado | Corpus, releases, modelos, backups externos y backups canónicos de migración del catálogo |
 
 El plan enumera targets, conteos, bytes, referencias cruzadas, locks/fences y la
 estrategia de continuidad de identificadores. Si una referencia, writer,
 publicación pendiente, schema o cambio concurrente impide garantizar el alcance,
 el reset se abstiene; no borra filas de Review, recovery o curación por
 inferencia. Las tres variantes preservan los originales del corpus.
+
+Aunque estén dentro de `State`, los backups canónicos de migración del catálogo
+con nombre `document_catalog.sqlite3.pre-vN-to-vN+1-<timestamp>.sqlite3` se
+conservan con su sidecar asociado, incluido el receipt JSON homónimo
+(`...sqlite3.json`) y cualquier sidecar SQLite que pertenezca al mismo backup.
+Esta excepción sólo aplica a ese patrón canónico: una SQLite desconocida o una
+SQLite de `recovery`, `restore` o `staging` (con sus sidecars) sigue bloqueando
+el reset con abstención fail-closed.
 
 El modo predeterminado es read-only y sólo produce un plan con digest. No crea
 el backup ni modifica SQLite, sidecars, epoch, journals o artefactos gestionados:

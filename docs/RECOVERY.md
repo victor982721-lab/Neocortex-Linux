@@ -106,6 +106,14 @@ interpretar la aparición de un plan como un borrado:
 | `runs-and-caches` | `runs`, todos los owners SQLite registrados con sus sidecars y la metadata de publicación necesaria para mantener coherencia | Artefactos no-SQLite gestionados, archivos no reconocidos y backups externos |
 | `all` | `runs-and-caches` y artefactos no-SQLite gestionados | Corpus, releases, modelos y backups externos |
 
+Para `all`, los backups canónicos de migración del catálogo que ya existan bajo
+`State` tampoco son targets: se conservan
+`document_catalog.sqlite3.pre-vN-to-vN+1-<timestamp>.sqlite3` y su sidecar
+asociado, incluido el receipt JSON homónimo (`...sqlite3.json`) y los sidecars
+SQLite del mismo backup, si existen. Esta excepción no cubre otras SQLite: una
+SQLite desconocida o una SQLite de `recovery`, `restore` o `staging` (con sus
+sidecars) mantiene la abstención fail-closed.
+
 Antes de cualquier aplicación:
 
 ```bash

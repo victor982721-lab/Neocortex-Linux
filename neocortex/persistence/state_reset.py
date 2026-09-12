@@ -34,6 +34,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import stat
@@ -119,6 +120,12 @@ _PRESERVED_TOP_LEVEL_STATE_NAMES = frozenset(
         "state-reset-backups",
     }
 )
+_CATALOG_MIGRATION_BACKUP_RE = re.compile(
+    r"^document_catalog\.sqlite3\.pre-v(?P<prior>[0-9]+)-to-v"
+    r"(?P<target>[0-9]+)-(?P<timestamp>[0-9]+)\.sqlite3$"
+)
+_CATALOG_MIGRATION_RECEIPT_SUFFIX = ".json"
+_MAX_CATALOG_MIGRATION_RECEIPT_BYTES = 256 * 1024
 
 # Explicit cross-owner references to Framework run identifiers.  Owner-local
 # identifiers such as ``catalog_run_id`` and Code ``analysis_run_id`` are
@@ -624,19 +631,29 @@ def _content_manifest_entries(state: Path) -> tuple[StateResetEntry, ...]:
         entry = _entry_for(state, state / name, kind="file")
         if entry is not None:
             entries.append(entry)
-    try:
-        candidates = tuple(sorted(state.glob(f"{STATE_CONTENT_PUBLICATION_MANIFEST_PREFIX}*.json")))
-    except OSError as exc:
-        raise StateResetError("publication manifest directory cannot be enumerated") from exc
-    for candidate in candidates:
-        if candidate.name == STATE_CONTENT_PUBLICATION_MANIFEST_FILENAME:
-            continue
-        if not candidate.name.startswith(STATE_CONTENT_PUBLICATION_MANIFEST_PREFIX):
-            continue
+    for candidate in _content_manifest_candidates(state):
         entry = _entry_for(state, candidate, kind="file")
         if entry is not None:
             entries.append(entry)
     return tuple(entries)
+
+
+def _content_manifest_candidates(state: Path) -> tuple[Path, ...]:
+    try:
+        candidates = tuple(
+            sorted(
+                state.glob(f"{STATE_CONTENT_PUBLICATION_MANIFEST_PREFIX}*.json"),
+                key=os.fspath,
+            )
+        )
+    except OSError as exc:
+        raise StateResetError("publication manifest directory cannot be enumerated") from exc
+    return tuple(
+        candidate
+        for candidate in candidates
+        if candidate.name != STATE_CONTENT_PUBLICATION_MANIFEST_FILENAME
+        and candidate.name.startswith(STATE_CONTENT_PUBLICATION_MANIFEST_PREFIX)
+    )
 
 
 def _known_state_paths(state: Path, scope: StateResetScope) -> set[Path]:
@@ -650,9 +667,8 @@ def _known_state_paths(state: Path, scope: StateResetScope) -> set[Path]:
         for suffix in _ALL_DATABASE_SIDECAR_SUFFIXES
     )
     known.update(state / name for name in _PUBLICATION_FILES)
-    known.add(state / STATE_PUBLICATION_LOCK_FILENAME)
-    known.add(state / "framework.lock")
-    known.add(state / "release.lock")
+    known.update(_content_manifest_candidates(state))
+    known.update(_lock_paths(state))
     if scope == "all":
         known.add(state / "runtime-cache")
         known.add(state / "curation" / "checkpoints")
@@ -673,12 +689,76 @@ def _unmanaged_entries(state: Path, scope: StateResetScope) -> tuple[Path, ...]:
     return tuple(result)
 
 
+def _catalog_migration_backup_paths(path: Path) -> tuple[Path, Path] | None:
+    backup = path
+    if backup.name.endswith(_CATALOG_MIGRATION_RECEIPT_SUFFIX):
+        backup = backup.with_name(
+            backup.name[: -len(_CATALOG_MIGRATION_RECEIPT_SUFFIX)]
+        )
+    else:
+        for suffix in _ALL_DATABASE_SIDECAR_SUFFIXES:
+            if backup.name.endswith(suffix):
+                backup = backup.with_name(backup.name[: -len(suffix)])
+                break
+    match = _CATALOG_MIGRATION_BACKUP_RE.fullmatch(backup.name)
+    if match is None:
+        return None
+    try:
+        prior = int(match.group("prior"))
+        target = int(match.group("target"))
+    except ValueError:
+        return None
+    if target != prior + 1:
+        return None
+    receipt = backup.with_name(backup.name + _CATALOG_MIGRATION_RECEIPT_SUFFIX)
+    return backup, receipt
+
+
+def _regular_file(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except (FileNotFoundError, OSError):
+        return False
+    return stat.S_ISREG(metadata.st_mode)
+
+
+def _valid_catalog_migration_backup_pair(state: Path, path: Path) -> bool:
+    pair = _catalog_migration_backup_paths(path)
+    if pair is None:
+        return False
+    backup, receipt = pair
+    if backup.parent != state or not _regular_file(backup) or not _regular_file(receipt):
+        return False
+    for suffix in _ALL_DATABASE_SIDECAR_SUFFIXES:
+        sidecar = Path(f"{backup}{suffix}")
+        if os.path.lexists(sidecar) and not _regular_file(sidecar):
+            return False
+    try:
+        metadata = receipt.stat()
+        if metadata.st_size > _MAX_CATALOG_MIGRATION_RECEIPT_BYTES:
+            return False
+        with receipt.open("r", encoding="utf-8") as stream:
+            payload = json.load(stream)
+    except (OSError, UnicodeError, ValueError, RecursionError):
+        return False
+    return (
+        isinstance(payload, dict)
+        and payload.get("backup") == str(backup)
+        and payload.get("source") == str(state / "document_catalog.sqlite3")
+    )
+
+
 def _unsafe_unmanaged_entries(plan: StateResetPlan) -> tuple[Path, ...]:
     """Return unknown state paths that make a destructive reset ambiguous."""
 
     result: list[Path] = []
     for path in plan.unmanaged_state_entries:
         if path.name in _PRESERVED_TOP_LEVEL_STATE_NAMES:
+            continue
+        if _catalog_migration_backup_paths(path) is not None:
+            if _valid_catalog_migration_backup_pair(plan.state_directory, path):
+                continue
+            result.append(path)
             continue
         name = path.name.casefold()
         if (

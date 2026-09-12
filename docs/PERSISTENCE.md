@@ -181,6 +181,14 @@ manifests, checkpoints o journals administrados) y conserva archivos desconocido
 o externos salvo que una política futura los registre expresamente. Los backups
 se escriben fuera de la raíz y nunca forman parte del target del reset.
 
+La única excepción interna documentada son los backups canónicos de migración del
+catálogo: `document_catalog.sqlite3.pre-vN-to-vN+1-<timestamp>.sqlite3` y su
+sidecar asociado, incluido el receipt JSON homónimo (`...sqlite3.json`) y los
+sidecars SQLite del mismo backup, si existen, se conservan íntegros aun cuando
+estén dentro de la raíz de `State`. El patrón y la relación deben ser exactos;
+una SQLite desconocida o una SQLite de `recovery`, `restore` o `staging` (con sus
+sidecars) bloquea el reset fail-closed.
+
 El preview es read-only y calcula digest, fingerprints, conteos y bytes dentro de
 límites bounded. Apply requiere el digest exacto, `RESET_STATE`, un backup nuevo
 y una segunda validación de locks, epoch, heads, schemas, referencias y límites.

@@ -365,6 +365,14 @@ particular:
 3. `all` agrega los artefactos no-SQLite administrados; no convierte archivos
    desconocidos, corpus, releases, modelos o backups externos en targets.
 
+Aunque estén dentro de `State`, `all` conserva los backups canónicos de migración
+del catálogo `document_catalog.sqlite3.pre-vN-to-vN+1-<timestamp>.sqlite3` y su
+sidecar asociado, incluido el receipt JSON homónimo (`...sqlite3.json`) y los
+sidecars SQLite del mismo backup, si existen. La excepción es exacta: una
+SQLite desconocida o una SQLite de `recovery`, `restore` o `staging` (con sus
+sidecars) mantiene el bloqueo fail-closed y no se elimina ni se adopta como
+backup.
+
 Para aplicar el alcance revisado:
 
 ```bash

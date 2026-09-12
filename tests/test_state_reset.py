@@ -19,6 +19,7 @@ from neocortex.persistence.state_reset import (
     StateResetBusyError,
     StateResetChangedError,
     StateResetConfirmationError,
+    StateResetError,
     StateResetPlan,
     StateResetResult,
     execute_state_reset,
@@ -81,6 +82,26 @@ def _create_image_database(state: Path) -> Path:
     with sqlite3.connect(database) as connection:
         connection.execute("INSERT INTO metadata VALUES('fixture_payload','preserve')")
     return database
+
+
+def _write_catalog_migration_backup(state: Path) -> tuple[Path, Path]:
+    backup = state / "document_catalog.sqlite3.pre-v7-to-v8-123456789.sqlite3"
+    receipt = Path(f"{backup}.json")
+    backup.write_bytes(b"fixture catalog migration backup")
+    receipt.write_text(
+        json.dumps(
+            {
+                "source": str(state / "document_catalog.sqlite3"),
+                "backup": str(backup),
+                "prior_schema": 7,
+                "target_schema": 8,
+                "sha256": "fixture",
+                "bytes": backup.stat().st_size,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return backup, receipt
 
 
 def test_preview_is_read_only_and_scope_selection_is_explicit(tmp_path: Path) -> None:
@@ -226,8 +247,16 @@ def test_all_adds_only_managed_non_sqlite_trees_and_preserves_unknown_and_receip
     receipt.write_text("keep", encoding="utf-8")
     unknown = state / "future-state.json"
     unknown.write_text("future", encoding="utf-8")
+    managed_manifest = state / f"content-publication-manifest.{'a' * 64}.json"
+    managed_manifest.write_text("managed", encoding="utf-8")
+    route_lock = state / "text.sqlite3.route.lock"
+    route_lock.write_text("lock", encoding="utf-8")
 
     preview = plan_state_reset(state, scope="all")
+    planned_paths = {entry.path for entry in preview.entries}
+    assert managed_manifest in planned_paths
+    assert planned_paths.isdisjoint(preview.unmanaged_state_entries)
+    assert route_lock not in preview.unmanaged_state_entries
     result = execute_state_reset(
         state,
         scope="all",
@@ -241,8 +270,122 @@ def test_all_adds_only_managed_non_sqlite_trees_and_preserves_unknown_and_receip
     assert not image.exists()
     assert not (state / "runtime-cache").exists()
     assert not (state / "curation" / "checkpoints").exists()
+    assert not managed_manifest.exists()
+    assert route_lock.read_text(encoding="utf-8") == "lock"
     assert receipt.read_text(encoding="utf-8") == "keep"
     assert unknown.read_text(encoding="utf-8") == "future"
+
+
+def test_all_preserves_verified_catalog_migration_backup_pair(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    image = _create_image_database(state)
+    backup, receipt = _write_catalog_migration_backup(state)
+    sidecars = {
+        Path(f"{backup}{suffix}"): f"fixture {suffix}".encode("ascii")
+        for suffix in ("-journal", "-wal", "-shm")
+    }
+    for path, content in sidecars.items():
+        path.write_bytes(content)
+    preserved_bytes = {
+        path: path.read_bytes() for path in (backup, receipt, *sidecars)
+    }
+
+    preview = plan_state_reset(state, scope="all")
+    assert backup in preview.unmanaged_state_entries
+    assert receipt in preview.unmanaged_state_entries
+    assert all(path in preview.unmanaged_state_entries for path in sidecars)
+    result = execute_state_reset(
+        state,
+        scope="all",
+        apply=True,
+        plan_digest=preview.plan_digest,
+        confirmation=STATE_RESET_CONFIRMATION,
+        backup_directory=tmp_path / "backup",
+    )
+
+    assert isinstance(result, StateResetResult)
+    assert not image.exists()
+    assert {path: path.read_bytes() for path in (backup, receipt, *sidecars)} == preserved_bytes
+
+
+def test_all_still_blocks_unknown_sqlite_with_verified_catalog_backup(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    image = _create_image_database(state)
+    backup, receipt = _write_catalog_migration_backup(state)
+    unknown = state / "unknown.sqlite3"
+    unknown.write_bytes(b"unknown")
+
+    preview = plan_state_reset(state, scope="all")
+    with pytest.raises(StateResetError, match="unknown or recovery state entries"):
+        execute_state_reset(
+            state,
+            scope="all",
+            apply=True,
+            plan_digest=preview.plan_digest,
+            confirmation=STATE_RESET_CONFIRMATION,
+            backup_directory=tmp_path / "blocked-backup",
+        )
+    assert image.is_file()
+    assert backup.is_file() and receipt.is_file() and unknown.is_file()
+
+
+@pytest.mark.parametrize("missing", ["backup", "receipt"])
+def test_all_blocks_incomplete_catalog_migration_backup_pair(
+    tmp_path: Path,
+    missing: str,
+) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    image = _create_image_database(state)
+    backup, receipt = _write_catalog_migration_backup(state)
+    if missing == "backup":
+        backup.unlink()
+    else:
+        receipt.unlink()
+
+    preview = plan_state_reset(state, scope="all")
+    with pytest.raises(StateResetError, match="unknown or recovery state entries"):
+        execute_state_reset(
+            state,
+            scope="all",
+            apply=True,
+            plan_digest=preview.plan_digest,
+            confirmation=STATE_RESET_CONFIRMATION,
+            backup_directory=tmp_path / "incomplete-backup",
+        )
+    assert image.is_file()
+
+
+@pytest.mark.parametrize("field", ["backup", "source"])
+def test_all_blocks_catalog_migration_backup_with_wrong_receipt_path(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    image = _create_image_database(state)
+    backup, receipt = _write_catalog_migration_backup(state)
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    payload[field] = str(state / "other.sqlite3")
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+
+    preview = plan_state_reset(state, scope="all")
+    with pytest.raises(StateResetError, match="unknown or recovery state entries"):
+        execute_state_reset(
+            state,
+            scope="all",
+            apply=True,
+            plan_digest=preview.plan_digest,
+            confirmation=STATE_RESET_CONFIRMATION,
+            backup_directory=tmp_path / "wrong-receipt-backup",
+        )
+    assert image.is_file() and backup.is_file() and receipt.is_file()
 
 
 def test_apply_requires_exact_token_and_digest_without_mutating_fixture(tmp_path: Path) -> None:
