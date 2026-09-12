@@ -342,6 +342,57 @@ Neocortex databases purge --json
 Todos muestran preview cuando corresponde. Antes de `--apply`, conserva el
 manifest/digest presentado, detén writers y sigue [RECOVERY.md](RECOVERY.md).
 
+### Reset seleccionable de runs y estado derivado
+
+Para limpiar el estado de forma controlada usa `state reset`, no un `rm` manual
+ni `databases purge` como sustituto. El alcance debe elegirse expresamente:
+
+```bash
+State="$HOME/.local/state/Neocortex/state"
+Neocortex state reset --state-directory "$State" --scope runs --json
+Neocortex state reset --state-directory "$State" --scope runs-and-caches --json
+Neocortex state reset --state-directory "$State" --scope all --json
+```
+
+El preview es read-only. Conserva su `plan_digest` y revisa targets, referencias,
+epoch, locks/fences, conteos, bytes y límites efectivos antes de aplicar. En
+particular:
+
+1. `runs` sólo retira el ledger de ejecución y no debe eliminar Review, recovery,
+   curación ni owners de contenido que no estén ligados de forma demostrable.
+2. `runs-and-caches` retira todos los owners SQLite y metadata de publicación
+   administrados como un conjunto; WAL/SHM/journal son parte del owner.
+3. `all` agrega los artefactos no-SQLite administrados; no convierte archivos
+   desconocidos, corpus, releases, modelos o backups externos en targets.
+
+Para aplicar el alcance revisado:
+
+```bash
+Neocortex state reset --state-directory "$State" --scope runs-and-caches \
+  --backup-directory "$HOME/.local/state/Neocortex/state-reset-backups/runs-and-caches-20260911" \
+  --plan-digest PLAN_SHA256 --confirm-state-reset RESET_STATE \
+  --apply --json
+```
+
+El backup debe ser nuevo, absoluto y externo al estado. El motor revalida el
+digest, el snapshot/fingerprints, la continuidad de IDs, las referencias, los
+schemas, el epoch, los locks y los límites bounded antes de cambiar archivos.
+Si algo deriva, hay un writer activo, una publicación pendiente o el backup no
+es verificable, se abstiene sin forzar la operación. Un reset aplicado deja un
+manifest de backup para rollback/conciliación; no se reintenta un efecto incierto
+ni se borra el backup para liberar espacio automáticamente.
+
+Después de cualquier aplicación, comprueba que el estado quedó terminal y que
+la siguiente ejecución sea nueva:
+
+```bash
+Neocortex databases status --state-directory "$State" --json
+Neocortex --state-health --state-health-json
+```
+
+El resultado sólo prueba la limpieza local declarada. No prueba extracción nueva,
+integridad del corpus, instalación de una release o disponibilidad de modelos.
+
 ## Instalación y release
 
 Esta oleada no declara una release publicada ni instalada. Antes de usar un

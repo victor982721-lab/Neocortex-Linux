@@ -331,10 +331,47 @@ El producto sí expone backup y restore generales mediante `Neocortex databases`
 Persistencia define el contrato; el procedimiento está en
 [RECOVERY.md](RECOVERY.md).
 
+### Reset seleccionable de estado
+
+`Neocortex state reset` es una frontera de mantenimiento separada de las rutas
+de contenido y de `databases purge`. Su contrato `neocortex.state-reset/v1`
+construye un plan inmutable y exige uno de tres scopes:
+
+- `runs`: limpia el ledger de ejecución de Framework y lifecycle expresamente
+  asociado, sin borrar owners de contenido ni datos de Review/recovery/curación
+  que no estén ligados por un contrato verificable;
+- `runs-and-caches`: extiende el alcance a todos los owners SQLite registrados,
+  sus sidecars y la metadata de publicación administrada, retirando la frontera
+  cross-owner como conjunto lógico;
+- `all`: agrega los artefactos no-SQLite administrados por el estado. No adopta
+  archivos desconocidos, corpus, releases, modelos ni backups externos como
+  targets.
+
+El plan incluye scope, raíz, targets, referencias cruzadas, fingerprints,
+conteos/bytes, epoch y conflictos de locks/fences. El digest cubre esos datos y
+los límites efectivos, por lo que modificar scope, raíz, estado observado o
+límite entre preview y apply invalida la operación. El preview no crea estado ni
+backup. Apply adquiere exclusión fuerte, vuelve a comprobar writers, publicación,
+schemas y heads, crea un backup verificable fuera de la raíz y sólo después
+publica el cambio. Las reservas de bytes/archivos son bounded; no existe un
+fallback que quite el límite para terminar.
+
+La implementación no simula una transacción física distribuida. Cada owner se
+respalda/retira con su contrato y el journal de reset registra baseline,
+postcondición y manifest. `runs` conserva continuidad de identificadores y
+procedencia mediante high-water mark/tombstone o un allocator equivalente; las
+referencias que no puedan conciliarse producen abstención. Si falla la
+preparación, el backup o la reversión, el estado queda `recovery_required` con
+staging/backup conservados. Un resultado `complete` sólo significa que el
+alcance local fue verificado; no inicia una corrida ni afirma efectos sobre el
+corpus, releases o modelos.
+
 ## Interfaces públicas
 
 - **CLI instalada:** `Neocortex`; el parser es la fuente exacta de argumentos.
-- **API Python:** contratos tipados en `neocortex.api` y `neocortex.sdk`.
+- **API/SDK Python:** `state_reset_payload` ofrece el mismo preview/apply
+  explícito y envelope bounded; exige raíz, scope, digest y confirmación cuando
+  aplica, sin seleccionar el estado productivo por omisión.
 - **GUI:** presentación PySide6 que delega trabajo a workers; no redefine reglas.
 - **MCP:** servidor stdio local con consultas read-only y las escrituras de
   estado advisory `curation_review`/`curation_decide`; estas últimas declaran
@@ -424,7 +461,7 @@ inspección de metadata, localización de ejecutable, archivos de modelo y éxit
 de procesamiento no son equivalentes.
 
 El coordinador limita CPU/memoria y registra fases. Writers toman exclusión
-cooperativa; backup, restore y purge requieren exclusión más fuerte. Los
+cooperativa; backup, restore, purge y state reset requieren exclusión más fuerte. Los
 subprocesos tardíos no pueden publicar sobre un head nuevo. Un fallo alrededor
 de la frontera de efecto produce un estado conciliable, no un reintento ciego.
 

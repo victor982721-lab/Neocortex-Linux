@@ -1,4 +1,8 @@
-"""Canonical lazy public facade for the modular NeoCortex framework."""
+"""Canonical lazy public facade for the modular NeoCortex framework.
+
+The explicit state-reset facade is digest/confirmation-bound and never touches
+corpus files implicitly.
+"""
 
 
 # region [01] Type-checking API declarations
@@ -182,6 +186,23 @@ if TYPE_CHECKING:
         RUN_CHECKPOINT_SCHEMA as RUN_CHECKPOINT_SCHEMA,
         lifecycle_status_payload as lifecycle_status_payload,
     )
+    from neocortex.api.state_reset import (
+        RESET_STATE_CONFIRMATION as RESET_STATE_CONFIRMATION,
+        STATE_RESET_API_SCHEMA as STATE_RESET_API_SCHEMA,
+        STATE_RESET_CONFIRMATION as STATE_RESET_CONFIRMATION,
+        STATE_RESET_SCHEMA as STATE_RESET_SCHEMA,
+        STATE_RESET_SCOPES as STATE_RESET_SCOPES,
+        StateResetEntry as StateResetEntry,
+        StateResetPlan as StateResetPlan,
+        StateResetResult as StateResetResult,
+        StateResetScope as StateResetScope,
+        StateResetTarget as StateResetTarget,
+        apply_state_reset as apply_state_reset,
+        execute_state_reset as execute_state_reset,
+        plan_state_reset as plan_state_reset,
+        reset_state as reset_state,
+        state_reset_payload as state_reset_payload,
+    )
     from neocortex.api.run_lifecycle import (
         read_run_status as read_run_status,
         read_run_status_json as read_run_status_json,
@@ -292,6 +313,21 @@ __all__ = [  # noqa: RUF022
     "lifecycle_status_payload",
     "read_run_status",
     "read_run_status_json",
+    "STATE_RESET_API_SCHEMA",
+    "STATE_RESET_CONFIRMATION",
+    "STATE_RESET_SCHEMA",
+    "STATE_RESET_SCOPES",
+    "RESET_STATE_CONFIRMATION",
+    "StateResetEntry",
+    "StateResetPlan",
+    "StateResetResult",
+    "StateResetScope",
+    "StateResetTarget",
+    "apply_state_reset",
+    "execute_state_reset",
+    "plan_state_reset",
+    "reset_state",
+    "state_reset_payload",
     "StageDescriptor",
     "detect_content_type",
     "verify_pdf_state",
@@ -511,6 +547,30 @@ _EXPORTS: Final[dict[str, tuple[str, str]]] = {
     ),
     "read_run_status": ("neocortex.api.run_lifecycle", "read_run_status"),
     "read_run_status_json": ("neocortex.api.run_lifecycle", "read_run_status_json"),
+    "RESET_STATE_CONFIRMATION": (
+        "neocortex.api.state_reset",
+        "RESET_STATE_CONFIRMATION",
+    ),
+    "STATE_RESET_API_SCHEMA": (
+        "neocortex.api.state_reset",
+        "STATE_RESET_API_SCHEMA",
+    ),
+    "STATE_RESET_CONFIRMATION": (
+        "neocortex.api.state_reset",
+        "STATE_RESET_CONFIRMATION",
+    ),
+    "STATE_RESET_SCHEMA": ("neocortex.api.state_reset", "STATE_RESET_SCHEMA"),
+    "STATE_RESET_SCOPES": ("neocortex.api.state_reset", "STATE_RESET_SCOPES"),
+    "StateResetEntry": ("neocortex.api.state_reset", "StateResetEntry"),
+    "StateResetPlan": ("neocortex.api.state_reset", "StateResetPlan"),
+    "StateResetResult": ("neocortex.api.state_reset", "StateResetResult"),
+    "StateResetScope": ("neocortex.api.state_reset", "StateResetScope"),
+    "StateResetTarget": ("neocortex.api.state_reset", "StateResetTarget"),
+    "apply_state_reset": ("neocortex.api.state_reset", "apply_state_reset"),
+    "execute_state_reset": ("neocortex.api.state_reset", "execute_state_reset"),
+    "plan_state_reset": ("neocortex.api.state_reset", "plan_state_reset"),
+    "reset_state": ("neocortex.api.state_reset", "reset_state"),
+    "state_reset_payload": ("neocortex.api.state_reset", "state_reset_payload"),
     "StageDescriptor": ("neocortex.semantic.derivation_contracts", "StageDescriptor"),
     "detect_content_type": ("neocortex.platform.content_types", "detect_content_type"),
     "verify_pdf_state": ("neocortex.capabilities.formats.pdf.pdf_admin", "verify_pdf_state"),

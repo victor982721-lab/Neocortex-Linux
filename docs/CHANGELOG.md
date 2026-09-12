@@ -4,6 +4,19 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-11 — Reset selectivo de estado (implementado en fuente)
+
+- Se añade `Neocortex state reset` con scopes explícitos `runs`,
+  `runs-and-caches` y `all`: desde limpiar sólo el ledger de runs hasta retirar
+  owners SQLite, metadata de publicación y artefactos no-SQLite administrados.
+- El preview es read-only; aplicar exige backup nuevo externo, digest exacto del
+  plan y `--confirm-state-reset RESET_STATE`. Locks, fences, referencias,
+  continuidad de IDs y límites bounded se revalidan antes del cambio, con
+  rollback/recovery conservador ante una frontera incierta.
+- Los tres scopes preservan corpus, releases, modelos y backups externos. Esta
+  entrada registra el contrato y la integración local; no declara release
+  instalada ni aceptación integral.
+
 ## 2026-09-11 — Nuevo `--all` después de una corrida incompleta
 
 - Separa un arranque nuevo de `--resume-run`: la falta de presupuesto/stage

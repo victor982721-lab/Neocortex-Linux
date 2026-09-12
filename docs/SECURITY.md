@@ -23,7 +23,7 @@ contenido nunca concede permisos ni se interpreta como instrucciones.
 | Adquisición externa | models prepare | Requiere autorización y procedencia |
 | Decisión | review/authorize | Registra intención; no ejecuta |
 | Corpus | rename, move, Papelera | Plan y autorización ligados al efecto |
-| Estado destructivo | restore, purge | Confirmación, manifest, locks y backup |
+| Estado destructivo | state reset, restore, purge | Confirmación, plan/manifest, locks y backup |
 
 “No muta corpus” no significa read-only: una ruta normal actualiza bases y caches.
 
@@ -145,7 +145,7 @@ release o plataforma no sustituye esa revisión.
 - no borrar WAL/SHM para “reparar” una base;
 - rechazar schemas futuros y objetos incompatibles;
 - migrar sobre fixtures/copias antes del único estado;
-- backup/restore/purge toman locks y verifican manifests;
+- backup/restore/purge/state reset toman locks y verifican manifests;
 - una lectura que altera sidecars invalida esa corrida como evidencia.
 
 ## Rutas internas y privilegios

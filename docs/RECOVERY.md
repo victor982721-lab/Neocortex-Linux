@@ -94,6 +94,70 @@ releases, modelos ni evidencia externa. Usa el mismo motor de backup que restore
 puede consumir; un manifest de purge no se presenta como un backup general si su
 contrato difiere.
 
+## Reset selectivo de estado
+
+`Neocortex state reset` coordina el borrado de estado derivado con tres alcances
+mutuamente excluyentes. El comando siempre empieza en preview; no hay que
+interpretar la aparición de un plan como un borrado:
+
+| Alcance | Se retira | No se retira por este alcance |
+|---|---|---|
+| `runs` | Ledger de runs de Framework y lifecycle expresamente asociado | Owners de contenido, caches y metadata de publicación no ligada |
+| `runs-and-caches` | `runs`, todos los owners SQLite registrados con sus sidecars y la metadata de publicación necesaria para mantener coherencia | Artefactos no-SQLite gestionados, archivos no reconocidos y backups externos |
+| `all` | `runs-and-caches` y artefactos no-SQLite gestionados | Corpus, releases, modelos y backups externos |
+
+Antes de cualquier aplicación:
+
+```bash
+State="$HOME/.local/state/Neocortex/state"
+Neocortex databases status --state-directory "$State" --json
+Neocortex state reset --state-directory "$State" --scope all --json
+```
+
+El segundo comando devuelve `neocortex.state-reset/v1`, un `plan_digest`, targets,
+conteo/bytes, referencias, epoch, locks/fences y límites efectivos. Lee estado
+sin crear backup, migrar SQLite, eliminar sidecars ni escribir epoch/journal. El
+plan debe revisarse para confirmar que el alcance es el deseado y que no hay
+referencias cruzadas, runs activos, publicaciones pendientes, schemas no
+compatibles o writers en curso. Un bloqueo se conserva como abstención; no se
+resuelve borrando el lock o ignorando el fence.
+
+La aplicación es backup-first y requiere el mismo alcance y digest del preview,
+el límite no excedido y el token literal:
+
+```bash
+Neocortex state reset --state-directory "$State" --scope all \
+  --backup-directory "$HOME/.local/state/Neocortex/state-reset-backups/all-20260911" \
+  --plan-digest PLAN_SHA256 \
+  --confirm-state-reset RESET_STATE --apply --json
+```
+
+El destino del backup debe ser absoluto, nuevo y externo a `State`; el reset no
+reutiliza ni limpia backups existentes. El motor vuelve a comprobar fingerprints,
+epoch, locks, referencias, límites de archivos/bytes e integridad antes de
+publicar el cambio. Si el estado cambió desde el preview, falta confirmación o
+el backup no puede verificarse, aborta sin retirar targets.
+
+El manifest del backup conserva procedencia, hashes, sidecars, heads y, según el
+alcance, los artefactos no-SQLite gestionados. Un fallo antes del commit intenta
+rollback desde el staging/backup verificado; si el rollback o la frontera de
+publicación quedan inciertos, el resultado es `recovery_required` y se conservan
+las rutas necesarias para conciliación. No se reintenta a ciegas ni se presenta
+un manifest extendido de `all` como si fuera un backup general de
+`databases restore`.
+
+Después de un resultado `applied`, verifica el resultado local:
+
+```bash
+Neocortex databases status --state-directory "$State" --json
+Neocortex --state-health --state-health-json
+```
+
+La siguiente corrida debe ser nueva y producir sus propios manifests/heads. Un
+reset no reconstruye el corpus, no instala releases ni modelos y no demuestra
+que una ejecución futura haya terminado. Los originales y los backups externos
+permanecen fuera de estos tres alcances.
+
 ## Corridas interrumpidas
 
 Consulta el run y sus fases. Reanuda sólo cuando inputs, firma de procesamiento y

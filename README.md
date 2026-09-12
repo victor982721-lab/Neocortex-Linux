@@ -43,7 +43,10 @@ La GUI usa la misma orden de rutas, estados y stage Semantic que la CLI: el perf
 completo se traduce al lifecycle `--all`, mientras un subconjunto guardado no se
 expande por sorpresa y el perfil piloto mantiene límites acotados. Una publicación
 Semantic pendiente posterior a epoch 0 se recupera mediante el mismo productor,
-manifest y heads de todos los modelos; nunca se reinicia ni se resetea el estado.
+manifest y heads de todos los modelos; no se reinicia ni se resetea el estado
+automáticamente.
+Un reset destructivo sólo ocurre mediante `Neocortex state reset` con un alcance
+seleccionado y confirmación explícita.
 Si la compatibilidad no puede demostrarse, el resultado es
 `recovery_required` explicable. La implementación y sus focos siguen en
 validación; no implican aceptación real ni instalación publicada.
@@ -64,6 +67,18 @@ NeoCortex puede:
   puede demostrarlos;
 - respaldar, restaurar, inspeccionar y purgar el estado mediante comandos
   explícitos.
+
+El estado derivado también puede limpiarse de forma seleccionable, siempre con
+preview y confirmación explícitos:
+
+```bash
+Neocortex state reset --scope runs
+Neocortex state reset --scope runs-and-caches
+Neocortex state reset --scope all
+```
+
+Estas variantes no tocan el corpus, releases, modelos ni backups externos;
+`--apply` requiere el digest exacto del preview y `RESET_STATE`.
 
 El recorrido físico sólo está habilitado para fixtures mediante un backend
 explícitamente inyectado: `curate apply` consume un grant confirmado y cruza el

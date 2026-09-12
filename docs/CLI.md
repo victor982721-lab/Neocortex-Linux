@@ -186,7 +186,7 @@ renombra los originales ni sustituye caracteres para inventar otra ruta.
 | Producción de estado | rutas, Semantic, catálogo, Review refresh, `curate review/decide` | Escribe owners; no modifica originales ni autoriza efectos |
 | Grant de autorización | `curate authorize` | Escribe un grant acotado; no aplica ni verifica un efecto físico |
 | Descarga | `--models-prepare` | Adquiere modelos de forma explícita |
-| Estado destructivo | `databases restore`, `databases purge` con `--apply` | Requiere confirmación, manifest/plan y locks |
+| Estado destructivo | `state reset`, `databases restore`, `databases purge` con `--apply` | Requiere confirmación, manifest/plan y locks |
 | Aplicación grant-bound | `curate apply` | Requiere confirmación exacta y backend/run inyectados; la CLI ordinaria falla cerrada sin ellos |
 | Conciliación | `curate reconcile` | Registra evidencia bounded; no reintenta ni modifica corpus |
 | Corpus genérico | `--apply`, `--organization-apply` | Rechazado en Linux en la versión actual |
@@ -397,6 +397,65 @@ Neocortex databases purge --json
 `--apply`, la confirmación literal que muestra `--help`, epoch/manifest o digest
 del plan según la operación. Restore publica desde staging; purge crea primero
 su backup verificable. Consulta [RECOVERY.md](RECOVERY.md).
+
+## Reset selectivo del estado
+
+El comando canónico para limpiar estado local es `Neocortex state reset`. Es una
+operación distinta de `databases purge`: permite escoger cuánto estado derivado
+se retira sin tocar el corpus. El alcance es obligatorio y sólo acepta uno de
+estos valores:
+
+| `--scope` | Alcance | Conserva fuera del alcance |
+|---|---|---|
+| `runs` | Ledger de ejecución de Framework y sus datos de lifecycle expresamente ligados a ese ledger | Owners SQLite de contenido, caches y metadata de publicación no ligada |
+| `runs-and-caches` | `runs` más todos los owners SQLite derivados registrados, incluidos sus WAL/SHM/journal, y la metadata de publicación necesaria para que el estado quede coherente | Artefactos no-SQLite gestionados por `all`, archivos desconocidos y backups externos |
+| `all` | `runs-and-caches` más los artefactos no-SQLite gestionados del directorio de estado | Corpus, releases, modelos y backups externos |
+
+El plan enumera targets, conteos, bytes, referencias cruzadas, locks/fences y la
+estrategia de continuidad de identificadores. Si una referencia, writer,
+publicación pendiente, schema o cambio concurrente impide garantizar el alcance,
+el reset se abstiene; no borra filas de Review, recovery o curación por
+inferencia. Las tres variantes preservan los originales del corpus.
+
+El modo predeterminado es read-only y sólo produce un plan con digest. No crea
+el backup ni modifica SQLite, sidecars, epoch, journals o artefactos gestionados:
+
+```bash
+State="$HOME/.local/state/Neocortex/state"
+Neocortex state reset --state-directory "$State" \
+  --scope runs --json
+Neocortex state reset --state-directory "$State" \
+  --scope runs-and-caches --json
+Neocortex state reset --state-directory "$State" \
+  --scope all --json
+```
+
+Para aplicar, reutiliza el `plan_digest` exacto del preview, confirma el token
+literal y conserva el backup fuera de la raíz de estado. El motor verifica de
+nuevo el plan, toma locks exclusivos, comprueba el límite de bytes/archivos y
+realiza el cambio de forma backup-first; ante fallo conserva el backup y deja
+un estado conciliable, sin retry ciego:
+
+```bash
+Neocortex state reset --state-directory "$State" --scope runs \
+  --backup-directory "$HOME/.local/state/Neocortex/state-reset-backups/runs-20260911" \
+  --plan-digest PLAN_SHA256 --confirm-state-reset RESET_STATE \
+  --apply --json
+```
+
+`--backup-directory` debe ser absoluto, nuevo y estar fuera de `State`; nunca se
+usa una ruta dentro del estado que se va a limpiar. `--apply` sin
+`--confirm-state-reset RESET_STATE` o sin `--plan-digest` se rechaza. El digest
+se liga a la raíz, alcance, fingerprints, epoch, referencias y límites efectivos;
+si cualquier dato cambia desde el preview hay que generar otro plan. Los límites
+son bounded y fail-closed: no se amplían por defecto para completar un reset.
+
+La salida JSON usa `neocortex.state-reset/v1` y distingue `preview` de
+`applied`, `read_only`, `scope`, `plan_digest`, backup/manifest, conteos y
+errores. Un resultado `applied` sólo acredita el reset local y el backup
+verificado; no acredita una nueva corrida, release instalada, reconstrucción del
+corpus ni promoción de modelos. Para restaurar/conciliar usa el manifest del
+backup y [RECOVERY.md](RECOVERY.md).
 
 ## Modelos y GUI
 

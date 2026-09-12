@@ -150,6 +150,50 @@ Backup de varios owners puede demostrar un conjunto coherente sólo si mantiene
 la coordinación y recaptura los mismos heads. De otro modo debe declararse
 `independent_owner_snapshots`.
 
+## Reset selectivo
+
+El motor `neocortex.persistence.state_reset` publica el contrato
+`neocortex.state-reset/v1` y coordina un reset explícito con scopes
+`runs`, `runs-and-caches` o `all`. El scope no es una etiqueta informativa: forma
+parte del digest del plan y de la lista de targets, por lo que no puede cambiarse
+entre preview y apply.
+
+| Scope | Owners/artefactos afectados | Invariante de propiedad |
+|---|---|---|
+| `runs` | Ledger de ejecución Framework y lifecycle asociado, sin borrar por inferencia Review, recovery o curación no ligados | Los owners de contenido y sus heads permanecen intactos |
+| `runs-and-caches` | Todos los owners SQLite del registro, sus sidecars y metadata de publicación necesaria (`epoch`/journal/manifests administrados) | La frontera cross-owner se retira como conjunto lógico, no como purga aislada de un archivo |
+| `all` | `runs-and-caches` más artefactos no-SQLite administrados por el estado | Sólo se alcanzan rutas registradas; corpus, releases, modelos y backups externos quedan fuera |
+
+`runs` debe mantener la continuidad de IDs y procedencia: no reutiliza un ID que
+pueda seguir referenciado. Si se compacta el ledger, el plan conserva un high
+water mark/tombstone o un mecanismo equivalente de asignación futura y reporta
+las referencias cruzadas que impidan retirar una fila. Ningún reset convierte
+una referencia histórica en autoridad nueva.
+
+`runs-and-caches` elimina de forma coordinada owners y metadata de publicación;
+no abre una transacción SQLite distribuida ni simula que varios archivos son una
+sola base. El motor toma los locks de writers/publicación, registra baseline y
+postcondición, y sólo declara `complete` después de verificar el conjunto. WAL,
+SHM y journals siempre se tratan como parte del owner correspondiente.
+
+`all` usa un inventario explícito de artefactos no-SQLite gestionados (por ejemplo
+manifests, checkpoints o journals administrados) y conserva archivos desconocidos
+o externos salvo que una política futura los registre expresamente. Los backups
+se escriben fuera de la raíz y nunca forman parte del target del reset.
+
+El preview es read-only y calcula digest, fingerprints, conteos y bytes dentro de
+límites bounded. Apply requiere el digest exacto, `RESET_STATE`, un backup nuevo
+y una segunda validación de locks, epoch, heads, schemas, referencias y límites.
+Ante drift, schema futuro, writer activo o referencia no conciliable, el motor se
+abstiene fail-closed. El backup verificado es la fuente de rollback; si una
+reversión o publicación quedan inciertas, conserva staging/backup y expone
+`recovery_required` en vez de reintentar.
+
+La operación no migra ni abre el corpus, no modifica bytes originales y no toca
+los directorios de releases/modelos. Una nueva corrida debe volver a crear sólo
+las proyecciones que sus writers publiquen; la ausencia temporal de un owner no
+se presenta como cobertura completa.
+
 ## Retención
 
 La retención protege heads actuales/anteriores necesarios, builders, leases,
@@ -162,7 +206,7 @@ de borrado ni ejecuta `VACUUM` implícito.
 - actualizar schema, migración y registro de owner;
 - cubrir fuente vacía y poblada de cada versión admitida;
 - comprobar rollback, foreign keys, integridad y objetos desconocidos;
-- actualizar backup/restore/purge, health, Knowledge y retención;
+- actualizar backup/restore/purge/reset, health, Knowledge y retención;
 - probar writer concurrente, WAL/SHM y publicación interrumpida;
 - documentar sólo el contrato final, no el transcript de la migración.
 

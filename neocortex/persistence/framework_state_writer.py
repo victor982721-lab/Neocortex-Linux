@@ -848,14 +848,23 @@ class FrameworkState:
             else (cursor.volume, str(cursor.journal_id), cursor.next_usn)
         )
         with self._connection:
+            # State-reset may retain only an allocator floor while removing
+            # the visible run ledger.  Allocate explicitly inside the same
+            # writer transaction so a new run can never reuse an identifier
+            # still present in owner/cache provenance.
+            from neocortex.persistence.framework_run_reset import framework_next_run_id
+
+            self._connection.execute("BEGIN IMMEDIATE")
+            run_id = framework_next_run_id(self._connection)
             result = self._connection.execute(
                 """INSERT INTO initial_runs(
-                root,started_ns,status,run_kind,current_phase,owner_pid,heartbeat_ns,
+                run_id,root,started_ns,status,run_kind,current_phase,owner_pid,heartbeat_ns,
                 journal_volume,journal_id,start_usn,corpus_access_mode,
                 root_device_id_hex,root_file_id_hex,root_birthtime_ns,state_directory,
                 inventory_policy_signature)
-                VALUES(?,?,'running','initial','prepare',?,?, ?,?,?, ?,?,?,?,?,?)""",
+                VALUES(?,?,?,'running','initial','prepare',?,?, ?,?,?, ?,?,?,?,?,?)""",
                 (
+                    run_id,
                     str(policy.root),
                     now,
                     os.getpid(),
@@ -871,7 +880,7 @@ class FrameworkState:
             )
         if result.lastrowid is None:
             raise RuntimeError("SQLite did not return a framework run identifier")
-        return int(result.lastrowid)
+        return run_id
 
 
     def begin_operational_run(
@@ -895,19 +904,24 @@ class FrameworkState:
             raise ValueError(f"source run {source_run_id} is still running")
         now = time.time_ns()
         with self._connection:
+            from neocortex.persistence.framework_run_reset import framework_next_run_id
+
+            self._connection.execute("BEGIN IMMEDIATE")
+            run_id = framework_next_run_id(self._connection)
             result = self._connection.execute(
                 """INSERT INTO initial_runs(
-                root,started_ns,status,run_kind,source_run_id,current_phase,
+                run_id,root,started_ns,status,run_kind,source_run_id,current_phase,
                 owner_pid,heartbeat_ns,scan_id,journal_volume,journal_id,start_usn,
                 end_usn,reconciliation_records,inventory_attempts,inventory_mode,
                 corpus_access_mode,root_device_id_hex,root_file_id_hex,
                 root_birthtime_ns,state_directory,inventory_policy_signature)
-                SELECT ?,?,'running',?,?, 'route_prepare',?,?,scan_id,journal_volume,
+                SELECT ?,?,?,'running',?,?, 'route_prepare',?,?,scan_id,journal_volume,
                 journal_id,start_usn,end_usn,0,0,'reused',corpus_access_mode,
                 root_device_id_hex,root_file_id_hex,root_birthtime_ns,state_directory,
                 inventory_policy_signature
                 FROM initial_runs WHERE run_id=?""",
                 (
+                    run_id,
                     str(root),
                     now,
                     run_kind,
@@ -919,7 +933,7 @@ class FrameworkState:
             )
         if result.lastrowid is None or result.rowcount != 1:
             raise ValueError(f"source run {source_run_id} does not exist")
-        return int(result.lastrowid)
+        return run_id
 
     def abort_run_start(
         self,

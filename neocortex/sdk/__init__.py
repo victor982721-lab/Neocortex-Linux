@@ -5,7 +5,8 @@ them, so callers receive the canonical contract objects directly.
 Knowledge retains its existing ``status()``, ``search()`` and ``context()``
 service.  Curation exposes a fixed-root, paginated plan read, a human-gated
 review journey and a digest-bound authorization grant; grants are durable but
-do not apply filesystem effects.
+do not apply filesystem effects.  State reset is exposed only through its
+explicit scope, preview, digest and confirmation contract.
 """
 
 
@@ -128,6 +129,21 @@ if TYPE_CHECKING:
         RunStatus as RunStatus,
         read_run_status as read_run_status,
         read_run_status_json as read_run_status_json,
+        RESET_STATE_CONFIRMATION as RESET_STATE_CONFIRMATION,
+        STATE_RESET_API_SCHEMA as STATE_RESET_API_SCHEMA,
+        STATE_RESET_CONFIRMATION as STATE_RESET_CONFIRMATION,
+        STATE_RESET_SCHEMA as STATE_RESET_SCHEMA,
+        STATE_RESET_SCOPES as STATE_RESET_SCOPES,
+        StateResetEntry as StateResetEntry,
+        StateResetPlan as StateResetPlan,
+        StateResetResult as StateResetResult,
+        StateResetScope as StateResetScope,
+        StateResetTarget as StateResetTarget,
+        apply_state_reset as apply_state_reset,
+        execute_state_reset as execute_state_reset,
+        plan_state_reset as plan_state_reset,
+        reset_state as reset_state,
+        state_reset_payload as state_reset_payload,
         asset_health_payload as asset_health_payload,
         code_search_payload as code_search_payload,
         context_payload as context_payload,
@@ -255,6 +271,21 @@ __all__ = (  # noqa: RUF022
     "RunStatus",
     "read_run_status",
     "read_run_status_json",
+    "RESET_STATE_CONFIRMATION",
+    "STATE_RESET_API_SCHEMA",
+    "STATE_RESET_CONFIRMATION",
+    "STATE_RESET_SCHEMA",
+    "STATE_RESET_SCOPES",
+    "StateResetEntry",
+    "StateResetPlan",
+    "StateResetResult",
+    "StateResetScope",
+    "StateResetTarget",
+    "apply_state_reset",
+    "execute_state_reset",
+    "plan_state_reset",
+    "reset_state",
+    "state_reset_payload",
 )
 
 _PUBLIC_NAMES: Final = frozenset(__all__)
@@ -468,6 +499,33 @@ _LIFECYCLE_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "RunBudget": ("neocortex.runtime.orchestration.run_manifest", "RunBudget"),
 }
 
+_STATE_RESET_EXPORTS: Final[dict[str, tuple[str, str]]] = {
+    "RESET_STATE_CONFIRMATION": (
+        "neocortex.api.state_reset",
+        "RESET_STATE_CONFIRMATION",
+    ),
+    "STATE_RESET_API_SCHEMA": (
+        "neocortex.api.state_reset",
+        "STATE_RESET_API_SCHEMA",
+    ),
+    "STATE_RESET_CONFIRMATION": (
+        "neocortex.api.state_reset",
+        "STATE_RESET_CONFIRMATION",
+    ),
+    "STATE_RESET_SCHEMA": ("neocortex.api.state_reset", "STATE_RESET_SCHEMA"),
+    "STATE_RESET_SCOPES": ("neocortex.api.state_reset", "STATE_RESET_SCOPES"),
+    "StateResetEntry": ("neocortex.api.state_reset", "StateResetEntry"),
+    "StateResetPlan": ("neocortex.api.state_reset", "StateResetPlan"),
+    "StateResetResult": ("neocortex.api.state_reset", "StateResetResult"),
+    "StateResetScope": ("neocortex.api.state_reset", "StateResetScope"),
+    "StateResetTarget": ("neocortex.api.state_reset", "StateResetTarget"),
+    "apply_state_reset": ("neocortex.api.state_reset", "apply_state_reset"),
+    "execute_state_reset": ("neocortex.api.state_reset", "execute_state_reset"),
+    "plan_state_reset": ("neocortex.api.state_reset", "plan_state_reset"),
+    "reset_state": ("neocortex.api.state_reset", "reset_state"),
+    "state_reset_payload": ("neocortex.api.state_reset", "state_reset_payload"),
+}
+
 # endregion [01]
 
 
@@ -484,6 +542,7 @@ def __getattr__(name: str) -> Any:
         or _READ_EXPORTS.get(name)
         or _KNOWLEDGE_READ_EXPORTS.get(name)
         or _LIFECYCLE_EXPORTS.get(name)
+        or _STATE_RESET_EXPORTS.get(name)
     )
     if target is None:
         target = (_PUBLIC_FACADE, name)

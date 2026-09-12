@@ -32,6 +32,7 @@ _HUMAN_COMMANDS = frozenset(
         "inspect",
         "review",
         "knowledge",
+        "state",
         "databases",
         "database",
         "agent",
