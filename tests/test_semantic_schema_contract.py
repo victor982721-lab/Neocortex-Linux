@@ -41,7 +41,7 @@ def _mutate(path: Path, sql: str) -> None:
 
 
 def test_semantic_state_facade_reexports_schema_lifecycle_contract() -> None:
-    assert semantic_state.SEMANTIC_SCHEMA_VERSION == 8
+    assert semantic_state.SEMANTIC_SCHEMA_VERSION == 9
     assert semantic_state.SemanticStateError is semantic_schema.SemanticStateError
     assert semantic_state.semantic_database is semantic_schema.semantic_database
     assert semantic_state.initialize_semantic_state is semantic_schema.initialize_semantic_state
@@ -105,7 +105,7 @@ def test_declared_current_malformed_schema_is_rejected_without_repair(
 
     assert database.read_bytes() == before
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
 
 
 @pytest.mark.parametrize(
@@ -204,17 +204,90 @@ def test_new_schema_records_exact_complete_migration_history(tmp_path: Path) -> 
     semantic_schema.initialize_semantic_state(database)
 
     with semantic_schema.semantic_database(database, readonly=True) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
         assert (
             connection.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()[
                 0
             ]
-            == "8"
+            == "9"
         )
         assert tuple(
             int(row[0])
             for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
-        ) == (1, 2, 3, 4, 5, 6, 7, 8)
+        ) == (1, 2, 3, 4, 5, 6, 7, 8, 9)
+
+
+def _create_version_eight(path: Path) -> None:
+    with semantic_schema.semantic_database(path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        semantic_schema._build_exact_schema(connection, 8)
+        semantic_schema._store_schema_version(connection, 8)
+        for _name, statement in semantic_schema._SEMANTIC_PERFORMANCE_INDEXES:
+            connection.execute(statement)
+
+
+def test_v9_protocol_migration_preserves_v8_layout_and_history(tmp_path: Path) -> None:
+    database = tmp_path / "protocol-only.sqlite3"
+    _create_version_eight(database)
+    with semantic_schema.semantic_database(database, readonly=True) as connection:
+        before_layout = tuple(map(tuple, connection.execute(
+            "SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name"
+        )))
+        before_history = tuple(map(tuple, connection.execute(
+            "SELECT * FROM schema_migrations ORDER BY version"
+        )))
+        assert semantic_schema._validate_semantic_read_schema(connection) == 8
+
+    semantic_schema.initialize_semantic_state(database)
+
+    with semantic_schema.semantic_database(database, readonly=True) as connection:
+        assert semantic_schema._validate_semantic_read_schema(connection) == 9
+        assert tuple(map(tuple, connection.execute(
+            "SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name"
+        ))) == before_layout
+        assert tuple(map(tuple, connection.execute(
+            "SELECT * FROM schema_migrations WHERE version<9 ORDER BY version"
+        ))) == before_history
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+
+@pytest.mark.parametrize("corruption", (
+    "DELETE FROM metadata WHERE key='schema_version'",
+    "DROP TRIGGER semantic_derivation_outbox_no_update",
+))
+def test_v9_does_not_relax_exact_v8_contract_before_migration(
+    tmp_path: Path, corruption: str,
+) -> None:
+    database = tmp_path / "malformed-v8.sqlite3"
+    _create_version_eight(database)
+    _mutate(database, corruption)
+    before = database.read_bytes()
+    with pytest.raises(semantic_schema.SemanticStateError):
+        semantic_schema.initialize_semantic_state(database)
+    assert database.read_bytes() == before
+
+
+def test_v9_protocol_migration_failure_rolls_back_history_and_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "protocol-rollback.sqlite3"
+    _create_version_eight(database)
+    migrate = semantic_schema._migrate_to_v9
+
+    def fail_after_protocol_marker(connection: sqlite3.Connection, applied_ns: int) -> None:
+        migrate(connection, applied_ns)
+        semantic_schema._store_schema_version(connection, 9)
+        raise sqlite3.OperationalError("injected v9 protocol failure")
+
+    monkeypatch.setitem(semantic_schema._MIGRATIONS_BY_TARGET, 9, fail_after_protocol_marker)
+    with pytest.raises(semantic_schema.SemanticStateError, match="from version 8 failed"):
+        semantic_schema.initialize_semantic_state(database)
+    with semantic_schema.semantic_database(database, readonly=True) as connection:
+        assert semantic_schema._validate_semantic_read_schema(connection) == 8
+        assert connection.execute(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version=9"
+        ).fetchone()[0] == 0
 
 
 def test_retired_image_provenance_scrub_preserves_product_keys(

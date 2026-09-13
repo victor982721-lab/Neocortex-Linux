@@ -1,7 +1,8 @@
-"""Adversarial coverage for the v8 Semantic generation-control projection.
+"""Adversarial coverage for the v8/v9 Semantic generation-control projection.
 
 The tests keep the existing generation/receipt contracts as their oracle while
-exercising the v8 counters, source-dirty fanout and cache-payload hints.  All
+exercising the v8 physical counters, source-dirty fanout and cache-payload
+hints through the current v9 owner.  All
 state is temporary and owner-local; no production database or corpus is used.
 """
 
@@ -15,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from neocortex.semantic import semantic_schema
+from neocortex.semantic.semantic_generation_repository import _has_generation_job_control
 from neocortex.semantic.semantic_generation_worker import complete_embedding_jobs_batch
 from neocortex.semantic.semantic_models import (
     BackendEmbedding,
@@ -91,6 +93,31 @@ def _text_fixture(
         == count
     )
     return database, generation_id, model, chunks
+
+
+@pytest.mark.parametrize("operation", ("summary", "claim", "reuse"))
+@pytest.mark.parametrize("malformation", ("future", "missing_metadata", "conflicting_metadata"))
+def test_generation_control_rejects_unknown_or_inconsistent_owner_before_transition(
+    tmp_path: Path, operation: str, malformation: str,
+) -> None:
+    database, generation_id, _model, _chunks = _text_fixture(tmp_path)
+    with semantic_database(database) as connection:
+        if malformation == "future":
+            connection.execute("PRAGMA user_version=10")
+            connection.execute("UPDATE metadata SET value='10' WHERE key='schema_version'")
+        elif malformation == "missing_metadata":
+            connection.execute("DELETE FROM metadata WHERE key='schema_version'")
+        else:
+            connection.execute("UPDATE metadata SET value='8' WHERE key='schema_version'")
+    before = database.read_bytes()
+    with pytest.raises(SemanticStateError):
+        if operation == "summary":
+            generation_summary(database, generation_id)
+        elif operation == "claim":
+            claim_embedding_jobs(database, generation_id, worker_id="must-not-lease", now_ns=200)
+        else:
+            reuse_cached_jobs(database, generation_id, now_ns=200)
+    assert database.read_bytes() == before
 
 
 def _claim(
@@ -268,7 +295,7 @@ def _image_fixture(tmp_path: Path) -> tuple[Path, int, EmbeddingModelSpec, Seman
     return database, generation_id, model, item, image_path
 
 
-def test_v8_schema_persists_control_columns_indexes_triggers_and_metadata(
+def test_current_v9_schema_persists_v8_control_columns_indexes_triggers_and_metadata(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "semantic.sqlite3"
@@ -289,14 +316,14 @@ def test_v8_schema_persists_control_columns_indexes_triggers_and_metadata(
         "text_chunks_embedding_jobs_source_dirty_delete",
     }
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
-        ).fetchone()[0] == "8"
+        ).fetchone()[0] == "9"
         assert tuple(
             int(row[0])
             for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
-        ) == tuple(range(1, 9))
+        ) == tuple(range(1, 10))
         columns = {
             str(row[1]): (str(row[2]).upper(), int(row[3]), row[4])
             for row in connection.execute("PRAGMA table_info(embedding_jobs)")
@@ -328,7 +355,7 @@ def test_v8_schema_persists_control_columns_indexes_triggers_and_metadata(
         assert all(triggers[name].startswith("CREATE TRIGGER") for name in expected_triggers)
 
 
-def test_v8_initialization_rejects_missing_control_trigger_without_repair(
+def test_current_v9_initialization_rejects_missing_control_trigger_without_repair(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "missing-trigger.sqlite3"
@@ -342,11 +369,28 @@ def test_v8_initialization_rejects_missing_control_trigger_without_repair(
         initialize_semantic_state(database)
     assert database.read_bytes() == after_drop
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
         assert connection.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' "
             "AND name='embedding_jobs_control_insert'"
         ).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize(
+    ("version", "controlled"),
+    ((7, False), (8, True), (9, True)),
+)
+def test_generation_control_gate_covers_v8_v9_not_legacy_v7(
+    version: int,
+    controlled: bool,
+) -> None:
+    connection = sqlite3.connect(":memory:")
+    try:
+        semantic_schema._build_exact_schema(connection, version)
+        semantic_schema._store_schema_version(connection, version)
+        assert _has_generation_job_control(connection) is controlled
+    finally:
+        connection.close()
 
 
 def _migrate_v5_to_v7(database: Path) -> None:
@@ -474,7 +518,7 @@ def test_v7_terminal_member_only_head_preserves_stored_counts_after_v8(
     )
 
 
-def test_v8_receipt_metadata_is_truthful_and_refs_remain_structured(
+def test_current_v9_receipt_metadata_is_truthful_and_refs_remain_structured(
     tmp_path: Path,
 ) -> None:
     database, generation_id, model, _chunks = _text_fixture(tmp_path)
@@ -501,7 +545,7 @@ def test_v8_receipt_metadata_is_truthful_and_refs_remain_structured(
         lease.job_id,
     )
     receipt = json.loads(str(row[5]))
-    assert receipt["runtime"]["semantic_schema"] == "8"
+    assert receipt["runtime"]["semantic_schema"] == "9"
     assert receipt["stage"]["stage_id"] == "semantic.embedding"
     assert receipt["outcome"] == "succeeded"
     assert len(receipt["outputs"]) == 2

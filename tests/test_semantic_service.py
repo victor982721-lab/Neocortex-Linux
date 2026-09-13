@@ -2705,7 +2705,7 @@ def test_semantic_status_handles_uri_fragment_character_in_path(
     status = service.semantic_status(state_directory)
 
     assert status.exists is True
-    assert status.schema_version == 8
+    assert status.schema_version == 9
     assert status.counts["semantic_items"] == 0
     assert status.counts["text_channel_revisions"] == 0
 

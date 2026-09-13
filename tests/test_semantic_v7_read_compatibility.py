@@ -1,8 +1,9 @@
-"""Read compatibility for Semantic schema v7 and current schema v8.
+"""Read compatibility for Semantic schema v7, v8, and current schema v9.
 
-These tests exercise the four bounded read consumers that may accept a
-validated legacy Semantic owner.  Writers remain v8-only.  Every owner is a
-temporary fixture and every compatibility read is checked for byte stability.
+These tests exercise the bounded read consumers that may accept a validated
+legacy Semantic owner.  Protocol/current writers are exercised at exact v8/v9
+for transition coverage, while the Code-link writer remains v9-only.  Every owner
+is a temporary fixture and every compatibility read is checked for byte stability.
 """
 
 from __future__ import annotations
@@ -44,7 +45,6 @@ from neocortex.semantic.semantic_state import (
     enqueue_text_chunk_jobs,
     finalize_embedding_generation,
     generation_summary,
-    initialize_semantic_state,
     register_embedding_model,
     semantic_database,
     start_embedding_generation,
@@ -68,26 +68,39 @@ def _database_files(root: Path) -> dict[str, bytes]:
     }
 
 
-def _create_empty_v7(database: Path) -> None:
+def _create_empty_version(database: Path, version: int) -> None:
+    if version not in {7, 8, 9}:
+        raise ValueError(f"unsupported Semantic fixture version: {version}")
     database.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(database)
     try:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("BEGIN IMMEDIATE")
-        for version in range(1, 8):
-            getattr(semantic_schema, f"_migrate_to_v{version}")(connection, version)
-        connection.execute("PRAGMA user_version=7")
+        for target in range(1, version + 1):
+            getattr(semantic_schema, f"_migrate_to_v{target}")(connection, target)
+        connection.execute(f"PRAGMA user_version={version}")
         connection.execute(
-            "INSERT INTO metadata(key,value) VALUES('schema_version','7') "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+            "INSERT INTO metadata(key,value) VALUES('schema_version',?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (str(version),),
         )
         connection.commit()
     finally:
         connection.close()
 
 
+def _create_empty_v7(database: Path) -> None:
+    _create_empty_version(database, 7)
+
+
 def _create_v8_empty(database: Path) -> None:
-    initialize_semantic_state(database)
+    """Build an actual v8 owner; do not initialize it as current v9."""
+
+    _create_empty_version(database, 8)
+
+
+def _create_v9_empty(database: Path) -> None:
+    _create_empty_version(database, 9)
 
 
 def _insert_semantic_head(
@@ -176,8 +189,12 @@ def _create_api_published_head(
 ) -> tuple[EmbeddingModelSpec, int, object]:
     if version == 7:
         _create_empty_v7(database)
-    else:
+    elif version == 8:
         _create_v8_empty(database)
+    elif version == 9:
+        _create_v9_empty(database)
+    else:
+        raise ValueError(f"unsupported Semantic fixture version: {version}")
     model = _text_model(
         f"compatibility-api-v{version}",
         f"compatibility-api-space-v{version}",
@@ -218,13 +235,17 @@ def _semantic_owner(snapshot: KnowledgeSnapshot) -> OwnerSnapshot:
     return next(owner for owner in snapshot.owners if owner.owner == "semantic")
 
 
-@pytest.mark.parametrize("version", (7, 8))
-def test_semantic_read_schema_accepts_only_exact_valid_v7_or_v8(
+@pytest.mark.parametrize("version", (7, 8, 9))
+def test_semantic_read_schema_accepts_only_exact_valid_v7_v8_or_v9(
     tmp_path: Path,
     version: int,
 ) -> None:
     database = tmp_path / "semantic.sqlite3"
-    (_create_empty_v7 if version == 7 else _create_v8_empty)(database)
+    {
+        7: _create_empty_v7,
+        8: _create_v8_empty,
+        9: _create_v9_empty,
+    }[version](database)
     before = database.read_bytes()
 
     with semantic_database(database, readonly=True) as connection:
@@ -243,7 +264,9 @@ def test_semantic_read_schema_accepts_only_exact_valid_v7_or_v8(
         (7, "trigger_missing"),
         (8, "index_missing"),
         (8, "trigger_missing"),
-        (8, "future_version"),
+        (9, "index_missing"),
+        (9, "trigger_missing"),
+        (9, "future_version"),
     ),
 )
 def test_semantic_read_schema_rejects_malformed_legacy_current_and_future_without_writes(
@@ -252,7 +275,11 @@ def test_semantic_read_schema_rejects_malformed_legacy_current_and_future_withou
     mutation: str,
 ) -> None:
     database = tmp_path / f"semantic-{version}-{mutation}.sqlite3"
-    (_create_empty_v7 if version == 7 else _create_v8_empty)(database)
+    {
+        7: _create_empty_v7,
+        8: _create_v8_empty,
+        9: _create_v9_empty,
+    }[version](database)
     with closing(sqlite3.connect(database)) as connection:
         if mutation == "metadata_missing":
             connection.execute("DELETE FROM metadata WHERE key='schema_version'")
@@ -274,9 +301,9 @@ def test_semantic_read_schema_rejects_malformed_legacy_current_and_future_withou
         elif mutation == "index_missing":
             connection.execute("DROP INDEX embedding_jobs_source_dirty_idx")
         elif mutation == "future_version":
-            connection.execute("PRAGMA user_version=9")
+            connection.execute("PRAGMA user_version=10")
             connection.execute(
-                "UPDATE metadata SET value='9' WHERE key='schema_version'"
+                "UPDATE metadata SET value='10' WHERE key='schema_version'"
             )
         else:  # pragma: no cover - parameter table is exhaustive
             raise AssertionError(mutation)
@@ -290,8 +317,8 @@ def test_semantic_read_schema_rejects_malformed_legacy_current_and_future_withou
     assert database.read_bytes() == before
 
 
-@pytest.mark.parametrize("version", (7, 8))
-def test_semantic_lineage_reads_v7_and_v8_without_rewriting_state(
+@pytest.mark.parametrize("version", (7, 8, 9))
+def test_semantic_lineage_reads_v7_v8_and_v9_without_rewriting_state(
     tmp_path: Path,
     version: int,
 ) -> None:
@@ -350,15 +377,19 @@ def test_v7_terminal_member_only_head_keeps_stored_counts_for_readers(
     assert _database_files(tmp_path) == before
 
 
-@pytest.mark.parametrize("version", (7, 8))
-def test_knowledge_snapshot_accepts_v7_or_v8_semantic_owner_and_preserves_warning(
+@pytest.mark.parametrize("version", (7, 8, 9))
+def test_knowledge_snapshot_accepts_v7_v8_or_v9_semantic_owner_and_preserves_warning(
     tmp_path: Path,
     version: int,
 ) -> None:
     state_directory = tmp_path / "state"
     state_directory.mkdir()
     database = state_directory / "semantic.sqlite3"
-    (_create_empty_v7 if version == 7 else _create_v8_empty)(database)
+    {
+        7: _create_empty_v7,
+        8: _create_v8_empty,
+        9: _create_v9_empty,
+    }[version](database)
     before = _database_files(state_directory)
 
     snapshot = collect_knowledge_snapshot(
@@ -367,19 +398,19 @@ def test_knowledge_snapshot_accepts_v7_or_v8_semantic_owner_and_preserves_warnin
     )
     semantic = _semantic_owner(snapshot)
     assert semantic.state is OwnerAvailability.AVAILABLE
-    assert semantic.expected_schema_version == 8
+    assert semantic.expected_schema_version == 9
     assert semantic.observed_schema_version == version
     assert snapshot.consistency is SnapshotConsistency.STABLE
-    if version == 7:
+    if version < 9:
         assert semantic.warning is not None
-        assert "legacy_schema_read_compatible:7->8" in semantic.warning
+        assert f"legacy_schema_read_compatible:{version}->9" in semantic.warning
     else:
         assert semantic.warning is None
     assert _database_files(state_directory) == before
 
 
-@pytest.mark.parametrize("version", (7, 8))
-def test_publication_heads_read_v7_and_v8_with_schema_bound_digest(
+@pytest.mark.parametrize("version", (7, 8, 9))
+def test_publication_heads_read_v7_v8_and_v9_with_schema_bound_digest(
     tmp_path: Path,
     version: int,
 ) -> None:
@@ -406,7 +437,7 @@ def test_publication_heads_read_v7_and_v8_with_schema_bound_digest(
     assert _database_files(tmp_path) == before
 
 
-def test_empty_publication_head_digest_distinguishes_observed_v7_from_v8(
+def test_empty_publication_head_digest_distinguishes_observed_v7_v8_and_v9(
     tmp_path: Path,
 ) -> None:
     from neocortex.semantic.semantic_publication_heads import (
@@ -420,18 +451,26 @@ def test_empty_publication_head_digest_distinguishes_observed_v7_from_v8(
     v8_root = tmp_path / "v8"
     v8_root.mkdir()
     _create_v8_empty(v8_root / "semantic.sqlite3")
+    v9_root = tmp_path / "v9"
+    v9_root.mkdir()
+    _create_v9_empty(v9_root / "semantic.sqlite3")
     before7 = _database_files(v7_root)
     before8 = _database_files(v8_root)
+    before9 = _database_files(v9_root)
 
     assert observe_semantic_generation_heads(v7_root) == ()
     assert observe_semantic_generation_heads(v8_root) == ()
+    assert observe_semantic_generation_heads(v9_root) == ()
     v7_head = observe_integrated_owner_heads(v7_root, include_code=False)[0]
     v8_head = observe_integrated_owner_heads(v8_root, include_code=False)[0]
+    v9_head = observe_integrated_owner_heads(v9_root, include_code=False)[0]
     assert (v7_head.revision, v7_head.schema_version) == (0, 7)
     assert (v8_head.revision, v8_head.schema_version) == (0, 8)
-    assert v7_head.digest_sha256 != v8_head.digest_sha256
+    assert (v9_head.revision, v9_head.schema_version) == (0, 9)
+    assert len({v7_head.digest_sha256, v8_head.digest_sha256, v9_head.digest_sha256}) == 3
     assert _database_files(v7_root) == before7
     assert _database_files(v8_root) == before8
+    assert _database_files(v9_root) == before9
 
 
 def _create_code_owner(state_directory: Path) -> Path:
@@ -487,13 +526,19 @@ def _insert_current_code_link(
     return chunk_id
 
 
-def test_code_read_availability_accepts_v7_but_synchronize_writer_rejects_it(
+@pytest.mark.parametrize("version", (7, 8))
+def test_code_read_availability_accepts_legacy_v7_v8_but_writer_rejects_them(
     tmp_path: Path,
+    version: int,
 ) -> None:
     state_directory = tmp_path / "state"
     state_directory.mkdir()
     semantic = state_directory / "semantic.sqlite3"
-    model, generation_id = _create_v7_default_head(semantic)
+    if version == 7:
+        model, generation_id = _create_v7_default_head(semantic)
+    else:
+        _create_v8_empty(semantic)
+        model, generation_id = _insert_semantic_head(semantic, multilingual_text_model())
     code = _create_code_owner(state_directory)
     _insert_current_code_link(code, model=model, generation_id=generation_id)
     code_before_writer = code.read_bytes()
@@ -506,7 +551,7 @@ def test_code_read_availability_accepts_v7_but_synchronize_writer_rejects_it(
     assert available.generation_id == generation_id
     assert available.current_links == 1
 
-    with pytest.raises(CodeSemanticLinkError, match=r"schema.*8|8.*schema"):
+    with pytest.raises(CodeSemanticLinkError, match=r"schema.*9|9.*schema"):
         synchronize_code_embedding_links(
             state_directory,
             generation_id=generation_id,
@@ -564,11 +609,11 @@ def test_semantic_plan_rejects_future_schema_as_typed_block_without_migration(
 ) -> None:
     _create_pdf_state(tmp_path, ("Contenido PDF para plan futuro.",))
     semantic = tmp_path / "semantic.sqlite3"
-    _create_v8_empty(semantic)
+    _create_v9_empty(semantic)
     with closing(sqlite3.connect(semantic)) as connection:
-        connection.execute("PRAGMA user_version=9")
+        connection.execute("PRAGMA user_version=10")
         connection.execute(
-            "UPDATE metadata SET value='9' WHERE key='schema_version'"
+            "UPDATE metadata SET value='10' WHERE key='schema_version'"
         )
         connection.commit()
     before = _database_files(tmp_path)

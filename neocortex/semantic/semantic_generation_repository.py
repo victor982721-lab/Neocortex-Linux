@@ -44,7 +44,7 @@ from .semantic_repository_common import (
     _now,
     _same_fingerprint,
 )
-from .semantic_schema import SemanticStateError, semantic_database
+from .semantic_schema import SemanticStateError, _read_schema_version, semantic_database
 from .semantic_work_budget import SemanticWorkBudget
 
 
@@ -1933,14 +1933,17 @@ def _current_job_matches_source(modality: EmbeddingModality) -> str:
 
 
 def _has_generation_job_control(connection: sqlite3.Connection) -> bool:
-    """Select the atomically migrated v8 projection, never a process-local cache.
+    """Select the atomically migrated v8/v9 projection, never a local cache.
 
     Legacy readers/writers retain their authoritative scans until the normal
     owner initializer has migrated the database.  Schema validation remains at
     that boundary; neither this probe nor the hints authorize publication.
     """
 
-    return int(connection.execute("PRAGMA user_version").fetchone()[0]) == 8
+    version = _read_schema_version(connection)
+    if version is None:
+        raise SemanticStateError("semantic generation control requires an initialized owner")
+    return version in {8, 9}
 
 
 def _mark_stale_jobs(

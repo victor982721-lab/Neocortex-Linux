@@ -105,7 +105,7 @@ def test_missing_databases_are_an_explicit_empty_baseline_without_creation(
     empty_database = observe_integrated_owner_heads(state, include_code=True)
     assert empty_database[0] == observed[0]
     assert empty_database[1] == observed[1]
-    assert empty_database[0].schema_version == 8
+    assert empty_database[0].schema_version == 9
 
     with CodeState(state / "code.sqlite3"):
         pass
@@ -137,7 +137,7 @@ def test_all_published_text_and_image_heads_are_observed_not_just_max_generation
     )
     observed = observe_integrated_owner_heads(database.parent)[0]
     assert observed.revision == max(text_generation, image_generation)
-    assert observed.schema_version == 8
+    assert observed.schema_version == 9
     assert observed.digest_sha256
 
 

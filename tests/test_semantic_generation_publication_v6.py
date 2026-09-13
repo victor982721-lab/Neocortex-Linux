@@ -2804,10 +2804,11 @@ def test_embedding_generation_finalization_order_and_work_are_row_bounded(
 
     assert (small_summary.done, large_summary.done) == (1, 24)
     assert len(small_trace) == len(large_trace)
-    # v8 adds constant control/provenance checks.  The 1/24-member comparison
-    # above still forbids per-row control queries, and finalization still owns
-    # exactly one authoritative aggregate after its cleanup.
-    assert len(small_trace) <= 44
+    # The measured v8 path used 43 statements.  v9 adds three fixed metadata
+    # reads at the control boundary to reject future/inconsistent owners.
+    # The 1/24-member comparison still forbids per-row control queries, and
+    # finalization still owns exactly one authoritative aggregate after cleanup.
+    assert len(small_trace) <= 46
     assert sum(
         "from embedding_generations g left join embedding_jobs j" in statement
         for statement in small_trace
@@ -3088,7 +3089,7 @@ def test_populated_v5_migration_preserves_legacy_rows_and_publishes_snapshot(
     assert resolved[0].path == "C:/fixtures/legacy-document.pdf"
     assert resolved[0].snippet == "legacy published transformer record"
     with semantic_database(database, readonly=True) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
         assert connection.execute("SELECT COUNT(*) FROM text_embeddings").fetchone()[0] == 1
         assert (
             connection.execute("SELECT COUNT(*) FROM embedding_generation_members").fetchone()[0]

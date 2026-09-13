@@ -198,7 +198,7 @@ Knowledge crea un snapshot lógico sobre owners compatibles y fusiona rankings
 sin convertir scores heterogéneos en una sola certeza. Puede entregar evidencia
 y contexto citado, pero no genera autoridad de mutación.
 
-Semantic v8 mantiene el control de generación dentro del mismo owner SQLite.
+Semantic conserva desde v8 el control de generación en el mismo owner SQLite.
 Los cinco contadores de jobs de una generación `building` se actualizan por
 triggers en la misma transacción que cada transición; los contadores terminales
 siguen siendo snapshots históricos. La migración inicializa sólo los contadores
@@ -218,9 +218,23 @@ Las invalidaciones por item parten de sus chunks antes de buscar jobs; los
 recorrer toda la cohorte al publicar cada item durante el staging. No cambian
 el conjunto publicado ni eliminan la validación de ordinals duplicados.
 Knowledge, observación de heads, availability de búsqueda Code y preflight de
-reuse leen v7/v8 sólo con el contrato canónico de la versión observada. Conservan
-v7 en avisos, planes, locators y digests; no lo presentan como v8 ni amplían los
+reuse leen v7/v8/v9 sólo con el contrato canónico de la versión observada. Conservan
+esa versión en avisos, planes, locators y digests; no la actualizan por lectura ni amplían los
 writers. Salud de estado sigue exigiendo el schema vigente para declarar healthy.
+
+El protocolo owner v9 mantiene la DDL v8 y sólo añade su marcador transaccional
+de migración: no reescribe receipts ni eventos históricos. Los nuevos eventos
+Semantic usan un envelope `semantic-derivation-event/v2` que referencia el receipt
+canónico completo mediante owner, ID, key y SHA-256 de sus bytes UTF-8 exactos.
+La fila, su FK y ambos registros append-only conservan la atomicidad anterior.
+El reader valida forma, digest y hechos normalizados en el mismo snapshot, y
+entrega el mismo DTO lógico v1 hidratado para lineage/proyección; una referencia
+sin su receipt no es un replay autocontenido. El presupuesto de página sigue
+contando el envelope lógico completo y el receipt, no sólo el wire reducido.
+Los eventos v1 existentes permanecen legibles y bytewise intactos; los writers
+compatibles que aún operen sobre v7/v8 siguen emitiendo v1. Un binario anterior
+rechaza el owner v9 por versión en lugar de interpretar el wire nuevo como v8.
+No hay compactación, GC, migración de estado productivo ni instalación implícita.
 
 La búsqueda vectorial exacta conserva el scan exhaustivo y acotado de miembros
 publicados. Para un único par modelo/generación, el miembro dirige los joins y

@@ -1,6 +1,7 @@
 """Owner-local semantic work receipts and read-only lineage explanations."""
 
 from __future__ import annotations
+import hashlib
 import json
 import math
 import platform
@@ -107,15 +108,18 @@ _SAFE_FAILURE_REASON_CODES = frozenset(
 )
 
 # Work receipts were introduced by v7.  v8 keeps their tables and payload
-# contract unchanged; only the owner schema evolves around them.  Keep these
-# sets explicit rather than accepting future versions by comparison (or by a
-# ``>=`` check), so a newer schema cannot silently acquire old semantics.
-_RECEIPT_SCHEMA_VERSIONS = frozenset({7, 8})
-_LINEAGE_SCHEMA_VERSIONS = frozenset({6, 7, 8})
-_RECEIPT_LINEAGE_SCHEMA_VERSIONS = frozenset({7, 8})
+# contract unchanged; v9 adds only the referenced event representation. Keep
+# these sets explicit rather than accepting future versions by comparison (or
+# by a ``>=`` check), so a newer schema cannot silently acquire old semantics.
+_RECEIPT_SCHEMA_VERSIONS = frozenset({7, 8, 9})
+_LINEAGE_SCHEMA_VERSIONS = frozenset({6, 7, 8, 9})
+_RECEIPT_LINEAGE_SCHEMA_VERSIONS = frozenset({7, 8, 9})
+_FORWARD_RECEIPT_SCHEMA_TRANSITIONS = frozenset({(7, 8), (7, 9), (8, 9)})
 # Stable digest encoding for pre-existing manifest/clone/attestation IDs.  It
 # is not the schema advertised by a new receipt or locator.
 _SEMANTIC_IDENTITY_SCHEMA_VERSION = 7
+_SEMANTIC_DERIVATION_EVENT_V1 = "neocortex.semantic-derivation-event/v1"
+_SEMANTIC_DERIVATION_EVENT_V2 = "neocortex.semantic-derivation-event/v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,7 +207,7 @@ class SemanticDerivationEvent:
 def _json_object(raw: object, *, label: str) -> dict[str, object]:
     try:
         value = json.loads(str(raw))
-    except (TypeError, ValueError) as exc:
+    except (RecursionError, TypeError, ValueError) as exc:
         raise SemanticStateError(f"{label} is not valid JSON") from exc
     if not isinstance(value, dict):
         raise SemanticStateError(f"{label} is not a JSON object")
@@ -225,7 +229,7 @@ def _require_current_receipt_schema(connection: sqlite3.Connection) -> int:
     version = _read_schema_version(connection)
     if version not in _RECEIPT_SCHEMA_VERSIONS:
         raise SemanticStateError(
-            "semantic work receipts require schema 7 or 8; "
+            "semantic work receipts require schema 7, 8 or 9; "
             f"observed {version!r}"
         )
     return int(version)
@@ -246,7 +250,7 @@ def _receipt_schema_version(receipt: WorkReceipt) -> int:
 def _validate_receipt_semantic_locators(receipt: WorkReceipt) -> None:
     """Reject unsupported Semantic owner locators without touching upstream refs."""
 
-    _receipt_schema_version(receipt)
+    receipt_schema = _receipt_schema_version(receipt)
     bindings: tuple[InputBinding | OutputBinding, ...] = (*receipt.inputs, *receipt.outputs)
     for binding in bindings:
         materialization = binding.materialization
@@ -255,6 +259,7 @@ def _validate_receipt_semantic_locators(receipt: WorkReceipt) -> None:
         if (
             isinstance(materialization.schema_version, bool)
             or materialization.schema_version not in _RECEIPT_SCHEMA_VERSIONS
+            or materialization.schema_version > receipt_schema
         ):
             raise ValueError(
                 "semantic WorkReceipt has an unsupported Semantic locator schema: "
@@ -282,7 +287,7 @@ def _semantic_materialization_for_schema(
         or materialization.schema_version not in _RECEIPT_SCHEMA_VERSIONS
     ):
         raise SemanticStateError(
-            "semantic materialization owner schema metadata is not 7 or 8"
+            "semantic materialization owner schema metadata is not 7, 8 or 9"
         )
     if schema_version not in _RECEIPT_SCHEMA_VERSIONS:
         raise SemanticStateError(
@@ -290,15 +295,20 @@ def _semantic_materialization_for_schema(
         )
     if materialization.schema_version == schema_version:
         return materialization
+    if materialization.schema_version > schema_version:
+        raise SemanticStateError(
+            "semantic materialization owner schema cannot be downgraded"
+        )
     return replace(materialization, schema_version=schema_version)
 
 
 def _normalize_receipt_semantic_schema_metadata(value: object) -> object:
-    """Normalize only bounded owner-schema metadata for v7->v8 writes.
+    """Normalize only bounded owner-schema metadata for forward writes.
 
     This helper is intentionally strict: the caller must separately prove that
-    the stored receipt is v7 and the new owner is v8.  A missing, boolean,
-    malformed, or future owner schema is not a compatibility case.
+    the stored receipt/new owner pair is one of the supported forward
+    transitions.  A missing, boolean, malformed, or future owner schema is not
+    a compatibility case.
     """
 
     if isinstance(value, Mapping):
@@ -317,7 +327,7 @@ def _normalize_receipt_semantic_schema_metadata(value: object) -> object:
                 or owner_schema not in _RECEIPT_SCHEMA_VERSIONS
             ):
                 raise SemanticStateError(
-                    "semantic materialization owner schema metadata is not 7 or 8"
+                    "semantic materialization owner schema metadata is not 7, 8 or 9"
                 )
             normalized["owner_schema_version"] = "<semantic-owner-schema>"
         return normalized
@@ -589,6 +599,299 @@ def _receipt_material_contract(
     return canonical_json(contract)
 
 
+def _semantic_receipt_sha256(receipt_json: str) -> str:
+    """Hash the exact stored UTF-8 receipt body, including canonical bytes."""
+
+    if not isinstance(receipt_json, str):
+        raise SemanticStateError("semantic receipt body must be text")
+    return "sha256:" + hashlib.sha256(receipt_json.encode("utf-8")).hexdigest()
+
+
+def _semantic_outbox_v1_payload(
+    *,
+    receipt_id: int,
+    receipt_key: str,
+    event_kind: str,
+    aggregate_kind: str,
+    aggregate_id: str,
+    receipt: Mapping[str, object],
+) -> dict[str, object]:
+    """Build the historical embedded envelope without changing its shape."""
+
+    return {
+        "schema": _SEMANTIC_DERIVATION_EVENT_V1,
+        "receipt_id": receipt_id,
+        "receipt_key": receipt_key,
+        "event_kind": event_kind,
+        "aggregate_kind": aggregate_kind,
+        "aggregate_id": aggregate_id,
+        "receipt": dict(receipt),
+    }
+
+
+def _semantic_outbox_v2_payload(
+    *,
+    receipt_id: int,
+    receipt_key: str,
+    event_kind: str,
+    aggregate_kind: str,
+    aggregate_id: str,
+    committed_ns: int,
+    receipt_json: str,
+) -> dict[str, object]:
+    """Build the compact referenced envelope for schema-9 writes."""
+
+    return {
+        "schema": _SEMANTIC_DERIVATION_EVENT_V2,
+        "owner": "semantic",
+        "receipt_ref": {
+            "owner": "semantic",
+            "receipt_id": receipt_id,
+            "receipt_key": receipt_key,
+            "receipt_sha256": _semantic_receipt_sha256(receipt_json),
+            "contract": WORK_RECEIPT_CONTRACT,
+        },
+        "event_kind": event_kind,
+        "aggregate_kind": aggregate_kind,
+        "aggregate_id": aggregate_id,
+        "committed_ns": committed_ns,
+    }
+
+
+def _json_object_no_duplicate_pairs(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise SemanticStateError("semantic v2 outbox payload has duplicate keys")
+        result[key] = value
+    return result
+
+
+def _strict_semantic_outbox_json(
+    payload_raw: str,
+    *,
+    label: str,
+) -> dict[str, object]:
+    try:
+        payload = json.loads(
+            payload_raw,
+            object_pairs_hook=_json_object_no_duplicate_pairs,
+        )
+    except SemanticStateError:
+        raise
+    except (RecursionError, TypeError, ValueError) as exc:
+        raise SemanticStateError(f"{label} is not valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise SemanticStateError(f"{label} is not a JSON object")
+    try:
+        canonical = canonical_json(payload)
+    except (RecursionError, TypeError, ValueError) as exc:
+        raise SemanticStateError(f"{label} is not canonical JSON") from exc
+    if canonical != payload_raw:
+        raise SemanticStateError(f"{label} is not canonical JSON")
+    return payload
+
+
+def _semantic_outbox_payload_schema(payload_raw: str) -> object:
+    """Read only the wire discriminator for page sizing before full validation."""
+
+    try:
+        payload = json.loads(payload_raw)
+    except (RecursionError, TypeError, ValueError):
+        return None
+    return payload.get("schema") if isinstance(payload, dict) else None
+
+
+def _semantic_outbox_v1_payload_from_row(
+    row: sqlite3.Row,
+    *,
+    receipt: Mapping[str, object],
+) -> dict[str, object]:
+    raw_receipt_id = row["outbox_receipt_id"]
+    receipt_id = (
+        int(raw_receipt_id)
+        if isinstance(raw_receipt_id, int) and not isinstance(raw_receipt_id, bool)
+        else 0
+    )
+    return _semantic_outbox_v1_payload(
+        receipt_id=receipt_id,
+        receipt_key="" if row["receipt_key"] is None else str(row["receipt_key"]),
+        event_kind="" if row["event_kind"] is None else str(row["event_kind"]),
+        aggregate_kind=("" if row["aggregate_kind"] is None else str(row["aggregate_kind"])),
+        aggregate_id="" if row["aggregate_id"] is None else str(row["aggregate_id"]),
+        receipt=receipt,
+    )
+
+
+def _semantic_outbox_row_cost(
+    row: sqlite3.Row,
+    *,
+    payload_raw: str,
+    receipt_raw: str,
+) -> int:
+    """Charge v1 logical hydration bytes, not only the compact v2 wire."""
+
+    receipt_bytes = len(receipt_raw.encode("utf-8"))
+    if _semantic_outbox_payload_schema(payload_raw) == _SEMANTIC_DERIVATION_EVENT_V1:
+        return len(payload_raw.encode("utf-8")) + receipt_bytes
+    placeholder = _semantic_outbox_v1_payload_from_row(row, receipt={})
+    placeholder_bytes = len(canonical_json(placeholder).encode("utf-8"))
+    # ``{}`` is the exact canonical JSON for the receipt placeholder.  A valid
+    # receipt_json body can therefore be substituted by byte length without
+    # parsing/validating an event that may later fall outside this page.
+    # Unknown or malformed compact wire cannot shrink this logical cost and
+    # pull an otherwise excluded corrupt event into the current page.  Its
+    # protocol error is reported only if the selected page reaches that row.
+    logical_v1_bytes = placeholder_bytes - 2 + receipt_bytes
+    return max(logical_v1_bytes, len(payload_raw.encode("utf-8"))) + receipt_bytes
+
+
+def _validate_semantic_outbox_v1_payload(
+    payload: Mapping[str, object],
+    *,
+    row: sqlite3.Row,
+    receipt: Mapping[str, object],
+) -> None:
+    """Preserve the existing v1 checks; do not tighten historical wire data."""
+
+    if (
+        payload.get("schema") != _SEMANTIC_DERIVATION_EVENT_V1
+        or row["outbox_receipt_id"] is None
+        or row["receipt_id"] is None
+        or int(row["outbox_receipt_id"]) != int(row["receipt_id"])
+        or payload.get("receipt_id") != int(row["receipt_id"])
+        or payload.get("receipt_key") != str(row["receipt_key"])
+        or payload.get("event_kind") != str(row["event_kind"])
+        or payload.get("aggregate_kind") != str(row["aggregate_kind"])
+        or payload.get("aggregate_id") != str(row["aggregate_id"])
+        or payload.get("receipt") != receipt
+    ):
+        raise SemanticStateError("semantic v1 outbox receipt does not match its owner receipt")
+
+
+def _validate_semantic_outbox_commit_timestamp(row: sqlite3.Row) -> None:
+    """Require the event and canonical receipt to share their commit fact."""
+
+    if row["event_committed_ns"] is None or row["committed_ns"] is None:
+        raise SemanticStateError("semantic derivation outbox commit timestamp is missing")
+    if int(row["event_committed_ns"]) != int(row["committed_ns"]):
+        raise SemanticStateError("semantic derivation outbox commit timestamp is inconsistent")
+
+
+def _validate_semantic_outbox_v2_payload(
+    payload_raw: str,
+    *,
+    row: sqlite3.Row,
+    receipt_raw: str,
+    receipt: Mapping[str, object],
+) -> dict[str, object]:
+    """Strictly validate a compact v2 envelope against its joined receipt row."""
+
+    payload = _strict_semantic_outbox_json(
+        payload_raw,
+        label="semantic v2 derivation outbox payload",
+    )
+    expected_payload_keys = frozenset(
+        {
+            "schema",
+            "owner",
+            "receipt_ref",
+            "event_kind",
+            "aggregate_kind",
+            "aggregate_id",
+            "committed_ns",
+        }
+    )
+    if set(payload) != expected_payload_keys:
+        raise SemanticStateError("semantic v2 outbox payload has unknown or missing fields")
+    receipt_ref = payload["receipt_ref"]
+    if not isinstance(receipt_ref, dict) or set(receipt_ref) != {
+        "owner",
+        "receipt_id",
+        "receipt_key",
+        "receipt_sha256",
+        "contract",
+    }:
+        raise SemanticStateError("semantic v2 outbox receipt_ref has unknown or missing fields")
+    receipt_id = receipt_ref["receipt_id"]
+    if not isinstance(receipt_id, int) or isinstance(receipt_id, bool) or receipt_id < 1:
+        raise SemanticStateError("semantic v2 outbox receipt_ref receipt_id is invalid")
+    receipt_key = receipt_ref["receipt_key"]
+    receipt_digest = receipt_ref["receipt_sha256"]
+    if not isinstance(receipt_key, str) or not receipt_key.strip():
+        raise SemanticStateError("semantic v2 outbox receipt_ref receipt_key is invalid")
+    if not isinstance(receipt_digest, str) or re.fullmatch(
+        r"sha256:[0-9a-f]{64}", receipt_digest
+    ) is None:
+        raise SemanticStateError("semantic v2 outbox receipt_ref receipt_sha256 is invalid")
+    committed_ns = payload["committed_ns"]
+    if not isinstance(committed_ns, int) or isinstance(committed_ns, bool) or committed_ns < 0:
+        raise SemanticStateError("semantic v2 outbox committed_ns is invalid")
+    if (
+        payload["schema"] != _SEMANTIC_DERIVATION_EVENT_V2
+        or payload["owner"] != "semantic"
+        or receipt_ref["owner"] != "semantic"
+        or receipt_ref["contract"] != WORK_RECEIPT_CONTRACT
+        or payload["event_kind"] != str(row["event_kind"])
+        or payload["aggregate_kind"] != str(row["aggregate_kind"])
+        or payload["aggregate_id"] != str(row["aggregate_id"])
+        or committed_ns != int(row["event_committed_ns"])
+        or row["outbox_receipt_id"] is None
+        or row["receipt_id"] is None
+        or receipt_id != int(row["outbox_receipt_id"])
+        or receipt_id != int(row["receipt_id"])
+        or receipt_key != str(row["receipt_key"])
+        or receipt_key != str(receipt["receipt_id"])
+        or receipt_digest != _semantic_receipt_sha256(receipt_raw)
+    ):
+        raise SemanticStateError("semantic v2 outbox receipt_ref does not match its owner receipt")
+    return payload
+
+
+def _validate_semantic_outbox_event_row(
+    row: sqlite3.Row,
+    *,
+    receipt_raw: str,
+    receipt: Mapping[str, object],
+    requested_event_kind: str,
+    requested_aggregate_kind: str,
+    requested_aggregate_id: str,
+    owner_schema_version: int,
+    candidate_payload_raw: str | None = None,
+) -> None:
+    """Validate a stored event while allowing its original commit timestamp."""
+
+    if row["receipt_id"] is None or row["outbox_receipt_id"] is None:
+        raise SemanticStateError("semantic derivation outbox receipt is missing")
+    _validate_semantic_outbox_commit_timestamp(row)
+    if (
+        str(row["event_kind"]) != requested_event_kind
+        or str(row["aggregate_kind"]) != requested_aggregate_kind
+        or str(row["aggregate_id"]) != requested_aggregate_id
+    ):
+        raise SemanticStateError("semantic derivation outbox event is bound to different facts")
+    payload_raw = str(row["payload_json"])
+    if candidate_payload_raw is not None and payload_raw != candidate_payload_raw:
+        raise SemanticStateError("semantic derivation outbox payload is not idempotent")
+    payload_schema = _semantic_outbox_payload_schema(payload_raw)
+    if payload_schema == _SEMANTIC_DERIVATION_EVENT_V1:
+        payload = _json_object(payload_raw, label="semantic derivation outbox payload")
+        _validate_semantic_outbox_v1_payload(payload, row=row, receipt=receipt)
+    elif payload_schema == _SEMANTIC_DERIVATION_EVENT_V2:
+        if owner_schema_version != 9:
+            raise SemanticStateError("semantic v2 outbox payload requires schema 9")
+        _validate_semantic_outbox_v2_payload(
+            payload_raw,
+            row=row,
+            receipt_raw=receipt_raw,
+            receipt=receipt,
+        )
+    else:
+        raise SemanticStateError("semantic derivation outbox payload schema is unsupported")
+
+
 def _record_work_receipt(
     connection: sqlite3.Connection,
     *,
@@ -740,59 +1043,71 @@ def _record_work_receipt(
     if cursor.lastrowid is not None and cursor.rowcount == 1:
         receipt_id = int(cursor.lastrowid)
         stored_receipt = work_receipt.to_dict()
+        stored_receipt_json = receipt_json
     else:
         existing = connection.execute(
-            """SELECT receipt_id,stage_id,stage_version,processing_signature,
-                status,execution_mode,reproducibility_class,entity_kind,entity_id,
-                item_revision_id,chunk_revision_id,generation_id,model_signature,
-                payload_id,job_id,attempt,receipt_json
-            FROM semantic_work_receipts WHERE receipt_key=?""",
+            "SELECT * FROM semantic_work_receipts WHERE receipt_key=?",
             (receipt_key,),
         ).fetchone()
         expected = (
-            stage_id,
-            stage_version,
-            processing_signature,
-            status,
-            execution_mode,
-            reproducibility_class,
-            entity_kind,
-            entity_id,
-            item_revision_id,
-            chunk_revision_id,
-            generation_id,
-            model_signature,
-            payload_id,
-            job_id,
-            selected_attempt,
+            (stage_id, stage_version, processing_signature, status, execution_mode,
+             reproducibility_class, entity_kind, entity_id, item_revision_id,
+             chunk_revision_id, generation_id, model_signature, payload_id, job_id,
+             selected_attempt)
         )
-        if existing is None or tuple(existing)[1:-1] != expected:
+        observed = (
+            None
+            if existing is None
+            else (
+                str(existing["stage_id"]),
+                str(existing["stage_version"]),
+                str(existing["processing_signature"]),
+                str(existing["status"]),
+                str(existing["execution_mode"]),
+                str(existing["reproducibility_class"]),
+                str(existing["entity_kind"]),
+                str(existing["entity_id"]),
+                existing["item_revision_id"],
+                existing["chunk_revision_id"],
+                existing["generation_id"],
+                existing["model_signature"],
+                existing["payload_id"],
+                existing["job_id"],
+                existing["attempt"],
+            )
+        )
+        if existing is None or observed != expected:
             raise SemanticStateError("semantic receipt key is bound to different work")
         receipt_id = int(existing["receipt_id"])
-        stored_receipt = _json_object(
-            existing["receipt_json"],
-            label="semantic work receipt",
-        )
+        stored_receipt_json = str(existing["receipt_json"])
         try:
-            stored_work_receipt = WorkReceipt.from_dict(stored_receipt)
-            _validate_receipt_semantic_locators(stored_work_receipt)
+            stored_work_receipt = _validated_semantic_receipt_row(
+                existing,
+                owner_schema_version=schema_version,
+            )
             stored_schema_version = _receipt_schema_version(stored_work_receipt)
         except (KeyError, TypeError, ValueError) as exc:
             raise SemanticStateError(
                 "semantic receipt key is bound to an invalid causal receipt"
             ) from exc
-        if stored_schema_version != schema_version and not (
-            stored_schema_version == 7 and schema_version == 8
-        ):
+        stored_receipt = stored_work_receipt.to_dict()
+        if stored_schema_version != schema_version and (
+            stored_schema_version,
+            schema_version,
+        ) not in _FORWARD_RECEIPT_SCHEMA_TRANSITIONS:
             raise SemanticStateError("semantic receipt key is bound to different causal facts")
         if _receipt_material_contract(stored_receipt) != _receipt_material_contract(
             work_receipt.to_dict()
         ):
-            # The sole tolerated transition is an immutable v7 receipt being
-            # replayed after the owner was migrated to v8.  Same-version
-            # conflicts, v8->v7 attempts, and future/malformed metadata remain
-            # hard conflicts instead of falling through this compatibility
-            # comparison.
+            # Only an explicitly forward owner-schema transition may compare
+            # schema metadata as non-identity.  Same-version conflicts,
+            # backward transitions, and future/malformed metadata remain hard
+            # conflicts instead of falling through this compatibility path.
+            if (
+                stored_schema_version,
+                schema_version,
+            ) not in _FORWARD_RECEIPT_SCHEMA_TRANSITIONS:
+                raise SemanticStateError("semantic receipt key is bound to different causal facts")
             if _receipt_material_contract(
                 stored_receipt,
                 normalize_semantic_schema_metadata=True,
@@ -801,18 +1116,31 @@ def _record_work_receipt(
                 normalize_semantic_schema_metadata=True,
             ):
                 raise SemanticStateError("semantic receipt key is bound to different causal facts")
-    event_payload = canonical_json(
-        {
-            "schema": "neocortex.semantic-derivation-event/v1",
-            "receipt_id": receipt_id,
-            "receipt_key": receipt_key,
-            "event_kind": event_kind,
-            "aggregate_kind": aggregate_kind,
-            "aggregate_id": aggregate_id,
-            "receipt": stored_receipt,
-        }
+    candidate_payload = (
+        _semantic_outbox_v2_payload(
+            receipt_id=receipt_id,
+            receipt_key=receipt_key,
+            event_kind=event_kind,
+            aggregate_kind=aggregate_kind,
+            aggregate_id=aggregate_id,
+            committed_ns=committed_ns,
+            receipt_json=stored_receipt_json,
+        )
+        if schema_version == 9
+        else _semantic_outbox_v1_payload(
+            receipt_id=receipt_id,
+            receipt_key=receipt_key,
+            event_kind=event_kind,
+            aggregate_kind=aggregate_kind,
+            aggregate_id=aggregate_id,
+            receipt=stored_receipt,
+        )
     )
-    connection.execute(
+    candidate_payload_raw = canonical_json(candidate_payload)
+    # Keep the original conflict/allocator semantics: even an ignored insert
+    # advances SQLite's AUTOINCREMENT sequence.  A pre-read would change the
+    # IDs of later events after replay, as well as add a query per new receipt.
+    insert_cursor = connection.execute(
         """INSERT INTO semantic_derivation_outbox(
             receipt_id,event_kind,aggregate_kind,aggregate_id,payload_json,
             committed_ns)
@@ -822,35 +1150,53 @@ def _record_work_receipt(
             event_kind,
             aggregate_kind,
             aggregate_id,
-            event_payload,
+            candidate_payload_raw,
             committed_ns,
         ),
     )
+    inserted_event = insert_cursor.rowcount == 1
     stored_event = connection.execute(
-        """SELECT payload_json,event_kind,aggregate_kind,aggregate_id
-        FROM semantic_derivation_outbox WHERE receipt_id=?""",
+        """SELECT event.event_id,event.receipt_id AS outbox_receipt_id,
+            event.event_kind,event.aggregate_kind,event.aggregate_id,
+            event.payload_json,event.committed_ns AS event_committed_ns,
+            receipt.*
+        FROM semantic_derivation_outbox event
+        JOIN semantic_work_receipts receipt ON receipt.receipt_id=event.receipt_id
+        WHERE event.receipt_id=?""",
         (receipt_id,),
     ).fetchone()
-    if stored_event is None or (
-        str(stored_event["payload_json"]),
-        str(stored_event["event_kind"]),
-        str(stored_event["aggregate_kind"]),
-        str(stored_event["aggregate_id"]),
-    ) != (
-        event_payload,
-        event_kind,
-        aggregate_kind,
-        aggregate_id,
-    ):
-        raise SemanticStateError("semantic outbox key is bound to different causal facts")
+    if stored_event is None:
+        raise SemanticStateError("semantic derivation outbox row disappeared")
+    _validate_semantic_outbox_event_row(
+        stored_event,
+        receipt_raw=stored_receipt_json,
+        receipt=stored_receipt,
+        requested_event_kind=event_kind,
+        requested_aggregate_kind=aggregate_kind,
+        requested_aggregate_id=aggregate_id,
+        owner_schema_version=schema_version,
+        candidate_payload_raw=(candidate_payload_raw if inserted_event else None),
+    )
     return receipt_id
 
 
-def _validated_semantic_receipt_row(row: sqlite3.Row) -> WorkReceipt:
+def _validated_semantic_receipt_row(
+    row: sqlite3.Row,
+    *,
+    owner_schema_version: int | None = None,
+) -> WorkReceipt:
     receipt_id = int(row["receipt_id"])
     try:
         receipt = WorkReceipt.from_json(str(row["receipt_json"]))
         _validate_receipt_semantic_locators(receipt)
+        receipt_schema_version = _receipt_schema_version(receipt)
+        if (
+            owner_schema_version is not None
+            and receipt_schema_version > owner_schema_version
+        ):
+            raise ValueError(
+                "semantic WorkReceipt is newer than its owner schema"
+            )
         started_ns = int(row["started_ns"])
         finished_ns = int(row["finished_ns"])
         normalized = (
@@ -892,6 +1238,7 @@ def _validated_semantic_receipts(
     connection: sqlite3.Connection,
     receipt_ids: Iterable[int],
 ) -> dict[int, tuple[WorkReceipt, sqlite3.Row]]:
+    owner_schema_version = _require_current_receipt_schema(connection)
     unique_ids = tuple(dict.fromkeys(int(receipt_id) for receipt_id in receipt_ids))
     validated: dict[int, tuple[WorkReceipt, sqlite3.Row]] = {}
     for offset in range(0, len(unique_ids), 250):
@@ -908,7 +1255,13 @@ def _validated_semantic_receipts(
             raise ValueError(f"semantic WorkReceipt is missing: {min(missing)}")
         for receipt_id in batch:
             row = rows_by_id[receipt_id]
-            validated[receipt_id] = (_validated_semantic_receipt_row(row), row)
+            validated[receipt_id] = (
+                _validated_semantic_receipt_row(
+                    row,
+                    owner_schema_version=owner_schema_version,
+                ),
+                row,
+            )
     return validated
 
 
@@ -922,7 +1275,13 @@ def _validated_semantic_receipt_by_key(
     ).fetchall()
     if len(rows) != 1:
         raise ValueError(f"semantic causation receipt is missing or ambiguous: {receipt_key}")
-    return _validated_semantic_receipt_row(rows[0]), rows[0]
+    return (
+        _validated_semantic_receipt_row(
+            rows[0],
+            owner_schema_version=_require_current_receipt_schema(connection),
+        ),
+        rows[0],
+    )
 
 
 def _output_matches_input(output: OutputBinding, input_binding: InputBinding) -> bool:
@@ -1976,7 +2335,7 @@ def _manifest_binding_fact(binding: Mapping[str, object]) -> dict[str, object]:
             or materialization.schema_version not in _RECEIPT_SCHEMA_VERSIONS
         ):
             raise SemanticStateError(
-                "semantic manifest locator schema metadata is not 7 or 8"
+                "semantic manifest locator schema metadata is not 7, 8 or 9"
             )
         # Owner-schema metadata is provenance, not content identity.  Pin the
         # digest representation to the last receipt schema so a v7 receipt
@@ -4815,7 +5174,7 @@ def explain_text_chunk_lineage(
         version = _read_schema_version(connection)
         if version not in _LINEAGE_SCHEMA_VERSIONS:
             raise SemanticStateError(
-                f"semantic lineage requires schema 6, 7 or 8; observed {version!r}"
+                f"semantic lineage requires schema 6, 7, 8 or 9; observed {version!r}"
             )
         _validate_version_contract(connection, version)
         chunk = connection.execute(
@@ -4901,7 +5260,7 @@ def find_text_chunks_for_source_revision(
         version = _read_schema_version(connection)
         if version not in _LINEAGE_SCHEMA_VERSIONS:
             raise SemanticStateError(
-                f"semantic lineage requires schema 6, 7 or 8; observed {version!r}"
+                f"semantic lineage requires schema 6, 7, 8 or 9; observed {version!r}"
             )
         _validate_version_contract(connection, version)
         if version in _RECEIPT_LINEAGE_SCHEMA_VERSIONS:
@@ -4965,7 +5324,7 @@ def read_semantic_derivation_outbox(
             return ()
         if version not in _RECEIPT_LINEAGE_SCHEMA_VERSIONS:
             raise SemanticStateError(
-                f"semantic derivation outbox requires schema 7 or 8; observed {version!r}"
+                f"semantic derivation outbox requires schema 7, 8 or 9; observed {version!r}"
             )
         _validate_version_contract(connection, version)
         rows = connection.execute(
@@ -4974,7 +5333,7 @@ def read_semantic_derivation_outbox(
             event.payload_json,event.committed_ns AS event_committed_ns,
             receipt.*
             FROM semantic_derivation_outbox event
-            JOIN semantic_work_receipts receipt
+            LEFT JOIN semantic_work_receipts receipt
               ON receipt.receipt_id=event.receipt_id
             WHERE event.event_id>? ORDER BY event.event_id LIMIT ?""",
             (after_event_id, limit),
@@ -4983,31 +5342,55 @@ def read_semantic_derivation_outbox(
         captured_bytes = 0
         for row in rows:
             payload_raw = str(row["payload_json"])
-            receipt_raw = str(row["receipt_json"])
-            row_bytes = len(payload_raw.encode("utf-8")) + len(receipt_raw.encode("utf-8"))
+            receipt_raw = "" if row["receipt_json"] is None else str(row["receipt_json"])
+            row_bytes = _semantic_outbox_row_cost(
+                row,
+                payload_raw=payload_raw,
+                receipt_raw=receipt_raw,
+            )
             if events and captured_bytes + row_bytes > _MAX_OUTBOX_PAGE_BYTES:
                 break
             captured_bytes += row_bytes
-            payload = _json_object(
-                payload_raw,
-                label="semantic derivation outbox payload",
+            if row["receipt_id"] is None:
+                raise SemanticStateError("semantic derivation outbox receipt is missing")
+            _validate_semantic_outbox_commit_timestamp(row)
+            payload_raw = str(row["payload_json"])
+            receipt_raw = str(row["receipt_json"])
+            payload_schema = _semantic_outbox_payload_schema(payload_raw)
+            receipt_contract = _validated_semantic_receipt_row(
+                row,
+                owner_schema_version=version,
             )
-            receipt_contract = _validated_semantic_receipt_row(row)
             receipt = receipt_contract.to_dict()
-            embedded = payload.get("receipt")
-            if (
-                not isinstance(embedded, dict)
-                or embedded != receipt
-                or int(row["outbox_receipt_id"]) != int(row["receipt_id"])
-                or payload.get("schema") != "neocortex.semantic-derivation-event/v1"
-                or payload.get("receipt_id") != int(row["receipt_id"])
-                or payload.get("receipt_key") != str(row["receipt_key"])
-                or payload.get("event_kind") != str(row["event_kind"])
-                or payload.get("aggregate_kind") != str(row["aggregate_kind"])
-                or payload.get("aggregate_id") != str(row["aggregate_id"])
-                or int(row["event_committed_ns"]) != int(row["committed_ns"])
-            ):
-                raise SemanticStateError("semantic outbox receipt does not match its owner receipt")
+            if payload_schema == _SEMANTIC_DERIVATION_EVENT_V1:
+                payload = _json_object(
+                    payload_raw,
+                    label="semantic derivation outbox payload",
+                )
+                _validate_semantic_outbox_v1_payload(
+                    payload,
+                    row=row,
+                    receipt=receipt,
+                )
+            elif payload_schema == _SEMANTIC_DERIVATION_EVENT_V2:
+                if version != 9:
+                    raise SemanticStateError(
+                        "semantic v2 outbox payload requires schema 9"
+                    )
+                _validate_semantic_outbox_v2_payload(
+                    payload_raw,
+                    row=row,
+                    receipt_raw=receipt_raw,
+                    receipt=receipt,
+                )
+                # Public payload remains the historical logical v1 envelope;
+                # only the stored wire body is compact and referenced.
+                payload = _semantic_outbox_v1_payload_from_row(
+                    row,
+                    receipt=receipt,
+                )
+            else:
+                raise SemanticStateError("semantic derivation outbox payload schema is unsupported")
             events.append(
                 SemanticDerivationEvent(
                     event_id=int(row["event_id"]),

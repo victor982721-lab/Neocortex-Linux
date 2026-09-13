@@ -3,7 +3,7 @@
 These tests are intentionally separate from the generation-control writer
 tests.  They build a real v5 -> v7 owner fixture with the existing migration
 helpers, create deterministic v7 receipts with the public state API, then
-exercise the v7 -> v8 compatibility boundary.  The only private call is the
+exercise the v7 -> v8 -> v9 compatibility boundaries.  The only private call is the
 fixture-bound receipt collision probe: it is used because no public operation
 replays an identical terminal receipt key on demand.
 
@@ -27,7 +27,7 @@ from typing import Any
 
 import pytest
 
-from neocortex.semantic import semantic_lineage_repository
+from neocortex.semantic import semantic_lineage_repository, semantic_schema
 from neocortex.semantic.derivation_contracts import MaterializationRef, WorkReceipt
 from neocortex.semantic.semantic_state import (
     SemanticStateError,
@@ -159,6 +159,25 @@ def _v7_fixture(tmp_path: Path, *, item_id: str = "compat-source") -> dict[str, 
         "embedding_row": embedding_row,
         "chunk_row": chunk_row,
     }
+
+
+def _migrate_semantic_schema(database: Path, target_version: int) -> None:
+    """Advance a v7/v8 fixture to an exact v8 or v9 owner without fresh init."""
+
+    if target_version not in {8, 9}:
+        raise ValueError(f"unsupported Semantic target version: {target_version}")
+    with sqlite3.connect(database) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("BEGIN IMMEDIATE")
+        current = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if current not in {7, 8} or current >= target_version:
+            raise AssertionError(
+                f"fixture must start at v7 or v8 below target, observed {current}"
+            )
+        for version in range(current + 1, target_version + 1):
+            getattr(semantic_schema, f"_migrate_to_v{version}")(connection, version)
+            semantic_schema._store_schema_version(connection, version)
+        connection.commit()
 
 
 def _domain_snapshot(database: Path) -> dict[str, tuple[tuple[object, ...], ...]]:
@@ -296,8 +315,14 @@ def _semantic_binding_schemas(receipt: WorkReceipt) -> dict[str, tuple[str, int]
     return result
 
 
-def test_v7_migration_preserves_receipt_outbox_bytes_and_domain_ids_then_writes_v8(
+@pytest.mark.parametrize(
+    ("source_version", "target_version"),
+    ((7, 8), (7, 9), (8, 9)),
+)
+def test_schema_migration_preserves_receipt_outbox_bytes_and_writes_current_version(
     tmp_path: Path,
+    source_version: int,
+    target_version: int,
 ) -> None:
     fixture = _v7_fixture(tmp_path)
     database = fixture["database"]
@@ -316,85 +341,96 @@ def test_v7_migration_preserves_receipt_outbox_bytes_and_domain_ids_then_writes_
             ).fetchone()[0]
         ) == "7"
 
-    initialize_semantic_state(database)
+    if source_version == 8:
+        _migrate_semantic_schema(database, source_version)
+    _migrate_semantic_schema(database, target_version)
     after_migration = _domain_snapshot(database)
     assert before == after_migration
     with semantic_database(database, readonly=True) as connection:
-        assert int(connection.execute("PRAGMA user_version").fetchone()[0]) == 8
+        assert int(connection.execute("PRAGMA user_version").fetchone()[0]) == target_version
         assert str(
             connection.execute(
                 "SELECT value FROM metadata WHERE key='schema_version'"
             ).fetchone()[0]
-        ) == "8"
+        ) == str(target_version)
         assert tuple(
             int(row[0])
             for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
-        ) == tuple(range(1, 9))
+        ) == tuple(range(1, target_version + 1))
 
     preserved = WorkReceipt.from_json(str(fixture["embedding_row"]["receipt_json"]))
     assert dict(preserved.runtime)["semantic_schema"] == "7"
     assert all(value == 7 for value in _semantic_schema_values(preserved.to_dict()))
 
-    v8_chunk = stage_fixture_item(
+    current_chunk = stage_fixture_item(
         database,
-        item_id="receipt-schema-v8-source",
-        source_revision_id="revision:text:receipt-schema-v8-source:v8",
-        text="contenido nuevo para una materializacion Semantic v8",
+        item_id=f"receipt-schema-v{target_version}-source",
+        source_revision_id=f"revision:text:receipt-schema-v{target_version}-source:v{target_version}",
+        text=f"contenido nuevo para una materializacion Semantic v{target_version}",
         ordinal=2,
     )
-    v8_generation = start_embedding_generation(
+    current_generation = start_embedding_generation(
         database,
         model_signature=model.model_signature,
-        processing_signature="receipt-schema-v8-generation",
-        provenance={"fixture": "receipt-schema-compatibility", "schema": 8},
+        processing_signature=f"receipt-schema-v{target_version}-generation",
+        provenance={"fixture": "receipt-schema-compatibility", "schema": target_version},
         materialize_base=False,
         started_ns=200,
     )
-    assert enqueue_text_chunk_jobs(database, v8_generation, (v8_chunk.chunk_id,), now_ns=210) == 1
+    assert enqueue_text_chunk_jobs(
+        database, current_generation, (current_chunk.chunk_id,), now_ns=210
+    ) == 1
     assert (
         prepare_embedding_generation(
             database,
-            v8_generation,
+            current_generation,
             enumeration_complete=True,
         )
         is None
     )
     lease = claim_embedding_jobs(
         database,
-        v8_generation,
-        worker_id="receipt-schema-v8-worker",
+        current_generation,
+        worker_id=f"receipt-schema-v{target_version}-worker",
         limit=1,
         now_ns=220,
     )[0]
     complete_embedding_job(
         database,
         lease.job_id,
-        worker_id="receipt-schema-v8-worker",
+        worker_id=f"receipt-schema-v{target_version}-worker",
         vector=(1.0, 0.0, 0.0, 0.0),
         now_ns=230,
     )
-    assert finalize_embedding_generation(database, v8_generation, completed_ns=240).status == "ready"
+    assert (
+        finalize_embedding_generation(database, current_generation, completed_ns=240).status
+        == "ready"
+    )
     with semantic_database(database, readonly=True) as connection:
         current = connection.execute(
             "SELECT receipt_json FROM semantic_work_receipts "
             "WHERE generation_id=? AND stage_id='semantic.embedding' AND job_id=?",
-            (v8_generation, lease.job_id),
+            (current_generation, lease.job_id),
         ).fetchone()
     assert current is not None
     current_receipt = WorkReceipt.from_json(str(current[0]))
-    assert dict(current_receipt.runtime)["semantic_schema"] == "8"
-    assert all(value == 8 for value in _semantic_schema_values(current_receipt.to_dict()))
+    assert dict(current_receipt.runtime)["semantic_schema"] == str(target_version)
+    assert all(
+        value == target_version for value in _semantic_schema_values(current_receipt.to_dict())
+    )
     assert dict(old_receipt.runtime)["semantic_schema"] == "7"
 
 
-def test_repeated_v7_receipt_key_on_v8_is_idempotent_and_does_not_reemit_outbox(
+@pytest.mark.parametrize("target_version", (8, 9))
+def test_repeated_v7_receipt_key_on_current_versions_is_idempotent(
     tmp_path: Path,
+    target_version: int,
 ) -> None:
     fixture = _v7_fixture(tmp_path, item_id="repeat-key-source")
     database = fixture["database"]
     before = _domain_snapshot(database)
     old_receipt_id = int(fixture["chunk_row"]["receipt_id"])
-    initialize_semantic_state(database)
+    _migrate_semantic_schema(database, target_version)
 
     with semantic_database(database, readonly=True) as connection:
         row = connection.execute(
@@ -415,8 +451,10 @@ def test_repeated_v7_receipt_key_on_v8_is_idempotent_and_does_not_reemit_outbox(
     assert str(stored[0]) == str(row["receipt_json"])
 
 
-def test_v8_rebind_and_cache_hit_keep_v7_causal_refs_and_v8_current_locators(
+@pytest.mark.parametrize("target_version", (8, 9))
+def test_rebind_and_cache_hit_keep_v7_causal_refs_and_current_locators(
     tmp_path: Path,
+    target_version: int,
 ) -> None:
     fixture = _v7_fixture(tmp_path, item_id="rebind-source")
     database = fixture["database"]
@@ -425,7 +463,7 @@ def test_v8_rebind_and_cache_hit_keep_v7_causal_refs_and_v8_current_locators(
     producer_row = fixture["embedding_row"]
     producer_receipt = WorkReceipt.from_json(str(producer_row["receipt_json"]))
     producer_key = str(producer_row["receipt_key"])
-    initialize_semantic_state(database)
+    _migrate_semantic_schema(database, target_version)
 
     # Keep the content-addressed chunk unchanged while advancing only the
     # current source revision.  The next queue pass must therefore rebind the
@@ -433,7 +471,7 @@ def test_v8_rebind_and_cache_hit_keep_v7_causal_refs_and_v8_current_locators(
     rebound_chunk = stage_fixture_item(
         database,
         item_id=chunk.item_id,
-        source_revision_id="revision:text:rebind-source:v8",
+        source_revision_id=f"revision:text:rebind-source:v{target_version}",
         text="contenido determinista para compatibilidad de receipts Semantic",
         ordinal=1,
     )
@@ -441,8 +479,12 @@ def test_v8_rebind_and_cache_hit_keep_v7_causal_refs_and_v8_current_locators(
     replay_generation = start_embedding_generation(
         database,
         model_signature=model.model_signature,
-        processing_signature="receipt-schema-v8-replay",
-        provenance={"fixture": "receipt-schema-compatibility", "mode": "replay"},
+        processing_signature=f"receipt-schema-v{target_version}-replay",
+        provenance={
+            "fixture": "receipt-schema-compatibility",
+            "mode": "replay",
+            "schema": target_version,
+        },
         materialize_base=False,
         started_ns=300,
     )
@@ -469,33 +511,37 @@ def test_v8_rebind_and_cache_hit_keep_v7_causal_refs_and_v8_current_locators(
     assert replay_receipt.execution_mode.value == "replay"
     assert replay_receipt.causation_id == producer_key
     assert replay_schemas["source_embedding_member"] == ("semantic", 7)
-    assert replay_schemas["semantic_item_snapshot"] == ("semantic", 8)
-    assert replay_schemas["semantic_chunk_snapshot"] == ("semantic", 8)
-    assert replay_schemas["semantic_embedding_member:0"] == ("semantic", 8)
+    assert replay_schemas["semantic_item_snapshot"] == ("semantic", target_version)
+    assert replay_schemas["semantic_chunk_snapshot"] == ("semantic", target_version)
+    assert replay_schemas["semantic_embedding_member:0"] == ("semantic", target_version)
     assert replay_receipt.outputs
     assert all(
         output.materialization.owner == "semantic"
-        and output.materialization.schema_version == 8
+        and output.materialization.schema_version == target_version
         for output in replay_receipt.outputs
     )
     assert replay_receipt.inputs[0].materialization is not None
     assert replay_receipt.inputs[0].materialization.owner == "semantic"
-    assert replay_receipt.inputs[0].materialization.schema_version == 8
+    assert replay_receipt.inputs[0].materialization.schema_version == target_version
     assert producer_receipt.execution_mode.value == "executed"
     assert all(value == 7 for value in _semantic_schema_values(producer_receipt.to_dict()))
 
     replacement = stage_fixture_item(
         database,
         item_id="cache-replacement",
-        source_revision_id="revision:text:cache-replacement:v8",
+        source_revision_id=f"revision:text:cache-replacement:v{target_version}",
         text="contenido determinista para compatibilidad de receipts Semantic",
         ordinal=3,
     )
     cache_generation = start_embedding_generation(
         database,
         model_signature=model.model_signature,
-        processing_signature="receipt-schema-v8-cache-hit",
-        provenance={"fixture": "receipt-schema-compatibility", "mode": "cache_hit"},
+        processing_signature=f"receipt-schema-v{target_version}-cache-hit",
+        provenance={
+            "fixture": "receipt-schema-compatibility",
+            "mode": "cache_hit",
+            "schema": target_version,
+        },
         materialize_base=False,
         started_ns=400,
     )
@@ -522,19 +568,19 @@ def test_v8_rebind_and_cache_hit_keep_v7_causal_refs_and_v8_current_locators(
     assert cache_receipt.execution_mode.value == "cache_hit"
     assert cache_receipt.causation_id == producer_key
     assert cache_schemas["reused_vector_payload"] == ("semantic", 7)
-    assert cache_schemas["semantic_item_snapshot"] == ("semantic", 8)
-    assert cache_schemas["semantic_chunk_snapshot"] == ("semantic", 8)
-    assert cache_schemas["semantic_embedding_member:0"] == ("semantic", 8)
+    assert cache_schemas["semantic_item_snapshot"] == ("semantic", target_version)
+    assert cache_schemas["semantic_chunk_snapshot"] == ("semantic", target_version)
+    assert cache_schemas["semantic_embedding_member:0"] == ("semantic", target_version)
     assert cache_receipt.outputs
     assert all(
         output.materialization.owner == "semantic"
-        and output.materialization.schema_version == 8
+        and output.materialization.schema_version == target_version
         for output in cache_receipt.outputs
     )
 
 
 @pytest.mark.parametrize("changed_fact", ("fingerprint", "stage", "id", "causation", "outcome", "attempt"))
-def test_v8_receipt_key_rejects_changed_causal_facts_without_mutation(
+def test_current_receipt_key_rejects_changed_causal_facts_without_mutation(
     tmp_path: Path,
     changed_fact: str,
 ) -> None:
@@ -593,7 +639,7 @@ def test_receipt_runtime_schema_metadata_is_strict_and_not_normalized(
     receipt = WorkReceipt.from_json(str(fixture["chunk_row"]["receipt_json"]))
     payload = json.loads(receipt.to_json())
     if runtime_mutation == "future":
-        payload["runtime"]["semantic_schema"] = "9"
+        payload["runtime"]["semantic_schema"] = "10"
     elif runtime_mutation == "missing":
         payload["runtime"].pop("semantic_schema")
     elif runtime_mutation == "malformed":
@@ -628,7 +674,7 @@ def test_declared_v7_connection_cannot_read_v8_receipt_owner_as_legacy(
         semantic_lineage_repository.read_semantic_derivation_outbox(database)
 
 
-@pytest.mark.parametrize("bad_schema", (9, True))
+@pytest.mark.parametrize("bad_schema", (10, True))
 def test_new_semantic_output_locator_schema_is_rejected_before_digest_or_replace(
     bad_schema: int | bool,
 ) -> None:
@@ -650,12 +696,12 @@ def test_semantic_locator_metadata_bad_values_are_not_normalized_to_supported_sc
         "materialization_id": "materialization:semantic:fixture",
         "owner_schema_version": bad_value,
     }
-    with pytest.raises(SemanticStateError, match="metadata is not 7 or 8"):
+    with pytest.raises(SemanticStateError, match="metadata is not 7, 8 or 9"):
         semantic_lineage_repository._normalize_receipt_semantic_schema_metadata(payload)
 
     missing = dict(payload)
     missing.pop("owner_schema_version")
-    with pytest.raises(SemanticStateError, match="metadata is not 7 or 8"):
+    with pytest.raises(SemanticStateError, match="metadata is not 7, 8 or 9"):
         semantic_lineage_repository._normalize_receipt_semantic_schema_metadata(missing)
 
 
@@ -682,31 +728,33 @@ def test_historical_other_owner_materialization_is_not_rebound_to_semantic_schem
     assert semantic_lineage_repository._normalize_receipt_semantic_schema_metadata(payload) == payload
 
 
-def test_same_version_v8_locator_schema_change_is_not_tolerated(
+@pytest.mark.parametrize("target_version", (8, 9))
+def test_same_version_locator_schema_change_is_not_tolerated(
     tmp_path: Path,
+    target_version: int,
 ) -> None:
-    """Keep a stored v8 receipt immutable when only its locator schema changes."""
+    """Keep a stored current receipt immutable when only its locator changes."""
 
     fixture = _v7_fixture(tmp_path, item_id="same-version-locator")
     database = fixture["database"]
-    initialize_semantic_state(database)
+    _migrate_semantic_schema(database, target_version)
 
-    # Produce a genuine v8 receipt first, then alter only the fixture's stored
+    # Produce a genuine current receipt first, then alter only the fixture's stored
     # payload and corresponding outbox event.  This is a private temporary
     # fixture, never a production owner; the update trigger is restored before
     # the assertion so the source contract remains active for the probe.
     model = fixture["model"]
-    v8_chunk = stage_fixture_item(
+    current_chunk = stage_fixture_item(
         database,
-        item_id="same-version-locator-v8",
-        source_revision_id="revision:text:same-version-locator-v8",
-        text="contenido nuevo para un receipt Semantic v8 independiente",
+        item_id=f"same-version-locator-v{target_version}",
+        source_revision_id=f"revision:text:same-version-locator-v{target_version}",
+        text=f"contenido nuevo para un receipt Semantic v{target_version} independiente",
         ordinal=2,
     )
     generation_id = start_embedding_generation(
         database,
         model_signature=model.model_signature,
-        processing_signature="same-version-locator-v8",
+        processing_signature=f"same-version-locator-v{target_version}",
         provenance={"fixture": "same-version-locator"},
         materialize_base=False,
         started_ns=500,
@@ -714,7 +762,7 @@ def test_same_version_v8_locator_schema_change_is_not_tolerated(
     enqueued = enqueue_text_chunk_jobs(
         database,
         generation_id,
-        (v8_chunk.chunk_id,),
+        (current_chunk.chunk_id,),
         now_ns=510,
     )
     assert enqueued == 1

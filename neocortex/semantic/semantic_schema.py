@@ -26,7 +26,7 @@ from neocortex.persistence.sqlite_connection import (
 from .semantic_generation_control_schema import SEMANTIC_GENERATION_CONTROL_MIGRATION
 
 
-SEMANTIC_SCHEMA_VERSION = 8
+SEMANTIC_SCHEMA_VERSION = 9
 _SEMANTIC_PERFORMANCE_INDEXES = (
     (
         "embedding_jobs_claim_order_idx",
@@ -1080,6 +1080,23 @@ def _migrate_to_v8(connection: sqlite3.Connection, applied_ns: int) -> None:
     )
 
 
+def _migrate_to_v9(connection: sqlite3.Connection, applied_ns: int) -> None:
+    """Gate referenced outbox writes without rewriting any historical fact.
+
+    The physical v8 layout is retained.  Advancing the owner protocol prevents
+    an old v8 reader/writer from accepting new referenced event payloads as its
+    own contract; the atomic initializer stores the matching version metadata.
+    """
+
+    _execute_migration(
+        connection,
+        (),
+        version=9,
+        description="referenced semantic outbox envelope protocol",
+        applied_ns=applied_ns,
+    )
+
+
 _MIGRATIONS_BY_TARGET: dict[int, Callable[[sqlite3.Connection, int], None]] = {
     1: _migrate_to_v1,
     2: _migrate_to_v2,
@@ -1089,6 +1106,7 @@ _MIGRATIONS_BY_TARGET: dict[int, Callable[[sqlite3.Connection, int], None]] = {
     6: _migrate_to_v6,
     7: _migrate_to_v7,
     8: _migrate_to_v8,
+    9: _migrate_to_v9,
 }
 
 _TABLE_NAMES_BY_VERSION = {
@@ -1121,6 +1139,7 @@ _TABLE_NAMES_BY_VERSION = {
         "semantic_derivation_outbox",
     ),
     8: (),
+    9: (),
 }
 
 _NAMED_INDEXES_BY_VERSION = {
@@ -1168,6 +1187,7 @@ _NAMED_INDEXES_BY_VERSION = {
         "semantic_chunk_derivations_item_refresh_idx": "semantic_chunk_derivations",
         "semantic_chunk_derivations_publication_idx": "semantic_chunk_derivations",
     },
+    9: {},
 }
 
 
@@ -1270,6 +1290,13 @@ def _exact_v7_contract() -> SQLiteSchemaContract:
     """Retain the complete pre-control DDL contract, including its triggers."""
 
     return schema_contract_from_builder(lambda connection: _build_exact_schema(connection, 7))
+
+
+@lru_cache(maxsize=1)
+def _exact_v8_contract() -> SQLiteSchemaContract:
+    """Preserve the complete pre-envelope control contract for legacy owners."""
+
+    return schema_contract_from_builder(lambda connection: _build_exact_schema(connection, 8))
 
 
 @lru_cache(maxsize=SEMANTIC_SCHEMA_VERSION)
@@ -1451,7 +1478,7 @@ def _read_schema_version(connection: sqlite3.Connection) -> int | None:
         )
     metadata_version = _read_metadata_version(
         connection,
-        required=version == SEMANTIC_SCHEMA_VERSION,
+        required=version in {8, SEMANTIC_SCHEMA_VERSION},
     )
     if metadata_version is not None and metadata_version != version:
         raise SemanticStateError(
@@ -1485,11 +1512,16 @@ def _validate_version_contract(
     version: int,
 ) -> None:
     _validate_schema(connection, version)
-    if version in {7, SEMANTIC_SCHEMA_VERSION}:
+    if version in {7, 8, SEMANTIC_SCHEMA_VERSION}:
+        exact_contract = (
+            _exact_v7_contract() if version == 7
+            else _exact_v8_contract() if version == 8
+            else _exact_current_contract()
+        )
         try:
             validate_sqlite_schema_contract(
                 connection,
-                _exact_v7_contract() if version == 7 else _exact_current_contract(),
+                exact_contract,
                 label="semantic",
                 exact=True,
                 allowed_extra_indexes=tuple(
@@ -1502,7 +1534,7 @@ def _validate_version_contract(
 
 
 def _validate_semantic_read_schema(connection: sqlite3.Connection) -> int:
-    """Validate exactly the v7/v8 domain shared by explicitly compatible readers.
+    """Validate exactly the v7/v8/v9 domain shared by compatible readers.
 
     This does not initialize, migrate, repair or authorize a writer.  The
     observed version is returned unchanged for locators, plans and head digests;
@@ -1511,8 +1543,8 @@ def _validate_semantic_read_schema(connection: sqlite3.Connection) -> int:
     """
 
     version = _read_schema_version(connection)
-    if version not in {7, 8}:
-        raise SemanticStateError(f"semantic read schema must be 7 or 8; observed {version!r}")
+    if version not in {7, 8, 9}:
+        raise SemanticStateError(f"semantic read schema must be 7, 8 or 9; observed {version!r}")
     if _read_metadata_version(connection, required=True) != version:
         raise SemanticStateError("semantic read metadata and PRAGMA user_version disagree")
     _validate_version_contract(connection, version)
