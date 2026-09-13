@@ -48,6 +48,23 @@ estado y evidencia reciente; sus afirmaciones se verifican antes de actuar.
 Una ficha no declara incidentes cerrados, reservas aprobadas ni instalaciones
 vigentes y no vuelve a abrir trabajo histórico por aparecer en un handoff.
 
+## Contexto durable tras desactivar memorias
+
+Las fichas y contratos siguientes son la memoria operativa del monorepositorio; no repiten estados, hashes ni resultados fechados. Para cada dominio, abre primero su ficha y después el AGENTS más cercano:
+
+| Dominio | Fuente durable principal |
+|---|---|
+| Runtime y persistencia | `docs/subprojects/platform-state.md`, `docs/PERSISTENCE.md` |
+| Inventario y catálogo | `docs/subprojects/inventory-catalog.md` |
+| Ingesta de formatos | `docs/subprojects/formats.md` |
+| Code como contenido | `docs/subprojects/code-content.md` |
+| Semantic y Knowledge | `docs/subprojects/retrieval-context.md`, `docs/KNOWLEDGE.md` |
+| Curación y efectos | `docs/subprojects/curation-effects.md` |
+| Interfaces públicas | `docs/subprojects/interfaces.md` |
+| Desarrollo y distribución | `docs/subprojects/development-release.md` |
+
+Los hechos vivos, heads, receipts, releases, procesos, fixtures, corpus y estados de publicación se consultan en sus fuentes propias (`.codex/handoffs/CURRENT.md`, manifests y registros), nunca se convierten en reglas permanentes por aparecer en un resumen de memoria.
+
 ## Capacidades de desarrollo opcionales
 
 Las skills del repositorio son procedimientos, no hooks ni tareas automáticas:
