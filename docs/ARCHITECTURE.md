@@ -198,6 +198,30 @@ Knowledge crea un snapshot lógico sobre owners compatibles y fusiona rankings
 sin convertir scores heterogéneos en una sola certeza. Puede entregar evidencia
 y contexto citado, pero no genera autoridad de mutación.
 
+Semantic v8 mantiene el control de generación dentro del mismo owner SQLite.
+Los cinco contadores de jobs de una generación `building` se actualizan por
+triggers en la misma transacción que cada transición; los contadores terminales
+siguen siendo snapshots históricos. La migración inicializa sólo los contadores
+vivos, sin reinterpretar generaciones legacy publicadas con members y sin jobs.
+Dos campos derivados por job acotan la revisión ordinaria: `source_dirty` recibe
+las invalidaciones de item/chunk y `cached_payload_id` identifica posibles hits
+de la caché de contenido. Sus índices permiten consultar cambios y hits, no
+recorrer todos los pending antes de cada batch. Son pistas, no evidencia: la
+reutilización y completion revalidan la fuente y conservan receipts/outbox,
+leases, revisiones y causalidad. La finalización conserva la reconciliación
+completa de stale y conteos después de limpiar el candidato, las verificaciones
+de members/publicación de fuente y el CAS del head. Los repositorios de control
+retienen el cálculo completo para una base v7 todavía no migrada; una lectura
+no instala esta proyección ni reanuda una generación productiva.
+Las invalidaciones por item parten de sus chunks antes de buscar jobs; los
+índices de derivaciones por revisión/refresh y receipt de publicación evitan
+recorrer toda la cohorte al publicar cada item durante el staging. No cambian
+el conjunto publicado ni eliminan la validación de ordinals duplicados.
+Knowledge, observación de heads, availability de búsqueda Code y preflight de
+reuse leen v7/v8 sólo con el contrato canónico de la versión observada. Conservan
+v7 en avisos, planes, locators y digests; no lo presentan como v8 ni amplían los
+writers. Salud de estado sigue exigiendo el schema vigente para declarar healthy.
+
 La planificación organizativa selecciona una raíz de entrada con identidad y
 heads publicados antes de calcular destinos. Clasificación, elegibilidad,
 operación y ejecutabilidad son dimensiones distintas; los miembros/componentes

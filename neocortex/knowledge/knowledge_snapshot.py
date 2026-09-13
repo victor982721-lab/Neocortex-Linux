@@ -289,10 +289,16 @@ def _validate_image(connection: sqlite3.Connection) -> None:
 
 
 def _validate_semantic(connection: sqlite3.Connection) -> None:
-    semantic_schema_module._validate_schema(
-        connection,
-        STATE_STORE_REGISTRY.by_owner("semantic").expected_schema_version,
-    )
+    observed = semantic_schema_module._validate_semantic_read_schema(connection)
+    expected = STATE_STORE_REGISTRY.by_owner("semantic").expected_schema_version
+    if observed != expected:
+        raise RuntimeError(f"semantic schema is {observed!r}; expected {expected}")
+
+
+def _validate_semantic_legacy_v7(connection: sqlite3.Connection) -> None:
+    observed = semantic_schema_module._validate_semantic_read_schema(connection)
+    if observed != 7:
+        raise RuntimeError(f"semantic legacy read schema is {observed!r}; expected 7")
 
 
 def _owner_spec(
@@ -330,7 +336,7 @@ _OWNER_VALIDATORS: dict[
     "audio": (_validate_audio, ()),
     "video": (video_state.validate_video_schema, ()),
     "image": (_validate_image, ()),
-    "semantic": (_validate_semantic, ()),
+    "semantic": (_validate_semantic, ((7, _validate_semantic_legacy_v7),)),
     "code": (validate_code_schema, ()),
     "archive": (_validate_archive, ()),
     "text": (_validate_text, ()),

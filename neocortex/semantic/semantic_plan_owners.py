@@ -40,11 +40,7 @@ from .semantic_plan_results import (
     _model_contract_payload,
 )
 from .semantic_plan_scratch import _ContentAccumulator
-from .semantic_schema import (
-    SEMANTIC_SCHEMA_VERSION,
-    _read_schema_version,
-    _validate_version_contract,
-)
+from .semantic_schema import _validate_semantic_read_schema
 from .semantic_service_contracts import SemanticSourcePlan
 from .semantic_sources import (
     IMAGE_SOURCE_KIND,
@@ -409,12 +405,7 @@ def _validate_semantic_cache(
     models: Iterable[EmbeddingModelSpec],
 ) -> int:
     try:
-        version = _read_schema_version(connection)
-        if version != SEMANTIC_SCHEMA_VERSION:
-            raise SemanticPlanBlocked(
-                f"semantic schema is {version!r}; expected {SEMANTIC_SCHEMA_VERSION}"
-            )
-        _validate_version_contract(connection, version)
+        version = _validate_semantic_read_schema(connection)
         from .semantic_repository_common import _model_from_row
 
         for model in models:

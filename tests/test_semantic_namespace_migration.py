@@ -28,12 +28,13 @@ MODULES = tuple(
 
 
 def test_semantic_modules_are_owned_by_the_canonical_tree() -> None:
-    assert len(MODULES) == 43
+    assert len(MODULES) == 44
     assert {
         "semantic_query_evidence",
         "semantic_query_variants",
         "semantic_publication_heads",
         "semantic_source_budget",
+        "semantic_generation_control_schema",
     } <= set(MODULES)
     for name in MODULES:
         product = importlib.import_module(f"neocortex.semantic.{name}")

@@ -18,7 +18,11 @@ from ..code_schema import (
     validate_code_schema,
 )
 from neocortex.semantic.semantic_models import canonical_json
-from neocortex.semantic.semantic_schema import SEMANTIC_SCHEMA_VERSION, semantic_database
+from neocortex.semantic.semantic_schema import (
+    SEMANTIC_SCHEMA_VERSION,
+    _validate_semantic_read_schema,
+    semantic_database,
+)
 from neocortex.persistence.sqlite_cancellation import (
     SQLiteCancellationBridge,
     sqlite_cancellation_scope,
@@ -63,22 +67,11 @@ class CodeSemanticAvailability:
     calibration: str = "uncalibrated_similarity"
 
 
-def _semantic_schema_version(connection: sqlite3.Connection) -> int:
-    pragma_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-    row = connection.execute(
-        "SELECT value FROM metadata WHERE key='schema_version' LIMIT 2"
-    ).fetchall()
-    if len(row) != 1:
-        raise CodeSemanticLinkError("Semantic metadata has no unique schema_version")
+def _semantic_read_schema_version(connection: sqlite3.Connection) -> int:
     try:
-        metadata_version = int(row[0][0])
-    except (TypeError, ValueError) as exc:
-        raise CodeSemanticLinkError("Semantic schema_version is malformed") from exc
-    if pragma_version != metadata_version:
-        raise CodeSemanticLinkError(
-            "Semantic metadata and PRAGMA user_version disagree"
-        )
-    return metadata_version
+        return _validate_semantic_read_schema(connection)
+    except (RuntimeError, sqlite3.DatabaseError, ValueError) as exc:
+        raise CodeSemanticLinkError("Semantic read schema is incompatible") from exc
 
 
 def _published_head(
@@ -87,7 +80,7 @@ def _published_head(
     generation_id: int,
     model_signature: str,
 ) -> str:
-    if _semantic_schema_version(connection) != SEMANTIC_SCHEMA_VERSION:
+    if _semantic_read_schema_version(connection) != SEMANTIC_SCHEMA_VERSION:
         raise CodeSemanticLinkError(
             f"Semantic schema must be {SEMANTIC_SCHEMA_VERSION} before linking Code"
         )
@@ -95,6 +88,7 @@ def _published_head(
         """SELECT h.generation_id,g.status,m.vector_space
         FROM published_embedding_heads h
         JOIN embedding_generations g ON g.generation_id=h.generation_id
+          AND g.model_signature=h.model_signature
         JOIN embedding_models m ON m.model_signature=h.model_signature
         WHERE h.model_signature=?""",
         (model_signature,),
@@ -743,15 +737,13 @@ def code_semantic_search_availability(
         )
     with semantic_database(semantic_path, readonly=True) as semantic:
         semantic.execute("BEGIN")
-        if _semantic_schema_version(semantic) != SEMANTIC_SCHEMA_VERSION:
-            raise CodeSemanticLinkError(
-                f"Semantic schema must be {SEMANTIC_SCHEMA_VERSION} for Code search"
-            )
+        _semantic_read_schema_version(semantic)
         head = semantic.execute(
             """SELECT h.generation_id,m.vector_space,g.status
             FROM published_embedding_heads h
             JOIN embedding_models m ON m.model_signature=h.model_signature
             JOIN embedding_generations g ON g.generation_id=h.generation_id
+              AND g.model_signature=h.model_signature
             WHERE h.model_signature=?""",
             (TEXT_MODEL_SIGNATURE,),
         ).fetchone()

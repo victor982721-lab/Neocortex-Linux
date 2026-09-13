@@ -7,7 +7,7 @@ import platform
 import re
 import sqlite3
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -105,6 +105,17 @@ _SAFE_FAILURE_REASON_CODES = frozenset(
         "source_changed",
     }
 )
+
+# Work receipts were introduced by v7.  v8 keeps their tables and payload
+# contract unchanged; only the owner schema evolves around them.  Keep these
+# sets explicit rather than accepting future versions by comparison (or by a
+# ``>=`` check), so a newer schema cannot silently acquire old semantics.
+_RECEIPT_SCHEMA_VERSIONS = frozenset({7, 8})
+_LINEAGE_SCHEMA_VERSIONS = frozenset({6, 7, 8})
+_RECEIPT_LINEAGE_SCHEMA_VERSIONS = frozenset({7, 8})
+# Stable digest encoding for pre-existing manifest/clone/attestation IDs.  It
+# is not the schema advertised by a new receipt or locator.
+_SEMANTIC_IDENTITY_SCHEMA_VERSION = 7
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,10 +221,109 @@ def _stable_key(stage_id: str, parts: Sequence[object]) -> str:
     return "semantic-work-xxh3-128:" + xxhash.xxh3_128_hexdigest(identity.encode("utf-8"))
 
 
-def _require_current_receipt_schema(connection: sqlite3.Connection) -> None:
+def _require_current_receipt_schema(connection: sqlite3.Connection) -> int:
     version = _read_schema_version(connection)
-    if version != 7:
-        raise SemanticStateError(f"semantic work receipts require schema 7; observed {version!r}")
+    if version not in _RECEIPT_SCHEMA_VERSIONS:
+        raise SemanticStateError(
+            "semantic work receipts require schema 7 or 8; "
+            f"observed {version!r}"
+        )
+    return int(version)
+
+
+def _receipt_schema_version(receipt: WorkReceipt) -> int:
+    """Return the explicit owner schema advertised by one stored receipt."""
+
+    raw_version = dict(receipt.runtime).get("semantic_schema")
+    if raw_version not in {str(version) for version in _RECEIPT_SCHEMA_VERSIONS}:
+        raise ValueError(
+            "semantic WorkReceipt has an unsupported owner schema version: "
+            f"{raw_version!r}"
+        )
+    return int(str(raw_version))
+
+
+def _validate_receipt_semantic_locators(receipt: WorkReceipt) -> None:
+    """Reject unsupported Semantic owner locators without touching upstream refs."""
+
+    _receipt_schema_version(receipt)
+    bindings: tuple[InputBinding | OutputBinding, ...] = (*receipt.inputs, *receipt.outputs)
+    for binding in bindings:
+        materialization = binding.materialization
+        if materialization is None or materialization.owner != "semantic":
+            continue
+        if (
+            isinstance(materialization.schema_version, bool)
+            or materialization.schema_version not in _RECEIPT_SCHEMA_VERSIONS
+        ):
+            raise ValueError(
+                "semantic WorkReceipt has an unsupported Semantic locator schema: "
+                f"{materialization.schema_version!r}"
+            )
+
+
+def _semantic_materialization_for_schema(
+    materialization: MaterializationRef,
+    *,
+    schema_version: int,
+) -> MaterializationRef:
+    """Bind a newly derived Semantic locator to the observed owner schema.
+
+    Materializations from another owner are provenance from that owner and are
+    intentionally left untouched.  This matters for source revisions carried
+    through a Semantic receipt: their historical owner schema is not a claim
+    about the current Semantic SQLite owner.
+    """
+
+    if materialization.owner != "semantic":
+        return materialization
+    if (
+        isinstance(materialization.schema_version, bool)
+        or materialization.schema_version not in _RECEIPT_SCHEMA_VERSIONS
+    ):
+        raise SemanticStateError(
+            "semantic materialization owner schema metadata is not 7 or 8"
+        )
+    if schema_version not in _RECEIPT_SCHEMA_VERSIONS:
+        raise SemanticStateError(
+            f"semantic materialization schema {schema_version!r} is unsupported"
+        )
+    if materialization.schema_version == schema_version:
+        return materialization
+    return replace(materialization, schema_version=schema_version)
+
+
+def _normalize_receipt_semantic_schema_metadata(value: object) -> object:
+    """Normalize only bounded owner-schema metadata for v7->v8 writes.
+
+    This helper is intentionally strict: the caller must separately prove that
+    the stored receipt is v7 and the new owner is v8.  A missing, boolean,
+    malformed, or future owner schema is not a compatibility case.
+    """
+
+    if isinstance(value, Mapping):
+        normalized = {
+            key: _normalize_receipt_semantic_schema_metadata(item)
+            for key, item in value.items()
+        }
+        if (
+            normalized.get("kind") == "materialization_ref"
+            and normalized.get("owner") == "semantic"
+        ):
+            owner_schema = normalized.get("owner_schema_version")
+            if (
+                isinstance(owner_schema, bool)
+                or not isinstance(owner_schema, int)
+                or owner_schema not in _RECEIPT_SCHEMA_VERSIONS
+            ):
+                raise SemanticStateError(
+                    "semantic materialization owner schema metadata is not 7 or 8"
+                )
+            normalized["owner_schema_version"] = "<semantic-owner-schema>"
+        return normalized
+    if isinstance(value, (list, tuple)):
+        return [_normalize_receipt_semantic_schema_metadata(item) for item in value]
+    return value
 
 
 def _utc_from_ns(value: int) -> str:
@@ -307,7 +417,12 @@ def _output_contracts(
     outputs: Sequence[Mapping[str, object]],
     *,
     generation_id: int | None,
+    schema_version: int,
 ) -> tuple[OutputBinding, ...]:
+    if schema_version not in _RECEIPT_SCHEMA_VERSIONS:
+        raise SemanticStateError(
+            f"semantic output schema {schema_version!r} is unsupported"
+        )
     contracts: list[OutputBinding] = []
     for index, binding in enumerate(outputs):
         kind, identifier, binding_generation = _binding_identity(binding)
@@ -322,11 +437,15 @@ def _output_contracts(
                     if identifier.startswith("materialization:")
                     else f"materialization:semantic:{kind}:{identifier}"
                 ),
-                schema_version=7,
+                schema_version=schema_version,
                 generation=(generation_id if generation_id is not None else binding_generation),
             )
         if not isinstance(materialization, MaterializationRef):
             raise SemanticStateError("semantic output materialization contract is invalid")
+        materialization = _semantic_materialization_for_schema(
+            materialization,
+            schema_version=schema_version,
+        )
         contracts.append(
             OutputBinding(
                 name=f"{kind}:{index}",
@@ -447,22 +566,27 @@ def _capability_failure(
     )
 
 
-def _receipt_material_contract(receipt: Mapping[str, object]) -> str:
-    return canonical_json(
-        {
-            "owner": receipt.get("owner"),
-            "stage": receipt.get("stage"),
-            "inputs": receipt.get("inputs"),
-            "outputs": receipt.get("outputs"),
-            "effective_configuration": receipt.get("effective_configuration"),
-            "attempt": receipt.get("attempt"),
-            "outcome": receipt.get("outcome"),
-            "execution_mode": receipt.get("execution_mode"),
-            "reproducibility": receipt.get("reproducibility"),
-            "causation_id": receipt.get("causation_id"),
-            "failure": receipt.get("failure"),
-        }
-    )
+def _receipt_material_contract(
+    receipt: Mapping[str, object],
+    *,
+    normalize_semantic_schema_metadata: bool = False,
+) -> str:
+    contract: object = {
+        "owner": receipt.get("owner"),
+        "stage": receipt.get("stage"),
+        "inputs": receipt.get("inputs"),
+        "outputs": receipt.get("outputs"),
+        "effective_configuration": receipt.get("effective_configuration"),
+        "attempt": receipt.get("attempt"),
+        "outcome": receipt.get("outcome"),
+        "execution_mode": receipt.get("execution_mode"),
+        "reproducibility": receipt.get("reproducibility"),
+        "causation_id": receipt.get("causation_id"),
+        "failure": receipt.get("failure"),
+    }
+    if normalize_semantic_schema_metadata:
+        contract = _normalize_receipt_semantic_schema_metadata(contract)
+    return canonical_json(contract)
 
 
 def _record_work_receipt(
@@ -499,7 +623,7 @@ def _record_work_receipt(
 ) -> int:
     """Persist a receipt and its projection outbox fact in one transaction."""
 
-    _require_current_receipt_schema(connection)
+    schema_version = _require_current_receipt_schema(connection)
     selected_finished_ns = committed_ns if finished_ns is None else finished_ns
     selected_started_ns = selected_finished_ns if started_ns is None else started_ns
     duration_ns = max(0, selected_finished_ns - selected_started_ns)
@@ -542,7 +666,11 @@ def _record_work_receipt(
             processing_signature=processing_signature,
             observed_ns=selected_started_ns,
         ),
-        outputs=_output_contracts(outputs, generation_id=generation_id),
+        outputs=_output_contracts(
+            outputs,
+            generation_id=generation_id,
+            schema_version=schema_version,
+        ),
         effective_configuration=_configuration_contract(
             effective_config,
             stage_id=stage_id,
@@ -550,7 +678,7 @@ def _record_work_receipt(
         runtime=(
             ("platform", platform.platform()),
             ("python", platform.python_version()),
-            ("semantic_schema", "7"),
+            ("semantic_schema", str(schema_version)),
             ("timing_basis", "owner_observation"),
         ),
         started_at_utc=_utc_from_ns(selected_started_ns),
@@ -573,6 +701,7 @@ def _record_work_receipt(
         causation_id=causation_id,
         failure=failure,
     )
+    _validate_receipt_semantic_locators(work_receipt)
     receipt_json = work_receipt.to_json()
     cursor = connection.execute(
         """INSERT INTO semantic_work_receipts(
@@ -644,10 +773,34 @@ def _record_work_receipt(
             existing["receipt_json"],
             label="semantic work receipt",
         )
+        try:
+            stored_work_receipt = WorkReceipt.from_dict(stored_receipt)
+            _validate_receipt_semantic_locators(stored_work_receipt)
+            stored_schema_version = _receipt_schema_version(stored_work_receipt)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SemanticStateError(
+                "semantic receipt key is bound to an invalid causal receipt"
+            ) from exc
+        if stored_schema_version != schema_version and not (
+            stored_schema_version == 7 and schema_version == 8
+        ):
+            raise SemanticStateError("semantic receipt key is bound to different causal facts")
         if _receipt_material_contract(stored_receipt) != _receipt_material_contract(
             work_receipt.to_dict()
         ):
-            raise SemanticStateError("semantic receipt key is bound to different causal facts")
+            # The sole tolerated transition is an immutable v7 receipt being
+            # replayed after the owner was migrated to v8.  Same-version
+            # conflicts, v8->v7 attempts, and future/malformed metadata remain
+            # hard conflicts instead of falling through this compatibility
+            # comparison.
+            if _receipt_material_contract(
+                stored_receipt,
+                normalize_semantic_schema_metadata=True,
+            ) != _receipt_material_contract(
+                work_receipt.to_dict(),
+                normalize_semantic_schema_metadata=True,
+            ):
+                raise SemanticStateError("semantic receipt key is bound to different causal facts")
     event_payload = canonical_json(
         {
             "schema": "neocortex.semantic-derivation-event/v1",
@@ -697,6 +850,7 @@ def _validated_semantic_receipt_row(row: sqlite3.Row) -> WorkReceipt:
     receipt_id = int(row["receipt_id"])
     try:
         receipt = WorkReceipt.from_json(str(row["receipt_json"]))
+        _validate_receipt_semantic_locators(receipt)
         started_ns = int(row["started_ns"])
         finished_ns = int(row["finished_ns"])
         normalized = (
@@ -801,6 +955,28 @@ def _input_mapping_from_output(
     }
 
 
+def _input_mapping_from_binding(
+    binding: InputBinding,
+    *,
+    name: str,
+) -> dict[str, object]:
+    """Re-use an exact stored input without rewriting its owner schema."""
+
+    materialization = binding.materialization
+    if materialization is None:
+        raise SemanticStateError("semantic stored input has no exact materialization")
+    return {
+        "kind": materialization.kind,
+        "binding_name": name,
+        "revision_ref": binding.revision,
+        "materialization_ref": materialization,
+        "fingerprint": {
+            "algorithm": binding.fingerprint_algorithm,
+            "value": binding.fingerprint,
+        },
+    }
+
+
 def _materialization_numeric_identifier(
     materialization: MaterializationRef,
     *,
@@ -822,8 +998,13 @@ def _validate_legacy_payload_attestation_receipt(
 ) -> None:
     if receipt_row["payload_id"] is None:
         raise ValueError("semantic legacy payload attestation lacks a payload")
+    receipt_schema_version = _receipt_schema_version(receipt)
     payload_id = int(receipt_row["payload_id"])
-    payload, _payload_provider = _payload_binding(connection, payload_id)
+    payload, _payload_provider = _payload_binding(
+        connection,
+        payload_id,
+        schema_version=receipt_schema_version,
+    )
     expected_inputs = _input_contracts(
         (_renamed_binding(payload, "legacy_vector_payload"),),
         stage_id=SEMANTIC_LEGACY_PAYLOAD_ATTESTATION_STAGE,
@@ -836,9 +1017,11 @@ def _validate_legacy_payload_attestation_receipt(
                 payload_id=payload_id,
                 payload_binding=payload,
                 now_ns=int(receipt_row["finished_ns"]),
+                schema_version=receipt_schema_version,
             ),
         ),
         generation_id=None,
+        schema_version=receipt_schema_version,
     )
     if (
         not bool(
@@ -951,6 +1134,7 @@ def _validate_embedding_payload_producer_receipt(
 ) -> None:
     if receipt_row["payload_id"] is None or receipt_row["generation_id"] is None:
         raise SemanticStateError("semantic reused vector payload producer lacks normalized facts")
+    receipt_schema_version = _receipt_schema_version(receipt)
     payload_id = int(receipt_row["payload_id"])
     generation = connection.execute(
         """SELECT processing_signature,provenance_json FROM embedding_generations
@@ -959,10 +1143,15 @@ def _validate_embedding_payload_producer_receipt(
     ).fetchone()
     if generation is None:
         raise SemanticStateError("semantic reused vector payload producer generation disappeared")
-    payload, provider = _payload_binding(connection, payload_id)
+    payload, provider = _payload_binding(
+        connection,
+        payload_id,
+        schema_version=receipt_schema_version,
+    )
     expected_payload = _output_contracts(
         (payload,),
         generation_id=int(receipt_row["generation_id"]),
+        schema_version=receipt_schema_version,
     )[0]
     item_revision_id = (
         None if receipt_row["item_revision_id"] is None else int(receipt_row["item_revision_id"])
@@ -972,9 +1161,21 @@ def _validate_embedding_payload_producer_receipt(
     )
     raw_inputs: list[Mapping[str, object]] = []
     if item_revision_id is not None:
-        raw_inputs.append(_item_revision_binding(connection, item_revision_id))
+        raw_inputs.append(
+            _item_revision_binding(
+                connection,
+                item_revision_id,
+                schema_version=receipt_schema_version,
+            )
+        )
     if chunk_revision_id is not None:
-        raw_inputs.append(_chunk_revision_binding(connection, chunk_revision_id))
+        raw_inputs.append(
+            _chunk_revision_binding(
+                connection,
+                chunk_revision_id,
+                schema_version=receipt_schema_version,
+            )
+        )
     expected_inputs = _input_contracts(
         tuple(raw_inputs),
         stage_id=SEMANTIC_EMBEDDING_STAGE,
@@ -1040,21 +1241,53 @@ def _validate_embedding_receipt_contract(
 ) -> None:
     selected_seen = set() if seen is None else seen
     selected_seen.add(receipt.receipt_id)
+    receipt_schema_version = _receipt_schema_version(receipt)
     generation_id = int(member["generation_id"])
     item_revision_id = int(member["item_revision_id"])
     chunk_revision_id = (
         None if member["chunk_revision_id"] is None else int(member["chunk_revision_id"])
     )
     payload_id = int(member["payload_id"])
-    payload, provider = _payload_binding(connection, payload_id)
-    member_binding = _embedding_member_binding_from_row(member)
-    raw_inputs: list[Mapping[str, object]] = [_item_revision_binding(connection, item_revision_id)]
+    payload, provider = _payload_binding(
+        connection,
+        payload_id,
+        schema_version=receipt_schema_version,
+    )
+    member_binding = _embedding_member_binding_from_row(
+        member,
+        schema_version=receipt_schema_version,
+    )
+    raw_inputs: list[Mapping[str, object]] = [
+        _item_revision_binding(
+            connection,
+            item_revision_id,
+            schema_version=receipt_schema_version,
+        )
+    ]
     if chunk_revision_id is not None:
-        raw_inputs.append(_chunk_revision_binding(connection, chunk_revision_id))
+        raw_inputs.append(
+            _chunk_revision_binding(
+                connection,
+                chunk_revision_id,
+                schema_version=receipt_schema_version,
+            )
+        )
     mode = receipt.execution_mode
     cause_expected_input: InputBinding | None = None
+    reused_payload_input: InputBinding | None = None
     if mode in {WorkExecutionMode.CACHE_HIT, WorkExecutionMode.REPLAY}:
-        raw_inputs.append(_renamed_binding(payload, "reused_vector_payload"))
+        reused_payloads = tuple(
+            binding for binding in receipt.inputs if binding.name == "reused_vector_payload"
+        )
+        if len(reused_payloads) != 1 or reused_payloads[0].materialization is None:
+            raise ValueError("semantic reused embedding lacks one exact payload input")
+        reused_payload_input = reused_payloads[0]
+        raw_inputs.append(
+            _input_mapping_from_binding(
+                reused_payload_input,
+                name="reused_vector_payload",
+            )
+        )
     if mode is WorkExecutionMode.REPLAY:
         source_inputs = tuple(
             binding for binding in receipt.inputs if binding.name == "source_embedding_member"
@@ -1102,8 +1335,15 @@ def _validate_embedding_receipt_contract(
                 observed_ns=int(receipt_row["started_ns"]),
             )[0]
         else:
+            if reused_payload_input is None:
+                raise ValueError("semantic cached embedding lacks exact payload input")
             cause_expected_input = _input_contracts(
-                (_renamed_binding(payload, "reused_vector_payload"),),
+                (
+                    _input_mapping_from_binding(
+                        reused_payload_input,
+                        name="reused_vector_payload",
+                    ),
+                ),
                 stage_id=SEMANTIC_EMBEDDING_STAGE,
                 processing_signature=str(member["processing_signature"]),
                 observed_ns=int(receipt_row["started_ns"]),
@@ -1117,6 +1357,7 @@ def _validate_embedding_receipt_contract(
     expected_outputs = _output_contracts(
         ((payload, member_binding) if mode is WorkExecutionMode.EXECUTED else (member_binding,)),
         generation_id=generation_id,
+        schema_version=receipt_schema_version,
     )
     if (
         receipt.stage.stage_version != "semantic-embedding-v1"
@@ -1182,6 +1423,7 @@ def _validate_embedding_clone_receipt_contract(
 ) -> None:
     if receipt_row["generation_id"] is None:
         raise ValueError("semantic clone receipt lacks a generation")
+    receipt_schema_version = _receipt_schema_version(receipt)
     generation_id = int(receipt_row["generation_id"])
     output_member_ids = tuple(
         _materialization_numeric_identifier(
@@ -1263,7 +1505,10 @@ def _validate_embedding_clone_receipt_contract(
     expected_inputs = _input_contracts(
         tuple(
             _renamed_binding(
-                _embedding_member_binding_from_row(base_by_id[member_id]),
+                _embedding_member_binding_from_row(
+                    base_by_id[member_id],
+                    schema_version=receipt_schema_version,
+                ),
                 f"base_member:{index}",
             )
             for index, member_id in enumerate(input_member_ids)
@@ -1274,10 +1519,14 @@ def _validate_embedding_clone_receipt_contract(
     )
     expected_outputs = _output_contracts(
         tuple(
-            _embedding_member_binding_from_row(output_by_id[member_id])
+            _embedding_member_binding_from_row(
+                output_by_id[member_id],
+                schema_version=receipt_schema_version,
+            )
             for member_id in output_member_ids
         ),
         generation_id=generation_id,
+        schema_version=receipt_schema_version,
     )
     generation = connection.execute(
         """SELECT generation.processing_signature,generation.model_signature,
@@ -1488,6 +1737,11 @@ def _require_published_chunk_revision(
             """SELECT 1 FROM embedding_generation_members member
             JOIN published_embedding_heads head
               ON head.generation_id=member.generation_id
+             AND head.model_signature=member.model_signature
+            JOIN embedding_generations generation
+              ON generation.generation_id=head.generation_id
+             AND generation.model_signature=head.model_signature
+             AND generation.status='ready'
             WHERE member.chunk_revision_id=? AND member.entity_kind='text_chunk'
             LIMIT 1""",
             (chunk_revision_id,),
@@ -1499,7 +1753,18 @@ def _require_published_chunk_revision(
 def _item_revision_binding(
     connection: sqlite3.Connection,
     item_revision_id: int,
+    *,
+    schema_version: int | None = None,
 ) -> dict[str, object]:
+    selected_schema_version = (
+        _require_current_receipt_schema(connection)
+        if schema_version is None
+        else schema_version
+    )
+    if selected_schema_version not in _RECEIPT_SCHEMA_VERSIONS:
+        raise SemanticStateError(
+            f"semantic item materialization schema {selected_schema_version!r} is unsupported"
+        )
     row = connection.execute(
         "SELECT * FROM semantic_item_revisions WHERE item_revision_id=?",
         (item_revision_id,),
@@ -1521,7 +1786,7 @@ def _item_revision_binding(
         owner="semantic",
         kind="semantic_item_revision",
         materialization_id=f"materialization:semantic:item-revision:{item_revision_id}",
-        schema_version=7,
+        schema_version=selected_schema_version,
         revision=revision,
         generation=item_revision_id,
     )
@@ -1629,17 +1894,35 @@ def _native_source_revision_binding(
 def _chunk_revision_binding(
     connection: sqlite3.Connection,
     chunk_revision_id: int,
+    *,
+    schema_version: int | None = None,
 ) -> dict[str, object]:
+    selected_schema_version = (
+        _require_current_receipt_schema(connection)
+        if schema_version is None
+        else schema_version
+    )
     row = connection.execute(
         "SELECT * FROM semantic_chunk_revisions WHERE chunk_revision_id=?",
         (chunk_revision_id,),
     ).fetchone()
     if row is None:
         raise SemanticStateError("semantic chunk revision disappeared")
-    return _chunk_revision_binding_from_row(row)
+    return _chunk_revision_binding_from_row(
+        row,
+        schema_version=selected_schema_version,
+    )
 
 
-def _chunk_revision_binding_from_row(row: sqlite3.Row) -> dict[str, object]:
+def _chunk_revision_binding_from_row(
+    row: sqlite3.Row,
+    *,
+    schema_version: int,
+) -> dict[str, object]:
+    if schema_version not in _RECEIPT_SCHEMA_VERSIONS:
+        raise SemanticStateError(
+            f"semantic chunk materialization schema {schema_version!r} is unsupported"
+        )
     chunk_revision_id = int(row["chunk_revision_id"])
     revision = RevisionRef(
         resource_id=(
@@ -1656,7 +1939,7 @@ def _chunk_revision_binding_from_row(row: sqlite3.Row) -> dict[str, object]:
         owner="semantic",
         kind="semantic_chunk_revision",
         materialization_id=(f"materialization:semantic:chunk-revision:{chunk_revision_id}"),
-        schema_version=7,
+        schema_version=schema_version,
         revision=revision,
         generation=chunk_revision_id,
     )
@@ -1686,9 +1969,22 @@ def _manifest_binding_fact(binding: Mapping[str, object]) -> dict[str, object]:
         raise SemanticStateError(
             "semantic manifest inputs require exact revision and materialization refs"
         )
+    materialization_payload = materialization.to_dict()
+    if materialization.owner == "semantic":
+        if (
+            isinstance(materialization.schema_version, bool)
+            or materialization.schema_version not in _RECEIPT_SCHEMA_VERSIONS
+        ):
+            raise SemanticStateError(
+                "semantic manifest locator schema metadata is not 7 or 8"
+            )
+        # Owner-schema metadata is provenance, not content identity.  Pin the
+        # digest representation to the last receipt schema so a v7 receipt
+        # keeps its stable manifest/clone key after the v8 owner migration.
+        materialization_payload["owner_schema_version"] = _SEMANTIC_IDENTITY_SCHEMA_VERSION
     return {
         "revision": revision.to_dict(),
-        "materialization": materialization.to_dict(),
+        "materialization": materialization_payload,
         "fingerprint": fingerprint,
         "fingerprint_algorithm": fingerprint_algorithm,
     }
@@ -1852,6 +2148,7 @@ def _producer_receipts_for_embedding_members(
     connection: sqlite3.Connection,
     member_ids: Sequence[int],
 ) -> dict[int, int]:
+    schema_version = _require_current_receipt_schema(connection)
     producer_by_member: dict[int, int] = {}
     for offset in range(0, len(member_ids), 250):
         batch = tuple(dict.fromkeys(int(value) for value in member_ids[offset : offset + 250]))
@@ -1880,7 +2177,10 @@ def _producer_receipts_for_embedding_members(
             )
         expected_by_materialization: dict[str, tuple[int, str, str]] = {}
         for member_id in batch:
-            binding = _embedding_member_binding_from_row(physical_by_id[member_id])
+            binding = _embedding_member_binding_from_row(
+                physical_by_id[member_id],
+                schema_version=schema_version,
+            )
             materialization = binding.get("materialization_ref")
             if not isinstance(materialization, MaterializationRef):
                 raise SemanticStateError(
@@ -1947,7 +2247,12 @@ def _legacy_payload_attestation_binding(
     payload_id: int,
     payload_binding: Mapping[str, object],
     now_ns: int,
+    schema_version: int,
 ) -> dict[str, object]:
+    if schema_version not in _RECEIPT_SCHEMA_VERSIONS:
+        raise SemanticStateError(
+            f"semantic attestation schema {schema_version!r} is unsupported"
+        )
     payload_fact = _manifest_binding_fact(payload_binding)
     contract_fingerprint = xxhash.xxh3_128_hexdigest(
         canonical_json(
@@ -1976,7 +2281,7 @@ def _legacy_payload_attestation_binding(
             "materialization:semantic:legacy-vector-payload-attestation:"
             f"{payload_id}:{contract_fingerprint}"
         ),
-        schema_version=7,
+        schema_version=schema_version,
         revision=revision,
         generation=payload_id,
     )
@@ -2010,11 +2315,17 @@ def _record_legacy_payload_attestation(
         raise SemanticStateError("semantic legacy vector payload disappeared")
     if not bool(row["legacy_before_receipts"]):
         raise SemanticStateError("semantic vector payload without a producer receipt is not legacy")
-    payload_binding, _payload_provider = _payload_binding(connection, payload_id)
+    schema_version = _require_current_receipt_schema(connection)
+    payload_binding, _payload_provider = _payload_binding(
+        connection,
+        payload_id,
+        schema_version=schema_version,
+    )
     output = _legacy_payload_attestation_binding(
         payload_id=payload_id,
         payload_binding=payload_binding,
         now_ns=now_ns,
+        schema_version=schema_version,
     )
     return _record_work_receipt(
         connection,
@@ -2172,7 +2483,12 @@ def _manifest_output_binding(
     processing_signature: str,
     digest: str,
     generation_id: int | None,
+    schema_version: int,
 ) -> dict[str, object]:
+    if schema_version not in _RECEIPT_SCHEMA_VERSIONS:
+        raise SemanticStateError(
+            f"semantic manifest schema {schema_version!r} is unsupported"
+        )
     revision = RevisionRef(
         resource_id=f"resource:semantic:derivation-manifest:{digest}",
         revision_id=f"revision:semantic:derivation-manifest:{digest}",
@@ -2186,7 +2502,7 @@ def _manifest_output_binding(
         owner="semantic",
         kind="derivation_manifest",
         materialization_id=f"materialization:semantic:derivation-manifest:{digest}",
-        schema_version=7,
+        schema_version=schema_version,
         revision=revision,
         generation=generation_id,
     )
@@ -2228,11 +2544,13 @@ def _record_manifest_node(
         }
     )
     digest = xxhash.xxh3_128_hexdigest(encoded.encode("utf-8"))
+    schema_version = _require_current_receipt_schema(connection)
     output = _manifest_output_binding(
         stage_id=stage_id,
         processing_signature=processing_signature,
         digest=digest,
         generation_id=generation_id,
+        schema_version=schema_version,
     )
     _record_work_receipt(
         connection,
@@ -2371,12 +2689,18 @@ def _manifest_contract_tree(
     scope: Sequence[object],
     bindings: Sequence[Mapping[str, object]],
     generation_id: int | None,
+    schema_version: int,
 ) -> tuple[
     dict[str, object] | None,
     str,
     tuple[tuple[dict[str, object], tuple[Mapping[str, object], ...], int, int], ...],
 ]:
     """Recompute the bounded manifest contract without writing owner state."""
+
+    if schema_version not in _RECEIPT_SCHEMA_VERSIONS:
+        raise SemanticStateError(
+            f"semantic manifest schema {schema_version!r} is unsupported"
+        )
 
     member_digest = xxhash.xxh3_128()
     nodes: list[tuple[dict[str, object], tuple[Mapping[str, object], ...], int, int]] = []
@@ -2404,6 +2728,7 @@ def _manifest_contract_tree(
             processing_signature=processing_signature,
             digest=digest,
             generation_id=generation_id,
+            schema_version=schema_version,
         )
         nodes.append((output, inputs, level, ordinal))
         return output
@@ -2484,6 +2809,7 @@ def _validate_chunk_publication_receipt(
 ) -> bool:
     """Validate one bounded publication exactly; return False above the cap."""
 
+    receipt_schema_version = _receipt_schema_version(receipt)
     rows = connection.execute(
         """SELECT revision.chunk_revision_id,revision.chunk_id,
             revision.chunking_signature,revision.captured_ns,
@@ -2506,13 +2832,20 @@ def _validate_chunk_publication_receipt(
     total_count = 0 if not rows else int(rows[0]["total_count"])
     if total_count > MAX_LINEAGE_ROWS:
         return False
-    bindings = tuple(_chunk_revision_binding_from_row(row) for row in rows)
+    bindings = tuple(
+        _chunk_revision_binding_from_row(
+            row,
+            schema_version=receipt_schema_version,
+        )
+        for row in rows
+    )
     root, members_fingerprint, nodes = _manifest_contract_tree(
         stage_id=SEMANTIC_CHUNK_MANIFEST_STAGE,
         processing_signature="semantic-chunk-manifest-v1",
         scope=(item_revision_id, chunking_signature, refresh_token),
         bindings=bindings,
         generation_id=None,
+        schema_version=receipt_schema_version,
     )
     materialization_ids = tuple(
         str(node_output["materialization_id"]) for node_output, _inputs, _level, _ordinal in nodes
@@ -2563,6 +2896,7 @@ def _validate_chunk_publication_receipt(
         expected_outputs = _output_contracts(
             (node_output,),
             generation_id=None,
+            schema_version=receipt_schema_version,
         )
         node_fingerprint = node_output.get("fingerprint")
         digest = node_fingerprint.get("xxh3_128") if isinstance(node_fingerprint, Mapping) else None
@@ -2587,9 +2921,22 @@ def _validate_chunk_publication_receipt(
         ):
             raise ValueError("semantic publication manifest contradicts exact facts")
     raw_publication_inputs: tuple[Mapping[str, object], ...] = (
-        (_item_revision_binding(connection, item_revision_id),)
+        (
+            _item_revision_binding(
+                connection,
+                item_revision_id,
+                schema_version=receipt_schema_version,
+            ),
+        )
         if root is None
-        else (_item_revision_binding(connection, item_revision_id), root)
+        else (
+            _item_revision_binding(
+                connection,
+                item_revision_id,
+                schema_version=receipt_schema_version,
+            ),
+            root,
+        )
     )
     expected_publication_inputs = _input_contracts(
         raw_publication_inputs,
@@ -2609,6 +2956,7 @@ def _validate_chunk_publication_receipt(
             ),
         ),
         generation_id=None,
+        schema_version=receipt_schema_version,
     )
     if (
         receipt.stage.stage_version != "owner-refresh-v1"
@@ -2734,6 +3082,7 @@ def _record_chunk_refresh_publication(
     refresh_token: str,
     now_ns: int,
 ) -> int:
+    schema_version = _require_current_receipt_schema(connection)
     item_revision_id = _snapshot_item_revision(connection, item_id, now_ns)
     duplicate = connection.execute(
         """SELECT revision.ordinal
@@ -2767,7 +3116,13 @@ def _record_chunk_refresh_publication(
         stage_id=SEMANTIC_CHUNK_MANIFEST_STAGE,
         processing_signature="semantic-chunk-manifest-v1",
         scope=(item_revision_id, chunking_signature, refresh_token),
-        bindings=(_chunk_revision_binding_from_row(row) for row in rows),
+        bindings=(
+            _chunk_revision_binding_from_row(
+                row,
+                schema_version=schema_version,
+            )
+            for row in rows
+        ),
         item_revision_id=item_revision_id,
         generation_id=None,
         now_ns=now_ns,
@@ -2863,7 +3218,18 @@ def _record_chunk_refresh_publication(
 def _payload_binding(
     connection: sqlite3.Connection,
     payload_id: int,
+    *,
+    schema_version: int | None = None,
 ) -> tuple[dict[str, object], dict[str, object]]:
+    selected_schema_version = (
+        _require_current_receipt_schema(connection)
+        if schema_version is None
+        else schema_version
+    )
+    if selected_schema_version not in _RECEIPT_SCHEMA_VERSIONS:
+        raise SemanticStateError(
+            f"semantic payload materialization schema {selected_schema_version!r} is unsupported"
+        )
     row = connection.execute(
         """SELECT p.*,m.model_id,m.model_version,m.provider,m.vector_space,
             m.dimensions AS model_dimensions,
@@ -2927,7 +3293,7 @@ def _payload_binding(
         owner="semantic",
         kind="semantic_vector_payload",
         materialization_id=f"materialization:semantic:vector-payload:{payload_id}",
-        schema_version=7,
+        schema_version=selected_schema_version,
         revision=revision,
         generation=payload_id,
     )
@@ -2962,7 +3328,13 @@ def _embedding_member_binding(
     generation_id: int,
     entity_kind: str,
     entity_id: str,
+    schema_version: int | None = None,
 ) -> dict[str, object]:
+    selected_schema_version = (
+        _require_current_receipt_schema(connection)
+        if schema_version is None
+        else schema_version
+    )
     row = connection.execute(
         """SELECT member.*,g.processing_signature,
             payload.dimensions,payload.vector_dtype,payload.original_norm,
@@ -2978,10 +3350,21 @@ def _embedding_member_binding(
     ).fetchone()
     if row is None:
         raise SemanticStateError("semantic embedding generation member disappeared")
-    return _embedding_member_binding_from_row(row)
+    return _embedding_member_binding_from_row(
+        row,
+        schema_version=selected_schema_version,
+    )
 
 
-def _embedding_member_binding_from_row(row: sqlite3.Row) -> dict[str, object]:
+def _embedding_member_binding_from_row(
+    row: sqlite3.Row,
+    *,
+    schema_version: int,
+) -> dict[str, object]:
+    if schema_version not in _RECEIPT_SCHEMA_VERSIONS:
+        raise SemanticStateError(
+            f"semantic embedding member schema {schema_version!r} is unsupported"
+        )
     member_id = int(row["member_id"])
     generation_id = int(row["generation_id"])
     member_contract = canonical_json(
@@ -3029,7 +3412,7 @@ def _embedding_member_binding_from_row(row: sqlite3.Row) -> dict[str, object]:
         owner="semantic",
         kind="semantic_embedding_member",
         materialization_id=f"materialization:semantic:embedding-member:{member_id}",
-        schema_version=7,
+        schema_version=schema_version,
         revision=revision,
         generation=generation_id,
     )
@@ -3077,7 +3460,14 @@ def _embedding_member_rows(
 def _embedding_member_binding_by_id(
     connection: sqlite3.Connection,
     member_id: int,
+    *,
+    schema_version: int | None = None,
 ) -> dict[str, object]:
+    selected_schema_version = (
+        _require_current_receipt_schema(connection)
+        if schema_version is None
+        else schema_version
+    )
     selected = connection.execute(
         """SELECT generation_id FROM embedding_generation_members
         WHERE member_id=?""",
@@ -3092,7 +3482,10 @@ def _embedding_member_binding_by_id(
     )
     if len(rows) != 1:
         raise SemanticStateError("semantic source embedding member is ambiguous")
-    return _embedding_member_binding_from_row(rows[0])
+    return _embedding_member_binding_from_row(
+        rows[0],
+        schema_version=selected_schema_version,
+    )
 
 
 def _record_embedding_clone_batch(
@@ -3105,6 +3498,7 @@ def _record_embedding_clone_batch(
 ) -> int:
     """Record one bounded, set-loaded replay page instead of per-member events."""
 
+    schema_version = _require_current_receipt_schema(connection)
     if not base_member_ids:
         raise ValueError("embedding clone receipt requires at least one base member")
     if len(base_member_ids) > _MAX_MANIFEST_INPUTS:
@@ -3158,12 +3552,21 @@ def _record_embedding_clone_batch(
         raise SemanticStateError("embedding clone generation disappeared")
     inputs = tuple(
         _renamed_binding(
-            _embedding_member_binding_from_row(row),
+            _embedding_member_binding_from_row(
+                row,
+                schema_version=schema_version,
+            ),
             f"base_member:{index}",
         )
         for index, row in enumerate(base_rows)
     )
-    outputs = tuple(_embedding_member_binding_from_row(row) for row in cloned_rows)
+    outputs = tuple(
+        _embedding_member_binding_from_row(
+            row,
+            schema_version=schema_version,
+        )
+        for row in cloned_rows
+    )
     causal_digest = xxhash.xxh3_128_hexdigest(
         canonical_json(
             {
@@ -3236,6 +3639,7 @@ def _record_embedding_receipt(
     source_causation_receipt_id: int | None = None,
     payload_causation_receipt_id: int | None = None,
 ) -> int:
+    schema_version = _require_current_receipt_schema(connection)
     generation = connection.execute(
         """SELECT processing_signature,provenance_json
         FROM embedding_generations WHERE generation_id=?""",
@@ -3243,19 +3647,41 @@ def _record_embedding_receipt(
     ).fetchone()
     if generation is None:
         raise SemanticStateError("embedding generation disappeared")
-    output, provider = _payload_binding(connection, payload_id)
+    output, provider = _payload_binding(
+        connection,
+        payload_id,
+        schema_version=schema_version,
+    )
     member_output = _embedding_member_binding(
         connection,
         generation_id=generation_id,
         entity_kind=entity_kind,
         entity_id=entity_id,
+        schema_version=schema_version,
     )
-    inputs = [_item_revision_binding(connection, item_revision_id)]
+    inputs = [
+        _item_revision_binding(
+            connection,
+            item_revision_id,
+            schema_version=schema_version,
+        )
+    ]
     if chunk_revision_id is not None:
-        inputs.append(_chunk_revision_binding(connection, chunk_revision_id))
+        inputs.append(
+            _chunk_revision_binding(
+                connection,
+                chunk_revision_id,
+                schema_version=schema_version,
+            )
+        )
     causation = None
+    causal_payload_binding: Mapping[str, object] = output
     if execution_mode in {"cache_hit", "replay"}:
-        inputs.append(_renamed_binding(output, "reused_vector_payload"))
+        # A cache hit may reuse a payload whose producer receipt predates the
+        # current owner schema.  Keep that exact causal locator rather than
+        # manufacturing a v8 locator for a historical source.
+        if execution_mode == "replay":
+            inputs.append(_renamed_binding(output, "reused_vector_payload"))
     if execution_mode == "cache_hit":
         causation = (
             _payload_causation_receipt(
@@ -3270,6 +3696,31 @@ def _record_embedding_receipt(
             connection,
             (causation,),
         )[causation]
+        payload_outputs = tuple(
+            candidate
+            for candidate in cause_receipt.outputs
+            if candidate.materialization.kind == "semantic_vector_payload"
+        )
+        if len(payload_outputs) == 1:
+            causal_payload_binding = _input_mapping_from_output(
+                payload_outputs[0],
+                name="reused_vector_payload",
+            )
+        else:
+            payload_inputs = tuple(
+                candidate
+                for candidate in cause_receipt.inputs
+                if candidate.name == "legacy_vector_payload"
+            )
+            if len(payload_inputs) != 1:
+                raise SemanticStateError(
+                    "semantic cached embedding lacks one exact payload causation"
+                )
+            causal_payload_binding = _input_mapping_from_binding(
+                payload_inputs[0],
+                name="reused_vector_payload",
+            )
+        inputs.append(_renamed_binding(causal_payload_binding, "reused_vector_payload"))
         if cause_receipt.stage.stage_id == SEMANTIC_LEGACY_PAYLOAD_ATTESTATION_STAGE:
             if len(cause_receipt.outputs) != 1:
                 raise SemanticStateError("semantic legacy payload attestation output is ambiguous")
@@ -3289,6 +3740,31 @@ def _record_embedding_receipt(
             selected_source_binding = _embedding_member_binding_by_id(
                 connection,
                 source_member_id,
+                schema_version=schema_version,
+            )
+        if execution_mode == "replay" and source_causation_receipt_id is not None:
+            source_receipt, _source_receipt_row = _validated_semantic_receipts(
+                connection,
+                (source_causation_receipt_id,),
+            )[source_causation_receipt_id]
+            source_materialization = selected_source_binding.get("materialization_ref")
+            if not isinstance(source_materialization, MaterializationRef):
+                raise SemanticStateError(
+                    "semantic replay source member has no exact materialization"
+                )
+            source_outputs = tuple(
+                candidate
+                for candidate in source_receipt.outputs
+                if candidate.materialization.materialization_id
+                == source_materialization.materialization_id
+            )
+            if len(source_outputs) != 1:
+                raise SemanticStateError(
+                    "semantic replay source member causation is not exact"
+                )
+            selected_source_binding = _input_mapping_from_output(
+                source_outputs[0],
+                name="source_embedding_member",
             )
         inputs.append(
             _renamed_binding(
@@ -3393,6 +3869,7 @@ def _record_discarded_embedding_execution(
     """Record a provider invocation whose duplicate result was not published."""
 
     generation_id = int(row["generation_id"])
+    schema_version = _require_current_receipt_schema(connection)
     generation = connection.execute(
         """SELECT processing_signature FROM embedding_generations
         WHERE generation_id=?""",
@@ -3400,7 +3877,11 @@ def _record_discarded_embedding_execution(
     ).fetchone()
     if generation is None:
         raise SemanticStateError("embedding generation disappeared")
-    incumbent, provider = _payload_binding(connection, incumbent_payload_id)
+    incumbent, provider = _payload_binding(
+        connection,
+        incumbent_payload_id,
+        schema_version=schema_version,
+    )
     item_revision_id = (
         int(row["input_item_revision_id"])
         if row["input_item_revision_id"] is not None
@@ -3409,10 +3890,21 @@ def _record_discarded_embedding_execution(
     chunk_revision_id = (
         None if row["input_chunk_revision_id"] is None else int(row["input_chunk_revision_id"])
     )
-    inputs = [_item_revision_binding(connection, item_revision_id)]
+    inputs = [
+        _item_revision_binding(
+            connection,
+            item_revision_id,
+            schema_version=schema_version,
+        )
+    ]
     if chunk_revision_id is not None:
-        inputs.append(_chunk_revision_binding(connection, chunk_revision_id))
-    inputs.append(_renamed_binding(incumbent, "incumbent_vector_payload"))
+        inputs.append(
+            _chunk_revision_binding(
+                connection,
+                chunk_revision_id,
+                schema_version=schema_version,
+            )
+        )
     job_id = int(row["job_id"])
     attempt = max(1, int(row["attempt_sequence"]))
     candidate_fingerprint = fingerprint_bytes(candidate_vector_blob)
@@ -3443,7 +3935,7 @@ def _record_discarded_embedding_execution(
         owner="semantic",
         kind="provider_execution_observation",
         materialization_id=(f"materialization:semantic:provider-execution:{job_id}:{attempt}"),
-        schema_version=7,
+        schema_version=schema_version,
         revision=observation_revision,
         generation=generation_id,
     )
@@ -3467,6 +3959,32 @@ def _record_discarded_embedding_execution(
         connection,
         (cause,),
     )[cause]
+    causal_incumbent_binding: Mapping[str, object] = incumbent
+    payload_outputs = tuple(
+        candidate
+        for candidate in cause_receipt.outputs
+        if candidate.materialization.kind == "semantic_vector_payload"
+    )
+    if len(payload_outputs) == 1:
+        causal_incumbent_binding = _input_mapping_from_output(
+            payload_outputs[0],
+            name="incumbent_vector_payload",
+        )
+    else:
+        payload_inputs = tuple(
+            candidate
+            for candidate in cause_receipt.inputs
+            if candidate.name == "legacy_vector_payload"
+        )
+        if len(payload_inputs) != 1:
+            raise SemanticStateError(
+                "semantic discarded execution lacks one exact incumbent causation"
+            )
+        causal_incumbent_binding = _input_mapping_from_binding(
+            payload_inputs[0],
+            name="incumbent_vector_payload",
+        )
+    inputs.append(_renamed_binding(causal_incumbent_binding, "incumbent_vector_payload"))
     if cause_receipt.stage.stage_id == SEMANTIC_LEGACY_PAYLOAD_ATTESTATION_STAGE:
         if len(cause_receipt.outputs) != 1:
             raise SemanticStateError("semantic legacy payload attestation output is ambiguous")
@@ -3640,6 +4158,7 @@ def _iter_embedding_member_bindings(
     connection: sqlite3.Connection,
     generation_id: int,
 ) -> Iterable[dict[str, object]]:
+    schema_version = _require_current_receipt_schema(connection)
     rows = connection.execute(
         """SELECT member.*,g.processing_signature,
             payload.dimensions,payload.vector_dtype,
@@ -3654,7 +4173,10 @@ def _iter_embedding_member_bindings(
         (generation_id,),
     )
     for row in rows:
-        yield _embedding_member_binding_from_row(row)
+        yield _embedding_member_binding_from_row(
+            row,
+            schema_version=schema_version,
+        )
 
 
 def _generation_candidate_binding(row: sqlite3.Row, generation_id: int) -> dict[str, object]:
@@ -3805,13 +4327,15 @@ def _query_text_chunk_embedding_rows(
 ) -> tuple[sqlite3.Row, ...]:
     """Read the bounded normalized embedding rows for one text chunk."""
 
+    publication_join_kind = "JOIN" if published_only else "LEFT JOIN"
     publication_join = (
-        "JOIN published_embedding_heads h ON h.generation_id=member.generation_id"
-        if published_only
-        else "LEFT JOIN published_embedding_heads h ON h.generation_id=member.generation_id"
+        f"{publication_join_kind} published_embedding_heads h "
+        "ON h.generation_id=member.generation_id "
+        "AND h.model_signature=member.model_signature "
+        "AND g.model_signature=h.model_signature AND g.status='ready'"
     )
     model_filter = "" if model_signature is None else "AND member.model_signature=?"
-    if version == 7:
+    if version in _RECEIPT_LINEAGE_SCHEMA_VERSIONS:
         parameters: tuple[object, ...] = (
             (
                 SEMANTIC_EMBEDDING_STAGE,
@@ -3929,9 +4453,16 @@ def _materialize_text_chunk_embedding_derivation(
     )
     if receipt_id is not None:
         receipt, receipt_row = member_receipts[receipt_id]
+        receipt_schema_version = _receipt_schema_version(receipt)
         expected_member = _output_contracts(
-            (_embedding_member_binding_from_row(member),),
+            (
+                _embedding_member_binding_from_row(
+                    member,
+                    schema_version=receipt_schema_version,
+                ),
+            ),
             generation_id=int(member["generation_id"]),
+            schema_version=receipt_schema_version,
         )[0]
         member_output_matches = any(
             output.materialization == expected_member.materialization
@@ -4027,7 +4558,7 @@ def _read_text_chunk_embedding_derivations(
     )
     member_receipts = (
         {}
-        if version != 7
+        if version not in _RECEIPT_LINEAGE_SCHEMA_VERSIONS
         else _validated_semantic_receipts(
             connection,
             (
@@ -4091,9 +4622,14 @@ def _materialize_text_chunk_origin(
     published = row["publication_receipt_id"] is not None
     materialization_id = int(row["materialization_receipt_id"])
     materialization_receipt, materialization_row = origin_receipts[materialization_id]
+    receipt_schema_version = _receipt_schema_version(materialization_receipt)
     item_revision_id = int(row["item_revision_id"])
     try:
-        item_binding = _item_revision_binding(connection, item_revision_id)
+        item_binding = _item_revision_binding(
+            connection,
+            item_revision_id,
+            schema_version=receipt_schema_version,
+        )
         native_binding = _native_source_revision_binding(connection, item_revision_id)
         expected_item = _input_contracts(
             (item_binding,),
@@ -4102,8 +4638,15 @@ def _materialize_text_chunk_origin(
             observed_ns=int(materialization_row["started_ns"]),
         )[0]
         expected_chunk = _output_contracts(
-            (_chunk_revision_binding(connection, chunk_revision_id),),
+            (
+                _chunk_revision_binding(
+                    connection,
+                    chunk_revision_id,
+                    schema_version=receipt_schema_version,
+                ),
+            ),
             generation_id=None,
+            schema_version=receipt_schema_version,
         )[0]
     except SemanticStateError as exc:
         raise ValueError(
@@ -4211,7 +4754,7 @@ def _read_text_chunk_origins(
 ) -> tuple[tuple[SemanticChunkOrigin, ...], int]:
     """Read and verify the bounded owner-native origins of one chunk."""
 
-    if version != 7 or chunk_revision_id is None:
+    if version not in _RECEIPT_LINEAGE_SCHEMA_VERSIONS or chunk_revision_id is None:
         return (), 0
     origin_rows = _query_text_chunk_origin_rows(
         connection,
@@ -4270,9 +4813,9 @@ def explain_text_chunk_lineage(
         raise ValueError(f"embedding_limit must be between 1 and {MAX_LINEAGE_ROWS}")
     with semantic_database(path, readonly=True) as connection:
         version = _read_schema_version(connection)
-        if version not in {6, 7}:
+        if version not in _LINEAGE_SCHEMA_VERSIONS:
             raise SemanticStateError(
-                f"semantic lineage requires schema 6 or 7; observed {version!r}"
+                f"semantic lineage requires schema 6, 7 or 8; observed {version!r}"
             )
         _validate_version_contract(connection, version)
         chunk = connection.execute(
@@ -4356,12 +4899,12 @@ def find_text_chunks_for_source_revision(
         raise ValueError("limit must be between 1 and 1000")
     with semantic_database(path, readonly=True) as connection:
         version = _read_schema_version(connection)
-        if version not in {6, 7}:
+        if version not in _LINEAGE_SCHEMA_VERSIONS:
             raise SemanticStateError(
-                f"semantic lineage requires schema 6 or 7; observed {version!r}"
+                f"semantic lineage requires schema 6, 7 or 8; observed {version!r}"
             )
         _validate_version_contract(connection, version)
-        if version == 7:
+        if version in _RECEIPT_LINEAGE_SCHEMA_VERSIONS:
             rows = connection.execute(
                 """SELECT chunk_id FROM (
                     SELECT chunk.chunk_id AS chunk_id
@@ -4420,9 +4963,9 @@ def read_semantic_derivation_outbox(
         if version == 6:
             _validate_version_contract(connection, version)
             return ()
-        if version != 7:
+        if version not in _RECEIPT_LINEAGE_SCHEMA_VERSIONS:
             raise SemanticStateError(
-                f"semantic derivation outbox requires schema 7; observed {version!r}"
+                f"semantic derivation outbox requires schema 7 or 8; observed {version!r}"
             )
         _validate_version_contract(connection, version)
         rows = connection.execute(

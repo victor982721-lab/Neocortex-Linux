@@ -341,6 +341,10 @@ def test_malformed_cached_vector_is_not_counted_as_reusable(tmp_path: Path) -> N
                 SELECT RAISE(ABORT,'semantic vector payloads are append-only');
             END"""
         )
+    # sqlite3's transaction context does not close its connection.  This
+    # fixture tests corrupt vector contents, not an active WAL writer or a
+    # snapshot-preparation deadline racing the writer's eventual GC/close.
+    connection.close()
 
     plan = plan_semantic_index(
         tmp_path,
@@ -940,22 +944,31 @@ def test_semantic_cache_rejects_every_model_contract_drift(
             (value, model.model_signature),
         )
 
+    fixture_writer = connection
+    if field not in {"normalization", "distance"}:
+        # The transaction context does not close sqlite3 connections.  This
+        # is a model-contract test, not an incidental live-WAL snapshot test.
+        fixture_writer.close()
     if field in {"normalization", "distance"}:
         # These injected values violate physical CHECK constraints.  The
         # read-only snapshot integrity barrier now rejects them before the
         # semantic model comparator can inspect the corrupt owner.
         with sqlite3.connect(semantic) as connection:
             integrity = tuple(str(row[0]) for row in connection.execute("PRAGMA integrity_check"))
+        connection.close()
         assert any("CHECK constraint failed in embedding_models" in line for line in integrity)
         rejection = "temporary SQLite snapshot integrity check failed"
     else:
         rejection = r"semantic model|vector-space"
-    with pytest.raises(SemanticPlanBlocked, match=rejection):
-        plan_semantic_index(
-            tmp_path,
-            scope="text",
-            source_kinds=("pdf",),
-        )
+    try:
+        with pytest.raises(SemanticPlanBlocked, match=rejection):
+            plan_semantic_index(
+                tmp_path,
+                scope="text",
+                source_kinds=("pdf",),
+            )
+    finally:
+        fixture_writer.close()
 
 
 def test_same_version_owner_ddl_drift_is_rejected(tmp_path: Path) -> None:

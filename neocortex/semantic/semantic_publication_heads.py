@@ -47,7 +47,7 @@ from .semantic_schema import (
     SEMANTIC_SCHEMA_VERSION,
     SemanticStateError,
     _read_schema_version,
-    _validate_version_contract,
+    _validate_semantic_read_schema,
 )
 
 
@@ -346,7 +346,11 @@ def _empty_owner_head(owner: str, *, schema_version: int | None = None) -> State
     if expected_schema is None:
         raise PublicationHeadsSchemaError(f"unknown empty owner: {owner}")
     selected_schema = expected_schema if schema_version is None else schema_version
-    if selected_schema != expected_schema:
+    if owner == "semantic":
+        allowed_schemas = {7, expected_schema}
+    else:
+        allowed_schemas = {expected_schema}
+    if selected_schema not in allowed_schemas:
         raise PublicationHeadsSchemaError(
             f"empty {owner} schema differs from the expected owner schema"
         )
@@ -508,12 +512,12 @@ def _semantic_schema(
         raise PublicationHeadsSchemaError("Semantic schema metadata is invalid") from exc
     if version is None:
         return None
-    if version != SEMANTIC_SCHEMA_VERSION:
+    if version not in {7, 8}:
         raise PublicationHeadsSchemaError(
             f"Semantic schema is not the current publication schema: {version!r}"
         )
     try:
-        _validate_version_contract(connection, version)
+        _validate_semantic_read_schema(connection)
     except (RuntimeError, sqlite3.DatabaseError, ValueError) as exc:
         if controls is not None:
             controls.raise_sql_failure_or_checkpoint(exc)

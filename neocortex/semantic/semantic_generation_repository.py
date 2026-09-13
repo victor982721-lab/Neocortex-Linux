@@ -951,6 +951,11 @@ def _queue_entity_rows(
                      FROM embedding_generation_members legacy
                      JOIN published_embedding_heads legacy_head
                        ON legacy_head.generation_id=legacy.generation_id
+                      AND legacy_head.model_signature=legacy.model_signature
+                     JOIN embedding_generations legacy_generation
+                       ON legacy_generation.generation_id=legacy_head.generation_id
+                      AND legacy_generation.model_signature=legacy_head.model_signature
+                      AND legacy_generation.status='ready'
                      WHERE legacy.chunk_revision_id=revision.chunk_revision_id
                        AND legacy.entity_kind='text_chunk'
                      ORDER BY legacy.member_id DESC LIMIT 1)
@@ -1927,16 +1932,44 @@ def _current_job_matches_source(modality: EmbeddingModality) -> str:
           AND i.content_xxh3_64_guard=embedding_jobs.content_xxh3_64_guard)"""
 
 
+def _has_generation_job_control(connection: sqlite3.Connection) -> bool:
+    """Select the atomically migrated v8 projection, never a process-local cache.
+
+    Legacy readers/writers retain their authoritative scans until the normal
+    owner initializer has migrated the database.  Schema validation remains at
+    that boundary; neither this probe nor the hints authorize publication.
+    """
+
+    return int(connection.execute("PRAGMA user_version").fetchone()[0]) == 8
+
+
 def _mark_stale_jobs(
     connection: sqlite3.Connection,
     generation_id: int,
     modality: EmbeddingModality,
     now_ns: int,
+    *,
+    reconcile: bool = False,
 ) -> None:
+    """Recheck source changes, preserving the pending/leased receipt contract.
+
+    v8 source/job triggers durably mark every affected live job in the same
+    transaction as the source change.  A dirty bit scopes the work; the current
+    source predicate still decides liveness.  Finalization deliberately checks
+    the whole generation, even when the derived projection claims no changes.
+    """
+
+    controlled = _has_generation_job_control(connection)
+    incremental = controlled and not reconcile
+    job_table = "embedding_jobs"
+    dirty_filter = ""
+    if incremental:
+        job_table += " INDEXED BY embedding_jobs_source_dirty_idx"
+        dirty_filter = " AND source_dirty=1"
     current_match = _current_job_matches_source(modality)
     leased_rows = connection.execute(
-        f"""SELECT * FROM embedding_jobs
-        WHERE generation_id=? AND status='leased' AND NOT {current_match}
+        f"""SELECT * FROM {job_table}
+        WHERE generation_id=? AND status='leased'{dirty_filter} AND NOT {current_match}
         ORDER BY job_id LIMIT ?""",
         (generation_id, MAX_WRITE_BATCH),
     ).fetchall()
@@ -1951,11 +1984,11 @@ def _mark_stale_jobs(
             now_ns=now_ns,
         )
     connection.execute(
-        f"""UPDATE embedding_jobs SET status='stale',lease_owner=NULL,
+        f"""UPDATE {job_table} SET status='stale',lease_owner=NULL,
             lease_until_ns=NULL,error_type='source_changed',
             error_message='source changed or became inactive before embedding',
             attempt_started_ns=NULL,updated_ns=?
-        WHERE generation_id=? AND status='pending' AND NOT {current_match}""",
+        WHERE generation_id=? AND status='pending'{dirty_filter} AND NOT {current_match}""",
         (now_ns, generation_id),
     )
     if leased_rows:
@@ -1968,6 +2001,16 @@ def _mark_stale_jobs(
                 attempt_started_ns=NULL,updated_ns=?
             WHERE job_id IN ({placeholders}) AND status='leased'""",
             (now_ns, *job_ids),
+        )
+    if controlled:
+        # Invalid leased jobs beyond MAX_WRITE_BATCH stay dirty for the next
+        # caller.  Clearing only *current* jobs cannot lose an attempt receipt.
+        connection.execute(
+            f"""UPDATE embedding_jobs INDEXED BY embedding_jobs_source_dirty_idx
+            SET source_dirty=0
+            WHERE generation_id=? AND source_dirty=1
+              AND status IN ('pending','leased') AND {current_match}""",
+            (generation_id,),
         )
 
 
@@ -2167,14 +2210,30 @@ def reuse_cached_jobs(
         connection.execute("BEGIN IMMEDIATE")
         model = _generation_model(connection, generation_id, require_building=True)
         _mark_stale_jobs(connection, generation_id, model.modality, selected_ns)
+        controlled = _has_generation_job_control(connection)
+        job_table = "embedding_jobs j"
+        payload_hint_match = ""
+        payload_hint_filter = ""
+        if controlled:
+            job_table += " INDEXED BY embedding_jobs_cached_pending_idx"
+            payload_hint_match = " AND p.payload_id=j.cached_payload_id"
+            payload_hint_filter = " AND j.cached_payload_id IS NOT NULL"
+            # The derived hints only narrow lookup.  Revalidate the live source
+            # on the bounded candidates before attaching, including images
+            # whose queued item revision may outlive a source deactivation.
+            current_match = _current_job_matches_source(model.modality).replace(
+                "embedding_jobs.", "j.",
+            )
+            payload_hint_filter += f" AND {current_match}"
         rows = connection.execute(
-            """SELECT j.*,p.payload_id,p.provenance_json AS payload_provenance_json
-            FROM embedding_jobs j JOIN vector_payloads p
+            f"""SELECT j.*,p.payload_id,p.provenance_json AS payload_provenance_json
+            FROM {job_table} JOIN vector_payloads p
               ON p.model_signature=j.model_signature
              AND p.content_xxh3_128=j.content_xxh3_128
              AND p.content_bytes=j.content_bytes
              AND p.content_xxh3_64_guard=j.content_xxh3_64_guard
-            WHERE j.generation_id=? AND j.status='pending'
+             {payload_hint_match}
+            WHERE j.generation_id=? AND j.status='pending'{payload_hint_filter}
             ORDER BY j.job_id LIMIT ?""",
             (generation_id, limit),
         ).fetchall()
@@ -2291,6 +2350,11 @@ def _lease_rows(
                     FROM embedding_generation_members member
                     JOIN published_embedding_heads head
                       ON head.generation_id=member.generation_id
+                     AND head.model_signature=member.model_signature
+                    JOIN embedding_generations generation
+                      ON generation.generation_id=head.generation_id
+                     AND generation.model_signature=head.model_signature
+                     AND generation.status='ready'
                     WHERE member.chunk_revision_id IN ({placeholders})
                       AND member.entity_kind='text_chunk'""",
                 revision_ids,
@@ -2342,6 +2406,18 @@ def _reconcile_expired_embedding_leases(
     generation_id: int,
     now_ns: int,
 ) -> None:
+    if _has_generation_job_control(connection):
+        # A deadline-leading probe makes the common no-expiry case independent
+        # of the leased population.  When work is due, preserve the historical
+        # job-id order and MAX_WRITE_BATCH terminal-attempt boundary below.
+        expired = connection.execute(
+            """SELECT 1 FROM embedding_jobs INDEXED BY embedding_jobs_lease_expiry_idx
+            WHERE generation_id=? AND status='leased' AND lease_until_ns<=?
+            LIMIT 1""",
+            (generation_id, now_ns),
+        ).fetchone()
+        if expired is None:
+            return
     rows = connection.execute(
         """SELECT * FROM embedding_jobs
         WHERE generation_id=? AND status='leased' AND lease_until_ns<=?
@@ -2858,8 +2934,16 @@ def _generation_summary_from_row(row: sqlite3.Row) -> GenerationSummary:
 def _generation_summary_rows(
     connection: sqlite3.Connection,
     generation_ids: Sequence[int],
+    *,
+    reconcile: bool = False,
 ) -> tuple[GenerationSummary, ...]:
-    """Load one bounded ordered summary page with a single aggregate query."""
+    """Read transactional counters, or an authoritative reconciliation page.
+
+    Migrated building generations have the same five counters as their jobs,
+    maintained by SQLite triggers together with every job transition.  Terminal
+    counters remain historical snapshots, including legacy member-only heads.
+    The full aggregate is retained for v7 and at the publication boundary.
+    """
 
     if not generation_ids:
         return ()
@@ -2869,21 +2953,27 @@ def _generation_summary_rows(
     if len(set(ordered_ids)) != len(ordered_ids):
         raise ValueError("generation summary identifiers must be unique")
     placeholders = ",".join("?" for _ in ordered_ids)
-    rows = connection.execute(
-        """SELECT g.generation_id,g.model_signature,g.processing_signature,g.status,
-            g.cursor_json,g.pending_count AS stored_pending,
-            g.leased_count AS stored_leased,g.done_count AS stored_done,
-            g.error_count AS stored_errors,g.stale_count AS stored_stale,
-            COALESCE(SUM(j.status='pending'),0) AS pending,
+    projection = """g.pending_count AS pending,g.leased_count AS leased,
+            g.done_count AS done,g.error_count AS errors,g.stale_count AS stale"""
+    jobs_join = ""
+    grouping = ""
+    if reconcile or not _has_generation_job_control(connection):
+        projection = """COALESCE(SUM(j.status='pending'),0) AS pending,
             COALESCE(SUM(j.status='leased'),0) AS leased,
             COALESCE(SUM(j.status='done'),0) AS done,
             COALESCE(SUM(j.status='error'),0) AS errors,
-            COALESCE(SUM(j.status='stale'),0) AS stale
+            COALESCE(SUM(j.status='stale'),0) AS stale"""
+        jobs_join = "LEFT JOIN embedding_jobs j ON j.generation_id=g.generation_id"
+        grouping = " GROUP BY g.generation_id"
+    rows = connection.execute(
+        f"""SELECT g.generation_id,g.model_signature,g.processing_signature,g.status,
+            g.cursor_json,g.pending_count AS stored_pending,
+            g.leased_count AS stored_leased,g.done_count AS stored_done,
+            g.error_count AS stored_errors,g.stale_count AS stored_stale,
+            {projection}
         FROM embedding_generations g
-        LEFT JOIN embedding_jobs j ON j.generation_id=g.generation_id
-        WHERE g.generation_id IN ({placeholders}) GROUP BY g.generation_id""".format(
-            placeholders=placeholders
-        ),
+        {jobs_join}
+        WHERE g.generation_id IN ({placeholders}){grouping}""",
         ordered_ids,
     ).fetchall()
     summaries = {int(row["generation_id"]): _generation_summary_from_row(row) for row in rows}
@@ -2896,8 +2986,10 @@ def _generation_summary_rows(
 def _generation_summary_row(
     connection: sqlite3.Connection,
     generation_id: int,
+    *,
+    reconcile: bool = False,
 ) -> GenerationSummary:
-    return _generation_summary_rows(connection, (generation_id,))[0]
+    return _generation_summary_rows(connection, (generation_id,), reconcile=reconcile)[0]
 
 
 def generation_summary(
@@ -3548,13 +3640,15 @@ def _load_generation_finalization(
     completed_ns: int,
 ) -> _EmbeddingGenerationFinalization:
     model = _generation_model(connection, generation_id, require_building=True)
-    _mark_stale_jobs(connection, generation_id, model.modality, completed_ns)
+    _mark_stale_jobs(
+        connection, generation_id, model.modality, completed_ns, reconcile=True,
+    )
     _remove_superseded_completed_jobs(
         connection,
         generation_id,
         model.modality,
     )
-    summary = _generation_summary_row(connection, generation_id)
+    summary = _generation_summary_row(connection, generation_id, reconcile=True)
     generation = connection.execute(
         """SELECT base_generation_id,base_clone_complete,provenance_json
         FROM embedding_generations WHERE generation_id=?""",
@@ -3632,6 +3726,11 @@ def _unpublished_text_finalization_member(
                   SELECT 1 FROM embedding_generation_members legacy_member
                   JOIN published_embedding_heads head
                     ON head.generation_id=legacy_member.generation_id
+                   AND head.model_signature=legacy_member.model_signature
+                  JOIN embedding_generations legacy_generation
+                    ON legacy_generation.generation_id=head.generation_id
+                   AND legacy_generation.model_signature=head.model_signature
+                   AND legacy_generation.status='ready'
                   WHERE legacy_member.chunk_revision_id=revision.chunk_revision_id
                     AND legacy_member.entity_kind='text_chunk'))))
         ORDER BY member.member_id LIMIT 1""",

@@ -2646,6 +2646,10 @@ def test_embedding_generation_preparation_order_and_work_are_row_bounded(
     )
     assert len(small_trace) == len(large_trace)
     assert len(small_trace) <= 36
+    assert not any(
+        "from embedding_generations g left join embedding_jobs j" in statement
+        for statement in small_trace
+    )
     ordered_phases = (
         "begin immediate",
         "select model_signature,status from embedding_generations",
@@ -2657,7 +2661,7 @@ def test_embedding_generation_preparation_order_and_work_are_row_bounded(
         "select provenance_json from embedding_generations",
         "select (select count(*) from text_embeddings",
         "delete from embedding_generations",
-        "from embedding_generations g left join embedding_jobs j",
+        "g.pending_count as pending,g.leased_count as leased",
         "commit",
     )
     phase_positions: list[int] = []
@@ -2800,7 +2804,14 @@ def test_embedding_generation_finalization_order_and_work_are_row_bounded(
 
     assert (small_summary.done, large_summary.done) == (1, 24)
     assert len(small_trace) == len(large_trace)
-    assert len(small_trace) <= 36
+    # v8 adds constant control/provenance checks.  The 1/24-member comparison
+    # above still forbids per-row control queries, and finalization still owns
+    # exactly one authoritative aggregate after its cleanup.
+    assert len(small_trace) <= 44
+    assert sum(
+        "from embedding_generations g left join embedding_jobs j" in statement
+        for statement in small_trace
+    ) == 1
     ordered_phases = (
         "begin immediate",
         "select model_signature,status from embedding_generations",
@@ -3077,7 +3088,7 @@ def test_populated_v5_migration_preserves_legacy_rows_and_publishes_snapshot(
     assert resolved[0].path == "C:/fixtures/legacy-document.pdf"
     assert resolved[0].snippet == "legacy published transformer record"
     with semantic_database(database, readonly=True) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
         assert connection.execute("SELECT COUNT(*) FROM text_embeddings").fetchone()[0] == 1
         assert (
             connection.execute("SELECT COUNT(*) FROM embedding_generation_members").fetchone()[0]

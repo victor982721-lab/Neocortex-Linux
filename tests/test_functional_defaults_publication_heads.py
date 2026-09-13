@@ -105,7 +105,7 @@ def test_missing_databases_are_an_explicit_empty_baseline_without_creation(
     empty_database = observe_integrated_owner_heads(state, include_code=True)
     assert empty_database[0] == observed[0]
     assert empty_database[1] == observed[1]
-    assert empty_database[0].schema_version == 7
+    assert empty_database[0].schema_version == 8
 
     with CodeState(state / "code.sqlite3"):
         pass
@@ -137,7 +137,7 @@ def test_all_published_text_and_image_heads_are_observed_not_just_max_generation
     )
     observed = observe_integrated_owner_heads(database.parent)[0]
     assert observed.revision == max(text_generation, image_generation)
-    assert observed.schema_version == 7
+    assert observed.schema_version == 8
     assert observed.digest_sha256
 
 
@@ -299,7 +299,7 @@ def test_sql_validation_interruption_preserves_cancellation_not_schema_error(
     state = tmp_path / "state"
     state.mkdir()
     initialize_semantic_state(state / "semantic.sqlite3")
-    original_validate = publication_heads._validate_version_contract
+    original_validate = publication_heads._validate_semantic_read_schema
     entered_validation = False
     calls = 0
 
@@ -308,14 +308,14 @@ def test_sql_validation_interruption_preserves_cancellation_not_schema_error(
         calls += 1
         return entered_validation
 
-    def validate_inside_wrapper(connection: sqlite3.Connection, version: int) -> None:
+    def validate_inside_wrapper(connection: sqlite3.Connection) -> int:
         nonlocal entered_validation
         entered_validation = True
-        original_validate(connection, version)
+        return original_validate(connection)
 
     monkeypatch.setattr(
         publication_heads,
-        "_validate_version_contract",
+        "_validate_semantic_read_schema",
         validate_inside_wrapper,
     )
     with pytest.raises(PublicationHeadsError) as raised:

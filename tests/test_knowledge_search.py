@@ -1211,7 +1211,8 @@ def test_real_lexical_and_semantic_sqlite_share_physical_resource_identity(
     )
     model, generation_id = _create_published_semantic_pdf_state(state)
     with sqlite3.connect(state / "semantic.sqlite3") as connection:
-        assert int(connection.execute("PRAGMA user_version").fetchone()[0]) == 7
+        assert int(connection.execute("PRAGMA user_version").fetchone()[0]) == 8
+    connection.close()
 
     snapshot = _snapshot(
         OwnerSnapshot("pdf", OwnerAvailability.AVAILABLE, 11, 11),

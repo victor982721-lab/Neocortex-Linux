@@ -41,7 +41,7 @@ def _mutate(path: Path, sql: str) -> None:
 
 
 def test_semantic_state_facade_reexports_schema_lifecycle_contract() -> None:
-    assert semantic_state.SEMANTIC_SCHEMA_VERSION == 7
+    assert semantic_state.SEMANTIC_SCHEMA_VERSION == 8
     assert semantic_state.SemanticStateError is semantic_schema.SemanticStateError
     assert semantic_state.semantic_database is semantic_schema.semantic_database
     assert semantic_state.initialize_semantic_state is semantic_schema.initialize_semantic_state
@@ -105,7 +105,7 @@ def test_declared_current_malformed_schema_is_rejected_without_repair(
 
     assert database.read_bytes() == before
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
 
 
 @pytest.mark.parametrize(
@@ -204,17 +204,17 @@ def test_new_schema_records_exact_complete_migration_history(tmp_path: Path) -> 
     semantic_schema.initialize_semantic_state(database)
 
     with semantic_schema.semantic_database(database, readonly=True) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
         assert (
             connection.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()[
                 0
             ]
-            == "7"
+            == "8"
         )
         assert tuple(
             int(row[0])
             for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
-        ) == (1, 2, 3, 4, 5, 6, 7)
+        ) == (1, 2, 3, 4, 5, 6, 7, 8)
 
 
 def test_retired_image_provenance_scrub_preserves_product_keys(

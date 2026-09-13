@@ -23,9 +23,10 @@ from neocortex.persistence.sqlite_connection import (
     ensure_private_state_directory,
     private_state_creation,
 )
+from .semantic_generation_control_schema import SEMANTIC_GENERATION_CONTROL_MIGRATION
 
 
-SEMANTIC_SCHEMA_VERSION = 7
+SEMANTIC_SCHEMA_VERSION = 8
 _SEMANTIC_PERFORMANCE_INDEXES = (
     (
         "embedding_jobs_claim_order_idx",
@@ -803,6 +804,8 @@ _MIGRATION_7 = (
         END""",
 )
 
+_MIGRATION_8 = SEMANTIC_GENERATION_CONTROL_MIGRATION
+
 
 def _execute_migration(
     connection: sqlite3.Connection,
@@ -1065,6 +1068,18 @@ def _migrate_to_v7(connection: sqlite3.Connection, applied_ns: int) -> None:
     )
 
 
+def _migrate_to_v8(connection: sqlite3.Connection, applied_ns: int) -> None:
+    """Add the owner-local generation-control projection and its triggers."""
+
+    _execute_migration(
+        connection,
+        _MIGRATION_8,
+        version=8,
+        description="transactional generation counters and source/cache hints",
+        applied_ns=applied_ns,
+    )
+
+
 _MIGRATIONS_BY_TARGET: dict[int, Callable[[sqlite3.Connection, int], None]] = {
     1: _migrate_to_v1,
     2: _migrate_to_v2,
@@ -1073,6 +1088,7 @@ _MIGRATIONS_BY_TARGET: dict[int, Callable[[sqlite3.Connection, int], None]] = {
     5: _migrate_to_v5,
     6: _migrate_to_v6,
     7: _migrate_to_v7,
+    8: _migrate_to_v8,
 }
 
 _TABLE_NAMES_BY_VERSION = {
@@ -1104,6 +1120,7 @@ _TABLE_NAMES_BY_VERSION = {
         "semantic_chunk_derivations",
         "semantic_derivation_outbox",
     ),
+    8: (),
 }
 
 _NAMED_INDEXES_BY_VERSION = {
@@ -1142,6 +1159,14 @@ _NAMED_INDEXES_BY_VERSION = {
         "semantic_chunk_derivations_chunk_idx": "semantic_chunk_derivations",
         "semantic_chunk_derivations_refresh_idx": "semantic_chunk_derivations",
         "semantic_derivation_outbox_scan_idx": "semantic_derivation_outbox",
+    },
+    8: {
+        "embedding_jobs_source_dirty_idx": "embedding_jobs",
+        "embedding_jobs_cached_pending_idx": "embedding_jobs",
+        "embedding_jobs_source_idx": "embedding_jobs",
+        "embedding_jobs_lease_expiry_idx": "embedding_jobs",
+        "semantic_chunk_derivations_item_refresh_idx": "semantic_chunk_derivations",
+        "semantic_chunk_derivations_publication_idx": "semantic_chunk_derivations",
     },
 }
 
@@ -1226,14 +1251,25 @@ def _named_indexes_through(version: int) -> dict[str, str]:
     }
 
 
-def _build_exact_current_schema(connection: sqlite3.Connection) -> None:
-    for target in range(1, SEMANTIC_SCHEMA_VERSION + 1):
+def _build_exact_schema(connection: sqlite3.Connection, version: int) -> None:
+    for target in range(1, version + 1):
         _MIGRATIONS_BY_TARGET[target](connection, target)
+
+
+def _build_exact_current_schema(connection: sqlite3.Connection) -> None:
+    _build_exact_schema(connection, SEMANTIC_SCHEMA_VERSION)
 
 
 @lru_cache(maxsize=1)
 def _exact_current_contract() -> SQLiteSchemaContract:
     return schema_contract_from_builder(_build_exact_current_schema)
+
+
+@lru_cache(maxsize=1)
+def _exact_v7_contract() -> SQLiteSchemaContract:
+    """Retain the complete pre-control DDL contract, including its triggers."""
+
+    return schema_contract_from_builder(lambda connection: _build_exact_schema(connection, 7))
 
 
 @lru_cache(maxsize=SEMANTIC_SCHEMA_VERSION)
@@ -1449,11 +1485,11 @@ def _validate_version_contract(
     version: int,
 ) -> None:
     _validate_schema(connection, version)
-    if version == SEMANTIC_SCHEMA_VERSION:
+    if version in {7, SEMANTIC_SCHEMA_VERSION}:
         try:
             validate_sqlite_schema_contract(
                 connection,
-                _exact_current_contract(),
+                _exact_v7_contract() if version == 7 else _exact_current_contract(),
                 label="semantic",
                 exact=True,
                 allowed_extra_indexes=tuple(
@@ -1463,6 +1499,24 @@ def _validate_version_contract(
         except SQLiteSchemaContractError as exc:
             raise SemanticStateError(str(exc)) from exc
     _validate_migration_history(connection, version)
+
+
+def _validate_semantic_read_schema(connection: sqlite3.Connection) -> int:
+    """Validate exactly the v7/v8 domain shared by explicitly compatible readers.
+
+    This does not initialize, migrate, repair or authorize a writer.  The
+    observed version is returned unchanged for locators, plans and head digests;
+    v6 and unknown future layouts cannot use this compatibility path.  v7 keeps
+    the metadata/history/DDL requirements it had when it was current.
+    """
+
+    version = _read_schema_version(connection)
+    if version not in {7, 8}:
+        raise SemanticStateError(f"semantic read schema must be 7 or 8; observed {version!r}")
+    if _read_metadata_version(connection, required=True) != version:
+        raise SemanticStateError("semantic read metadata and PRAGMA user_version disagree")
+    _validate_version_contract(connection, version)
+    return version
 
 
 # endregion [03]
