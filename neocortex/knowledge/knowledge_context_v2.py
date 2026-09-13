@@ -221,7 +221,23 @@ def _coverage(entries: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             if not isinstance(ranking, Mapping):
                 continue
             if ranking.get("available") and ranking.get("complete"):
-                continue
+                if ranking.get("executed") is not False:
+                    continue
+                ranking_name = ranking.get("name")
+                warnings = result.get("warnings")
+                marker = (
+                    f"ranking_unavailable:{ranking_name}"
+                    if isinstance(ranking_name, str)
+                    else None
+                )
+                if (
+                    marker is None
+                    or not isinstance(warnings, (list, tuple))
+                    or marker not in warnings
+                ):
+                    # Only the broker's exact warning marks a required gap;
+                    # legitimate omissions retain their previous coverage.
+                    continue
             name = _text(ranking.get("name", "unknown_channel"), 96)
             reason = _text(ranking.get("reason") or "incomplete_or_unavailable", 160)
             target = (
