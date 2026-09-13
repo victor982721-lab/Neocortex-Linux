@@ -222,6 +222,21 @@ reuse leen v7/v8 sólo con el contrato canónico de la versión observada. Conse
 v7 en avisos, planes, locators y digests; no lo presentan como v8 ni amplían los
 writers. Salud de estado sigue exigiendo el schema vigente para declarar healthy.
 
+La búsqueda vectorial exacta conserva el scan exhaustivo y acotado de miembros
+publicados. Para un único par modelo/generación, el miembro dirige los joins y
+el prefijo fijo del índice existente permite emitir `member_id` en orden sin
+ordenar filas anchas con vectores y provenance. No se fuerza un índice por
+nombre ni se repara un owner durante la lectura. La selección de varios pares,
+incluidas firmas repetidas, conserva su consulta y multiplicidad anteriores.
+La optimización no cambia scoring, precisión, desempates, filtros ni resolución:
+todos los vectores y JSON de los candidatos efectivamente escaneados se validan,
+incluso si no entran al top-K; la fila adicional que detecta un corte por
+`max_vectors` no se puntúa. Cada página mantiene su top-K local, cursor y
+cobertura, no una promesa de top-K global al concatenar páginas. La hidratación
+de evidencia mantiene sus revisiones, localizadores y fences. El costo continúa
+siendo exhaustivo: eliminar el sort temporal no garantiza una latencia constante
+ni un p95 objetivo, y no incorpora ANN ni nuevos modelos.
+
 La planificación organizativa selecciona una raíz de entrada con identidad y
 heads publicados antes de calcular destinos. Clasificación, elegibilidad,
 operación y ejecutabilidad son dimensiones distintas; los miembros/componentes

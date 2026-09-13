@@ -187,6 +187,24 @@ def _search_sql(
 ) -> str:
     _validate_text_scope(modality, text_scope)
     selected = ",".join("(?,?)" for _ in range(pair_count))
+    if pair_count == 1:
+        # One published pair is already ordered by the existing search index.
+        # Keep members outermost: sorting the wide vector/provenance projection
+        # only to restore member_id order would spill every candidate to disk.
+        selection = ""
+        # Do not require INDEXED BY: read-only callers may still inspect an
+        # owner with missing/changed index metadata without repairing it.
+        members = "FROM embedding_generation_members e"
+        pair_clause = "e.model_signature=? AND e.generation_id=? AND "
+        join = "CROSS JOIN"
+    else:
+        selection = f"WITH selected(model_signature,generation_id) AS (VALUES {selected})"
+        members = """FROM selected s
+        JOIN embedding_generation_members e
+          ON e.model_signature=s.model_signature
+         AND e.generation_id=s.generation_id"""
+        pair_clause = ""
+        join = "JOIN"
     if modality is EmbeddingModality.TEXT:
         scope_clause = {
             "all": "",
@@ -199,42 +217,34 @@ def _search_sql(
                 f"('{SEMANTIC_TITLE_SECTION_KIND}','video_metadata_title')"
             ),
         }[text_scope]
-        return f"""WITH selected(model_signature,generation_id) AS
-            (VALUES {selected})
+        return f"""{selection}
         SELECT e.member_id AS ref_id,e.entity_id,i.item_id,
             e.model_signature,m.vector_space,m.modality,e.generation_id,
             e.provenance_json,p.vector_blob,p.dimensions,p.vector_dtype
-        FROM selected s
-        JOIN embedding_generation_members e
-          ON e.model_signature=s.model_signature
-         AND e.generation_id=s.generation_id
-        JOIN embedding_models m ON m.model_signature=e.model_signature
-        JOIN vector_payloads p ON p.payload_id=e.payload_id
-        JOIN semantic_chunk_revisions c
+        {members}
+        {join} embedding_models m ON m.model_signature=e.model_signature
+        {join} vector_payloads p ON p.payload_id=e.payload_id
+        {join} semantic_chunk_revisions c
           ON c.chunk_revision_id=e.chunk_revision_id
-        JOIN semantic_item_revisions i
+        {join} semantic_item_revisions i
           ON i.item_revision_id=e.item_revision_id
-        JOIN embedding_generations g ON g.generation_id=e.generation_id
-        WHERE e.member_id>? AND e.entity_kind='text_chunk' AND g.status='ready'
+        {join} embedding_generations g ON g.generation_id=e.generation_id
+        WHERE {pair_clause}e.member_id>? AND e.entity_kind='text_chunk' AND g.status='ready'
           AND e.content_xxh3_128=c.content_xxh3_128
           AND e.content_bytes=c.content_bytes
           AND e.content_xxh3_64_guard=c.content_xxh3_64_guard
           {scope_clause}
         ORDER BY e.member_id LIMIT ?"""
-    return f"""WITH selected(model_signature,generation_id) AS
-        (VALUES {selected})
+    return f"""{selection}
     SELECT e.member_id AS ref_id,e.entity_id,i.item_id,
         e.model_signature,m.vector_space,m.modality,e.generation_id,
         e.provenance_json,p.vector_blob,p.dimensions,p.vector_dtype
-    FROM selected s
-    JOIN embedding_generation_members e
-      ON e.model_signature=s.model_signature
-     AND e.generation_id=s.generation_id
-    JOIN embedding_models m ON m.model_signature=e.model_signature
-    JOIN vector_payloads p ON p.payload_id=e.payload_id
-    JOIN semantic_item_revisions i ON i.item_revision_id=e.item_revision_id
-    JOIN embedding_generations g ON g.generation_id=e.generation_id
-    WHERE e.member_id>? AND e.entity_kind='image_item' AND g.status='ready'
+    {members}
+    {join} embedding_models m ON m.model_signature=e.model_signature
+    {join} vector_payloads p ON p.payload_id=e.payload_id
+    {join} semantic_item_revisions i ON i.item_revision_id=e.item_revision_id
+    {join} embedding_generations g ON g.generation_id=e.generation_id
+    WHERE {pair_clause}e.member_id>? AND e.entity_kind='image_item' AND g.status='ready'
       AND e.content_xxh3_128=i.content_xxh3_128
       AND e.content_bytes=i.content_bytes
       AND e.content_xxh3_64_guard=i.content_xxh3_64_guard
