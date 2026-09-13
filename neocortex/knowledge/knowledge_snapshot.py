@@ -307,6 +307,12 @@ def _validate_semantic_legacy_v8(connection: sqlite3.Connection) -> None:
         raise RuntimeError(f"semantic legacy read schema is {observed!r}; expected 8")
 
 
+def _validate_semantic_legacy_v9(connection: sqlite3.Connection) -> None:
+    observed = semantic_schema_module._validate_semantic_read_schema(connection)
+    if observed != 9:
+        raise RuntimeError(f"semantic legacy read schema is {observed!r}; expected 9")
+
+
 def _owner_spec(
     owner: str,
     validate: _Validator,
@@ -344,7 +350,11 @@ _OWNER_VALIDATORS: dict[
     "image": (_validate_image, ()),
     "semantic": (
         _validate_semantic,
-        ((7, _validate_semantic_legacy_v7), (8, _validate_semantic_legacy_v8)),
+        (
+            (7, _validate_semantic_legacy_v7),
+            (8, _validate_semantic_legacy_v8),
+            (9, _validate_semantic_legacy_v9),
+        ),
     ),
     "code": (validate_code_schema, ()),
     "archive": (_validate_archive, ()),

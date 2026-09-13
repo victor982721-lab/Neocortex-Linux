@@ -347,7 +347,7 @@ def _empty_owner_head(owner: str, *, schema_version: int | None = None) -> State
         raise PublicationHeadsSchemaError(f"unknown empty owner: {owner}")
     selected_schema = expected_schema if schema_version is None else schema_version
     if owner == "semantic":
-        allowed_schemas = {7, 8, expected_schema}
+        allowed_schemas = {7, 8, 9, expected_schema}
     else:
         allowed_schemas = {expected_schema}
     if selected_schema not in allowed_schemas:
@@ -512,7 +512,7 @@ def _semantic_schema(
         raise PublicationHeadsSchemaError("Semantic schema metadata is invalid") from exc
     if version is None:
         return None
-    if version not in {7, 8, 9}:
+    if version not in {7, 8, 9, 10}:
         raise PublicationHeadsSchemaError(
             f"Semantic schema is not the current publication schema: {version!r}"
         )

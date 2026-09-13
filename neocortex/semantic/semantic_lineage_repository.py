@@ -108,13 +108,15 @@ _SAFE_FAILURE_REASON_CODES = frozenset(
 )
 
 # Work receipts were introduced by v7.  v8 keeps their tables and payload
-# contract unchanged; v9 adds only the referenced event representation. Keep
+# contract unchanged; v9/v10 use the referenced event representation. Keep
 # these sets explicit rather than accepting future versions by comparison (or
 # by a ``>=`` check), so a newer schema cannot silently acquire old semantics.
-_RECEIPT_SCHEMA_VERSIONS = frozenset({7, 8, 9})
-_LINEAGE_SCHEMA_VERSIONS = frozenset({6, 7, 8, 9})
-_RECEIPT_LINEAGE_SCHEMA_VERSIONS = frozenset({7, 8, 9})
-_FORWARD_RECEIPT_SCHEMA_TRANSITIONS = frozenset({(7, 8), (7, 9), (8, 9)})
+_RECEIPT_SCHEMA_VERSIONS = frozenset({7, 8, 9, 10})
+_LINEAGE_SCHEMA_VERSIONS = frozenset({6, 7, 8, 9, 10})
+_RECEIPT_LINEAGE_SCHEMA_VERSIONS = frozenset({7, 8, 9, 10})
+_FORWARD_RECEIPT_SCHEMA_TRANSITIONS = frozenset(
+    {(7, 8), (7, 9), (7, 10), (8, 9), (8, 10), (9, 10)}
+)
 # Stable digest encoding for pre-existing manifest/clone/attestation IDs.  It
 # is not the schema advertised by a new receipt or locator.
 _SEMANTIC_IDENTITY_SCHEMA_VERSION = 7
@@ -229,7 +231,7 @@ def _require_current_receipt_schema(connection: sqlite3.Connection) -> int:
     version = _read_schema_version(connection)
     if version not in _RECEIPT_SCHEMA_VERSIONS:
         raise SemanticStateError(
-            "semantic work receipts require schema 7, 8 or 9; "
+            "semantic work receipts require schema 7, 8, 9 or 10; "
             f"observed {version!r}"
         )
     return int(version)
@@ -287,7 +289,7 @@ def _semantic_materialization_for_schema(
         or materialization.schema_version not in _RECEIPT_SCHEMA_VERSIONS
     ):
         raise SemanticStateError(
-            "semantic materialization owner schema metadata is not 7, 8 or 9"
+            "semantic materialization owner schema metadata is not 7, 8, 9 or 10"
         )
     if schema_version not in _RECEIPT_SCHEMA_VERSIONS:
         raise SemanticStateError(
@@ -327,7 +329,7 @@ def _normalize_receipt_semantic_schema_metadata(value: object) -> object:
                 or owner_schema not in _RECEIPT_SCHEMA_VERSIONS
             ):
                 raise SemanticStateError(
-                    "semantic materialization owner schema metadata is not 7, 8 or 9"
+                    "semantic materialization owner schema metadata is not 7, 8, 9 or 10"
                 )
             normalized["owner_schema_version"] = "<semantic-owner-schema>"
         return normalized
@@ -639,7 +641,7 @@ def _semantic_outbox_v2_payload(
     committed_ns: int,
     receipt_json: str,
 ) -> dict[str, object]:
-    """Build the compact referenced envelope for schema-9 writes."""
+    """Build the compact referenced envelope for schema-9/10 writes."""
 
     return {
         "schema": _SEMANTIC_DERIVATION_EVENT_V2,
@@ -880,8 +882,8 @@ def _validate_semantic_outbox_event_row(
         payload = _json_object(payload_raw, label="semantic derivation outbox payload")
         _validate_semantic_outbox_v1_payload(payload, row=row, receipt=receipt)
     elif payload_schema == _SEMANTIC_DERIVATION_EVENT_V2:
-        if owner_schema_version != 9:
-            raise SemanticStateError("semantic v2 outbox payload requires schema 9")
+        if owner_schema_version not in {9, 10}:
+            raise SemanticStateError("semantic v2 outbox payload requires schema 9 or 10")
         _validate_semantic_outbox_v2_payload(
             payload_raw,
             row=row,
@@ -1126,7 +1128,7 @@ def _record_work_receipt(
             committed_ns=committed_ns,
             receipt_json=stored_receipt_json,
         )
-        if schema_version == 9
+        if schema_version in {9, 10}
         else _semantic_outbox_v1_payload(
             receipt_id=receipt_id,
             receipt_key=receipt_key,
@@ -2335,7 +2337,7 @@ def _manifest_binding_fact(binding: Mapping[str, object]) -> dict[str, object]:
             or materialization.schema_version not in _RECEIPT_SCHEMA_VERSIONS
         ):
             raise SemanticStateError(
-                "semantic manifest locator schema metadata is not 7, 8 or 9"
+                "semantic manifest locator schema metadata is not 7, 8, 9 or 10"
             )
         # Owner-schema metadata is provenance, not content identity.  Pin the
         # digest representation to the last receipt schema so a v7 receipt
@@ -5174,7 +5176,7 @@ def explain_text_chunk_lineage(
         version = _read_schema_version(connection)
         if version not in _LINEAGE_SCHEMA_VERSIONS:
             raise SemanticStateError(
-                f"semantic lineage requires schema 6, 7, 8 or 9; observed {version!r}"
+                f"semantic lineage requires schema 6, 7, 8, 9 or 10; observed {version!r}"
             )
         _validate_version_contract(connection, version)
         chunk = connection.execute(
@@ -5260,7 +5262,7 @@ def find_text_chunks_for_source_revision(
         version = _read_schema_version(connection)
         if version not in _LINEAGE_SCHEMA_VERSIONS:
             raise SemanticStateError(
-                f"semantic lineage requires schema 6, 7, 8 or 9; observed {version!r}"
+                f"semantic lineage requires schema 6, 7, 8, 9 or 10; observed {version!r}"
             )
         _validate_version_contract(connection, version)
         if version in _RECEIPT_LINEAGE_SCHEMA_VERSIONS:
@@ -5324,7 +5326,7 @@ def read_semantic_derivation_outbox(
             return ()
         if version not in _RECEIPT_LINEAGE_SCHEMA_VERSIONS:
             raise SemanticStateError(
-                f"semantic derivation outbox requires schema 7, 8 or 9; observed {version!r}"
+                f"semantic derivation outbox requires schema 7, 8, 9 or 10; observed {version!r}"
             )
         _validate_version_contract(connection, version)
         rows = connection.execute(
@@ -5373,9 +5375,9 @@ def read_semantic_derivation_outbox(
                     receipt=receipt,
                 )
             elif payload_schema == _SEMANTIC_DERIVATION_EVENT_V2:
-                if version != 9:
+                if version not in {9, 10}:
                     raise SemanticStateError(
-                        "semantic v2 outbox payload requires schema 9"
+                        "semantic v2 outbox payload requires schema 9 or 10"
                     )
                 _validate_semantic_outbox_v2_payload(
                     payload_raw,

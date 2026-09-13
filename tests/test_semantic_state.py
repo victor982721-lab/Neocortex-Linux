@@ -354,7 +354,10 @@ def test_schema_is_explicit_current_and_integrity_checked(tmp_path: Path) -> Non
     database = tmp_path / "semantic.sqlite3"
     initialize_semantic_state(database)
     with semantic_database(database, readonly=True) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert (
+            connection.execute("PRAGMA user_version").fetchone()[0]
+            == state_module.SEMANTIC_SCHEMA_VERSION
+        )
         assert connection.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         tables = {
             str(row[0])
@@ -381,7 +384,10 @@ def test_v2_database_migrates_additively_to_current(tmp_path: Path) -> None:
     with semantic_database(database, readonly=True) as connection:
         columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(semantic_items)")}
         assert "source_revision_json" in columns
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert (
+            connection.execute("PRAGMA user_version").fetchone()[0]
+            == state_module.SEMANTIC_SCHEMA_VERSION
+        )
         assert (
             connection.execute(
                 """SELECT COUNT(*) FROM sqlite_master

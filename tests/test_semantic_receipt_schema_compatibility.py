@@ -639,7 +639,9 @@ def test_receipt_runtime_schema_metadata_is_strict_and_not_normalized(
     receipt = WorkReceipt.from_json(str(fixture["chunk_row"]["receipt_json"]))
     payload = json.loads(receipt.to_json())
     if runtime_mutation == "future":
-        payload["runtime"]["semantic_schema"] = "10"
+        payload["runtime"]["semantic_schema"] = str(
+            semantic_schema.SEMANTIC_SCHEMA_VERSION + 1
+        )
     elif runtime_mutation == "missing":
         payload["runtime"].pop("semantic_schema")
     elif runtime_mutation == "malformed":
@@ -674,7 +676,9 @@ def test_declared_v7_connection_cannot_read_v8_receipt_owner_as_legacy(
         semantic_lineage_repository.read_semantic_derivation_outbox(database)
 
 
-@pytest.mark.parametrize("bad_schema", (10, True))
+@pytest.mark.parametrize(
+    "bad_schema", (semantic_schema.SEMANTIC_SCHEMA_VERSION + 1, True)
+)
 def test_new_semantic_output_locator_schema_is_rejected_before_digest_or_replace(
     bad_schema: int | bool,
 ) -> None:
@@ -696,12 +700,12 @@ def test_semantic_locator_metadata_bad_values_are_not_normalized_to_supported_sc
         "materialization_id": "materialization:semantic:fixture",
         "owner_schema_version": bad_value,
     }
-    with pytest.raises(SemanticStateError, match="metadata is not 7, 8 or 9"):
+    with pytest.raises(SemanticStateError, match=r"metadata is not"):
         semantic_lineage_repository._normalize_receipt_semantic_schema_metadata(payload)
 
     missing = dict(payload)
     missing.pop("owner_schema_version")
-    with pytest.raises(SemanticStateError, match="metadata is not 7, 8 or 9"):
+    with pytest.raises(SemanticStateError, match=r"metadata is not"):
         semantic_lineage_repository._normalize_receipt_semantic_schema_metadata(missing)
 
 

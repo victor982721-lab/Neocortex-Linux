@@ -50,7 +50,7 @@ BASE_TIME_NS = 1_700_000_000_000_000_000
 STAGE_ID = "semantic.a04.receipt.outbox.benchmark"
 STAGE_VERSION = "semantic-a04-receipt-outbox-benchmark-v1"
 PROCESSING_SIGNATURE = "semantic-a04-receipt-outbox-benchmark-v1"
-EXPECTED_SCHEMA_TO_WIRE = {8: WIRE_V1, 9: WIRE_V2}
+EXPECTED_SCHEMA_TO_WIRE = {8: WIRE_V1, 9: WIRE_V2, 10: WIRE_V2}
 KNOWN_SEMANTIC_SCHEMAS = frozenset(EXPECTED_SCHEMA_TO_WIRE)
 STRESS_BINDING_COUNT = 200
 MAX_LARGE_PAYLOAD_COUNT = 10
@@ -755,9 +755,9 @@ def _normalize_work_receipt(value: object) -> object:
     runtime = normalized.get("runtime")
     if isinstance(runtime, dict):
         semantic_schema = runtime.get("semantic_schema")
-        if semantic_schema == "9":
+        if semantic_schema in ("9", "10"):
             runtime["semantic_schema"] = "8"
-        elif semantic_schema == 9 and not isinstance(semantic_schema, bool):
+        elif semantic_schema in (9, 10) and not isinstance(semantic_schema, bool):
             runtime["semantic_schema"] = 8
     for section_name in ("inputs", "outputs"):
         section = normalized.get(section_name)
@@ -776,7 +776,7 @@ def _normalize_work_receipt(value: object) -> object:
                 if (
                     isinstance(owner_schema_version, int)
                     and not isinstance(owner_schema_version, bool)
-                    and owner_schema_version in {8, 9}
+                    and owner_schema_version in {8, 9, 10}
                 ):
                     materialization["owner_schema_version"] = 8
     return normalized
@@ -1501,10 +1501,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             "wire_contracts": {
                 "schema8": WIRE_V1,
                 "schema9": WIRE_V2,
+                "schema10": WIRE_V2,
                 "receipt": RECEIPT_CONTRACT,
             },
             "comparison_normalization": {
-                "transition": "semantic owner 9 -> 8",
+                "transition": "semantic owner 9/10 -> 8",
                 "receipt_runtime_key": "runtime.semantic_schema",
                 "typed_locator": "MaterializationRef(owner=semantic).owner_schema_version",
                 "other_fields_normalized": False,

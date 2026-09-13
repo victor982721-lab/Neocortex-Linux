@@ -18,7 +18,7 @@ import pytest
 from neocortex.deduplication import FileSnapshot
 from neocortex.deduplication.persistence import initialize_inventory_schema
 from neocortex.knowledge import knowledge_search as knowledge_search_module
-from neocortex.semantic import semantic_preparation, semantic_service
+from neocortex.semantic import semantic_preparation, semantic_schema, semantic_service
 from neocortex.capabilities.formats.archive.state import (
     archive_database,
     initialize_archive_state,
@@ -1211,7 +1211,10 @@ def test_real_lexical_and_semantic_sqlite_share_physical_resource_identity(
     )
     model, generation_id = _create_published_semantic_pdf_state(state)
     with sqlite3.connect(state / "semantic.sqlite3") as connection:
-        assert int(connection.execute("PRAGMA user_version").fetchone()[0]) == 9
+        assert (
+            int(connection.execute("PRAGMA user_version").fetchone()[0])
+            == semantic_schema.SEMANTIC_SCHEMA_VERSION
+        )
     connection.close()
 
     snapshot = _snapshot(

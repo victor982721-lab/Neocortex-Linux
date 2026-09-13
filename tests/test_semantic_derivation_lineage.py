@@ -674,7 +674,10 @@ def test_v5_to_current_migration_does_not_fabricate_legacy_receipts(tmp_path: Pa
     assert lineage.embeddings[0].receipt_id is None
     assert read_semantic_derivation_outbox(database) == ()
     with semantic_schema.semantic_database(database, readonly=True) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert (
+            connection.execute("PRAGMA user_version").fetchone()[0]
+            == semantic_schema.SEMANTIC_SCHEMA_VERSION
+        )
         assert connection.execute("SELECT COUNT(*) FROM semantic_work_receipts").fetchone()[0] == 0
         assert (
             connection.execute("SELECT COUNT(*) FROM semantic_chunk_derivations").fetchone()[0] == 0

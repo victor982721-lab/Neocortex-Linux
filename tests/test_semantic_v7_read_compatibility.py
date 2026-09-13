@@ -1,8 +1,8 @@
-"""Read compatibility for Semantic schema v7, v8, and current schema v9.
+"""Read compatibility for Semantic schema v7, v8, v9, and current schema.
 
 These tests exercise the bounded read consumers that may accept a validated
 legacy Semantic owner.  Protocol/current writers are exercised at exact v8/v9
-for transition coverage, while the Code-link writer remains v9-only.  Every owner
+for transition coverage, while the Code-link writer remains current-only.  Every owner
 is a temporary fixture and every compatibility read is checked for byte stability.
 """
 
@@ -94,7 +94,7 @@ def _create_empty_v7(database: Path) -> None:
 
 
 def _create_v8_empty(database: Path) -> None:
-    """Build an actual v8 owner; do not initialize it as current v9."""
+    """Build an actual v8 owner; do not initialize it as current."""
 
     _create_empty_version(database, 8)
 
@@ -301,9 +301,11 @@ def test_semantic_read_schema_rejects_malformed_legacy_current_and_future_withou
         elif mutation == "index_missing":
             connection.execute("DROP INDEX embedding_jobs_source_dirty_idx")
         elif mutation == "future_version":
-            connection.execute("PRAGMA user_version=10")
+            future_version = semantic_schema.SEMANTIC_SCHEMA_VERSION + 1
+            connection.execute(f"PRAGMA user_version={future_version}")
             connection.execute(
-                "UPDATE metadata SET value='10' WHERE key='schema_version'"
+                "UPDATE metadata SET value=? WHERE key='schema_version'",
+                (str(future_version),),
             )
         else:  # pragma: no cover - parameter table is exhaustive
             raise AssertionError(mutation)
@@ -398,12 +400,15 @@ def test_knowledge_snapshot_accepts_v7_v8_or_v9_semantic_owner_and_preserves_war
     )
     semantic = _semantic_owner(snapshot)
     assert semantic.state is OwnerAvailability.AVAILABLE
-    assert semantic.expected_schema_version == 9
+    assert semantic.expected_schema_version == semantic_schema.SEMANTIC_SCHEMA_VERSION
     assert semantic.observed_schema_version == version
     assert snapshot.consistency is SnapshotConsistency.STABLE
-    if version < 9:
+    if version < semantic_schema.SEMANTIC_SCHEMA_VERSION:
         assert semantic.warning is not None
-        assert f"legacy_schema_read_compatible:{version}->9" in semantic.warning
+        assert (
+            f"legacy_schema_read_compatible:{version}->"
+            f"{semantic_schema.SEMANTIC_SCHEMA_VERSION}"
+        ) in semantic.warning
     else:
         assert semantic.warning is None
     assert _database_files(state_directory) == before
@@ -551,7 +556,11 @@ def test_code_read_availability_accepts_legacy_v7_v8_but_writer_rejects_them(
     assert available.generation_id == generation_id
     assert available.current_links == 1
 
-    with pytest.raises(CodeSemanticLinkError, match=r"schema.*9|9.*schema"):
+    current_schema = semantic_schema.SEMANTIC_SCHEMA_VERSION
+    with pytest.raises(
+        CodeSemanticLinkError,
+        match=rf"schema.*{current_schema}|{current_schema}.*schema",
+    ):
         synchronize_code_embedding_links(
             state_directory,
             generation_id=generation_id,
@@ -611,9 +620,11 @@ def test_semantic_plan_rejects_future_schema_as_typed_block_without_migration(
     semantic = tmp_path / "semantic.sqlite3"
     _create_v9_empty(semantic)
     with closing(sqlite3.connect(semantic)) as connection:
-        connection.execute("PRAGMA user_version=10")
+        future_version = semantic_schema.SEMANTIC_SCHEMA_VERSION + 1
+        connection.execute(f"PRAGMA user_version={future_version}")
         connection.execute(
-            "UPDATE metadata SET value='10' WHERE key='schema_version'"
+            "UPDATE metadata SET value=? WHERE key='schema_version'",
+            (str(future_version),),
         )
         connection.commit()
     before = _database_files(tmp_path)

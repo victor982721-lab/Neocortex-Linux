@@ -41,7 +41,7 @@ def _mutate(path: Path, sql: str) -> None:
 
 
 def test_semantic_state_facade_reexports_schema_lifecycle_contract() -> None:
-    assert semantic_state.SEMANTIC_SCHEMA_VERSION == 9
+    assert semantic_state.SEMANTIC_SCHEMA_VERSION == semantic_schema.SEMANTIC_SCHEMA_VERSION
     assert semantic_state.SemanticStateError is semantic_schema.SemanticStateError
     assert semantic_state.semantic_database is semantic_schema.semantic_database
     assert semantic_state.initialize_semantic_state is semantic_schema.initialize_semantic_state
@@ -105,7 +105,10 @@ def test_declared_current_malformed_schema_is_rejected_without_repair(
 
     assert database.read_bytes() == before
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert (
+            connection.execute("PRAGMA user_version").fetchone()[0]
+            == semantic_schema.SEMANTIC_SCHEMA_VERSION
+        )
 
 
 @pytest.mark.parametrize(
@@ -204,17 +207,20 @@ def test_new_schema_records_exact_complete_migration_history(tmp_path: Path) -> 
     semantic_schema.initialize_semantic_state(database)
 
     with semantic_schema.semantic_database(database, readonly=True) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert (
+            connection.execute("PRAGMA user_version").fetchone()[0]
+            == semantic_schema.SEMANTIC_SCHEMA_VERSION
+        )
         assert (
             connection.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()[
                 0
             ]
-            == "9"
+            == str(semantic_schema.SEMANTIC_SCHEMA_VERSION)
         )
         assert tuple(
             int(row[0])
             for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
-        ) == (1, 2, 3, 4, 5, 6, 7, 8, 9)
+        ) == tuple(range(1, semantic_schema.SEMANTIC_SCHEMA_VERSION + 1))
 
 
 def _create_version_eight(path: Path) -> None:
@@ -238,7 +244,10 @@ def test_v9_protocol_migration_preserves_v8_layout_and_history(tmp_path: Path) -
         )))
         assert semantic_schema._validate_semantic_read_schema(connection) == 8
 
-    semantic_schema.initialize_semantic_state(database)
+    with semantic_schema.semantic_database(database) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        semantic_schema._migrate_to_v9(connection, 9)
+        semantic_schema._store_schema_version(connection, 9)
 
     with semantic_schema.semantic_database(database, readonly=True) as connection:
         assert semantic_schema._validate_semantic_read_schema(connection) == 9

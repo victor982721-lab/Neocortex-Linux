@@ -23,12 +23,13 @@ from neocortex.semantic.semantic_state import (
     enqueue_text_chunk_jobs,
     finalize_embedding_generation,
     initialize_semantic_state,
+    register_embedding_model,
     semantic_database,
 )
 from tests.test_semantic_derivation_lineage import (
     _execute,
     _generation,
-    _initialize,
+    _model,
     _stage,
 )
 from tests.test_semantic_generation_control_projection import _migrate_v5_to_v7
@@ -48,9 +49,23 @@ _OUTBOX_UPDATE_TRIGGER = "semantic_derivation_outbox_no_update"
 _RECEIPT_UPDATE_TRIGGER = "semantic_work_receipts_no_update"
 
 
+def _initialize_v9_fixture_owner(database: Path):
+    """Build an exact historical v9 owner without current-schema initialization."""
+
+    with semantic_schema.semantic_database(database) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        semantic_schema._build_exact_schema(connection, 9)
+        semantic_schema._store_schema_version(connection, 9)
+        for _name, statement in semantic_schema._SEMANTIC_PERFORMANCE_INDEXES:
+            connection.execute(statement)
+    model = _model()
+    register_embedding_model(database, model, allow_test_provider=True)
+    return model
+
+
 def _v9_fixture(tmp_path: Path, *, item_id: str = "outbox-v9-item") -> dict[str, object]:
     database = tmp_path / "semantic.sqlite3"
-    model = _initialize(database)
+    model = _initialize_v9_fixture_owner(database)
     chunk = _stage(
         database,
         item_id=item_id,
@@ -406,7 +421,7 @@ def test_v9_hydrated_projection_replay_is_idempotent_and_preserves_full_receipts
 
 
 @pytest.mark.parametrize("version", (7, 8))
-def test_legacy_v1_events_and_receipt_bytes_survive_migration_to_v9_and_retry(
+def test_legacy_v1_events_and_receipt_bytes_survive_migration_to_current_and_retry(
     tmp_path: Path,
     version: int,
 ) -> None:
@@ -422,16 +437,19 @@ def test_legacy_v1_events_and_receipt_bytes_survive_migration_to_v9_and_retry(
     after_migration = _stored_rows(database)
     assert after_migration == before
     with semantic_database(database, readonly=True) as connection:
-        assert int(connection.execute("PRAGMA user_version").fetchone()[0]) == 9
+        assert (
+            int(connection.execute("PRAGMA user_version").fetchone()[0])
+            == semantic_schema.SEMANTIC_SCHEMA_VERSION
+        )
         assert str(
             connection.execute(
                 "SELECT value FROM metadata WHERE key='schema_version'"
             ).fetchone()[0]
-        ) == "9"
+        ) == str(semantic_schema.SEMANTIC_SCHEMA_VERSION)
         assert tuple(
             int(row[0])
             for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
-        ) == tuple(range(1, 10))
+        ) == tuple(range(1, semantic_schema.SEMANTIC_SCHEMA_VERSION + 1))
 
     receipt_row = _first_receipt_row(database)
     result, _kwargs = _record_collision(database, receipt_row)

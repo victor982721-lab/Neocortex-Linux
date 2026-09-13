@@ -1,8 +1,8 @@
-"""Adversarial coverage for the v8/v9 Semantic generation-control projection.
+"""Adversarial coverage for the v8/v9 and current Semantic generation-control projection.
 
 The tests keep the existing generation/receipt contracts as their oracle while
 exercising the v8 physical counters, source-dirty fanout and cache-payload
-hints through the current v9 owner.  All
+hints through the current owner.  All
 state is temporary and owner-local; no production database or corpus is used.
 """
 
@@ -103,8 +103,12 @@ def test_generation_control_rejects_unknown_or_inconsistent_owner_before_transit
     database, generation_id, _model, _chunks = _text_fixture(tmp_path)
     with semantic_database(database) as connection:
         if malformation == "future":
-            connection.execute("PRAGMA user_version=10")
-            connection.execute("UPDATE metadata SET value='10' WHERE key='schema_version'")
+            future_version = semantic_schema.SEMANTIC_SCHEMA_VERSION + 1
+            connection.execute(f"PRAGMA user_version={future_version}")
+            connection.execute(
+                "UPDATE metadata SET value=? WHERE key='schema_version'",
+                (str(future_version),),
+            )
         elif malformation == "missing_metadata":
             connection.execute("DELETE FROM metadata WHERE key='schema_version'")
         else:
@@ -295,7 +299,7 @@ def _image_fixture(tmp_path: Path) -> tuple[Path, int, EmbeddingModelSpec, Seman
     return database, generation_id, model, item, image_path
 
 
-def test_current_v9_schema_persists_v8_control_columns_indexes_triggers_and_metadata(
+def test_current_schema_persists_v8_control_columns_indexes_triggers_and_metadata(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "semantic.sqlite3"
@@ -316,14 +320,17 @@ def test_current_v9_schema_persists_v8_control_columns_indexes_triggers_and_meta
         "text_chunks_embedding_jobs_source_dirty_delete",
     }
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert (
+            connection.execute("PRAGMA user_version").fetchone()[0]
+            == semantic_schema.SEMANTIC_SCHEMA_VERSION
+        )
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
-        ).fetchone()[0] == "9"
+        ).fetchone()[0] == str(semantic_schema.SEMANTIC_SCHEMA_VERSION)
         assert tuple(
             int(row[0])
             for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
-        ) == tuple(range(1, 10))
+        ) == tuple(range(1, semantic_schema.SEMANTIC_SCHEMA_VERSION + 1))
         columns = {
             str(row[1]): (str(row[2]).upper(), int(row[3]), row[4])
             for row in connection.execute("PRAGMA table_info(embedding_jobs)")
@@ -355,7 +362,7 @@ def test_current_v9_schema_persists_v8_control_columns_indexes_triggers_and_meta
         assert all(triggers[name].startswith("CREATE TRIGGER") for name in expected_triggers)
 
 
-def test_current_v9_initialization_rejects_missing_control_trigger_without_repair(
+def test_current_schema_initialization_rejects_missing_control_trigger_without_repair(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "missing-trigger.sqlite3"
@@ -369,7 +376,10 @@ def test_current_v9_initialization_rejects_missing_control_trigger_without_repai
         initialize_semantic_state(database)
     assert database.read_bytes() == after_drop
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert (
+            connection.execute("PRAGMA user_version").fetchone()[0]
+            == semantic_schema.SEMANTIC_SCHEMA_VERSION
+        )
         assert connection.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' "
             "AND name='embedding_jobs_control_insert'"
@@ -518,7 +528,7 @@ def test_v7_terminal_member_only_head_preserves_stored_counts_after_v8(
     )
 
 
-def test_current_v9_receipt_metadata_is_truthful_and_refs_remain_structured(
+def test_current_receipt_metadata_is_truthful_and_refs_remain_structured(
     tmp_path: Path,
 ) -> None:
     database, generation_id, model, _chunks = _text_fixture(tmp_path)
@@ -545,7 +555,9 @@ def test_current_v9_receipt_metadata_is_truthful_and_refs_remain_structured(
         lease.job_id,
     )
     receipt = json.loads(str(row[5]))
-    assert receipt["runtime"]["semantic_schema"] == "9"
+    assert receipt["runtime"]["semantic_schema"] == str(
+        semantic_schema.SEMANTIC_SCHEMA_VERSION
+    )
     assert receipt["stage"]["stage_id"] == "semantic.embedding"
     assert receipt["outcome"] == "succeeded"
     assert len(receipt["outputs"]) == 2

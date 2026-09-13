@@ -50,8 +50,13 @@ def _comparison_receipt() -> dict:
     }
 
 
-def test_comparison_only_normalizes_typed_semantic_provenance_without_mutation() -> None:
+@pytest.mark.parametrize("version", (9, 10))
+def test_comparison_only_normalizes_typed_semantic_provenance_without_mutation(
+    version: int,
+) -> None:
     receipt = _comparison_receipt()
+    receipt["runtime"]["semantic_schema"] = str(version)
+    receipt["inputs"][0]["materialization"]["owner_schema_version"] = version
     before = deepcopy(receipt)
     result = benchmark._normalize_work_receipt(receipt)
     assert receipt == before

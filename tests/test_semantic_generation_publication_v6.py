@@ -3089,7 +3089,10 @@ def test_populated_v5_migration_preserves_legacy_rows_and_publishes_snapshot(
     assert resolved[0].path == "C:/fixtures/legacy-document.pdf"
     assert resolved[0].snippet == "legacy published transformer record"
     with semantic_database(database, readonly=True) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert (
+            connection.execute("PRAGMA user_version").fetchone()[0]
+            == semantic_schema.SEMANTIC_SCHEMA_VERSION
+        )
         assert connection.execute("SELECT COUNT(*) FROM text_embeddings").fetchone()[0] == 1
         assert (
             connection.execute("SELECT COUNT(*) FROM embedding_generation_members").fetchone()[0]

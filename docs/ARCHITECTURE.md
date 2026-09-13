@@ -218,7 +218,7 @@ Las invalidaciones por item parten de sus chunks antes de buscar jobs; los
 recorrer toda la cohorte al publicar cada item durante el staging. No cambian
 el conjunto publicado ni eliminan la validación de ordinals duplicados.
 Knowledge, observación de heads, availability de búsqueda Code y preflight de
-reuse leen v7/v8/v9 sólo con el contrato canónico de la versión observada. Conservan
+reuse leen v7/v8/v9/v10 sólo con el contrato canónico de la versión observada. Conservan
 esa versión en avisos, planes, locators y digests; no la actualizan por lectura ni amplían los
 writers. Salud de estado sigue exigiendo el schema vigente para declarar healthy.
 
@@ -235,6 +235,23 @@ Los eventos v1 existentes permanecen legibles y bytewise intactos; los writers
 compatibles que aún operen sobre v7/v8 siguen emitiendo v1. Un binario anterior
 rechaza el owner v9 por versión en lugar de interpretar el wire nuevo como v8.
 No hay compactación, GC, migración de estado productivo ni instalación implícita.
+
+El schema v10 cambia sólo el layout físico de `text_chunks` a rowid, con
+`chunk_id TEXT PRIMARY KEY NOT NULL` explícito y los mismos dos índices de
+consulta. El layout anterior almacenaba filas amplias en un B-tree de claves;
+rowid evita su umbral de overflow sin cambiar chunks, compresión ni vectores.
+La migración copia y compara todas las columnas y clases de almacenamiento
+antes de sustituir la tabla, preserva la FK de `text_embeddings` y recrea los
+seis triggers canónicos de invalidación de fuente. Una copia equivalente de
+`text_embeddings` apunta al nuevo parent antes de retirar el par anterior;
+preserva ref_ids y el high-water del allocator. Las referencias se actualizan
+al renombrar las copias ya verificadas. FK permanece habilitada e inmediata
+durante toda la transacción, sin activar deferral ni resetear su tracking.
+Se ejecutan también `foreign_key_check` e `integrity_check` completos. Cualquier
+error revierte datos, DDL y marcadores juntos. No se ejecuta
+VACUUM ni se promete reducir el archivo existente: las páginas liberadas quedan
+disponibles para reutilización. Receipts históricos y protocolo wire v2 se
+conservan; leer un owner antiguo no dispara esta migración.
 
 La búsqueda vectorial exacta conserva el scan exhaustivo y acotado de miembros
 publicados. Para un único par modelo/generación, el miembro dirige los joins y

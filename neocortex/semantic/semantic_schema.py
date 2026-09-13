@@ -26,7 +26,7 @@ from neocortex.persistence.sqlite_connection import (
 from .semantic_generation_control_schema import SEMANTIC_GENERATION_CONTROL_MIGRATION
 
 
-SEMANTIC_SCHEMA_VERSION = 9
+SEMANTIC_SCHEMA_VERSION = 10
 _SEMANTIC_PERFORMANCE_INDEXES = (
     (
         "embedding_jobs_claim_order_idx",
@@ -1097,6 +1097,192 @@ def _migrate_to_v9(connection: sqlite3.Connection, applied_ns: int) -> None:
     )
 
 
+_TEXT_CHUNK_V10_COLUMNS = (
+    "chunk_id", "item_id", "ordinal", "section_kind", "section_id",
+    "start_char", "end_char", "text_zlib", "text_chars", "content_xxh3_128",
+    "content_bytes", "content_xxh3_64_guard", "chunking_signature",
+    "provenance_json", "refresh_token", "active", "updated_ns",
+)
+_TEXT_CHUNK_V10_CANDIDATE = "__semantic_text_chunks_v10_candidate"
+_TEXT_EMBEDDING_V10_COLUMNS = (
+    "ref_id", "chunk_id", "model_signature", "payload_id", "generation_id",
+    "content_xxh3_128", "content_bytes", "content_xxh3_64_guard", "provenance_json",
+    "updated_ns",
+)
+_TEXT_EMBEDDING_V10_CANDIDATE = "__semantic_text_embeddings_v10_candidate"
+
+
+def _verify_v10_layout_copy(
+    connection: sqlite3.Connection, *, source: str, candidate: str,
+    columns: tuple[str, ...], identity: str,
+) -> None:
+    """Compare complete copies using only the caller's canonical identifiers."""
+
+    original_count = int(connection.execute(f"SELECT COUNT(*) FROM {source}").fetchone()[0])
+    copied_count = int(connection.execute(f"SELECT COUNT(*) FROM {candidate}").fetchone()[0])
+    if original_count != copied_count:
+        raise SemanticStateError(f"semantic v10 {source} copy count mismatch")
+    differences = " OR ".join(
+        f"original.{name} IS NOT copied.{name} "
+        f"OR typeof(original.{name}) IS NOT typeof(copied.{name})"
+        for name in columns
+    )
+    mismatch = connection.execute(
+        f"SELECT 1 FROM {source} original "
+        f"LEFT JOIN {candidate} copied USING({identity}) "
+        f"WHERE copied.{identity} IS NULL OR {differences} LIMIT 1",
+    ).fetchone()
+    if mismatch is not None:
+        raise SemanticStateError(f"semantic v10 {source} copy value mismatch")
+
+
+def _verify_text_chunks_v10_copy(connection: sqlite3.Connection) -> None:
+    """Compare every stored value and storage class before retiring the source.
+
+    Both tables have unique, non-null chunk identities. Equal counts plus an
+    indexed left join of every source row therefore also exclude extra rows.
+    No decoding, recompression, fingerprinting or receipt rewrite is involved.
+    """
+
+    _verify_v10_layout_copy(
+        connection, source="text_chunks", candidate=_TEXT_CHUNK_V10_CANDIDATE,
+        columns=_TEXT_CHUNK_V10_COLUMNS, identity="chunk_id",
+    )
+
+
+def _verify_text_embeddings_v10_copy(connection: sqlite3.Connection) -> None:
+    """Preserve the legacy FK child, including its public ref_id and BLOBs."""
+
+    _verify_v10_layout_copy(
+        connection, source="text_embeddings", candidate=_TEXT_EMBEDDING_V10_CANDIDATE,
+        columns=_TEXT_EMBEDDING_V10_COLUMNS, identity="ref_id",
+    )
+
+
+def _migrate_to_v10(connection: sqlite3.Connection, applied_ns: int) -> None:
+    """Change only the physical chunk layout in the initializer's transaction.
+
+    Foreign keys remain immediate and enabled throughout. An equivalent copy
+    of the legacy text_embeddings child points to the verified new parent.
+    Retire the original child before its now-unreferenced parent, then rename
+    both copies. No deferred tracking is disabled/reset and no rows are lost.
+    The child's explicit ref_ids and AUTOINCREMENT high-water stay unchanged.
+    The enclosing initializer rolls back DDL, data and history on any failure.
+    """
+
+    if not connection.in_transaction:
+        raise SemanticStateError("semantic v10 migration requires an atomic transaction")
+    if int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
+        raise SemanticStateError("semantic v10 migration requires foreign keys enabled")
+    if int(connection.execute("PRAGMA defer_foreign_keys").fetchone()[0]) != 0:
+        raise SemanticStateError("semantic v10 migration requires immediate foreign keys initially")
+    _validate_version_contract(connection, 9)
+    if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise SemanticStateError("semantic v10 migration refuses existing foreign-key violations")
+    sequence_rows = connection.execute(
+        "SELECT seq FROM sqlite_sequence WHERE name='text_embeddings'",
+    ).fetchall()
+    if len(sequence_rows) > 1 or (sequence_rows and type(sequence_rows[0][0]) is not int):
+        raise SemanticStateError("semantic v10 legacy embedding allocator is malformed")
+    candidate_ddl = f"""CREATE TABLE {_TEXT_CHUNK_V10_CANDIDATE}(
+        chunk_id TEXT PRIMARY KEY NOT NULL,
+        item_id TEXT NOT NULL,
+        ordinal INTEGER NOT NULL CHECK(ordinal>=0),
+        section_kind TEXT NOT NULL,
+        section_id TEXT NOT NULL,
+        start_char INTEGER NOT NULL CHECK(start_char>=0),
+        end_char INTEGER NOT NULL CHECK(end_char>start_char),
+        text_zlib BLOB NOT NULL,
+        text_chars INTEGER NOT NULL CHECK(text_chars>0),
+        content_xxh3_128 TEXT NOT NULL,
+        content_bytes INTEGER NOT NULL CHECK(content_bytes>0),
+        content_xxh3_64_guard TEXT NOT NULL,
+        chunking_signature TEXT NOT NULL,
+        provenance_json TEXT NOT NULL,
+        refresh_token TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+        updated_ns INTEGER NOT NULL,
+        FOREIGN KEY(item_id) REFERENCES semantic_items(item_id)
+    )"""
+    connection.execute(candidate_ddl)
+    columns = ",".join(_TEXT_CHUNK_V10_COLUMNS)
+    connection.execute(
+        f"INSERT INTO {_TEXT_CHUNK_V10_CANDIDATE}({columns}) "
+        f"SELECT {columns} FROM text_chunks ORDER BY chunk_id",
+    )
+    _verify_text_chunks_v10_copy(connection)
+    child_ddl = next(
+        statement for statement in _MIGRATION_1
+        if statement.startswith("CREATE TABLE text_embeddings(")
+    )
+    connection.execute(child_ddl.replace(
+        "CREATE TABLE text_embeddings(", f"CREATE TABLE {_TEXT_EMBEDDING_V10_CANDIDATE}(", 1,
+    ).replace(
+        "REFERENCES text_chunks(", f"REFERENCES {_TEXT_CHUNK_V10_CANDIDATE}(", 1,
+    ))
+    child_columns = ",".join(_TEXT_EMBEDDING_V10_COLUMNS)
+    connection.execute(
+        f"INSERT INTO {_TEXT_EMBEDDING_V10_CANDIDATE}({child_columns}) "
+        f"SELECT {child_columns} FROM text_embeddings ORDER BY ref_id",
+    )
+    _verify_text_embeddings_v10_copy(connection)
+    source_triggers = tuple(
+        (statement.split()[2], statement)
+        for statement in _MIGRATION_8
+        if statement.startswith((
+            "CREATE TRIGGER text_chunks_embedding_jobs_source_dirty_",
+            "CREATE TRIGGER semantic_items_embedding_jobs_source_dirty_",
+        ))
+    )
+    if len(source_triggers) != 6:  # pragma: no cover - canonical DDL invariant
+        raise SemanticStateError("semantic v10 source trigger topology is incomplete")
+    for name, _statement in source_triggers:
+        connection.execute(f'DROP TRIGGER "{name}"')
+    connection.execute("DROP TABLE text_embeddings")
+    connection.execute("DROP TABLE text_chunks")
+    connection.execute(f"ALTER TABLE {_TEXT_CHUNK_V10_CANDIDATE} RENAME TO text_chunks")
+    connection.execute(f"ALTER TABLE {_TEXT_EMBEDDING_V10_CANDIDATE} RENAME TO text_embeddings")
+    if sequence_rows:
+        updated = connection.execute(
+            "UPDATE sqlite_sequence SET seq=? WHERE name='text_embeddings'", (sequence_rows[0][0],),
+        )
+        if updated.rowcount == 0:
+            connection.execute(
+                "INSERT INTO sqlite_sequence(name,seq) VALUES('text_embeddings',?)",
+                (sequence_rows[0][0],),
+            )
+    else:
+        # INSERT SELECT on an empty child can create a zero sequence entry.
+        # Preserve absence as well as a populated owner's prior high-water.
+        connection.execute("DELETE FROM sqlite_sequence WHERE name='text_embeddings'")
+    for statement in _MIGRATION_1:
+        if statement.startswith((
+            "CREATE INDEX text_chunks_item_active_idx",
+            "CREATE INDEX text_chunks_refresh_idx",
+            "CREATE INDEX text_embeddings_search_idx",
+        )):
+            connection.execute(statement)
+    for _name, statement in source_triggers:
+        connection.execute(statement)
+    if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise SemanticStateError("semantic v10 migration created a foreign-key violation")
+    integrity = tuple(str(row[0]) for row in connection.execute("PRAGMA integrity_check"))
+    if integrity != ("ok",):
+        raise SemanticStateError(f"semantic v10 migration failed integrity_check: {integrity!r}")
+    if (
+        int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) != 1
+        or int(connection.execute("PRAGMA defer_foreign_keys").fetchone()[0]) != 0
+    ):
+        raise SemanticStateError("semantic v10 migration lost immediate foreign-key enforcement")
+    _execute_migration(
+        connection,
+        (),
+        version=10,
+        description="rowid text chunk layout with explicit non-null identity",
+        applied_ns=applied_ns,
+    )
+
+
 _MIGRATIONS_BY_TARGET: dict[int, Callable[[sqlite3.Connection, int], None]] = {
     1: _migrate_to_v1,
     2: _migrate_to_v2,
@@ -1107,6 +1293,7 @@ _MIGRATIONS_BY_TARGET: dict[int, Callable[[sqlite3.Connection, int], None]] = {
     7: _migrate_to_v7,
     8: _migrate_to_v8,
     9: _migrate_to_v9,
+    10: _migrate_to_v10,
 }
 
 _TABLE_NAMES_BY_VERSION = {
@@ -1140,6 +1327,7 @@ _TABLE_NAMES_BY_VERSION = {
     ),
     8: (),
     9: (),
+    10: (),
 }
 
 _NAMED_INDEXES_BY_VERSION = {
@@ -1188,6 +1376,7 @@ _NAMED_INDEXES_BY_VERSION = {
         "semantic_chunk_derivations_publication_idx": "semantic_chunk_derivations",
     },
     9: {},
+    10: {},
 }
 
 
@@ -1299,10 +1488,18 @@ def _exact_v8_contract() -> SQLiteSchemaContract:
     return schema_contract_from_builder(lambda connection: _build_exact_schema(connection, 8))
 
 
+@lru_cache(maxsize=1)
+def _exact_v9_contract() -> SQLiteSchemaContract:
+    """Keep the pre-rowid layout exact for compatible historical readers."""
+
+    return schema_contract_from_builder(lambda connection: _build_exact_schema(connection, 9))
+
+
 @lru_cache(maxsize=SEMANTIC_SCHEMA_VERSION)
 def _canonical_contract(version: int) -> _SchemaContract:
     connection = sqlite3.connect(":memory:")
     try:
+        connection.execute("PRAGMA foreign_keys=ON")
         for target in range(1, version + 1):
             _MIGRATIONS_BY_TARGET[target](connection, target)
 
@@ -1478,7 +1675,7 @@ def _read_schema_version(connection: sqlite3.Connection) -> int | None:
         )
     metadata_version = _read_metadata_version(
         connection,
-        required=version in {8, SEMANTIC_SCHEMA_VERSION},
+        required=version in {8, 9, SEMANTIC_SCHEMA_VERSION},
     )
     if metadata_version is not None and metadata_version != version:
         raise SemanticStateError(
@@ -1512,10 +1709,11 @@ def _validate_version_contract(
     version: int,
 ) -> None:
     _validate_schema(connection, version)
-    if version in {7, 8, SEMANTIC_SCHEMA_VERSION}:
+    if version in {7, 8, 9, SEMANTIC_SCHEMA_VERSION}:
         exact_contract = (
             _exact_v7_contract() if version == 7
             else _exact_v8_contract() if version == 8
+            else _exact_v9_contract() if version == 9
             else _exact_current_contract()
         )
         try:
@@ -1534,7 +1732,7 @@ def _validate_version_contract(
 
 
 def _validate_semantic_read_schema(connection: sqlite3.Connection) -> int:
-    """Validate exactly the v7/v8/v9 domain shared by compatible readers.
+    """Validate exactly the v7/v8/v9/v10 domain shared by compatible readers.
 
     This does not initialize, migrate, repair or authorize a writer.  The
     observed version is returned unchanged for locators, plans and head digests;
@@ -1543,8 +1741,8 @@ def _validate_semantic_read_schema(connection: sqlite3.Connection) -> int:
     """
 
     version = _read_schema_version(connection)
-    if version not in {7, 8, 9}:
-        raise SemanticStateError(f"semantic read schema must be 7, 8 or 9; observed {version!r}")
+    if version not in {7, 8, 9, 10}:
+        raise SemanticStateError(f"semantic read schema must be 7, 8, 9 or 10; observed {version!r}")
     if _read_metadata_version(connection, required=True) != version:
         raise SemanticStateError("semantic read metadata and PRAGMA user_version disagree")
     _validate_version_contract(connection, version)

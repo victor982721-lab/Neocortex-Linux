@@ -1933,7 +1933,7 @@ def _current_job_matches_source(modality: EmbeddingModality) -> str:
 
 
 def _has_generation_job_control(connection: sqlite3.Connection) -> bool:
-    """Select the atomically migrated v8/v9 projection, never a local cache.
+    """Select the atomically migrated v8/v9/v10 projection, never a local cache.
 
     Legacy readers/writers retain their authoritative scans until the normal
     owner initializer has migrated the database.  Schema validation remains at
@@ -1943,7 +1943,7 @@ def _has_generation_job_control(connection: sqlite3.Connection) -> bool:
     version = _read_schema_version(connection)
     if version is None:
         raise SemanticStateError("semantic generation control requires an initialized owner")
-    return version in {8, 9}
+    return version in {8, 9, 10}
 
 
 def _mark_stale_jobs(

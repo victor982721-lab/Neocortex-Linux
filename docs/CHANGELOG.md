@@ -4,6 +4,17 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-13 — Layout físico de chunks Semantic
+
+- El schema 10 sustituye `text_chunks WITHOUT ROWID` por una tabla rowid con
+  identidad textual explícitamente `NOT NULL`, manteniendo columnas, bytes,
+  constraints, índices de consulta y causalidad.
+- La inicialización migra atómicamente después de validar el schema anterior
+  y comparar la copia completa. Conserva las FKs y los triggers de invalidación;
+  un error revierte también la historia de migraciones.
+- Readers compatibles conservan los schemas reales 7/8/9 y rechazan versiones
+  futuras. No hay VACUUM, GC, cambio de retención ni instalación implícita.
+
 ## 2026-09-11 — Reset selectivo de estado (implementado en fuente)
 
 - Se añade `Neocortex state reset` con scopes explícitos `runs`,
