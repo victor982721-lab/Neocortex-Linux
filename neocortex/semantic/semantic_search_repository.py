@@ -8,7 +8,10 @@ import unicodedata
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from .semantic_exact_index import ExactIndexHandle
 
 from .semantic_item_repository import _decode_chunk_text
 from .semantic_lexical import query_centered_snippet, query_term_support
@@ -514,6 +517,7 @@ def _search_exact_page(
     cancellation_check: Callable[[], None] | None = None,
     diagnostic_item_ids: tuple[str, ...] = (),
     diagnostics: dict[str, object] | None = None,
+    exact_index: ExactIndexHandle | None = None,
 ) -> ExactSearchPage:
     """Shared bounded scan for discovery and concrete-evidence retrieval."""
 
@@ -534,6 +538,18 @@ def _search_exact_page(
     if cancellation_check is not None:
         cancellation_check()
     query_vector, _ = normalize_vector(query.vector, query.dimensions)
+    if exact_index is not None:
+        from .semantic_exact_index import _try_exact_index_page
+
+        indexed = _try_exact_index_page(
+            path, query, query_vector, exact_index=exact_index,
+            limit=limit, max_vectors=max_vectors, after_ref_id=after_ref_id,
+            batch_size=batch_size, text_scope=text_scope, evidence_mode=evidence_mode,
+            diagnostic_item_ids=selected_diagnostic_ids,
+            cancellation_check=cancellation_check,
+        )
+        if indexed is not None:
+            return indexed
     heap: list[tuple[float, int, SearchHit]] = []
     best_by_item: dict[str, tuple[float, int, SearchHit]] = {}
     best_by_evidence: dict[tuple[str, str], tuple[float, int, SearchHit]] = {}
@@ -627,6 +643,7 @@ def search_exact_page(
     cancellation_check: Callable[[], None] | None = None,
     diagnostic_item_ids: tuple[str, ...] = (),
     diagnostics: dict[str, object] | None = None,
+    exact_index: ExactIndexHandle | None = None,
 ) -> ExactSearchPage:
     """Scan discovery hits, retaining the best entity per resource item."""
 
@@ -642,6 +659,7 @@ def search_exact_page(
         cancellation_check=cancellation_check,
         diagnostic_item_ids=diagnostic_item_ids,
         diagnostics=diagnostics,
+        **({"exact_index": exact_index} if exact_index is not None else {}),
     )
 
 
@@ -657,6 +675,7 @@ def search_exact_evidence_page(
     cancellation_check: Callable[[], None] | None = None,
     diagnostic_item_ids: tuple[str, ...] = (),
     diagnostics: dict[str, object] | None = None,
+    exact_index: ExactIndexHandle | None = None,
 ) -> ExactSearchPage:
     """Scan concrete evidence while retaining several entities per resource."""
 
@@ -672,6 +691,7 @@ def search_exact_evidence_page(
         cancellation_check=cancellation_check,
         diagnostic_item_ids=diagnostic_item_ids,
         diagnostics=diagnostics,
+        **({"exact_index": exact_index} if exact_index is not None else {}),
     )
 
 

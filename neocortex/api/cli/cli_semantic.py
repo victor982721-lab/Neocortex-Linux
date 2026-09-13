@@ -11,7 +11,7 @@ from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NotRequired, TypedDict
 
 from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
 from neocortex.persistence.state_publication import StatePublicationRecoveryRequired
@@ -21,6 +21,7 @@ from neocortex.platform.policy import stat_birthtime_ns
 if TYPE_CHECKING:
     from neocortex.persistence.state_publication import StateOwnerHead
     from neocortex.semantic.semantic_models import EmbeddingModelSpec
+    from neocortex.semantic.semantic_exact_index import ExactIndexHandle
     from neocortex.semantic.semantic_service_contracts import SemanticIndexResult
     from neocortex.semantic.semantic_work_budget import SemanticWorkBudget
 
@@ -30,6 +31,7 @@ __all__ = [
     "run_integrated_all_semantic_index",
     "run_semantic_classify",
     "run_semantic_evidence",
+    "run_semantic_exact_index_build",
     "run_semantic_image_calibrate",
     "run_semantic_index",
     "run_semantic_plan",
@@ -42,6 +44,25 @@ __all__ = [
 _INTEGRATED_START_METADATA_TIMEOUT_SECONDS = 60.0
 _INTEGRATED_START_SNAPSHOT_BYTES = 256 * 1024 * 1024
 _INTEGRATED_FRAMEWORK_CONTROL_READ_TIMEOUT_SECONDS = 1.0
+_EXACT_INDEX_MAX_ROWS = 500_000
+_EXACT_INDEX_MAX_TOTAL_BYTES = 4_000_000_000
+
+
+class _SemanticSearchKeywordArgs(TypedDict):
+    """Typed keyword set for the public Semantic search facade."""
+
+    limit: int
+    max_vectors: int
+    include_text: bool
+    include_images: bool
+    include_lexical: bool
+    text_model: EmbeddingModelSpec | None
+    model_cache: Path | None
+    local_files_only: bool
+    threads: int | None
+    diagnostic_item_ids: tuple[str, ...]
+    cancellation_check: NotRequired[Callable[[], None]]
+    exact_index: NotRequired[ExactIndexHandle]
 
 # region [01] Multimodal semantic index
 
@@ -333,6 +354,164 @@ def _bounded_framework_metadata_read(
         if failure is not None:
             raise failure
         controls.check()
+
+
+def _exact_index_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":"))
+
+
+def _print_exact_index_result(
+    operation: str,
+    directory: Path,
+    summary: Mapping[str, object],
+    usage: Mapping[str, object],
+) -> None:
+    _print_console_line(
+        f"{operation} directory={json.dumps(str(directory), ensure_ascii=False)} "
+        f"summary={_exact_index_json(dict(summary))} "
+        f"usage={_exact_index_json(dict(usage))}"
+    )
+
+
+def _print_exact_index_usage(directory: Path, handle: object) -> None:
+    try:
+        usage_summary = getattr(handle, "usage_summary", None)
+        if not callable(usage_summary):
+            raise TypeError("exact-index handle has no usage_summary")
+        usage = usage_summary()
+    except Exception as exc:  # diagnostics must not hide a completed search
+        _print_console_line(
+            f"WARNING semantic-exact-index usage unavailable "
+            f"directory={json.dumps(str(directory), ensure_ascii=False)} "
+            f"error={type(exc).__name__}"
+        )
+        return
+    if not isinstance(usage, Mapping):
+        _print_console_line(
+            f"WARNING semantic-exact-index usage has invalid shape "
+            f"directory={json.dumps(str(directory), ensure_ascii=False)}"
+        )
+        return
+    _print_console_line(
+        f"SEMANTIC_EXACT_INDEX_USAGE directory={json.dumps(str(directory), ensure_ascii=False)} "
+        f"usage={_exact_index_json(dict(usage))}"
+    )
+
+
+def _close_exact_index_handle(directory: Path, handle: object) -> None:
+    """Release an explicitly opened handle without masking the CLI result."""
+
+    try:
+        close = getattr(handle, "close", None)
+        if not callable(close):
+            raise TypeError("exact-index handle has no close")
+        close()
+    except Exception as exc:  # cleanup diagnostics must not mask the operation result
+        _print_console_line(
+            f"WARNING semantic-exact-index close unavailable "
+            f"directory={json.dumps(str(directory), ensure_ascii=False)} "
+            f"error={type(exc).__name__}"
+        )
+
+
+def _semantic_cancellation_checkpoint(
+    args: argparse.Namespace,
+) -> Callable[[], None] | None:
+    """Adapt the CLI's boolean cancellation signal to the exact-index API."""
+
+    cancellation: Callable[[], bool | None] | None = getattr(
+        args, "_semantic_cancellation_check", None
+    )
+    if cancellation is None:
+        return None
+    if not callable(cancellation):
+        raise TypeError("Semantic cancellation check must be callable")
+
+    def checkpoint() -> None:
+        decision = cancellation()
+        if decision is True or (decision is not None and decision is not False):
+            raise KeyboardInterrupt("Semantic exact-index operation was cancelled")
+
+    return checkpoint
+
+
+def run_semantic_exact_index_build(args: argparse.Namespace) -> int:
+    """Build one explicit derived exact-index artifact without mutating Semantic state."""
+
+    from neocortex.semantic.semantic_exact_index import prepare_exact_index
+    from neocortex.semantic.semantic_service import SEMANTIC_DATABASE_NAME
+
+    database = args.state_directory / SEMANTIC_DATABASE_NAME
+    cancellation_check = _semantic_cancellation_checkpoint(args)
+    handle: ExactIndexHandle | None = None
+    try:
+        handle = prepare_exact_index(
+            database,
+            args.semantic_exact_index_build,
+            model_signature=args.semantic_exact_index_model,
+            text_scope=args.semantic_exact_index_scope,
+            max_rows=args.semantic_max_vectors,
+            max_total_bytes=_EXACT_INDEX_MAX_TOTAL_BYTES,
+            cancellation_check=cancellation_check,
+        )
+        summary = handle.summary()
+        usage = handle.usage_summary()
+        if not isinstance(summary, Mapping) or not isinstance(usage, Mapping):
+            raise TypeError("exact-index handle returned an invalid summary")
+        _print_exact_index_result(
+            "SEMANTIC_EXACT_INDEX_BUILD",
+            args.semantic_exact_index_build,
+            summary,
+            usage,
+        )
+        return 0
+    except Exception as exc:
+        return _semantic_failure("semantic-exact-index-build", exc, offline=False)
+    finally:
+        if handle is not None:
+            _close_exact_index_handle(args.semantic_exact_index_build, handle)
+
+
+def _open_exact_index_for_search(
+    args: argparse.Namespace,
+    database: Path,
+    *,
+    cancellation_check: Callable[[], None] | None = None,
+) -> ExactIndexHandle | None:
+    """Open one validated exact-index handle, or return None for typed fallback."""
+
+    if args.semantic_exact_index is None:
+        return None
+    if cancellation_check is None:
+        cancellation_check = _semantic_cancellation_checkpoint(args)
+    from neocortex.semantic.semantic_exact_index import ExactIndexUnavailable, open_exact_index
+
+    _print_console_line(
+        "NOTICE semantic-exact-index cold validation is bounded and may scan source; "
+        "only reused handle query is warm"
+    )
+    started = time.monotonic()
+    try:
+        handle = open_exact_index(
+            database,
+            args.semantic_exact_index,
+            max_rows=_EXACT_INDEX_MAX_ROWS,
+            max_total_bytes=_EXACT_INDEX_MAX_TOTAL_BYTES,
+            cancellation_check=cancellation_check,
+        )
+    except ExactIndexUnavailable as exc:
+        _print_console_line(
+            "WARNING semantic-exact-index unavailable; falling back to normal semantic search "
+            f"reason={json.dumps(str(exc), ensure_ascii=False)}"
+        )
+        return None
+    elapsed = max(0.0, time.monotonic() - started)
+    _print_console_line(
+        f"SEMANTIC_EXACT_INDEX_OPEN directory={json.dumps(str(args.semantic_exact_index), ensure_ascii=False)} "
+        "cold_validation=bounded_may_scan_source only_reused_handle_query_is_warm=1 "
+        f"elapsed_seconds={elapsed:.6f}"
+    )
+    return handle
 
 
 def run_semantic_status(args: argparse.Namespace) -> int:
@@ -2703,28 +2882,73 @@ def run_integrated_all_semantic_index(
 def run_semantic_search(args: argparse.Namespace) -> int:
     """Search requested rankings independently and print rank-only fusion."""
 
+    from neocortex.semantic.semantic_service import SEMANTIC_DATABASE_NAME
+
+    database = args.state_directory / SEMANTIC_DATABASE_NAME
+    cancellation_check = _semantic_cancellation_checkpoint(args)
+    try:
+        exact_index = _open_exact_index_for_search(
+            args,
+            database,
+            cancellation_check=cancellation_check,
+        )
+    except Exception as exc:
+        return _semantic_failure("semantic-exact-index-open", exc, offline=False)
+    if exact_index is None:
+        return _run_semantic_search_with_handle(
+            args,
+            None,
+            cancellation_check=cancellation_check,
+        )
+    try:
+        return _run_semantic_search_with_handle(
+            args,
+            exact_index,
+            cancellation_check=cancellation_check,
+        )
+    finally:
+        _close_exact_index_handle(args.semantic_exact_index, exact_index)
+
+
+def _run_semantic_search_with_handle(
+    args: argparse.Namespace,
+    exact_index: ExactIndexHandle | None,
+    *,
+    cancellation_check: Callable[[], None] | None = None,
+) -> int:
+    """Run the search while the optional verified handle remains alive."""
+
     from neocortex.semantic.semantic_service import search_semantic_index
 
     mode = args.semantic_search_mode
     diagnostic_item_ids: tuple[str, ...] = tuple(
         getattr(args, "semantic_diagnostic_item", ()) or ()
     )
+    search_kwargs: _SemanticSearchKeywordArgs = {
+        "limit": args.semantic_search_limit,
+        "max_vectors": args.semantic_max_vectors,
+        "include_text": mode in {"all", "text"},
+        "include_images": mode in {"all", "image"},
+        "include_lexical": mode in {"all", "lexical"},
+        "text_model": _semantic_text_model(args.semantic_text_profile),
+        "model_cache": args.semantic_model_cache,
+        "local_files_only": True,
+        "threads": args.semantic_threads,
+        "diagnostic_item_ids": diagnostic_item_ids,
+    }
+    if cancellation_check is not None:
+        search_kwargs["cancellation_check"] = cancellation_check
+    if exact_index is not None:
+        search_kwargs["exact_index"] = exact_index
     try:
         result = search_semantic_index(
             args.state_directory,
             args.semantic_search,
-            limit=args.semantic_search_limit,
-            max_vectors=args.semantic_max_vectors,
-            include_text=mode in {"all", "text"},
-            include_images=mode in {"all", "image"},
-            include_lexical=mode in {"all", "lexical"},
-            text_model=_semantic_text_model(args.semantic_text_profile),
-            model_cache=args.semantic_model_cache,
-            local_files_only=True,
-            threads=args.semantic_threads,
-            diagnostic_item_ids=diagnostic_item_ids,
+            **search_kwargs,
         )
     except Exception as exc:  # FTS/ONNX backends expose distinct exceptions
+        if exact_index is not None:
+            _print_exact_index_usage(args.semantic_exact_index, exact_index)
         return _semantic_failure("semantic-search", exc, offline=mode != "lexical")
 
     available_rankings = 0
@@ -2801,6 +3025,8 @@ def run_semantic_search(args: argparse.Namespace) -> int:
             f"snippet={json.dumps(hit.snippet, ensure_ascii=False)} "
             f"evidence={evidence or '-'}"
         )
+    if exact_index is not None:
+        _print_exact_index_usage(args.semantic_exact_index, exact_index)
     return 0 if result.complete and available_rankings else 2
 
 

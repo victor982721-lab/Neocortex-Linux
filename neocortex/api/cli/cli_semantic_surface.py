@@ -59,6 +59,23 @@ def register_semantic_arguments(parser: argparse.ArgumentParser) -> None:
         help="incrementally index existing durable text caches, images, or both",
     )
     semantic.add_argument(
+        "--semantic-exact-index-build",
+        type=Path,
+        metavar="DIRECTORY",
+        help="explicitly build a bounded derived exact-vector index in DIRECTORY",
+    )
+    semantic.add_argument(
+        "--semantic-exact-index-model",
+        metavar="SIGNATURE",
+        help="embedding model signature required by --semantic-exact-index-build",
+    )
+    semantic.add_argument(
+        "--semantic-exact-index-scope",
+        choices=("content", "all", "title"),
+        default="content",
+        help="source scope for an explicit exact-index build (default: content)",
+    )
+    semantic.add_argument(
         "--semantic-image-calibrate",
         type=Path,
         metavar="DATASET.json",
@@ -98,6 +115,15 @@ def register_semantic_arguments(parser: argparse.ArgumentParser) -> None:
         "--semantic-search",
         metavar="QUERY",
         help="search lexical and/or separate semantic vector spaces",
+    )
+    semantic.add_argument(
+        "--semantic-exact-index",
+        type=Path,
+        metavar="DIRECTORY",
+        help=(
+            "reuse a prepared exact index for semantic search; cold validation is bounded "
+            "and may scan source; only reused handle query is warm"
+        ),
     )
     semantic.add_argument(
         "--semantic-classify",
@@ -227,6 +253,26 @@ def _validate_semantic_values(args: argparse.Namespace) -> None:
         )
     if not 64 * 1024 <= args.semantic_plan_max_scratch_bytes <= (16 * 1024 * 1024 * 1024 * 1024):
         raise SystemExit("--semantic-plan-max-scratch-bytes must be between 65536 and 16 TiB")
+    explicit = set(getattr(args, "_explicit_options", ()))
+    exact_build = getattr(args, "semantic_exact_index_build", None)
+    exact_model = getattr(args, "semantic_exact_index_model", None)
+    if exact_build is not None:
+        if not isinstance(exact_model, str) or not exact_model.strip() or exact_model.strip() != exact_model:
+            raise SystemExit(
+                "--semantic-exact-index-build requires a non-empty trimmed "
+                "--semantic-exact-index-model"
+            )
+        if len(exact_model) > 4_096:
+            raise SystemExit("--semantic-exact-index-model cannot exceed 4096 characters")
+        if args.semantic_max_vectors > 500_000:
+            raise SystemExit("--semantic-max-vectors for exact-index build cannot exceed 500000")
+    else:
+        if "semantic_exact_index_model" in explicit:
+            raise SystemExit("--semantic-exact-index-model requires --semantic-exact-index-build")
+        if "semantic_exact_index_scope" in explicit:
+            raise SystemExit("--semantic-exact-index-scope requires --semantic-exact-index-build")
+    if getattr(args, "semantic_exact_index", None) is not None and args.semantic_search is None:
+        raise SystemExit("--semantic-exact-index requires --semantic-search")
 
 
 def validate_semantic_arguments(args: argparse.Namespace) -> None:
@@ -261,6 +307,9 @@ def validate_semantic_arguments(args: argparse.Namespace) -> None:
         "semantic_max_items",
         "semantic_max_new_jobs",
         "semantic_time_budget_seconds",
+        "semantic_exact_index",
+        "semantic_exact_index_model",
+        "semantic_exact_index_scope",
     }
     code_search_options = (
         {"semantic_model_cache", "semantic_threads"} if code_semantic_search else set()
@@ -303,11 +352,16 @@ def validate_semantic_arguments(args: argparse.Namespace) -> None:
         "semantic_search_limit",
         "semantic_max_vectors",
         "semantic_diagnostic_item",
+        "semantic_exact_index",
     }
     diagnostic_items = getattr(args, "semantic_diagnostic_item", None) or ()
     if len(diagnostic_items) > 20 or any(not item.strip() or len(item) > 512 for item in diagnostic_items):
         raise SystemExit("--semantic-diagnostic-item requires 1..512 characters per item and at most 20 items")
-    if search_only.intersection(explicit) and args.semantic_search is None:
+    if (
+        search_only.intersection(explicit)
+        and args.semantic_search is None
+        and getattr(args, "semantic_exact_index_build", None) is None
+    ):
         raise SystemExit("semantic search options require --semantic-search")
     if "semantic_evidence_limit" in explicit and args.semantic_evidence is None:
         raise SystemExit("--semantic-evidence-limit requires --semantic-evidence")

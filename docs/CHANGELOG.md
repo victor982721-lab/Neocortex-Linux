@@ -4,6 +4,16 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-13 — Índice exacto derivado opt-in (fuente)
+
+- Preparación explícita de un artefacto textual separado, desde un head
+  publicado, sin modificar SQLite ni activar modelos o corpus.
+- Apertura contra todas las filas autoritativas y handle reutilizable con
+  fences, cancelación, cierre explícito y scoring exacto de lotes acotados.
+- Integración aditiva en API/servicio y CLI, apagada por defecto; conserva
+  el scan nativo cuando el caso no es elegible y se abstiene ante drift durante
+  una consulta, sin rebuild/retry ocultos. No incluye instalación.
+
 ## 2026-09-13 — Layout físico de chunks Semantic
 
 - El schema 10 sustituye `text_chunks WITHOUT ROWID` por una tabla rowid con

@@ -282,6 +282,50 @@ Neocortex curate apply GRANT_ID --confirm-grant-id GRANT_ID --json
 Neocortex curate reconcile --actor ACTOR --confirm-reconcile --json
 ```
 
+## Índice exacto derivado de Semantic
+
+Es opt-in y no se activa con `--all`, `--semantic-index` ni al preparar modelos.
+Requiere un head textual ya publicado y un directorio destino **nuevo**, de
+ruta absoluta y con padre existente, fuera del corpus y de los owners. No
+descarga modelos, cambia SQLite, sustituye índices previos ni limpia archivos.
+Selecciona la firma registrada del head; el scope debe coincidir con la ruta
+de búsqueda que se quiere acelerar (`content` para el cuerpo por defecto).
+
+```bash
+Neocortex --state-directory /ruta/estado \
+  --semantic-exact-index-build /ruta/derivados/indice-nuevo \
+  --semantic-exact-index-model FIRMA_REGISTRADA \
+  --semantic-exact-index-scope content --semantic-max-vectors 500000
+Neocortex --state-directory /ruta/estado --semantic-search "consulta" \
+  --semantic-exact-index /ruta/derivados/indice-nuevo
+```
+
+La apertura verifica el artefacto completo contra el owner y tiene costo frío
+O(ND), aunque la consulta use menos vectores. La CLI informa esa apertura y los
+contadores de uso/fallback; no oculta ese costo dentro de una promesa de consulta
+cálida. El API permite amortizarlo con un handle reutilizable:
+
+```python
+from pathlib import Path
+from neocortex.semantic.semantic_exact_index import open_exact_index
+from neocortex.semantic.semantic_search_repository import search_exact_page
+
+database = Path("/ruta/estado/semantic.sqlite3")
+with open_exact_index(database, Path("/ruta/derivados/indice-nuevo")) as index:
+    page = search_exact_page(database, query, text_scope="content", exact_index=index)
+```
+
+`query` es un `ExactSearchQuery` compatible, no texto sin vector. Construcción
+y apertura se realizan fuera de `semantic_read_context`; un callback de
+cancelación del API debe elevar su excepción, no devolver un booleano.
+El artefacto admite como máximo500000 filas y4GB totales. El índice se invalida
+si cambia el owner, head, archivo o runtime matemático. Se debe construir otro
+destino explícitamente para datos nuevos; no hay rebuild, retención ni poda
+automáticos. La ruta no soportada (otros scopes, imagen, varios pares,
+diagnósticos dirigidos o batches escalares) usa el scan nativo; un cambio durante
+el scoring cancela la consulta sin volver a escanearla. Los límites y cursores
+siguen siendo por página; concatenar páginas no equivale a top-K global.
+
 ## Mantenimiento de estado
 
 ### Preferencias para conservar duplicados

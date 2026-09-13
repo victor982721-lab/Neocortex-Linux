@@ -6,7 +6,10 @@ import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, NotRequired, Protocol, TypedDict
+
+if TYPE_CHECKING:
+    from .semantic_exact_index import ExactIndexHandle
 
 from .semantic_backends import EmbeddingBackend, TextTokenLimitExceededError, reciprocal_rank_fusion
 from .semantic_config import (
@@ -78,6 +81,40 @@ class LexicalSearch(Protocol):
 SEMANTIC_TEXT_RANKING = "semantic_text"
 SEMANTIC_TITLE_RANKING = "semantic_title"
 SEMANTIC_TITLE_FUSION_WEIGHT = 0.5
+
+
+class _OptionalExactIndexKwargs(TypedDict, total=False):
+    exact_index: NotRequired[ExactIndexHandle]
+
+
+class _OptionalDiagnosticItemIdsKwargs(TypedDict, total=False):
+    diagnostic_item_ids: NotRequired[tuple[str, ...]]
+
+
+class _SearchPageKwargs(TypedDict):
+    limit: int
+    max_vectors: int
+    text_scope: Literal["all", "content", "title"]
+    cancellation_check: Callable[[], None] | None
+    diagnostic_item_ids: tuple[str, ...]
+    diagnostics: dict[str, object]
+    exact_index: NotRequired[ExactIndexHandle]
+
+
+def _optional_exact_index_kwargs(
+    exact_index: ExactIndexHandle | None,
+) -> _OptionalExactIndexKwargs:
+    if exact_index is None:
+        return {}
+    return {"exact_index": exact_index}
+
+
+def _optional_diagnostic_item_ids_kwargs(
+    diagnostic_item_ids: tuple[str, ...],
+) -> _OptionalDiagnosticItemIdsKwargs:
+    if not diagnostic_item_ids:
+        return {}
+    return {"diagnostic_item_ids": diagnostic_item_ids}
 
 _QUERY_INTENT_TERM = re.compile(r"[^\W_]+", flags=re.UNICODE)
 _EXPLICIT_VISUAL_TERMS = frozenset(
@@ -155,6 +192,7 @@ class _SemanticSearchContext:
     database: Path
     database_exists: bool
     cache: Path
+    exact_index: ExactIndexHandle | None = None
 
 
 # region [01] Query vectors and exact rankings
@@ -222,11 +260,22 @@ def semantic_ranking(
     query: str | None = None,
     diagnostic_item_ids: tuple[str, ...] = (),
     cancellation_check: Callable[[], None] | None = None,
+    exact_index: ExactIndexHandle | None = None,
 ) -> SemanticRanking:
     search_page: Callable[..., ExactSearchPage] = (
         search_exact_evidence_page if evidence_mode else search_exact_page
     )
     diagnostics: dict[str, object] = {}
+    page_kwargs: _SearchPageKwargs = {
+        "limit": limit,
+        "max_vectors": max_vectors,
+        "text_scope": text_scope,
+        "cancellation_check": cancellation_check,
+        "diagnostic_item_ids": diagnostic_item_ids,
+        "diagnostics": diagnostics,
+    }
+    if exact_index is not None:
+        page_kwargs["exact_index"] = exact_index
     page = search_page(
         database,
         ExactSearchQuery(
@@ -237,12 +286,7 @@ def semantic_ranking(
             target_modality=target_modality,
             indexed_model_signatures=indexed_model_signatures,
         ),
-        limit=limit,
-        max_vectors=max_vectors,
-        text_scope=text_scope,
-        cancellation_check=cancellation_check,
-        diagnostic_item_ids=diagnostic_item_ids,
-        diagnostics=diagnostics,
+        **page_kwargs,
     )
     resolved_values: list[ResolvedSearchHit] = []
     for hit_batch in batches(page.hits, SEARCH_RESOLUTION_BATCH_SIZE):
@@ -1023,6 +1067,7 @@ def text_search_ranking(
     evidence_mode: bool = False,
     diagnostic_item_ids: tuple[str, ...] = (),
     cancellation_check: Callable[[], None] | None = None,
+    exact_index: ExactIndexHandle | None = None,
 ) -> SemanticRanking:
     """Compatibility entry point returning only source-content evidence."""
 
@@ -1041,6 +1086,7 @@ def text_search_ranking(
         include_title=False,
         diagnostic_item_ids=diagnostic_item_ids,
         cancellation_check=cancellation_check,
+        **_optional_exact_index_kwargs(exact_index),
     )[0]
 
 
@@ -1060,6 +1106,7 @@ def text_search_rankings(
     include_title: bool = False,
     diagnostic_item_ids: tuple[str, ...] = (),
     cancellation_check: Callable[[], None] | None = None,
+    exact_index: ExactIndexHandle | None = None,
 ) -> tuple[SemanticRanking, ...]:
     """Search source content and durable basename metadata as separate channels."""
 
@@ -1138,6 +1185,7 @@ def text_search_rankings(
             "excluded_section_kind": SEMANTIC_TITLE_SECTION_KIND,
         },
         cancellation_check=cancellation_check,
+        **_optional_exact_index_kwargs(exact_index),
     )
     if expansions:
         original_variant: dict[str, object] = {
@@ -1201,6 +1249,7 @@ def text_search_rankings(
                 diagnostic_item_ids=diagnostic_item_ids,
                 provenance={"channel": "source_content", "query_variant": dict(expansion)},
                 cancellation_check=cancellation_check,
+                **_optional_exact_index_kwargs(exact_index),
             )
             remaining -= expanded.scanned
             variants.append((expansion, expanded))
@@ -1259,6 +1308,7 @@ def text_search_rankings(
             "advisory_only": True,
         },
         cancellation_check=cancellation_check,
+        **_optional_exact_index_kwargs(exact_index),
     )
     observed_policies = sorted(
         {
@@ -1317,6 +1367,7 @@ def image_search_ranking(
     diagnostic_item_ids: tuple[str, ...] = (),
     calibration: ImageRetrievalCalibration | None = None,
     cancellation_check: Callable[[], None] | None = None,
+    exact_index: ExactIndexHandle | None = None,
 ) -> SemanticRanking:
     query_model = clip_text_model()
     indexed_model = clip_image_model()
@@ -1402,6 +1453,7 @@ def image_search_ranking(
             ),
         },
         cancellation_check=cancellation_check,
+        **_optional_exact_index_kwargs(exact_index),
     )
     return apply_image_retrieval_calibration(
         ranking,
@@ -1599,6 +1651,7 @@ def _prepare_search_context(
     semantic_database: object,
     model_cache_override: Path | None,
     cancellation_check: Callable[[], None] | None,
+    exact_index: ExactIndexHandle | None = None,
 ) -> _SemanticSearchContext:
     normalized_query = _validated_search_query(query)
     validated_limit = _bounded_search_integer(
@@ -1635,6 +1688,7 @@ def _prepare_search_context(
         database,
         database.is_file(),
         model_cache(state_directory, model_cache_override),
+        exact_index,
     )
 
 
@@ -1672,8 +1726,9 @@ def _semantic_search_rankings(
                 backend_factory=backend_factory,
                 evidence_mode=evidence_mode,
                 include_title=include_title,
-                **({"diagnostic_item_ids": diagnostic_item_ids} if diagnostic_item_ids else {}),
+                **_optional_diagnostic_item_ids_kwargs(diagnostic_item_ids),
                 cancellation_check=cancellation_check,
+                **_optional_exact_index_kwargs(context.exact_index),
             )
         )
     if include_images:
@@ -1698,6 +1753,7 @@ def _semantic_search_rankings(
                 diagnostic_item_ids=diagnostic_item_ids,
                 calibration=image_calibration,
                 cancellation_check=cancellation_check,
+                **_optional_exact_index_kwargs(context.exact_index),
             )
         )
     return tuple(rankings)
@@ -1753,6 +1809,7 @@ def search_semantic_index(
     allow_ambiguous_images: bool = True,
     diagnostic_item_ids: tuple[str, ...] = (),
     cancellation_check: Callable[[], None] | None = None,
+    exact_index: ExactIndexHandle | None = None,
 ) -> SemanticSearchResult:
     """Search incompatible spaces independently, then fuse only their ranks."""
 
@@ -1779,6 +1836,7 @@ def search_semantic_index(
         semantic_database=semantic_database,
         model_cache_override=model_cache_override,
         cancellation_check=cancellation_check,
+        **_optional_exact_index_kwargs(exact_index),
     )
     rankings = _semantic_search_rankings(
         context,

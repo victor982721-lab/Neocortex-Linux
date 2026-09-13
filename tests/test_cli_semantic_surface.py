@@ -110,6 +110,26 @@ EXPECTED_SEMANTIC_ACTIONS = (
         help_text="incrementally index existing durable text caches, images, or both",
     ),
     _expected_store(
+        "--semantic-exact-index-build",
+        "semantic_exact_index_build",
+        type_name="Path",
+        metavar="DIRECTORY",
+        help_text="explicitly build a bounded derived exact-vector index in DIRECTORY",
+    ),
+    _expected_store(
+        "--semantic-exact-index-model",
+        "semantic_exact_index_model",
+        metavar="SIGNATURE",
+        help_text="embedding model signature required by --semantic-exact-index-build",
+    ),
+    _expected_store(
+        "--semantic-exact-index-scope",
+        "semantic_exact_index_scope",
+        default="content",
+        choices=("content", "all", "title"),
+        help_text="source scope for an explicit exact-index build (default: content)",
+    ),
+    _expected_store(
         "--semantic-image-calibrate",
         "semantic_image_calibrate",
         type_name="Path",
@@ -154,6 +174,16 @@ EXPECTED_SEMANTIC_ACTIONS = (
         "semantic_search",
         metavar="QUERY",
         help_text="search lexical and/or separate semantic vector spaces",
+    ),
+    _expected_store(
+        "--semantic-exact-index",
+        "semantic_exact_index",
+        type_name="Path",
+        metavar="DIRECTORY",
+        help_text=(
+            "reuse a prepared exact index for semantic search; cold validation is bounded "
+            "and may scan source; only reused handle query is warm"
+        ),
     ),
     _expected_store(
         "--semantic-classify",
@@ -272,6 +302,15 @@ EXPECTED_SEMANTIC_HELP = (
     "  --semantic-index {text,image,all}\n"
     "                        incrementally index existing durable text caches,\n"
     "                        images, or both\n"
+    "  --semantic-exact-index-build DIRECTORY\n"
+    "                        explicitly build a bounded derived exact-vector index\n"
+    "                        in DIRECTORY\n"
+    "  --semantic-exact-index-model SIGNATURE\n"
+    "                        embedding model signature required by --semantic-\n"
+    "                        exact-index-build\n"
+    "  --semantic-exact-index-scope {content,all,title}\n"
+    "                        source scope for an explicit exact-index build\n"
+    "                        (default: content)\n"
     "  --semantic-image-calibrate DATASET.json\n"
     "                        measure and persist a bounded local CLIP image-\n"
     "                        retrieval calibration from labelled queries\n"
@@ -287,6 +326,10 @@ EXPECTED_SEMANTIC_HELP = (
     "                        run\n"
     "  --semantic-search QUERY\n"
     "                        search lexical and/or separate semantic vector spaces\n"
+    "  --semantic-exact-index DIRECTORY\n"
+    "                        reuse a prepared exact index for semantic search; cold\n"
+    "                        validation is bounded and may scan source; only reused\n"
+    "                        handle query is warm\n"
     "  --semantic-classify {text,image,all}\n"
     "                        materialize advisory ontology evidence for active\n"
     "                        embeddings\n"

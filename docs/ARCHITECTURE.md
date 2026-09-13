@@ -268,6 +268,27 @@ de evidencia mantiene sus revisiones, localizadores y fences. El costo continúa
 siendo exhaustivo: eliminar el sort temporal no garantiza una latencia constante
 ni un p95 objetivo, y no incorpora ANN ni nuevos modelos.
 
+El índice exacto derivado es una opción explícita, apagada por defecto. Su
+formato separado conserva los bytes f16/f32, códigos de agrupación y normas
+float64 calculadas con la misma aritmética del scan nativo. La preparación
+desde un único head textual crea un directorio nuevo; no cambia el owner ni
+se ejecuta con `--all`. Los hashes y el marker de finalización no conceden
+autoridad: `open_exact_index` coteja todas las filas con la relación nativa
+publicada, además de modelos, scope, runtime matemático y fences. Preparar y
+abrir son operaciones frías O(ND), fuera de un contexto de lectura prestado.
+
+Las consultas aceptan un `ExactIndexHandle` ya verificado, nunca una ruta para
+reconstruir implícitamente. El handle serializa su uso y requiere cierre
+explícito/context manager. La ruta elegible puntúa exhaustivamente en lotes
+de hasta512 vectores, mantiene arrays numéricos O(U) por grupos y sólo hidrata
+losK ganadores; no es ANN. Cada página conserva scores, desempates y cursor.
+Un índice obsoleto o una combinación no soportada vuelve al scan nativo antes
+del scoring y con los mismos límites; un cambio detectado durante la consulta
+produce abstención sin retry oculto. No se prometen tiempos constantes ni una
+latencia CLI equivalente a la consulta cálida: la CLI abre y verifica el
+artefacto por invocación. La ausencia del argumento conserva la ruta anterior
+sin descubrir, abrir ni construir cachés.
+
 La planificación organizativa selecciona una raíz de entrada con identidad y
 heads publicados antes de calcular destinos. Clasificación, elegibilidad,
 operación y ejecutabilidad son dimensiones distintas; los miembros/componentes

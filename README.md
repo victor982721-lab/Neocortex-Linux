@@ -129,6 +129,12 @@ mientras la función Python de bajo nivel conserva v1 hasta una deprecación
 explícita. Un resultado completo de búsqueda no prueba que la pregunta tenga
 respuesta ni autoriza acciones.
 
+La búsqueda Semantic admite un [índice exacto derivado explícito](docs/OPERATIONS.md#índice-exacto-derivado-de-semantic),
+apagado por defecto. Su preparación y apertura verifican un head publicado;
+reutilizar el handle puede reducir el costo de consultas repetidas sin ANN ni
+cambio de precisión. La CLI incluye el costo frío de verificar el artefacto,
+y no lo construye ni lo descubre automáticamente.
+
 Las consultas de diagnóstico respetan `--root` (o el corpus predeterminado),
 distinguen cero resultados de owner ausente/error y exponen cursores ligados a
 su ámbito. MCP conserva `content_diagnostics` v1 y añade

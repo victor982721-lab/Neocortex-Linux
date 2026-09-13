@@ -4,7 +4,10 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from functools import partial
 from pathlib import Path
-from typing import Literal, TypeVar
+from typing import TYPE_CHECKING, Literal, NotRequired, TypeVar, TypedDict
+
+if TYPE_CHECKING:
+    from .semantic_exact_index import ExactIndexHandle
 
 from neocortex.progress import ProgressCallback
 
@@ -158,6 +161,18 @@ from .semantic_state import (
 )
 
 _T = TypeVar("_T")
+
+
+class _OptionalExactIndexKwargs(TypedDict, total=False):
+    exact_index: NotRequired[ExactIndexHandle]
+
+
+def _optional_exact_index_kwargs(
+    exact_index: ExactIndexHandle | None,
+) -> _OptionalExactIndexKwargs:
+    if exact_index is None:
+        return {}
+    return {"exact_index": exact_index}
 
 __all__ = (
     "DEFAULT_SEARCH_MAX_VECTORS",
@@ -548,6 +563,7 @@ def _semantic_ranking(
     limit: int,
     max_vectors: int,
     cancellation_check: Callable[[], None] | None = None,
+    exact_index: ExactIndexHandle | None = None,
 ) -> SemanticRanking:
     return _search.semantic_ranking(
         database,
@@ -559,6 +575,7 @@ def _semantic_ranking(
         limit=limit,
         max_vectors=max_vectors,
         cancellation_check=cancellation_check,
+        **_optional_exact_index_kwargs(exact_index),
     )
 
 
@@ -596,6 +613,7 @@ def _text_search_ranking(
     limit: int,
     max_vectors: int,
     cancellation_check: Callable[[], None] | None = None,
+    exact_index: ExactIndexHandle | None = None,
 ) -> SemanticRanking:
     return _search.text_search_ranking(
         database,
@@ -609,6 +627,7 @@ def _text_search_ranking(
         max_vectors=max_vectors,
         backend_factory=_backend,
         cancellation_check=cancellation_check,
+        **_optional_exact_index_kwargs(exact_index),
     )
 
 
@@ -623,6 +642,7 @@ def _image_search_ranking(
     limit: int,
     max_vectors: int,
     cancellation_check: Callable[[], None] | None = None,
+    exact_index: ExactIndexHandle | None = None,
 ) -> SemanticRanking:
     return _search.image_search_ranking(
         database,
@@ -635,6 +655,7 @@ def _image_search_ranking(
         max_vectors=max_vectors,
         backend_factory=_backend,
         cancellation_check=cancellation_check,
+        **_optional_exact_index_kwargs(exact_index),
     )
 
 
@@ -661,6 +682,7 @@ def search_semantic_index(
     allow_ambiguous_images: bool = True,
     diagnostic_item_ids: tuple[str, ...] = (),
     cancellation_check: Callable[[], None] | None = None,
+    exact_index: ExactIndexHandle | None = None,
 ) -> SemanticSearchResult:
     """Search incompatible spaces with discovery or concrete-evidence retention."""
     from .semantic_schema import semantic_read_context
@@ -690,6 +712,7 @@ def search_semantic_index(
             allow_ambiguous_images=allow_ambiguous_images,
             diagnostic_item_ids=diagnostic_item_ids,
             cancellation_check=cancellation_check,
+            **_optional_exact_index_kwargs(exact_index),
         )
 
 

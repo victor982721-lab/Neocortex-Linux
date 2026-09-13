@@ -232,6 +232,13 @@ DIRECT_OPERATIONS: tuple[DirectOperation, ...] = (
         module_name=".cli_semantic",
     ),
     DirectOperation(
+        "semantic_exact_index_build",
+        "run_semantic_exact_index_build",
+        _SEMANTIC,
+        _VALUE,
+        module_name=".cli_semantic",
+    ),
+    DirectOperation(
         "semantic_search",
         "run_semantic_search",
         _SEMANTIC,

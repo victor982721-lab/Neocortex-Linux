@@ -110,7 +110,8 @@ EXPECTED_SIGNATURES = {
         "\"Literal['explicit_visual', 'explicit_textual', 'ambiguous'] | None\" = None, "
         "allow_ambiguous_images: 'bool' = True, diagnostic_item_ids: 'tuple[str, ...]' = (), "
         "cancellation_check: "
-        "'Callable[[], None] | None' = None) -> "
+        "'Callable[[], None] | None' = None, "
+        "exact_index: 'ExactIndexHandle | None' = None) -> "
         "'SemanticSearchResult'"
     ),
     "classify_semantic_index": (
