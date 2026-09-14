@@ -4,6 +4,15 @@ Esta guía contiene procedimientos. Los argumentos exactos están en
 [CLI.md](CLI.md), los owners en [PERSISTENCE.md](PERSISTENCE.md) y la recuperación
 en [RECOVERY.md](RECOVERY.md).
 
+## Cierre operativo vigente
+
+La release `0.14.0` integra dedupe/KIO receipt-bound, el lifecycle `--all`
+(admisión, reutilización, reparación y ZIPs), reset/retención explícitos y el
+coordinador global adaptativo. La publicación y la instalación se verifican por
+separado con `tools/release_linux.py verify`; su receipt es la fuente viva del
+SHA, launcher, `current` y rollback. Ningún procedimiento de esta guía aplica
+el corpus personal por inferencia.
+
 ## Estado e instalación
 
 Los focos locales no certifican que el comando instalado funcione sobre su

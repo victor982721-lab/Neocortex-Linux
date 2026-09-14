@@ -19,6 +19,7 @@ _EXPORTS = {
     "classify_archive_bytes": (".units", "classify_archive_bytes"),
     "materialize_archive": (".materialization", "materialize_archive"),
     "materialize_zip": (".materialization", "materialize_zip"),
+    "is_container_normalized": (".materialization", "is_container_normalized"),
     "repair_zip_candidate": (".repair", "repair_zip_candidate"),
     "ZipRepairLimits": (".repair", "ZipRepairLimits"),
     "ZipRepairResult": (".repair", "ZipRepairResult"),

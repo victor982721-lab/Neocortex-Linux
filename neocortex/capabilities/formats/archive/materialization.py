@@ -20,7 +20,7 @@ import zipfile
 import zlib
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
-from typing import Callable, Literal
+from typing import Callable, Literal, cast
 
 from neocortex.platform.zip_safety import (
     DEFAULT_MAX_CENTRAL_DIRECTORY_BYTES,
@@ -209,6 +209,52 @@ class ArchiveManifest:
     def complete(self) -> bool:
         return self.status == "complete"
 
+    @property
+    def container_normalized(self) -> bool:
+        """Whether a caller may consider this generic container removable.
+
+        The service itself never removes the source.  This predicate is an
+        evidence gate for an owner that may later perform a separately
+        authorised effect: every member must be validated and either published
+        or intentionally traversed as a generic nested container.  Functional
+        packages/projects are preserved as one unit and therefore are *not*
+        reported as normalized here.
+        """
+
+        if not self.apply or self.status != "complete":
+            return False
+        if self.classification.preserve_as_unit:
+            return False
+        if any(entry.status != "validated" for entry in self.entries):
+            return False
+        outputs_by_identity = {output.entry_identity: output for output in self.outputs}
+        for entry in (entry for entry in self.entries if entry.status == "validated"):
+            output = outputs_by_identity.get(entry.identity)
+            if output is None:
+                return False
+            if output.status in {"applied", "reused"}:
+                continue
+            if (
+                output.status == "skipped"
+                and entry.content_kind == "storage_archive"
+                and any(other.chain.startswith(entry.chain + "!/") for other in self.entries)
+            ):
+                continue
+            return False
+        return True
+
+    @property
+    def normalization_disposition(self) -> str:
+        """Explain why a source container is or is not removable."""
+
+        if self.container_normalized:
+            return "container_normalized"
+        if not self.apply:
+            return "virtual_only"
+        if self.classification.preserve_as_unit and self.status == "complete":
+            return "functional_unit_preserved"
+        return "pending"
+
     def to_dict(self) -> dict[str, object]:
         return {
             "schema": "neocortex.archive-manifest/v1",
@@ -221,6 +267,8 @@ class ArchiveManifest:
             "status": self.status,
             "apply": self.apply,
             "virtual": self.virtual,
+            "container_normalized": self.container_normalized,
+            "normalization_disposition": self.normalization_disposition,
             "destination": self.destination,
             "outputs": [output.to_dict() for output in self.outputs],
             "errors": list(self.errors),
@@ -516,8 +564,10 @@ def _scan_zip(
                     elif nested_classification.status == "corrupt":
                         raise zipfile.BadZipFile(nested_classification.detail or "nested ZIP is corrupt")
                     elif nested_classification.status in {"password", "permission", "dependency", "timeout", "budget"}:
-                        status: EntryStatus = nested_classification.status
-                        raise ArchiveMaterializationError(nested_classification.detail or status)
+                        status = cast(EntryStatus, nested_classification.status)
+                        raise ArchiveMaterializationError(
+                            f"{status}: {nested_classification.detail or status}"
+                        )
                     else:
                         content_kind = "storage_archive"
                 entry = ArchiveEntry(
@@ -541,18 +591,37 @@ def _scan_zip(
                 entries.append(entry)
                 _record_journal(journal_hook, {"event": "entry", **entry.to_dict()})
                 if nested and unit_kind is None and depth < limits.max_depth:
-                    _scan_zip(
-                        stage,
-                        prefix=chain,
-                        depth=depth + 1,
-                        source_sha256=source_sha256,
-                        entries=entries,
-                        stage_paths=stage_paths,
-                        temp_root=temp_root,
-                        budget=budget,
-                        limits=limits,
-                        journal_hook=journal_hook,
-                    )
+                    entry_index = len(entries) - 1
+                    try:
+                        _scan_zip(
+                            stage,
+                            prefix=chain,
+                            depth=depth + 1,
+                            source_sha256=source_sha256,
+                            entries=entries,
+                            stage_paths=stage_paths,
+                            temp_root=temp_root,
+                            budget=budget,
+                            limits=limits,
+                            journal_hook=journal_hook,
+                        )
+                    except BaseException as nested_exc:
+                        nested_status, nested_code, nested_detail = _status_for_exception(
+                            nested_exc
+                        )
+                        entries[entry_index] = replace(
+                            entries[entry_index],
+                            status=nested_status,
+                            error_code=nested_code,
+                            detail=nested_detail,
+                        )
+                        _record_journal(
+                            journal_hook,
+                            {
+                                "event": "entry_update",
+                                **entries[entry_index].to_dict(),
+                            },
+                        )
                 elif nested and unit_kind is None and depth >= limits.max_depth:
                     # The container itself remains valid, but the manifest is
                     # partial because its descendants were not accounted for.
@@ -601,8 +670,19 @@ def _digest_manifest(manifest: ArchiveManifest) -> str:
 
 
 def _status_for_manifest(classification: ArchiveUnitClassification, entries: tuple[ArchiveEntry, ...]) -> MaterializationStatus:
-    if classification.status in {"password", "permission", "dependency", "timeout", "budget", "corrupt"} and not entries:
-        return classification.status
+    if not entries:
+        if classification.status == "password":
+            return "password"
+        if classification.status == "permission":
+            return "permission"
+        if classification.status == "dependency":
+            return "dependency"
+        if classification.status == "timeout":
+            return "timeout"
+        if classification.status == "budget":
+            return "budget"
+        if classification.status == "corrupt":
+            return "corrupt"
     if any(entry.status == "timeout" for entry in entries):
         return "timeout"
     if any(entry.status == "password" for entry in entries):
@@ -821,7 +901,8 @@ def _apply_manifest(
             except OSError:
                 pass
         final_status: MaterializationStatus = manifest.status if not outputs or outputs[0].status == "collision" else ("partial" if manifest.status != "complete" else "complete")
-        return replace(manifest, status=final_status, apply=True, destination=str(destination), outputs=tuple(outputs), manifest_digest="")
+        result = replace(manifest, status=final_status, apply=True, destination=str(destination), outputs=tuple(outputs), manifest_digest="")
+        return replace(result, manifest_digest=_digest_manifest(result))
     for entry in manifest.entries:
         if entry.status != "validated":
             updated_entries.append(entry)
@@ -874,10 +955,27 @@ def _apply_manifest(
         _record_journal(journal_hook, {"event": "materialization", **output.to_dict()})
     if any(output.status == "collision" for output in outputs):
         final_status: MaterializationStatus = "collision"
-    elif any(output.status == "skipped" for output in outputs):
-        final_status = "partial"
     else:
-        final_status = manifest.status if manifest.status != "complete" else "complete"
+        entry_by_identity = {entry.identity: entry for entry in updated_entries}
+        unexpected_skip = any(
+            output.status == "skipped"
+            and not (
+                (entry := entry_by_identity.get(output.entry_identity)) is not None
+                and entry.content_kind == "storage_archive"
+                and any(
+                    other.chain.startswith(entry.chain + "!/")
+                    for other in manifest.entries
+                )
+            )
+            for output in outputs
+        )
+        final_status = (
+            "partial"
+            if unexpected_skip
+            else manifest.status
+            if manifest.status != "complete"
+            else "complete"
+        )
     result = replace(manifest, entries=tuple(updated_entries), status=final_status, apply=True, destination=str(destination), outputs=tuple(outputs), manifest_digest="")
     return replace(result, manifest_digest=_digest_manifest(result))
 
@@ -955,6 +1053,16 @@ def materialize_archive(
     return result
 
 
+# Friendly predicate for lifecycle owners.  It is intentionally read-only and
+# does not remove the source or create a Framework action by itself.
+def is_container_normalized(manifest: ArchiveManifest) -> bool:
+    """Return the conservative removable-container gate for a final manifest."""
+
+    if not isinstance(manifest, ArchiveManifest):
+        raise TypeError("manifest must be an ArchiveManifest")
+    return manifest.container_normalized
+
+
 # Friendly aliases for callers that use inventory terminology.
 inventory_archive = scan_archive
 materialize_zip = materialize_archive
@@ -968,6 +1076,7 @@ __all__ = (
     "ArchiveMaterializedOutput",
     "EntryStatus",
     "inventory_archive",
+    "is_container_normalized",
     "materialize_archive",
     "materialize_zip",
     "scan_archive",

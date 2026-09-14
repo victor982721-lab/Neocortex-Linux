@@ -109,6 +109,15 @@ def archive_route_config_from_application(
         ocr_timeout_seconds=config.archive_ocr_timeout_seconds,
         tesseract_cmd=config.archive_tesseract_cmd,
         tessdata_dir=config.archive_tessdata_dir,
+        # Archive remains virtual by default.  Only an explicit Framework
+        # ``--apply`` request opts into the owner-local no-replace staging
+        # service; the destination is never the corpus root.
+        materialize_on_apply=bool(getattr(config, "apply_actions", False)),
+        materialization_directory=(
+            Path(config.state_directory).resolve() / "archive-materialized"
+            if bool(getattr(config, "apply_actions", False))
+            else None
+        ),
     )
 
 

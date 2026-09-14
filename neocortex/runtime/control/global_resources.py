@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import Any, cast
 
 from .cancellation import CancellationRequested, CancellationToken
 from .cpu_runtime import CpuLoadSampler, effective_cpu_count
@@ -104,7 +105,10 @@ def _linux_memory_pressure_sample(
         text = path.read_text(encoding="ascii")
     except (OSError, UnicodeError):
         return None
-    values: dict[str, float | int] = {}
+    some_percent: float | None = None
+    full_percent: float | None = None
+    some_total_us: int | None = None
+    full_total_us: int | None = None
     for line in text.splitlines():
         parts = line.split()
         if not parts or parts[0] not in {"some", "full"}:
@@ -115,21 +119,30 @@ def _linux_memory_pressure_sample(
                 continue
             if name == "avg10":
                 try:
-                    values[parts[0]] = float(raw)
+                    if parts[0] == "some":
+                        some_percent = float(raw)
+                    else:
+                        full_percent = float(raw)
                 except ValueError:
                     pass
             elif name == "total":
                 try:
-                    values[f"{parts[0]}_total"] = int(raw)
+                    if parts[0] == "some":
+                        some_total_us = int(raw)
+                    else:
+                        full_total_us = int(raw)
                 except ValueError:
                     pass
-    if not values:
+    if all(
+        value is None
+        for value in (some_percent, full_percent, some_total_us, full_total_us)
+    ):
         return None
     return ResourceSample(
-        memory_pressure_some_percent=values.get("some"),
-        memory_pressure_full_percent=values.get("full"),
-        memory_pressure_some_total_us=values.get("some_total"),
-        memory_pressure_full_total_us=values.get("full_total"),
+        memory_pressure_some_percent=some_percent,
+        memory_pressure_full_percent=full_percent,
+        memory_pressure_some_total_us=some_total_us,
+        memory_pressure_full_total_us=full_total_us,
     )
 
 
@@ -193,33 +206,36 @@ def _coerce_resource_sample(value: object) -> ResourceSample | None:
     for key, target in aliases.items():
         if key in value:
             values[target] = value[key]
+    def as_int(name: str) -> int | None:
+        raw = values.get(name)
+        if raw is None:
+            return None
+        return int(cast(Any, raw))
+
+    def as_float(name: str) -> float | None:
+        raw = values.get(name)
+        if raw is None:
+            return None
+        return float(cast(Any, raw))
+
     try:
-        integer_names = {
-            "available_physical",
-            "available_commit",
-            "total_physical",
-            "total_commit",
-            "resident_bytes",
-            "transient_bytes",
-            "temp_bytes",
-            "native_threads",
-            "memory_pressure_some_total_us",
-            "memory_pressure_full_total_us",
-        }
-        for name in integer_names:
-            if name in values and values[name] is not None:
-                values[name] = int(values[name])
-        if "cpu_load_percent" in values and values["cpu_load_percent"] is not None:
-            values["cpu_load_percent"] = float(values["cpu_load_percent"])
-        for name in (
-            "memory_pressure_some_percent",
-            "memory_pressure_full_percent",
-        ):
-            if name in values and values[name] is not None:
-                values[name] = float(values[name])
+        return ResourceSample(
+            available_physical=as_int("available_physical"),
+            available_commit=as_int("available_commit"),
+            total_physical=as_int("total_physical"),
+            total_commit=as_int("total_commit"),
+            cpu_load_percent=as_float("cpu_load_percent"),
+            resident_bytes=as_int("resident_bytes"),
+            transient_bytes=as_int("transient_bytes"),
+            temp_bytes=as_int("temp_bytes"),
+            native_threads=as_int("native_threads"),
+            memory_pressure_some_percent=as_float("memory_pressure_some_percent"),
+            memory_pressure_full_percent=as_float("memory_pressure_full_percent"),
+            memory_pressure_some_total_us=as_int("memory_pressure_some_total_us"),
+            memory_pressure_full_total_us=as_int("memory_pressure_full_total_us"),
+        )
     except (TypeError, ValueError, OverflowError):
         return None
-    return ResourceSample(**values)
 
 
 def _memory_snapshot_from_resource_sample(sample: ResourceSample | None) -> MemorySnapshot | None:

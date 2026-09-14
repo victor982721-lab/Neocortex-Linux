@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, NotRequired, TypeVar, TypedDict
@@ -31,6 +33,7 @@ from .semantic_chunking import (
     TextChunkingConfig as TextChunkingConfig,
     iter_text_chunks as iter_text_chunks,
 )
+from .semantic_admission import ContentAdmissionPolicy
 from .semantic_config import (
     COMPACT_TEXT_MODEL_SIGNATURE as COMPACT_TEXT_MODEL_SIGNATURE,
     SEMANTIC_PIPELINE_VERSION as SEMANTIC_PIPELINE_VERSION,
@@ -120,6 +123,8 @@ from .semantic_sources import (
     SOURCE_ADAPTER_VERSION as SOURCE_ADAPTER_VERSION,
     TEXT_SOURCE_KINDS as TEXT_SOURCE_KINDS,
     ImageSourceRecord as ImageSourceRecord,
+    TextSourceRecord as TextSourceRecord,
+    filter_text_source_records,
     iter_image_source_records as iter_image_source_records,
     iter_text_source_records as iter_text_source_records,
     semantic_source_database as semantic_source_database,
@@ -161,6 +166,63 @@ from .semantic_state import (
 )
 
 _T = TypeVar("_T")
+
+_ADMISSION_POLICY: ContextVar[ContentAdmissionPolicy | None] = ContextVar(
+    "neocortex_semantic_admission_policy",
+    default=None,
+)
+
+
+@contextmanager
+def admission_policy_scope(policy: ContentAdmissionPolicy | None) -> Iterator[None]:
+    """Temporarily bind a Framework-owned admission policy to this stage.
+
+    The public service signatures remain backward-compatible; lifecycle
+    callers opt into a persisted policy through this narrow context boundary.
+    """
+
+    if policy is not None and not isinstance(policy, ContentAdmissionPolicy):
+        raise TypeError("admission policy scope requires ContentAdmissionPolicy")
+    token = _ADMISSION_POLICY.set(policy)
+    try:
+        yield
+    finally:
+        _ADMISSION_POLICY.reset(token)
+
+
+def _active_admission_policy() -> ContentAdmissionPolicy:
+    return _ADMISSION_POLICY.get() or ContentAdmissionPolicy()
+
+
+def _admitted_text_source_iterator(
+    policy: ContentAdmissionPolicy,
+) -> Callable[[Path, str], Iterator[TextSourceRecord]]:
+    """Use the service's compatibility seam before applying visibility."""
+
+    def iterator(state_directory: Path, source_kind: str) -> Iterator[TextSourceRecord]:
+        # ``iter_text_source_records`` is intentionally a module-level alias;
+        # focused callers historically monkeypatch it, so do not bypass that
+        # seam by closing over the lower-level module directly.
+        yield from filter_text_source_records(
+            iter_text_source_records(state_directory, source_kind),
+            policy,
+        )
+
+    return iterator
+
+
+def _admitted_image_source_iterator(
+    policy: ContentAdmissionPolicy,
+) -> Callable[[Path], Iterator[ImageSourceRecord]]:
+    """Use the image compatibility seam before applying visibility."""
+
+    def iterator(state_directory: Path) -> Iterator[ImageSourceRecord]:
+        yield from filter_text_source_records(
+            iter_image_source_records(state_directory),
+            policy,
+        )
+
+    return iterator
 
 
 class _OptionalExactIndexKwargs(TypedDict, total=False):
@@ -440,6 +502,10 @@ def index_text_embeddings(
     """Incrementally embed extracted text; source files are never rescanned."""
 
     budget = work_budget or SemanticWorkBudget()
+    # Keep admission at the source boundary for every public indexing call.
+    # The empty policy is deliberately equivalent to the historical iterator,
+    # while callers with a persisted/corrected policy can pass it explicitly.
+    policy = _active_admission_policy()
     try:
         result = _text_index.index_text_embeddings(
             state_directory,
@@ -450,7 +516,7 @@ def index_text_embeddings(
             threads=threads,
             chunking=chunking,
             backend_factory=_index_backend_factory(budget),
-            source_record_iterator=iter_text_source_records,
+            source_record_iterator=_admitted_text_source_iterator(policy),
             generation_runner=partial(_run_generation, progress=progress),
             work_budget=budget,
             progress=progress,
@@ -507,6 +573,7 @@ def index_image_embeddings(
     """Index visual CLIP vectors and retained OCR in separate compatible spaces."""
 
     budget = work_budget or SemanticWorkBudget()
+    policy = _active_admission_policy()
     try:
         return _image_index.index_image_embeddings(
             state_directory,
@@ -517,7 +584,7 @@ def index_image_embeddings(
             ocr_model=ocr_model,
             chunking=chunking,
             backend_factory=_index_backend_factory(budget),
-            source_record_iterator=iter_image_source_records,
+            source_record_iterator=_admitted_image_source_iterator(policy),
             generation_runner=partial(_run_generation, progress=progress),
             work_budget=budget,
             progress=progress,
@@ -687,8 +754,10 @@ def search_semantic_index(
     """Search incompatible spaces with discovery or concrete-evidence retention."""
     from .semantic_schema import semantic_read_context
 
+    policy = _active_admission_policy()
+
     with semantic_read_context():
-        return _search.search_semantic_index(
+        result = _search.search_semantic_index(
             state_directory,
             query,
             limit=limit,
@@ -714,6 +783,19 @@ def search_semantic_index(
             cancellation_check=cancellation_check,
             **_optional_exact_index_kwargs(exact_index),
         )
+    # Query visibility is a projection over durable results.  Keep vectors and
+    # owner evidence intact when a policy correction hides an item; only the
+    # returned fused hits are filtered for this request.
+    from .semantic_admission import filter_search_hits
+
+    if not hasattr(result, "fused"):
+        # Preserve the lightweight facade seam used by callers that replace
+        # the lower-level search service with a sentinel during inspection.
+        return result
+    visible = tuple(filter_search_hits(result.fused, policy))
+    if len(visible) == len(result.fused):
+        return result
+    return type(result)(result.query, result.rankings, result.lexical_rankings, visible)
 
 
 def calibrate_image_retrieval(

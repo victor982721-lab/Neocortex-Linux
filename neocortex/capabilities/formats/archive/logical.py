@@ -113,6 +113,16 @@ def identify_logical_document(
 def issue_diagnosis(reason_code: str) -> tuple[str, str]:
     """Return coverage impact and a recovery *possibility*, never permission."""
 
+    if reason_code in {
+        "archive_materialization_complete",
+        "archive_materialization_unit_preserved",
+    }:
+        # A successful apply-only manifest is evidence of a separate local
+        # stage, not a coverage defect.  Functional packages are intentionally
+        # preserved as one unit rather than marked removable.
+        return "identification_only", "not_verified"
+    if reason_code.startswith("archive_materialization_"):
+        return "coverage_limited", "bounded_retry_review"
     if reason_code == "archive_logical_extension_mismatch":
         return "identification_only", "review_identification"
     if reason_code.startswith("archive_logical_"):

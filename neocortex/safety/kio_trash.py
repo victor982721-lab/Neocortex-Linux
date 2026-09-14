@@ -19,7 +19,7 @@ import stat
 import subprocess
 import tempfile
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -367,7 +367,7 @@ def private_kio_context(
     environment: Mapping[str, str] | None = None,
     *,
     home_directory: Path | None = None,
-) -> tuple[dict[str, str], Path]:
+) -> Iterator[tuple[dict[str, str], Path]]:
     """Yield an operation-private KDE config without changing user config.
 
     The user's data home is retained so a real KIO move reaches the normal
@@ -587,6 +587,11 @@ def _renameat2_noreplace(
 ) -> None:
     """Move one regular file with descriptor-relative no-replace semantics."""
 
+    if _absolute_path(expected.path, label="snapshot") != source:
+        raise KioTrashUnavailable(
+            "kio_claim_snapshot_path_mismatch",
+            "claim snapshot does not identify the requested source path",
+        )
     source_parent_fd: int | None = None
     destination_parent_fd: int | None = None
     source_fd: int | None = None
@@ -626,6 +631,23 @@ def _renameat2_noreplace(
             raise KioTrashUnavailable(
                 "kio_claim_exdev",
                 "private KIO claim requires one filesystem",
+            )
+        # Recheck the path-bound dentry immediately before the syscall.  The
+        # retained descriptor proves the original inode, while this second
+        # observation prevents a concurrent unlink/create from being moved by
+        # ``renameat2`` under the old pathname.
+        current_metadata = os.lstat(source)
+        if (
+            stat.S_ISLNK(current_metadata.st_mode)
+            or not stat.S_ISREG(current_metadata.st_mode)
+            or current_metadata.st_nlink != 1
+            or not stat_matches_snapshot(expected, current_metadata)
+            or (current_metadata.st_dev, current_metadata.st_ino)
+            != (source_metadata.st_dev, source_metadata.st_ino)
+        ):
+            raise KioTrashUnavailable(
+                "kio_claim_source_changed",
+                "claim source changed immediately before rename",
             )
         libc = ctypes.CDLL(None, use_errno=True)
         renameat2 = getattr(libc, "renameat2", None)
@@ -1397,10 +1419,15 @@ def move_to_trash(
     except KioTrashUnavailable as exc:
         return _blocked(source_path, exc)
     if bus_launcher is not None:
+        # ``dbus-run-session`` performs a second exec and rejects an O_PATH
+        # ``/proc/self/fd`` executable with ELOOP.  The client was already
+        # identity-checked immediately before this command is built; use its
+        # absolute path only inside the private wrapper.  The source itself is
+        # still protected by the same-filesystem claim in the native backend.
         command = [
             os.fspath(bus_launcher),
             "--",
-            f"/proc/self/fd/{client_descriptor}",
+            os.fspath(preflight.client),
             "move",
             os.fspath(source_path),
             KIO_TRASH_URL,
@@ -1422,8 +1449,6 @@ def move_to_trash(
                 "pass_fds": (client_descriptor,),
             }
         )
-    elif runner is None and bus_launcher is not None:
-        runner_kwargs["pass_fds"] = (client_descriptor,)
     try:
         completed = effective_runner(
             command,

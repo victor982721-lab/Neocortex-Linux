@@ -19,7 +19,7 @@ import zlib
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import Literal, cast
 
 from neocortex.capabilities.formats.xml_safety import safe_xml_fromstring
 from neocortex.platform.zip_safety import (
@@ -234,15 +234,17 @@ def _package_kind(names: tuple[str, ...], declared_mime: str | None) -> tuple[st
     observation = identify_logical_document(names, declared_mime)
     if observation is not None and observation.identified:
         kind = observation.logical_kind
+        if kind is None:
+            return None, None, ()
         if kind == "epub":
             return kind, "epub", ("mimetype", "META-INF/container.xml")
         if kind in ODF_MIME_KINDS.values():
-            return kind, "odf", _ODF_REQUIRED.get(kind, ("mimetype", "content.xml"))
+            return cast(ClassificationKind, kind), "odf", _ODF_REQUIRED.get(kind, ("mimetype", "content.xml"))
         if kind in {"docx", "xlsx", "pptx"}:
             return kind, "office", _OOXML_REQUIRED[kind]
     # ``mimetype`` values for ODF that the compatibility logical detector may
     # reject are still not generic storage: preserve the package until review.
-    if declared_mime in ODF_MIME_KINDS:
+    if declared_mime is not None and declared_mime in ODF_MIME_KINDS:
         kind = ODF_MIME_KINDS[declared_mime]
         return kind, "odf", _ODF_REQUIRED[kind]
     return None, None, ()
@@ -358,10 +360,11 @@ def _classify_open_archive(
         )
     kind, unit_kind, required = _package_kind(names, declared)
     if kind is not None and unit_kind is not None:
+        logical_kind = cast(ClassificationKind, kind)
         missing = tuple(name for name in required if name not in names)
         if missing:
             return ArchiveUnitClassification(
-                kind,
+                logical_kind,
                 "partial",
                 unit_kind,
                 tuple(f"missing:{name}" for name in missing),
@@ -379,9 +382,9 @@ def _classify_open_archive(
                 if marker in payloads and marker.endswith(".xml"):
                     safe_xml_fromstring(payloads[marker])
         except (ET.ParseError, UnicodeError, ValueError) as exc:
-            return ArchiveUnitClassification(kind, "partial", unit_kind, ("marker_xml_invalid",), names, required, structure=structure, detail=str(exc))
+            return ArchiveUnitClassification(logical_kind, "partial", unit_kind, ("marker_xml_invalid",), names, required, structure=structure, detail=str(exc))
         return ArchiveUnitClassification(
-            kind, "validated", unit_kind, tuple([f"required:{name}" for name in required] + ([f"declared_mime:{declared}"] if declared else [])), names, required, structure=structure, integrity_verified=True, opening_verified=False
+            logical_kind, "validated", unit_kind, tuple([f"required:{name}" for name in required] + ([f"declared_mime:{declared}"] if declared else [])), names, required, structure=structure, integrity_verified=True, opening_verified=False
         )
     project_evidence = _project_evidence(names)
     if project_evidence:

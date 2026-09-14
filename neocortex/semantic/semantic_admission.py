@@ -291,8 +291,14 @@ def _file_identity_from_item(item: SemanticItem) -> PhysicalIdentity | None:
             return _identity_from_explicit(explicit, kind="physical")  # type: ignore[return-value]
         if "volume_id" in container and "file_id" in container:
             try:
-                volume_id = int(container["volume_id"])
-                file_id = int(container["file_id"])
+                raw_volume_id = container["volume_id"]
+                raw_file_id = container["file_id"]
+                if isinstance(raw_volume_id, bool) or not isinstance(raw_volume_id, (int, str)):
+                    continue
+                if isinstance(raw_file_id, bool) or not isinstance(raw_file_id, (int, str)):
+                    continue
+                volume_id = int(raw_volume_id)
+                file_id = int(raw_file_id)
             except (TypeError, ValueError, OverflowError):
                 continue
             if volume_id >= 0 and file_id >= 0:
@@ -603,9 +609,19 @@ def filter_search_hits(
     excluded = frozenset(policy.excluded_item_ids)
     excluded_sources = frozenset(policy.excluded_source_kinds)
     for hit in hits:
+        # Search returns both raw ``ResolvedSearchHit`` values and the public
+        # ``FusedResolvedHit`` envelope.  Resolve the stable identity from
+        # either shape instead of silently letting an excluded item through.
+        fused = getattr(hit, "fused", None)
         item_id = getattr(hit, "item_id", None)
+        if item_id is None:
+            item_id = getattr(fused, "item_id", None)
         provenance = getattr(hit, "provenance", {})
         source_kind = provenance.get("source_kind") if isinstance(provenance, Mapping) else None
+        if source_kind is None:
+            source_kind = getattr(hit, "source_kind", None)
+        if source_kind is None:
+            source_kind = getattr(fused, "source_kind", None)
         if item_id in excluded or source_kind in excluded_sources:
             continue
         yield hit

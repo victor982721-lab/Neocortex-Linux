@@ -298,6 +298,7 @@ def state_reset_payload(
     confirmation: str | None = None,
     yes: bool = False,
     plan_digest: str | None = None,
+    expected_plan_digest: str | None = None,
     backup_directory: str | os.PathLike[str] | None = None,
     request_id: str | None = None,
 ) -> dict[str, object]:
@@ -328,6 +329,11 @@ def state_reset_payload(
             else _absolute_path(backup_directory, label="backup_directory")
         )
         requested_digest = _digest(plan_digest)
+        legacy_digest = _digest(expected_plan_digest)
+        if requested_digest is not None and legacy_digest is not None and requested_digest != legacy_digest:
+            raise ValueError("plan_digest and expected_plan_digest disagree")
+        if requested_digest is None:
+            requested_digest = legacy_digest
         if not apply:
             if confirmation is not None or yes is not False:
                 raise ValueError("confirmation is only valid with apply=True")

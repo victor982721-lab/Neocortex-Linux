@@ -10,6 +10,7 @@ from types import ModuleType
 import pytest
 
 from neocortex.api.cli import human
+from neocortex.api.cli import state_reset as state_reset_cli
 from neocortex.api.cli.state_reset import STATE_RESET_CONFIRMATION
 
 
@@ -233,3 +234,95 @@ def test_state_reset_apply_rejects_stale_digest_without_executing(
     payload = _json_output(capsys)
     assert "preview again" in payload["error"]["message"]
     assert [call["operation"] for call in calls] == ["plan"]
+
+
+def test_state_reset_apply_without_yes_is_rejected_on_non_tty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls = _install_fake_engine(monkeypatch)
+    state = tmp_path / "state"
+    state.mkdir()
+    no_tty = type("NoTTY", (), {"isatty": lambda _self: False})()
+    monkeypatch.setattr(state_reset_cli.sys, "stdin", no_tty)
+
+    assert (
+        human.run_human_command(
+            (
+                "state",
+                "reset",
+                "--state-directory",
+                str(state),
+                "--scope",
+                "runs",
+                "--apply",
+                "--json",
+            )
+        )
+        == 3
+    )
+    payload = _json_output(capsys)
+    assert payload["error"]["code"] == "confirmation_required"
+    assert [call["operation"] for call in calls] == []
+
+
+def test_state_reset_yes_binds_fresh_preview_before_apply(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls = _install_fake_engine(monkeypatch)
+    state = tmp_path / "state"
+    state.mkdir()
+
+    assert (
+        human.run_human_command(
+            (
+                "state",
+                "reset",
+                "--state-directory",
+                str(state),
+                "--scope",
+                "runs",
+                "--apply",
+                "--yes",
+                "--json",
+            )
+        )
+        == 0
+    )
+    payload = _json_output(capsys)
+    assert payload["status"] == "complete"
+    assert payload["read_only"] is False
+    assert [call["operation"] for call in calls] == ["plan", "plan", "execute"]
+    assert calls[-1]["confirmation"] == STATE_RESET_CONFIRMATION
+
+
+def test_state_reset_yes_without_apply_is_rejected_before_engine(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls = _install_fake_engine(monkeypatch)
+    state = tmp_path / "state"
+    state.mkdir()
+
+    assert (
+        human.run_human_command(
+            (
+                "state",
+                "reset",
+                "--state-directory",
+                str(state),
+                "--scope",
+                "runs",
+                "--yes",
+                "--json",
+            )
+        )
+        == 2
+    )
+    payload = _json_output(capsys)
+    assert payload["error"]["code"] == "invalid_request"
+    assert [call["operation"] for call in calls] == []

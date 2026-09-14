@@ -4,6 +4,26 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-13 — Cierre operativo consolidado 0.14.0
+
+- Dedupe Linux/KIO receipt-bound con claim same-filesystem, no-replace,
+  recuperación e idempotencia; se conservan los testigos y no hay fallback a
+  borrado permanente.
+- `--all` mantiene su forma de flag e integra admisión Semantic, reutilización,
+  reparación acotada, clasificación y materialización bounded de ZIPs. Los
+  paquetes funcionales se preservan como unidad y un contenedor sólo queda
+  `container_normalized` cuando toda su evidencia es verificable; la ruta no
+  retira el origen automáticamente.
+- `state reset` conserva sus tres scopes y ahora usa rollback efímero por
+  defecto; el backup durable sólo nace con `--backup-directory` explícito.
+  `--yes` enlaza preview/digest en no-TTY y la retención agregada permanece
+  read-only para no borrar evidencia sin un contrato posterior.
+- El coordinador global adapta memoria, cgroup/PSI, CPU y threads nativos sin
+  estrangular CPU propia; la recuperación es cooperativa y no usa `SIGSTOP`.
+- Validación local individual, publicación `main`, instalación y verificación
+  de la release se mantienen separadas; el corpus original no se aplica durante
+  esta entrega.
+
 ## 2026-09-13 — Índice exacto derivado opt-in (fuente)
 
 - Preparación explícita de un artefacto textual separado, desde un head

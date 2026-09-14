@@ -1410,6 +1410,7 @@ def _apply_framework_runs_staged(
     stage_database = stage_directory / "framework.sqlite3"
     final_database = stage_directory / "framework-final.sqlite3"
     staged_connection: sqlite3.Connection | None = None
+    cleared_cache_rows = 0
     try:
         if backup is None:
             # The live main file may be paired with a WAL.  Use the existing
@@ -1450,6 +1451,11 @@ def _apply_framework_runs_staged(
             # Framework owner preserves.  Clear it only on the disposable
             # staged copy; the live owner is replaced atomically below.
             staged_connection.execute("BEGIN IMMEDIATE")
+            cleared_cache_rows = int(
+                staged_connection.execute(
+                    "SELECT COUNT(*) FROM content_type_cache"
+                ).fetchone()[0]
+            )
             staged_connection.execute("DELETE FROM content_type_cache")
             staged_connection.commit()
         staged_connection.close()
@@ -1503,9 +1509,12 @@ def _apply_framework_runs_staged(
             os.fsync(directory_fd)
         finally:
             os.close(directory_fd)
-        return framework_result, tuple(
+        cleared_tables = tuple(
             table for table, count in framework_result.deleted_counts if count
         )
+        if cleared_cache_rows:
+            cleared_tables += ("content_type_cache",)
+        return framework_result, cleared_tables
     except FrameworkRunResetError as exc:
         raise StateResetError(f"Framework staged run reset failed: {exc}") from exc
     except (OSError, sqlite3.Error) as exc:
@@ -1566,7 +1575,16 @@ def _apply_catalog_owner_staged(
     final_database = stage_directory / "document_catalog-final.sqlite3"
     connection: sqlite3.Connection | None = None
     try:
-        shutil.copyfile(source, stage_database)
+        if backup is None:
+            backup_sqlite_online(
+                source,
+                stage_database,
+                policy=SQLiteBackupPolicy(
+                    integrity=SQLiteIntegrityPolicy(check_mode="full")
+                ),
+            )
+        else:
+            shutil.copyfile(source, stage_database)
         os.chmod(stage_database, entry.mode)
         connection = sqlite3.connect(
             existing_sqlite_uri(stage_database),

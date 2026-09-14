@@ -443,9 +443,9 @@ conteos/bytes, epoch y conflictos de locks/fences. El digest cubre esos datos y
 los límites efectivos, por lo que modificar scope, raíz, estado observado o
 límite entre preview y apply invalida la operación. El preview no crea estado ni
 backup. Apply adquiere exclusión fuerte, vuelve a comprobar writers, publicación,
-schemas y heads, crea un backup verificable fuera de la raíz y sólo después
-publica el cambio. Las reservas de bytes/archivos son bounded; no existe un
-fallback que quite el límite para terminar.
+schemas y heads, y usa staging/rollback efímero; sólo `--backup-directory`
+explícito crea una copia durable externa. Las reservas de bytes/archivos son
+bounded; no existe un fallback que quite el límite para terminar.
 
 La implementación no simula una transacción física distribuida. Cada owner se
 respalda/retira con su contrato y el journal de reset registra baseline,

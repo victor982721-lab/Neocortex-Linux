@@ -36,17 +36,24 @@ _SERVICE_UNAVAILABLE_EXIT_CODE = 2
 def _json_summary_payload(result: object, *, semantic_results: Sequence[tuple[str, object]], semantic_exit_code: int) -> object:
     """Convert one completed run to a bounded JSON-safe summary."""
 
-    if is_dataclass(result):
-        payload: object = asdict(result)
+    if is_dataclass(result) and not isinstance(result, type):
+        payload: dict[str, object] = asdict(result)
     elif isinstance(result, Mapping):
-        payload = dict(result)
+        payload = {str(key): value for key, value in result.items()}
     else:
         payload = {"result": str(result)}
     if isinstance(payload, dict):
         payload.setdefault("semantic_exit_code", semantic_exit_code)
         if semantic_results:
             payload["semantic_results"] = [
-                {"scope": scope, "result": (asdict(value) if is_dataclass(value) else value)}
+                {
+                    "scope": scope,
+                    "result": (
+                        asdict(value)
+                        if is_dataclass(value) and not isinstance(value, type)
+                        else value
+                    ),
+                }
                 for scope, value in semantic_results
             ]
     from neocortex.api.read_contract import sanitize_untrusted_payload
@@ -603,7 +610,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         # An empty invocation is an ambiguous no-op, not permission to start
         # an inventory run.  Keep this fast path before parser construction so
         # it cannot create state or import route engines.
-        print("Uso: Neocortex --all, --route ROUTES o una operación directa")
+        print("Uso: Neocortex --all, --dedupe, --route ROUTES o una operación directa")
         print("Use `Neocortex --help` para ver las opciones disponibles.")
         return 0
     if forwarded == ["--version"]:
@@ -644,7 +651,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     ):
         # Options such as --root or --state-directory alone do not select an
         # operation.  Never turn them into an implicit inventory write.
-        print("Uso: Neocortex --all, --route ROUTES o una operación directa")
+        print("Uso: Neocortex --all, --dedupe, --route ROUTES o una operación directa")
         print("Use `Neocortex --help` para ver las opciones disponibles.")
         return 0
 

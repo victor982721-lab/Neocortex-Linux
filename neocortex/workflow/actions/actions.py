@@ -12,6 +12,7 @@ import time
 from collections.abc import Callable, Iterable
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 from neocortex.platform.policy import stat_birthtime_ns
 
@@ -409,11 +410,30 @@ class FrameworkActions:
                     target_path=None,
                 )
                 self._state.mark_file_actions_applying(((action_id, expected_json),))
-                outcome = self._trash_backend.apply_snapshot(
-                    planned,
-                    root=mutation_root,
-                    source_digest=source_digest,
-                )
+                apply_snapshot = getattr(self._trash_backend, "apply_snapshot", None)
+                if callable(apply_snapshot):
+                    outcome = apply_snapshot(
+                        planned,
+                        root=mutation_root,
+                        source_digest=source_digest,
+                    )
+                else:
+                    # Compatibility seam for older injected backends that
+                    # implement the grant-style ``apply(candidate)`` only.
+                    apply_effect = SimpleNamespace(
+                        action="trash",
+                        source=planned,
+                        source_digest=source_digest,
+                        keeper=None,
+                        keeper_digest=None,
+                        target_path=None,
+                    )
+                    apply_method = getattr(self._trash_backend, "apply", None)
+                    if not callable(apply_method):
+                        raise RuntimeError("trash backend lacks apply_snapshot(candidate)")
+                    outcome = apply_method(
+                        SimpleNamespace(effect=apply_effect, root=mutation_root)
+                    )
                 if not isinstance(outcome, BackendOutcome):
                     raise RuntimeError("trash backend returned an unsupported outcome")
                 if outcome.status == "applied" and outcome.receipt_json is not None:

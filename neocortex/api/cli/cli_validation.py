@@ -277,6 +277,16 @@ def _validate_dedupe_operation(args: argparse.Namespace) -> None:
         raise SystemExit("--dedupe cannot be combined with direct query/doctor options")
 
 
+def _validate_json_output(args: argparse.Namespace) -> None:
+    """Keep the flat JSON switch attached to a run-producing operation."""
+
+    if not getattr(args, "json_output", False):
+        return
+    selected_routes = normalize_route_selection(args.route, BUILTIN_ROUTE_ORDER)
+    if not (args.all or args.dedupe or selected_routes or args.route_only):
+        raise SystemExit("--json requires --all, --dedupe or --route")
+
+
 def _validate_linux_mutation_capability(args: argparse.Namespace) -> None:
     """Permit Linux effects only when the live platform policy says so.
 
@@ -811,6 +821,7 @@ def validate_arguments(args: argparse.Namespace) -> None:
     validate_models_arguments(args)
     _validate_direct_operations(args)
     _validate_dedupe_operation(args)
+    _validate_json_output(args)
     _validate_linux_mutation_capability(args)
     _validate_route_only(args)
 

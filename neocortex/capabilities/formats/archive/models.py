@@ -45,6 +45,15 @@ class ArchiveRouteSummary:
     catalog_stale_marked: int = field(default=0, kw_only=True)
     catalog_source_missing: int = field(default=0, kw_only=True)
     catalog_complete: bool | None = field(default=None, kw_only=True)
+    # Physical archive materialization is an explicit apply-only extension.
+    # These keyword-only counters preserve the historical positional summary
+    # contract while making the separate no-replace stage observable.
+    materialization_applied: int = field(default=0, kw_only=True)
+    materialization_reused: int = field(default=0, kw_only=True)
+    materialization_pending: int = field(default=0, kw_only=True)
+    materialization_collisions: int = field(default=0, kw_only=True)
+    materialization_units_preserved: int = field(default=0, kw_only=True)
+    materialization_manifest_digest: str | None = field(default=None, kw_only=True)
 
 
 for _defined_value in tuple(globals().values()):

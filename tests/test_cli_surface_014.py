@@ -10,7 +10,7 @@ import pytest
 from neocortex.api.cli import cli_app, cli_validation
 from neocortex.api.cli.cli_app import dispatch_direct
 from neocortex.api.cli.cli_parser import build_parser
-from neocortex.interface.entrypoint import entrypoint
+from neocortex.interface.entrypoint import _translate_canonical_arguments, entrypoint
 
 
 def test_dedupe_is_an_explicit_non_routed_selector() -> None:
@@ -30,6 +30,7 @@ def test_dedupe_is_an_explicit_non_routed_selector() -> None:
         ("--dedupe", "--route", "pdf"),
         ("--dedupe", "--route-only", "--route", "pdf"),
         ("--dedupe-json",),
+        ("--json",),
     ),
 )
 def test_dedupe_rejects_ambiguous_combinations(arguments: tuple[str, ...]) -> None:
@@ -53,6 +54,15 @@ def test_dedupe_dispatches_one_domain_service_without_framework(
 
     assert dispatch_direct(args) == 0
     assert calls == [args]
+
+
+def test_dedupe_command_alias_converges_on_the_flat_service() -> None:
+    assert _translate_canonical_arguments(
+        ["dedupe", "--root", "/tmp/corpus", "--dedupe-json"]
+    ) == ["--dedupe", "--root", "/tmp/corpus", "--dedupe-json"]
+    assert _translate_canonical_arguments(
+        ["--root", "/tmp/corpus", "dedupe", "--dedupe-json"]
+    ) == ["--root", "/tmp/corpus", "--dedupe", "--dedupe-json"]
 
 
 def test_dedupe_unavailable_is_structured_on_json_stdout(
@@ -92,4 +102,5 @@ def test_installed_root_help_is_brief_and_does_not_run_framework(
     assert "--all" in output
     assert "--dedupe" in output
     assert "--route ROUTES" in output
+    assert "--json" in output
     assert "no inicia inventario" in output

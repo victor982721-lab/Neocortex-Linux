@@ -40,6 +40,11 @@ from neocortex.platform.zip_safety import (
     inspect_zip_bytes,
     inspect_zip_stream,
 )
+from .materialization import (
+    ArchiveMaterializationLimits,
+    ArchiveManifest,
+    materialize_archive,
+)
 from neocortex.foundation.processing_provenance import (
     ProcessingProvenance,
     build_processing_provenance,
@@ -115,6 +120,11 @@ class ArchiveRouteConfig:
     ocr_timeout_seconds: float = DEFAULT_OCR_TIMEOUT_SECONDS
     tesseract_cmd: str | None = None
     tessdata_dir: str | None = None
+    # Materialization is intentionally opt-in and defaults to virtual/read-only
+    # behavior.  The application projection enables it only for an explicit
+    # Framework ``apply_actions`` request and points it at state-managed output.
+    materialize_on_apply: bool = field(default=False, kw_only=True)
+    materialization_directory: Path | None = field(default=None, kw_only=True)
 
     @property
     def processing_signature(self) -> str:
@@ -945,6 +955,12 @@ class _ContainerCounters:
     coverage_issues: int = 0
     text_chars: int = 0
     max_depth: int = 0
+    materialization_applied: int = 0
+    materialization_reused: int = 0
+    materialization_pending: int = 0
+    materialization_collisions: int = 0
+    materialization_units_preserved: int = 0
+    materialization_manifest_digest: str | None = None
 
 
 def _member_key(container_key: str, member_chain: str) -> str:
@@ -1948,6 +1964,14 @@ class ArchiveRoute:
     def _validate(self) -> None:
         if not isinstance(self.config.retry_recoverable_errors, bool):
             raise ValueError("archive retry_recoverable_errors must be a boolean")
+        if not isinstance(self.config.materialize_on_apply, bool):
+            raise ValueError("archive materialize_on_apply must be a boolean")
+        if self.config.materialize_on_apply and self.config.materialization_directory is not None:
+            directory = self.config.materialization_directory
+            if not isinstance(directory, Path) or not directory.is_absolute():
+                raise ValueError(
+                    "archive materialization_directory must be an absolute path"
+                )
         positive = {
             "max_depth": self.config.max_depth,
             "max_members": self.config.max_members,
@@ -2002,6 +2026,132 @@ class ArchiveRoute:
             128 * 1024 * 1024,
         )
         return self.memory_gate.admit(max(1, estimate))
+
+    def _materialization_limits(self) -> ArchiveMaterializationLimits:
+        """Project route bounds into the apply-only materialization service."""
+
+        return ArchiveMaterializationLimits(
+            max_members=self.config.max_members,
+            max_member_bytes=self.config.max_member_bytes,
+            max_total_uncompressed_bytes=self.config.max_total_uncompressed_bytes,
+            max_total_temp_bytes=self.config.max_total_uncompressed_bytes,
+            max_depth=self.config.max_depth,
+            max_compression_ratio=self.config.max_compression_ratio,
+            max_central_directory_bytes=self.config.max_central_directory_bytes,
+            timeout_seconds=max(1.0, float(self.config.pdf_timeout_seconds)),
+        )
+
+    def _materialization_destination(self, container_key: str) -> Path:
+        base = self.config.materialization_directory
+        if base is None:
+            base = self.config.state_path.parent / "archive-materialized"
+        # State-managed output is separated by the immutable container identity;
+        # no source basename or member name can escape this directory.
+        safe_key = container_key.replace(":", "_")
+        return Path(base) / safe_key
+
+    def _record_materialization_manifest(
+        self,
+        connection: sqlite3.Connection,
+        container_key: str,
+        counters: _ContainerCounters,
+        manifest: ArchiveManifest,
+    ) -> None:
+        status = str(getattr(manifest, "status", "partial"))
+        digest_value = getattr(manifest, "manifest_digest", None)
+        counters.materialization_manifest_digest = (
+            None if digest_value is None else str(digest_value)
+        )
+        outputs = tuple(getattr(manifest, "outputs", ()) or ())
+        counters.materialization_applied += sum(
+            str(getattr(output, "status", "")) == "applied" for output in outputs
+        )
+        counters.materialization_reused += sum(
+            str(getattr(output, "status", "")) == "reused" for output in outputs
+        )
+        counters.materialization_collisions += sum(
+            str(getattr(output, "status", "")) == "collision" for output in outputs
+        )
+        normalized = bool(getattr(manifest, "container_normalized", False))
+        classification = getattr(manifest, "classification", None)
+        preserved_unit = bool(getattr(classification, "preserve_as_unit", False))
+        if preserved_unit and status == "complete":
+            counters.materialization_units_preserved += 1
+        if status != "complete" or counters.materialization_collisions:
+            counters.materialization_pending += 1
+        reason_code = (
+            "archive_materialization_complete"
+            if status == "complete" and normalized
+            else "archive_materialization_unit_preserved"
+            if status == "complete" and preserved_unit
+            else "archive_materialization_collision"
+            if counters.materialization_collisions
+            else f"archive_materialization_{status}"
+        )
+        classification_kind = getattr(classification, "kind", None)
+        evidence = {
+            "manifest_digest": counters.materialization_manifest_digest,
+            "status": status,
+            "container_normalized": normalized,
+            "classification": None if classification_kind is None else str(classification_kind),
+            "outputs": len(outputs),
+            "applied": counters.materialization_applied,
+            "reused": counters.materialization_reused,
+            "collisions": counters.materialization_collisions,
+            "source_preserved": True,
+        }
+        _record_issue(
+            connection,
+            container_key,
+            counters,
+            member_chain=None,
+            depth=0,
+            code=reason_code,
+            detail=json.dumps(evidence, ensure_ascii=False, sort_keys=True),
+        )
+
+    def _materialize_container(
+        self,
+        connection: sqlite3.Connection,
+        snapshot: FileSnapshot,
+        container_key: str,
+        counters: _ContainerCounters,
+    ) -> None:
+        """Materialize to state-managed staging only after explicit apply."""
+
+        if not self.config.materialize_on_apply:
+            return
+        destination = self._materialization_destination(container_key)
+        try:
+            manifest = materialize_archive(
+                snapshot.path,
+                destination,
+                apply=True,
+                limits=self._materialization_limits(),
+            )
+        except Exception as exc:
+            counters.materialization_pending += 1
+            _record_issue(
+                connection,
+                container_key,
+                counters,
+                member_chain=None,
+                depth=0,
+                code="archive_materialization_error",
+                detail=json.dumps(
+                    {
+                        "status": "partial",
+                        "error_type": type(exc).__name__,
+                        "detail": str(exc)[:1_000],
+                        "destination": str(destination),
+                        "source_preserved": True,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            )
+            return
+        self._record_materialization_manifest(connection, container_key, counters, manifest)
 
     def _process_container(
         self,
@@ -2063,6 +2213,7 @@ class ArchiveRoute:
                             "ZIP source changed during traversal",
                             retryable=True,
                         )
+                self._materialize_container(connection, snapshot, container_key, counters)
             _require_current_source(snapshot, "ZIP source path changed during traversal")
             _publish_container(
                 connection,
@@ -2097,6 +2248,10 @@ class ArchiveRoute:
         processed = cache_hits = cached_errors = complete = partial = errors = 0
         members = indexed = metadata_only = nested = text_chars = issues = 0
         fts_rows_repaired = 0
+        materialization_applied = materialization_reused = 0
+        materialization_pending = materialization_collisions = 0
+        materialization_units_preserved = 0
+        materialization_manifest_digest: str | None = None
 
         def report(*, finished: bool = False) -> None:
             emit_progress(
@@ -2113,6 +2268,11 @@ class ArchiveRoute:
                         ProgressMetric("cache_hits", cache_hits),
                         ProgressMetric("members", members),
                         ProgressMetric("nested_archives", nested),
+                        ProgressMetric(
+                            "materialized",
+                            materialization_applied + materialization_reused,
+                        ),
+                        ProgressMetric("materialization_pending", materialization_pending),
                         ProgressMetric("issues", issues + errors),
                     ),
                 ),
@@ -2154,6 +2314,7 @@ class ArchiveRoute:
                 ):
                     connection.execute("BEGIN IMMEDIATE")
                     repaired: int | None = None
+                    cached_materialization = _ContainerCounters()
                     try:
                         repaired_count = _refresh_cached_container(
                             connection,
@@ -2161,6 +2322,13 @@ class ArchiveRoute:
                             self.run_id,
                             max_text_chars=self.config.max_text_chars,
                         )
+                        if self.config.materialize_on_apply and str(cached["status"]) != "error":
+                            self._materialize_container(
+                                connection,
+                                snapshot,
+                                file_key_from_snapshot(snapshot),
+                                cached_materialization,
+                            )
                     except _ArchiveCacheInvalid:
                         # A missing/corrupt derived projection is repairable,
                         # but a corrupt durable representation must go through
@@ -2188,6 +2356,18 @@ class ArchiveRoute:
                         nested += int(cached["nested_archive_count"])
                         issues += int(cached["issue_count"])
                         text_chars += int(cached["text_chars"])
+                        materialization_applied += cached_materialization.materialization_applied
+                        materialization_reused += cached_materialization.materialization_reused
+                        materialization_pending += cached_materialization.materialization_pending
+                        materialization_collisions += cached_materialization.materialization_collisions
+                        materialization_units_preserved += (
+                            cached_materialization.materialization_units_preserved
+                        )
+                        materialization_manifest_digest = (
+                            cached_materialization.materialization_manifest_digest
+                            or materialization_manifest_digest
+                        )
+                        issues += cached_materialization.issues
                         processed += 1
                         report()
                         continue
@@ -2226,6 +2406,17 @@ class ArchiveRoute:
                     nested += outcome.counters.nested_archives
                     issues += outcome.counters.issues
                     text_chars += outcome.counters.text_chars
+                    materialization_applied += outcome.counters.materialization_applied
+                    materialization_reused += outcome.counters.materialization_reused
+                    materialization_pending += outcome.counters.materialization_pending
+                    materialization_collisions += outcome.counters.materialization_collisions
+                    materialization_units_preserved += (
+                        outcome.counters.materialization_units_preserved
+                    )
+                    materialization_manifest_digest = (
+                        outcome.counters.materialization_manifest_digest
+                        or materialization_manifest_digest
+                    )
                 processed += 1
                 report()
 
@@ -2274,6 +2465,12 @@ class ArchiveRoute:
             memory_waits=(0 if self.memory_gate is None else int(self.memory_gate.wait_count)),
             processing_signature=provenance.signature,
             processing_provenance=provenance.manifest,
+            materialization_applied=materialization_applied,
+            materialization_reused=materialization_reused,
+            materialization_pending=materialization_pending,
+            materialization_collisions=materialization_collisions,
+            materialization_units_preserved=materialization_units_preserved,
+            materialization_manifest_digest=materialization_manifest_digest,
         )
 
 

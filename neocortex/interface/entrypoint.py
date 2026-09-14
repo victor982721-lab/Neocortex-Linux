@@ -78,13 +78,17 @@ Consulta local:
 Procesamiento:
   --all                 ejecuta las rutas configuradas
   --dedupe              solicita el servicio de duplicados, sin rutas de contenido
+  dedupe                alias de --dedupe
   --route ROUTES        ejecuta una o más rutas sobre el inventario
   --root ROOT           conserva precedencia explícita sobre la raíz por defecto
   --apply               sólo procede con una capacidad de backend verificada
+  --json                emite un resumen JSON para --all, --dedupe o --route
+  --dedupe-json         emite el contrato JSON específico de --dedupe
   --version             muestra la identidad de la instalación activa
 
 Usa `Neocortex COMMAND --help` para una operación concreta. Las banderas
-heredadas siguen disponibles; `--help` no inicia inventario ni crea estado.
+heredadas (incluido `--code-project-root PATH`) siguen disponibles; `--help`
+no inicia inventario ni crea estado.
 """
     )
 
@@ -97,6 +101,25 @@ def _translate_canonical_arguments(arguments: Sequence[str]) -> list[str]:
     # flag and is intentionally not introduced as a subcommand.
     if arguments and arguments[0] == "dedupe":
         return ["--dedupe", *arguments[1:]]
+    # Keep the global path overrides in front of the translated selector so
+    # ``Neocortex --root ROOT dedupe`` has the same precedence as the flat
+    # spelling.  Only the two value-bearing global options are skipped here;
+    # every other token remains the responsibility of argparse.
+    position = 0
+    while position < len(arguments):
+        option, separator, value = arguments[position].partition("=")
+        if option not in {"--root", "--state-directory"}:
+            break
+        if separator:
+            if not value:
+                break
+            position += 1
+            continue
+        if position + 1 >= len(arguments):
+            break
+        position += 2
+    if position < len(arguments) and arguments[position] == "dedupe":
+        return [*arguments[:position], "--dedupe", *arguments[position + 1 :]]
     if len(arguments) < 2:
         return list(arguments)
     command = (arguments[0], arguments[1])

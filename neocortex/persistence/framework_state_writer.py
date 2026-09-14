@@ -1877,11 +1877,14 @@ class FrameworkState:
                         raise RuntimeError(
                             f"run {run_id} lifecycle cancellation is malformed"
                         ) from exc
-                    if not isinstance(existing_payload, Mapping) or existing_payload.get(
-                        "reason"
-                    ) != reason:
-                        raise ValueError(
-                            f"run {run_id} has a conflicting cancellation reason"
+                    # The first durable cancellation is authoritative.  A
+                    # signal/UI caller may race the worker with a different
+                    # reason; treating that retry as an idempotent no-op keeps
+                    # the run terminalizable without appending contradictory
+                    # lifecycle events.
+                    if not isinstance(existing_payload, Mapping):
+                        raise RuntimeError(
+                            f"run {run_id} lifecycle cancellation is malformed"
                         )
                     return False
                 if row is None:

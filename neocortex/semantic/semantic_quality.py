@@ -13,7 +13,12 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 
 from .semantic_chunking import TextChunkingConfig, TextTokenCounter, iter_text_chunks
-from .semantic_models import TextChunk, TextSection
+from .semantic_admission import (
+    ContentAdmissionDecision,
+    ContentAdmissionPolicy,
+    evaluate_content_admission,
+)
+from .semantic_models import SemanticItem, TextChunk, TextSection
 
 
 SEMANTIC_TEXT_QUALITY_POLICY = "semantic-text-quality-v1"
@@ -122,6 +127,40 @@ def iter_semantic_text_chunks(
         yield chunk
 
 
+def assess_semantic_item(
+    item: SemanticItem,
+    policy: ContentAdmissionPolicy,
+) -> ContentAdmissionDecision:
+    """Return the deterministic item boundary before chunk payload staging."""
+
+    return evaluate_content_admission(item, policy)
+
+
+def iter_admitted_semantic_text_chunks(
+    item: SemanticItem,
+    sections: Iterable[TextSection],
+    config: TextChunkingConfig,
+    policy: ContentAdmissionPolicy,
+    *,
+    token_counter: TextTokenCounter | None = None,
+) -> Iterator[TextChunk]:
+    """Yield quality-gated chunks only for policy-visible source items.
+
+    This is a projection boundary, not a destructive cleanup: callers may
+    retain the returned decision and existing vectors/diagnostics unchanged
+    when a later policy correction hides the item.
+    """
+
+    if not assess_semantic_item(item, policy).visible:
+        return
+    yield from iter_semantic_text_chunks(
+        item.item_id,
+        sections,
+        config,
+        token_counter=token_counter,
+    )
+
+
 def bounded_title_sample(
     sections: Iterable[TextSection],
 ) -> tuple[Iterator[TextSection], list[str]]:
@@ -195,9 +234,11 @@ def content_title_from_sample(sample: str) -> str | None:
 __all__ = [
     "SEMANTIC_TEXT_QUALITY_POLICY",
     "TextQualityAssessment",
+    "assess_semantic_item",
     "assess_semantic_text",
     "bounded_title_sample",
     "clean_title_candidate",
     "content_title_from_sample",
+    "iter_admitted_semantic_text_chunks",
     "iter_semantic_text_chunks",
 ]

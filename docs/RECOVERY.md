@@ -130,8 +130,17 @@ referencias cruzadas, runs activos, publicaciones pendientes, schemas no
 compatibles o writers en curso. Un bloqueo se conserva como abstención; no se
 resuelve borrando el lock o ignorando el fence.
 
-La aplicación es backup-first y requiere el mismo alcance y digest del preview,
-el límite no excedido y el token literal:
+La aplicación usa rollback efímero y requiere el mismo alcance y digest del
+preview, el límite no excedido y el token literal. No se crea un backup durable
+si no se solicita `--backup-directory` de forma explícita. Para el uso ordinario
+no interactivo, `--yes` enlaza un preview fresco con su digest:
+
+```bash
+Neocortex state reset --state-directory "$State" --scope all --apply --yes --json
+```
+
+Cuando se necesita conservar una copia externa, el backup sí se pide de forma
+expresa:
 
 ```bash
 Neocortex state reset --state-directory "$State" --scope all \
@@ -140,8 +149,8 @@ Neocortex state reset --state-directory "$State" --scope all \
   --confirm-state-reset RESET_STATE --apply --json
 ```
 
-El destino del backup debe ser absoluto, nuevo y externo a `State`; el reset no
-reutiliza ni limpia backups existentes. El motor vuelve a comprobar fingerprints,
+El destino del backup explícito debe ser absoluto, nuevo y externo a `State`; el
+reset no reutiliza ni limpia backups existentes. El motor vuelve a comprobar fingerprints,
 epoch, locks, referencias, límites de archivos/bytes e integridad antes de
 publicar el cambio. Si el estado cambió desde el preview, falta confirmación o
 el backup no puede verificarse, aborta sin retirar targets.

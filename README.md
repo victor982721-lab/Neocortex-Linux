@@ -5,10 +5,10 @@ organizar archivos personales en Linux. Su objetivo es sustituir inventarios,
 auditorías y scripts improvisados por un flujo reproducible que conserve
 identidad, evidencia, incertidumbre y trazabilidad.
 
-La fuente vigente declara `0.14.0`. La release Linux instalada y verificada es
-`0.14.0-bcfe1d686db0-cp314-linux-x86_64`, construida desde el SHA publicado
-`bcfe1d686db07b1ae724d165943c000cbfb42a80`; `current` conserva el rollback
-inmediato. Estos punteros se vuelven a comprobar al promover cada release.
+La fuente vigente declara `0.14.0`. La release Linux activa se comprueba desde
+el SHA final mediante `tools/release_linux.py verify`; el receipt canónico es
+la fuente viva de `source_sha`, `current` y el rollback inmediato. No se usan
+hashes históricos escritos en esta entrada como evidencia actual.
 
 Esta entrega cierra el primer comportamiento operativo: deduplicación exacta
 desde la CLI instalada, backend KDE/KIO con recuperación receipt-bound,
@@ -16,7 +16,15 @@ admisión de contenido y ayuda/JSON coherentes. La aplicación física sobre el
 corpus personal sigue siendo una invocación explícita posterior; las canarias
 destructivas usan fixtures aisladas.
 
-## Implementación funcional en curso
+El cierre operativo reúne cuatro fronteras en el mismo lifecycle: (1) dedupe
+Linux/KIO recuperable, (2) `--all` con admisión, reutilización, reparación,
+normalización bounded de ZIP, clasificación y publicación, (3) reset/retención
+de estado sin backup implícito y (4) coordinación adaptativa de recursos. Cada
+frontera conserva su owner, receipt y motivo de operación; materializar un ZIP
+no retira su contenedor automáticamente y las exclusiones Semantic sólo
+proyectan visibilidad, sin borrar vectores ni diagnósticos.
+
+## Implementación funcional integrada
 
 La ruta integrada conserva los owners y contratos existentes. `--all` selecciona
 las nueve rutas (`pdf`, `docx`, `office`, `archive`, `text`, `audio`, `video`,

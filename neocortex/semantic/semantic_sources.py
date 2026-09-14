@@ -14,7 +14,7 @@ import re
 import sqlite3
 import unicodedata
 import zlib
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -2011,6 +2011,58 @@ def iter_admitted_text_source_records(
 
     records = iter_text_source_records(state_directory, source_kind, connection=connection)
     yield from filter_text_source_records(records, policy)
+
+
+def iter_admitted_image_source_records(
+    state_directory: Path,
+    *,
+    policy: ContentAdmissionPolicy,
+    verify_snapshots: bool = True,
+) -> Iterator[ImageSourceRecord]:
+    """Project only visible images while retaining excluded diagnostics."""
+
+    records = iter_image_source_records(
+        state_directory,
+        verify_snapshots=verify_snapshots,
+    )
+    yield from filter_text_source_records(records, policy)
+
+
+def admitted_text_source_iterator(
+    policy: ContentAdmissionPolicy,
+) -> Callable[[Path, str], Iterator[TextSourceRecord]]:
+    """Bind a policy to the callback shape consumed by text ``--all`` stages.
+
+    The returned callback is intentionally side-effect free beyond the existing
+    source-owner reads.  A caller can select it at the workflow boundary while
+    leaving the legacy iterator available for policy-free compatibility paths.
+    """
+
+    if not isinstance(policy, ContentAdmissionPolicy):
+        raise TypeError("admission iterator requires a ContentAdmissionPolicy")
+
+    def iterator(state_directory: Path, source_kind: str) -> Iterator[TextSourceRecord]:
+        yield from iter_admitted_text_source_records(
+            state_directory,
+            source_kind,
+            policy=policy,
+        )
+
+    return iterator
+
+
+def admitted_image_source_iterator(
+    policy: ContentAdmissionPolicy,
+) -> Callable[[Path], Iterator[ImageSourceRecord]]:
+    """Bind a policy to the callback shape consumed by image ``--all`` stages."""
+
+    if not isinstance(policy, ContentAdmissionPolicy):
+        raise TypeError("admission iterator requires a ContentAdmissionPolicy")
+
+    def iterator(state_directory: Path) -> Iterator[ImageSourceRecord]:
+        yield from iter_admitted_image_source_records(state_directory, policy=policy)
+
+    return iterator
 
 
 # endregion [04]

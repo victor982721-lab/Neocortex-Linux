@@ -15,14 +15,15 @@ import ctypes
 import hashlib
 import json
 import os
+import shutil
 import stat
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast
 
 from neocortex.curation.authorization import _item_from_task
 from neocortex.curation.lifecycle import (
@@ -57,6 +58,7 @@ from neocortex.safety.kio_trash import (
     _rewrite_trash_info_path,
     _trash_info_path_value,
     _verify_curation_trash_evidence,
+    KioRunner,
     move_to_trash,
     private_kio_context,
 )
@@ -903,7 +905,7 @@ class KioTrashBackend:
         operation_home = self._home_directory
 
         @contextmanager
-        def operation_context():
+        def operation_context() -> Iterator[tuple[Mapping[str, str] | None, Path | None]]:
             if native and self._private_config:
                 with private_kio_context(
                     self._environment,
@@ -926,13 +928,13 @@ class KioTrashBackend:
                     kio_source = source
                     kio_expected = effect.source
 
-                verifier = self._verifier
-                if verifier is None:
-                    def verifier(
-                        verified_source,
-                        verified_snapshot,
-                        client,
-                    ):
+                configured_verifier = self._verifier
+                if configured_verifier is None:
+                    def default_verifier(
+                        verified_source: Path,
+                        verified_snapshot: FileSnapshot,
+                        client: Path,
+                    ) -> KioTrashVerification:
                         return _default_kio_verifier(
                             verified_source,
                             verified_snapshot,
@@ -944,21 +946,20 @@ class KioTrashBackend:
                             home_directory=operation_home,
                             source_digest=effect.source_digest,
                         )
-                kwargs: dict[str, object] = {
-                    "verifier": verifier,
-                    "timeout_seconds": self._timeout_seconds,
-                }
-                if self._runner is not None:
-                    kwargs["runner"] = self._runner
-                if self._which is not None:
-                    kwargs["which"] = self._which
-                if operation_environment is not None:
-                    kwargs["environment"] = operation_environment
-                if operation_home is not None:
-                    kwargs["home_directory"] = operation_home
-                if native and self._private_bus:
-                    kwargs["private_bus"] = True
-                result = move_to_trash(kio_source, kio_expected, **kwargs)  # type: ignore[arg-type]
+                    effective_verifier = default_verifier
+                else:
+                    effective_verifier = configured_verifier
+                result = move_to_trash(
+                    kio_source,
+                    kio_expected,
+                    verifier=effective_verifier,
+                    runner=cast(KioRunner | None, self._runner),
+                    which=shutil.which if self._which is None else self._which,
+                    environment=operation_environment,
+                    home_directory=operation_home,
+                    timeout_seconds=self._timeout_seconds,
+                    private_bus=native and self._private_bus,
+                )
         except KioTrashUnavailable as exc:
             if claim is not None:
                 try:
@@ -999,13 +1000,30 @@ class KioTrashBackend:
                     )
             return BackendOutcome("blocked", result.reason, result.detail)
         if result.receipt is None:
-            return BackendOutcome("recovery_required", "kio_receipt_missing")
+            detail = "KIO reported an applied effect without a receipt"
+            if claim is not None:
+                detail = _claim_recovery_detail(claim, reason="kio_receipt_missing", detail=detail)
+            return BackendOutcome("recovery_required", "kio_receipt_missing", detail)
         try:
             evidence = json.loads(result.receipt.trash_evidence)
         except (TypeError, ValueError):
-            return BackendOutcome("recovery_required", "kio_trash_evidence_unstructured")
+            detail = "KIO trash evidence is not JSON"
+            if claim is not None:
+                detail = _claim_recovery_detail(
+                    claim,
+                    reason="kio_trash_evidence_unstructured",
+                    detail=detail,
+                )
+            return BackendOutcome("recovery_required", "kio_trash_evidence_unstructured", detail)
         if not isinstance(evidence, dict):
-            return BackendOutcome("recovery_required", "kio_trash_evidence_unstructured")
+            detail = "KIO trash evidence is not an object"
+            if claim is not None:
+                detail = _claim_recovery_detail(
+                    claim,
+                    reason="kio_trash_evidence_unstructured",
+                    detail=detail,
+                )
+            return BackendOutcome("recovery_required", "kio_trash_evidence_unstructured", detail)
         try:
             if claim is not None:
                 _root, _trash_path, info_path = _curation_trash_paths(
@@ -1093,7 +1111,7 @@ class KioTrashBackend:
             keeper_digest=None,
             target_path=None,
         )
-        return self.apply(SimpleNamespace(effect=effect, root=Path(root)))
+        return self.apply(cast(ApplyCandidate, SimpleNamespace(effect=effect, root=Path(root))))
 
 
 @dataclass(frozen=True, slots=True)

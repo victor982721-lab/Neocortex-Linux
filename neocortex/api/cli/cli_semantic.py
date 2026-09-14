@@ -95,6 +95,33 @@ def _semantic_text_model(profile: str):
     return compact_multilingual_text_model() if profile == "compact" else multilingual_text_model()
 
 
+def _persisted_semantic_admission_policy(args: argparse.Namespace):
+    """Load the latest corpus policy without inventing a second state owner.
+
+    Direct Semantic commands may run before Framework state exists.  In that
+    case ``None`` deliberately preserves the service's empty-policy default;
+    an existing but malformed policy is surfaced as an error instead of being
+    silently bypassed.
+    """
+
+    current = getattr(args, "_semantic_admission_policy", None)
+    if current is not None:
+        return current
+    database = args.state_directory / "framework.sqlite3"
+    if not database.is_file():
+        return None
+    from neocortex.persistence.framework_state_writer import FrameworkState
+
+    corpus = getattr(args, "root", args.state_directory)
+    with FrameworkState(database) as state:
+        ledger = state.content_admission_ledger()
+        stored = ledger.read_policy(corpus)
+    if stored is None:
+        return None
+    args._semantic_admission_policy = stored.policy
+    return stored.policy
+
+
 def _validate_semantic_state_write(
     state_directory: Path,
     *,
@@ -732,6 +759,10 @@ def run_semantic_index(
 
     text_model = _semantic_text_model(args.semantic_text_profile)
     selected_sources = _selected_semantic_text_sources(args)
+    # Resolve the durable Framework-owned policy once per Semantic stage.  The
+    # source callbacks then apply it before model work, while direct callers
+    # without an existing Framework owner continue with an empty policy.
+    _persisted_semantic_admission_policy(args)
     work_budget = getattr(args, "_semantic_work_budget", None)
     if work_budget is None:
         work_budget = SemanticWorkBudget.from_time_budget(
@@ -759,14 +790,17 @@ def run_semantic_index(
         )
         def execute_scopes() -> None:
             from neocortex.semantic.semantic_source_budget import semantic_source_read_budget
+            from neocortex.semantic.semantic_service import admission_policy_scope
 
             _validate_integrated_publication_token(args)
-            with semantic_source_read_budget(work_budget):
-                _execute_semantic_index_scopes(
-                    execution,
-                    text_operation=index_text_embeddings,
-                    image_operation=index_image_embeddings,
-                )
+            policy = getattr(args, "_semantic_admission_policy", None)
+            with admission_policy_scope(policy):
+                with semantic_source_read_budget(work_budget):
+                    _execute_semantic_index_scopes(
+                        execution,
+                        text_operation=index_text_embeddings,
+                        image_operation=index_image_embeddings,
+                    )
         if framework_lock_held:
             execute_scopes()
         else:
@@ -1010,15 +1044,18 @@ def _execute_semantic_text_index(
         )
     started = time.perf_counter_ns()
     try:
+        kwargs = {
+            "source_kinds": execution.selected_sources,
+            "model": execution.text_model,
+            "model_cache": args.semantic_model_cache,
+            "local_files_only": True,
+            "threads": args.semantic_threads,
+            "work_budget": execution.work_budget,
+            "progress": execution.progress,
+        }
         result = operation(
             args.state_directory,
-            source_kinds=execution.selected_sources,
-            model=execution.text_model,
-            model_cache=args.semantic_model_cache,
-            local_files_only=True,
-            threads=args.semantic_threads,
-            work_budget=execution.work_budget,
-            progress=execution.progress,
+            **kwargs,
         )
     finally:
         execution.scope_timings.append(("text", time.perf_counter_ns() - started))
@@ -1037,15 +1074,18 @@ def _execute_semantic_image_index(
         return
     started = time.perf_counter_ns()
     try:
+        kwargs = {
+            "model_cache": args.semantic_model_cache,
+            "local_files_only": True,
+            "threads": args.semantic_threads,
+            "embed_ocr_text": not args.semantic_no_ocr and "text" not in execution.unavailable_scopes,
+            "ocr_model": execution.text_model,
+            "work_budget": execution.work_budget,
+            "progress": execution.progress,
+        }
         result = operation(
             args.state_directory,
-            model_cache=args.semantic_model_cache,
-            local_files_only=True,
-            threads=args.semantic_threads,
-            embed_ocr_text=not args.semantic_no_ocr and "text" not in execution.unavailable_scopes,
-            ocr_model=execution.text_model,
-            work_budget=execution.work_budget,
-            progress=execution.progress,
+            **kwargs,
         )
     finally:
         execution.scope_timings.append(("image", time.perf_counter_ns() - started))
