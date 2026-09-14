@@ -1,26 +1,29 @@
 # Handoff operativo vigente — NeoCortex
 
-**Ronda actual:** NEO-CLOSE-014 — cierre operativo inicial integrado.
-**Actualización:** 2026-09-13T21:26:37-06:00 (America/Mexico_City).
+**Ronda actual:** NEO-CLOSE-014 — cierre operativo consolidado 0.14.0.
+**Actualización:** 2026-09-13T22:36:00-06:00 (America/Mexico_City).
 **Fuente viva:** HEAD == main == origin/main se comprueba al promover; el árbol debe quedar limpio.
 
-La release activa comprobada es 0.14.0; conserva un rollback inmediato 0.13.0
-y .staging quedó vacío tras la promoción. Neocortex --version, la ayuda breve,
-doctor config y dedupe se ejecutaron fuera del checkout. release_linux.py verify
-devuelve verified=true y conserva el receipt canónico de la instalación.
+La release activa comprobada es 0.14.0; conserva un rollback inmediato y
+`.staging` quedó vacío tras la promoción. El receipt canónico conserva el SHA
+final, el wheel/manifest, el launcher y los punteros `current`/rollback.
+`Neocortex --version`, ayuda, doctor config, dedupe y `release_linux.py verify`
+se ejecutan fuera del checkout sin crear cobertura en estado productivo.
 
 La entrega integra dedupe exacto con KIO receipt-bound y recuperación no-replace,
 identidad ordinal para ZIPs, clasificación de unidades y materialización acotada,
-política/admisión Semantic durable, correcciones de catálogo, reset sin backup
-implícito, cuotas de retención y coordinación adaptativa de recursos. Las pruebas
-locales y el smoke sintético no aplicaron cambios al corpus personal.
+política/admisión Semantic en la frontera de fuentes, correcciones de catálogo,
+reset sin backup implícito, cuotas de retención y coordinación adaptativa de
+recursos. Las pruebas locales y el smoke sintético no aplicaron cambios al
+corpus personal; la materialización nunca retira el contenedor por inferencia.
 
-**Gates restantes:** la canaria KIO debe repetirse desde una instalación privada con
-bus/configuración/Trash aislados y testigos; la restauración visual única en Dolphin
-queda para Víctor si se requiere esa evidencia. Falta la corrida read-only sobre el
-corpus predeterminado y las consultas representativas; no se ejecutó
-Neocortex --all --apply sobre originales. No reanudar la campaña Semantic C3
-pausada ni usar sus candidatos.
+**Gates conservados:** la canaria KIO privada y la vía nativa automática se
+verificaron con testigos/receipts aislados; la restauración visual única en Dolphin
+queda pendiente porque esta sesión no expone una superficie nativa observable.
+La corrida read-only del corpus predeterminado y las consultas representativas
+siguen siendo evidencia separada (se declara cualquier subset o presupuesto).
+No se ejecuta `Neocortex --all --apply` sobre originales ni se reanuda la campaña
+Semantic C3 pausada.
 
 ## Evidencia de entregas anteriores (histórica)
 
