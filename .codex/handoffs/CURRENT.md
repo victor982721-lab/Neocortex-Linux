@@ -1,14 +1,17 @@
 # Handoff operativo vigente — NeoCortex
 
 **Ronda actual:** NEO-CLOSE-014 — cierre operativo consolidado 0.14.0.
-**Actualización:** 2026-09-13T22:36:00-06:00 (America/Mexico_City).
+**Actualización:** 2026-09-13T22:54:00-06:00 (America/Mexico_City).
 **Fuente viva:** HEAD == main == origin/main se comprueba al promover; el árbol debe quedar limpio.
 
 La release activa comprobada es 0.14.0; conserva un rollback inmediato y
 `.staging` quedó vacío tras la promoción. El receipt canónico conserva el SHA
 final, el wheel/manifest, el launcher y los punteros `current`/rollback.
 `Neocortex --version`, ayuda, doctor config, dedupe y `release_linux.py verify`
-se ejecutan fuera del checkout sin crear cobertura en estado productivo.
+se ejecutan fuera del checkout sin crear cobertura en estado productivo. La
+suite integral final cerró con 7707 pasadas, 60 omitidas, 103 warnings y 42
+subtests; Ruff y compileall quedaron limpios, y Pyright no reportó errores en
+los cambios de esta ronda.
 
 La entrega integra dedupe exacto con KIO receipt-bound y recuperación no-replace,
 identidad ordinal para ZIPs, clasificación de unidades y materialización acotada,
@@ -20,10 +23,12 @@ corpus personal; la materialización nunca retira el contenedor por inferencia.
 **Gates conservados:** la canaria KIO privada y la vía nativa automática se
 verificaron con testigos/receipts aislados; la restauración visual única en Dolphin
 queda pendiente porque esta sesión no expone una superficie nativa observable.
-La corrida read-only del corpus predeterminado y las consultas representativas
-siguen siendo evidencia separada (se declara cualquier subset o presupuesto).
-No se ejecuta `Neocortex --all --apply` sobre originales ni se reanuda la campaña
-Semantic C3 pausada.
+La corrida read-only del corpus predeterminado procesó un subset acotado por
+presupuesto; 871 archivos de metadata conservaron el mismo manifiesto antes y
+después. Las consultas representativas devolvieron envelopes JSON parciales
+explicados en el expediente de auditoría. No se ejecuta
+`Neocortex --all --apply` sobre originales ni se reanuda la campaña Semantic C3
+pausada.
 
 ## Evidencia de entregas anteriores (histórica)
 
