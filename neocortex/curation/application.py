@@ -18,7 +18,7 @@ import os
 import shutil
 import stat
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -46,6 +46,10 @@ from neocortex.runtime.control.locking import FrameworkRunLock
 from neocortex.workflow.actions.action_policy import validate_mutation_path
 from neocortex.safety.kio_trash import (
     KioTrashStatus,
+    KioTrashBatchItem,
+    KioTrashBatchResult,
+    KioTrashResult,
+    MAX_KIO_BATCH_ITEMS,
     KioTrashVerification,
     KioTrashUnavailable,
     _claim_recovery_detail,
@@ -59,6 +63,7 @@ from neocortex.safety.kio_trash import (
     _trash_info_path_value,
     _verify_curation_trash_evidence,
     KioRunner,
+    move_many_to_trash,
     move_to_trash,
     private_kio_context,
 )
@@ -1112,6 +1117,267 @@ class KioTrashBackend:
             target_path=None,
         )
         return self.apply(cast(ApplyCandidate, SimpleNamespace(effect=effect, root=Path(root))))
+
+    def apply_many_snapshots(
+        self,
+        items: Sequence[tuple[FileSnapshot, str]],
+        *,
+        root: Path,
+    ) -> tuple[BackendOutcome, ...]:
+        """Apply several trash snapshots through one native KIO invocation.
+
+        The return tuple is in input order and contains one normal
+        :class:`BackendOutcome` per snapshot, allowing the action owner to
+        persist each ``file_actions`` transition independently.  This method
+        deliberately does not merge ledger rows or receipts: the caller
+        remains the single writer for those effects.
+
+        Each source is physically revalidated before the shared KIO frontier;
+        the safety adapter then claims and verifies every member independently.
+        The supplied digest is the content identity already admitted by the
+        action owner.  A malformed or stale digest is rejected before KIO.
+        """
+
+        if not isinstance(items, Sequence):
+            raise TypeError("KIO batch items must be a finite sequence")
+        if not items:
+            return ()
+        root = Path(root)
+        valid_effects: list[object] = []
+        outcomes: list[BackendOutcome | None] = [None] * len(items)
+        valid_items: list[KioTrashBatchItem] = []
+        valid_indexes: list[int] = []
+        for index, item in enumerate(items):
+            if (
+                not isinstance(item, Sequence)
+                or isinstance(item, (str, bytes, bytearray))
+                or len(item) != 2
+                or not isinstance(item[0], FileSnapshot)
+                or not isinstance(item[1], str)
+            ):
+                raise TypeError("each KIO batch item must contain (FileSnapshot, source_digest)")
+            snapshot, source_digest = item
+            effect = SimpleNamespace(
+                action="trash",
+                source=snapshot,
+                source_digest=source_digest,
+                keeper=None,
+                keeper_digest=None,
+                target_path=None,
+            )
+            try:
+                # Keep the same physical admission contract as the
+                # grant-bound single-item route.  It is intentionally done
+                # once per item before the shared process, not in a second
+                # subprocess/preflight loop.
+                _validate_effect_physical(cast(AuthorizationEffect, effect), root)
+            except (CurationApplicationError, OSError, RuntimeError, ValueError) as exc:
+                outcomes[index] = BackendOutcome(
+                    "blocked",
+                    "kio_preflight_failed",
+                    str(exc),
+                )
+                continue
+            valid_effects.append(effect)
+            valid_items.append(KioTrashBatchItem(snapshot.path, snapshot, source_digest))
+            valid_indexes.append(index)
+        if not valid_items:
+            return tuple(cast(BackendOutcome, item) for item in outcomes)
+
+        native = self._runner is None
+        operation_environment: Mapping[str, str] | None = self._environment
+        operation_home = self._home_directory
+
+        @contextmanager
+        def operation_context() -> Iterator[tuple[Mapping[str, str] | None, Path | None]]:
+            if native and self._private_config:
+                with private_kio_context(
+                    self._environment,
+                    home_directory=self._home_directory,
+                ) as prepared:
+                    yield prepared
+            else:
+                yield operation_environment, operation_home
+
+        def invoke_batches(
+            batch_items: Sequence[KioTrashBatchItem],
+            *,
+            environment: Mapping[str, str] | None,
+            home_directory: Path | None,
+        ) -> tuple[KioTrashResult, ...]:
+            """Run bounded KIO batches, splitting only before any effect."""
+
+            if len(batch_items) > MAX_KIO_BATCH_ITEMS:
+                midpoint = len(batch_items) // 2
+                return invoke_batches(
+                    batch_items[:midpoint],
+                    environment=environment,
+                    home_directory=home_directory,
+                ) + invoke_batches(
+                    batch_items[midpoint:],
+                    environment=environment,
+                    home_directory=home_directory,
+                )
+            try:
+                result = move_many_to_trash(
+                    batch_items,
+                    verifier=self._verifier,
+                    runner=cast(KioRunner | None, self._runner),
+                    which=shutil.which if self._which is None else self._which,
+                    environment=environment,
+                    home_directory=home_directory,
+                    timeout_seconds=self._timeout_seconds,
+                    private_bus=native and self._private_bus,
+                    private_claim=native and self._private_claim,
+                )
+            except (OSError, RuntimeError, ValueError, TypeError) as exc:
+                # Preserve outcomes from earlier chunks.  A typed recovery
+                # vector for this chunk avoids losing receipts if a later
+                # bounded invocation fails after an earlier one crossed its
+                # physical frontier.
+                detail = f"{type(exc).__name__}: {exc}"
+                return tuple(
+                    KioTrashResult(
+                        status=KioTrashStatus.RECOVERY_REQUIRED,
+                        reason="kio_batch_operation_failed",
+                        source_path=item.expected.path,
+                        detail=detail,
+                    )
+                    for item in batch_items
+                )
+            if not isinstance(result, KioTrashBatchResult) or len(result.outcomes) != len(
+                batch_items
+            ):
+                detail = "KIO batch returned an unexpected outcome vector"
+                return tuple(
+                    KioTrashResult(
+                        status=KioTrashStatus.RECOVERY_REQUIRED,
+                        reason="kio_batch_result_invalid",
+                        source_path=item.expected.path,
+                        detail=detail,
+                    )
+                    for item in batch_items
+                )
+            # ``move_many_to_trash`` restores all claims when argv is too
+            # large, so this is the sole safe condition for a pre-effect
+            # retry with a smaller bounded batch.  Never split a mixed or
+            # post-frontier result.
+            if len(batch_items) > 1 and result.outcomes and all(
+                item.status is KioTrashStatus.BLOCKED
+                and item.reason == "kio_batch_arguments_too_large"
+                for item in result.outcomes
+            ):
+                midpoint = len(batch_items) // 2
+                return invoke_batches(
+                    batch_items[:midpoint],
+                    environment=environment,
+                    home_directory=home_directory,
+                ) + invoke_batches(
+                    batch_items[midpoint:],
+                    environment=environment,
+                    home_directory=home_directory,
+                )
+            return tuple(result.outcomes)
+
+        try:
+            with operation_context() as prepared:
+                operation_environment, operation_home = prepared
+                batch_outcomes = invoke_batches(
+                    valid_items,
+                    environment=operation_environment,
+                    home_directory=operation_home,
+                )
+        except (KioTrashUnavailable, CurationApplicationError, OSError, RuntimeError, ValueError) as exc:
+            # ``move_many_to_trash`` classifies process/effect ambiguity per
+            # item.  Reaching this handler means no typed result was returned;
+            # conservatively expose a blocked preflight for each item.
+            for index in valid_indexes:
+                outcomes[index] = BackendOutcome("blocked", "kio_preflight_failed", str(exc))
+            return tuple(cast(BackendOutcome, item) for item in outcomes)
+
+        if len(batch_outcomes) != len(valid_items):
+            for index in valid_indexes:
+                outcomes[index] = BackendOutcome(
+                    "recovery_required",
+                    "kio_batch_result_invalid",
+                    "KIO batch returned an unexpected outcome vector",
+                )
+            return tuple(cast(BackendOutcome, item) for item in outcomes)
+
+        for index, effect, result in zip(
+            valid_indexes,
+            valid_effects,
+            batch_outcomes,
+            strict=True,
+        ):
+            if result.status is KioTrashStatus.BLOCKED:
+                outcomes[index] = BackendOutcome("blocked", result.reason, result.detail)
+                continue
+            if result.status is KioTrashStatus.RECOVERY_REQUIRED:
+                outcomes[index] = BackendOutcome(
+                    "recovery_required",
+                    result.reason,
+                    result.detail,
+                )
+                continue
+            if result.receipt is None:
+                outcomes[index] = BackendOutcome(
+                    "recovery_required",
+                    "kio_receipt_missing",
+                    "KIO batch reported an applied item without a receipt",
+                )
+                continue
+            try:
+                evidence = json.loads(result.receipt.trash_evidence)
+                if not isinstance(evidence, dict):
+                    raise ValueError("KIO batch Trash evidence is not an object")
+                receipt = effect_receipt_json(
+                    operation="trash",
+                    source_path=cast(AuthorizationEffect, effect).source.path,
+                    target_path=None,
+                )
+                payload = json.loads(receipt)
+                payload.update(
+                    {
+                        "backend": self.name,
+                        "source_digest": cast(AuthorizationEffect, effect).source_digest,
+                        "trash": evidence,
+                    }
+                )
+                outcomes[index] = BackendOutcome(
+                    "applied",
+                    "kio_trash_verified",
+                    receipt_json=_canonical_json(payload),
+                )
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                outcomes[index] = BackendOutcome(
+                    "recovery_required",
+                    "kio_receipt_invalid",
+                    str(exc),
+                )
+        return tuple(cast(BackendOutcome, item) for item in outcomes)
+
+    # Explicit aliases keep the backend seam discoverable to action owners
+    # while retaining the singular ``apply_snapshot`` compatibility method.
+    def apply_snapshot_batch(
+        self,
+        items: Sequence[tuple[FileSnapshot, str]],
+        *,
+        root: Path,
+    ) -> tuple[BackendOutcome, ...]:
+        """Compatibility alias for :meth:`apply_many_snapshots`."""
+
+        return self.apply_many_snapshots(items, root=root)
+
+    def apply_snapshots(
+        self,
+        items: Sequence[tuple[FileSnapshot, str]],
+        *,
+        root: Path,
+    ) -> tuple[BackendOutcome, ...]:
+        """Preferred plural alias for the batch backend seam."""
+
+        return self.apply_many_snapshots(items, root=root)
 
 
 @dataclass(frozen=True, slots=True)

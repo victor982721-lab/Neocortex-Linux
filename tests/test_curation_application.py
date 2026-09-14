@@ -515,7 +515,7 @@ def test_kio_backend_requires_structured_fixture_trash_evidence(tmp_path: Path) 
     info.mkdir()
 
     def runner(command, **kwargs):
-        assert command == [str(client), "move", effect.source.path, "trash:/"]
+        assert command == [str(client), "--noninteractive", "move", effect.source.path, "trash:/"]
         assert kwargs["shell"] is False
         target = files / Path(effect.source.path).name
         os.rename(effect.source.path, target)
@@ -552,6 +552,79 @@ def test_kio_backend_requires_structured_fixture_trash_evidence(tmp_path: Path) 
     ).apply(ApplyCandidate(grant_id, "sha256:" + "0" * 64, root, effect))
     assert result.status == "applied"
     assert result.receipt_json is not None
+
+
+def test_kio_batch_keeps_outcomes_aligned_when_one_item_fails_preflight(
+    tmp_path: Path,
+) -> None:
+    """A rejected earlier member must not relabel a later receipt."""
+
+    root = tmp_path / "root"
+    root.mkdir()
+    valid = root / "valid.txt"
+    valid.write_text("valid batch source", encoding="utf-8")
+    valid_snapshot = snapshot_path(valid)
+    missing = root / "missing.txt"
+    missing_snapshot = replace(valid_snapshot, path=str(missing))
+    trash = tmp_path / "trash"
+    files = trash / "files"
+    info = trash / "info"
+    files.mkdir(parents=True)
+    info.mkdir()
+    config = tmp_path / "config"
+    config.mkdir()
+    client = tmp_path / "kioclient5"
+    client.write_text("fixture", encoding="utf-8")
+    client.chmod(0o700)
+    valid_digest = "xxh3_128_full_v1:" + full_fingerprint(valid_snapshot).hex()
+
+    def runner(command, **_kwargs):
+        assert command == [str(client), "--noninteractive", "move", str(valid), "trash:/"]
+        target = files / valid.name
+        os.rename(valid, target)
+        (info / (target.name + ".trashinfo")).write_text(
+            f"[Trash Info]\nPath={valid}\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    def verifier(_source, expected, _client):
+        target = files / valid.name
+        return KioTrashVerification(
+            True,
+            json.dumps(
+                {
+                    "trash_root": str(trash),
+                    "trash_path": str(target),
+                    "info_path": str(info / (target.name + ".trashinfo")),
+                    "volume_id": f"{expected.volume_id:x}",
+                    "file_id": f"{expected.file_id:x}",
+                    "size": expected.size,
+                    "digest": valid_digest,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
+
+    backend = KioTrashBackend(
+        verifier=verifier,
+        runner=runner,
+        which=lambda name: str(client) if name == "kioclient5" else None,
+        environment={"XDG_CONFIG_HOME": str(config)},
+    )
+    outcomes = backend.apply_many_snapshots(
+        (
+            (missing_snapshot, "xxh3_128_full_v1:" + "0" * 32),
+            (valid_snapshot, valid_digest),
+        ),
+        root=root,
+    )
+
+    assert outcomes[0].status == "blocked"
+    assert outcomes[1].status == "applied"
+    assert outcomes[1].receipt_json is not None
+    assert json.loads(outcomes[1].receipt_json)["source_path"] == str(valid)
 
 
 def test_replay_rejects_a_tampered_applied_receipt(tmp_path: Path) -> None:

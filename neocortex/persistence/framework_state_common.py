@@ -258,6 +258,9 @@ def _main_database_state_policy(
 def _file_action_mutation_guard(
     connection: sqlite3.Connection,
     action_id: int,
+    *,
+    guard: CorpusMutationGuard | None = None,
+    validate_paths: bool = True,
 ) -> CorpusMutationGuard:
     row = connection.execute(
         """SELECT action.run_id,action.corpus_access_mode,action.protected_root,
@@ -270,7 +273,11 @@ def _file_action_mutation_guard(
     ).fetchone()
     if row is None:
         raise ValueError(f"file action does not exist: {action_id}")
-    guard = corpus_mutation_guard(connection, int(row[0]))
+    effective_guard = (
+        corpus_mutation_guard(connection, int(row[0]))
+        if guard is None
+        else guard
+    )
     actual_policy_values = (
         str(row[1]),
         None if row[2] is None else str(row[2]),
@@ -278,7 +285,7 @@ def _file_action_mutation_guard(
         None if row[4] is None else str(row[4]),
         None if row[5] is None else int(row[5]),
     )
-    if actual_policy_values != _action_policy_values(guard.policy):
+    if actual_policy_values != _action_policy_values(effective_guard.policy):
         raise InternalPathProtectionError(
             f"file action {action_id} policy snapshot does not match its run"
         )
@@ -286,11 +293,12 @@ def _file_action_mutation_guard(
         raise InternalPathProtectionError(
             f"file action {action_id} was not explicitly authorized for apply"
         )
-    guard.require_paths_allowed(
-        str(row[7]),
-        None if row[8] is None else str(row[8]),
-    )
-    return guard
+    if validate_paths:
+        effective_guard.require_paths_allowed(
+            str(row[7]),
+            None if row[8] is None else str(row[8]),
+        )
+    return effective_guard
 
 
 def _action_policy_values(
@@ -343,6 +351,16 @@ def begin_file_actions(
 
     guard = corpus_mutation_guard(connection, run_id)
     guard.reject_run_mutation()
+    prepared = tuple(actions)
+    path_values = tuple(
+        path
+        for action in prepared
+        for path in (action[1], action[2])
+    )
+    # Validate the complete batch before inserting its intents.  A final
+    # validation below closes the same transaction, preserving the fail-closed
+    # boundary while avoiding a full policy-identity walk for every member.
+    guard.require_paths_allowed(*path_values)
     policy_values = _action_policy_values(guard.policy)
     action_ids: list[int] = []
     with connection:
@@ -353,8 +371,7 @@ def begin_file_actions(
             detected_mime,
             evidence,
             apply_requested,
-        ) in actions:
-            guard.require_paths_allowed(source_path, target_path)
+        ) in prepared:
             started_ns = time.time_ns()
             idempotency_key = _action_idempotency_key(
                 run_id,
@@ -422,6 +439,8 @@ def begin_file_actions(
                 stage="intent_recorded",
             )
             action_ids.append(action_id)
+        guard.reject_run_mutation()
+        guard.require_paths_allowed(*path_values)
     return action_ids
 
 
@@ -441,8 +460,39 @@ def mark_file_actions_applying(
     applying_ns = time.time_ns()
     connection.execute("BEGIN IMMEDIATE")
     try:
+        # All actions in a normal Framework batch share one run.  Rehydrate
+        # each run guard at most once, validate the per-row policy snapshot
+        # without repeating expensive identity walks, and check all paths in
+        # one bounded call before crossing the mutation frontier.
+        guards: dict[int, CorpusMutationGuard] = {}
+        action_runs: dict[int, int] = {}
+        paths_by_run: dict[int, list[str | None]] = {}
         for action_id, _identity_json in prepared:
-            _file_action_mutation_guard(connection, action_id).reject_run_mutation()
+            row = connection.execute(
+                "SELECT run_id,source_path,target_path FROM main.file_actions "
+                "WHERE action_id=?",
+                (action_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"file action does not exist: {action_id}")
+            action_run_id = int(row[0])
+            guard = guards.get(action_run_id)
+            if guard is None:
+                guard = corpus_mutation_guard(connection, action_run_id)
+                guards[action_run_id] = guard
+            _file_action_mutation_guard(
+                connection,
+                action_id,
+                guard=guard,
+                validate_paths=False,
+            )
+            action_runs[action_id] = action_run_id
+            paths_by_run.setdefault(action_run_id, []).extend(
+                (str(row[1]), None if row[2] is None else str(row[2]))
+            )
+        for action_run_id, guard in guards.items():
+            guard.reject_run_mutation()
+            guard.require_paths_allowed(*paths_by_run[action_run_id])
         for action_id, identity_json in prepared:
             updated = connection.execute(
                 """UPDATE main.file_actions SET status='applying',
@@ -469,7 +519,16 @@ def mark_file_actions_applying(
                 evidence_json=identity_json,
             )
         for action_id, _identity_json in prepared:
-            _file_action_mutation_guard(connection, action_id).reject_run_mutation()
+            guard = guards[action_runs[action_id]]
+            _file_action_mutation_guard(
+                connection,
+                action_id,
+                guard=guard,
+                validate_paths=False,
+            )
+        for action_run_id, guard in guards.items():
+            guard.reject_run_mutation()
+            guard.require_paths_allowed(*paths_by_run[action_run_id])
     except BaseException:
         connection.rollback()
         raise

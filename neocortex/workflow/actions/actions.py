@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import json
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import replace
@@ -94,9 +95,11 @@ class FrameworkActions:
         )
         self._progress = progress
         self._trash_backend = trash_backend
+        self._deferred_reconciliation_paths: list[str] = []
 
     def execute(self, plan: DedupPlan, *, cleanup_empty_directories: bool = True) -> ActionSummary:
         self._validate_apply_root()
+        self._deferred_reconciliation_paths.clear()
         summary = ActionSummary(apply_actions=self._apply)
         started = time.perf_counter_ns()
         summary = self._trash_empty_files(plan, summary)
@@ -328,9 +331,16 @@ class FrameworkActions:
         *,
         expected_snapshots: tuple[FileSnapshot | None, ...] | None = None,
         reference_snapshots: tuple[FileSnapshot | None, ...] | None = None,
+        defer_reconciliation: bool = False,
     ) -> tuple[int, int, int]:
         """Apply one bounded batch and isolate partial Recycle Bin failures."""
 
+        # The empty-file phase is plan-independent but runs before the
+        # duplicate-plan generator.  Always defer its successor publication so
+        # that ``plan.scan_id`` still resolves to the generation containing the
+        # persisted duplicate groups.  Keep the keyword optional for older
+        # diagnostic wrappers that forward this private method.
+        defer_reconciliation = defer_reconciliation or action_type == "trash_empty_file"
         mutation_guard = self._effective_mutation_guard()
         validated_root = self._validate_apply_root(mutation_guard=mutation_guard)
         expected, references = self._normalize_trash_snapshots(
@@ -364,6 +374,8 @@ class FrameworkActions:
         # when the corpus root and policy objects themselves are unchanged.
         mutation_guard.require_paths_allowed(*(candidate[1] for candidate in active))
         mutation_root = self._validate_apply_root(mutation_guard=mutation_guard)
+        if mutation_root is None:
+            raise RuntimeError("apply mutation root is unavailable")
         ready, revalidation_failures = self._revalidate_trash_candidates(
             action_type,
             active,
@@ -388,8 +400,21 @@ class FrameworkActions:
             )
             return 0, preflight_failures, protected + len(ready)
 
+        batch_apply = self._optional_trash_batch_backend()
+        if batch_apply is not None:
+            return self._apply_trash_backend_batch(
+                action_type,
+                ready,
+                mutation_root=mutation_root,
+                failed=preflight_failures,
+                protected=protected,
+                apply_batch=batch_apply,
+                defer_reconciliation=defer_reconciliation,
+            )
+
         applied = 0
         failed = preflight_failures
+        applied_paths: list[str] = []
         for action_id, path, planned, reference, _current_stat in ready:
             if planned is None:
                 self._state.finish_file_action(
@@ -440,11 +465,8 @@ class FrameworkActions:
                     self._state.confirm_file_actions_applied(
                         ((action_id, outcome.receipt_json),)
                     )
-                    self._index.apply_reconciliation(
-                        self._scan_id,
-                        remove_paths=(path,),
-                    )
                     applied += 1
+                    applied_paths.append(path)
                     continue
                 detail = outcome.detail or outcome.reason
                 if outcome.status == "recovery_required":
@@ -468,6 +490,206 @@ class FrameworkActions:
                 except BaseException as persistence_error:
                     exc.add_note(f"file action transition failed: {persistence_error}")
                 failed += 1
+        if applied_paths:
+            if defer_reconciliation:
+                self._deferred_reconciliation_paths.extend(applied_paths)
+            else:
+                self._index.apply_reconciliation(
+                    self._scan_id,
+                    remove_paths=tuple(applied_paths),
+                )
+        return applied, failed, protected
+
+    def _optional_trash_batch_backend(self) -> Callable[..., object] | None:
+        """Return the optional multi-snapshot seam without probing ``__getattr__``.
+
+        ``KioTrashBackend`` exposes ``apply_many_snapshots`` (and a compatibility
+        alias) only when the batch safety adapter is available.  Looking at
+        ``dir`` first is intentional: an unconfigured ``MagicMock`` fabricates
+        arbitrary attributes, and must continue through the individual fixture
+        seam instead of being mistaken for a batch backend.
+        """
+
+        backend = self._trash_backend
+        if backend is None:
+            return None
+        for name in ("apply_many_snapshots", "apply_snapshot_batch", "apply_batch"):
+            if name not in dir(backend):
+                continue
+            candidate = getattr(backend, name, None)
+            if callable(candidate):
+                return candidate
+        return None
+
+    def _apply_trash_backend_batch(
+        self,
+        action_type: str,
+        ready: list[
+            tuple[
+                int,
+                str,
+                FileSnapshot | None,
+                FileSnapshot | None,
+                os.stat_result,
+            ]
+        ],
+        *,
+        mutation_root: Path,
+        failed: int,
+        protected: int,
+        apply_batch: Callable[..., object],
+        defer_reconciliation: bool,
+    ) -> tuple[int, int, int]:
+        """Run one optional backend batch while retaining per-item ledger rows."""
+
+        # Compute each digest and exact-keeper check before crossing any
+        # ``applying`` frontier.  One stale member is failed independently;
+        # unrelated members can still use the same physical batch.
+        prepared: list[tuple[int, str, FileSnapshot, str, str]] = []
+        for action_id, path, planned, reference, _current_stat in ready:
+            if planned is None:
+                self._state.finish_file_action(
+                    action_id,
+                    "failed",
+                    "trash candidate has no expected snapshot",
+                )
+                failed += 1
+                continue
+            try:
+                source_digest = "xxh3_128_full_v1:" + full_fingerprint(planned).hex()
+                if reference is not None and not files_equal_exact(planned, reference):
+                    raise RuntimeError("keeper changed during exact duplicate comparison")
+                expected_json = expected_identity_json(
+                    planned,
+                    source_path=path,
+                    target_path=None,
+                )
+            except (OSError, RuntimeError, FileChangedError, ValueError) as exc:
+                self._state.finish_file_action(action_id, "failed", str(exc))
+                failed += 1
+                continue
+            prepared.append((action_id, path, planned, source_digest, expected_json))
+
+        if not prepared:
+            return 0, failed, protected
+
+        # The state writer owns this transition.  It is one transaction for the
+        # batch, but every action receives its own expected identity and event.
+        self._state.mark_file_actions_applying(
+            (action_id, expected_json) for action_id, _path, _snapshot, _digest, expected_json in prepared
+        )
+
+        try:
+            batch_result = apply_batch(
+                tuple((snapshot, source_digest) for _id, _path, snapshot, source_digest, _expected in prepared),
+                root=mutation_root,
+            )
+            outcomes_value = (
+                batch_result
+                if isinstance(batch_result, (tuple, list))
+                else getattr(batch_result, "outcomes", None)
+            )
+            if outcomes_value is None:
+                raise RuntimeError("trash backend returned no batch outcomes")
+            outcomes = tuple(outcomes_value)
+            if len(outcomes) != len(prepared):
+                raise RuntimeError(
+                    "trash backend returned an outcome count different from the batch"
+                )
+        except (OSError, RuntimeError, FileChangedError, ValueError, TypeError) as exc:
+            # A batch process may have crossed its physical frontier before an
+            # exception reached this owner.  Never retry it as individual work;
+            # preserve one recovery row for every member instead.
+            detail = str(exc) or "trash backend batch outcome is unavailable"
+            for action_id, _path, _snapshot, _digest, _expected in prepared:
+                self._best_effort_require_recovery((action_id,), detail, exc)
+            return 0, failed + len(prepared), protected
+        except BaseException as exc:
+            # KeyboardInterrupt/SystemExit or an unexpected backend failure
+            # may arrive after the shared physical frontier.  Preserve every
+            # applying row before re-raising the control-flow interruption;
+            # never retry the batch as individual operations.
+            detail = str(exc) or "trash backend batch operation was interrupted"
+            for action_id, _path, _snapshot, _digest, _expected in prepared:
+                self._best_effort_require_recovery((action_id,), detail, exc)
+            raise
+
+        applied_paths: list[str] = []
+        applied = 0
+        confirmations: list[tuple[int, str, str]] = []
+        for (
+            action_id,
+            path,
+            _snapshot,
+            _source_digest,
+            _expected,
+        ), outcome in zip(prepared, outcomes, strict=True):
+            if not isinstance(outcome, BackendOutcome):
+                detail = "trash backend returned an unsupported batch outcome"
+                self._best_effort_require_recovery((action_id,), detail, RuntimeError(detail))
+                failed += 1
+                continue
+            if outcome.status == "applied":
+                if outcome.receipt_json is None:
+                    detail = "trash backend reported applied without a receipt"
+                    self._best_effort_require_recovery(
+                        (action_id,), detail, RuntimeError(detail)
+                    )
+                    failed += 1
+                    continue
+                try:
+                    receipt_value = json.loads(outcome.receipt_json)
+                except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                    self._best_effort_require_recovery((action_id,), str(exc), exc)
+                    failed += 1
+                    continue
+                if not isinstance(receipt_value, dict):
+                    detail = "trash backend returned a non-object effect receipt"
+                    self._best_effort_require_recovery(
+                        (action_id,), detail, RuntimeError(detail)
+                    )
+                    failed += 1
+                    continue
+                confirmations.append((action_id, outcome.receipt_json, path))
+                continue
+
+            detail = outcome.detail or outcome.reason
+            # All members entered ``applying`` before the shared call.  The
+            # state contract therefore cannot safely transition one member
+            # back to ``failed`` after the frontier; retain recovery even when
+            # the backend reports a per-item block, because the batch may have
+            # crossed the physical frontier for another member.
+            self._best_effort_require_recovery(
+                (action_id,), detail, RuntimeError(detail)
+            )
+            failed += 1
+
+        if confirmations:
+            try:
+                self._state.confirm_file_actions_applied(
+                    (action_id, receipt) for action_id, receipt, _path in confirmations
+                )
+            except (OSError, RuntimeError, ValueError) as exc:
+                # The physical results were classified as applied, but an
+                # atomic ledger confirmation failed.  Preserve recovery for
+                # every member and do not reconcile an unconfirmed path.
+                for action_id, _receipt, _path in confirmations:
+                    self._best_effort_require_recovery((action_id,), str(exc), exc)
+                failed += len(confirmations)
+            else:
+                applied = len(confirmations)
+                applied_paths.extend(path for _action_id, _receipt, path in confirmations)
+
+        # Reconciliation is deliberately after all receipts have crossed the
+        # durable confirmation frontier, and exactly once for this batch.
+        if applied_paths:
+            if defer_reconciliation:
+                self._deferred_reconciliation_paths.extend(applied_paths)
+            else:
+                self._index.apply_reconciliation(
+                    self._scan_id,
+                    remove_paths=tuple(applied_paths),
+                )
         return applied, failed, protected
 
     def _best_effort_require_recovery(
@@ -985,6 +1207,10 @@ class FrameworkActions:
                 if len(pending) >= TRASH_BATCH_SIZE:
                     flush_pending()
         flush_pending()
+        # Empty-file effects intentionally defer reconciliation: publishing an
+        # inventory successor before this generator is exhausted would make
+        # ``plan.scan_id`` resolve to a generation without its duplicate plan.
+        self._flush_deferred_reconciliation()
         emit_progress(
             self._progress,
             ProgressEvent(
@@ -1015,6 +1241,9 @@ class FrameworkActions:
         return current, None
 
     def _validate_extensions(self, plan: DedupPlan, summary: ActionSummary) -> ActionSummary:
+        # Keep direct phase callers safe as well as the normal ``execute``
+        # route, whose duplicate phase normally flushes this queue first.
+        self._flush_deferred_reconciliation()
         # The inventory is the physical source of truth for this pass.  A
         # dry-run only records proposed actions; it does not remove any
         # inventory member from the route input set.  In particular, a
@@ -1120,6 +1349,21 @@ class FrameworkActions:
             ),
         )
         return summary
+
+    def _flush_deferred_reconciliation(self) -> None:
+        """Publish deferred empty-file removals after the duplicate plan pass."""
+
+        if not self._deferred_reconciliation_paths:
+            return
+        paths = tuple(self._deferred_reconciliation_paths)
+        self._index.apply_reconciliation(
+            self._scan_id,
+            remove_paths=paths,
+        )
+        # Clear only after the owner has acknowledged the successor.  If the
+        # reconciliation raises, the paths remain available to an explicit
+        # retry by the caller rather than being silently discarded.
+        self._deferred_reconciliation_paths.clear()
 
     def _inspect_content_type_candidate(
         self,

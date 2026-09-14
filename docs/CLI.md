@@ -245,6 +245,13 @@ redundante mediante KIO receipt-bound y conserva una restauración no-replace;
 no usa `gio`, `unlink` ni vacía la Papelera. El alias `Neocortex dedupe` traduce
 al mismo servicio. Un replay sin cambios no repite efectos.
 
+La frontera física agrupa archivos regulares en lotes bounded (máximo 256 o el
+límite de argumentos efectivo) y ejecuta una invocación KIO no interactiva por
+lote. Cada miembro conserva su claim, receipt y transición de recovery; un
+resultado parcial nunca activa un retry individual ciego. La reconciliación de
+inventario se publica por lote y los vacíos se concilian después de consumir el
+plan de duplicados, para que un sucesor no oculte sus grupos persistidos.
+
 ```bash
 Neocortex --root "$Root" --route pdf --max-count 25 --strict-exit-codes
 Neocortex --root "$Root" --route pdf,docx --max-count 25 \

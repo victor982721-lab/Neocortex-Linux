@@ -4,6 +4,18 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-14 — Aplicación KIO bounded por lote
+
+- `--all --apply` y `dedupe --apply` agrupan archivos regulares en lotes de
+  hasta 256 elementos y usan una sola invocación KIO no interactiva por lote;
+  cada archivo conserva su claim, receipt y estado de recovery independiente.
+- Los argumentos demasiado grandes se dividen sólo antes de cruzar la frontera
+  física. La reconciliación del inventario se hace una vez por lote y los
+  archivos vacíos difieren esa publicación hasta consumir el plan de duplicados,
+  evitando perder grupos por sucesores sin plan.
+- El contexto KIO mantiene configuración y caché efímeros, sin escribir la
+  configuración global ni cambiar el corpus fuera de los efectos autorizados.
+
 ## 2026-09-14 — Snapshot de inventario reutilizado durante acciones
 
 - Las fases de archivos vacíos y validación de tipos consumen páginas bounded

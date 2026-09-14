@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 from neocortex.deduplication import DedupIndex, DedupPlanner, InventoryExclusionPolicy
 from neocortex.deduplication.io import native_io_path
+from neocortex.curation.application import BackendOutcome
 from neocortex.workflow.actions.actions import FrameworkActions
 from neocortex.platform.content_types import detect_content_type
 from neocortex.persistence.framework_state_writer import FrameworkState
@@ -659,6 +660,257 @@ class ActionTests(unittest.TestCase):
             recycle.assert_not_called()
             self.assertLessEqual(guard_rebuilds, 6)
             self.assertEqual(len(list(corpus.iterdir())), 258)
+
+    def test_batch_trash_backend_is_called_once_and_reconciles_as_one_group(self) -> None:
+        """A supported batch seam avoids one KIO call and one inventory write per file."""
+
+        class BatchBackend:
+            name = "fixture-batch"
+
+            def __init__(self) -> None:
+                self.batch_calls: list[tuple[tuple[object, ...], Path]] = []
+                self.individual_calls = 0
+
+            def apply_many_snapshots(
+                self,
+                items: tuple[tuple[object, str], ...],
+                *,
+                root: Path,
+            ) -> tuple[BackendOutcome, ...]:
+                self.batch_calls.append((tuple(items), root))
+                return tuple(
+                    BackendOutcome(
+                        "applied",
+                        "fixture_batch_applied",
+                        receipt_json='{"schema":"fixture-receipt"}',
+                    )
+                    for _item in items
+                )
+
+            def apply_snapshot(self, *_args: object, **_kwargs: object) -> BackendOutcome:
+                self.individual_calls += 1
+                raise AssertionError("batch backend unexpectedly used individual fallback")
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            corpus = base / "corpus"
+            corpus.mkdir()
+            paths = tuple(corpus / f"duplicate-{number}.bin" for number in range(3))
+            for path in paths:
+                path.write_bytes(b"same")
+
+            with (
+                DedupIndex(base / "dedup.sqlite3") as index,
+                FrameworkState(_framework_database(base)) as state,
+            ):
+                scan = index.scan(corpus)
+                plan = DedupPlanner(index).plan(
+                    scan.scan_id,
+                    exact_compare=False,
+                    preview_limit=0,
+                )
+                run_id = begin_signed_normal_run(state, corpus)
+                backend = BatchBackend()
+                actions = FrameworkActions(
+                    index,
+                    state,
+                    run_id,
+                    scan.scan_id,
+                    apply=True,
+                    trash_backend=backend,  # type: ignore[arg-type]
+                )
+
+                with patch.object(
+                    index,
+                    "apply_reconciliation",
+                    wraps=index.apply_reconciliation,
+                ) as reconcile:
+                    summary = actions._trash_duplicates(
+                        plan,
+                        ActionSummary(apply_actions=True),
+                    )
+
+                rows = state._connection.execute(
+                    "SELECT source_path,status FROM file_actions "
+                    "WHERE run_id=? ORDER BY source_path",
+                    (run_id,),
+                ).fetchall()
+
+            self.assertEqual(summary.duplicates_trashed, 2)
+            self.assertEqual(summary.duplicate_skips, 0)
+            self.assertEqual(summary.errors, 0)
+            self.assertEqual(len(backend.batch_calls), 1)
+            self.assertEqual(backend.individual_calls, 0)
+            items, root = backend.batch_calls[0]
+            self.assertEqual(len(items), 2)
+            self.assertEqual(root, corpus)
+            self.assertEqual({row[1] for row in rows}, {"applied"})
+            reconcile.assert_called_once()
+            self.assertEqual(reconcile.call_args.args, (scan.scan_id,))
+            self.assertEqual(
+                tuple(reconcile.call_args.kwargs["remove_paths"]),
+                tuple(row[0] for row in rows),
+            )
+
+    def test_batch_trash_backend_preserves_per_item_recovery_and_blocked_states(self) -> None:
+        """Mixed backend outcomes retain independent ledger transitions."""
+
+        class MixedBatchBackend:
+            name = "fixture-mixed-batch"
+
+            def __init__(self) -> None:
+                self.calls = 0
+                self.asserted_items: tuple[tuple[object, str], ...] = ()
+
+            def apply_many_snapshots(
+                self,
+                items: tuple[tuple[object, str], ...],
+                *,
+                root: Path,
+            ) -> tuple[BackendOutcome, ...]:
+                del root
+                self.calls += 1
+                self.asserted_items = tuple(items)
+                return (
+                    BackendOutcome(
+                        "applied",
+                        "fixture_batch_applied",
+                        receipt_json='{"schema":"fixture-receipt"}',
+                    ),
+                    BackendOutcome("recovery_required", "fixture_ambiguous", "inspect fixture"),
+                    BackendOutcome("blocked", "fixture_blocked", "fixture refused"),
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            corpus = base / "corpus"
+            corpus.mkdir()
+            for number in range(4):
+                (corpus / f"duplicate-{number}.bin").write_bytes(b"same")
+
+            with (
+                DedupIndex(base / "dedup.sqlite3") as index,
+                FrameworkState(_framework_database(base)) as state,
+            ):
+                scan = index.scan(corpus)
+                plan = DedupPlanner(index).plan(
+                    scan.scan_id,
+                    exact_compare=False,
+                    preview_limit=0,
+                )
+                run_id = begin_signed_normal_run(state, corpus)
+                backend = MixedBatchBackend()
+                actions = FrameworkActions(
+                    index,
+                    state,
+                    run_id,
+                    scan.scan_id,
+                    apply=True,
+                    trash_backend=backend,  # type: ignore[arg-type]
+                )
+
+                with patch.object(
+                    index,
+                    "apply_reconciliation",
+                    wraps=index.apply_reconciliation,
+                ) as reconcile:
+                    summary = actions._trash_duplicates(
+                        plan,
+                        ActionSummary(apply_actions=True),
+                    )
+                rows = state._connection.execute(
+                    "SELECT source_path,status,detail FROM file_actions "
+                    "WHERE run_id=? ORDER BY source_path",
+                    (run_id,),
+                ).fetchall()
+
+            self.assertEqual(backend.calls, 1)
+            self.assertEqual(len(backend.asserted_items), 3)
+            self.assertEqual(summary.duplicates_trashed, 1)
+            self.assertEqual(summary.duplicate_skips, 2)
+            self.assertEqual(summary.errors, 2)
+            self.assertEqual(
+                {row[1] for row in rows},
+                {"applied", "recovery_required"},
+            )
+            self.assertIn("inspect fixture", " ".join(str(row[2]) for row in rows))
+            self.assertIn("fixture refused", " ".join(str(row[2]) for row in rows))
+            reconcile.assert_called_once()
+            self.assertEqual(tuple(reconcile.call_args.kwargs["remove_paths"]), (rows[0][0],))
+
+    def test_execute_processes_duplicate_plan_before_empty_file_reconciliation(self) -> None:
+        """An empty-file successor must not hide the still-persisted duplicate plan."""
+
+        class BatchBackend:
+            name = "fixture-batch"
+
+            def __init__(self) -> None:
+                self.calls: list[int] = []
+
+            def apply_many_snapshots(
+                self,
+                items: tuple[tuple[object, str], ...],
+                *,
+                root: Path,
+            ) -> tuple[BackendOutcome, ...]:
+                del root
+                self.calls.append(len(items))
+                return tuple(
+                    BackendOutcome(
+                        "applied",
+                        "fixture_batch_applied",
+                        receipt_json='{"schema":"fixture-receipt"}',
+                    )
+                    for _item in items
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            corpus = base / "corpus"
+            corpus.mkdir()
+            (corpus / "empty.bin").touch()
+            for number in range(3):
+                (corpus / f"duplicate-{number}.bin").write_bytes(b"same")
+
+            with (
+                DedupIndex(base / "dedup.sqlite3") as index,
+                FrameworkState(_framework_database(base)) as state,
+            ):
+                scan = index.scan(corpus)
+                plan = DedupPlanner(index).plan(
+                    scan.scan_id,
+                    exact_compare=False,
+                    preview_limit=0,
+                )
+                run_id = begin_signed_normal_run(state, corpus)
+                backend = BatchBackend()
+                summary = FrameworkActions(
+                    index,
+                    state,
+                    run_id,
+                    scan.scan_id,
+                    apply=True,
+                    trash_backend=backend,  # type: ignore[arg-type]
+                ).execute(plan, cleanup_empty_directories=False)
+                statuses = state._connection.execute(
+                    "SELECT action_type,status FROM file_actions "
+                    "WHERE run_id=? ORDER BY action_id",
+                    (run_id,),
+                ).fetchall()
+
+            self.assertEqual(backend.calls, [1, 2])
+            self.assertEqual(summary.duplicate_candidates, 3)
+            self.assertEqual(summary.duplicates_trashed, 3)
+            self.assertEqual(summary.duplicate_skips, 0)
+            self.assertEqual(summary.errors, 0)
+            self.assertEqual(
+                statuses,
+                [
+                    ("trash_empty_file", "applied"),
+                    ("trash_duplicate", "applied"),
+                    ("trash_duplicate", "applied"),
+                ],
+            )
 
     @unittest.skipUnless(os.name == "nt", "identity-bound rename is Windows-only")
     def test_abstains_exact_trash_and_applies_safe_extension_rename(self) -> None:

@@ -7,6 +7,7 @@ provided by explicit fixture doubles.
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -14,13 +15,16 @@ from typing import cast
 
 import pytest
 
-from neocortex.deduplication import FileSnapshot, snapshot_path
+from neocortex.deduplication import FileSnapshot, full_fingerprint, snapshot_path
 from neocortex.safety import kio_trash
 from neocortex.safety.kio_trash import (
     KIO_TRASH_URL,
+    KioTrashBatchItem,
     KioTrashStatus,
+    KioTrashBatchResult,
     KioTrashVerification,
     discover_kio_client,
+    move_many_to_trash,
     move_to_trash,
 )
 
@@ -72,6 +76,33 @@ def _never_verify(
     _client: Path,
 ) -> KioTrashVerification:
     raise AssertionError("verifier must remain unreachable")
+
+
+def _batch_digest(expected: FileSnapshot) -> str:
+    return "xxh3_128_full_v1:" + full_fingerprint(expected).hex()
+
+
+def _batch_evidence(
+    trash: Path,
+    source: Path,
+    expected: FileSnapshot,
+    digest: str,
+) -> str:
+    target = trash / "files" / source.name
+    info = trash / "info" / (target.name + ".trashinfo")
+    return json.dumps(
+        {
+            "trash_root": str(trash),
+            "trash_path": str(target),
+            "info_path": str(info),
+            "volume_id": f"{expected.volume_id:x}",
+            "file_id": f"{target.stat().st_ino:x}",
+            "size": expected.size,
+            "digest": digest,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def test_client_resolution_uses_required_priority_order(tmp_path: Path) -> None:
@@ -409,7 +440,7 @@ def test_exact_command_has_no_shell_and_success_receipt_keeps_snapshot(tmp_path:
     )
 
     command, kwargs = runner.calls[0]
-    assert command == [str(client), "move", str(source), KIO_TRASH_URL]
+    assert command == [str(client), "--noninteractive", "move", str(source), KIO_TRASH_URL]
     assert kwargs == {
         "check": False,
         "shell": False,
@@ -600,3 +631,234 @@ def test_timeout_limits_reject_invalid_values_before_runner(
         )
 
     assert runner.calls == []
+
+
+def test_batch_uses_one_noninteractive_kio_process_and_returns_item_receipts(
+    tmp_path: Path,
+) -> None:
+    config_home = tmp_path / "config"
+    config_home.mkdir()
+    trash = tmp_path / "trash"
+    (trash / "files").mkdir(parents=True)
+    (trash / "info").mkdir()
+    client = _executable(tmp_path / "kioclient5")
+    sources: list[Path] = []
+    items: list[KioTrashBatchItem] = []
+    digests: dict[str, str] = {}
+    for name in ("first.txt", "second.txt"):
+        source, expected = _source(tmp_path / name, name.encode("utf-8"))
+        digest = _batch_digest(expected)
+        sources.append(source)
+        digests[source.name] = digest
+        items.append(KioTrashBatchItem(source, expected, digest))
+
+    def effect(
+        command: Sequence[str],
+        _kwargs: Mapping[str, object],
+    ) -> subprocess.CompletedProcess[str]:
+        assert command[:4] == [str(client), "--noninteractive", "move", command[3]]
+        assert command[-1] == KIO_TRASH_URL
+        for argument in command[3:-1]:
+            source = Path(argument)
+            target = trash / "files" / source.name
+            os.rename(source, target)
+            (trash / "info" / (target.name + ".trashinfo")).write_text(
+                f"[Trash Info]\nPath={source}\n",
+                encoding="utf-8",
+            )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    def verifier(
+        source: Path,
+        expected: FileSnapshot,
+        _client: Path,
+    ) -> KioTrashVerification:
+        return KioTrashVerification(
+            True,
+            _batch_evidence(trash, source, expected, digests[source.name]),
+        )
+
+    runner = RunnerSpy(effect)
+    result = move_many_to_trash(
+        items,
+        verifier=verifier,
+        runner=runner,
+        which=_which_for(client),
+        environment=_environment(config_home),
+        timeout_seconds=15,
+    )
+
+    assert isinstance(result, KioTrashBatchResult)
+    assert len(runner.calls) == 1
+    command, kwargs = runner.calls[0]
+    assert command == [
+        str(client),
+        "--noninteractive",
+        "move",
+        str(sources[0]),
+        str(sources[1]),
+        KIO_TRASH_URL,
+    ]
+    assert kwargs["timeout"] == 15.0
+    assert [item.status for item in result.outcomes] == [
+        KioTrashStatus.APPLIED,
+        KioTrashStatus.APPLIED,
+    ]
+    assert result.applied == 2
+    assert all(item.receipt is not None for item in result.outcomes)
+    assert all(not source.exists() for source in sources)
+    assert all(
+        f"Path={source}\n"
+        in (trash / "info" / (source.name + ".trashinfo")).read_text(encoding="utf-8")
+        for source in sources
+    )
+
+
+def test_batch_native_claims_are_shared_process_and_cleanup_is_durable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_home = tmp_path / "config"
+    config_home.mkdir()
+    trash = tmp_path / "trash"
+    (trash / "files").mkdir(parents=True)
+    (trash / "info").mkdir()
+    client = _executable(tmp_path / "kioclient5")
+    items: list[KioTrashBatchItem] = []
+    digests: dict[str, str] = {}
+    for name in ("first.txt", "second.txt"):
+        source, expected = _source(tmp_path / name, name.encode("utf-8"))
+        digest = _batch_digest(expected)
+        items.append(KioTrashBatchItem(source, expected, digest))
+        digests[name] = digest
+
+    def native_runner(
+        command: Sequence[str],
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        assert command[0] == str(client)
+        assert command[1:4] == ["--noninteractive", "move", command[3]]
+        assert all(".neocortex-kio-claim-" in argument for argument in command[3:-1])
+        for argument in command[3:-1]:
+            claim = Path(argument)
+            target = trash / "files" / claim.name
+            os.rename(claim, target)
+            (trash / "info" / (target.name + ".trashinfo")).write_text(
+                f"[Trash Info]\nPath={claim}\n",
+                encoding="utf-8",
+            )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    def verifier(
+        claim: Path,
+        expected: FileSnapshot,
+        _client: Path,
+    ) -> KioTrashVerification:
+        original_name = claim.name
+        # The source basename survives the private claim, so the fixture can
+        # bind each verifier result without observing the original path.
+        return KioTrashVerification(
+            True,
+            _batch_evidence(trash, claim, expected, digests[original_name]),
+        )
+
+    monkeypatch.setattr(kio_trash.subprocess, "run", native_runner)
+    result = move_many_to_trash(
+        items,
+        verifier=verifier,
+        which=_which_for(client),
+        environment=_environment(config_home),
+    )
+    assert [item.status for item in result.outcomes] == [
+        KioTrashStatus.APPLIED,
+        KioTrashStatus.APPLIED,
+    ]
+    assert not list(tmp_path.glob(".neocortex-kio-claim-*"))
+    for item in items:
+        info = trash / "info" / (Path(item.source).name + ".trashinfo")
+        assert f"Path={item.source}\n" in info.read_text(encoding="utf-8")
+
+
+def test_batch_verification_failure_does_not_hide_other_item(
+    tmp_path: Path,
+) -> None:
+    config_home = tmp_path / "config"
+    config_home.mkdir()
+    trash = tmp_path / "trash"
+    (trash / "files").mkdir(parents=True)
+    (trash / "info").mkdir()
+    client = _executable(tmp_path / "kioclient5")
+    items: list[KioTrashBatchItem] = []
+    for name in ("first.txt", "second.txt"):
+        source, expected = _source(tmp_path / name, name.encode("utf-8"))
+        items.append(KioTrashBatchItem(source, expected, _batch_digest(expected)))
+
+    def effect(
+        command: Sequence[str],
+        _kwargs: Mapping[str, object],
+    ) -> subprocess.CompletedProcess[str]:
+        for argument in command[3:-1]:
+            source = Path(argument)
+            target = trash / "files" / source.name
+            os.rename(source, target)
+            (trash / "info" / (target.name + ".trashinfo")).write_text(
+                f"[Trash Info]\nPath={source}\n",
+                encoding="utf-8",
+            )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    def verifier(
+        source: Path,
+        expected: FileSnapshot,
+        _client: Path,
+    ) -> KioTrashVerification:
+        if source.name == "first.txt":
+            return KioTrashVerification(True, "not-json")
+        return KioTrashVerification(
+            True,
+            _batch_evidence(
+                trash,
+                source,
+                expected,
+                cast(str, items[1].source_digest),
+            ),
+        )
+
+    result = move_many_to_trash(
+        items,
+        verifier=verifier,
+        runner=RunnerSpy(effect),
+        which=_which_for(client),
+        environment=_environment(config_home),
+    )
+
+    assert result.outcomes[0].status is KioTrashStatus.RECOVERY_REQUIRED
+    assert result.outcomes[0].reason == "kio_effect_unverified"
+    assert result.outcomes[1].status is KioTrashStatus.APPLIED
+
+
+def test_batch_timeout_is_recovery_required_for_each_item(tmp_path: Path) -> None:
+    config_home = tmp_path / "config"
+    config_home.mkdir()
+    client = _executable(tmp_path / "kioclient5")
+    items = []
+    for name in ("first.txt", "second.txt"):
+        source, expected = _source(tmp_path / name)
+        items.append(KioTrashBatchItem(source, expected, _batch_digest(expected)))
+
+    def effect(command: Sequence[str], kwargs: Mapping[str, object]) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(command, cast(float, kwargs["timeout"]), stderr="timed out")
+
+    result = move_many_to_trash(
+        items,
+        verifier=_never_verify,
+        runner=RunnerSpy(effect),
+        which=_which_for(client),
+        environment=_environment(config_home),
+    )
+
+    assert [item.status for item in result.outcomes] == [
+        KioTrashStatus.RECOVERY_REQUIRED,
+        KioTrashStatus.RECOVERY_REQUIRED,
+    ]
+    assert all(item.reason == "kio_timeout_effect_ambiguous" for item in result.outcomes)
