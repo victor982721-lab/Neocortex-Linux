@@ -19,6 +19,7 @@ from neocortex.deduplication.io import native_io_path
 from neocortex.workflow.actions.actions import FrameworkActions
 from neocortex.platform.content_types import detect_content_type
 from neocortex.persistence.framework_state_writer import FrameworkState
+from neocortex.runtime.models import ActionSummary
 from tests.internal_paths_test_support import begin_signed_normal_run
 # endregion [01]
 
@@ -463,6 +464,157 @@ class ActionTests(unittest.TestCase):
             self.assertTrue(survivor.exists())
             self.assertTrue(all(path.exists() for path in empty_paths))
 
+    def test_empty_file_phase_reuses_open_inventory_index(self) -> None:
+        """The empty-file phase must not reopen the WAL-backed inventory.
+
+        The owning ``DedupIndex`` remains open for the whole action run.  A
+        second constructor would select the temporary SQLite snapshot path
+        while the owner still has its WAL/SHM pair, which can exhaust the
+        bounded snapshot budget before the first candidate is processed.
+        Keep this regression deterministic by making any reopen fail rather
+        than manufacturing a large database or depending on a host budget.
+        """
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            corpus = base / "corpus"
+            corpus.mkdir()
+            empty = corpus / "empty.bin"
+            empty.touch()
+
+            with (
+                DedupIndex(base / "dedup.sqlite3") as index,
+                FrameworkState(_framework_database(base)) as state,
+            ):
+                scan = index.scan(corpus)
+                plan = DedupPlanner(index).plan(
+                    scan.scan_id,
+                    exact_compare=False,
+                    preview_limit=0,
+                )
+                run_id = begin_signed_normal_run(state, corpus)
+                actions = FrameworkActions(
+                    index,
+                    state,
+                    run_id,
+                    scan.scan_id,
+                    apply=False,
+                )
+
+                with patch(
+                    "neocortex.workflow.actions.actions.DedupIndex",
+                    side_effect=AssertionError(
+                        "empty-file phase reopened its owning DedupIndex"
+                    ),
+                ) as reopen:
+                    summary = actions._trash_empty_files(
+                        plan,
+                        ActionSummary(apply_actions=False),
+                    )
+
+                reopen.assert_not_called()
+
+            self.assertEqual(summary.duplicate_candidates, 1)
+            self.assertEqual(summary.duplicates_trashed, 0)
+            self.assertEqual(summary.errors, 0)
+            self.assertTrue(empty.exists())
+
+    def test_empty_file_phase_pages_more_than_one_trash_batch(self) -> None:
+        """Large empty-file populations stay bounded without reopening inventory."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            corpus = base / "corpus"
+            corpus.mkdir()
+            empty_paths = tuple(
+                corpus / f"empty-{index:04d}.bin" for index in range(513)
+            )
+            for path in empty_paths:
+                path.touch()
+
+            with (
+                DedupIndex(base / "dedup.sqlite3") as index,
+                FrameworkState(_framework_database(base)) as state,
+            ):
+                scan = index.scan(corpus)
+                plan = DedupPlanner(index).plan(
+                    scan.scan_id,
+                    exact_compare=False,
+                    preview_limit=0,
+                )
+                run_id = begin_signed_normal_run(state, corpus)
+                actions = FrameworkActions(
+                    index,
+                    state,
+                    run_id,
+                    scan.scan_id,
+                    apply=False,
+                )
+
+                with patch(
+                    "neocortex.workflow.actions.actions.DedupIndex",
+                    side_effect=AssertionError(
+                        "large empty-file phase reopened its owning DedupIndex"
+                    ),
+                ) as reopen:
+                    summary = actions._trash_empty_files(
+                        plan,
+                        ActionSummary(apply_actions=False),
+                    )
+
+                reopen.assert_not_called()
+
+            self.assertEqual(summary.duplicate_candidates, 513)
+            self.assertEqual(summary.errors, 0)
+            self.assertEqual(len(tuple(corpus.iterdir())), 513)
+            self.assertTrue(all(path.exists() and path.stat().st_size == 0 for path in empty_paths))
+
+    def test_execute_reuses_open_inventory_index_for_content_type_phase(self) -> None:
+        """The complete action pass must not reopen the writer-owned inventory."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            corpus = base / "corpus"
+            corpus.mkdir()
+            document = corpus / "document.txt"
+            document.write_text("contenido de fixture", encoding="utf-8")
+
+            with (
+                DedupIndex(base / "dedup.sqlite3") as index,
+                FrameworkState(_framework_database(base)) as state,
+            ):
+                scan = index.scan(corpus)
+                plan = DedupPlanner(index).plan(
+                    scan.scan_id,
+                    exact_compare=False,
+                    preview_limit=0,
+                )
+                run_id = begin_signed_normal_run(state, corpus)
+                actions = FrameworkActions(
+                    index,
+                    state,
+                    run_id,
+                    scan.scan_id,
+                    apply=False,
+                )
+
+                with patch(
+                    "neocortex.workflow.actions.actions.DedupIndex",
+                    side_effect=AssertionError(
+                        "action execute reopened its owning DedupIndex"
+                    ),
+                ) as reopen:
+                    summary = actions.execute(
+                        plan,
+                        cleanup_empty_directories=False,
+                    )
+
+                reopen.assert_not_called()
+
+            self.assertEqual(summary.files_checked, 1)
+            self.assertEqual(summary.errors, 0)
+            self.assertTrue(document.exists())
+
     def test_large_group_abstains_in_bounded_batches(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -520,8 +672,14 @@ class ActionTests(unittest.TestCase):
             older.write_bytes(b"duplicate")
             newer.write_bytes(b"duplicate")
             disguised.write_bytes(b"\x89PNG\r\n\x1a\n" + b"payload")
-            os.utime(older, ns=(1_700_000_000_000_000_000,) * 2)
-            os.utime(newer, ns=(1_710_000_000_000_000_000,) * 2)
+            os.utime(
+                older,
+                ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000),
+            )
+            os.utime(
+                newer,
+                ns=(1_710_000_000_000_000_000, 1_710_000_000_000_000_000),
+            )
 
             framework_database = _framework_database(base)
             with (

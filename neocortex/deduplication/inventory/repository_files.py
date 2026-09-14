@@ -311,6 +311,84 @@ class FileRepositoryMixin:
                 birth,
             )
 
+    def snapshots_by_size_page(
+        self,
+        scan_id: int,
+        size: int,
+        *,
+        after_path: str = "",
+        limit: int = 256,
+    ) -> tuple[FileSnapshot, ...]:
+        """Read one bounded size page using the already-open owner connection.
+
+        Action phases must not construct a second :class:`DedupIndex` while
+        the writer connection owns a WAL-backed inventory.  Returning a fully
+        materialized page closes the SQLite cursor before callers perform any
+        file effect, while ``after_path`` keeps the traversal bounded and
+        deterministic for large zero-byte populations.
+        """
+
+        if not isinstance(after_path, str):
+            raise TypeError("after_path must be text")
+        if type(limit) is not int or not 1 <= limit <= 10_000:
+            raise ValueError("snapshot page limit must be between 1 and 10000")
+        scan_id = resolve_scan_id(self._connection, scan_id)
+        rows = self._connection.execute(
+            "SELECT path,volume_id,file_id,size,mtime_ns,birthtime_ns "
+            "FROM files WHERE scan_id=? AND size=? AND path>? "
+            "ORDER BY path LIMIT ?",
+            (scan_id, size, after_path, limit),
+        ).fetchall()
+        return tuple(
+            FileSnapshot(
+                path,
+                int.from_bytes(volume, "little"),
+                int.from_bytes(file_id, "little"),
+                item_size,
+                mtime,
+                birth,
+            )
+            for path, volume, file_id, item_size, mtime, birth in rows
+        )
+
+    def snapshots_page(
+        self,
+        scan_id: int,
+        *,
+        after_path: str = "",
+        limit: int = 256,
+    ) -> tuple[FileSnapshot, ...]:
+        """Read one bounded inventory page without opening another owner.
+
+        The action pipeline persists route candidates and cache observations
+        while the inventory owner remains open.  A fetched tuple closes the
+        cursor before those writes, avoiding a WAL-backed read connection and
+        keeping memory bounded for large inventories.
+        """
+
+        if not isinstance(after_path, str):
+            raise TypeError("after_path must be text")
+        if type(limit) is not int or not 1 <= limit <= 10_000:
+            raise ValueError("snapshot page limit must be between 1 and 10000")
+        scan_id = resolve_scan_id(self._connection, scan_id)
+        rows = self._connection.execute(
+            "SELECT path,volume_id,file_id,size,mtime_ns,birthtime_ns "
+            "FROM files WHERE scan_id=? AND path>? "
+            "ORDER BY path LIMIT ?",
+            (scan_id, after_path, limit),
+        ).fetchall()
+        return tuple(
+            FileSnapshot(
+                path,
+                int.from_bytes(volume, "little"),
+                int.from_bytes(file_id, "little"),
+                item_size,
+                mtime,
+                birth,
+            )
+            for path, volume, file_id, item_size, mtime, birth in rows
+        )
+
     def file_count_by_size(self, scan_id: int, size: int) -> int:
         scan_id = resolve_scan_id(self._connection, scan_id)
         return int(

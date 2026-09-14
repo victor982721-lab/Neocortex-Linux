@@ -792,35 +792,43 @@ class FrameworkActions:
         )
         pending: list[tuple[str, str, FileSnapshot]] = []
         completed = 0
-        with DedupIndex(self._index.path) as read_index:
-            for snapshot in read_index.snapshots_by_size(plan.scan_id, 0):
+        after_path = ""
+        while True:
+            page = self._index.snapshots_by_size_page(
+                plan.scan_id,
+                0,
+                after_path=after_path,
+                limit=TRASH_BATCH_SIZE,
+            )
+            if not page:
+                break
+            for snapshot in page:
                 pending.append((snapshot.path, "size=0;policy=trash-all-empty", snapshot))
-                if len(pending) < TRASH_BATCH_SIZE:
-                    continue
-                applied, failed, protected = self._apply_trash_batch(
-                    "trash_empty_file",
-                    tuple((path, evidence) for path, evidence, _snapshot in pending),
-                    expected_snapshots=tuple(snapshot for _path, _evidence, snapshot in pending),
-                )
-                completed += len(pending)
-                pending.clear()
-                summary = replace(
-                    summary,
-                    duplicates_trashed=summary.duplicates_trashed + applied,
-                    duplicate_skips=summary.duplicate_skips + failed + protected,
-                    errors=summary.errors + failed,
-                )
-                emit_progress(
-                    self._progress,
-                    ProgressEvent(
-                        "framework",
-                        "empty-files",
-                        "Enviando archivos vacíos",
-                        completed,
-                        candidates,
-                        "archivos",
-                    ),
-                )
+            after_path = page[-1].path
+            applied, failed, protected = self._apply_trash_batch(
+                "trash_empty_file",
+                tuple((path, evidence) for path, evidence, _snapshot in pending),
+                expected_snapshots=tuple(snapshot for _path, _evidence, snapshot in pending),
+            )
+            completed += len(pending)
+            pending.clear()
+            summary = replace(
+                summary,
+                duplicates_trashed=summary.duplicates_trashed + applied,
+                duplicate_skips=summary.duplicate_skips + failed + protected,
+                errors=summary.errors + failed,
+            )
+            emit_progress(
+                self._progress,
+                ProgressEvent(
+                    "framework",
+                    "empty-files",
+                    "Enviando archivos vacíos",
+                    completed,
+                    candidates,
+                    "archivos",
+                ),
+            )
         if pending:
             applied, failed, protected = self._apply_trash_batch(
                 "trash_empty_file",
@@ -1076,12 +1084,21 @@ class FrameworkActions:
                 ),
             )
 
-        # Keep a stable WAL read snapshot while the writer connection updates
-        # paths after successful actions. This avoids loading the full corpus
-        # into memory or observing a renamed row twice.
-        with DedupIndex(self._index.path) as read_index:
-            snapshots = read_index.snapshots(self._scan_id)
-            for planned in snapshots:
+        # Read bounded pages through the already-open inventory owner.  The
+        # page tuple closes its SQLite cursor before this loop can persist
+        # route/cache state or apply an extension rename; reopening the same
+        # WAL-backed inventory here can exhaust the temporary snapshot budget.
+        after_path = ""
+        while True:
+            page = self._index.snapshots_page(
+                self._scan_id,
+                after_path=after_path,
+                limit=TRASH_BATCH_SIZE,
+            )
+            if not page:
+                break
+            after_path = page[-1].path
+            for planned in page:
                 if planned.size == 0:
                     continue
                 completed += 1
