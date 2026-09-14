@@ -86,6 +86,11 @@ DIRECT_ARGUMENT_CASES = (
         ("--semantic-prepare-models",),
     ),
     ("semantic_index", "run_semantic_index", ("--semantic-index", "text")),
+    (
+        "semantic_exact_index_build",
+        "run_semantic_exact_index_build",
+        ("--semantic-exact-index-build", "/tmp/exact-index"),
+    ),
     ("semantic_search", "run_semantic_search", ("--semantic-search", "query")),
     (
         "semantic_image_calibrate", "run_semantic_image_calibrate",

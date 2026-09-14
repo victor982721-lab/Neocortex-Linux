@@ -153,7 +153,7 @@ def test_state_reset_apply_requires_confirmation_and_plan_digest(
                 "--json",
             )
         )
-        == 2
+        == 3
     )
     payload = _json_output(capsys)
     assert payload["read_only"] is False

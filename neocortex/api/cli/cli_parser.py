@@ -161,11 +161,27 @@ def build_parser() -> argparse.ArgumentParser:
             "run every PDF, DOCX, Office, ZIP (including nested ZIP), audio, video, image and "
             "code route using the existing "
             "cache, update the technical catalog and prune stale cache state; with "
-            "--apply, also organize every safely classified technical document; "
+            "--apply, also organize every safely classified technical document "
+            "only when the active backend capability is verified; "
             "cached errors are "
             "retried only when their explicit --retry-*-errors flag is supplied; "
             "compatible options supplied explicitly override preset defaults"
         ),
+    )
+    parser.add_argument(
+        "--dedupe",
+        action="store_true",
+        help=(
+            "run the configured duplicate-detection service over --root without "
+            "content routes; no file action is implied"
+        ),
+    )
+    parser.add_argument(
+        "--dedupe-json",
+        "--json",
+        dest="dedupe_json",
+        action="store_true",
+        help="emit the duplicate-service result as one JSON document (for --dedupe)",
     )
     parser.add_argument(
         "--route",

@@ -18,8 +18,10 @@ import os
 import stat
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Literal, Protocol
 
 from neocortex.curation.authorization import _item_from_task
@@ -44,10 +46,19 @@ from neocortex.workflow.actions.action_policy import validate_mutation_path
 from neocortex.safety.kio_trash import (
     KioTrashStatus,
     KioTrashVerification,
+    KioTrashUnavailable,
+    _claim_recovery_detail,
+    _claim_source,
+    _default_kio_verifier,
     _curation_trash_paths,
     _fsync_directory,
+    _read_regular_bounded,
+    _restore_claim,
+    _rewrite_trash_info_path,
+    _trash_info_path_value,
     _verify_curation_trash_evidence,
     move_to_trash,
+    private_kio_context,
 )
 from neocortex.workflow.actions.file_action_reconciliation_store import (
     RecordedFileActionReconciliation,
@@ -838,49 +849,154 @@ def _open_parent_dirfd(root_fd: int, parts: tuple[str, ...]) -> tuple[int, str]:
 
 
 class KioTrashBackend:
-    """Injected KIO trash adapter requiring structured destination evidence."""
+    """KIO trash adapter with a safe native path and an injected test seam.
+
+    Native calls use a private KDE configuration, an operation-private D-Bus
+    session, and a same-filesystem ``RENAME_NOREPLACE`` claim before KIO sees
+    the source.  Supplying ``runner`` deliberately retains the historical
+    fixture seam and does not create a claim or private context.
+    """
 
     name = "kio-trash-path-bound-v1"
 
     def __init__(
         self,
         *,
-        verifier: Callable[[Path, FileSnapshot, Path], KioTrashVerification],
+        verifier: Callable[[Path, FileSnapshot, Path], KioTrashVerification] | None = None,
         runner: Callable[..., object] | None = None,
         which: Callable[[str], str | None] | None = None,
         environment: Mapping[str, str] | None = None,
         home_directory: Path | None = None,
         timeout_seconds: float = 120.0,
+        private_claim: bool = True,
+        private_config: bool = True,
+        private_bus: bool = True,
     ) -> None:
+        if not isinstance(private_claim, bool):
+            raise TypeError("private_claim must be boolean")
+        if not isinstance(private_config, bool):
+            raise TypeError("private_config must be boolean")
+        if not isinstance(private_bus, bool):
+            raise TypeError("private_bus must be boolean")
         self._verifier = verifier
         self._runner = runner
         self._which = which
         self._environment = environment
         self._home_directory = home_directory
         self._timeout_seconds = timeout_seconds
+        self._private_claim = private_claim
+        self._private_config = private_config
+        self._private_bus = private_bus
 
     def apply(self, candidate: ApplyCandidate) -> BackendOutcome:
         effect = candidate.effect
         if effect.action != "trash":
             return BackendOutcome("blocked", "kio_backend_supports_trash_only")
-        if self._runner is None:
+        # Keep the old diagnostic for incomplete fixture probes while valid
+        # candidates now use the real runner when no test runner is injected.
+        if not hasattr(effect, "source") or not hasattr(candidate, "root"):
             return BackendOutcome("blocked", "kio_runner_not_injected")
-        kwargs: dict[str, object] = {
-            "verifier": self._verifier,
-            "timeout_seconds": self._timeout_seconds,
-        }
-        if self._runner is not None:
-            kwargs["runner"] = self._runner
-        if self._which is not None:
-            kwargs["which"] = self._which
-        if self._environment is not None:
-            kwargs["environment"] = self._environment
-        if self._home_directory is not None:
-            kwargs["home_directory"] = self._home_directory
-        result = move_to_trash(effect.source.path, effect.source, **kwargs)  # type: ignore[arg-type]
+
+        native = self._runner is None
+        claim = None
+        operation_environment: Mapping[str, str] | None = self._environment
+        operation_home = self._home_directory
+
+        @contextmanager
+        def operation_context():
+            if native and self._private_config:
+                with private_kio_context(
+                    self._environment,
+                    home_directory=self._home_directory,
+                ) as prepared:
+                    yield prepared
+            else:
+                yield operation_environment, operation_home
+
+        try:
+            with operation_context() as prepared:
+                operation_environment, operation_home = prepared
+                source = Path(effect.source.path)
+                if native and self._private_claim:
+                    _validate_effect_physical(effect, candidate.root)
+                    claim = _claim_source(source, effect.source)
+                    kio_source = claim.claim_path
+                    kio_expected = replace(effect.source, path=os.fspath(kio_source))
+                else:
+                    kio_source = source
+                    kio_expected = effect.source
+
+                verifier = self._verifier
+                if verifier is None:
+                    def verifier(
+                        verified_source,
+                        verified_snapshot,
+                        client,
+                    ):
+                        return _default_kio_verifier(
+                            verified_source,
+                            verified_snapshot,
+                            client,
+                            environment=(
+                                dict(os.environ)
+                                | dict(operation_environment or {})
+                            ),
+                            home_directory=operation_home,
+                            source_digest=effect.source_digest,
+                        )
+                kwargs: dict[str, object] = {
+                    "verifier": verifier,
+                    "timeout_seconds": self._timeout_seconds,
+                }
+                if self._runner is not None:
+                    kwargs["runner"] = self._runner
+                if self._which is not None:
+                    kwargs["which"] = self._which
+                if operation_environment is not None:
+                    kwargs["environment"] = operation_environment
+                if operation_home is not None:
+                    kwargs["home_directory"] = operation_home
+                if native and self._private_bus:
+                    kwargs["private_bus"] = True
+                result = move_to_trash(kio_source, kio_expected, **kwargs)  # type: ignore[arg-type]
+        except KioTrashUnavailable as exc:
+            if claim is not None:
+                try:
+                    _restore_claim(claim)
+                except KioTrashUnavailable as restore_error:
+                    return BackendOutcome(
+                        "recovery_required",
+                        "kio_claim_restore_failed",
+                        _claim_recovery_detail(claim, reason=restore_error.reason, detail=restore_error.detail),
+                    )
+            return BackendOutcome("blocked", exc.reason, exc.detail)
+        except (CurationApplicationError, OSError, RuntimeError, ValueError) as exc:
+            if claim is not None:
+                try:
+                    _restore_claim(claim)
+                except KioTrashUnavailable as restore_error:
+                    return BackendOutcome(
+                        "recovery_required",
+                        "kio_claim_restore_failed",
+                        _claim_recovery_detail(claim, reason=restore_error.reason, detail=restore_error.detail),
+                    )
+            return BackendOutcome("blocked", "kio_preflight_failed", str(exc))
+
         if result.status is KioTrashStatus.RECOVERY_REQUIRED:
-            return BackendOutcome("recovery_required", result.reason, result.detail)
+            detail = result.detail
+            if claim is not None:
+                detail = _claim_recovery_detail(claim, reason=result.reason, detail=detail)
+            return BackendOutcome("recovery_required", result.reason, detail)
         if result.status is KioTrashStatus.BLOCKED:
+            if claim is not None:
+                try:
+                    _restore_claim(claim)
+                except KioTrashUnavailable as restore_error:
+                    return BackendOutcome(
+                        "recovery_required",
+                        "kio_claim_restore_failed",
+                        _claim_recovery_detail(claim, reason=restore_error.reason, detail=restore_error.detail),
+                    )
             return BackendOutcome("blocked", result.reason, result.detail)
         if result.receipt is None:
             return BackendOutcome("recovery_required", "kio_receipt_missing")
@@ -891,9 +1007,29 @@ class KioTrashBackend:
         if not isinstance(evidence, dict):
             return BackendOutcome("recovery_required", "kio_trash_evidence_unstructured")
         try:
+            if claim is not None:
+                _root, _trash_path, info_path = _curation_trash_paths(
+                    evidence,
+                    effect.source,
+                    effect.source_digest,
+                )
+                path_value = _trash_info_path_value(
+                    _read_regular_bounded(info_path, limit=8_192)
+                )
+                if path_value == os.fspath(claim.claim_path):
+                    _rewrite_trash_info_path(
+                        info_path,
+                        old_source=claim.claim_path,
+                        new_source=source,
+                    )
+                elif path_value != effect.source.path:
+                    raise ValueError("trash info source path differs from the grant effect")
             _verify_curation_trash_evidence(evidence, effect.source, effect.source_digest)
         except BaseException as exc:
-            return BackendOutcome("recovery_required", "kio_trash_evidence_mismatch", str(exc))
+            detail = str(exc)
+            if claim is not None:
+                detail = _claim_recovery_detail(claim, reason="kio_trash_evidence_mismatch", detail=detail)
+            return BackendOutcome("recovery_required", "kio_trash_evidence_mismatch", detail)
         try:
             _fsync_directory(Path(effect.source.path).parent)
             _root, trash_path, info_path = _curation_trash_paths(
@@ -904,7 +1040,19 @@ class KioTrashBackend:
             if info_path.parent != trash_path.parent:
                 _fsync_directory(info_path.parent)
         except (OSError, ValueError) as exc:
-            return BackendOutcome("recovery_required", "kio_directory_fsync_failed", str(exc))
+            detail = str(exc)
+            if claim is not None:
+                detail = _claim_recovery_detail(claim, reason="kio_directory_fsync_failed", detail=detail)
+            return BackendOutcome("recovery_required", "kio_directory_fsync_failed", detail)
+        if claim is not None:
+            try:
+                os.rmdir(claim.claim_directory)
+            except OSError as exc:
+                return BackendOutcome(
+                    "recovery_required",
+                    "kio_claim_cleanup_failed",
+                    _claim_recovery_detail(claim, reason="kio_claim_cleanup_failed", detail=exc),
+                )
         receipt = effect_receipt_json(
             operation="trash",
             source_path=effect.source.path,
@@ -921,6 +1069,31 @@ class KioTrashBackend:
         return BackendOutcome(
             "applied", "kio_trash_verified", receipt_json=_canonical_json(payload)
         )
+
+    def apply_snapshot(
+        self,
+        snapshot: FileSnapshot,
+        *,
+        root: Path,
+        source_digest: str,
+    ) -> BackendOutcome:
+        """Apply one exact-dedup snapshot without manufacturing a new plan.
+
+        ``FrameworkActions`` owns the inventory plan and ledger, while this
+        adapter owns the physical KIO frontier.  A tiny structural candidate
+        keeps the two owners decoupled and lets the same native implementation
+        serve the grant-bound and integrated exact-dedup routes.
+        """
+
+        effect = SimpleNamespace(
+            action="trash",
+            source=snapshot,
+            source_digest=source_digest,
+            keeper=None,
+            keeper_digest=None,
+            target_path=None,
+        )
+        return self.apply(SimpleNamespace(effect=effect, root=Path(root)))
 
 
 @dataclass(frozen=True, slots=True)

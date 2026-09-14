@@ -42,6 +42,8 @@ STATE_RESET_API_SCHEMA = STATE_RESET_SCHEMA
 STATE_RESET_CONFIRMATION = "RESET_STATE"
 # Compatibility spelling shared with the persistence engine and the CLI.
 RESET_STATE_CONFIRMATION = STATE_RESET_CONFIRMATION
+STATE_RESET_YES = "yes"
+STATE_RESET_INTERNAL_TOKEN = "__neocortex_state_reset_internal__"
 STATE_RESET_SCOPES: Final[tuple[StateResetScope, ...]] = (
     "runs",
     "runs-and-caches",
@@ -181,6 +183,7 @@ def _execute(
     backup_directory: Path | None,
     confirmation: str,
     plan_digest: str,
+    yes: bool = False,
 ) -> object:
     """Call either spelling of the engine's digest-binding keyword.
 
@@ -197,6 +200,10 @@ def _execute(
         "apply": True,
         "confirmation": confirmation,
     }
+    # The optional flag is deliberately capability-detected so an older
+    # injected/embedded engine keeps the legacy digest/token call shape.
+    if yes and _accepts_keyword(function, "yes"):
+        kwargs["yes"] = True
     if _accepts_keyword(function, "plan_digest"):
         kwargs["plan_digest"] = plan_digest
     elif _accepts_keyword(function, "expected_plan_digest"):
@@ -289,6 +296,7 @@ def state_reset_payload(
     scope: StateResetScope = "runs",
     apply: bool = False,
     confirmation: str | None = None,
+    yes: bool = False,
     plan_digest: str | None = None,
     backup_directory: str | os.PathLike[str] | None = None,
     request_id: str | None = None,
@@ -321,11 +329,24 @@ def state_reset_payload(
         )
         requested_digest = _digest(plan_digest)
         if not apply:
-            if confirmation is not None:
+            if confirmation is not None or yes is not False:
                 raise ValueError("confirmation is only valid with apply=True")
             if requested_digest is not None:
                 raise ValueError("plan_digest is only valid with apply=True")
         else:
+            if not isinstance(yes, bool):
+                raise ValueError("yes must be a boolean")
+            if yes:
+                if confirmation is None:
+                    confirmation = STATE_RESET_CONFIRMATION
+                elif confirmation not in {
+                    STATE_RESET_CONFIRMATION,
+                    STATE_RESET_YES,
+                    STATE_RESET_INTERNAL_TOKEN,
+                }:
+                    raise ValueError("yes conflicts with confirmation")
+            if confirmation in {STATE_RESET_YES, STATE_RESET_INTERNAL_TOKEN}:
+                confirmation = STATE_RESET_CONFIRMATION
             if not isinstance(confirmation, str) or confirmation != STATE_RESET_CONFIRMATION:
                 raise ValueError(
                     f"apply requires confirmation token {STATE_RESET_CONFIRMATION!r}"
@@ -375,6 +396,7 @@ def state_reset_payload(
             backup_directory=backup,
             confirmation=confirmed,
             plan_digest=requested_digest_value,
+            yes=yes,
         )
         result = _as_payload(applied, mode="applied")
         result.setdefault("scope", selected_scope)
@@ -414,8 +436,10 @@ def __dir__() -> list[str]:
 __all__ = (  # noqa: RUF022
     "STATE_RESET_API_SCHEMA",
     "STATE_RESET_CONFIRMATION",
+    "STATE_RESET_INTERNAL_TOKEN",
     "STATE_RESET_SCHEMA",
     "STATE_RESET_SCOPES",
+    "STATE_RESET_YES",
     "RESET_STATE_CONFIRMATION",
     "StateResetEntry",
     "StateResetPlan",

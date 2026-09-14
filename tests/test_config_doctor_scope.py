@@ -49,7 +49,7 @@ def test_config_doctor_reports_defaults_limits_and_effective_paths_without_state
         "corpus": str(corpus),
         "state": str(state),
     }
-    assert payload["capabilities"]["mutation"]["available"] is False
+    assert payload["capabilities"]["mutation"]["available"] is True
     assert not corpus.exists()
     assert not state.exists()
 

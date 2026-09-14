@@ -95,14 +95,119 @@ def run_state_reset(args: argparse.Namespace) -> int:
     try:
         from neocortex.api.state_reset import state_reset_payload
 
-        payload = state_reset_payload(
-            args.state_directory,
-            scope=args.scope,
-            apply=bool(getattr(args, "apply", False)),
-            confirmation=getattr(args, "confirm_state_reset", None),
-            plan_digest=getattr(args, "plan_digest", None),
-            backup_directory=getattr(args, "backup_directory", None),
-        )
+        apply_requested = bool(getattr(args, "apply", False))
+        yes_requested = bool(getattr(args, "yes", False))
+        confirmation = getattr(args, "confirm_state_reset", None)
+        plan_digest = getattr(args, "plan_digest", None)
+        backup_directory = getattr(args, "backup_directory", None)
+
+        # The ordinary interface binds confirmation to a fresh, hidden
+        # preview.  Legacy callers that already supply RESET_STATE and a
+        # digest retain their exact one-call contract.
+        if apply_requested and yes_requested and plan_digest is None:
+            preview = state_reset_payload(
+                args.state_directory,
+                scope=args.scope,
+                apply=False,
+            )
+            preview_result = preview.get("result") if isinstance(preview, Mapping) else None
+            if not isinstance(preview_result, Mapping):
+                payload = preview
+            else:
+                digest = preview_result.get("plan_digest")
+                if not isinstance(digest, str) or not digest:
+                    payload = {
+                        "schema": STATE_RESET_SCHEMA,
+                        "kind": "state-reset",
+                        "operation": "state-reset",
+                        "scope": args.scope,
+                        "status": "error",
+                        "read_only": True,
+                        "exit_code": 4,
+                        "error": {
+                            "code": "preview_digest_missing",
+                            "type": "StateResetPlanError",
+                            "message": "la vista previa no produjo un digest aplicable",
+                            "retryable": True,
+                        },
+                        "result": {},
+                    }
+                else:
+                    payload = state_reset_payload(
+                        args.state_directory,
+                        scope=args.scope,
+                        apply=True,
+                        yes=True,
+                        confirmation=confirmation,
+                        plan_digest=digest,
+                        backup_directory=backup_directory,
+                    )
+        elif apply_requested and not yes_requested and plan_digest is None and confirmation is None:
+            # Avoid an accidental destructive operation from a pipe or
+            # automation.  Interactive callers must opt into the same exact
+            # plan with --yes after seeing the preview.
+            if not sys.stdin.isatty():
+                payload = {
+                    "schema": STATE_RESET_SCHEMA,
+                    "kind": "state-reset",
+                    "operation": "state-reset",
+                    "scope": args.scope,
+                    "status": "error",
+                    "read_only": False,
+                    "exit_code": 3,
+                    "error": {
+                        "code": "confirmation_required",
+                        "type": "StateResetConfirmationError",
+                        "message": "en un TTY use --yes; primero revise `state reset --scope ...`",
+                        "retryable": False,
+                    },
+                    "result": {},
+                }
+            else:
+                preview = state_reset_payload(
+                    args.state_directory,
+                    scope=args.scope,
+                    apply=False,
+                )
+                preview_result = preview.get("result") if isinstance(preview, Mapping) else None
+                digest = preview_result.get("plan_digest") if isinstance(preview_result, Mapping) else None
+                if not isinstance(digest, str) or not digest:
+                    payload = preview
+                else:
+                    print(
+                        "Confirma el reset del alcance "
+                        f"{args.scope!r} con el plan {digest}? [s/N] ",
+                        end="",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    answer = sys.stdin.readline().strip().casefold()
+                    if answer not in {"s", "si", "sí", "y", "yes"}:
+                        payload = {
+                            **preview,
+                            "status": "cancelled",
+                            "read_only": True,
+                            "exit_code": 0,
+                        }
+                    else:
+                        payload = state_reset_payload(
+                            args.state_directory,
+                            scope=args.scope,
+                            apply=True,
+                            yes=True,
+                            plan_digest=digest,
+                            backup_directory=backup_directory,
+                        )
+        else:
+            payload = state_reset_payload(
+                args.state_directory,
+                scope=args.scope,
+                apply=apply_requested,
+                yes=yes_requested,
+                confirmation=confirmation,
+                plan_digest=plan_digest,
+                backup_directory=backup_directory,
+            )
         if not isinstance(payload, Mapping):
             raise TypeError("state reset API returned a non-mapping payload")
     except Exception as exc:  # pragma: no cover - only import/adapter failures

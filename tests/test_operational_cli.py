@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from neocortex.api.cli.cli_config import framework_config_from_args
 from neocortex.api.cli.cli_parser import build_parser
 from neocortex.api.cli.cli_validation import validate_arguments
-from neocortex.platform.policy import LINUX_MUTATION_REASON
 
 
 # region [01] Route-only selection
@@ -57,20 +54,12 @@ def test_selection_requires_route_only() -> None:
 
 def test_route_only_is_non_destructive() -> None:
     args = build_parser().parse_args(["--route", "pdf", "--route-only", "--apply"])
-    expected = "never executes file actions" if os.name == "nt" else LINUX_MUTATION_REASON
+    expected = "never executes file actions"
     with pytest.raises(SystemExit, match=expected):
         validate_arguments(args)
 
 
 def test_all_apply_is_the_single_authorization_for_verified_actions() -> None:
-    if os.name != "nt":
-        with pytest.raises(SystemExit, match=LINUX_MUTATION_REASON):
-            _parse("--all", "--apply")
-        args = _parse("--all")
-        config = framework_config_from_args(args)
-        assert config.route == "all"
-        assert config.apply_actions is False
-        return
     args = _parse("--all", "--apply")
     config = framework_config_from_args(args)
     assert config.route == "all"

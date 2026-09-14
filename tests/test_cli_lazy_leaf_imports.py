@@ -61,13 +61,18 @@ def test_doctor_leaf_preserves_full_parser_exit_and_output_bytes(
     assert _invoke(lambda: entrypoint(arguments)) == baseline
 
 
-@pytest.mark.parametrize("arguments", (("--version",), ("--help",)))
-def test_global_leaf_output_matches_the_established_full_parser_bytes(
-    arguments: tuple[str, ...],
-) -> None:
-    baseline = _invoke(lambda: build_parser().parse_args(arguments))
+def test_global_version_output_matches_the_established_full_parser_bytes() -> None:
+    assert _invoke(lambda: entrypoint(("--version",))) == _invoke(
+        lambda: build_parser().parse_args(("--version",))
+    )
 
-    assert _invoke(lambda: entrypoint(arguments)) == baseline
+
+def test_global_help_is_concise_and_does_not_start_route_parsing() -> None:
+    code, stdout, stderr = _invoke(lambda: entrypoint(("--help",)))
+    assert code == 0
+    assert stderr == b""
+    assert stdout.startswith(b"usage: Neocortex [--root ROOT]")
+    assert b"--all" in stdout
 
 
 @pytest.mark.parametrize(

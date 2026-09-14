@@ -74,7 +74,6 @@ from neocortex.semantic.semantic_state import (
     start_embedding_generation,
     upsert_semantic_item,
 )
-from neocortex.platform.policy import LINUX_MUTATION_REASON
 from tests.internal_paths_test_support import disjoint_internal_paths_policy
 
 WINDOWS_MUTATION_ONLY = pytest.mark.skipif(
@@ -4071,8 +4070,8 @@ def test_organization_cli_allows_default_root_and_keeps_apply_separate() -> None
         assert integrated.apply
         assert integrated.organization_root == Path(r"C:\Organizados")
     else:
-        with pytest.raises(SystemExit, match=LINUX_MUTATION_REASON):
-            validate_arguments(integrated)
+        validate_arguments(integrated)
+        assert integrated.apply
     with pytest.raises(SystemExit, match="requires an organization command"):
         validate_arguments(parser.parse_args(["--all", "--organization-root", r"C:\Organizados"]))
     route_apply_error = "requires an organization command"

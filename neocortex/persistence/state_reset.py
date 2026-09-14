@@ -85,6 +85,11 @@ from neocortex.safety.state_topology_contracts import STATE_STORE_REGISTRY
 
 STATE_RESET_SCHEMA = "neocortex.state-reset/v1"
 STATE_RESET_CONFIRMATION = "RESET_STATE"
+# ``yes`` is an adapter convenience, not a second authority.  It is accepted
+# only by the typed engine/API together with the exact preview digest; the
+# human CLI remains responsible for presenting the destructive confirmation.
+STATE_RESET_YES = "yes"
+STATE_RESET_INTERNAL_TOKEN = "__neocortex_state_reset_internal__"
 # A descriptive alias is useful to adapters whose command says ``reset``
 # rather than ``state reset``.  Both names are intentionally stable.
 RESET_STATE_CONFIRMATION = STATE_RESET_CONFIRMATION
@@ -126,6 +131,68 @@ _CATALOG_MIGRATION_BACKUP_RE = re.compile(
 )
 _CATALOG_MIGRATION_RECEIPT_SUFFIX = ".json"
 _MAX_CATALOG_MIGRATION_RECEIPT_BYTES = 256 * 1024
+
+# Tables whose rows are evidence, policy, correction or recovery state.  They
+# are owner data, not disposable cache.  This list is intentionally explicit;
+# an unknown non-empty table is also treated as protected below so a schema
+# extension cannot silently turn a whole owner into a delete target.
+_NON_REGENERABLE_TABLES: dict[str, frozenset[str]] = {
+    "framework": frozenset(
+        {
+            "curation_authorization_grants",
+            "file_actions",
+            "file_action_events",
+            "file_action_reconciliation_events",
+            "review_candidates",
+            "review_decisions",
+            "review_evidence_examples",
+            "review_evidence_progress",
+            "review_task_batches",
+            "review_tasks",
+            "review_task_batch_memberships",
+            "review_task_events",
+            "review_task_scan_progress",
+            "review_task_source_publications",
+            "semantic_content_admission_policies",
+            "semantic_content_admission_events",
+        }
+    ),
+    "catalog": frozenset(
+        {
+            "classification_history",
+            "classification_corrections",
+            "organization_plans",
+            "catalog_generation_manifests",
+        }
+    ),
+    "semantic": frozenset(
+        {
+            "semantic_evidence",
+            "semantic_work_receipts",
+            "semantic_derivation_outbox",
+        }
+    ),
+    "inventory": frozenset(
+        {
+            "fingerprint_content_evidence",
+            "duplicate_plan_summaries",
+            "planned_duplicate_groups",
+            "planned_duplicate_members",
+        }
+    ),
+}
+_NON_REGENERABLE_NAME_MARKERS = (
+    "policy",
+    "policie",
+    "correction",
+    "review",
+    "recovery",
+    "authorization",
+    "decision",
+    "evidence",
+    "receipt",
+)
+_SCHEMA_METADATA_TABLES = frozenset({"metadata", "schema_migrations"})
 
 # Explicit cross-owner references to Framework run identifiers.  Owner-local
 # identifiers such as ``catalog_run_id`` and Code ``analysis_run_id`` are
@@ -262,7 +329,7 @@ class StateResetTarget:
     target_id: str
     kind: TargetKind
     owner: str | None
-    action: Literal["clear-rows", "remove-files"]
+    action: Literal["clear-rows", "remove-files", "stage-reset"]
     entries: tuple[StateResetEntry, ...]
 
     @property
@@ -306,6 +373,11 @@ class StateResetPlan:
     lock_conflicts: tuple[Path, ...]
     unmanaged_state_entries: tuple[Path, ...]
     plan_digest: str
+    # A broad reset removes an owner file only when no durable, non-regenerable
+    # rows are present.  Owners in this tuple are transformed from the
+    # verified backup instead of being unlinked wholesale.
+    protected_tables: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    staged_owners: tuple[str, ...] = ()
 
     @property
     def entries(self) -> tuple[StateResetEntry, ...]:
@@ -350,6 +422,10 @@ class StateResetPlan:
             "unmanaged_state_entries": [str(path) for path in self.unmanaged_state_entries],
             "preserved": [str(path) for path in self.unmanaged_state_entries],
             "unknown_residual": [str(path) for path in self.unmanaged_state_entries],
+            "protected_tables": {
+                owner: list(tables) for owner, tables in self.protected_tables
+            },
+            "staged_owners": list(self.staged_owners),
             "blocked_by": [
                 *[str(path) for path in self.lock_conflicts],
                 *[f"run:{value}" for value in self.active_run_ids],
@@ -807,6 +883,78 @@ def _database_entries(state: Path, owner: str) -> tuple[StateResetEntry, ...]:
     return tuple(result)
 
 
+def _protected_owner_tables(
+    state: Path,
+    owners: Sequence[str],
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Find durable rows that make whole-owner unlinking unsafe.
+
+    This is deliberately a small owner-aware read.  It does not infer
+    protection from arbitrary payload text and it never opens a live database
+    with a bare ``mode=ro`` connection.  Unknown schemas are handled by the
+    normal reset/schema fences; this helper only recognizes the concrete
+    non-regenerable tables already owned by NeoCortex.
+    """
+
+    observed: list[tuple[str, tuple[str, ...]]] = []
+    for owner in owners:
+        # Owners without a concrete non-regenerable extension have no reason
+        # to be opened during reset planning.  In particular, avoid even a
+        # detached inspection of ordinary format caches whose historical WAL
+        # sidecars are themselves part of the read-only fence.
+        if owner not in _NON_REGENERABLE_TABLES:
+            continue
+        database = state / STATE_STORE_REGISTRY.by_owner(owner).database_name
+        if not database.is_file():
+            continue
+        protected: list[str] = []
+        try:
+            with sqlite_read_session(
+                database,
+                mode=preferred_sqlite_read_mode(database),
+                timeout_seconds=60.0,
+            ) as connection:
+                tables = tuple(
+                    (str(row[0]), str(row[1]))
+                    for row in connection.execute(
+                        "SELECT name,type FROM sqlite_master "
+                        "WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' "
+                        "ORDER BY name"
+                    )
+                )
+                explicit = _NON_REGENERABLE_TABLES.get(owner, frozenset())
+                for table, kind in tables:
+                    if kind != "table":
+                        continue
+                    quoted = _quote_identifier(table)
+                    count = int(connection.execute(f"SELECT COUNT(*) FROM {quoted}").fetchone()[0])
+                    if count <= 0:
+                        continue
+                    folded = table.casefold()
+                    if (
+                        table in explicit
+                        or any(marker in folded for marker in _NON_REGENERABLE_NAME_MARKERS)
+                    ):
+                        protected.append(table)
+                # Metadata is always structurally retained by a staged owner,
+                # but only marker-bearing keys make it a reason to avoid an
+                # otherwise safe whole-file removal.
+                if any(table == "metadata" for table, _kind in tables):
+                    keys = connection.execute("SELECT key FROM metadata").fetchall()
+                    if any(
+                        any(marker in str(row[0]).casefold() for marker in _NON_REGENERABLE_NAME_MARKERS)
+                        for row in keys
+                    ):
+                        protected.append("metadata")
+        except (OSError, sqlite3.Error, StateResetError) as exc:
+            raise StateResetError(
+                f"protected owner rows cannot be inspected safely: {owner}"
+            ) from exc
+        if protected:
+            observed.append((owner, tuple(sorted(set(protected)))))
+    return tuple(observed)
+
+
 def _framework_lifecycle(
     path: Path,
     *,
@@ -1057,6 +1205,8 @@ def _plan_digest(
     cross_owner_orphan_ids: tuple[int, ...],
     active_runs: tuple[int, ...],
     active_actions: tuple[int, ...],
+    protected_tables: tuple[tuple[str, tuple[str, ...]], ...],
+    staged_owners: tuple[str, ...],
 ) -> str:
     payload = {
         "schema": STATE_RESET_SCHEMA,
@@ -1076,6 +1226,10 @@ def _plan_digest(
         "cross_owner_orphan_ids": list(cross_owner_orphan_ids),
         "active_run_ids": list(active_runs),
         "active_action_ids": list(active_actions),
+        "protected_tables": {
+            owner: list(tables) for owner, tables in protected_tables
+        },
+        "staged_owners": list(staged_owners),
     }
     encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -1114,6 +1268,12 @@ def plan_state_reset(
         pending,
         publication_owner_heads,
     ) = _publication_snapshot(selected)
+    protected_tables = (
+        _protected_owner_tables(selected, selected_stores)
+        if scope != "runs"
+        else ()
+    )
+    staged_owners = tuple(owner for owner, _tables in protected_tables)
 
     targets: list[StateResetTarget] = []
     if scope == "runs":
@@ -1134,12 +1294,12 @@ def plan_state_reset(
             if entries:
                 targets.append(
                     StateResetTarget(
-                        target_id=f"sqlite:{owner}",
-                        kind="sqlite-owner",
-                        owner=owner,
-                        action="remove-files",
-                        entries=entries,
-                    )
+                    target_id=f"sqlite:{owner}",
+                    kind="sqlite-owner",
+                    owner=owner,
+                    action=("stage-reset" if owner in staged_owners else "remove-files"),
+                    entries=entries,
+                )
                 )
         publication_entries = _content_manifest_entries(selected)
         if publication_entries:
@@ -1188,6 +1348,8 @@ def plan_state_reset(
         cross_owner_orphans,
         active_runs,
         active_actions,
+        protected_tables,
+        staged_owners,
     )
     return StateResetPlan(
         state_directory=selected,
@@ -1207,13 +1369,15 @@ def plan_state_reset(
         lock_conflicts=conflicts,
         unmanaged_state_entries=_unmanaged_entries(selected, scope),
         plan_digest=digest,
+        protected_tables=protected_tables,
+        staged_owners=staged_owners,
     )
 
 
 def _apply_framework_runs_staged(
     plan: StateResetPlan,
     *,
-    backup: DatabaseBackupResult,
+    backup: DatabaseBackupResult | None,
 ) -> tuple[FrameworkRunResetResult, tuple[str, ...]]:
     """Transform a verified Framework backup and atomically promote it.
 
@@ -1232,9 +1396,13 @@ def _apply_framework_runs_staged(
     )
     if entry is None:
         raise StateResetBackupError("Framework reset backup omitted framework.sqlite3")
-    backup_database = backup.backup_directory / "framework.sqlite3"
+    backup_database = (
+        plan.state_directory / "framework.sqlite3"
+        if backup is None
+        else backup.backup_directory / "framework.sqlite3"
+    )
     if not backup_database.is_file():
-        raise StateResetBackupError("Framework reset backup database is missing")
+        raise StateResetBackupError("Framework reset source database is missing")
 
     stage_directory = Path(
         tempfile.mkdtemp(prefix=".neocortex-state-reset-", dir=plan.state_directory)
@@ -1243,7 +1411,20 @@ def _apply_framework_runs_staged(
     final_database = stage_directory / "framework-final.sqlite3"
     staged_connection: sqlite3.Connection | None = None
     try:
-        shutil.copyfile(backup_database, stage_database)
+        if backup is None:
+            # The live main file may be paired with a WAL.  Use the existing
+            # SQLite online-copy primitive for this ephemeral staging source;
+            # this is not the durable owner-backup service and does not
+            # publish a backup artifact.
+            backup_sqlite_online(
+                backup_database,
+                stage_database,
+                policy=SQLiteBackupPolicy(
+                    integrity=SQLiteIntegrityPolicy(check_mode="full")
+                ),
+            )
+        else:
+            shutil.copyfile(backup_database, stage_database)
         os.chmod(stage_database, entry.mode)
         staged_connection = sqlite3.connect(
             existing_sqlite_uri(stage_database),
@@ -1263,6 +1444,14 @@ def _apply_framework_runs_staged(
             staged_plan,
             staged=True,
         )
+        if plan.scope != "runs":
+            # ``content_type_cache`` is regenerable cache, unlike the
+            # file-action, Review, authorization and recovery tables that the
+            # Framework owner preserves.  Clear it only on the disposable
+            # staged copy; the live owner is replaced atomically below.
+            staged_connection.execute("BEGIN IMMEDIATE")
+            staged_connection.execute("DELETE FROM content_type_cache")
+            staged_connection.commit()
         staged_connection.close()
         staged_connection = None
         backup_sqlite_online(
@@ -1277,7 +1466,7 @@ def _apply_framework_runs_staged(
         live_database = plan.state_directory / "framework.sqlite3"
         current = plan_state_reset(
             plan.state_directory,
-            scope="runs",
+            scope=plan.scope,
             _include_lock_conflicts=False,
         )
         _assert_plan_current(plan, current)
@@ -1324,6 +1513,136 @@ def _apply_framework_runs_staged(
     finally:
         if staged_connection is not None:
             staged_connection.close()
+        shutil.rmtree(stage_directory, ignore_errors=True)
+
+
+_CATALOG_REGENERABLE_TABLE_ORDER = (
+    "catalog_generation_documents",
+    "catalog_publications",
+    "catalog_generations",
+    "catalog_runs",
+    "documents",
+    "catalog_generation_manifests",
+)
+
+
+def _apply_catalog_owner_staged(
+    plan: StateResetPlan,
+    *,
+    backup: DatabaseBackupResult | None,
+) -> None:
+    """Reset catalog projections while retaining correction/recovery rows.
+
+    Classification history, durable classification corrections and
+    organization plans are owner evidence.  They cannot be recovered from a
+    corpus-only rebuild, so a broad state reset replaces a staged catalog
+    rather than unlinking it.  The helper intentionally handles only the
+    current catalog schema; another owner is never guessed into this policy.
+    """
+
+    entry = next(
+        (
+            item
+            for target in plan.targets
+            if target.owner == "catalog"
+            for item in target.entries
+            if item.relative_path == "document_catalog.sqlite3"
+        ),
+        None,
+    )
+    if entry is None:
+        raise StateResetBackupError("catalog staged reset omitted document_catalog.sqlite3")
+    source = (
+        plan.state_directory / "document_catalog.sqlite3"
+        if backup is None
+        else backup.backup_directory / "document_catalog.sqlite3"
+    )
+    if not source.is_file():
+        raise StateResetBackupError("catalog staged reset source is missing")
+    stage_directory = Path(
+        tempfile.mkdtemp(prefix=".neocortex-state-reset-catalog-", dir=plan.state_directory)
+    )
+    stage_database = stage_directory / "document_catalog.sqlite3"
+    final_database = stage_directory / "document_catalog-final.sqlite3"
+    connection: sqlite3.Connection | None = None
+    try:
+        shutil.copyfile(source, stage_database)
+        os.chmod(stage_database, entry.mode)
+        connection = sqlite3.connect(
+            existing_sqlite_uri(stage_database),
+            uri=True,
+            timeout=60.0,
+        )
+        connection.execute("PRAGMA busy_timeout=60000")
+        connection.execute("PRAGMA foreign_keys=ON")
+        protected = dict(plan.protected_tables).get("catalog", ())
+        table_names = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            )
+        }
+        connection.execute("BEGIN IMMEDIATE")
+        for table in _CATALOG_REGENERABLE_TABLE_ORDER:
+            if table not in table_names or table in protected or table in _SCHEMA_METADATA_TABLES:
+                continue
+            connection.execute(f"DELETE FROM {_quote_identifier(table)}")
+        if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+            raise StateResetError("catalog staged reset failed foreign-key verification")
+        integrity = tuple(
+            str(row[0]) for row in connection.execute("PRAGMA integrity_check")
+        )
+        if integrity != ("ok",):
+            raise StateResetError("catalog staged reset failed integrity verification")
+        connection.commit()
+        connection.close()
+        connection = None
+        backup_sqlite_online(
+            stage_database,
+            final_database,
+            policy=SQLiteBackupPolicy(
+                integrity=SQLiteIntegrityPolicy(check_mode="full")
+            ),
+        )
+        os.chmod(final_database, entry.mode)
+        live_database = plan.state_directory / "document_catalog.sqlite3"
+        if not _entry_matches(entry):
+            raise StateResetChangedError(
+                "catalog owner changed before staged reset promotion"
+            )
+        old_sidecars = {
+            item.path
+            for target in plan.targets
+            if target.owner == "catalog"
+            for item in target.entries
+            if item.kind == "file" and item.relative_path != "document_catalog.sqlite3"
+        }
+        os.replace(final_database, live_database)
+        for suffix in _ALL_DATABASE_SIDECAR_SUFFIXES:
+            sidecar = Path(f"{live_database}{suffix}")
+            if not os.path.lexists(sidecar):
+                continue
+            metadata = sidecar.lstat()
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+                raise StateResetChangedError(f"catalog sidecar is not regular: {sidecar}")
+            if sidecar not in old_sidecars and metadata.st_size > 0:
+                raise StateResetChangedError(
+                    f"catalog sidecar appeared during reset: {sidecar}"
+                )
+            sidecar.unlink()
+        directory_fd = os.open(
+            plan.state_directory,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except sqlite3.Error as exc:
+        raise StateResetError("catalog staged reset could not be promoted") from exc
+    finally:
+        if connection is not None:
+            connection.close()
         shutil.rmtree(stage_directory, ignore_errors=True)
 
 
@@ -1562,9 +1881,9 @@ def _manifest_payload(
     plan: StateResetPlan,
     *,
     status: str,
-    backup: Path,
+    backup: Path | None,
     database_backup: DatabaseBackupResult | None,
-    raw_root: Path,
+    raw_root: Path | None,
     error: str | None = None,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
@@ -1575,10 +1894,14 @@ def _manifest_payload(
         "state_directory": str(plan.state_directory),
         "plan_digest": plan.plan_digest,
         "stores": list(plan.stores),
-        "raw_backup_directory": str(raw_root.relative_to(backup)),
+        "raw_backup_directory": (
+            None
+            if raw_root is None or backup is None
+            else str(raw_root.relative_to(backup))
+        ),
         "database_backup_manifest": (
             None
-            if database_backup is None
+            if database_backup is None or backup is None
             else str(database_backup.manifest.relative_to(backup))
         ),
         "targets": [target.as_payload() for target in plan.targets],
@@ -1591,7 +1914,7 @@ def _manifest_payload(
 def _apply_reset_locked(
     plan: StateResetPlan,
     *,
-    backup_directory: Path,
+    backup_directory: Path | None,
 ) -> StateResetResult:
     current = plan_state_reset(
         plan.state_directory,
@@ -1648,10 +1971,13 @@ def _apply_reset_locked(
         )
 
     has_database_targets = bool(
-        any(target.kind in {"run-ledger", "sqlite-owner"} and target.entries for target in plan.targets)
+        any(
+            target.kind in {"run-ledger", "sqlite-owner"} and target.entries
+            for target in plan.targets
+        )
     )
     database_backup: DatabaseBackupResult | None = None
-    if has_database_targets:
+    if backup_directory is not None and has_database_targets:
         try:
             database_backup = backup_state_owners(
                 plan.state_directory,
@@ -1666,26 +1992,53 @@ def _apply_reset_locked(
             raise
         except BaseException as exc:
             raise StateResetBackupError("verified SQLite reset backup failed") from exc
-    else:
+    elif backup_directory is not None:
         _new_backup_directory(backup_directory)
 
-    raw_root = _raw_backup_entries(backup_directory, plan.entries)
+    # Even a no-backup apply gets an ephemeral raw copy while the effect is in
+    # flight.  It is not a backup artifact and is removed after a successful
+    # operation; retaining it on an uncertain rollback gives the caller a
+    # local recovery breadcrumb without silently publishing a backup.
+    ephemeral_root: Path | None = None
+    raw_root: Path | None
+    if plan.entries:
+        if backup_directory is None:
+            try:
+                ephemeral_root = Path(
+                    tempfile.mkdtemp(
+                        prefix=".neocortex-state-reset-raw-",
+                        dir=plan.state_directory.parent,
+                    )
+                )
+            except OSError as exc:
+                raise StateResetBackupError(
+                    "ephemeral reset rollback area could not be created"
+                ) from exc
+            raw_root = _raw_backup_entries(ephemeral_root, plan.entries)
+        else:
+            raw_root = _raw_backup_entries(backup_directory, plan.entries)
+    else:
+        raw_root = None
     post_backup = plan_state_reset(
         plan.state_directory,
         scope=plan.scope,
         _include_lock_conflicts=False,
     )
     _assert_plan_current(plan, post_backup)
-    prepared_manifest = _write_json(
-        backup_directory / "state-reset-manifest.json",
-        _manifest_payload(
-            plan,
-            status="prepared",
-            backup=backup_directory,
-            database_backup=database_backup,
-            raw_root=raw_root,
-        ),
-    )
+    prepared_manifest: Path | None = None
+    if backup_directory is not None:
+        if raw_root is None:  # pragma: no cover - backup directory invariant
+            raise StateResetBackupError("reset backup has no rollback root")
+        prepared_manifest = _write_json(
+            backup_directory / "state-reset-manifest.json",
+            _manifest_payload(
+                plan,
+                status="prepared",
+                backup=backup_directory,
+                database_backup=database_backup,
+                raw_root=raw_root,
+            ),
+        )
 
     deleted: tuple[StateResetEntry, ...] = ()
     cleared_tables: tuple[str, ...] = ()
@@ -1693,14 +2046,34 @@ def _apply_reset_locked(
     effect_started = True
     try:
         if plan.scope == "runs":
-            if database_backup is None:
-                raise StateResetBackupError("Framework reset requires a verified SQLite backup")
             framework_result, cleared_tables = _apply_framework_runs_staged(
                 plan,
                 backup=database_backup,
             )
         else:
-            deleted = _delete_entries(plan.entries)
+            staged_owner_entries = {
+                entry
+                for target in plan.targets
+                if target.owner in set(plan.staged_owners)
+                for entry in target.entries
+            }
+            if "framework" in plan.staged_owners:
+                # Framework owns the run ledger and the protected Review /
+                # action / authorization / recovery rows.  Its staged helper
+                # clears only regenerable cache rows before promotion.
+                framework_result, cleared_tables = _apply_framework_runs_staged(
+                    plan,
+                    backup=database_backup,
+                )
+            if "catalog" in plan.staged_owners:
+                _apply_catalog_owner_staged(
+                    plan,
+                    backup=database_backup,
+                )
+            removable_entries = tuple(
+                entry for entry in plan.entries if entry not in staged_owner_entries
+            )
+            deleted = _delete_entries(removable_entries)
         after = plan_state_reset(
             plan.state_directory,
             scope=plan.scope,
@@ -1712,19 +2085,33 @@ def _apply_reset_locked(
             if framework_result is None or not framework_result.verified:
                 raise StateResetError("Framework staged run reset was not verified")
         else:
-            if after.entries:
+            remaining_targets = {
+                entry
+                for target in plan.targets
+                if target.owner not in set(plan.staged_owners)
+                for entry in target.entries
+            }
+            remaining_after = {
+                entry.path
+                for entry in after.entries
+            }
+            if any(entry.path in remaining_after for entry in remaining_targets):
                 raise StateResetError("reset targets remain after removal")
-        final_manifest = _write_json(
-            prepared_manifest,
-            _manifest_payload(
-                plan,
-                status="applied",
-                backup=backup_directory,
-                database_backup=database_backup,
-                raw_root=raw_root,
-            ),
+        final_manifest = (
+            None
+            if prepared_manifest is None
+            else _write_json(
+                prepared_manifest,
+                _manifest_payload(
+                    plan,
+                    status="applied",
+                    backup=backup_directory,
+                    database_backup=database_backup,
+                    raw_root=raw_root,
+                ),
+            )
         )
-        return StateResetResult(
+        result = StateResetResult(
             plan=plan,
             backup_directory=backup_directory,
             backup_manifest=(
@@ -1739,32 +2126,42 @@ def _apply_reset_locked(
             post_pending_publications=after.pending_publications,
             post_remaining_entries=tuple(str(entry.path) for entry in after.entries),
         )
+        if ephemeral_root is not None:
+            shutil.rmtree(ephemeral_root, ignore_errors=False)
+            ephemeral_root = None
+        return result
     except BaseException as exc:
         if effect_started:
             try:
-                _restore_raw(plan.entries, raw_root)
+                if raw_root is not None:
+                    _restore_raw(plan.entries, raw_root)
             except BaseException as rollback_error:
                 raise StateResetRecoveryRequiredError(
-                    f"reset failed and raw rollback failed: {rollback_error}",
+                    f"reset failed and raw rollback failed: {rollback_error}; "
+                    f"ephemeral_rollback={ephemeral_root}",
                     backup_directory=backup_directory,
                 ) from exc
             try:
-                _write_json(
-                    prepared_manifest,
-                    _manifest_payload(
-                        plan,
-                        status="rolled-back",
-                        backup=backup_directory,
-                        database_backup=database_backup,
-                        raw_root=raw_root,
-                        error=str(exc),
-                    ),
-                )
+                if prepared_manifest is not None:
+                    _write_json(
+                        prepared_manifest,
+                        _manifest_payload(
+                            plan,
+                            status="rolled-back",
+                            backup=backup_directory,
+                            database_backup=database_backup,
+                            raw_root=raw_root,
+                            error=str(exc),
+                        ),
+                    )
             except BaseException as manifest_error:
                 raise StateResetRecoveryRequiredError(
                     f"reset rolled back but receipt update failed: {manifest_error}",
                     backup_directory=backup_directory,
                 ) from exc
+            if ephemeral_root is not None:
+                shutil.rmtree(ephemeral_root, ignore_errors=True)
+                ephemeral_root = None
         if isinstance(exc, StateResetError):
             raise
         raise StateResetError("state reset failed and was rolled back") from exc
@@ -1776,7 +2173,11 @@ def execute_state_reset(
     scope: StateResetScope = "runs",
     apply: bool = False,
     plan_digest: str | None = None,
+    # Older embedders called this fence ``expected_plan_digest``.  Keep it as
+    # a strict alias rather than making them bypass the current preview.
+    expected_plan_digest: str | None = None,
     confirmation: str | None = None,
+    yes: bool = False,
     backup_directory: str | Path | None = None,
 ) -> StateResetPlan | StateResetResult:
     """Preview by default or apply one exact reset plan.
@@ -1789,20 +2190,48 @@ def execute_state_reset(
 
     plan = plan_state_reset(state_directory, scope=scope)
     if not apply:
-        if plan_digest is not None or confirmation is not None:
+        if (
+            plan_digest is not None
+            or expected_plan_digest is not None
+            or confirmation is not None
+            or yes is not False
+        ):
             raise StateResetConfirmationError("digest and confirmation are only valid with --apply")
         return plan
+    if not isinstance(yes, bool):
+        raise StateResetConfirmationError("yes must be a boolean")
+    if plan_digest is not None and expected_plan_digest is not None and plan_digest != expected_plan_digest:
+        raise StateResetConfirmationError(
+            "plan_digest and expected_plan_digest disagree"
+        )
+    selected_digest = plan_digest if plan_digest is not None else expected_plan_digest
+    # The aliases deliberately converge on the legacy literal.  No yes-like
+    # value is accepted as a digest or as a substitute for the digest fence.
+    if yes:
+        if confirmation is None:
+            confirmation = STATE_RESET_CONFIRMATION
+        elif confirmation not in {
+            STATE_RESET_CONFIRMATION,
+            STATE_RESET_YES,
+            STATE_RESET_INTERNAL_TOKEN,
+        }:
+            raise StateResetConfirmationError("yes conflicts with confirmation")
+    if confirmation in {STATE_RESET_YES, STATE_RESET_INTERNAL_TOKEN}:
+        confirmation = STATE_RESET_CONFIRMATION
     if confirmation != STATE_RESET_CONFIRMATION:
         raise StateResetConfirmationError(
             f"apply requires confirmation token {STATE_RESET_CONFIRMATION!r}"
         )
-    if not isinstance(plan_digest, str) or plan_digest != plan.plan_digest:
+    if not isinstance(selected_digest, str) or selected_digest != plan.plan_digest:
         raise StateResetConfirmationError("apply requires the exact preview plan digest")
-    selected_backup = _safe_backup_directory(
-        _default_backup_directory(plan.state_directory)
+    # A destructive reset is never implicit-backup.  When the caller supplies
+    # ``backup_directory`` the existing verified owner-backup service is used;
+    # when omitted, no durable backup service is invoked (only an ephemeral
+    # rollback copy is kept for the duration of the effect).
+    selected_backup = (
+        None
         if backup_directory is None
-        else backup_directory,
-        plan.state_directory,
+        else _safe_backup_directory(backup_directory, plan.state_directory)
     )
     if plan.lock_conflicts:
         raise StateResetBusyError(plan.lock_conflicts)
@@ -1825,7 +2254,9 @@ def execute_state_reset(
 def apply_state_reset(
     plan: StateResetPlan,
     *,
-    confirmation: str,
+    confirmation: str | None = None,
+    yes: bool = False,
+    expected_plan_digest: str | None = None,
     backup_directory: str | Path | None = None,
 ) -> StateResetResult:
     """Apply a previously returned plan without silently replanning its scope."""
@@ -1835,7 +2266,9 @@ def apply_state_reset(
         scope=plan.scope,
         apply=True,
         plan_digest=plan.plan_digest,
+        expected_plan_digest=expected_plan_digest,
         confirmation=confirmation,
+        yes=yes,
         backup_directory=backup_directory,
     )
     if not isinstance(result, StateResetResult):  # pragma: no cover - type invariant
@@ -1850,8 +2283,10 @@ reset_state = execute_state_reset
 __all__ = [
     "RESET_STATE_CONFIRMATION",
     "STATE_RESET_CONFIRMATION",
+    "STATE_RESET_INTERNAL_TOKEN",
     "STATE_RESET_SCHEMA",
     "STATE_RESET_SCOPES",
+    "STATE_RESET_YES",
     "StateResetBackupError",
     "StateResetBusyError",
     "StateResetChangedError",

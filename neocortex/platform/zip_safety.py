@@ -41,6 +41,36 @@ class ZipStructure:
     central_directory_bytes: int
     central_directory_offset: int
     zip64: bool
+    # The entry tuple is an additive extension of the historical four-field
+    # structure.  Keeping it on the preflight result means callers can retain
+    # duplicate names without building a ``name -> ZipInfo`` dictionary.  The
+    # default keeps hand-built/legacy instances source compatible.
+    entries: tuple["ZipMemberStructure", ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ZipMemberStructure:
+    """Bounded structural identity for one central-directory entry.
+
+    ``ordinal`` is the zero-based central-directory position and
+    ``header_offset`` is the physical local-header offset after any prepended
+    self-extracting stub adjustment.  Neither the filename nor CRC is used as
+    identity; ZIPs are allowed to contain repeated names and stale metadata.
+    ``upper_bound`` is the next local-header boundary (or the physical central
+    directory start), useful to keep recovery reads inside one entry.
+    """
+
+    ordinal: int
+    filename: str
+    header_offset: int
+    payload_offset: int
+    compressed_size: int
+    uncompressed_size: int
+    crc32: int
+    compression_method: int
+    flags: int
+    upper_bound: int
+    is_directory: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,11 +266,13 @@ def _validate_central_member(
     source,
     *,
     central: tuple[Any, ...],
+    ordinal: int = 0,
     extra_offset: int,
+    name_offset: int | None = None,
     central_directory_offset: int,
     offset_adjustment: int,
     file_size: int,
-) -> int:
+) -> ZipMemberStructure:
     """Validate one central record and its local data boundary."""
 
     (
@@ -262,6 +294,17 @@ def _validate_central_member(
         _external_attributes,
         _local_header_offset,
     ) = central
+    if name_offset is None:
+        # Kept as an optional keyword for the historical private helper seam;
+        # central-directory callers always pass the actual name offset.
+        name_offset = extra_offset - int(_name_length)
+    raw_name = _read_exact(source, int(name_offset), int(_name_length))
+    try:
+        name = raw_name.decode("utf-8" if int(_flags) & 0x800 else "cp437", "strict")
+    except UnicodeDecodeError as exc:
+        raise ZipStructureError("ZIP member name is not decodable") from exc
+    if "\x00" in name:
+        raise ZipStructureError("ZIP member name contains a NUL byte")
     if signature != b"PK\x01\x02":
         raise ZipStructureError("invalid ZIP central directory record signature")
     extra = _read_exact(source, extra_offset, int(extra_length))
@@ -310,7 +353,22 @@ def _validate_central_member(
             raise ZipStructureError("ZIP local and central uncompressed sizes disagree")
     if payload_offset + compressed_size > file_size:
         raise ZipStructureError("ZIP member payload points outside the file")
-    return int(local_header_offset)
+    return ZipMemberStructure(
+        ordinal=int(ordinal),
+        filename=name,
+        header_offset=int(local_header_offset),
+        payload_offset=int(payload_offset),
+        compressed_size=int(compressed_size),
+        uncompressed_size=int(_uncompressed_size),
+        crc32=int(_crc32),
+        compression_method=int(_compression),
+        flags=int(_flags),
+        # The next local-header boundary is filled in by the central-directory
+        # pass once all offsets are known.  ``central_directory_offset`` is a
+        # safe conservative value for the one-entry case.
+        upper_bound=int(central_directory_offset),
+        is_directory=name.endswith("/"),
+    )
 
 
 def _inspect_central_directory(
@@ -322,13 +380,14 @@ def _inspect_central_directory(
     max_members: int,
     offset_adjustment: int,
     file_size: int,
-) -> int:
+) -> tuple[ZipMemberStructure, ...]:
     """Count and validate central records without building a ZipInfo list."""
 
     central_end = central_directory_offset + central_directory_bytes
     cursor = central_directory_offset
     actual_members = 0
     seen_local_offsets: set[int] = set()
+    entries: list[ZipMemberStructure] = []
     while cursor < central_end:
         remaining = central_end - cursor
         if remaining < _CENTRAL_DIRECTORY.size:
@@ -357,14 +416,17 @@ def _inspect_central_directory(
         local_header_offset = _validate_central_member(
             source,
             central=central,
+            ordinal=actual_members - 1,
+            name_offset=cursor + _CENTRAL_DIRECTORY.size,
             extra_offset=cursor + _CENTRAL_DIRECTORY.size + name_length,
             central_directory_offset=central_directory_offset,
             offset_adjustment=offset_adjustment,
             file_size=file_size,
         )
-        if local_header_offset in seen_local_offsets:
+        if local_header_offset.header_offset in seen_local_offsets:
             raise ZipStructureError("ZIP members share a local header offset")
-        seen_local_offsets.add(local_header_offset)
+        seen_local_offsets.add(local_header_offset.header_offset)
+        entries.append(local_header_offset)
         cursor += record_length
     if cursor != central_end:
         raise ZipStructureError("ZIP central directory length is inconsistent")
@@ -373,7 +435,35 @@ def _inspect_central_directory(
             "ZIP central directory member count disagrees with its end record: "
             f"declared {declared_members}, found {actual_members}"
         )
-    return actual_members
+    # Local file headers need not occur in central-directory order.  Recovery
+    # must nevertheless use physical, not lexical, boundaries so a malformed
+    # compressed-size field cannot consume a neighbouring member.  The central
+    # record's ordinal remains stable and is restored in the returned order.
+    by_offset = sorted(entries, key=lambda item: item.header_offset)
+    upper_bounds = {
+        item.header_offset: (
+            by_offset[index + 1].header_offset
+            if index + 1 < len(by_offset)
+            else central_directory_offset
+        )
+        for index, item in enumerate(by_offset)
+    }
+    return tuple(
+        ZipMemberStructure(
+            ordinal=item.ordinal,
+            filename=item.filename,
+            header_offset=item.header_offset,
+            payload_offset=item.payload_offset,
+            compressed_size=item.compressed_size,
+            uncompressed_size=item.uncompressed_size,
+            crc32=item.crc32,
+            compression_method=item.compression_method,
+            flags=item.flags,
+            upper_bound=upper_bounds[item.header_offset],
+            is_directory=item.is_directory,
+        )
+        for item in entries
+    )
 
 
 # endregion [02]
@@ -457,7 +547,7 @@ def _inspect_zip_source(
     physical_central_offset = central_offset + offset_adjustment
     if physical_central_offset < 0 or physical_central_offset + central_size > file_size:
         raise ZipStructureError("ZIP central directory points outside the file")
-    _inspect_central_directory(
+    entries = _inspect_central_directory(
         source,
         central_directory_offset=physical_central_offset,
         central_directory_bytes=central_size,
@@ -466,7 +556,13 @@ def _inspect_zip_source(
         offset_adjustment=offset_adjustment,
         file_size=file_size,
     )
-    return ZipStructure(members, central_size, physical_central_offset, is_zip64)
+    return ZipStructure(
+        members,
+        central_size,
+        physical_central_offset,
+        is_zip64,
+        entries,
+    )
 
 
 def inspect_zip_stream(

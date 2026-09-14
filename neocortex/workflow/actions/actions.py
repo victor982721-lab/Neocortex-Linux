@@ -21,6 +21,7 @@ from neocortex.deduplication import (
     FileChangedError,
     FileSnapshot,
     files_equal_exact,
+    full_fingerprint,
     snapshot_path,
     stat_matches_snapshot,
 )
@@ -44,6 +45,8 @@ from neocortex.safety.internal_paths import InternalPathProtectionError
 from neocortex.runtime.models import ActionSummary
 from neocortex.safety.protected_content import ProtectedContentError
 from neocortex.persistence.framework_state_writer import FrameworkState
+from neocortex.workflow.actions.file_action_recovery import expected_identity_json
+from neocortex.curation.application import BackendOutcome, KioTrashBackend
 # endregion [01]
 
 # region [02] Implementación
@@ -75,6 +78,7 @@ class FrameworkActions:
         excluded_paths: Iterable[str | Path] = DEFAULT_EXCLUDED_PATHS,
         exclusion_policy: InventoryExclusionPolicy | None = None,
         progress: ProgressCallback | None = None,
+        trash_backend: KioTrashBackend | None = None,
     ):
         self._index = index
         self._state = state
@@ -88,6 +92,7 @@ class FrameworkActions:
             excluded_paths
         )
         self._progress = progress
+        self._trash_backend = trash_backend
 
     def execute(self, plan: DedupPlan, *, cleanup_empty_directories: bool = True) -> ActionSummary:
         self._validate_apply_root()
@@ -366,17 +371,84 @@ class FrameworkActions:
         preflight_failures += revalidation_failures
         if not ready:
             return 0, preflight_failures, protected
-        # Send2Trash accepts paths only. Revalidation cannot prevent another
-        # process from replacing the directory entry before its syscall, so
-        # destructive mode fails closed until a handle-bound Recycle Bin
-        # primitive is available and tested.  The frontier pass above remains
-        # mandatory so a future backend cannot bypass the TOCTOU contract.
-        self._state.finish_file_actions(
-            (candidate[0] for candidate in ready),
-            "skipped",
-            TRASH_IDENTITY_ABSTENTION,
-        )
-        return 0, preflight_failures, protected + len(ready)
+        if self._trash_backend is None or action_type == "trash_empty_directory":
+            # Directory trash remains deliberately outside the KIO adapter.
+            # The injected backend is an explicit opt-in; ordinary framework
+            # runs preserve their historical fail-closed behavior.
+            detail = (
+                TRASH_IDENTITY_ABSTENTION
+                if self._trash_backend is None
+                else "KIO directory trash is unsupported; only regular files are supported"
+            )
+            self._state.finish_file_actions(
+                (candidate[0] for candidate in ready),
+                "skipped",
+                detail,
+            )
+            return 0, preflight_failures, protected + len(ready)
+
+        applied = 0
+        failed = preflight_failures
+        for action_id, path, planned, reference, _current_stat in ready:
+            if planned is None:
+                self._state.finish_file_action(
+                    action_id,
+                    "failed",
+                    "trash candidate has no expected snapshot",
+                )
+                failed += 1
+                continue
+            try:
+                source_digest = "xxh3_128_full_v1:" + full_fingerprint(planned).hex()
+                if reference is not None:
+                    if not files_equal_exact(planned, reference):
+                        raise RuntimeError("keeper changed during exact duplicate comparison")
+                expected_json = expected_identity_json(
+                    planned,
+                    source_path=path,
+                    target_path=None,
+                )
+                self._state.mark_file_actions_applying(((action_id, expected_json),))
+                outcome = self._trash_backend.apply_snapshot(
+                    planned,
+                    root=mutation_root,
+                    source_digest=source_digest,
+                )
+                if not isinstance(outcome, BackendOutcome):
+                    raise RuntimeError("trash backend returned an unsupported outcome")
+                if outcome.status == "applied" and outcome.receipt_json is not None:
+                    self._state.confirm_file_actions_applied(
+                        ((action_id, outcome.receipt_json),)
+                    )
+                    self._index.apply_reconciliation(
+                        self._scan_id,
+                        remove_paths=(path,),
+                    )
+                    applied += 1
+                    continue
+                detail = outcome.detail or outcome.reason
+                if outcome.status == "recovery_required":
+                    self._state.require_file_action_recovery((action_id,), detail)
+                    failed += 1
+                else:
+                    self._state.finish_file_action(action_id, "failed", detail)
+                    failed += 1
+            except (OSError, RuntimeError, FileChangedError, ValueError) as exc:
+                # A failure for one member must not suppress independent
+                # candidates in the same bounded batch.
+                try:
+                    row = self._state._connection.execute(
+                        "SELECT status FROM file_actions WHERE action_id=?",
+                        (action_id,),
+                    ).fetchone()
+                    if row is not None and str(row[0]) == "applying":
+                        self._state.require_file_action_recovery((action_id,), str(exc))
+                    elif row is not None and str(row[0]) == "started":
+                        self._state.finish_file_action(action_id, "failed", str(exc))
+                except BaseException as persistence_error:
+                    exc.add_note(f"file action transition failed: {persistence_error}")
+                failed += 1
+        return applied, failed, protected
 
     def _best_effort_require_recovery(
         self,
@@ -1310,4 +1382,54 @@ class FrameworkActions:
         """Reload the current fail-closed guard at every mutation boundary."""
 
         return self._state.corpus_mutation_guard(self._run_id)
+
+
+def apply_exact_dedupe_plan(
+    index: DedupIndex,
+    state: FrameworkState,
+    run_id: int,
+    plan: DedupPlan,
+    *,
+    trash_backend: KioTrashBackend | None = None,
+    excluded_paths: Iterable[str | Path] = DEFAULT_EXCLUDED_PATHS,
+    exclusion_policy: InventoryExclusionPolicy | None = None,
+    progress: ProgressCallback | None = None,
+) -> ActionSummary:
+    """Apply an existing, complete exact-dedup plan through native KIO.
+
+    This is intentionally not a planner: callers provide the already
+    published ``DedupPlan`` and its inventory owner.  Only duplicate members
+    are processed; extension corrections, empty files/directories, and any
+    non-exact or partial plan remain outside this E1 service.
+    """
+
+    if plan.verification_mode != "full_hash" or plan.requested_policy != "exact":
+        raise ValueError("exact dedupe application requires a complete full-hash plan")
+    if plan.coverage != "complete":
+        raise ValueError("exact dedupe application requires complete plan coverage")
+    if isinstance(run_id, bool) or not isinstance(run_id, int) or run_id < 1:
+        raise ValueError("run_id must be positive")
+    runner = FrameworkActions(
+        index,
+        state,
+        run_id,
+        plan.scan_id,
+        apply=True,
+        verify_bytes_before_trash=True,
+        excluded_paths=excluded_paths,
+        exclusion_policy=exclusion_policy,
+        progress=progress,
+        trash_backend=trash_backend or KioTrashBackend(),
+    )
+    summary = runner._trash_duplicates(plan, ActionSummary(apply_actions=True))
+    state.store_action_summary(run_id, summary)
+    return summary
+
+
+# A short alias is useful to importers that already use the noun "dedupe";
+# both names intentionally point at the same no-planner service.
+apply_exact_dedupe = apply_exact_dedupe_plan
+
+
+__all__ = ["FrameworkActions", "apply_exact_dedupe", "apply_exact_dedupe_plan"]
 # endregion [02]

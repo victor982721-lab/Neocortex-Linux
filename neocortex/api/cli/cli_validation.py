@@ -4,7 +4,11 @@ from __future__ import annotations
 import argparse
 import math
 
-from neocortex.platform.policy import LINUX_MUTATION_REASON, linux_mutation_requested
+from neocortex.platform.policy import (
+    LINUX_MUTATION_REASON,
+    current_platform_policy,
+    linux_mutation_requested,
+)
 
 from .cli_audio_surface import (
     validate_audio_arguments,
@@ -252,6 +256,52 @@ def _validate_direct_operation_selection(args: argparse.Namespace) -> None:
     )
     if args.all and non_watcher_operations:
         raise SystemExit("--all cannot be combined with direct query/doctor options")
+
+
+def _validate_dedupe_operation(args: argparse.Namespace) -> None:
+    """Keep the duplicate-service selector separate from routed/direct work."""
+
+    explicit = set(getattr(args, "_explicit_options", ()))
+    selected = bool(getattr(args, "dedupe", False))
+    if not selected:
+        if "dedupe_json" in explicit:
+            raise SystemExit("--dedupe-json requires --dedupe")
+        return
+    if args.all:
+        raise SystemExit("--dedupe cannot be combined with --all")
+    if normalize_route_selection(args.route, BUILTIN_ROUTE_ORDER):
+        raise SystemExit("--dedupe cannot be combined with --route")
+    if args.route_only or args.resume_run is not None or args.candidate_run is not None:
+        raise SystemExit("--dedupe cannot be combined with route-only/resume options")
+    if selected_direct_operations(args):
+        raise SystemExit("--dedupe cannot be combined with direct query/doctor options")
+
+
+def _validate_linux_mutation_capability(args: argparse.Namespace) -> None:
+    """Permit Linux effects only when the live platform policy says so.
+
+    The CLI is deliberately not a mutation backend.  A capability check is
+    the only gate owned here; the selected service remains responsible for
+    identity, containment, and effect verification at its own boundary.
+    """
+
+    if not linux_mutation_requested(
+        apply=bool(getattr(args, "apply", False)),
+        organization_apply=bool(getattr(args, "organization_apply", False)),
+    ):
+        return
+    try:
+        policy = current_platform_policy()
+        available = bool(getattr(policy, "mutation_available", False))
+    except Exception as exc:
+        raise SystemExit(
+            f"{LINUX_MUTATION_REASON}: mutation capability check failed "
+            f"({type(exc).__name__})"
+        ) from exc
+    if not available:
+        raise SystemExit(
+            f"{LINUX_MUTATION_REASON}: corpus mutation is unavailable in the active policy"
+        )
 
 
 def _validate_status_operation(args: argparse.Namespace) -> None:
@@ -760,13 +810,8 @@ def validate_arguments(args: argparse.Namespace) -> None:
     validate_platform_arguments(args)
     validate_models_arguments(args)
     _validate_direct_operations(args)
-    if linux_mutation_requested(
-        apply=bool(getattr(args, "apply", False)),
-        organization_apply=bool(getattr(args, "organization_apply", False)),
-    ):
-        raise SystemExit(
-            f"{LINUX_MUTATION_REASON}: corpus mutation is intentionally unavailable on Linux"
-        )
+    _validate_dedupe_operation(args)
+    _validate_linux_mutation_capability(args)
     _validate_route_only(args)
 
 

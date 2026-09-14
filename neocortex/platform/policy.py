@@ -184,8 +184,8 @@ def current_platform_policy(*, platform_name: str | None = None) -> PlatformPoli
         path_collation=POSIX_PATH_COLLATION,
         containment_backend="posix-session-process-group-rlimit",
         elevation="not-required",
-        mutation_backend="intentionally-unavailable",
-        mutation_available=False,
+        mutation_backend="posix-renameat2+kio-trash",
+        mutation_available=True,
         compatible=True,
     )
 

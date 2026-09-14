@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import inspect
 import sqlite3
 import threading
 import time
@@ -466,7 +467,7 @@ class FrameworkOrchestrator:
         ).as_tuple()
 
     def _resource_coordinator(self) -> GlobalResourceCoordinator | None:
-        if len(self.selected_routes) <= 1:
+        if not self.selected_routes:
             return None
         return GlobalResourceCoordinator(
             self.selected_routes,
@@ -503,6 +504,7 @@ class FrameworkOrchestrator:
             default_organization_root,
             plan_document_organization,
         )
+        from neocortex.documents.document_organization_planning import OrganizationCorpusPolicy
 
         organization_root = self.config.organization_root
         if organization_root is None:
@@ -520,13 +522,42 @@ class FrameworkOrchestrator:
             self.config.document_catalog_database,
             root,
         )
+        organization_arguments = {
+            "source_scope": source_scope,
+            "min_confidence": self.config.organization_min_confidence,
+            "progress": self.progress,
+            "mutation_guard": state.corpus_mutation_guard(run_id),
+            # Integrated ``--all`` is the user's explicit corpus workflow.  A
+            # reversible destination is safe for general, uncertain, sensitive
+            # and non-technical categories; true unknowns still go to
+            # ``Sin_clasificar`` and technical failures remain pending.
+            "corpus_policy": OrganizationCorpusPolicy(
+                allow_general=True,
+                allow_uncertain=True,
+                allow_sensitive=True,
+                allow_nontechnical=True,
+            ),
+        }
+        # A patched/embedded legacy adapter may expose the pre-policy
+        # signature. Inspect its actual side effect before invocation so a
+        # compatibility call cannot execute the planner twice.
+        signature_target = getattr(plan_document_organization, "side_effect", None)
+        if not callable(signature_target):
+            signature_target = plan_document_organization
+        try:
+            parameters = inspect.signature(signature_target).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        accepts_policy = (
+            "corpus_policy" in parameters
+            or any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
+        )
+        if not accepts_policy:
+            organization_arguments.pop("corpus_policy", None)
         plan_summary = plan_document_organization(
             self.config.document_catalog_database,
             organization_root,
-            source_scope=source_scope,
-            min_confidence=self.config.organization_min_confidence,
-            progress=self.progress,
-            mutation_guard=state.corpus_mutation_guard(run_id),
+            **organization_arguments,
         )
         state.record_event(
             run_id,
@@ -1461,6 +1492,14 @@ class FrameworkOrchestrator:
         excluded_paths: tuple[Path, ...],
         inventory_policy: InventoryExclusionPolicy,
     ) -> tuple[FrameworkActions, ActionSummary]:
+        trash_backend = None
+        if self.config.apply_actions and os.name != "nt":
+            # The CLI capability gate has already checked the active Linux
+            # policy.  Keep construction lazy so read-only runs never resolve
+            # KIO, create a bus, or touch Trash configuration.
+            from neocortex.curation.application import KioTrashBackend
+
+            trash_backend = KioTrashBackend()
         runner = FrameworkActions(
             dedup_index,
             state,
@@ -1471,6 +1510,7 @@ class FrameworkOrchestrator:
             excluded_paths=excluded_paths,
             exclusion_policy=inventory_policy,
             progress=self.progress,
+            trash_backend=trash_backend,
         )
         state.set_run_phase(run_id, "actions")
         actions = runner.execute(

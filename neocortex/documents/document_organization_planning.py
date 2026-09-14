@@ -13,6 +13,8 @@ import sqlite3
 import stat
 import time
 import unicodedata
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 from neocortex.platform.policy import sqlite_path_collation
@@ -55,6 +57,92 @@ _WINDOWS_RESERVED_NAMES = frozenset(
 
 _CLIENT_ACCOUNT_ORGANIZATIONS = frozenset({"ANDRITZ"})
 _PATH_COLLATION = sqlite_path_collation()
+ORGANIZATION_CORPUS_POLICY_SCHEMA = "neocortex.organization-corpus-policy/v1"
+
+
+@dataclass(frozen=True, slots=True)
+class OrganizationCorpusPolicy:
+    """Explicit opt-in for reversible plans outside the technical default."""
+
+    allow_general: bool = False
+    allow_uncertain: bool = False
+    allow_sensitive: bool = False
+    allow_nontechnical: bool = False
+    reversible: bool = True
+    policy_version: str = ORGANIZATION_CORPUS_POLICY_SCHEMA
+
+    def __post_init__(self) -> None:
+        if self.policy_version != ORGANIZATION_CORPUS_POLICY_SCHEMA:
+            raise ValueError("organization corpus policy is unsupported")
+        for name in (
+            "allow_general",
+            "allow_uncertain",
+            "allow_sensitive",
+            "allow_nontechnical",
+            "reversible",
+        ):
+            if type(getattr(self, name)) is not bool:
+                raise ValueError(f"organization corpus policy {name} must be boolean")
+
+    def allows(self, category: str) -> bool:
+        return self.reversible and bool(
+            {
+                "general": self.allow_general,
+                "uncertain": self.allow_uncertain,
+                "sensitive": self.allow_sensitive,
+                "nontechnical": self.allow_nontechnical,
+            }.get(category, False)
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema": self.policy_version,
+            "allow_general": self.allow_general,
+            "allow_uncertain": self.allow_uncertain,
+            "allow_sensitive": self.allow_sensitive,
+            "allow_nontechnical": self.allow_nontechnical,
+            "reversible": self.reversible,
+        }
+
+
+# Descriptive aliases allow callers to use either vocabulary without creating
+# a second policy contract.
+CorpusOrganizationPolicy = OrganizationCorpusPolicy
+OrganizationPolicy = OrganizationCorpusPolicy
+
+
+def _normalize_corpus_policy(
+    policy: OrganizationCorpusPolicy | Mapping[str, object] | None,
+) -> OrganizationCorpusPolicy:
+    if policy is None:
+        return OrganizationCorpusPolicy()
+    if isinstance(policy, OrganizationCorpusPolicy):
+        return policy
+    if not isinstance(policy, Mapping):
+        raise ValueError("organization corpus policy must be explicit")
+    accepted = {
+        "allow_general",
+        "allow_uncertain",
+        "allow_sensitive",
+        "allow_nontechnical",
+        "reversible",
+        "allow_reversible",
+        "allow_review",
+    }
+    unknown = set(policy) - accepted
+    if unknown:
+        raise ValueError(f"organization corpus policy has unknown fields: {sorted(unknown)}")
+    values = dict(policy)
+    if "allow_reversible" in values:
+        if "reversible" in values and values["reversible"] != values["allow_reversible"]:
+            raise ValueError("organization corpus policy reversible fields disagree")
+        values["reversible"] = values["allow_reversible"]
+    if values.get("allow_review") is True:
+        for category in ("general", "uncertain", "sensitive", "nontechnical"):
+            values[f"allow_{category}"] = True
+    values.pop("allow_reversible", None)
+    values.pop("allow_review", None)
+    return OrganizationCorpusPolicy(**values)
 _COMPACT_KIND_DIRECTORIES: dict[str, tuple[str, ...]] = {
     "accion_correctiva_preventiva": ("Pruebas_y_calidad", "Calidad"),
     "catalogo_equipo": ("Ingenieria_y_documentacion", "Manuales_catalogos_y_fichas"),
@@ -209,6 +297,8 @@ def plan_document_organization(
     progress: ProgressCallback | None = None,
     progress_operation: str = "framework",
     mutation_guard: CorpusMutationGuard | None = None,
+    corpus_policy: OrganizationCorpusPolicy | Mapping[str, object] | None = None,
+    organization_policy: OrganizationCorpusPolicy | Mapping[str, object] | None = None,
 ) -> OrganizationPlanSummary:
     """Persist proposed destinations; never create directories or move files."""
 
@@ -216,6 +306,11 @@ def plan_document_organization(
         raise ValueError("min_confidence must be between 0 and 1")
     if not isinstance(source_scope, OrganizationInputScope):
         raise ValueError("organization_input_scope_required")
+    if corpus_policy is not None and organization_policy is not None:
+        raise ValueError("organization corpus policy was supplied twice")
+    resolved_policy = _normalize_corpus_policy(
+        corpus_policy if corpus_policy is not None else organization_policy
+    )
     source_scope.verify()
     root = Path(os.path.abspath(organization_root.expanduser()))
     if mutation_guard is not None:
@@ -305,6 +400,7 @@ def plan_document_organization(
                     managed_locations=managed_locations,
                     mutation_guard=mutation_guard,
                     source_scope=source_scope,
+                    corpus_policy=resolved_policy,
                 )
                 if status == "planned":
                     planned += 1
@@ -368,6 +464,7 @@ def _plan_catalog_document(
     managed_locations: set[tuple[str, str, str]],
     mutation_guard: CorpusMutationGuard | None,
     source_scope: OrganizationInputScope,
+    corpus_policy: OrganizationCorpusPolicy,
 ) -> str:
     assessment = assess_organization_resource(row, source_scope)
     if not assessment.included:
@@ -381,6 +478,7 @@ def _plan_catalog_document(
             assessment.reason or "resource_scope_unverified",
             mutation_guard=mutation_guard,
             source_scope=source_scope,
+            corpus_policy=corpus_policy,
         )
     binding = parse_resource_binding(row["resource_binding_json"])
     managed_source = (
@@ -407,14 +505,20 @@ def _plan_catalog_document(
             protected_reason,
             mutation_guard=mutation_guard,
             source_scope=source_scope,
+            corpus_policy=corpus_policy,
         )
     destination, status, reason = _proposed_destination(
         row,
         root,
         min_confidence=min_confidence,
         managed_source=managed_source,
+        corpus_policy=corpus_policy,
     )
-    if status == "planned" and str(row["catalog_status"]) != "classified":
+    if (
+        status == "planned"
+        and str(row["catalog_status"]) != "classified"
+        and not reason.startswith("explicit_corpus_policy_reversible:")
+    ):
         status, reason = "review", "source_classification_requires_review"
     if binding["representation_kind"] != "physical_file":
         destination = None
@@ -449,6 +553,7 @@ def _plan_catalog_document(
         reason,
         mutation_guard=mutation_guard,
         source_scope=source_scope,
+        corpus_policy=corpus_policy,
     )
 
 
@@ -495,6 +600,7 @@ def _persist_catalog_plan(
     *,
     mutation_guard: CorpusMutationGuard | None,
     source_scope: OrganizationInputScope,
+    corpus_policy: OrganizationCorpusPolicy,
 ) -> str:
     try:
         _insert_plan(
@@ -506,6 +612,7 @@ def _persist_catalog_plan(
             status,
             reason,
             source_scope=source_scope,
+            corpus_policy=corpus_policy,
         )
         return status
     except sqlite3.IntegrityError:
@@ -528,6 +635,7 @@ def _persist_catalog_plan(
                     "blocked",
                     protected_reason,
                     source_scope=source_scope,
+                    corpus_policy=corpus_policy,
                 )
                 return "blocked"
             _insert_plan(
@@ -539,6 +647,7 @@ def _persist_catalog_plan(
                 status,
                 "classification_above_threshold_with_identity_disambiguation",
                 source_scope=source_scope,
+                corpus_policy=corpus_policy,
             )
             return status
         _insert_plan(
@@ -550,6 +659,7 @@ def _persist_catalog_plan(
             "blocked",
             "destination_conflict_with_another_plan",
             source_scope=source_scope,
+            corpus_policy=corpus_policy,
         )
         return "blocked"
 
@@ -569,16 +679,101 @@ def _protected_content_reason(
     return None
 
 
+_SENSITIVE_ORGANIZATION_KINDS = frozenset(
+    {
+        "expediente_personal",
+        "instruccion_cuenta_bancaria",
+        "credencial_visitante",
+        "registro_entrega_epp",
+    }
+)
+_NONTECHNICAL_ORGANIZATION_KINDS = frozenset(
+    {
+        "audio_transcrito",
+        "registro_log",
+        "reporte_inventario_archivo",
+        "codigo",
+    }
+)
+
+
+def _classification_payload(row: sqlite3.Row) -> dict[str, object]:
+    try:
+        payload = json.loads(str(row["classification_json"]))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _organization_policy_category(row: sqlite3.Row, *, reason: str | None = None) -> str | None:
+    """Map an advisory row to an explicit opt-in policy bucket."""
+
+    kind = str(row["primary_kind"] or "")
+    payload = _classification_payload(row)
+    taxonomy_status = str(payload.get("taxonomy_status") or "")
+    if kind == "otro" and taxonomy_status not in {"outside_taxonomy"}:
+        # ``otro`` with insufficient identification is the one true unknown
+        # bucket.  It must not be made actionable merely by enabling a broad
+        # reversible policy.
+        return None
+    if kind in _SENSITIVE_ORGANIZATION_KINDS:
+        return "sensitive"
+    if kind in _NONTECHNICAL_ORGANIZATION_KINDS or taxonomy_status == "outside_taxonomy":
+        return "nontechnical"
+    if (
+        str(row["catalog_status"]) != "classified"
+        or str(row["uncertainty"]) == "alta"
+        or reason in {
+            "classification_confidence_below_threshold",
+            "insufficient_document_identification",
+            "outside_organization_taxonomy",
+        }
+    ):
+        return "uncertain"
+    return "general"
+
+
+def _policy_destination(
+    row: sqlite3.Row,
+    root: Path,
+    category: str,
+) -> Path:
+    kind = str(row["primary_kind"] or "")
+    kind_segment = "Sin_clasificar" if kind == "otro" else _safe_segment(kind)
+    directories = {
+        "general": ("General", kind_segment),
+        "uncertain": ("Revision_pendiente", kind_segment),
+        "sensitive": ("Sensible", kind_segment),
+        "nontechnical": ("No_tecnico", kind_segment),
+    }
+    parts = directories.get(category)
+    if parts is None:  # pragma: no cover - caller validates category
+        raise ValueError(f"unsupported organization policy category: {category}")
+    destination = root.joinpath(*parts, Path(str(row["path"])).name)
+    _validate_destination(root, destination)
+    return destination
+
+
 def _proposed_destination(
     row: sqlite3.Row,
     root: Path,
     *,
     min_confidence: float,
     managed_source: bool,
+    corpus_policy: OrganizationCorpusPolicy | None = None,
 ) -> tuple[Path | None, str, str]:
     """Choose one compact semantic destination without redundant dimensions."""
 
+    resolved_policy = corpus_policy or OrganizationCorpusPolicy()
+
     def review(reason: str) -> tuple[Path | None, str, str]:
+        category = _organization_policy_category(row, reason=reason)
+        if category is not None and resolved_policy.allows(category):
+            return (
+                _policy_destination(row, root, category),
+                "planned",
+                f"explicit_corpus_policy_reversible:{category}:{reason}",
+            )
         if not managed_source:
             return None, "review", reason
         destination = root.joinpath(
@@ -810,6 +1005,7 @@ def _insert_plan(
     reason: str,
     *,
     source_scope: OrganizationInputScope,
+    corpus_policy: OrganizationCorpusPolicy,
 ) -> None:
     binding = parse_resource_binding(row["resource_binding_json"])
     try:
@@ -846,7 +1042,13 @@ def _insert_plan(
     # A logical location is classification evidence, not a writable file path.
     logical_destination = None
     if virtual:
-        proposed, _, _ = _proposed_destination(row, root, min_confidence=0.0, managed_source=False)
+        proposed, _, _ = _proposed_destination(
+            row,
+            root,
+            min_confidence=0.0,
+            managed_source=False,
+            corpus_policy=corpus_policy,
+        )
         logical_destination = None if proposed is None else str(proposed)
     evidence = json.dumps(
         {
@@ -871,6 +1073,8 @@ def _insert_plan(
             "equipment": json.loads(row["equipment_json"]),
             "activities": json.loads(row["activities_json"]),
             "uncertainty": row["uncertainty"],
+            "corpus_policy": corpus_policy.to_dict(),
+            "reversible": corpus_policy.reversible,
         },
         ensure_ascii=False,
         sort_keys=True,

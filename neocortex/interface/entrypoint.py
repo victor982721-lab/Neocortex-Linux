@@ -40,9 +40,63 @@ _HUMAN_COMMANDS = frozenset(
 )
 
 
+def _root_help_requested(arguments: Sequence[str]) -> bool:
+    """Recognize the small root help form without constructing route state."""
+
+    if not arguments:
+        return False
+    position = 0
+    remaining: list[str] = []
+    value_options = {"--root", "--state-directory"}
+    while position < len(arguments):
+        token = arguments[position]
+        option, separator, _value = token.partition("=")
+        if option in value_options:
+            if separator:
+                if not _value:
+                    return False
+                position += 1
+                continue
+            if position + 1 >= len(arguments):
+                return False
+            position += 2
+            continue
+        remaining.append(token)
+        position += 1
+    return remaining in (["--help"], ["-h"])
+
+
+def _print_root_help() -> None:
+    """Print concise installed-command guidance, not the route inventory."""
+
+    print(
+        """usage: Neocortex [--root ROOT] (--all | --dedupe | --route ROUTES | COMMAND)
+
+Consulta local:
+  status, search, ask, inspect, review, knowledge, curate, state, databases
+
+Procesamiento:
+  --all                 ejecuta las rutas configuradas
+  --dedupe              solicita el servicio de duplicados, sin rutas de contenido
+  --route ROUTES        ejecuta una o más rutas sobre el inventario
+  --root ROOT           conserva precedencia explícita sobre la raíz por defecto
+  --apply               sólo procede con una capacidad de backend verificada
+  --version             muestra la identidad de la instalación activa
+
+Usa `Neocortex COMMAND --help` para una operación concreta. Las banderas
+heredadas siguen disponibles; `--help` no inicia inventario ni crea estado.
+"""
+    )
+
+
 def _translate_canonical_arguments(arguments: Sequence[str]) -> list[str]:
     """Translate the small set of public product aliases to parser flags."""
 
+    # The specialized spelling is an additive compatibility convenience.  It
+    # must converge on the exact same ``--dedupe`` service; ``--all`` remains a
+    # flag and is intentionally not introduced as a subcommand.
+    if arguments and arguments[0] == "dedupe":
+        return ["--dedupe", *arguments[1:]]
     if len(arguments) < 2:
         return list(arguments)
     command = (arguments[0], arguments[1])
@@ -135,6 +189,9 @@ def entrypoint(arguments: Sequence[str] | None = None) -> int:
     """Run one public CLI, desktop, or supervised-worker invocation."""
 
     forwarded = list(sys.argv[1:] if arguments is None else arguments)
+    if _root_help_requested(forwarded):
+        _print_root_help()
+        return 0
     canonical_help = _canonical_help_requested(forwarded)
     if canonical_help is not None:
         _print_canonical_help(canonical_help)

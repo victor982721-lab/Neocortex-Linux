@@ -73,7 +73,9 @@ def test_document_organization_public_signatures_require_mutation_guard() -> Non
             "source_scope: 'OrganizationInputScope', "
             "min_confidence: 'float' = 0.72, progress: 'ProgressCallback | None' "
             "= None, progress_operation: 'str' = 'framework', "
-            "mutation_guard: 'CorpusMutationGuard | None' = None) -> "
+            "mutation_guard: 'CorpusMutationGuard | None' = None, "
+            "corpus_policy: 'OrganizationCorpusPolicy | Mapping[str, object] | None' = None, "
+            "organization_policy: 'OrganizationCorpusPolicy | Mapping[str, object] | None' = None) -> "
             "'OrganizationPlanSummary'"
         ),
         "apply_document_organization": (

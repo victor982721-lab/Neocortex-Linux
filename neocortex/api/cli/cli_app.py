@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 import argparse
+import importlib
 import inspect
+import json
 import os
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -15,6 +17,190 @@ from pathlib import Path
 from .cli_operations import dispatch_direct_operation
 
 __all__ = ["dispatch_direct", "main", "run_framework"]
+
+
+# Optional service adapters are deliberately kept here instead of growing a
+# second duplicate engine in the CLI.  Domain owners may publish one of these
+# stable lazy modules; until then ``--dedupe`` fails closed with a bounded,
+# actionable result.
+_DEDUPE_SERVICE_MODULES = (
+    "neocortex.api.dedupe",
+    "neocortex.api.dedupe_service",
+    "neocortex.deduplication.service",
+)
+_DEDUPE_SERVICE_HANDLERS = ("run_dedupe", "dedupe", "execute_dedupe")
+_SERVICE_UNAVAILABLE_EXIT_CODE = 2
+
+
+def _service_json_requested(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "dedupe_json", False) or getattr(args, "json", False))
+
+
+def _service_payload(
+    value: object,
+    *,
+    operation: str,
+    code: str | None = None,
+) -> dict[str, object]:
+    """Normalize one optional service result without interpreting text output."""
+
+    if isinstance(value, Mapping):
+        payload = {str(key): item for key, item in value.items()}
+    else:
+        to_mapping = getattr(value, "to_dict", None)
+        if not callable(to_mapping):
+            to_mapping = getattr(value, "as_dict", None)
+        converted = to_mapping() if callable(to_mapping) else None
+        payload = (
+            {str(key): item for key, item in converted.items()}
+            if isinstance(converted, Mapping)
+            else {"result": value}
+        )
+    payload.setdefault("operation", operation)
+    if code is not None:
+        payload.setdefault("code", code)
+    return payload
+
+
+def _print_service_unavailable(args: argparse.Namespace, *, reason: str) -> int:
+    """Report an absent optional service on JSON stdout or diagnostic stderr."""
+
+    payload = _service_payload(
+        {
+            "schema": "neocortex.cli-service/v1",
+            "operation": "dedupe",
+            "status": "unavailable",
+            "code": "dedupe_service_unavailable",
+            "exit_code": _SERVICE_UNAVAILABLE_EXIT_CODE,
+            "read_only": not bool(getattr(args, "apply", False)),
+            "mutation_authorized": bool(getattr(args, "apply", False)),
+            "reason": reason,
+        },
+        operation="dedupe",
+    )
+    if _service_json_requested(args):
+        from neocortex.api.read_contract import sanitize_untrusted_payload
+
+        safe_payload = sanitize_untrusted_payload(payload)
+        print(
+            json.dumps(
+                safe_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+    else:
+        from neocortex.api.read_contract import sanitize_untrusted_text
+
+        print(
+            "ERROR dedupe_service_unavailable: "
+            + sanitize_untrusted_text(reason, limit=800),
+            file=sys.stderr,
+        )
+    return _SERVICE_UNAVAILABLE_EXIT_CODE
+
+
+def _load_dedupe_service() -> tuple[Callable[[argparse.Namespace], object] | None, str | None]:
+    """Find a domain-owned duplicate service without importing route engines."""
+
+    reasons: list[str] = []
+    for module_name in _DEDUPE_SERVICE_MODULES:
+        try:
+            module = importlib.import_module(module_name)
+        except ModuleNotFoundError as exc:
+            # A missing dependency inside an existing service is still an
+            # unavailable capability, not permission to fall back to a local
+            # implementation or to start the framework engine here.
+            if exc.name and exc.name != module_name:
+                reasons.append(f"{module_name}: missing dependency {exc.name}")
+            continue
+        except Exception as exc:
+            reasons.append(f"{module_name}: {type(exc).__name__}")
+            continue
+        for handler_name in _DEDUPE_SERVICE_HANDLERS:
+            handler = getattr(module, handler_name, None)
+            if callable(handler):
+                return handler, None
+        reasons.append(f"{module_name}: no supported handler")
+    return None, "; ".join(reasons) or "no duplicate-detection service is registered"
+
+
+def _dispatch_dedupe_service(args: argparse.Namespace) -> int:
+    """Dispatch ``--dedupe`` to the owner service, never to a second engine."""
+
+    handler, unavailable_reason = _load_dedupe_service()
+    if handler is None:
+        return _print_service_unavailable(
+            args,
+            reason=unavailable_reason or "service unavailable",
+        )
+    try:
+        result = handler(args)
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:
+        reason = f"{type(exc).__name__}: {exc}"
+        if _service_json_requested(args):
+            from neocortex.api.read_contract import sanitize_untrusted_payload
+
+            payload = _service_payload(
+                {
+                    "schema": "neocortex.cli-service/v1",
+                    "operation": "dedupe",
+                    "status": "failed",
+                    "code": "dedupe_service_failed",
+                    "exit_code": _SERVICE_UNAVAILABLE_EXIT_CODE,
+                    "reason": reason,
+                },
+                operation="dedupe",
+            )
+            print(
+                json.dumps(
+                    sanitize_untrusted_payload(payload),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
+        else:
+            from neocortex.api.read_contract import sanitize_untrusted_text
+
+            print(
+                "ERROR dedupe_service_failed: "
+                + sanitize_untrusted_text(reason, limit=800),
+                file=sys.stderr,
+            )
+        return _SERVICE_UNAVAILABLE_EXIT_CODE
+
+    if isinstance(result, int) and not isinstance(result, bool):
+        return result
+    payload = _service_payload(result, operation="dedupe")
+    raw_exit_code = payload.get("exit_code", 0)
+    exit_code = (
+        raw_exit_code
+        if isinstance(raw_exit_code, int) and not isinstance(raw_exit_code, bool)
+        else 0
+    )
+    if _service_json_requested(args):
+        from neocortex.api.read_contract import sanitize_untrusted_payload
+
+        print(
+            json.dumps(
+                sanitize_untrusted_payload(payload),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+    else:
+        from neocortex.api.read_contract import sanitize_untrusted_text
+
+        status = sanitize_untrusted_text(payload.get("status", "complete"), limit=128)
+        code = sanitize_untrusted_text(payload.get("code", "ok"), limit=128)
+        print(f"DEDUPE status={status} code={code} exit_code={exit_code}")
+    return exit_code
+
 
 # endregion [01]
 
@@ -25,6 +211,8 @@ __all__ = ["dispatch_direct", "main", "run_framework"]
 def dispatch_direct(args: argparse.Namespace) -> int | None:
     """Run a selected direct operation, or return ``None`` for a full run."""
 
+    if getattr(args, "dedupe", False):
+        return _dispatch_dedupe_service(args)
     # Configuration doctor is a parser-owned leaf rather than a product
     # direct-operation registry entry, preserving the established registry
     # contract for content and state operations.
@@ -392,6 +580,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         or args.route_only
         or args.resume_run is not None
         or args.candidate_run is not None
+        or bool(getattr(args, "dedupe", False))
         or bool(getattr(args, "dedup_keep", ()))
         or bool(getattr(args, "dedup_prefer_root", ()))
     ):

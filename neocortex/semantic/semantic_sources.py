@@ -46,6 +46,10 @@ from .semantic_quality import (
     clean_title_candidate,
     content_title_from_sample,
 )
+from .semantic_admission import (
+    ContentAdmissionPolicy,
+    filter_text_source_records,
+)
 from neocortex.persistence.sqlite_immutable import (
     ImmutableSQLiteUnavailable,
     SQLiteImmutableFence,
@@ -1988,6 +1992,25 @@ def iter_image_source_records(
                 },
             )
         yield ImageSourceRecord(item, ocr_section)
+
+
+def iter_admitted_text_source_records(
+    state_directory: Path,
+    source_kind: str,
+    *,
+    policy: ContentAdmissionPolicy,
+    connection: sqlite3.Connection | None = None,
+) -> Iterator[TextSourceRecord]:
+    """Project only visible text records without deleting source diagnostics.
+
+    Admission is intentionally applied after the owner adapter has produced a
+    bounded ``SemanticItem``.  The source head and the semantic database stay
+    untouched, so a policy correction does not invalidate or recompute an
+    unchanged vector.
+    """
+
+    records = iter_text_source_records(state_directory, source_kind, connection=connection)
+    yield from filter_text_source_records(records, policy)
 
 
 # endregion [04]

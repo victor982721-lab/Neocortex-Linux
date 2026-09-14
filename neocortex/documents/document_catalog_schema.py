@@ -22,7 +22,7 @@ from neocortex.persistence.sqlite_schema_contract import (
 # region [01] Canonical schema
 
 
-CATALOG_SCHEMA_VERSION = 9
+CATALOG_SCHEMA_VERSION = 10
 _PATH_COLLATION = sqlite_path_collation()
 
 
@@ -415,6 +415,37 @@ def catalog_input_manifest_digest(
 
 _CURRENT_SCHEMA_DDL = (*_V8_SCHEMA_DDL, *_V9_PUBLICATION_DDL)
 
+# Classification corrections are deliberately outside the generation and
+# current-projection tables.  A catalog rebuild replaces those derived rows,
+# while a correction is a durable human observation that must survive that
+# boundary.  The unique key is the public correction identity; revocation is
+# represented on the same row so an old observation cannot silently become
+# current again after a generation reset.
+_V10_CORRECTION_DDL = (
+    f"""CREATE TABLE IF NOT EXISTS classification_corrections(
+        correction_id INTEGER PRIMARY KEY,
+        root TEXT NOT NULL COLLATE {_PATH_COLLATION},
+        logical_identity TEXT NOT NULL,
+        dimension TEXT NOT NULL,
+        value_json TEXT NOT NULL,
+        observed_fingerprint TEXT NOT NULL,
+        created_ns INTEGER NOT NULL,
+        revoked_ns INTEGER,
+        revocation_reason TEXT,
+        UNIQUE(root,logical_identity,dimension)
+    )""",
+    """CREATE INDEX IF NOT EXISTS classification_corrections_lookup_idx
+        ON classification_corrections(
+            root,logical_identity,dimension,revoked_ns,correction_id
+        )""",
+)
+
+# Keep the v9 builder available as an exact migration source contract.  Do not
+# fold the correction table into this tuple: v9 databases have no such table
+# and must be validated before the additive v10 step.
+_V9_SCHEMA_DDL = _CURRENT_SCHEMA_DDL
+_CURRENT_SCHEMA_DDL = (*_V9_SCHEMA_DDL, *_V10_CORRECTION_DDL)
+
 
 def _create_v7_schema(connection: sqlite3.Connection) -> None:
     for statement in _V7_SCHEMA_DDL:
@@ -455,11 +486,34 @@ def create_document_catalog_schema(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
+def _create_v9_schema(connection: sqlite3.Connection) -> None:
+    """Build the exact schema that preceded durable correction storage."""
+
+    for statement in _V9_SCHEMA_DDL:
+        connection.execute(statement)
+
+
 @lru_cache(maxsize=1)
 def document_catalog_schema_contract() -> SQLiteSchemaContract:
-    """Return the immutable structural contract for schema v9."""
+    """Return the immutable structural contract for the current schema v10."""
 
     return schema_contract_from_builder(create_document_catalog_schema)
+
+
+@lru_cache(maxsize=1)
+def _v9_schema_contract() -> SQLiteSchemaContract:
+    return schema_contract_from_builder(_create_v9_schema)
+
+
+def validate_v9_document_catalog_schema(connection: sqlite3.Connection) -> None:
+    """Abstain before adding corrections to an unrecognized v9 catalog."""
+
+    validate_sqlite_schema_contract(
+        connection,
+        _v9_schema_contract(),
+        label="document catalog v9 migration source",
+        exact=True,
+    )
 
 
 # endregion [01]
@@ -1020,6 +1074,14 @@ def _migrate_to_v9(connection: sqlite3.Connection) -> None:
         raise RuntimeError("document catalog v8 to v9 migration violated foreign keys")
 
 
+def _migrate_to_v10(connection: sqlite3.Connection) -> None:
+    """Add durable correction storage without rewriting derived catalog rows."""
+
+    validate_v9_document_catalog_schema(connection)
+    for statement in _V10_CORRECTION_DDL:
+        connection.execute(statement)
+
+
 def migrate_document_catalog_schema(
     connection: sqlite3.Connection,
     prior_version: int,
@@ -1038,6 +1100,7 @@ def migrate_document_catalog_schema(
         7: lambda: _migrate_to_v7(connection),
         8: lambda: _migrate_to_v8(connection),
         9: lambda: _migrate_to_v9(connection),
+        10: lambda: _migrate_to_v10(connection),
     }
     for target_version in range(prior_version + 1, CATALOG_SCHEMA_VERSION + 1):
         migrations[target_version]()
@@ -1059,4 +1122,5 @@ __all__ = [
     "validate_v6_document_catalog_schema",
     "validate_v7_document_catalog_schema",
     "validate_v8_document_catalog_schema",
+    "validate_v9_document_catalog_schema",
 ]

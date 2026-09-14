@@ -214,8 +214,9 @@ def build_human_parser() -> argparse.ArgumentParser:
         prog="Neocortex",
         description=(
             "Consulta local, trazable y de solo lectura; el borrado de bases "
-            "requiere una acción y confirmación explícitas. Los comandos heredados "
-            "con flags siguen disponibles."
+            "requiere una acción y confirmación explícitas. Para procesamiento, "
+            "usa --all, --dedupe o --route; los comandos heredados con flags "
+            "siguen disponibles."
         ),
         allow_abbrev=False,
     )
@@ -567,6 +568,14 @@ def build_human_parser() -> argparse.ArgumentParser:
         "--apply",
         action="store_true",
         help="ejecuta el reset; sin esta opción sólo muestra la vista previa",
+    )
+    state_reset.add_argument(
+        "--yes",
+        action="store_true",
+        help=(
+            "confirma de forma no interactiva el plan exacto mostrado por la "
+            "vista previa (no crea backup implícito)"
+        ),
     )
     state_reset.add_argument(
         "--confirm-state-reset",

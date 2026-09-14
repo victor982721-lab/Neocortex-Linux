@@ -561,6 +561,17 @@ class FrameworkState:
             raise ValueError(f"source run {run_id} does not exist")
         return None if row[0] is None else str(row[0])
 
+    def content_admission_ledger(self):
+        """Return the Semantic admission ledger on this Framework owner.
+
+        The import is lazy so the long-lived Framework writer keeps its
+        existing import boundary; the ledger never opens a second database.
+        """
+
+        from neocortex.persistence.framework_content_admission import ContentAdmissionLedger
+
+        return ContentAdmissionLedger(self)
+
     def recorded_inventory_evidence(self, run_id: int) -> InventoryRunEvidence:
         """Recover one unambiguous inventory checkpoint from append-only events."""
 

@@ -95,7 +95,7 @@ class UiWorkerShutdownTests(unittest.TestCase):
         self.assertEqual(len(terminal), 1)
         self.assertEqual(terminal[0]["error_type"], "InvalidArguments")
         self.assertEqual(terminal[0]["stage"], "preparation")
-        expected = "remove --apply" if os.name == "nt" else "linux_mutation_backend_unavailable"
+        expected = "remove --apply" if os.name == "nt" else "--route-only never executes file actions"
         self.assertIn(expected, terminal[0]["detail"])
         self.assertNotIn("traceback", terminal[0])
 

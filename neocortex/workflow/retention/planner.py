@@ -91,6 +91,16 @@ class RetentionPolicy:
     batch_size: int = 100
     snapshot_max_temporary_bytes: int = 256 * 1024 * 1024
     snapshot_prepare_timeout_seconds: float = 5.0
+    # Aggregate product-history quotas.  A destructive cleaner must consume
+    # an exact preview and apply these same values rather than inventing
+    # per-stage copies.
+    terminal_log_count: int = 2
+    terminal_log_bytes: int = 512 * 1024 * 1024
+    summary_count: int = 30
+    summary_bytes: int = 64 * 1024 * 1024
+    receipt_count: int = 30
+    receipt_bytes: int = 128 * 1024 * 1024
+    rollback_derived_count: int = 1
 
     def __post_init__(self) -> None:
         SQLiteSnapshotBudget(
@@ -115,6 +125,25 @@ class RetentionPolicy:
             or not 1 <= self.batch_size <= 1_000
         ):
             raise ValueError("retention batch_size must be between 1 and 1000")
+        for name, value in (
+            ("terminal_log_count", self.terminal_log_count),
+            ("terminal_log_bytes", self.terminal_log_bytes),
+            ("summary_count", self.summary_count),
+            ("summary_bytes", self.summary_bytes),
+            ("receipt_count", self.receipt_count),
+            ("receipt_bytes", self.receipt_bytes),
+            ("rollback_derived_count", self.rollback_derived_count),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        if self.terminal_log_count != 2:
+            raise ValueError("terminal_log_count must be exactly 2")
+        if self.summary_count != 30:
+            raise ValueError("summary_count must be exactly 30")
+        if self.receipt_count != 30:
+            raise ValueError("receipt_count must be exactly 30")
+        if self.rollback_derived_count != 1:
+            raise ValueError("rollback_derived_count must be exactly 1")
 
 
 class _RetentionInspectionBudget:
@@ -1653,6 +1682,13 @@ def retention_plan_payload(plan: RetentionPlan) -> dict[str, object]:
             "minimum_age_ns": plan.policy.minimum_age_ns,
             "snapshot_max_temporary_bytes": plan.policy.snapshot_max_temporary_bytes,
             "snapshot_prepare_timeout_seconds": plan.policy.snapshot_prepare_timeout_seconds,
+            "terminal_log_count": plan.policy.terminal_log_count,
+            "terminal_log_bytes": plan.policy.terminal_log_bytes,
+            "summary_count": plan.policy.summary_count,
+            "summary_bytes": plan.policy.summary_bytes,
+            "receipt_count": plan.policy.receipt_count,
+            "receipt_bytes": plan.policy.receipt_bytes,
+            "rollback_derived_count": plan.policy.rollback_derived_count,
         },
         "snapshot_scope": plan.snapshot_scope,
         "sqlite_read_snapshot_may_touch_shm": (plan.sqlite_read_snapshot_may_touch_shm),

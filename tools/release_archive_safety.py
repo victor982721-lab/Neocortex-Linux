@@ -455,6 +455,11 @@ def scan_archive(
             )
         except (OSError, ZipStructureError) as exc:
             message = str(exc)
+            if "member name is not decodable" in message:
+                # Preserve the established artifact-validation envelope for
+                # malformed filename encodings while retaining the precise
+                # cause on the exception chain.
+                raise ArchiveSafetyError(f"invalid ZIP artifact: {resolved}") from exc
             if " members; limit is " in message:
                 message = f"archive member count limit exceeded: {message}"
             raise ArchiveSafetyError(f"unsafe ZIP structure: {message}") from exc

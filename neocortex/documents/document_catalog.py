@@ -12,6 +12,7 @@ import time
 import zlib
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
+from collections.abc import Mapping
 from pathlib import Path
 
 from neocortex.platform.policy import sqlite_path_collation, stat_birthtime_ns
@@ -39,6 +40,7 @@ from neocortex.persistence.sqlite_immutable import (
 from .document_taxonomy import (
     DocumentClassification,
     DocumentSignals,
+    ScoredLabel,
     TechnicalTaxonomy,
     classify_document,
     document_classifier_signature,
@@ -52,6 +54,7 @@ from .document_catalog_schema import (
     validate_v6_document_catalog_schema,
     validate_v7_document_catalog_schema,
     validate_v8_document_catalog_schema,
+    validate_v9_document_catalog_schema,
     catalog_generation_digest,
     catalog_input_manifest_digest,
 )
@@ -218,6 +221,98 @@ class CatalogPublicationManifest:
     input_policy_signature: str | None
     input_manifest_digest: str | None
     generation_digest: str | None
+
+
+# A correction is intentionally a catalog-owned observation rather than a
+# mutation of a generated classification row.  The row is keyed by corpus
+# root, logical document identity and one classification dimension; its
+# observed fingerprint makes the correction conditional on the revision that
+# the person actually reviewed, and the revocation columns make that loss of
+# validity durable and inspectable.
+CLASSIFICATION_CORRECTION_DIMENSIONS = frozenset(
+    {
+        "primary_kind",
+        "primary_subtype",
+        "primary_authority",
+        "primary_organization",
+        "primary_client",
+        "primary_project",
+        "primary_workstream",
+        "document_role",
+        "taxonomy_status",
+        "confidence",
+        "uncertainty",
+        "suggested_stem",
+        "naming_signature",
+        "catalog_status",
+        "authorities",
+        "organizations",
+        "clients",
+        "projects",
+        "workstreams",
+        "topics",
+        "equipment",
+        "activities",
+        "document_subtypes",
+    }
+)
+_CORRECTION_DIMENSION_ALIASES = {
+    "kind": "primary_kind",
+    "subtype": "primary_subtype",
+    "authority": "primary_authority",
+    "organization": "primary_organization",
+    "client": "primary_client",
+    "project": "primary_project",
+    "workstream": "primary_workstream",
+    "role": "document_role",
+    "taxonomy": "taxonomy_status",
+    "score": "confidence",
+    "name": "suggested_stem",
+}
+CLASSIFICATION_CORRECTION_SCHEMA = "neocortex.document-classification-correction/v1"
+
+
+@dataclass(frozen=True, slots=True)
+class ClassificationCorrection:
+    """One durable, revision-bound human classification correction."""
+
+    correction_id: int
+    root: str
+    logical_identity: str
+    dimension: str
+    value: object
+    observed_fingerprint: str
+    created_ns: int
+    revoked_ns: int | None = None
+    revocation_reason: str | None = None
+
+    @property
+    def active(self) -> bool:
+        return self.revoked_ns is None
+
+    @property
+    def value_json(self) -> str:
+        return json.dumps(
+            self.value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema": CLASSIFICATION_CORRECTION_SCHEMA,
+            "correction_id": self.correction_id,
+            "root": self.root,
+            "logical_identity": self.logical_identity,
+            "dimension": self.dimension,
+            "value": self.value,
+            "observed_fingerprint": self.observed_fingerprint,
+            "created_ns": self.created_ns,
+            "revoked_ns": self.revoked_ns,
+            "revocation_reason": self.revocation_reason,
+            "active": self.active,
+        }
 
 
 CATALOG_INPUT_POLICY = "catalog-source-root/v1"
@@ -413,6 +508,393 @@ def initialize_document_catalog(path: Path) -> None:
                 connection.commit()
 
 
+# region [01b] Durable classification corrections
+
+
+def _canonical_correction_root(root: Path | str) -> str:
+    """Return a stable root key without resolving a missing future root."""
+
+    candidate = Path(os.fspath(root)).expanduser()
+    if not candidate.is_absolute():
+        raise ValueError("classification correction root must be absolute")
+    absolute = Path(os.path.abspath(candidate))
+    try:
+        metadata = absolute.lstat()
+    except OSError:
+        return str(absolute)
+    if not stat.S_ISDIR(metadata.st_mode) or absolute.resolve(strict=True) != absolute:
+        raise ValueError("classification correction root must be a canonical directory")
+    return str(absolute)
+
+
+def _canonical_logical_identity(
+    logical_identity: str | tuple[str, str] | list[str] | None,
+    *,
+    source_kind: str | None = None,
+    file_key: str | None = None,
+) -> str:
+    if logical_identity is None:
+        if not isinstance(source_kind, str) or not source_kind:
+            raise ValueError("classification correction source_kind is required")
+        if not isinstance(file_key, str) or not file_key:
+            raise ValueError("classification correction file_key is required")
+        logical_identity = (source_kind, file_key)
+    if isinstance(logical_identity, (tuple, list)):
+        if len(logical_identity) != 2 or not all(
+            isinstance(item, str) and item for item in logical_identity
+        ):
+            raise ValueError("classification correction logical identity is invalid")
+        value = f"{logical_identity[0]}:{logical_identity[1]}"
+    elif isinstance(logical_identity, str):
+        value = logical_identity.strip()
+    else:
+        raise ValueError("classification correction logical identity is invalid")
+    if not value or len(value.encode("utf-8", "surrogatepass")) > 512:
+        raise ValueError("classification correction logical identity is invalid")
+    return value
+
+
+def _canonical_correction_dimension(dimension: str) -> str:
+    if not isinstance(dimension, str):
+        raise ValueError("classification correction dimension is invalid")
+    normalized = dimension.strip().casefold().replace("-", "_")
+    normalized = _CORRECTION_DIMENSION_ALIASES.get(normalized, normalized)
+    if normalized not in CLASSIFICATION_CORRECTION_DIMENSIONS:
+        raise ValueError(f"unsupported classification correction dimension: {dimension}")
+    return normalized
+
+
+def _canonical_correction_value(dimension: str, value: object) -> str:
+    if dimension in {
+        "confidence",
+    }:
+        if type(value) not in {int, float} or isinstance(value, bool):
+            raise ValueError("classification correction confidence must be numeric")
+        if not 0.0 <= float(value) <= 1.0:
+            raise ValueError("classification correction confidence must be between 0 and 1")
+    elif dimension in CLASSIFICATION_CORRECTION_DIMENSIONS - {
+        "catalog_status",
+        "confidence",
+        "authorities",
+        "organizations",
+        "clients",
+        "projects",
+        "workstreams",
+        "topics",
+        "equipment",
+        "activities",
+        "document_subtypes",
+    }:
+        if value is not None and not isinstance(value, str):
+            raise ValueError(
+                f"classification correction {dimension} must be a string or null"
+            )
+    try:
+        encoded = json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("classification correction value must be bounded JSON") from exc
+    if len(encoded.encode("utf-8", "surrogatepass")) > 32_768:
+        raise ValueError("classification correction value is too large")
+    return encoded
+
+
+def _correction_model(row: sqlite3.Row) -> ClassificationCorrection:
+    try:
+        value = json.loads(str(row["value_json"]))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("classification correction value is invalid") from exc
+    return ClassificationCorrection(
+        correction_id=int(row["correction_id"]),
+        root=str(row["root"]),
+        logical_identity=str(row["logical_identity"]),
+        dimension=str(row["dimension"]),
+        value=value,
+        observed_fingerprint=str(row["observed_fingerprint"]),
+        created_ns=int(row["created_ns"]),
+        revoked_ns=None if row["revoked_ns"] is None else int(row["revoked_ns"]),
+        revocation_reason=(
+            None if row["revocation_reason"] is None else str(row["revocation_reason"])
+        ),
+    )
+
+
+def _catalog_record_value(record: SourceDocument | Mapping[str, object], field: str) -> object:
+    if isinstance(record, SourceDocument):
+        return getattr(record, field)
+    return record[field]
+
+
+def catalog_document_observed_fingerprint(
+    record: SourceDocument | Mapping[str, object],
+) -> str:
+    """Return the revision fingerprint used to guard a correction.
+
+    The path is deliberately excluded: a same-identity move is a location
+    transition, not a new document revision.  Size/mtime/birthtime and the
+    producer/text fingerprints remain part of the observation so a changed
+    source revokes an old correction instead of reusing it silently.
+    """
+
+    payload = {
+        "schema": "neocortex.document-observation/v1",
+        "source_kind": str(_catalog_record_value(record, "source_kind")),
+        "file_key": str(_catalog_record_value(record, "file_key")),
+        "volume_id": str(_catalog_record_value(record, "volume_id")),
+        "file_id": str(_catalog_record_value(record, "file_id")),
+        "size": int(_catalog_record_value(record, "size")),
+        "mtime_ns": int(_catalog_record_value(record, "mtime_ns")),
+        "birthtime_ns": int(_catalog_record_value(record, "birthtime_ns")),
+        "source_status": str(_catalog_record_value(record, "source_status")),
+        "processing_signature": str(_catalog_record_value(record, "processing_signature")),
+        "text_fingerprint": (
+            None
+            if _catalog_record_value(record, "text_fingerprint") is None
+            else str(_catalog_record_value(record, "text_fingerprint"))
+        ),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8", "surrogatepass"
+        )
+    ).hexdigest()
+
+
+# A short text fingerprint is a useful interoperability seam for callers that
+# already hold the producer's bounded content fingerprint.  The canonical
+# catalog fingerprint remains the primary value returned by the public helper.
+def _observation_fingerprint_aliases(record: SourceDocument | Mapping[str, object]) -> frozenset[str]:
+    canonical = catalog_document_observed_fingerprint(record)
+    text_fingerprint = _catalog_record_value(record, "text_fingerprint")
+    processing_signature = _catalog_record_value(record, "processing_signature")
+    aliases = {canonical, f"sha256:{canonical}"}
+    if text_fingerprint:
+        aliases.add(str(text_fingerprint))
+    if processing_signature:
+        aliases.add(str(processing_signature))
+    return frozenset(aliases)
+
+
+def logical_document_identity(
+    source_kind: str | SourceDocument,
+    file_key: str | None = None,
+) -> str:
+    """Build the stable owner-scoped identity used by corrections."""
+
+    if isinstance(source_kind, SourceDocument):
+        return _canonical_logical_identity((source_kind.source_kind, source_kind.file_key))
+    return _canonical_logical_identity(None, source_kind=source_kind, file_key=file_key)
+
+
+def _catalog_correction_table_exists(connection: sqlite3.Connection) -> bool:
+    return (
+        connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='classification_corrections' LIMIT 1"
+        ).fetchone()
+        is not None
+    )
+
+
+def _current_document_for_logical_identity(
+    connection: sqlite3.Connection,
+    logical_identity: str,
+) -> sqlite3.Row | None:
+    prefix, separator, file_key = logical_identity.partition(":")
+    if separator and prefix and file_key:
+        row = connection.execute(
+            "SELECT * FROM documents WHERE source_kind=? AND file_key=? "
+            "ORDER BY active DESC,updated_ns DESC LIMIT 1",
+            (prefix, file_key),
+        ).fetchone()
+        if row is not None:
+            return row
+    # Resource IDs are accepted as a read-only convenience for callers that
+    # obtained identity from a binding.  This fallback never rewrites the
+    # owner-scoped logical key stored by the correction.
+    for row in connection.execute(
+        "SELECT * FROM documents WHERE active=1 ORDER BY source_kind,file_key"
+    ):
+        raw = row["resource_binding_json"]
+        if raw is None:
+            continue
+        try:
+            binding = parse_resource_binding(raw)
+        except ResourceBindingError:
+            continue
+        if binding["resource_ref"].get("resource_id") == logical_identity:
+            return row
+    return None
+
+
+def record_classification_correction(
+    catalog_path: Path,
+    root: Path | str,
+    logical_identity: str | tuple[str, str] | list[str] | None = None,
+    dimension: str = "",
+    value: object = None,
+    observed_fingerprint: str | None = None,
+    *,
+    source_kind: str | None = None,
+    file_key: str | None = None,
+) -> ClassificationCorrection:
+    """Store or replace one revision-bound correction atomically.
+
+    When ``observed_fingerprint`` is omitted, it is derived from the current
+    catalog row.  Supplying it explicitly also permits recording a correction
+    for a source that is currently absent; the next catalog observation will
+    either apply it or persist its revocation.
+    """
+
+    root_key = _canonical_correction_root(root)
+    identity = _canonical_logical_identity(
+        logical_identity,
+        source_kind=source_kind,
+        file_key=file_key,
+    )
+    normalized_dimension = _canonical_correction_dimension(dimension)
+    value_json = _canonical_correction_value(normalized_dimension, value)
+    if observed_fingerprint is not None:
+        if not isinstance(observed_fingerprint, str) or not observed_fingerprint.strip():
+            raise ValueError("classification correction observed fingerprint is required")
+        observed = observed_fingerprint.strip()
+    else:
+        observed = None
+    initialize_document_catalog(catalog_path)
+    with _CATALOG_WRITE_LOCK, document_catalog_database(catalog_path) as connection:
+        if observed is None:
+            row = _current_document_for_logical_identity(connection, identity)
+            if row is None:
+                raise ValueError(
+                    "observed_fingerprint is required when the logical document is absent"
+                )
+            observed = catalog_document_observed_fingerprint(row)
+        now = time.time_ns()
+        connection.execute(
+            """INSERT INTO classification_corrections(
+                root,logical_identity,dimension,value_json,observed_fingerprint,
+                created_ns,revoked_ns,revocation_reason)
+            VALUES(?,?,?,?,?,?,NULL,NULL)
+            ON CONFLICT(root,logical_identity,dimension) DO UPDATE SET
+                value_json=excluded.value_json,
+                observed_fingerprint=excluded.observed_fingerprint,
+                created_ns=excluded.created_ns,
+                revoked_ns=NULL,
+                revocation_reason=NULL""",
+            (
+                root_key,
+                identity,
+                normalized_dimension,
+                value_json,
+                observed,
+                now,
+            ),
+        )
+        connection.commit()
+        row = connection.execute(
+            "SELECT * FROM classification_corrections WHERE root=? "
+            "AND logical_identity=? AND dimension=?",
+            (root_key, identity, normalized_dimension),
+        ).fetchone()
+        if row is None:  # pragma: no cover - SQLite uniqueness invariant
+            raise RuntimeError("classification correction was not persisted")
+        return _correction_model(row)
+
+
+def revoke_classification_correction(
+    catalog_path: Path,
+    root: Path | str,
+    logical_identity: str | tuple[str, str] | list[str],
+    dimension: str,
+    *,
+    reason: str = "revoked_by_user",
+) -> ClassificationCorrection | None:
+    """Revoke one correction without deleting its review evidence."""
+
+    root_key = _canonical_correction_root(root)
+    identity = _canonical_logical_identity(logical_identity)
+    normalized_dimension = _canonical_correction_dimension(dimension)
+    if not isinstance(reason, str) or not reason.strip() or len(reason) > 512:
+        raise ValueError("classification correction revocation reason is invalid")
+    initialize_document_catalog(catalog_path)
+    with _CATALOG_WRITE_LOCK, document_catalog_database(catalog_path) as connection:
+        now = time.time_ns()
+        connection.execute(
+            """UPDATE classification_corrections
+            SET revoked_ns=COALESCE(revoked_ns,?),revocation_reason=?
+            WHERE root=? AND logical_identity=? AND dimension=?""",
+            (now, reason.strip(), root_key, identity, normalized_dimension),
+        )
+        connection.commit()
+        row = connection.execute(
+            "SELECT * FROM classification_corrections WHERE root=? "
+            "AND logical_identity=? AND dimension=?",
+            (root_key, identity, normalized_dimension),
+        ).fetchone()
+        return None if row is None else _correction_model(row)
+
+
+def list_classification_corrections(
+    catalog_path: Path,
+    *,
+    limit: int = 10_000,
+    root: Path | str | None = None,
+    logical_identity: str | tuple[str, str] | list[str] | None = None,
+    dimension: str | None = None,
+    include_revoked: bool = True,
+) -> tuple[ClassificationCorrection, ...]:
+    """Read bounded durable corrections, including revocations when requested."""
+
+    if limit < 1 or limit > 10_000:
+        raise ValueError("limit must be between 1 and 10000")
+    root_key = None if root is None else _canonical_correction_root(root)
+    identity = None if logical_identity is None else _canonical_logical_identity(logical_identity)
+    normalized_dimension = (
+        None if dimension is None else _canonical_correction_dimension(dimension)
+    )
+    if not catalog_path.is_file():
+        return ()
+    with document_catalog_database(catalog_path, readonly=True) as connection:
+        if not _catalog_correction_table_exists(connection):
+            return ()
+        clauses = ["1=1"]
+        parameters: list[object] = []
+        if root_key is not None:
+            clauses.append("root=?")
+            parameters.append(root_key)
+        if identity is not None:
+            clauses.append("logical_identity=?")
+            parameters.append(identity)
+        if normalized_dimension is not None:
+            clauses.append("dimension=?")
+            parameters.append(normalized_dimension)
+        if not include_revoked:
+            clauses.append("revoked_ns IS NULL")
+        rows = connection.execute(
+            "SELECT * FROM classification_corrections WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY root,logical_identity,dimension,correction_id LIMIT ?",
+            (*parameters, limit),
+        ).fetchall()
+        return tuple(_correction_model(row) for row in rows)
+
+
+# Descriptive aliases keep integrations from having to know whether the
+# catalog calls the event a correction or an override.  Both names share the
+# exact same durable contract and do not create another storage path.
+record_document_classification_correction = record_classification_correction
+revoke_document_classification_correction = revoke_classification_correction
+list_document_classification_corrections = list_classification_corrections
+
+
+# endregion [01b]
+
+
 def read_catalog_publication_manifest(
     connection: sqlite3.Connection,
     source_kind: str,
@@ -517,6 +999,8 @@ def _read_catalog_version(path: Path) -> int | None:
             validate_v7_document_catalog_schema(connection)
         elif version == 8:
             validate_v8_document_catalog_schema(connection)
+        elif version == 9:
+            validate_v9_document_catalog_schema(connection)
     return version
 
 
@@ -838,7 +1322,12 @@ def update_document_catalog_source(
                         source_stale += 1
                         continue
                     document = _attach_resource_binding(document)
-                    if _catalog_cache_hit(catalog, document, taxonomy):
+                    if _catalog_cache_hit(
+                        catalog,
+                        document,
+                        taxonomy,
+                        source_root=scoped_root,
+                    ):
                         _stage_cached_document(catalog, build, document)
                         hits += 1
                     else:
@@ -866,6 +1355,7 @@ def update_document_catalog_source(
                                 build,
                                 document,
                                 classification,
+                                source_root=scoped_root,
                             )
                             classified += 1
                             if (
@@ -2085,20 +2575,343 @@ def _source_snapshot_is_current(document: SourceDocument) -> bool:
 # region [04] Cache validation and persistence
 
 
+def _document_binding_anchor(record: SourceDocument | Mapping[str, object]) -> str | None:
+    raw = (
+        record.resource_binding_json
+        if isinstance(record, SourceDocument)
+        else record.get("resource_binding_json")
+    )
+    if raw is not None:
+        try:
+            return parse_resource_binding(raw)["physical_anchor_path"]
+        except ResourceBindingError:
+            return None
+    if isinstance(record, SourceDocument) and record.virtual:
+        return None
+    value = _catalog_record_value(record, "path")
+    return None if value is None else str(value)
+
+
+def _correction_root_contains(root: str, record: SourceDocument | Mapping[str, object]) -> bool:
+    anchor = _document_binding_anchor(record)
+    if anchor is None:
+        return False
+    try:
+        return Path(os.path.abspath(anchor)).is_relative_to(Path(root))
+    except (OSError, ValueError):
+        return False
+
+
+def _applicable_classification_corrections(
+    connection: sqlite3.Connection,
+    record: SourceDocument | Mapping[str, object],
+    *,
+    source_root: Path | None = None,
+) -> tuple[ClassificationCorrection, ...]:
+    """Load valid corrections and persist revocation for changed observations."""
+
+    if not _catalog_correction_table_exists(connection):
+        return ()
+    identity = logical_document_identity(record.source_kind, record.file_key) if isinstance(
+        record, SourceDocument
+    ) else logical_document_identity(
+        str(record["source_kind"]), str(record["file_key"])
+    )
+    rows = connection.execute(
+        "SELECT * FROM classification_corrections WHERE logical_identity=? "
+        "ORDER BY root,dimension,correction_id",
+        (identity,),
+    ).fetchall()
+    expected_root = None if source_root is None else str(Path(os.path.abspath(source_root)))
+    aliases = _observation_fingerprint_aliases(record)
+    valid: list[ClassificationCorrection] = []
+    for row in rows:
+        if row["revoked_ns"] is not None:
+            continue
+        root = str(row["root"])
+        if expected_root is not None:
+            if root != expected_root:
+                continue
+        elif not _correction_root_contains(root, record):
+            continue
+        correction = _correction_model(row)
+        if correction.observed_fingerprint not in aliases:
+            connection.execute(
+                "UPDATE classification_corrections SET revoked_ns=?,"
+                "revocation_reason=? WHERE correction_id=? AND revoked_ns IS NULL",
+                (time.time_ns(), "observed_fingerprint_changed", correction.correction_id),
+            )
+            continue
+        valid.append(correction)
+    return tuple(valid)
+
+
+def _corrected_label_tuple(
+    value: object,
+    *,
+    dimension: str,
+) -> tuple[ScoredLabel, ...]:
+    if value is None:
+        return ()
+    values = value if isinstance(value, list) else [value]
+    labels: list[ScoredLabel] = []
+    for item in values:
+        if isinstance(item, dict):
+            label = item.get("label")
+            if not isinstance(label, str) or not label.strip():
+                continue
+            score = item.get("score", 1.0)
+            evidence = item.get("evidence", ())
+            if type(score) not in {int, float} or isinstance(score, bool):
+                score = 1.0
+            if not isinstance(evidence, (list, tuple)) or not all(
+                isinstance(entry, str) for entry in evidence
+            ):
+                evidence = ()
+            labels.append(ScoredLabel(label.strip(), float(score), tuple(evidence)))
+            continue
+        if isinstance(item, str) and item.strip():
+            labels.append(ScoredLabel(item.strip(), 1.0, (f"human_correction:{dimension}",)))
+    return tuple(labels)
+
+
+def _apply_classification_correction(
+    classification: DocumentClassification,
+    correction: ClassificationCorrection,
+) -> tuple[DocumentClassification, str | None]:
+    """Apply one whitelisted dimension without changing taxonomy ownership."""
+
+    dimension = correction.dimension
+    value = correction.value
+    if dimension == "catalog_status":
+        return classification, None if value is None else str(value)
+    if dimension == "primary_kind":
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("primary_kind correction cannot be empty")
+        updated = replace(classification, primary_kind=value.strip())
+    elif dimension == "primary_subtype":
+        updated = replace(
+            classification,
+            document_subtypes=_corrected_label_tuple(value, dimension=dimension),
+        )
+    elif dimension == "primary_authority":
+        updated = replace(
+            classification,
+            authorities=_corrected_label_tuple(value, dimension=dimension),
+        )
+    elif dimension == "primary_organization":
+        updated = replace(
+            classification,
+            organizations=_corrected_label_tuple(value, dimension=dimension),
+        )
+    elif dimension == "primary_client":
+        updated = replace(classification, clients=_corrected_label_tuple(value, dimension=dimension))
+    elif dimension == "primary_project":
+        updated = replace(
+            classification,
+            projects=_corrected_label_tuple(value, dimension=dimension),
+        )
+    elif dimension == "primary_workstream":
+        updated = replace(
+            classification,
+            workstreams=_corrected_label_tuple(value, dimension=dimension),
+        )
+    elif dimension == "document_role":
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("document_role correction cannot be empty")
+        updated = replace(classification, document_role=value.strip())
+    elif dimension == "taxonomy_status":
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("taxonomy_status correction cannot be empty")
+        updated = replace(classification, taxonomy_status=value.strip())
+    elif dimension == "confidence":
+        updated = replace(classification, confidence=float(value))
+    elif dimension == "uncertainty":
+        updated = replace(classification, uncertainty=str(value))
+    elif dimension == "suggested_stem":
+        updated = replace(classification, suggested_stem="" if value is None else str(value))
+    elif dimension == "naming_signature":
+        updated = replace(classification, naming_signature="" if value is None else str(value))
+    elif dimension in {
+        "authorities",
+        "organizations",
+        "clients",
+        "projects",
+        "workstreams",
+        "topics",
+        "equipment",
+        "activities",
+        "document_subtypes",
+    }:
+        updated = replace(
+            classification,
+            **{dimension: _corrected_label_tuple(value, dimension=dimension)},
+        )
+    else:  # pragma: no cover - dimension validation is the public gate
+        raise ValueError(f"unsupported classification correction dimension: {dimension}")
+    evidence = tuple(
+        dict.fromkeys((*updated.evidence, f"human_correction:{dimension}"))
+    )
+    return replace(updated, evidence=evidence), None
+
+
+def _apply_document_classification_corrections(
+    connection: sqlite3.Connection,
+    document: SourceDocument,
+    classification: DocumentClassification,
+    *,
+    source_root: Path | None = None,
+) -> tuple[DocumentClassification, tuple[dict[str, object], ...], str | None]:
+    corrections = _applicable_classification_corrections(
+        connection,
+        document,
+        source_root=source_root,
+    )
+    updated = classification
+    catalog_status: str | None = None
+    metadata: list[dict[str, object]] = []
+    for correction in corrections:
+        updated, status_override = _apply_classification_correction(updated, correction)
+        if status_override is not None:
+            catalog_status = status_override
+        metadata.append(
+            {
+                "correction_id": correction.correction_id,
+                "dimension": correction.dimension,
+                "observed_fingerprint": correction.observed_fingerprint,
+                "value": correction.value,
+            }
+        )
+    return updated, tuple(metadata), catalog_status
+
+
+def _classification_correction_marker(row: Mapping[str, object]) -> tuple[dict[str, object], ...]:
+    try:
+        payload = json.loads(str(row["classification_json"]))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return ()
+    marker = payload.get("_classification_corrections") if isinstance(payload, dict) else None
+    if not isinstance(marker, list) or not all(isinstance(item, dict) for item in marker):
+        return ()
+    return tuple(item for item in marker if isinstance(item, dict))
+
+
+def _correction_projection_value(row: Mapping[str, object], dimension: str) -> object:
+    if dimension in {
+        "primary_kind",
+        "primary_authority",
+        "primary_organization",
+        "primary_client",
+        "primary_project",
+        "primary_workstream",
+        "confidence",
+        "uncertainty",
+        "catalog_status",
+    }:
+        return row[dimension]
+    if dimension == "primary_subtype":
+        return row["primary_subtype"]
+    try:
+        payload = json.loads(str(row["classification_json"]))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if dimension in {"document_role", "taxonomy_status", "suggested_stem", "naming_signature"}:
+        return payload.get(dimension)
+    if dimension in {
+        "authorities",
+        "organizations",
+        "clients",
+        "projects",
+        "workstreams",
+        "topics",
+        "equipment",
+        "activities",
+        "document_subtypes",
+    }:
+        return payload.get(dimension)
+    return None
+
+
+def _correction_projection_matches(
+    row: Mapping[str, object],
+    corrections: tuple[ClassificationCorrection, ...],
+) -> bool:
+    for correction in corrections:
+        observed = _correction_projection_value(row, correction.dimension)
+        expected = correction.value
+        if correction.dimension in {
+            "authorities",
+            "organizations",
+            "clients",
+            "projects",
+            "workstreams",
+            "topics",
+            "equipment",
+            "activities",
+            "document_subtypes",
+        }:
+            # The stored JSON keeps scored labels/evidence; compare labels only
+            # so a classifier's evidence ordering cannot invalidate a human
+            # correction that is already reflected in the projection.
+            observed_labels = (
+                [item.get("label") for item in observed if isinstance(item, dict)]
+                if isinstance(observed, list)
+                else []
+            )
+            expected_labels = (
+                [item.get("label") for item in expected if isinstance(item, dict)]
+                if isinstance(expected, list)
+                else [expected]
+            )
+            if observed_labels != expected_labels:
+                return False
+        elif observed != expected:
+            try:
+                if float(observed) != float(expected):
+                    return False
+            except (TypeError, ValueError):
+                return False
+    return True
+
+
 def _catalog_cache_hit(
     connection: sqlite3.Connection,
     document: SourceDocument,
     taxonomy: TechnicalTaxonomy,
+    *,
+    source_root: Path | None = None,
 ) -> bool:
     row = connection.execute(
-        """SELECT path,size,mtime_ns,birthtime_ns,source_status,
-        processing_signature,text_fingerprint,classifier_signature,catalog_status,resource_binding_json
-        FROM documents WHERE source_kind=? AND file_key=?""",
+        "SELECT * FROM documents WHERE source_kind=? AND file_key=?",
         (document.source_kind, document.file_key),
     ).fetchone()
     if row is None or str(row["catalog_status"]) == "error":
         return False
     classifier_signature = document_classifier_signature(taxonomy)
+    corrections = _applicable_classification_corrections(
+        connection,
+        document,
+        source_root=source_root,
+    )
+    marker = _classification_correction_marker(row)
+    if corrections:
+        expected_marker = tuple(
+            {
+                "correction_id": item.correction_id,
+                "dimension": item.dimension,
+                "observed_fingerprint": item.observed_fingerprint,
+                "value": item.value,
+            }
+            for item in corrections
+        )
+        if marker != expected_marker or not _correction_projection_matches(row, corrections):
+            return False
+    elif marker:
+        # A manually revoked or fingerprint-stale correction must restore the
+        # classifier output on the next source publication.
+        return False
     return (
         row["resource_binding_json"] == document.resource_binding_json
         and row["resource_binding_json"] is not None
@@ -2159,10 +2972,26 @@ def _store_classification(
     build: CatalogBuild,
     document: SourceDocument,
     classification: DocumentClassification,
+    *,
+    source_root: Path | None = None,
 ) -> None:
     now = time.time_ns()
+    classification, correction_marker, catalog_status_override = (
+        _apply_document_classification_corrections(
+            connection,
+            document,
+            classification,
+            source_root=source_root,
+        )
+    )
+    classification_payload = asdict(classification)
+    if correction_marker:
+        # This marker is only a cache-validation aid.  It is part of the
+        # durable classification evidence so a manual revocation or source
+        # revision cannot leave a corrected projection looking cache-valid.
+        classification_payload["_classification_corrections"] = list(correction_marker)
     serialized = json.dumps(
-        asdict(classification),
+        classification_payload,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -2220,17 +3049,27 @@ def _store_classification(
     # existing ``review`` contract so Knowledge and organization readers
     # abstain without introducing a second status vocabulary in the schema.
     catalog_status = (
-        "review"
-        if (
-            classification.uncertainty == "alta"
-            or document.coverage != "complete"
-            # Code is a distinct content role, not a document-taxonomy
-            # classification.  Keep the strong role evidence while retaining
-            # the catalog's review gate for organization decisions.
-            or classification.document_role == "codigo"
+        catalog_status_override
+        if catalog_status_override is not None
+        else (
+            "review"
+            if (
+                classification.uncertainty == "alta"
+                or document.coverage != "complete"
+                # Code is a distinct content role, not a document-taxonomy
+                # classification.  Keep the strong role evidence while retaining
+                # the catalog's review gate for organization decisions.
+                or classification.document_role == "codigo"
+            )
+            else "classified"
         )
-        else "classified"
     )
+    if catalog_status not in {"classified", "review", "error"}:
+        raise ValueError("classification correction catalog_status is unsupported")
+    if correction_marker and document.coverage != "complete":
+        # Human corrections may explain a partial source but cannot promote an
+        # incomplete producer observation into a complete catalog row.
+        catalog_status = "review"
     connection.execute(
         """INSERT INTO catalog_generation_documents(
         generation_id,source_kind,file_key,path,volume_id,file_id,size,mtime_ns,birthtime_ns,

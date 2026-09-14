@@ -94,7 +94,7 @@ def test_linux_policy_uses_xdg_roots_and_safe_documents_file(tmp_path: Path) -> 
     assert policy.user_alias == home / ".local" / "bin" / "Neocortex"
     assert policy.inventory_backend == "portable-full-scan"
     assert policy.path_collation == "BINARY"
-    assert policy.mutation_available is False
+    assert policy.mutation_available is True
 
 
 def test_windows_policy_preserves_profile_and_localappdata_contract(tmp_path: Path) -> None:
@@ -190,9 +190,9 @@ def test_linux_inventory_preserves_case_and_accents_and_skips_symlinks(tmp_path:
     assert scan.skipped_links == 1
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Linux mutation abstention contract")
+@pytest.mark.skipif(os.name == "nt", reason="Linux mutation capability contract")
 @pytest.mark.parametrize("flag", ("--apply", "--organization-apply"))
-def test_linux_mutation_abstains_with_exit_two_before_state(
+def test_linux_mutation_capability_is_allowed_before_state(
     tmp_path: Path,
     flag: str,
     capsys: pytest.CaptureFixture[str],
@@ -203,10 +203,13 @@ def test_linux_mutation_abstains_with_exit_two_before_state(
     arguments = ["--root", str(root), "--state-directory", str(state), "--route", "none", flag]
     if flag == "--organization-apply":
         arguments.extend(("--organization-root", str(root / "organized")))
-    with pytest.raises(SystemExit) as raised:
-        main(arguments)
-    assert raised.value.code == 2
-    assert LINUX_MUTATION_REASON in capsys.readouterr().err
+    # The live Linux policy now exposes the real backend capability.  This
+    # validator check must remain side-effect free; execution uses fixtures.
+    from neocortex.api.cli.cli_parser import build_parser
+    from neocortex.api.cli.cli_validation import validate_arguments
+
+    validate_arguments(build_parser().parse_args(arguments))
+    assert capsys.readouterr().err == ""
     assert not state.exists()
 
 

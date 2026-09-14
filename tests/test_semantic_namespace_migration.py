@@ -28,7 +28,7 @@ MODULES = tuple(
 
 
 def test_semantic_modules_are_owned_by_the_canonical_tree() -> None:
-    assert len(MODULES) == 46
+    assert len(MODULES) == 47
     assert {
         "semantic_query_evidence",
         "semantic_query_variants",

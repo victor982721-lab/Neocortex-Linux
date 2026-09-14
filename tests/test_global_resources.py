@@ -106,10 +106,12 @@ class GlobalResourceCoordinatorTests(unittest.TestCase):
             )
 
         summary = coordinator.summary()
-        self.assertEqual(summary.memory_budget_bytes, 5 * gib)
+        # Automatic capacity is derived from the effective host rather than
+        # being capped at the historical 5 GiB preset.
+        self.assertEqual(summary.memory_budget_bytes, 6 * gib)
         self.assertEqual(summary.min_free_memory_bytes, (16 * gib) // 6)
         self.assertEqual(summary.min_free_commit_bytes, (16 * gib) // 6)
-        self.assertEqual(summary.cpu_slots, 8)
+        self.assertEqual(summary.cpu_slots, 15)
 
     def test_live_scale_budget_can_admit_four_bounded_pdf_workers(self):
         gib = 1024 * 1024 * 1024

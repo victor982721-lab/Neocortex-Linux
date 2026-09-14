@@ -60,7 +60,7 @@ def test_registry_routes_extracted_handlers_to_family_modules() -> None:
         if operation.destination in {"audio_search", "audio_doctor"}
     )
 
-    assert len(semantic) == 8
+    assert len(semantic) == 9
     assert "semantic_image_calibrate" in {operation.destination for operation in semantic}
     assert {operation.module_name for operation in semantic} == {".cli_semantic"}
     assert len(audio) == 2

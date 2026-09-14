@@ -21,10 +21,36 @@ from neocortex.persistence.framework_authorization_schema import (
     authorization_extension_present,
     validate_authorization_extension,
 )
+from neocortex.persistence.framework_content_admission import (
+    CONTENT_ADMISSION_EXTENSION_OBJECTS,
+    CONTENT_ADMISSION_EXTENSION_TABLES,
+    content_admission_extension_present,
+    validate_content_admission_extension,
+)
 
 
 SCHEMA_VERSION = 22
 _PATH_COLLATION = sqlite_path_collation()
+
+
+def _allowed_framework_extension_tables(connection: sqlite3.Connection) -> tuple[str, ...]:
+    """Return optional extension tables without weakening the core contract."""
+
+    tables: list[str] = []
+    if authorization_extension_present(connection):
+        tables.append("curation_authorization_grants")
+    if content_admission_extension_present(connection):
+        tables.extend(sorted(CONTENT_ADMISSION_EXTENSION_TABLES))
+    return tuple(tables)
+
+
+def _allowed_framework_extension_objects(connection: sqlite3.Connection) -> tuple[str, ...]:
+    objects: list[str] = []
+    if authorization_extension_present(connection):
+        objects.extend(sorted(AUTHORIZATION_EXTENSION_OBJECTS))
+    if content_admission_extension_present(connection):
+        objects.extend(sorted(CONTENT_ADMISSION_EXTENSION_OBJECTS))
+    return tuple(objects)
 
 
 class _FrameworkSchemaMigrationError(RuntimeError):
@@ -2523,18 +2549,11 @@ def validate_framework_schema_v22(connection: sqlite3.Connection) -> None:
             _exact_schema_contract(),
             label="framework v22",
             exact=True,
-            allowed_extra_tables=(
-                ("curation_authorization_grants",)
-                if authorization_extension_present(connection)
-                else ()
-            ),
-            allowed_extra_objects=(
-                AUTHORIZATION_EXTENSION_OBJECTS
-                if authorization_extension_present(connection)
-                else ()
-            ),
+            allowed_extra_tables=_allowed_framework_extension_tables(connection),
+            allowed_extra_objects=_allowed_framework_extension_objects(connection),
         )
         validate_authorization_extension(connection)
+        validate_content_admission_extension(connection)
     except SQLiteSchemaContractError as exc:
         raise RuntimeError(f"framework v22 schema contract validation failed: {exc}") from exc
 
@@ -2665,18 +2684,11 @@ def _validate_schema(connection: sqlite3.Connection) -> None:
             _exact_schema_contract(),
             label="framework",
             exact=True,
-            allowed_extra_tables=(
-                ("curation_authorization_grants",)
-                if authorization_extension_present(connection)
-                else ()
-            ),
-            allowed_extra_objects=(
-                AUTHORIZATION_EXTENSION_OBJECTS
-                if authorization_extension_present(connection)
-                else ()
-            ),
+            allowed_extra_tables=_allowed_framework_extension_tables(connection),
+            allowed_extra_objects=_allowed_framework_extension_objects(connection),
         )
         validate_authorization_extension(connection)
+        validate_content_admission_extension(connection)
     except SQLiteSchemaContractError as exc:
         raise RuntimeError(f"framework schema contract validation failed: {exc}") from exc
 
