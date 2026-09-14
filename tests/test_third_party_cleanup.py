@@ -179,3 +179,38 @@ def test_applied_third_party_cleanup_precedes_route_candidate_publication(
     assert not vendor_source.exists()
     assert own_source.exists()
     assert str(vendor_source) not in route_candidate_paths
+
+
+def test_legal_metadata_survives_dedupe_and_empty_file_actions(tmp_path: Path) -> None:
+    root = tmp_path / "corpus"
+    state_root = tmp_path / "state"
+    root.mkdir()
+    state_root.mkdir()
+    keeper = root / "keeper.txt"
+    keeper.write_text("same attribution\n", encoding="utf-8")
+    duplicate_notice = root / "vendor" / "NOTICE.md"
+    duplicate_notice.parent.mkdir()
+    duplicate_notice.write_text("same attribution\n", encoding="utf-8")
+    empty_license = root / "vendor" / "LICENSE-APACHE"
+    empty_license.touch()
+
+    backend = _FixtureBatchBackend()
+    with DedupIndex(state_root / "dedup.sqlite3") as index:
+        scan = index.scan(root)
+        plan = DedupPlanner(index).plan(scan.scan_id)
+        with FrameworkState(state_root / "framework.sqlite3") as state:
+            run_id = begin_signed_normal_run(state, root)
+            runner = FrameworkActions(
+                index,
+                state,
+                run_id,
+                scan.scan_id,
+                apply=True,
+                trash_backend=backend,  # type: ignore[arg-type]
+                third_party_policy=CodeThirdPartyPolicy(action="trash"),
+            )
+            summary = runner.execute(plan, cleanup_empty_directories=False)
+
+    assert summary.errors == 0
+    assert duplicate_notice.exists()
+    assert empty_license.exists()

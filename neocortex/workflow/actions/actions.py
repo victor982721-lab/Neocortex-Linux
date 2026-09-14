@@ -1119,20 +1119,26 @@ class FrameworkActions:
             )
             if not page:
                 break
+            protected = 0
             for snapshot in page:
+                if _is_third_party_metadata_name(snapshot.path):
+                    protected += 1
+                    continue
                 pending.append((snapshot.path, "size=0;policy=trash-all-empty", snapshot))
             after_path = page[-1].path
-            applied, failed, protected = self._apply_trash_batch(
-                "trash_empty_file",
-                tuple((path, evidence) for path, evidence, _snapshot in pending),
-                expected_snapshots=tuple(snapshot for _path, _evidence, snapshot in pending),
-            )
-            completed += len(pending)
+            applied = failed = batch_protected = 0
+            if pending:
+                applied, failed, batch_protected = self._apply_trash_batch(
+                    "trash_empty_file",
+                    tuple((path, evidence) for path, evidence, _snapshot in pending),
+                    expected_snapshots=tuple(snapshot for _path, _evidence, snapshot in pending),
+                )
+            completed += len(pending) + protected
             pending.clear()
             summary = replace(
                 summary,
                 duplicates_trashed=summary.duplicates_trashed + applied,
-                duplicate_skips=summary.duplicate_skips + failed + protected,
+                duplicate_skips=summary.duplicate_skips + failed + batch_protected + protected,
                 errors=summary.errors + failed,
             )
             emit_progress(
@@ -1245,7 +1251,11 @@ class FrameworkActions:
 
         def fail_candidate(path: str, evidence: str, detail: str) -> None:
             nonlocal completed, summary
-            protected_reason = _protected_path_reason(path)
+            protected_reason = (
+                "legal attribution metadata"
+                if _is_third_party_metadata_name(path)
+                else _protected_path_reason(path)
+            )
             if protected_reason is None:
                 protected_reason = self._protected_content_skip_reason(path)
             if protected_reason is not None:
@@ -1282,6 +1292,13 @@ class FrameworkActions:
             )
             keep_now, keep_error = self._validated_duplicate_keeper(group.keep)
             for redundant in group.redundant:
+                if _is_third_party_metadata_name(redundant.path):
+                    fail_candidate(
+                        redundant.path,
+                        evidence,
+                        "legal attribution metadata is preserved",
+                    )
+                    continue
                 if keep_error is not None:
                     fail_candidate(redundant.path, evidence, keep_error)
                     continue
