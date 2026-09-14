@@ -118,6 +118,23 @@ durable. El gate se consulta antes de admitir trabajo y antes de cada transició
 terminal; el replay consume sólo el remanente del run origen y nunca abre una
 ventana de presupuesto nueva.
 
+### Scratch registrado (tranche A+B)
+
+El control-plane `maintenance --scope owned-temp|audit-work` administra sólo
+workspaces privados creados por NeoCortex bajo
+`<state_directory>/scratch/<scope>`. Cada workspace tiene `manifest.json` con
+digest, owner, run, identidad física y estado `active`, `committing`,
+`completed`, `failed-retained` o `recovery_required`. La consulta no crea la
+raíz ausente; `--apply` revalida el root, la identidad, los permisos y el
+contenido antes de retirar únicamente un `completed` elegible. Vecinos sin
+manifest, enlaces, drift o estados no terminales quedan intactos.
+
+El servicio vive en `neocortex.runtime.scratch` y no sustituye los owners de
+SQLite, KIO, staging de releases ni corpus. Semantic puede optar por este
+servicio al recibir un `scratch_directory`; si no lo recibe conserva su
+compatibilidad temporal aislada. El `--all` inicial registra la observación
+bounded de `owned-temp` en el lifecycle y no escanea `/tmp`.
+
 Cada ruta declara una capacidad de lifecycle: `phase_resume` conserva progreso
 por fase, `safe_replay` reejecuta únicamente con entradas/publicaciones
 durables e idempotencia, y `not_resumable` se rechaza explícitamente. La ruta

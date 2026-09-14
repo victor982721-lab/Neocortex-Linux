@@ -4,6 +4,21 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-14 — Scratch registrado y mantenimiento acotado (fuente)
+
+- Se añade el servicio `neocortex.runtime.scratch` para crear workspaces
+  privados con manifest versionado, digest, identidad física y estados de
+  lifecycle; el cierre normal retira sólo scratch propio y los fallos quedan
+  retenidos para recuperación.
+- La CLI `maintenance --scope owned-temp|audit-work` planifica sin crear raíces
+  ausentes y aplica únicamente registros `completed` bajo el
+  `state_directory`; no escanea `/tmp`, no usa KIO para scratch interno y no
+  toca corpus, `.codex`, cachés externas, releases ni SQLite productiva.
+- `--all` publica una observación bounded de ese scope al finalizar el run, sin
+  convertir una categoría opcional en un limpiador global. Semantic usa el
+  contrato registrado cuando recibe un scratch explícito; las demás rutas y la
+  instalación conservan sus gates independientes.
+
 ## 2026-09-14 — Alcance seguro y procedencia de Code
 
 - `--all` deja de forzar `broad`: Code usa `projects` y sólo analiza raíces

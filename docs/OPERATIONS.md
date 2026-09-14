@@ -344,6 +344,37 @@ siguen siendo por página; concatenar páginas no equivale a top-K global.
 
 ## Mantenimiento de estado
 
+### Scratch registrado (tranche A+B)
+
+**IMPLEMENTADO EN FUENTE / focales verificados; instalación pendiente:** este flujo sólo revisa
+los workspaces privados registrados bajo
+`<state_directory>/scratch/<scope>`. Los scopes admitidos son `owned-temp` y
+`audit-work`; no se debe proporcionar una raíz de corpus para cambiar el
+alcance y no se inspecciona `/tmp`.
+
+La consulta no crea la raíz ausente y no tiene efecto físico. Ejecuta primero
+el plan bounded:
+
+```bash
+Neocortex maintenance --scope owned-temp --maintenance-json
+Neocortex maintenance --scope audit-work --maintenance-json
+```
+
+Sólo aplica después de revisar la salida y confirmar que los candidatos son
+scratch propio, registrado y marcado `completed`:
+
+```bash
+Neocortex maintenance --scope owned-temp --apply --maintenance-json
+```
+
+El `--apply` de este comando retira únicamente esos registros y no usa KIO
+para scratch interno. No incluye estado derivado fuera de `scratch/`,
+`host/.cache`, `.codex`, corpus, releases ni SQLite productiva. La integración
+de `--all --apply` ya concilia esta área privada en la fuente verificada; la
+release instalada requiere su propio gate de promoción y verificación. Un
+`--all` sin `--apply` no cruza ninguna frontera física, aunque puede escribir
+estado derivado del lifecycle.
+
 ### Preferencias para conservar duplicados
 
 Sobre una muestra autorizada, las preferencias se aplican a las identidades

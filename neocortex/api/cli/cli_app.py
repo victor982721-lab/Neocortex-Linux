@@ -244,6 +244,12 @@ def _dispatch_dedupe_service(args: argparse.Namespace) -> int:
 def dispatch_direct(args: argparse.Namespace) -> int | None:
     """Run a selected direct operation, or return ``None`` for a full run."""
 
+    # Maintenance is a control-plane leaf, not a Framework route.  Keep its
+    # owner import lazy and dispatch it before any integrated-run decision.
+    if getattr(args, "command", None) == "maintenance":
+        from .cli_maintenance import run_maintenance
+
+        return run_maintenance(args)
     if getattr(args, "dedupe", False):
         return _dispatch_dedupe_service(args)
     # Configuration doctor is a parser-owned leaf rather than a product
@@ -610,7 +616,9 @@ def main(arguments: Sequence[str] | None = None) -> int:
         # An empty invocation is an ambiguous no-op, not permission to start
         # an inventory run.  Keep this fast path before parser construction so
         # it cannot create state or import route engines.
-        print("Uso: Neocortex --all, --dedupe, --route ROUTES o una operación directa")
+        print(
+            "Uso: Neocortex --all, --dedupe, --route ROUTES, maintenance o una operación directa"
+        )
         print("Use `Neocortex --help` para ver las opciones disponibles.")
         return 0
     if forwarded == ["--version"]:
@@ -651,7 +659,9 @@ def main(arguments: Sequence[str] | None = None) -> int:
     ):
         # Options such as --root or --state-directory alone do not select an
         # operation.  Never turn them into an implicit inventory write.
-        print("Uso: Neocortex --all, --dedupe, --route ROUTES o una operación directa")
+        print(
+            "Uso: Neocortex --all, --dedupe, --route ROUTES, maintenance o una operación directa"
+        )
         print("Use `Neocortex --help` para ver las opciones disponibles.")
         return 0
 

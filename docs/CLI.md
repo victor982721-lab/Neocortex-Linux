@@ -177,6 +177,29 @@ inventario conserva los archivos independientes y devuelve salida 2 con
 `unsupported_path_encoding`, sin traceback ni publicación completa. No
 renombra los originales ni sustituye caracteres para inventar otra ruta.
 
+## Mantenimiento registrado de scratch
+
+**IMPLEMENTADO EN FUENTE / focales verificados; instalación pendiente:** `maintenance` es una
+hoja de control local para el scratch registrado de NeoCortex. El alcance se
+resuelve exclusivamente bajo `<state_directory>/scratch/`:
+`owned-temp` y `audit-work`; no usa `--root` para redirigirlo ni escanea
+`/tmp`. La consulta predeterminada sólo genera un plan bounded, no crea la
+raíz ausente ni produce un efecto físico.
+
+```bash
+Neocortex maintenance --scope owned-temp --maintenance-json
+Neocortex maintenance --scope audit-work --maintenance-json
+Neocortex maintenance --scope owned-temp --apply --maintenance-json
+```
+
+`--apply` sólo puede retirar scratch propio, registrado y en estado
+`completed`; el scratch interno no pasa por KIO. El estado derivado fuera de
+`scratch/`, `host/.cache`, `.codex`, el corpus, las releases y las SQLite
+productivas quedan fuera de este comando. `--all --apply` puede conciliar
+también esta área privada únicamente después de una integración verificada;
+no amplía esos límites. `--all` sin `--apply` no produce efecto físico,
+aunque el lifecycle puede escribir estado derivado.
+
 ## Efectos
 
 | Clase | Ejemplos | Efecto |
@@ -189,6 +212,7 @@ renombra los originales ni sustituye caracteres para inventar otra ruta.
 | Estado destructivo | `state reset`, `databases restore`, `databases purge` con `--apply` | Requiere confirmación, manifest/plan y locks |
 | Aplicación grant-bound | `curate apply` | Requiere confirmación exacta y conserva su autoridad independiente |
 | Conciliación | `curate reconcile` | Registra evidencia bounded; no reintenta ni modifica corpus |
+| Mantenimiento de scratch registrado | `maintenance --scope owned-temp|audit-work` | Plan limitado a `state_directory/scratch`; `--apply` sólo retira scratch propio `completed`, sin KIO |
 | Dedupe/corpus Linux | `--dedupe`, `--all --apply` | Backend KIO receipt-bound, igualdad exacta, no-replace y raíz delimitada |
 
 ## Consultas cotidianas

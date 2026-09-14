@@ -132,6 +132,7 @@ Neocortex --pdf-diagnostics 20 --diagnostics-json
 Neocortex --text-errors 20 --diagnostics-json
 Neocortex --archive-issues 20 --diagnostics-json
 Neocortex --root "$Root" --content-diagnostics 20 --diagnostics-owner all --diagnostics-json
+Neocortex maintenance --scope owned-temp --maintenance-json
 ```
 
 Las preguntas explícitas sobre estado del corpus, por ejemplo
@@ -140,6 +141,12 @@ publicados por sus owners en lugar de tratar una conversación que menciona un
 error como si fuera el archivo afectado. El MCP equivalente es
 `operational_query`; ambos conservan snapshot, cursor y el límite advisory
 read-only.
+
+`maintenance --scope owned-temp|audit-work` consulta únicamente el scratch
+registrado bajo `state_directory/scratch`; no crea la raíz ausente ni escanea
+`/tmp`. Su forma `--apply` sólo retira workspaces propios `completed` y se
+documenta separadamente, sin tocar corpus, cachés externas, releases ni SQLite
+productiva.
 
 `ask`, `ask --json`, `--knowledge-context` y la herramienta MCP `context` usan
 el contexto compacto v2: fuentes sin repetición, fragmentos citables y cobertura

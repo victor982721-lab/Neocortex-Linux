@@ -1,0 +1,97 @@
+"""CLI contracts for the registered scratch maintenance leaf."""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+import pytest
+
+from neocortex.api.cli.cli_app import main
+from neocortex.runtime.scratch import ScratchManager
+
+
+def _invoke(args: list[str], capsys) -> tuple[int, dict[str, object]]:
+    exit_code = main(args)
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    return exit_code, json.loads(captured.out)
+
+
+def test_missing_root_is_read_only_and_not_created(tmp_path: Path, capsys) -> None:
+    state = tmp_path / "state"
+    exit_code, payload = _invoke(
+        [
+            "maintenance",
+            "--scope",
+            "owned-temp",
+            "--maintenance-json",
+            "--state-directory",
+            str(state),
+        ],
+        capsys,
+    )
+    assert exit_code == 0
+    assert payload["schema"] == "neocortex.maintenance/v1"
+    assert payload["status"] == "planned"
+    assert payload["planned"] == 0
+    assert payload["read_only"] is True
+    assert not state.exists()
+
+
+def test_apply_retires_only_registered_completed_workspace(tmp_path: Path, capsys) -> None:
+    state = tmp_path / "state"
+    root = state / "scratch" / "owned-temp"
+    manager = ScratchManager(root, owner="neocortex-framework", create_root=True)
+    workspace = manager.create(retain_on_success=True)
+    payload_path = workspace.path / "payload"
+    payload_path.write_bytes(b"fixture")
+    os.chmod(payload_path, 0o600)
+    workspace.complete(retain=True)
+    assert workspace.path.exists()
+
+    exit_code, payload = _invoke(
+        [
+            "maintenance",
+            "--scope",
+            "owned-temp",
+            "--apply",
+            "--maintenance-json",
+            "--state-directory",
+            str(state),
+        ],
+        capsys,
+    )
+    assert exit_code == 0
+    assert payload["status"] == "applied"
+    assert payload["planned"] == 1
+    assert payload["applied"] == 1
+    assert not workspace.path.exists()
+
+
+def test_maintenance_scope_is_required_and_state_derived_is_not_supported() -> None:
+    with pytest.raises(SystemExit):
+        main(["maintenance"])
+    with pytest.raises(SystemExit):
+        main(["maintenance", "--scope", "state-derived"])
+
+
+def test_maintenance_does_not_enter_framework_routes(tmp_path: Path, monkeypatch, capsys) -> None:
+    def fail_framework(*_args, **_kwargs):
+        raise AssertionError("maintenance must not run Framework routes")
+
+    monkeypatch.setattr("neocortex.api.cli.cli_app.run_framework", fail_framework)
+    exit_code, payload = _invoke(
+        [
+            "maintenance",
+            "--scope",
+            "audit-work",
+            "--maintenance-json",
+            "--state-directory",
+            str(tmp_path / "state"),
+        ],
+        capsys,
+    )
+    assert exit_code == 0
+    assert payload["operation"] == "maintenance"

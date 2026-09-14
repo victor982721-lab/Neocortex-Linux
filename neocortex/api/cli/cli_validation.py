@@ -45,6 +45,8 @@ from neocortex.runtime.orchestration.route_selection import (
     normalize_route_selection,
 )
 
+_MAINTENANCE_SCOPES = ("owned-temp", "audit-work")
+
 # region [01] Stable presets
 
 ALL_PRESET = {
@@ -91,6 +93,63 @@ def apply_all_preset(args: argparse.Namespace) -> None:
 
 
 # endregion [01]
+
+
+def _maintenance_requested(args: argparse.Namespace) -> bool:
+    """Identify the maintenance leaf before validating unrelated flat flags."""
+
+    explicit = set(getattr(args, "_explicit_options", ()))
+    if getattr(args, "command", None) == "maintenance":
+        return True
+    if "maintenance_json" in explicit:
+        return True
+    # ``--scope`` is shared with Knowledge for compatibility.  Only the two
+    # maintenance values make it a maintenance request without the command;
+    # personal/framework/all continue through the established Knowledge path.
+    return (
+        "knowledge_scope" in explicit
+        and getattr(args, "scope", None) in _MAINTENANCE_SCOPES
+    )
+
+
+def _validate_maintenance_operation(args: argparse.Namespace) -> bool:
+    """Validate the direct maintenance leaf and its mutually-exclusive flags."""
+
+    if not _maintenance_requested(args):
+        return False
+
+    command = getattr(args, "command", None)
+    explicit = set(getattr(args, "_explicit_options", ()))
+    selected = command == "maintenance"
+    scope = getattr(args, "scope", getattr(args, "knowledge_scope", None))
+    if not selected:
+        if "maintenance_json" in explicit:
+            raise SystemExit("--maintenance-json requires the maintenance command")
+        raise SystemExit("maintenance --scope requires the maintenance command")
+    if "knowledge_scope" not in explicit:
+        raise SystemExit("maintenance requires --scope")
+    if scope not in _MAINTENANCE_SCOPES:
+        raise SystemExit(
+            "maintenance --scope must be one of " + ", ".join(_MAINTENANCE_SCOPES)
+        )
+
+    if getattr(args, "all", False):
+        raise SystemExit("maintenance cannot be combined with --all")
+    if normalize_route_selection(getattr(args, "route", "none"), BUILTIN_ROUTE_ORDER):
+        raise SystemExit("maintenance cannot be combined with --route")
+    if (
+        getattr(args, "route_only", False)
+        or getattr(args, "resume_run", None) is not None
+        or getattr(args, "candidate_run", None) is not None
+    ):
+        raise SystemExit("maintenance cannot be combined with route-only/resume options")
+    if getattr(args, "dedupe", False) or "dedupe_json" in explicit:
+        raise SystemExit("maintenance cannot be combined with --dedupe")
+    if selected_direct_operations(args):
+        raise SystemExit("maintenance cannot be combined with direct query/doctor options")
+    # ``--json`` is accepted as the flat CLI's conventional spelling and is
+    # rendered by the maintenance adapter exactly like --maintenance-json.
+    return True
 
 
 # region [02] Domain validators
@@ -803,6 +862,9 @@ def _validate_route_only(args: argparse.Namespace) -> None:
 
 
 def validate_arguments(args: argparse.Namespace) -> None:
+    if _validate_maintenance_operation(args):
+        _validate_linux_mutation_capability(args)
+        return
     apply_all_preset(args)
     validate_dedup_keeper_arguments(args)
     if args.show_groups < 0:

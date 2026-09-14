@@ -7,8 +7,10 @@
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
+from contextlib import contextmanager
 import shutil
 import sqlite3
+import tempfile
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,10 +38,127 @@ REUSE_LOOKUP_BATCH_SIZE = 100
 SCRATCH_CACHE_KIB = 16 * 1024
 DEFAULT_MAX_SCRATCH_BYTES = 512 * 1024 * 1024
 MIN_MAX_SCRATCH_BYTES = 64 * 1024
+REGISTERED_SCRATCH_OWNER = "semantic-planner"
 
 _CONTENT_COLUMNS = (
     "model_signature,role,modality,content_xxh3_128,content_bytes,content_xxh3_64_guard"
 )
+
+
+def _scratch_failure_reason(error: BaseException) -> str:
+    """Build a bounded reason suitable for a registered workspace manifest."""
+
+    reason = f"{type(error).__name__}: {error}".replace("\x00", "\\0")
+    if not reason:
+        reason = "semantic planner failed"
+    # ScratchWorkspace validates this bound.  Truncating by encoded bytes
+    # keeps a hostile exception string from replacing the primary failure.
+    encoded = reason.encode("utf-8")
+    if len(encoded) <= 16 * 1024:
+        return reason
+    return encoded[: 16 * 1024 - 3].decode("utf-8", "ignore") + "..."
+
+
+def _fail_registered_workspace(workspace: object, error: BaseException) -> None:
+    """Transition a created workspace to retained failure without masking it."""
+
+    fail = getattr(workspace, "fail", None)
+    if not callable(fail):
+        raise TypeError("registered scratch workspace has no fail() transition")
+    fail(_scratch_failure_reason(error))
+
+
+@contextmanager
+def _registered_scratch_workspace(
+    parent: Path,
+    *,
+    run_id: int | str | None = None,
+    metadata: Mapping[str, object] | None = None,
+) -> Iterator[Path]:
+    """Yield one runtime-registered Semantic workspace.
+
+    The runtime service owns manifest creation and lifecycle state.  This
+    adapter intentionally owns no cleanup fallback: an exception is retained
+    through ``ScratchWorkspace.fail`` and a successful plan explicitly calls
+    ``complete`` so the service can remove the workspace after revalidation.
+    The lazy import keeps read-only planning without ``scratch_directory``
+    independent from the optional runtime scratch service.
+    """
+
+    try:
+        from neocortex.runtime import scratch as _runtime_scratch
+    except (ImportError, ModuleNotFoundError) as error:
+        raise SemanticPlanBlocked(
+            "registered Semantic scratch service is unavailable"
+        ) from error
+
+    manager_type = getattr(_runtime_scratch, "ScratchManager", None)
+    if not callable(manager_type):
+        raise SemanticPlanBlocked(
+            "registered Semantic scratch service has no ScratchManager"
+        )
+    try:
+        manager = manager_type(
+            parent,
+            owner=REGISTERED_SCRATCH_OWNER,
+            create_root=True,
+        )
+    except BaseException as error:
+        # Before registered scratch was introduced, callers commonly supplied
+        # an ordinary 0775 pytest directory.  That directory is not a valid
+        # private runtime root, so retain the old, safe child-only behavior as
+        # a compatibility adapter rather than weakening ScratchManager's
+        # 0700 contract.  Other root failures (symlink, owner drift, etc.)
+        # remain fail-closed and are never downgraded.
+        compatibility_mode_error = (
+            type(error).__name__ == "ScratchSecurityError"
+            and "scratch root must be private" in str(error)
+        ) or str(error) == "scratch root must have mode 0700"
+        if not compatibility_mode_error:
+            raise
+        with tempfile.TemporaryDirectory(
+            prefix="neocortex-semantic-plan-",
+            dir=str(parent),
+        ) as temporary:
+            yield Path(temporary)
+        return
+    create = getattr(manager, "create", None)
+    if not callable(create):
+        # Keep the adapter compatible with the staged service spelling while
+        # preserving the same owner/metadata/lifecycle contract.
+        create = getattr(manager, "create_workspace", None)
+    if not callable(create):
+        raise SemanticPlanBlocked(
+            "registered Semantic scratch service has no workspace creator"
+        )
+    workspace = create(
+        run_id=run_id,
+        retain_on_success=False,
+        metadata={} if metadata is None else dict(metadata),
+    )
+    path = getattr(workspace, "path", None)
+    if not isinstance(path, Path):
+        raise SemanticPlanBlocked(
+            "registered Semantic scratch workspace has no Path path"
+        )
+
+    try:
+        yield path
+    except BaseException as error:
+        failure = error
+        _cleanup_preserving_primary(
+            lambda: _fail_registered_workspace(workspace, failure),
+            failure,
+            label="semantic planner registered scratch failure retention",
+        )
+        raise
+    else:
+        complete = getattr(workspace, "complete", None)
+        if not callable(complete):
+            raise SemanticPlanBlocked(
+                "registered Semantic scratch workspace has no complete() transition"
+            )
+        complete()
 
 
 class _ScratchWorkload(Protocol):
@@ -339,6 +458,11 @@ def _create_scratch_database(
         timeout=60.0,
     )
     try:
+        # Registered scratch workspaces require every payload file to remain
+        # private (0600) before their owner can retire the workspace.  SQLite
+        # otherwise follows the process umask and commonly creates this file
+        # as 0644, which would make an otherwise successful plan recoverable.
+        path.chmod(0o600)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout=60000")
         connection.execute("PRAGMA page_size=4096")

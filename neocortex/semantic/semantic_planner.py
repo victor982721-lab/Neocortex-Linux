@@ -1,12 +1,15 @@
 """Read-only Semantic workload planning over validated durable owner caches.
 
 The planner deliberately has no path to model loading, generations, staging or
-jobs. Source cardinality spills to a private temporary SQLite database that is
-removed on success, failure and cancellation. Text projections without an
-externally bound exact tokenizer contract are explicitly marked pre-tokenizer.
+jobs. Source cardinality spills to a private temporary SQLite database. An
+explicit ``scratch_directory`` registers that workspace with the runtime:
+successful plans retire it, while failures remain retained for recovery when
+the runtime can record that state. Text projections without an externally
+bound exact tokenizer contract are explicitly marked pre-tokenizer.
 """
 
 from __future__ import annotations
+from contextlib import AbstractContextManager
 import sqlite3  # noqa: F401 - exposed for the planner's bounded test seam
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
@@ -49,6 +52,7 @@ from .semantic_plan_scratch import (
     DEFAULT_MAX_SCRATCH_BYTES as DEFAULT_MAX_SCRATCH_BYTES,
     _ContentAccumulator as _ContentAccumulator,
     _create_scratch_database as _create_scratch_database,
+    _registered_scratch_workspace as _registered_scratch_workspace,
     _ScratchBudget as _ScratchBudget,
 )
 from .semantic_service_contracts import (
@@ -220,10 +224,23 @@ def plan_semantic_index(
     bridge = SQLiteCancellationBridge(cancellation_check)
     bridge.checkpoint()
 
-    with tempfile.TemporaryDirectory(
-        prefix="neocortex-semantic-plan-",
-        dir=None if scratch_directory is None else str(scratch_directory),
-    ) as temporary:
+    if scratch_directory is None:
+        scratch_context: AbstractContextManager[str | Path] = tempfile.TemporaryDirectory(
+            prefix="neocortex-semantic-plan-",
+        )
+    else:
+        scratch_context = _registered_scratch_workspace(
+            scratch_directory,
+            run_id=None,
+            metadata={
+                "component": "semantic-planner",
+                "operation": "plan_semantic_index",
+                "scope": scope,
+                "plan_algorithm_version": PLAN_ALGORITHM_VERSION,
+            },
+        )
+
+    with scratch_context as temporary:
         scratch_root = Path(temporary)
         scratch_path = scratch_root / "content-keys.sqlite3"
         budget = _ScratchBudget(scratch_root, max_scratch_bytes)

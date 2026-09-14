@@ -172,6 +172,15 @@ class RouteExecutionError(RuntimeError):
 class FrameworkOrchestrator:
     """The only coordinator; component modules never start work on import."""
 
+    _SCRATCH_OWNER = "neocortex-framework"
+    _SCRATCH_SCOPE = "owned-temp"
+    # Keep the event payload bounded even if a legacy adapter returns an
+    # untrusted collection or counter.  The scratch owner remains the source
+    # of truth for the complete plan; Framework only publishes this compact
+    # observation.
+    _SCRATCH_REPORT_COUNT_LIMIT = 1_000_000
+    _SCRATCH_REPORT_BYTES_LIMIT = 16 * 1024 * 1024 * 1024 * 1024
+
     def __init__(
         self,
         config: FrameworkConfig | None = None,
@@ -1725,8 +1734,252 @@ class FrameworkOrchestrator:
             raise RuntimeError("the USN journal changed during the initial framework run")
         return journal_after
 
-    @staticmethod
+    @classmethod
+    def _scratch_plan_value(
+        cls,
+        plan: object,
+        name: str,
+        *aliases: str,
+    ) -> object | None:
+        """Read one bounded scratch-plan field without coupling its model.
+
+        ``ScratchPlan`` is owned by ``neocortex.runtime.scratch``.  Keeping
+        this adapter intentionally small lets Framework consume the public
+        ``plan()/apply()`` contract while remaining compatible with a mapping
+        or a frozen result object during a staged rollout.
+        """
+
+        for candidate in (name, *aliases):
+            if isinstance(plan, Mapping) and candidate in plan:
+                return plan[candidate]
+            if hasattr(plan, candidate):
+                return getattr(plan, candidate)
+        return None
+
+    @classmethod
+    def _bounded_scratch_count(cls, value: object | None) -> int:
+        """Normalize a plan count for one compact Framework event."""
+
+        if isinstance(value, bool) or value is None:
+            return 0
+        if type(value) is int:
+            return max(0, min(value, cls._SCRATCH_REPORT_COUNT_LIMIT))
+        # Some early adapters expose buckets as tuples/lists instead of
+        # counters.  Taking only their bounded length is safe and avoids
+        # serializing arbitrary record payloads into the Framework owner.
+        try:
+            size = len(value)  # type: ignore[arg-type]
+        except (TypeError, AttributeError):
+            return 0
+        if isinstance(size, bool) or type(size) is not int:
+            return 0
+        return max(0, min(size, cls._SCRATCH_REPORT_COUNT_LIMIT))
+
+    @classmethod
+    def _bounded_scratch_bytes(cls, value: object | None) -> int:
+        """Normalize one byte counter without claiming physical disk gain."""
+
+        if isinstance(value, bool) or value is None or type(value) is not int:
+            return 0
+        return max(0, min(value, cls._SCRATCH_REPORT_BYTES_LIMIT))
+
+    @classmethod
+    def _scratch_maintenance_details(
+        cls,
+        plan: object,
+        *,
+        apply_requested: bool,
+        root: Path,
+    ) -> dict[str, object]:
+        """Build a bounded, JSON-safe result from the scratch owner."""
+
+        counters = {
+            name: cls._bounded_scratch_count(
+                cls._scratch_plan_value(plan, name, f"{name}_records")
+            )
+            for name in (
+                "planned",
+                "applied",
+                "kept",
+                "blocked",
+                "failed",
+                "recovery_required",
+            )
+        }
+        byte_counters = {
+            f"{name}_bytes": cls._bounded_scratch_bytes(
+                cls._scratch_plan_value(
+                    plan,
+                    f"{name}_bytes",
+                    f"bytes_{name}",
+                )
+            )
+            for name in (
+                "planned",
+                "applied",
+                "kept",
+                "blocked",
+                "failed",
+                "recovery_required",
+            )
+        }
+        status_value = cls._scratch_plan_value(plan, "status", "state")
+        status = str(status_value) if status_value is not None else ""
+        if status.startswith("ScratchState."):
+            status = status.rsplit(".", 1)[-1]
+        status = status.casefold()
+        if status not in {
+            "planned",
+            "applied",
+            "kept",
+            "blocked",
+            "failed",
+            "recovery_required",
+            "completed",
+            "partial",
+        }:
+            status = "applied" if apply_requested else "planned"
+        root_blocked = cls._scratch_plan_value(plan, "root_blocked")
+        unmanaged = cls._bounded_scratch_count(
+            cls._scratch_plan_value(plan, "unmanaged", "unmanaged_records")
+        )
+        if root_blocked and root_blocked != "scratch root is absent":
+            status = "blocked"
+        if counters["recovery_required"]:
+            status = "recovery_required"
+        elif counters["failed"]:
+            status = "failed"
+        elif counters["blocked"]:
+            status = "blocked"
+        elif apply_requested and status == "planned":
+            status = "applied"
+        return {
+            "schema": "neocortex.scratch-maintenance/v1",
+            "scope": cls._SCRATCH_SCOPE,
+            "owner": cls._SCRATCH_OWNER,
+            "root": str(root),
+            "mode": "apply" if apply_requested else "plan",
+            "status": status,
+            "root_blocked": (None if root_blocked is None else str(root_blocked)[:8192]),
+            "unmanaged": unmanaged,
+            **counters,
+            **byte_counters,
+        }
+
+    @classmethod
+    def _record_scratch_maintenance(
+        cls,
+        state: FrameworkState,
+        run_id: int,
+        details: Mapping[str, object],
+    ) -> None:
+        """Publish optional scratch evidence through existing Framework APIs."""
+
+        status = str(details.get("status", "failed"))
+        attention = status in {"blocked", "failed", "recovery_required", "unavailable"}
+        publish_stage = getattr(state, "publish_run_stage", None)
+        if callable(publish_stage):
+            try:
+                publish_stage(
+                    run_id,
+                    "scratch-owned-temp",
+                    "partial" if attention else "completed",
+                    details=dict(details),
+                    idempotency_key="scratch:owned-temp",
+                )
+            except Exception:
+                # Scratch is an optional category.  A legacy state adapter or
+                # a conflicting historical marker must not hide the completed
+                # Framework run; the event below is attempted independently.
+                pass
+        record_event = getattr(state, "record_event", None)
+        if not callable(record_event):
+            return
+        try:
+            record_event(
+                run_id,
+                "warning" if attention else "info",
+                "maintenance",
+                "Mantenimiento de scratch owned-temp evaluado",
+                dict(details),
+            )
+        except Exception:
+            # Event publication is best-effort for compatibility doubles.  It
+            # is deliberately not a second ledger or a finalization gate.
+            pass
+
+    def _run_initial_scratch_maintenance(
+        self,
+        state: FrameworkState,
+        run_id: int,
+    ) -> dict[str, object]:
+        """Plan/apply only registered Framework-owned scratch workspaces.
+
+        The manager is imported lazily so ordinary route execution does not
+        load maintenance code.  ``create_root=False`` is important: a normal
+        ``--all`` query must not create ``state/scratch/owned-temp`` merely to
+        discover that no registered workspace exists.  The manager itself is
+        the sole owner of manifest validation and of any eligible deletion.
+        """
+
+        scratch_root = (
+            Path(self.config.state_directory)
+            / "scratch"
+            / self._SCRATCH_SCOPE
+        )
+        apply_requested = bool(getattr(self.config, "apply_actions", False))
+        try:
+            from neocortex.runtime.scratch import ScratchManager
+
+            manager = ScratchManager(
+                scratch_root,
+                owner=self._SCRATCH_OWNER,
+                create_root=False,
+            )
+            planned = manager.plan()
+            result = planned
+            if apply_requested:
+                # Do not filter or synthesize records here.  ``apply`` owns
+                # the completed/eligible check and its revalidation frontier.
+                result = manager.apply()
+            details = self._scratch_maintenance_details(
+                result,
+                apply_requested=apply_requested,
+                root=scratch_root,
+            )
+        except Exception as exc:
+            details = {
+                "schema": "neocortex.scratch-maintenance/v1",
+                "scope": self._SCRATCH_SCOPE,
+                "owner": self._SCRATCH_OWNER,
+                "root": str(scratch_root),
+                "mode": "apply" if apply_requested else "plan",
+                # Keep the public status vocabulary aligned with the scratch
+                # maintenance contract.  The diagnostic distinguishes an
+                # absent/incompatible optional owner through error_type.
+                "status": "failed",
+                "root_blocked": None,
+                "unmanaged": 0,
+                "planned": 0,
+                "applied": 0,
+                "kept": 0,
+                "blocked": 0,
+                "failed": 0,
+                "recovery_required": 0,
+                "planned_bytes": 0,
+                "applied_bytes": 0,
+                "kept_bytes": 0,
+                "blocked_bytes": 0,
+                "failed_bytes": 0,
+                "recovery_required_bytes": 0,
+                "error_type": type(exc).__name__,
+                "error": str(exc)[:8192],
+            }
+        self._record_scratch_maintenance(state, run_id, details)
+        return details
+
     def _finalize_initial_run(
+        self,
         state: FrameworkState,
         run_id: int,
         boundary: NormalInventoryBoundary,
@@ -1745,6 +1998,7 @@ class FrameworkOrchestrator:
             inventory.inventory_attempts,
             inventory.inventory_mode,
         )
+        scratch_maintenance = self._run_initial_scratch_maintenance(state, run_id)
         state.record_event(
             run_id,
             "warning" if work.route_failures else "info",
@@ -1755,6 +2009,7 @@ class FrameworkOrchestrator:
                 "scan_id": inventory.scan.scan_id,
                 "transient_route_rows_pruned": transient_rows_pruned,
                 "route_failures": work.route_failures,
+                "scratch_maintenance": scratch_maintenance,
             },
         )
 

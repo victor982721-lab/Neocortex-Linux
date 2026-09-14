@@ -127,6 +127,18 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run the integrated NeoCortex pre-index framework.",
         allow_abbrev=False,
     )
+    # Keep the existing flat option surface while admitting one explicit
+    # control-plane command.  This is intentionally not a subparser: all
+    # established invocations remain parsed by the same parser and the
+    # command is dispatched directly before the Framework route graph.
+    parser.add_argument(
+        "command",
+        nargs="?",
+        choices=("maintenance",),
+        default=None,
+        metavar="COMMAND",
+        help="direct registered-scratch maintenance command",
+    )
     register_platform_arguments(parser)
     register_config_doctor_arguments(parser)
     register_models_arguments(parser)
@@ -1059,6 +1071,25 @@ def build_parser() -> argparse.ArgumentParser:
     register_semantic_arguments(parser)
 
     register_knowledge_arguments(parser)
+
+    # ``--scope`` is historically owned by the flat Knowledge surface.  The
+    # maintenance command reuses that spelling, but its two scopes are not
+    # Knowledge scopes and are consumed only when ``command=maintenance``.
+    # Extend the argparse choices after Knowledge registers the option so
+    # existing personal/framework/all invocations remain unchanged.
+    scope_action = parser._option_string_actions.get("--scope")
+    if scope_action is not None:
+        existing_choices = tuple(scope_action.choices or ())
+        scope_action.choices = tuple(
+            dict.fromkeys((*existing_choices, "owned-temp", "audit-work"))
+        )
+
+    maintenance = parser.add_argument_group("Registered scratch maintenance")
+    maintenance.add_argument(
+        "--maintenance-json",
+        action="store_true",
+        help="emit maintenance as one bounded JSON object",
+    )
 
     return parser
 
