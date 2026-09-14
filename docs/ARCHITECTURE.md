@@ -519,17 +519,20 @@ Archive/ZIP sigue siendo únicamente una ruta de contenido.
 
 ## Efectos sobre archivos
 
-Las rutas genéricas `--apply` y `--organization-apply` continúan rechazándose
-con `linux_mutation_backend_unavailable`. La ruta nueva `curate apply` sólo
-consume un grant confirmado y un backend inyectado en una raíz contenida, por lo
-que no habilita mutación implícita del corpus instalado.
+`--organization-apply` y las operaciones directas de cada formato conservan
+sus rechazos read-only. En Linux, `--all --apply` y `--dedupe --apply` sí cruzan
+la frontera explícita de archivos regulares mediante KIO receipt-bound; no hay
+mutación implícita en las corridas sin `--apply`. `curate apply` sigue siendo
+grant-bound y requiere un backend inyectado en una raíz contenida.
 
 La fuente ya contiene `neocortex.safety.kio_trash`: una foundation preparada que
 descubre `kioclient6`, `kioclient5` o `kioclient`, valida configuración y snapshot,
 ejecuta `move <origen> trash:/` mediante un runner inyectable y clasifica
 `blocked`, `recovery_required` o `applied` sólo después de un verificador del
-caller. Es reversible pero path-bound y está intencionalmente desconectada de
-Linux `--apply`; no fue promovida ni probada contra KIO real en esta cohorte.
+caller. La frontera integrada agrupa hasta 256 archivos por invocación no
+interactiva, conserva claim/receipt por elemento y publica reconciliación por
+lote. Es reversible pero path-bound; la canaria instalada se ejecutó sólo en
+fixtures privados y la restauración visual de Dolphin conserva su gate humano.
 
 La integración actual hace que `apply` lea y revalide el grant, además de
 identidades, guard same-filesystem, ledger y expiración, y que `reconcile`

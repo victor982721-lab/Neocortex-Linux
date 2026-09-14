@@ -129,20 +129,22 @@ La fuente ya prepara la foundation `neocortex.safety.kio_trash`, que descubre el
 primer cliente disponible entre `kioclient6`, `kioclient5` y `kioclient`, valida
 configuración y snapshot, ejecuta mediante un runner inyectable
 `move <origen> trash:/` y exige verificación del caller antes de emitir receipt.
-No está conectada a la CLI de aplicación, promovida ni probada contra KIO real.
+`--all --apply` y `--dedupe --apply` la consumen en Linux con lotes bounded;
+cualquier canaria física queda contenida en fixtures privados.
 
 La integración grant-bound ya revalida raíz, autorización, límites e identidad
-y conserva ledger y recovery con backends inyectados. La promoción KIO real
-todavía debe demostrar permisos y locks efectivos, ausencia del origen, entrada
-esperada en `trash:/`, metadata de restauración y receipt en el escritorio.
+y conserva ledger y recovery con backends inyectados. La canaria KIO instalada
+demuestra permisos y locks efectivos, ausencia del origen, entrada esperada en
+`trash:/`, metadata de restauración y receipt en un árbol privado; la
+restauración visual en el escritorio real permanece separada.
 Un timeout, error ambiguo, configuración KDE no escribible, symlink,
 hard link no admitido, mount inseguro o cambio concurrente deja
 `recovery_required` y no se reintenta a ciegas.
 
 No se usará `gio trash`, `unlink`, borrado permanente ni una carpeta de
-cuarentena como fallback. La prueba real de KIO queda fuera de esta cohorte para
-no tocar la configuración de escritorio; las pruebas de la foundation usan
-runner, resolver y verificador inyectados sobre fixtures contenidos.
+cuarentena como fallback. Las pruebas de la foundation y la canaria instalada
+usan runner, resolver y verificador sobre fixtures contenidos, sin reusar la
+configuración global.
 
 ## Interfaces CURRENT, IMPLEMENTED y TARGET
 

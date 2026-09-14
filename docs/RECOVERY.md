@@ -218,8 +218,9 @@ fixtures. El preview de restore es read-only; la aplicación exige confirmación
 exacta del action/receipt, crea su propio `file_actions` intent, restaura con
 no-replace, verifica bytes/hash y elimina `.trashinfo` sólo después de verificar
 el archivo restaurado. Un fallo posterior al movimiento conserva
-`recovery_required` y se concilia sin retry. La ejecución real de KIO y el
-restore de escritorio siguen siendo gates posteriores.
+`recovery_required` y se concilia sin retry. La ejecución integrada de KIO se
+verifica en lotes bounded sobre fixtures privados; el restore visual de
+escritorio sigue siendo un gate posterior e independiente.
 
 Si falta metadata, aparece una colisión, el filesystem cambió o el efecto cruzó
 dispositivo, el estado permanece `recovery_required`; no se degrada a borrado

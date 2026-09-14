@@ -1,21 +1,31 @@
 # Handoff operativo vigente — NeoCortex
 
-**Ronda actual:** NEO-FIX-014 — corrección de snapshots durante acciones.
-**Actualización:** 2026-09-14T07:05:00-06:00 (America/Mexico_City).
+**Ronda actual:** NEO-FIX-015 — aplicación KIO bounded y reconciliación por lote.
+**Actualización:** 2026-09-14T09:18:00-06:00 (America/Mexico_City).
 **Fuente viva:** HEAD == main == origin/main se comprueba al promover; el árbol debe quedar limpio.
 
-La release activa comprobada es 0.14.0; conserva un rollback inmediato y
+La release activa comprobada es `0.14.0-1bc0da636925-cp314-linux-x86_64`; conserva
+la anterior `0.14.0-c3cf242f7962-cp314-linux-x86_64` como rollback inmediato y
 `.staging` quedó vacío tras la promoción. El receipt canónico conserva el SHA
 final, el wheel/manifest, el launcher y los punteros `current`/rollback.
 `Neocortex --version`, ayuda, doctor config, dedupe y `release_linux.py verify`
 se ejecutan fuera del checkout sin crear cobertura en estado productivo. La
-suite integral final cerró con 7707 pasadas, 60 omitidas, 103 warnings y 42
-subtests; Ruff y compileall quedaron limpios, y Pyright no reportó errores en
-los cambios de esta ronda.
+suite integral de la ronda cerró con 7710 pasadas, 67 omitidas, 103 warnings y
+42 subtests; el único fallo asociado a instalación fue la identidad del texto
+contra metadata instalada 0.13, antes de promover la release nueva. Ruff,
+compileall y Pyright de los cambios quedaron limpios.
 
 La corrección de NEO-FUN-003 hace que las fases `empty-files` y `content-types`
 usen páginas del `DedupIndex` ya abierto, con cursor cerrado antes de cada
 efecto/escritura; regresiones cubren 513 archivos vacíos y ambas fases.
+
+NEO-FIX-015 agrupa la frontera KIO en lotes de hasta 256 archivos regulares y
+una invocación no interactiva por lote, mantiene un receipt/recovery por
+elemento, indexa `Trash/info` una vez y reconcilia el inventario una vez por
+lote. Los vacíos difieren la reconciliación hasta consumir el plan de
+duplicados; la validación de guards y confirmación de ledger también es
+bounded. Benchmark instalado aislado de 512 duplicados: 136.685 s → 12.949 s,
+511 receipts, keeper preservado y cero errores.
 
 La entrega integra dedupe exacto con KIO receipt-bound y recuperación no-replace,
 identidad ordinal para ZIPs, clasificación de unidades y materialización acotada,
