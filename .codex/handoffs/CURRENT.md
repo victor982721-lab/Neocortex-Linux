@@ -1,7 +1,7 @@
 # Handoff operativo vigente — NeoCortex
 
-**Ronda actual:** NEO-CLOSE-014 — cierre operativo consolidado 0.14.0.
-**Actualización:** 2026-09-13T22:54:00-06:00 (America/Mexico_City).
+**Ronda actual:** NEO-FIX-014 — corrección de snapshots durante acciones.
+**Actualización:** 2026-09-14T07:05:00-06:00 (America/Mexico_City).
 **Fuente viva:** HEAD == main == origin/main se comprueba al promover; el árbol debe quedar limpio.
 
 La release activa comprobada es 0.14.0; conserva un rollback inmediato y
@@ -12,6 +12,10 @@ se ejecutan fuera del checkout sin crear cobertura en estado productivo. La
 suite integral final cerró con 7707 pasadas, 60 omitidas, 103 warnings y 42
 subtests; Ruff y compileall quedaron limpios, y Pyright no reportó errores en
 los cambios de esta ronda.
+
+La corrección de NEO-FUN-003 hace que las fases `empty-files` y `content-types`
+usen páginas del `DedupIndex` ya abierto, con cursor cerrado antes de cada
+efecto/escritura; regresiones cubren 513 archivos vacíos y ambas fases.
 
 La entrega integra dedupe exacto con KIO receipt-bound y recuperación no-replace,
 identidad ordinal para ZIPs, clasificación de unidades y materialización acotada,
@@ -26,7 +30,8 @@ queda pendiente porque esta sesión no expone una superficie nativa observable.
 La corrida read-only del corpus predeterminado procesó un subset acotado por
 presupuesto; 871 archivos de metadata conservaron el mismo manifiesto antes y
 después. Las consultas representativas devolvieron envelopes JSON parciales
-explicados en el expediente de auditoría. No se ejecuta
+explicados en el expediente de auditoría. RUN_ID 3 permanece como fallo
+terminal diagnosticado; no se reintenta ni se borra su evidencia. No se ejecuta
 `Neocortex --all --apply` sobre originales ni se reanuda la campaña Semantic C3
 pausada.
 
