@@ -148,6 +148,34 @@ class CodeInventoryProjection:
         yield from self.records
 
 
+def _project_roots_relevant_to_corpus(
+    corpus_root: Path,
+    project_roots: Iterable[Path],
+) -> tuple[Path, ...]:
+    """Keep allowlist roots that overlap the selected corpus lexically.
+
+    The default personal project roots normally live outside the controlled
+    corpus.  Treating those unrelated paths as an always-nonempty allowlist
+    would suppress marker discovery for an intentionally copied project.  An
+    explicitly overlapping root remains authoritative; no filesystem walk or
+    symlink resolution is performed here.
+    """
+
+    corpus = Path(corpus_root).absolute()
+    relevant: list[Path] = []
+    for root in project_roots:
+        candidate = Path(root).absolute()
+        try:
+            corpus.relative_to(candidate)
+        except ValueError:
+            try:
+                candidate.relative_to(corpus)
+            except ValueError:
+                continue
+        relevant.append(candidate)
+    return tuple(relevant)
+
+
 def build_code_inventory_projection(
     index: _InventorySnapshotSource,
     scan_id: int,
@@ -282,6 +310,10 @@ def _code_route_workload(context: RouteExecutionContext) -> RouteWorkload:
     selected_paths = {
         str(Path(value).expanduser().absolute()) for value in config.selection.paths
     }
+    project_roots = _project_roots_relevant_to_corpus(
+        context.root,
+        config.code_project_roots,
+    )
 
     def estimate(index: _InventorySnapshotSource) -> RouteWorkload:
         project_scope = None
@@ -290,7 +322,7 @@ def _code_route_workload(context: RouteExecutionContext) -> RouteWorkload:
                 (snapshot.path for snapshot in index.snapshots(context.scan_id)),
                 include_generated=config.code_include_generated,
                 include_vendored=config.code_include_vendored,
-                explicit_roots=config.code_project_roots,
+                explicit_roots=project_roots,
             )
 
         def code_sizes() -> Iterable[int]:
@@ -632,6 +664,14 @@ def _run_code(context: RouteExecutionContext) -> object:
     from neocortex.code.code_route import CodeRoute
 
     config = context.config
+    code_config = code_route_config_from_framework(config)
+    if code_config.candidate_scope == "projects":
+        relevant_roots = _project_roots_relevant_to_corpus(
+            context.root,
+            code_config.explicit_project_roots,
+        )
+        if relevant_roots != code_config.explicit_project_roots:
+            code_config = replace(code_config, explicit_project_roots=relevant_roots)
     gate = None
     if context.resource_coordinator is not None:
         from neocortex.runtime.control.global_resources import CoordinatedMemoryGate
@@ -640,7 +680,7 @@ def _run_code(context: RouteExecutionContext) -> object:
     inventory_view = context.inventory_view
     if inventory_view is not None:
         summary = CodeRoute(
-            code_route_config_from_framework(config),
+            code_config,
             inventory_view,
             context.framework_state,
             context.run_id,
@@ -657,7 +697,7 @@ def _run_code(context: RouteExecutionContext) -> object:
 
         with DedupIndex(config.dedup_database) as dedup_index:
             summary = CodeRoute(
-                code_route_config_from_framework(config),
+                code_config,
                 dedup_index,
                 context.framework_state,
                 context.run_id,
