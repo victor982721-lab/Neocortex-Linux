@@ -190,12 +190,14 @@ una SQLite desconocida o una SQLite de `recovery`, `restore` o `staging` (con su
 sidecars) bloquea el reset fail-closed.
 
 El preview es read-only y calcula digest, fingerprints, conteos y bytes dentro de
-límites bounded. Apply requiere el digest exacto, `RESET_STATE`, un backup nuevo
-y una segunda validación de locks, epoch, heads, schemas, referencias y límites.
-Ante drift, schema futuro, writer activo o referencia no conciliable, el motor se
-abstiene fail-closed. El backup verificado es la fuente de rollback; si una
-reversión o publicación quedan inciertas, conserva staging/backup y expone
-`recovery_required` en vez de reintentar.
+límites bounded. Apply requiere el digest exacto, `RESET_STATE` y una segunda
+validación de locks, epoch, heads, schemas, referencias y límites. Sin
+`--backup-directory` el motor usa sólo staging/rollback efímero; el backup
+durable es opcional y debe ser nuevo, absoluto y externo cuando se solicita de
+forma explícita. Ante drift, schema futuro, writer activo o referencia no
+conciliable, el motor se abstiene fail-closed. Si una reversión o publicación
+quedan inciertas, conserva lo necesario y expone `recovery_required` en vez de
+reintentar.
 
 La operación no migra ni abre el corpus, no modifica bytes originales y no toca
 los directorios de releases/modelos. Una nueva corrida debe volver a crear sólo

@@ -1,4 +1,4 @@
-"""Selectable, backup-first reset of NeoCortex derived state.
+"""Selectable, staged reset of NeoCortex derived state.
 
 This module deliberately sits below the command-line adapters.  It exposes a
 small typed contract that an adapter can use to present a read-only preview and
@@ -1980,7 +1980,7 @@ def _apply_reset_locked(
     # A run-only reset leaves the publication boundary in place, so an
     # inconsistent marker still needs owner-aware recovery.  Broader scopes
     # explicitly include the publication files and can retire that marker as
-    # part of the same backup-first set; blocking those scopes would make it
+    # part of the same staged set; blocking those scopes would make it
     # impossible to recover a stale publication by selecting ``all``.
     if current.publication_status == "inconsistent" and plan.scope == "runs":
         raise StateResetBusyError(
