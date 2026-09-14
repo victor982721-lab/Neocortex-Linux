@@ -90,7 +90,7 @@ operación amplia, no el primer smoke: selecciona todas las rutas registradas,
 incluida Code como contenido, y en esa modalidad usa alcance `broad` dentro de la
 raíz elegida.
 
-Para reproducir o regresionar el lifecycle 0.13, ejecuta la ampliación sólo
+Para reproducir o regresionar el lifecycle 0.14, ejecuta la ampliación sólo
 sobre el piloto temporal y prueba las nueve rutas (`pdf`, `docx`, `office`,
 `archive`, `text`, `audio`, `video`, `image`, `code`) bajo el mismo presupuesto.
 Code no ejecuta el contenido observado. El stage Semantic integrado se ejecuta
@@ -107,8 +107,9 @@ de estado y efecto sobre corpus.
 Las rutas reutilizan extracción válida para reparar FTS y derivados sin repetir
 OCR, transcripción o análisis íntegros. Los reintentos sólo proceden con
 evidencia estructurada `retryable` y una vez por archivo y corrida; el texto de
-un mensaje no es autorización. Las propuestas de organización son advisory y no
-requieren `--apply`.
+un mensaje no es autorización. `--dedupe` usa la misma planificación exacta sin
+cargar modelos; `--apply` organiza de forma reversible dentro de la raíz
+autorizada.
 
 ## Reanudación
 
@@ -268,14 +269,14 @@ receipt: no creó `file_actions` ni aplicó nada. Un digest/event head cambiado
 requiere volver a consultar, no reintentar a ciegas. `--json` no exporta ni crea
 ZIP, y MCP no ofrece authorize sin actor autenticado.
 
-**IMPLEMENTED sobre fixtures:** `curate apply` consume un grant confirmado y
-revalida su manifest antes de cada efecto, `curate reconcile` registra
-observaciones sin reintentar y `curate restore preview/apply` ofrece una
-reversión no-replace con un intent separado y confirmación exacta. La CLI
-instalada no selecciona un backend ni un run firmado, por lo que apply/restore
-devuelven `backend_unavailable` antes de crear efectos; las pruebas usan
-backends inyectados y raíces temporales. La foundation KIO real y el restore de
-escritorio siguen fuera de este gate.
+**IMPLEMENTED sobre fixtures y canaria local:** `curate apply` consume un grant
+confirmado y revalida su manifest antes de cada efecto, `curate reconcile`
+registra observaciones sin reintentar y `curate restore preview/apply` ofrece
+una reversión no-replace con un intent separado. `dedupe --apply` y
+`--all --apply` usan KIO receipt-bound con claim same-filesystem; la canaria
+privada verifica que las cuotas no borren testigos y que la restauración nativa
+sea observable. La interacción visual única de Dolphin permanece como gate
+humano independiente.
 
 ```bash
 Neocortex curate apply GRANT_ID --confirm-grant-id GRANT_ID --json
@@ -404,8 +405,9 @@ particular:
 
 1. `runs` sólo retira el ledger de ejecución y no debe eliminar Review, recovery,
    curación ni owners de contenido que no estén ligados de forma demostrable.
-2. `runs-and-caches` retira todos los owners SQLite y metadata de publicación
-   administrados como un conjunto; WAL/SHM/journal son parte del owner.
+2. `runs-and-caches` limpia derivaciones de los owners administrados; conserva
+   tablas de política, correcciones, Review, autorización y recovery mediante
+   reconstrucción staged; WAL/SHM/journal son parte del owner.
 3. `all` agrega los artefactos no-SQLite administrados; no convierte archivos
    desconocidos, corpus, releases, modelos o backups externos en targets.
 
@@ -417,22 +419,20 @@ SQLite desconocida o una SQLite de `recovery`, `restore` o `staging` (con sus
 sidecars) mantiene el bloqueo fail-closed y no se elimina ni se adopta como
 backup.
 
-Para aplicar el alcance revisado:
+Para aplicar el alcance revisado sin crear backup persistente:
 
 ```bash
 Neocortex state reset --state-directory "$State" --scope runs-and-caches \
-  --backup-directory "$HOME/.local/state/Neocortex/state-reset-backups/runs-and-caches-20260911" \
-  --plan-digest PLAN_SHA256 --confirm-state-reset RESET_STATE \
-  --apply --json
+  --apply --yes --json
 ```
 
-El backup debe ser nuevo, absoluto y externo al estado. El motor revalida el
-digest, el snapshot/fingerprints, la continuidad de IDs, las referencias, los
-schemas, el epoch, los locks y los límites bounded antes de cambiar archivos.
-Si algo deriva, hay un writer activo, una publicación pendiente o el backup no
-es verificable, se abstiene sin forzar la operación. Un reset aplicado deja un
-manifest de backup para rollback/conciliación; no se reintenta un efecto incierto
-ni se borra el backup para liberar espacio automáticamente.
+Si se desea respaldo, añade un `--backup-directory` nuevo, absoluto y externo al
+estado. El motor revalida el preview, snapshot/fingerprints, continuidad de IDs,
+referencias, schemas, epoch, locks y límites bounded antes de cambiar archivos.
+Si algo deriva, hay un writer activo o una publicación pendiente, se abstiene sin
+forzar la operación. Un reset aplicado sin backup sólo conserva staging efímero;
+no se reintenta un efecto incierto ni se borra un backup solicitado para liberar
+espacio automáticamente.
 
 Después de cualquier aplicación, comprueba que el estado quedó terminal y que
 la siguiente ejecución sea nueva:

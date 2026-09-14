@@ -187,9 +187,9 @@ renombra los originales ni sustituye caracteres para inventar otra ruta.
 | Grant de autorización | `curate authorize` | Escribe un grant acotado; no aplica ni verifica un efecto físico |
 | Descarga | `--models-prepare` | Adquiere modelos de forma explícita |
 | Estado destructivo | `state reset`, `databases restore`, `databases purge` con `--apply` | Requiere confirmación, manifest/plan y locks |
-| Aplicación grant-bound | `curate apply` | Requiere confirmación exacta y backend/run inyectados; la CLI ordinaria falla cerrada sin ellos |
+| Aplicación grant-bound | `curate apply` | Requiere confirmación exacta y conserva su autoridad independiente |
 | Conciliación | `curate reconcile` | Registra evidencia bounded; no reintenta ni modifica corpus |
-| Corpus genérico | `--apply`, `--organization-apply` | Rechazado en Linux en la versión actual |
+| Dedupe/corpus Linux | `--dedupe`, `--all --apply` | Backend KIO receipt-bound, igualdad exacta, no-replace y raíz delimitada |
 
 ## Consultas cotidianas
 
@@ -232,6 +232,19 @@ Framework. No modifica corpus ni concede autorización.
 Las rutas registradas son `pdf`, `docx`, `office`, `archive`, `text`, `audio`,
 `video`, `image` y `code`.
 
+### Dedupe físico Linux
+
+```bash
+Neocortex --root "$Root" --dedupe --dedupe-json
+Neocortex --root "$Root" --dedupe --apply --dedupe-json
+```
+
+`dedupe` fuerza comparación exacta de bytes y no carga OCR, Semantic ni
+modelos. `--apply` reutiliza el mismo planner y ledger de `--all`, reclama cada
+redundante mediante KIO receipt-bound y conserva una restauración no-replace;
+no usa `gio`, `unlink` ni vacía la Papelera. El alias `Neocortex dedupe` traduce
+al mismo servicio. Un replay sin cambios no repite efectos.
+
 ```bash
 Neocortex --root "$Root" --route pdf --max-count 25 --strict-exit-codes
 Neocortex --root "$Root" --route pdf,docx --max-count 25 \
@@ -251,7 +264,7 @@ NeoCortex se abstiene antes de crear estado y muestra cómo usar
 `--all` selecciona todas las rutas registradas, incluida Code. No ejecuta código
 del corpus ni produce evidencia de validación del repositorio.
 
-### Lifecycle durable de `--all` (0.13 instalado)
+### Lifecycle durable de `--all` (0.14 instalado)
 
 Una corrida amplia puede fijar un presupuesto global opcional para todo el
 lifecycle, no sólo para una ruta o un documento:
@@ -307,8 +320,8 @@ bounded `neocortex.lifecycle-envelope/v1`, con manifest/digest, stages, rutas,
 presupuesto, checkpoints, capacidades, recuperación y owner heads equivalentes.
 Las consultas son read-only: no inician runs, no reservan trabajo y no crean
 estado. MCP no expone ejecución, autorización, aplicación ni mutación. Los
-manifests/checkpoints v1 históricos siguen siendo legibles y 0.13 sólo añade
-campos de forma compatible.
+manifests/checkpoints históricos siguen siendo legibles y 0.14 añade campos de
+forma compatible.
 
 ## Estado y salud
 
@@ -438,11 +451,11 @@ Neocortex state reset --state-directory "$State" \
   --scope all --json
 ```
 
-Para aplicar, reutiliza el `plan_digest` exacto del preview, confirma el token
-literal y conserva el backup fuera de la raíz de estado. El motor verifica de
-nuevo el plan, toma locks exclusivos, comprueba el límite de bytes/archivos y
-realiza el cambio de forma backup-first; ante fallo conserva el backup y deja
-un estado conciliable, sin retry ciego:
+Para aplicar, el uso normal es `--yes`: el adaptador obtiene un preview nuevo,
+enlaza su `plan_digest` internamente y confirma sólo ese plan. No crea un backup
+persistentemente salvo que se indique `--backup-directory`; el staging temporal
+se elimina tras éxito o rollback verificado. El motor verifica de nuevo el plan,
+toma locks exclusivos y deja un estado conciliable ante fallo, sin retry ciego:
 
 ```bash
 Neocortex state reset --state-directory "$State" --scope runs \
@@ -452,18 +465,19 @@ Neocortex state reset --state-directory "$State" --scope runs \
 ```
 
 `--backup-directory` debe ser absoluto, nuevo y estar fuera de `State`; nunca se
-usa una ruta dentro del estado que se va a limpiar. `--apply` sin
-`--confirm-state-reset RESET_STATE` o sin `--plan-digest` se rechaza. El digest
-se liga a la raíz, alcance, fingerprints, epoch, referencias y límites efectivos;
-si cualquier dato cambia desde el preview hay que generar otro plan. Los límites
-son bounded y fail-closed: no se amplían por defecto para completar un reset.
+usa una ruta dentro del estado que se va a limpiar. La forma legacy con
+`--confirm-state-reset RESET_STATE` y `--plan-digest` se mantiene para integradores.
+En una tubería o sesión no-TTY, `--apply` sin `--yes` se rechaza con una
+instrucción concreta. El digest se liga a la raíz, alcance, fingerprints, epoch,
+referencias y límites efectivos; si cualquier dato cambia desde el preview hay
+que generar otro plan.
 
 La salida JSON usa `neocortex.state-reset/v1` y distingue `preview` de
-`applied`, `read_only`, `scope`, `plan_digest`, backup/manifest, conteos y
-errores. Un resultado `applied` sólo acredita el reset local y el backup
-verificado; no acredita una nueva corrida, release instalada, reconstrucción del
-corpus ni promoción de modelos. Para restaurar/conciliar usa el manifest del
-backup y [RECOVERY.md](RECOVERY.md).
+`applied`, `read_only`, `scope`, `plan_digest`, backup/manifest, conteos y errores.
+Un resultado `applied` sólo acredita el reset local; no acredita una nueva
+corrida, release instalada, reconstrucción del corpus ni promoción de modelos.
+Para restaurar/conciliar usa el manifest del backup cuando se haya solicitado y
+[RECOVERY.md](RECOVERY.md).
 
 ## Modelos y GUI
 

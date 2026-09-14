@@ -5,15 +5,16 @@ organizar archivos personales en Linux. Su objetivo es sustituir inventarios,
 auditorías y scripts improvisados por un flujo reproducible que conserve
 identidad, evidencia, incertidumbre y trazabilidad.
 
-La fuente vigente declara `0.13.0`. La integración funcional C1–C5 está en
-curso sobre el checkout de esta oleada. El estado de `HEAD`, `main`, `origin/main`,
-`current`, el launcher y el árbol se comprueba en vivo; este README no los
-presenta como alineados por inferencia.
+La fuente vigente declara `0.14.0`. La release Linux instalada y verificada es
+`0.14.0-bcfe1d686db0-cp314-linux-x86_64`, construida desde el SHA publicado
+`bcfe1d686db07b1ae724d165943c000cbfb42a80`; `current` conserva el rollback
+inmediato. Estos punteros se vuelven a comprobar al promover cada release.
 
-Esta documentación distingue implementación de aceptación: no certifica una
-recuperación real de la generación 17, una release final instalada desde esta
-oleada ni el cierre completo C0–C7. Esas conclusiones requieren una copia de
-fuente y pruebas frescas, más los gates de [desarrollo y release](docs/subprojects/development-release.md).
+Esta entrega cierra el primer comportamiento operativo: deduplicación exacta
+desde la CLI instalada, backend KDE/KIO con recuperación receipt-bound,
+admisión de contenido y ayuda/JSON coherentes. La aplicación física sobre el
+corpus personal sigue siendo una invocación explícita posterior; las canarias
+destructivas usan fixtures aisladas.
 
 ## Implementación funcional en curso
 
@@ -36,8 +37,9 @@ Las rutas reparan FTS y derivados desde una representación durable válida sin
 repetir OCR, transcripción o análisis que ya sean íntegros. Un reintento sólo se
 admite con evidencia estructurada `retryable` y una vez por archivo y corrida;
 un mensaje que contenga la palabra «retry» no concede permiso. Las propuestas de
-organización son advisory y no requieren `--apply`; mover, renombrar o borrar
-originales sigue siendo una operación separada.
+organización son reversibles y se aplican sólo dentro de la raíz autorizada
+cuando se solicita `--apply`; mover, renombrar o retirar fuera de esa frontera
+sigue siendo rechazado.
 
 La GUI usa la misma orden de rutas, estados y stage Semantic que la CLI: el perfil
 completo se traduce al lifecycle `--all`, mientras un subconjunto guardado no se
@@ -46,10 +48,10 @@ Semantic pendiente posterior a epoch 0 se recupera mediante el mismo productor,
 manifest y heads de todos los modelos; no se reinicia ni se resetea el estado
 automáticamente.
 Un reset destructivo sólo ocurre mediante `Neocortex state reset` con un alcance
-seleccionado y confirmación explícita.
-Si la compatibilidad no puede demostrarse, el resultado es
-`recovery_required` explicable. La implementación y sus focos siguen en
-validación; no implican aceptación real ni instalación publicada.
+seleccionado, preview y confirmación explícita. Sin `--backup-directory` no se
+crea un backup persistente; los datos no regenerables se preservan por owner.
+Si la compatibilidad no puede demostrarse, el resultado es `recovery_required`
+explicable.
 
 ## Qué resuelve hoy
 
@@ -61,6 +63,8 @@ NeoCortex puede:
 - conservar resultados en owners SQLite separados y publicar proyecciones
   incrementales;
 - planear duplicados, clasificación y organización sin modificar originales;
+- ejecutar `--dedupe`/`dedupe` con igualdad byte a byte y enviar redundantes
+  verificados a la Papelera KDE, conservando receipts y restauración no-replace;
 - buscar evidencia mediante CLI, API Python, GUI y MCP local; las únicas
   escrituras MCP actuales publican o deciden ReviewTasks advisory;
 - exponer cobertura, errores, procedencia y localizadores cuando el productor
@@ -77,19 +81,17 @@ Neocortex state reset --scope runs-and-caches
 Neocortex state reset --scope all
 ```
 
-Estas variantes no tocan el corpus, releases, modelos ni backups externos;
-`--apply` requiere el digest exacto del preview y `RESET_STATE`.
+Estas variantes no tocan el corpus, releases, modelos ni backups externos.
+`--apply --yes` enlaza un preview nuevo de forma no interactiva; también se
+conserva la forma legacy con digest y `RESET_STATE`. `--backup-directory` sólo
+se usa cuando se solicita expresamente.
 
-El recorrido físico sólo está habilitado para fixtures mediante un backend
-explícitamente inyectado: `curate apply` consume un grant confirmado y cruza el
-ledger por efecto, `curate reconcile` registra recovery sin reintentar y
-`curate restore preview/apply` permite una reversión no-replace con confirmación
-separada sobre receipts de fixtures.
-`--apply` y `--organization-apply` siguen absteniéndose con
-`linux_mutation_backend_unavailable`, y la CLI no selecciona KIO ni otro backend
-automáticamente. La promoción contra KIO real, el restore y la sincronización de
-caches permanecen como gates posteriores, sin `gio trash`, borrado directo ni
-fallback destructivo.
+El recorrido físico Linux usa el backend KIO nativo receipt-bound con claim
+same-filesystem/no-replace, sin `gio trash`, borrado directo ni fallback
+destructivo. `curate apply` conserva su frontera grant-bound independiente;
+`dedupe --apply` y `--all --apply` reutilizan la cadena de acciones y recovery.
+La canaria KIO debe demostrar cuotas sin autovaciado y restauración automática;
+la restauración visual única desde Dolphin permanece como gate humano separado.
 
 ## Empieza por una consulta
 
@@ -100,6 +102,8 @@ modificar archivos del corpus:
 Neocortex --version
 Neocortex --help
 Neocortex help
+Neocortex --root "$Root" --dedupe --dedupe-json
+Neocortex --root "$Root" --all --json
 Neocortex status --scope all
 Neocortex search "consulta" --scope personal --limit 20
 Neocortex ask "consulta" --scope personal --limit 12

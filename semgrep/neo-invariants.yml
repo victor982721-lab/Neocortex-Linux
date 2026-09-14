@@ -155,6 +155,9 @@ rules:
       # mutation frontier, and is kept as an explicit file-level exception.
       exclude:
         - /neocortex/curation/recovery.py
+        # Receipt-bound KIO recovery performs the same root, identity, digest
+        # and no-replace checks before removing only its metadata sidecar.
+        - /neocortex/safety/kio_trash.py
     patterns:
       - pattern-either:
           - pattern: os.remove(...)

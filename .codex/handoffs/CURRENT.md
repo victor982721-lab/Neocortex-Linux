@@ -1,24 +1,26 @@
 # Handoff operativo vigente — NeoCortex
 
-**Ronda actual:** `NEO-FUN-003` — funcional por defecto, C1–C6.
-**Actualización:** 2026-09-11T01:53:16-06:00.
-**Estado/artefacto vivos:** `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-10-functional-defaults-01a08e62/STATUS.md`
-y `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-10-functional-defaults-01a08e62/COVERAGE.json`,
-junto con `PENDIENTES.md`, Git y el manifest del `current` realmente instalado.
-Estos punteros evitan fijar aquí el propio SHA del commit que los contiene.
+**Ronda actual:** NEO-CLOSE-014 — cierre operativo inicial integrado.
+**Actualización:** 2026-09-13T21:26:37-06:00 (America/Mexico_City).
+**Fuente viva:** HEAD == main == origin/main se comprueba al promover; el árbol debe quedar limpio.
 
-La ronda integra nueve rutas, Code del corpus incluyendo archivos sueltos,
-catálogo y reparación de derivados, selección Semantic con Video/Archive/Code,
-reintentos tipados, límites acumulados, recuperación compatible y paridad GUI/CLI.
-Las propuestas son advisory. `--all` no aplica cambios a originales ni crea un
-autoanalizador del repositorio.
+La release activa comprobada es 0.14.0; conserva un rollback inmediato 0.13.0
+y .staging quedó vacío tras la promoción. Neocortex --version, la ayuda breve,
+doctor config y dedupe se ejecutaron fuera del checkout. release_linux.py verify
+devuelve verified=true y conserva el receipt canónico de la instalación.
 
-La aceptación de código, publicación e instalación se registra en esos destinos,
-incluyendo el arranque efectivo del comando tras una corrida incompleta. Víctor
-retiró la preservación/recuperación de generaciones experimentales como requisito:
-una nueva `--all` usa una petición nueva y derivados reconstruibles; no exige
-rescatar gen17. Los originales, R1–R4, principal autenticado, KIO, modelos y
-cualquier efecto físico conservan sus límites.
+La entrega integra dedupe exacto con KIO receipt-bound y recuperación no-replace,
+identidad ordinal para ZIPs, clasificación de unidades y materialización acotada,
+política/admisión Semantic durable, correcciones de catálogo, reset sin backup
+implícito, cuotas de retención y coordinación adaptativa de recursos. Las pruebas
+locales y el smoke sintético no aplicaron cambios al corpus personal.
+
+**Gates restantes:** la canaria KIO debe repetirse desde una instalación privada con
+bus/configuración/Trash aislados y testigos; la restauración visual única en Dolphin
+queda para Víctor si se requiere esa evidencia. Falta la corrida read-only sobre el
+corpus predeterminado y las consultas representativas; no se ejecutó
+Neocortex --all --apply sobre originales. No reanudar la campaña Semantic C3
+pausada ni usar sus candidatos.
 
 ## Evidencia de entregas anteriores (histórica)
 

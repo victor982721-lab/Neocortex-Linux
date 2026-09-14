@@ -1,6 +1,6 @@
 # Kubuntu/Linux
 
-NeoCortex `0.13.0` tiene como única plataforma activa Kubuntu/Ubuntu 26.04
+NeoCortex `0.14.0` tiene como única plataforma activa Kubuntu/Ubuntu 26.04
 x86-64, con CPython 3.13–3.14 con GIL. CPython 3.14 es el runtime personal de
 referencia y 3.13 dispone de la instalación ordinaria offline descrita aquí.
 
@@ -200,28 +200,27 @@ autorizada; actualizar el helper en fuente no modifica el launcher instalado.
 
 ## Estado actual de mutación
 
-Las rutas genéricas `--apply` y `--organization-apply` se rechazan antes de
-crear estado con `linux_mutation_backend_unavailable`. `curate apply` y
-`curate restore` existen como consumidores grant-bound, pero la CLI instalada no
-selecciona backend ni run firmado, por lo que también fallan cerrados hasta
-recibir una integración explícita. `curate recovery status` y `curate restore
-preview` sólo leen evidencia, mientras inventario, extracción, catálogo,
-búsqueda, Review y conciliación advisory siguen disponibles.
-
-No uses `Path.rename`, shell, KIO o scripts externos para eludir ese contrato.
+`--dedupe --apply` y `--all --apply` seleccionan el backend Linux
+`posix-renameat2+kio-trash` sólo después de validar la raíz, identidad, keeper y
+configuración de Papelera. El backend usa claim same-filesystem, KIO nativo,
+receipt y restauración no-replace; no usa `gio`, shell ni borrado permanente.
+Una carrera, cuota con autolimpieza o evidencia insuficiente deja el efecto en
+`recovery_required`/`blocked` individualmente, sin detener recursos válidos.
+`curate apply` y `curate restore` conservan su frontera grant-bound separada.
 
 ## Backend objetivo de Papelera
 
-`neocortex/safety/kio_trash.py` ya prepara el adaptador fail-closed: descubre el
+`neocortex/safety/kio_trash.py` expone el adaptador: descubre el
 primer cliente disponible entre `kioclient6`, `kioclient5` y `kioclient`, valida
 configuración y snapshot, usa `move <origen> trash:/` con timeout acotado y
-requiere un verificador del caller antes de emitir receipt. Todavía no está
-conectado a `--apply`, promovido ni verificado con KIO real.
+requiere un verificador antes de emitir receipt. La configuración de cuota se
+lee sin modificar el `ktrashrc` global; se rechaza cualquier política que pueda
+podar entradas existentes. La canaria instalada debe confirmar el efecto real.
 
-La implementación de `0.11.x` integra esa foundation con autorización, ledger,
-preflight same-filesystem y recovery sobre fixtures, sin relajar su garantía
-path-bound. KIO real, restore y sincronización posterior de owners siguen siendo
-gates separados.
+La release `0.14.0` integra esa foundation con el ledger de acciones, preflight
+same-filesystem y recovery sobre fixtures. La restauración automática nativa se
+verifica por bytes/identidad; la única restauración visual de Dolphin permanece
+como comprobación humana independiente.
 
 Preflight:
 
