@@ -1807,8 +1807,12 @@ class FrameworkState:
                 snapshot = self._read_run_budget_locked(run_id)
             assert snapshot is not None
             if snapshot["cancel_requested"]:
-                if snapshot["cancel_reason"] != reason:
-                    raise ValueError(f"run {run_id} has a conflicting cancellation reason")
+                # A terminal budget/cancel path may be observed twice (for
+                # example a worker notices the deadline and the outer
+                # lifecycle then records termination).  The first durable
+                # reason is authoritative; a later, more specific reason must
+                # not strand the run in ``running`` while trying to append a
+                # duplicate cancellation marker.
                 return False
             details = {
                 "schema": RUN_BUDGET_SCHEMA,
