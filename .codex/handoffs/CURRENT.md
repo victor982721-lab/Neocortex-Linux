@@ -4,8 +4,8 @@
 **Actualización:** 2026-09-14T09:18:00-06:00 (America/Mexico_City).
 **Fuente viva:** HEAD == main == origin/main se comprueba al promover; el árbol debe quedar limpio.
 
-La release activa comprobada es `0.14.0-1bc0da636925-cp314-linux-x86_64`; conserva
-la anterior `0.14.0-c3cf242f7962-cp314-linux-x86_64` como rollback inmediato y
+La release activa comprobada es `0.14.0-420faa70448f-cp314-linux-x86_64`; conserva
+la anterior `0.14.0-1bc0da636925-cp314-linux-x86_64` como rollback inmediato y
 `.staging` quedó vacío tras la promoción. El receipt canónico conserva el SHA
 final, el wheel/manifest, el launcher y los punteros `current`/rollback.
 `Neocortex --version`, ayuda, doctor config, dedupe y `release_linux.py verify`
