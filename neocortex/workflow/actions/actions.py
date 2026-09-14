@@ -829,19 +829,6 @@ class FrameworkActions:
                     "archivos",
                 ),
             )
-        if pending:
-            applied, failed, protected = self._apply_trash_batch(
-                "trash_empty_file",
-                tuple((path, evidence) for path, evidence, _snapshot in pending),
-                expected_snapshots=tuple(snapshot for _path, _evidence, snapshot in pending),
-            )
-            completed += len(pending)
-            summary = replace(
-                summary,
-                duplicates_trashed=summary.duplicates_trashed + applied,
-                duplicate_skips=summary.duplicate_skips + failed + protected,
-                errors=summary.errors + failed,
-            )
         emit_progress(
             self._progress,
             ProgressEvent(
