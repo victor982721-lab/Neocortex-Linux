@@ -386,6 +386,38 @@ def _emit_unsuccessful_execution(
     )
 
 
+def _emit_json_execution_error(
+    *,
+    code: str,
+    failure: BaseException,
+    failed_routes: Sequence[str] = (),
+) -> None:
+    """Keep ``--json`` parseable when execution fails before a result object."""
+
+    from neocortex.api.read_contract import sanitize_untrusted_payload, sanitize_untrusted_text
+
+    payload = {
+        "schema": "neocortex.lifecycle-envelope/v1",
+        "status": "partial",
+        "completion": "incomplete",
+        "exit_code": 2,
+        "error": {
+            "code": code,
+            "type": type(failure).__name__,
+            "message": sanitize_untrusted_text(failure, limit=1_000, single_line=False),
+        },
+        "failed_routes": [sanitize_untrusted_text(item, limit=128) for item in failed_routes],
+    }
+    print(
+        json.dumps(
+            sanitize_untrusted_payload(payload),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+
+
 _ROUTE_FAILURE_NEXT_STEP = (
     "Siguiente paso: consulte --status --status-json con el mismo --state-directory "
     "y resuelva las causas indicadas antes de reanudar la ejecución."
@@ -751,6 +783,9 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 )
                 raise
     except RunBudgetExceeded as exc:
+        if bool(getattr(args, "json_output", False)):
+            _emit_json_execution_error(code="budget_exhausted", failure=exc)
+            return 2
         print(
             "ERROR budget_exhausted completion=incomplete: "
             + sanitize_untrusted_text(exc, limit=800),
@@ -758,6 +793,9 @@ def main(arguments: Sequence[str] | None = None) -> int:
         )
         return 2
     except StatePublicationError as exc:
+        if bool(getattr(args, "json_output", False)):
+            _emit_json_execution_error(code="recovery_required", failure=exc)
+            return 2
         print(
             "ERROR recovery_required status=failed completion=incomplete: "
             + sanitize_untrusted_text(exc, limit=800),
@@ -766,11 +804,17 @@ def main(arguments: Sequence[str] | None = None) -> int:
         print("El avance se conserva; la publicación pendiente requiere recuperación compatible.", file=sys.stderr)
         return 2
     except InventoryError as exc:
+        if bool(getattr(args, "json_output", False)):
+            _emit_json_execution_error(code="corpus_unavailable", failure=exc)
+            return 2
         print(
             f"ERROR corpus_unavailable: {sanitize_untrusted_text(exc, limit=800)}", file=sys.stderr
         )
         return 2
     except ImmutableSQLiteUnavailable as exc:
+        if bool(getattr(args, "json_output", False)):
+            _emit_json_execution_error(code="sqlite_snapshot_unavailable", failure=exc)
+            return 2
         print(
             "ERROR sqlite_snapshot_unavailable status=failed completion=incomplete: "
             + sanitize_untrusted_text(exc, limit=800),
@@ -779,6 +823,9 @@ def main(arguments: Sequence[str] | None = None) -> int:
         print(_SQLITE_FAILURE_NEXT_STEP, file=sys.stderr)
         return 2
     except RuntimeCacheConfigurationError as exc:
+        if bool(getattr(args, "json_output", False)):
+            _emit_json_execution_error(code="runtime_cache_configuration", failure=exc)
+            return 2
         print(
             "ERROR runtime_cache_configuration status=failed completion=incomplete: "
             + sanitize_untrusted_text(exc, limit=800),
@@ -786,6 +833,9 @@ def main(arguments: Sequence[str] | None = None) -> int:
         )
         return 2
     except ProtectedContentError as exc:
+        if bool(getattr(args, "json_output", False)):
+            _emit_json_execution_error(code="protected_content_root", failure=exc)
+            return 2
         print(
             "ERROR protected_content_root status=failed completion=incomplete: "
             + sanitize_untrusted_text(exc, limit=800),
@@ -796,6 +846,13 @@ def main(arguments: Sequence[str] | None = None) -> int:
         # The owners have already recorded the failed routes.  Present that
         # failure without inventing a completed run or continuing --all's
         # dependent semantic stage; partial results remain with their owners.
+        if bool(getattr(args, "json_output", False)):
+            _emit_json_execution_error(
+                code="route_execution_failed",
+                failure=exc,
+                failed_routes=tuple(exc.failures),
+            )
+            return 2
         print(
             "ERROR route_execution_failed status=failed completion=incomplete",
             file=sys.stderr,
