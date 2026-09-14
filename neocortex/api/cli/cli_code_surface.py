@@ -11,6 +11,12 @@ from neocortex.runtime.orchestration.route_selection import (
     BUILTIN_ROUTE_ORDER,
     normalize_route_selection,
 )
+from neocortex.runtime.config.third_party_policy import (
+    DEFAULT_THIRD_PARTY_KINDS,
+    THIRD_PARTY_ACTION_CHOICES,
+    THIRD_PARTY_KIND_CHOICES,
+    CodeThirdPartyPolicy,
+)
 
 
 def register_code_arguments(
@@ -70,6 +76,42 @@ def register_code_arguments(
         action=argparse.BooleanOptionalAction,
         default=False,
         help="include vendored artifacts in structural representation",
+    )
+    code.add_argument(
+        "--code-third-party-action",
+        choices=THIRD_PARTY_ACTION_CHOICES,
+        default="keep",
+        help=(
+            "keep identified dependency/vendor/binary artifacts as advisory "
+            "content (default), or request a bounded trash plan; the plan "
+            "needs --apply to enact and an explicit Code route"
+        ),
+    )
+    code.add_argument(
+        "--code-third-party-min-confidence",
+        type=float,
+        default=0.95,
+        metavar="SCORE",
+        help="minimum classification confidence admitted to a third-party trash plan",
+    )
+    code.add_argument(
+        "--code-third-party-max-actions",
+        type=int,
+        default=256,
+        metavar="N",
+        help="maximum third-party trash candidates admitted in one run",
+    )
+    code.add_argument(
+        "--code-third-party-kind",
+        dest="code_third_party_kinds",
+        action="append",
+        choices=THIRD_PARTY_KIND_CHOICES,
+        default=None,
+        metavar="KIND",
+        help=(
+            "third-party class admitted to an explicit trash plan; repeat to "
+            "opt into generated, build_artifact or cache artifacts"
+        ),
     )
     code.add_argument("--retry-code-errors", action="store_true")
     code.add_argument("--code-status", action="store_true", help="show the code index status")
@@ -162,6 +204,67 @@ def validate_code_arguments(args: argparse.Namespace) -> None:
         raise SystemExit("direct code operations cannot be combined with --route")
 
     _validate_explicit_root_project_scope(args, explicit, code_direct=bool(code_direct))
+    _validate_third_party_arguments(args, explicit, code_direct=bool(code_direct))
+
+
+def code_third_party_policy_from_args(args: argparse.Namespace) -> CodeThirdPartyPolicy:
+    """Project parsed Code origin-cleanup switches into one immutable policy."""
+
+    kinds = tuple(getattr(args, "code_third_party_kinds", None) or DEFAULT_THIRD_PARTY_KINDS)
+    return CodeThirdPartyPolicy(
+        action=args.code_third_party_action,
+        min_confidence=args.code_third_party_min_confidence,
+        max_actions=args.code_third_party_max_actions,
+        kinds=kinds,
+    )
+
+
+def _validate_third_party_arguments(
+    args: argparse.Namespace,
+    explicit: set[str],
+    *,
+    code_direct: bool,
+) -> None:
+    """Keep third-party effects opt-in and separate from read-only Code queries."""
+
+    if not 0.0 <= args.code_third_party_min_confidence <= 1.0:
+        raise SystemExit("--code-third-party-min-confidence must be between 0 and 1")
+    if not 1 <= args.code_third_party_max_actions <= 10_000:
+        raise SystemExit("--code-third-party-max-actions must be between 1 and 10000")
+    kinds = tuple(args.code_third_party_kinds or ())
+    if len(kinds) != len(set(kinds)):
+        raise SystemExit("--code-third-party-kind values must be unique")
+
+    policy_requested = bool(
+        {
+            "code_third_party_action",
+            "code_third_party_min_confidence",
+            "code_third_party_max_actions",
+            "code_third_party_kinds",
+        }
+        & explicit
+    )
+    selected_routes = normalize_route_selection(args.route, BUILTIN_ROUTE_ORDER)
+    code_selected = bool(args.all or "code" in selected_routes)
+    if code_direct and policy_requested:
+        raise SystemExit("third-party Code policy cannot be combined with direct Code queries")
+    if args.dedupe and policy_requested:
+        raise SystemExit("third-party Code policy cannot be combined with --dedupe")
+    if policy_requested and not code_selected and not args.route_only and args.resume_run is None:
+        raise SystemExit("third-party Code policy requires --all or --route code")
+    if args.code_third_party_action == "trash":
+        if not code_selected:
+            raise SystemExit("--code-third-party-action trash requires --all or --route code")
+        if args.route_only or args.resume_run is not None:
+            raise SystemExit("third-party Code trash is unavailable with --route-only/--resume-run")
+        if "root" not in explicit:
+            raise SystemExit(
+                "--code-third-party-action trash requires an explicit --root"
+            )
+        if "code_project_root" not in explicit:
+            raise SystemExit(
+                "--code-third-party-action trash requires at least one --code-project-root"
+            )
 
 
 def _validate_explicit_root_project_scope(
@@ -215,4 +318,8 @@ def _validate_explicit_root_project_scope(
         raise SystemExit(feedback["message"])
 
 
-__all__ = ["register_code_arguments", "validate_code_arguments"]
+__all__ = [
+    "code_third_party_policy_from_args",
+    "register_code_arguments",
+    "validate_code_arguments",
+]

@@ -39,17 +39,26 @@ def _args(root: Path, *extra: str):
     return args
 
 
-def test_all_uses_all_local_code_and_no_hidden_semantic_ceiling(tmp_path: Path):
+def test_all_uses_conservative_code_scope_and_no_hidden_semantic_ceiling(tmp_path: Path):
     root = tmp_path / "corpus"
     root.mkdir()
     args = _args(root, "--all")
-    assert args.route == "all" and args.code_candidate_scope == "broad"
+    assert args.route == "all" and args.code_candidate_scope == "projects"
     assert args.semantic_max_items is None
     assert args.semantic_max_new_jobs is None
     assert args.semantic_time_budget_seconds is None
     assert framework_config_from_args(args).retry_recoverable_errors is True
     budget = _integrated_semantic_budget(args, None)
     assert budget.max_items is None and budget.max_new_jobs is None and budget.deadline is None
+
+
+def test_all_requires_explicit_opt_in_for_broad_code_scope(tmp_path: Path):
+    root = tmp_path / "corpus"
+    root.mkdir()
+
+    args = _args(root, "--all", "--code-scope", "broad")
+
+    assert args.code_candidate_scope == "broad"
 
 
 def test_explicit_semantic_limit_does_not_restore_other_hidden_limits(tmp_path: Path):

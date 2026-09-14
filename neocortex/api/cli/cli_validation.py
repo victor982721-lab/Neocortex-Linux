@@ -49,7 +49,9 @@ from neocortex.runtime.orchestration.route_selection import (
 
 ALL_PRESET = {
     "route": "all",
-    "code_candidate_scope": "broad",
+    # Keep the integrated command conservative: Code only admits configured
+    # project roots unless the caller explicitly opts into a broader scan.
+    "code_candidate_scope": "projects",
     "ocr": "auto",
     "pdf_cache_validation": "metadata",
     "image_document_ocr": "auto",

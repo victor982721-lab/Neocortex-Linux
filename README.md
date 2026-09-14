@@ -28,11 +28,19 @@ proyectan visibilidad, sin borrar vectores ni diagnósticos.
 
 La ruta integrada conserva los owners y contratos existentes. `--all` selecciona
 las nueve rutas (`pdf`, `docx`, `office`, `archive`, `text`, `audio`, `video`,
-`image` y `code`); para esa modalidad Code usa el alcance `broad` dentro de la
-raíz elegida, sin ejecutar el código observado. Sus límites por formato
+`image` y `code`); para esa modalidad Code conserva el alcance seguro
+`projects` y sólo admite raíces de proyectos configuradas, sin ejecutar el
+código observado. Un escaneo amplio requiere el opt-in explícito
+`--code-scope broad`; sus límites por formato
 permanecen efectivos y los límites globales sólo aparecen cuando se expresan de
 forma explícita: no se añade un techo global oculto y los flags repetibles siguen
 siendo acumulativos.
+
+La procedencia de Code distingue señales fuertes de dependencia/vendor,
+generado/build/cache y binario, pero no infiere autoría. La limpieza física es
+opt-in (`--code-third-party-action trash` prepara un plan; `--apply` lo ejecuta),
+usa sólo candidatos con evidencia suficiente y conserva la revalidación/receipt
+KIO; lo ambiguo se deja intacto.
 
 El stage Semantic integrado considera también Archive, Code y Video cuando sus
 owners, heads y dependencias están disponibles. Una dependencia ausente degrada

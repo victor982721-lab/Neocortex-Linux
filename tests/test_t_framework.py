@@ -105,7 +105,7 @@ class CommandLineTests(unittest.TestCase):
         self.assertIsNone(args.semantic_max_items)
         self.assertIsNone(args.semantic_max_new_jobs)
         self.assertIsNone(args.semantic_time_budget_seconds)
-        self.assertEqual(args.code_candidate_scope, "broad")
+        self.assertEqual(args.code_candidate_scope, "projects")
         self.assertIsNone(args.global_memory_budget_mb)
         self.assertIsNone(args.global_min_free_memory_mb)
         self.assertIsNone(args.global_min_free_commit_mb)

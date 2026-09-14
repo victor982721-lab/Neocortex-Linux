@@ -6,10 +6,16 @@ import io
 import re
 import token
 import tokenize
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Final
 
-from ..code_contracts import ArtifactClassification, ArtifactKind
+from ..code_contracts import (
+    ArtifactClassification,
+    ArtifactKind,
+    ThirdPartyClassification,
+    ThirdPartyKind,
+)
 
 
 # region [01] Extensible detection tables
@@ -172,6 +178,102 @@ _EXAMPLE_PATH_PARTS = frozenset(
     {"example", "examples", "demo", "demos", "sample", "samples"}
 )
 _DOC_PATH_PARTS = frozenset({"doc", "docs", "documentation"})
+
+# These are deliberately exact path components.  A filename containing one of
+# these words is not enough to classify it as foreign; a project may quite
+# legitimately have ``dependencies.py`` or ``build_notes.md``.
+_DEPENDENCY_PATH_PARTS = frozenset(
+    {
+        ".cargo",
+        ".gradle",
+        ".venv",
+        "bower_components",
+        "carthage",
+        "dist-packages",
+        "go.mod.cache",
+        "jspm_packages",
+        "node_modules",
+        "packagecache",
+        "pods",
+        "site-packages",
+        "thirdparty",
+        "third-party",
+        "third_party",
+        "vendor",
+        "vendors",
+        "venv",
+    }
+)
+_VENDORED_DIRECTORY_PARTS = frozenset(
+    {"thirdparty", "third-party", "third_party", "vendor", "vendors"}
+)
+_BUILD_PATH_PARTS = frozenset(
+    {
+        ".next",
+        ".nuxt",
+        ".parcel-cache",
+        ".turbo",
+        "bin",
+        "build",
+        "coverage",
+        "dist",
+        "htmlcov",
+        "obj",
+        "out",
+        "target",
+        "wheelhouse",
+    }
+)
+_GENERATED_PATH_PARTS_EXTENDED = frozenset(
+    {"__generated__", "codegen", "generated", "gen"}
+)
+_CACHE_PATH_PARTS = frozenset(
+    {
+        ".cache",
+        ".gradle",
+        ".mypy_cache",
+        ".nox",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".tox",
+        "__pycache__",
+    }
+)
+_BINARY_SUFFIXES = frozenset(
+    {
+        ".a",
+        ".aar",
+        ".appimage",
+        ".class",
+        ".dll",
+        ".dylib",
+        ".ear",
+        ".exe",
+        ".jar",
+        ".lib",
+        ".msi",
+        ".o",
+        ".obj",
+        ".pdb",
+        ".pyc",
+        ".pyo",
+        ".so",
+        ".war",
+        ".wasm",
+    }
+)
+_GENERATED_SUFFIXES = frozenset({".map"})
+_BINARY_MAGIC: Final[tuple[tuple[bytes, str], ...]] = (
+    (b"\x7fELF", "elf"),
+    (b"MZ", "pe"),
+    (b"\xca\xfe\xba\xbe", "mach-o-or-class"),
+    (b"\xfe\xed\xfa\xce", "mach-o"),
+    (b"\xce\xfa\xed\xfe", "mach-o"),
+    (b"\xcf\xfa\xed\xfe", "mach-o"),
+    (b"\xfe\xed\xfa\xcf", "mach-o"),
+    (b"\x00asm", "wasm"),
+)
+THIRD_PARTY_DETECTOR_VERSION = "code-third-party-detector-v1"
 
 _GENERATED_DECLARATION = re.compile(
     r"(?ix)^\s*(?:(?:warning|notice|important|caution)\s*[:!-]\s*)?(?:"
@@ -667,7 +769,254 @@ def classify_artifact(path: str | Path, text: str) -> ArtifactClassification:
 # endregion [03]
 
 
-# region [04] Non-destructive normalized/token fingerprints
+# region [04] Third-party/build/binary origin signals
+
+
+def _path_parts_for_origin(path: str | Path) -> tuple[str, ...]:
+    """Return normalized path components without resolving or reading a path."""
+
+    return tuple(part.casefold() for part in Path(path).parts if part not in {"", "."})
+
+
+def _project_root_for_path(
+    path: str | Path,
+    roots: Iterable[str | Path],
+) -> Path | None:
+    """Return the nearest explicit project root using lexical paths only."""
+
+    candidate = Path(path).absolute()
+    selected: Path | None = None
+    for root in roots:
+        root_path = Path(root).absolute()
+        try:
+            candidate.relative_to(root_path)
+        except ValueError:
+            continue
+        if selected is None or len(root_path.parts) > len(selected.parts):
+            selected = root_path
+    return selected
+
+
+def _binary_magic_evidence(raw: bytes) -> tuple[str, ...]:
+    for magic, label in _BINARY_MAGIC:
+        if raw.startswith(magic):
+            return (f"bytes:binary-magic:{label}",)
+    return ()
+
+
+def _origin_text_probe(
+    candidate: Path,
+    raw: bytes | None,
+    text: str | None,
+) -> str | None:
+    """Obtain only the bounded header used for generated-marker detection."""
+
+    if text is not None:
+        return text[:_HEADER_SCAN_CHARS]
+    if raw is None or not raw or looks_binary(raw):
+        return None
+    try:
+        decoded, _encoding, _evidence = decode_text(
+            raw[:PROBE_BYTES],
+            candidate,
+        )
+    except (UnicodeError, ValueError):
+        return None
+    return decoded[:_HEADER_SCAN_CHARS]
+
+
+def classify_third_party_artifact(
+    path: str | Path,
+    raw: bytes | None = None,
+    *,
+    text: str | None = None,
+    artifact_classification: ArtifactClassification | None = None,
+    analysis_status: str | None = None,
+    project_roots: Iterable[str | Path] = (),
+) -> ThirdPartyClassification:
+    """Classify foreign/build/binary signals without asserting ownership.
+
+    The function is deliberately path-first and bounded.  It consumes only
+    the observed path, optional bytes already read by Code, optional decoded
+    text, and optional route metadata.  It never opens a file, resolves a
+    symlink, consults a package index, contacts a provider, or mutates the
+    corpus.
+
+    Exact dependency/install path components are stronger than a filename
+    substring.  Generated/build/cache paths and binary signatures are retained
+    as separate signals because a generated or binary file can still be
+    project-owned.  A clean source file is called ``PROJECT_CODE`` only when
+    it lies under an explicit project root; otherwise the result is
+    ``UNKNOWN``.  Neither result is an authorship or license determination.
+    """
+
+    candidate = Path(path)
+    candidate_absolute = candidate.absolute()
+    project_root = _project_root_for_path(candidate_absolute, project_roots)
+    parts = _path_parts_for_origin(
+        candidate_absolute.relative_to(project_root)
+        if project_root is not None
+        else candidate_absolute
+    )
+    suffixes = tuple(suffix.casefold() for suffix in candidate.suffixes)
+    evidence: list[str] = [f"detector:{THIRD_PARTY_DETECTOR_VERSION}"]
+    observed: set[ThirdPartyKind] = set()
+    path_dependency = next(
+        (part for part in parts if part in _DEPENDENCY_PATH_PARTS),
+        None,
+    )
+    if path_dependency is not None:
+        kind = (
+            ThirdPartyKind.VENDORED
+            if path_dependency in _VENDORED_DIRECTORY_PARTS
+            else ThirdPartyKind.DEPENDENCY
+        )
+        observed.add(kind)
+        evidence.append(f"path:{kind.value}:{path_dependency}")
+
+    path_build = next((part for part in parts if part in _BUILD_PATH_PARTS), None)
+    if path_build is not None:
+        observed.add(ThirdPartyKind.BUILD_ARTIFACT)
+        evidence.append(f"path:build-artifact:{path_build}")
+
+    path_generated = next(
+        (part for part in parts if part in _GENERATED_PATH_PARTS_EXTENDED),
+        None,
+    )
+    if path_generated is not None:
+        observed.add(ThirdPartyKind.GENERATED)
+        evidence.append(f"path:generated:{path_generated}")
+
+    path_cache = next((part for part in parts if part in _CACHE_PATH_PARTS), None)
+    if path_cache is not None:
+        observed.add(ThirdPartyKind.CACHE)
+        evidence.append(f"path:cache:{path_cache}")
+
+    if suffixes and suffixes[-1] in _GENERATED_SUFFIXES:
+        observed.add(ThirdPartyKind.GENERATED)
+        evidence.append(f"suffix:generated:{suffixes[-1]}")
+    stem = candidate.stem.casefold()
+    if stem.endswith((".generated", ".gen", "_generated", "-generated")):
+        observed.add(ThirdPartyKind.GENERATED)
+        evidence.append("filename:generated-suffix")
+
+    if artifact_classification is None and text is not None:
+        artifact_classification = classify_artifact(candidate, text)
+    if artifact_classification is not None:
+        if artifact_classification.vendored or (
+            artifact_classification.artifact_kind is ArtifactKind.VENDORED
+        ):
+            observed.add(ThirdPartyKind.VENDORED)
+            evidence.append("metadata:artifact-kind:vendored")
+        if artifact_classification.generated or (
+            artifact_classification.artifact_kind is ArtifactKind.GENERATED
+        ):
+            observed.add(ThirdPartyKind.GENERATED)
+            evidence.append("metadata:artifact-kind:generated")
+
+    probe_text = _origin_text_probe(candidate, raw, text)
+    if probe_text:
+        generated_evidence = _generated_header_evidence(
+            probe_text,
+            artifact_classification.language if artifact_classification is not None else None,
+        )
+        if generated_evidence:
+            observed.add(ThirdPartyKind.GENERATED)
+            evidence.extend(f"metadata:{item}" for item in generated_evidence)
+
+    binary_evidence: tuple[str, ...] = ()
+    binary_strong = False
+    if raw is not None:
+        binary_evidence = _binary_magic_evidence(raw)
+        binary_strong = bool(binary_evidence)
+        if looks_binary(raw):
+            binary_evidence = (*binary_evidence, "bytes:binary-control-probe")
+    if binary_evidence:
+        observed.add(ThirdPartyKind.BINARY)
+        evidence.extend(binary_evidence)
+    if suffixes and any(suffix in _BINARY_SUFFIXES for suffix in suffixes):
+        observed.add(ThirdPartyKind.BINARY)
+        binary_strong = True
+        matched_suffix = next(suffix for suffix in suffixes if suffix in _BINARY_SUFFIXES)
+        if f"suffix:binary:{matched_suffix}" not in evidence:
+            evidence.append(f"suffix:binary:{matched_suffix}")
+    if analysis_status is not None and analysis_status.casefold() == "binary":
+        observed.add(ThirdPartyKind.BINARY)
+        evidence.append("metadata:analysis-status:binary")
+
+    if observed:
+        precedence = (
+            ThirdPartyKind.VENDORED,
+            ThirdPartyKind.DEPENDENCY,
+            ThirdPartyKind.CACHE,
+            ThirdPartyKind.BUILD_ARTIFACT,
+            ThirdPartyKind.GENERATED,
+            ThirdPartyKind.BINARY,
+        )
+        primary = next(item for item in precedence if item in observed)
+        if primary in {ThirdPartyKind.VENDORED, ThirdPartyKind.DEPENDENCY}:
+            confidence = 0.98
+        elif primary is ThirdPartyKind.BINARY and not binary_strong:
+            # A generic control-byte probe or a cached ``binary`` status is
+            # useful evidence but can also describe a PDF/image payload.  It
+            # must stay below the default trash-policy threshold.
+            confidence = 0.70
+        else:
+            confidence = 0.95
+    elif project_root is not None:
+        primary = ThirdPartyKind.PROJECT_CODE
+        confidence = 0.60
+        evidence.append("scope:explicit-project-root")
+    else:
+        primary = ThirdPartyKind.UNKNOWN
+        confidence = 0.0
+        evidence.append("scope:ownership-unverified")
+
+    ordered_signals = tuple(
+        item
+        for item in (
+            ThirdPartyKind.VENDORED,
+            ThirdPartyKind.DEPENDENCY,
+            ThirdPartyKind.GENERATED,
+            ThirdPartyKind.BUILD_ARTIFACT,
+            ThirdPartyKind.CACHE,
+            ThirdPartyKind.BINARY,
+        )
+        if item in observed and item is not primary
+    )
+    return ThirdPartyClassification(
+        kind=primary,
+        confidence=confidence,
+        evidence=tuple(dict.fromkeys(evidence)),
+        signals=ordered_signals,
+    )
+
+
+def classify_code_provenance(
+    path: str | Path,
+    raw: bytes | None = None,
+    *,
+    text: str | None = None,
+    artifact_classification: ArtifactClassification | None = None,
+    analysis_status: str | None = None,
+    project_roots: Iterable[str | Path] = (),
+) -> ThirdPartyClassification:
+    """Readable alias for :func:`classify_third_party_artifact`."""
+
+    return classify_third_party_artifact(
+        path,
+        raw,
+        text=text,
+        artifact_classification=artifact_classification,
+        analysis_status=analysis_status,
+        project_roots=project_roots,
+    )
+
+
+# endregion [04]
+
+
+# region [05] Non-destructive normalized/token fingerprints
 
 
 _GENERIC_TOKEN = re.compile(
@@ -706,7 +1055,10 @@ def normalized_tokens(text: str, language: str | None) -> tuple[str, ...]:
 __all__ = [
     "DETECTOR_VERSION",
     "PROBE_BYTES",
+    "THIRD_PARTY_DETECTOR_VERSION",
     "classify_artifact",
+    "classify_code_provenance",
+    "classify_third_party_artifact",
     "decode_text",
     "likely_code_candidate",
     "looks_binary",
@@ -714,4 +1066,4 @@ __all__ = [
 ]
 
 
-# endregion [04]
+# endregion [05]

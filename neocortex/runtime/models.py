@@ -22,6 +22,7 @@ from neocortex.runtime.config.app_paths import (
     default_code_project_roots,
     default_state_directory,
 )
+from neocortex.runtime.config.third_party_policy import CodeThirdPartyPolicy
 from neocortex.safety.ocr_profiles import OcrProfileName
 from neocortex.safety.route_filters import CandidateSelection
 
@@ -91,6 +92,10 @@ class FrameworkConfig:
     code_include_vendored: bool = False
     code_complexity_warning: int = 15
     code_function_lines_warning: int = 200
+    code_third_party_policy: CodeThirdPartyPolicy = field(
+        default_factory=CodeThirdPartyPolicy,
+        kw_only=True,
+    )
     image_workers: int = 4
     image_max_file_bytes: int | None = None
     image_max_documents: int | None = None
@@ -358,4 +363,10 @@ class ActionSummary:
     empty_directories_trashed: int = 0
     empty_directory_skips: int = 0
     errors: int = 0
+    # Appended keyword-only fields keep older positional consumers compatible.
+    # Third-party origin is advisory; non-zero values only appear when an
+    # explicit Code third-party action policy was requested.
+    third_party_candidates: int = field(default=0, kw_only=True)
+    third_party_trashed: int = field(default=0, kw_only=True)
+    third_party_skips: int = field(default=0, kw_only=True)
 # endregion [02]

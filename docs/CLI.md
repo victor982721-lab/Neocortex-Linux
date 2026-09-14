@@ -268,8 +268,34 @@ Cuando se proporciona una raíz explícita para Code, el alcance predeterminado
 NeoCortex se abstiene antes de crear estado y muestra cómo usar
 `--code-project-root PATH` o `--code-scope broad`.
 
-`--all` selecciona todas las rutas registradas, incluida Code. No ejecuta código
-del corpus ni produce evidencia de validación del repositorio.
+`--all` selecciona todas las rutas registradas, incluida Code, pero conserva el
+alcance seguro `projects`: no convierte automáticamente toda la raíz del corpus
+en código candidato. Para analizar una copia de un proyecto, registra su raíz
+con `--code-project-root PATH`; `--code-scope broad` queda como opt-in explícito
+para una exploración amplia y no ejecuta el código observado ni produce
+evidencia de validación del repositorio.
+
+La procedencia de Code es sólo una señal explicable, no una prueba legal de
+autoría. Para solicitar la limpieza de dependencias, árboles `vendor` y
+binarios con evidencia fuerte usa, únicamente sobre una raíz que hayas
+preparado, `--code-third-party-action trash`; sin `--apply` sólo genera el plan,
+y con `--apply` lo ejecuta. El valor predeterminado es `keep`; artefactos
+ambiguos, licencias, contenedores ZIP y miembros virtuales no se mueven. Puedes
+limitar clases con `--code-third-party-kind` y el volumen
+con `--code-third-party-max-actions`; la acción conserva la misma identidad,
+revalidación, Papelera KIO y receipt por archivo que el dedupe.
+Las carpetas que el inventario excluye por política (por ejemplo `.venv`,
+`node_modules`, `.git` y cachés) no forman parte de esta acción y no se borran;
+para una limpieza posterior de una copia concreta habrá que incluirla mediante
+una política de inventario independiente.
+
+Ejemplo de una copia controlada:
+
+```bash
+Neocortex --root "$Root" --state-directory "$State" --all --apply \
+  --code-project-root "$Root/mi-proyecto" \
+  --code-third-party-action trash
+```
 
 ### Lifecycle durable de `--all` (0.14 instalado)
 

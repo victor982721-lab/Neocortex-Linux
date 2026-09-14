@@ -96,8 +96,15 @@ ocultar las rutas independientes.
 
 Después de validar un foco, amplía sólo sobre la raíz temporal. `--all` es una
 operación amplia, no el primer smoke: selecciona todas las rutas registradas,
-incluida Code como contenido, y en esa modalidad usa alcance `broad` dentro de la
-raíz elegida.
+incluida Code como contenido, pero en Code conserva el alcance seguro `projects`.
+Registra las copias de proyectos que quieras procesar con
+`--code-project-root PATH`; sólo usa `--code-scope broad` cuando quieras asumir
+explícitamente una exploración amplia dentro de la raíz elegida.
+La limpieza de dependencias/vendor/binarios requiere además el opt-in explícito
+`--code-third-party-action trash`; sin `--apply` sólo prepara el plan y con
+`--apply` cruza la frontera física. Su política predeterminada es `keep`, los
+artefactos ambiguos permanecen intactos y los efectos usan la misma frontera
+KIO receipt-bound que dedupe.
 
 Para reproducir o regresionar el lifecycle 0.14, ejecuta la ampliación sólo
 sobre el piloto temporal y prueba las nueve rutas (`pdf`, `docx`, `office`,

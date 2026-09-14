@@ -379,6 +379,15 @@ if TYPE_CHECKING:
         @property
         def errors(self) -> int: ...
 
+        @property
+        def third_party_candidates(self) -> int: ...
+
+        @property
+        def third_party_trashed(self) -> int: ...
+
+        @property
+        def third_party_skips(self) -> int: ...
+
 
 @dataclass(frozen=True, slots=True)
 class InventoryRunEvidence:

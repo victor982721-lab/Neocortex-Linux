@@ -39,6 +39,26 @@ class ArtifactKind(StrEnum):
     PLAIN_TEXT = "plain_text"
 
 
+class ThirdPartyKind(StrEnum):
+    """Conservative origin signal for code-shaped corpus artifacts.
+
+    ``PROJECT_CODE`` means only that an artifact is inside an explicitly
+    supplied project root and has no stronger foreign/build signal.  It is not
+    an ownership proof.  Likewise, ``DEPENDENCY``/``VENDORED`` identify
+    strong path/package signals, not legal authorship or license provenance.
+    The classifier deliberately leaves unscoped artifacts as ``UNKNOWN``.
+    """
+
+    PROJECT_CODE = "project_code"
+    DEPENDENCY = "dependency"
+    VENDORED = "vendored"
+    GENERATED = "generated"
+    BUILD_ARTIFACT = "build_artifact"
+    CACHE = "cache"
+    BINARY = "binary"
+    UNKNOWN = "unknown"
+
+
 class AnalysisStatus(StrEnum):
     """Durable outcome of one versioned analysis."""
 
@@ -74,6 +94,100 @@ class ArtifactClassification:
             raise ValueError("artifact confidence must be between 0 and 1")
         if not self.evidence:
             raise ValueError("artifact classification requires evidence")
+
+
+@dataclass(frozen=True, slots=True)
+class ThirdPartyClassification:
+    """Explainable, non-authorizing origin classification for one artifact.
+
+    This value is intentionally separate from :class:`ArtifactClassification`:
+    language/format detection and origin/cleanup signals answer different
+    questions.  ``signals`` may contain several independent observations (for
+    example a binary inside ``node_modules``).  No field in this contract
+    authorizes deletion or trashing; callers must perform their own explicit
+    review, grant and identity/revalidation steps.
+    """
+
+    kind: ThirdPartyKind
+    confidence: float
+    evidence: tuple[str, ...]
+    signals: tuple[ThirdPartyKind, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ValueError("third-party confidence must be between 0 and 1")
+        if not self.evidence:
+            raise ValueError("third-party classification requires evidence")
+        if len(set(self.signals)) != len(self.signals):
+            raise ValueError("third-party classification signals must be unique")
+
+    @property
+    def category(self) -> ThirdPartyKind:
+        """Compatibility/readability alias for the primary kind."""
+
+        return self.kind
+
+    @property
+    def is_third_party(self) -> bool:
+        """Whether an explicit dependency/vendored signal was observed."""
+
+        return any(
+            signal in {ThirdPartyKind.DEPENDENCY, ThirdPartyKind.VENDORED}
+            for signal in (self.kind, *self.signals)
+        )
+
+    @property
+    def is_binary(self) -> bool:
+        """Whether bytes/metadata/path identify a binary artifact."""
+
+        return ThirdPartyKind.BINARY in {self.kind, *self.signals}
+
+    @property
+    def is_generated(self) -> bool:
+        """Whether generated-source evidence was observed."""
+
+        return ThirdPartyKind.GENERATED in {self.kind, *self.signals}
+
+    @property
+    def is_build_artifact(self) -> bool:
+        """Whether build-output evidence was observed."""
+
+        return ThirdPartyKind.BUILD_ARTIFACT in {self.kind, *self.signals}
+
+    @property
+    def is_cache(self) -> bool:
+        """Whether cache-output evidence was observed."""
+
+        return ThirdPartyKind.CACHE in {self.kind, *self.signals}
+
+    @property
+    def cleanup_candidate(self) -> bool:
+        """Return advisory cleanup candidacy, never an action authorization."""
+
+        return any(
+            signal
+            in {
+                ThirdPartyKind.DEPENDENCY,
+                ThirdPartyKind.VENDORED,
+                ThirdPartyKind.GENERATED,
+                ThirdPartyKind.BUILD_ARTIFACT,
+                ThirdPartyKind.CACHE,
+                ThirdPartyKind.BINARY,
+            }
+            for signal in (self.kind, *self.signals)
+        )
+
+    @property
+    def review_required(self) -> bool:
+        """Every cleanup candidate remains human/review-gated."""
+
+        return self.cleanup_candidate
+
+    @property
+    def auto_trash_eligible(self) -> bool:
+        """Origin heuristics never grant automatic trash permission."""
+
+        return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -552,5 +666,7 @@ __all__ = [
     "ReferenceRecord",
     "SourceRange",
     "SymbolRecord",
+    "ThirdPartyClassification",
+    "ThirdPartyKind",
     "analyzer_for_language",
 ]

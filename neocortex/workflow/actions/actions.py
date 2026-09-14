@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import json
+import stat
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import replace
@@ -49,12 +50,36 @@ from neocortex.safety.protected_content import ProtectedContentError
 from neocortex.persistence.framework_state_writer import FrameworkState
 from neocortex.workflow.actions.file_action_recovery import expected_identity_json
 from neocortex.curation.application import BackendOutcome, KioTrashBackend
+from neocortex.code.ingestion.code_detection import (
+    classify_third_party_artifact,
+    likely_code_candidate,
+)
+from neocortex.code.code_contracts import ThirdPartyKind
+from neocortex.runtime.config.third_party_policy import CodeThirdPartyPolicy
 # endregion [01]
 
 # region [02] Implementación
 
 
 TRASH_BATCH_SIZE = 256
+_THIRD_PARTY_METADATA_NAMES = frozenset(
+    {
+        "authors",
+        "authors.txt",
+        "changelog",
+        "changelog.md",
+        "copying",
+        "copying.md",
+        "license",
+        "license.txt",
+        "licence",
+        "licence.txt",
+        "notice",
+        "notice.txt",
+        "readme",
+        "readme.md",
+    }
+)
 TRASH_IDENTITY_ABSTENTION = (
     "Recycle Bin mutation abstained: the available Send2Trash backends resolve "
     "the source by path and cannot bind the observed file identity to the syscall"
@@ -63,6 +88,36 @@ TRASH_IDENTITY_ABSTENTION = (
 # the removed path backend to assert it is never invoked. Production code never
 # reads or calls this sentinel.
 send2trash: None = None
+
+
+def _third_party_binary_probe(snapshot: FileSnapshot) -> bytes | None:
+    """Read a tiny identity-bound prefix for an extensionless binary probe."""
+
+    descriptor: int | None = None
+    try:
+        flags = os.O_RDONLY | int(getattr(os, "O_CLOEXEC", 0))
+        flags |= int(getattr(os, "O_NOFOLLOW", 0))
+        descriptor = os.open(snapshot.path, flags)
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or not stat_matches_snapshot(snapshot, before)
+        ):
+            return None
+        probe = os.read(descriptor, min(8192, max(0, snapshot.size)))
+        after = os.fstat(descriptor)
+        if not stat_matches_snapshot(snapshot, after):
+            return None
+        return probe
+    except OSError:
+        return None
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
 
 
 class FrameworkActions:
@@ -81,6 +136,8 @@ class FrameworkActions:
         exclusion_policy: InventoryExclusionPolicy | None = None,
         progress: ProgressCallback | None = None,
         trash_backend: KioTrashBackend | None = None,
+        third_party_policy: CodeThirdPartyPolicy | None = None,
+        third_party_project_roots: Iterable[str | Path] = (),
     ):
         self._index = index
         self._state = state
@@ -95,6 +152,10 @@ class FrameworkActions:
         )
         self._progress = progress
         self._trash_backend = trash_backend
+        self._third_party_policy = third_party_policy or CodeThirdPartyPolicy()
+        self._third_party_project_roots = tuple(
+            Path(root).expanduser().absolute() for root in third_party_project_roots
+        )
         self._deferred_reconciliation_paths: list[str] = []
 
     def execute(self, plan: DedupPlan, *, cleanup_empty_directories: bool = True) -> ActionSummary:
@@ -110,6 +171,10 @@ class FrameworkActions:
         started = time.perf_counter_ns()
         summary = self._validate_extensions(plan, summary)
         self._record_phase("content-types", started, summary)
+        if self._third_party_policy.mutation_requested:
+            started = time.perf_counter_ns()
+            summary = self._trash_third_party_code(plan, summary)
+            self._record_phase("third-party-code", started, summary)
         if cleanup_empty_directories:
             started = time.perf_counter_ns()
             summary = self._trash_empty_directories(plan, summary)
@@ -163,6 +228,9 @@ class FrameworkActions:
                 "type_cache_misses": summary.type_cache_misses,
                 "stale_inventory": summary.stale_inventory,
                 "errors": summary.errors,
+                "third_party_candidates": summary.third_party_candidates,
+                "third_party_trashed": summary.third_party_trashed,
+                "third_party_skips": summary.third_party_skips,
             },
         )
 
@@ -1364,6 +1432,148 @@ class FrameworkActions:
         # reconciliation raises, the paths remain available to an explicit
         # retry by the caller rather than being silently discarded.
         self._deferred_reconciliation_paths.clear()
+
+    def _trash_third_party_code(
+        self,
+        plan: DedupPlan,
+        summary: ActionSummary,
+    ) -> ActionSummary:
+        """Apply an explicitly requested, conservative third-party plan.
+
+        Origin heuristics are advisory and never grant an effect by
+        themselves.  This phase is reached only when the CLI/configuration
+        carries the explicit ``action=trash`` policy; every selected member
+        still crosses the normal action ledger, identity revalidation, KIO
+        receipt and reconciliation boundary.  Unknown/unscoped artifacts and
+        virtual archive members remain untouched.
+        """
+
+        candidates_total = self._index.file_count(self._scan_id)
+        emit_progress(
+            self._progress,
+            ProgressEvent(
+                "framework",
+                "third-party-code",
+                "Identificando código de terceros",
+                0,
+                candidates_total,
+                "archivos",
+            ),
+        )
+        pending: list[tuple[str, str, FileSnapshot]] = []
+        selected = applied_total = failed_total = protected_total = 0
+        completed = 0
+        capped = False
+        after_path = ""
+
+        def flush() -> None:
+            nonlocal applied_total, failed_total, protected_total
+            if not pending:
+                return
+            batch = tuple((path, evidence) for path, evidence, _snapshot in pending)
+            expected = tuple(snapshot for _path, _evidence, snapshot in pending)
+            applied, failed, protected = self._apply_trash_batch(
+                "trash_third_party_code",
+                batch,
+                expected_snapshots=expected,
+            )
+            applied_total += applied
+            failed_total += failed
+            protected_total += protected
+            pending.clear()
+
+        while True:
+            page = self._index.snapshots_page(
+                plan.scan_id,
+                after_path=after_path,
+                limit=TRASH_BATCH_SIZE,
+            )
+            if not page:
+                break
+            for snapshot in page:
+                completed += 1
+                if Path(snapshot.path).name.casefold() in _THIRD_PARTY_METADATA_NAMES:
+                    continue
+                classification = classify_third_party_artifact(
+                    snapshot.path,
+                    project_roots=self._third_party_project_roots,
+                )
+                if not likely_code_candidate(snapshot.path) and not classification.is_binary:
+                    continue
+                # An extensionless executable is still a common dependency
+                # payload.  Probe only the small set that already looks
+                # code-like and only after path-only classification found no
+                # stronger origin signal; the normal action boundary performs
+                # the full identity/hash revalidation before KIO.
+                if classification.kind is ThirdPartyKind.UNKNOWN:
+                    probe = _third_party_binary_probe(snapshot)
+                    if probe:
+                        classification = classify_third_party_artifact(
+                            snapshot.path,
+                            probe,
+                            project_roots=self._third_party_project_roots,
+                        )
+                if self._third_party_policy.admits(
+                    classification.kind.value,
+                    classification.confidence,
+                ):
+                    if selected >= self._third_party_policy.max_actions:
+                        capped = True
+                        continue
+                    selected += 1
+                    evidence = (
+                        "code-origin="
+                        + classification.kind.value
+                        + ";confidence="
+                        + f"{classification.confidence:.3f}"
+                        + ";signals="
+                        + ",".join(classification.evidence)
+                    )[:8_192]
+                    pending.append((snapshot.path, evidence, snapshot))
+                    if len(pending) >= TRASH_BATCH_SIZE:
+                        flush()
+                if completed % TRASH_BATCH_SIZE == 0:
+                    emit_progress(
+                        self._progress,
+                        ProgressEvent(
+                            "framework",
+                            "third-party-code",
+                            "Identificando código de terceros",
+                            completed,
+                            candidates_total,
+                            "archivos",
+                        ),
+                    )
+            after_path = page[-1].path
+        flush()
+        third_party_skips = failed_total + protected_total
+        if capped:
+            # The cap is an intentional bounded policy outcome, not an error.
+            third_party_skips += 1
+        emit_progress(
+            self._progress,
+            ProgressEvent(
+                "framework",
+                "third-party-code",
+                "Código de terceros procesado",
+                completed,
+                candidates_total,
+                "archivos",
+                True,
+                (
+                    ProgressMetric("selected", selected),
+                    ProgressMetric("applied", applied_total),
+                    ProgressMetric("skipped", third_party_skips),
+                ),
+            ),
+        )
+        return replace(
+            summary,
+            third_party_candidates=selected,
+            third_party_trashed=applied_total,
+            third_party_skips=third_party_skips,
+            errors=summary.errors + failed_total,
+        )
 
     def _inspect_content_type_candidate(
         self,

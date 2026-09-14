@@ -341,6 +341,9 @@ def _print_action_report(result, dedup_policy: str) -> None:
         f"files_renamed={actions.files_renamed} "
         f"empty_directory_candidates={actions.empty_directory_candidates} "
         f"empty_directories_trashed={actions.empty_directories_trashed} "
+        f"third_party_candidates={_optional_counter(actions, 'third_party_candidates') or 0} "
+        f"third_party_trashed={_optional_counter(actions, 'third_party_trashed') or 0} "
+        f"third_party_skips={_optional_counter(actions, 'third_party_skips') or 0} "
         f"action_errors={actions.errors}"
     )
 
@@ -641,6 +644,7 @@ def _action_counts(actions: object) -> dict[str, int]:
             "duplicate_candidates",
             "rename_candidates",
             "empty_directory_candidates",
+            "third_party_candidates",
         )
     )
     skips = sum(
@@ -649,6 +653,7 @@ def _action_counts(actions: object) -> dict[str, int]:
             "duplicate_skips",
             "rename_skips",
             "empty_directory_skips",
+            "third_party_skips",
         )
     )
     applied = sum(
@@ -657,6 +662,7 @@ def _action_counts(actions: object) -> dict[str, int]:
             "duplicates_trashed",
             "files_renamed",
             "empty_directories_trashed",
+            "third_party_trashed",
         )
     )
     apply_requested = bool(_field_value(actions, "apply_actions")[1])

@@ -17,6 +17,17 @@ Los nombres legacy en DDL/migraciones o aliases de lectura pueden ser datos de
 compatibilidad: no los borres ni reescribas por coincidir con una palabra prohibida.
 Conserva la lectura histórica y demuestra el límite ejecutable actual.
 
+La procedencia se expresa como señal (`dependency`, `vendored`, `generated`,
+`build_artifact`, `cache`, `binary`, `project_code` o `unknown`), nunca como
+prueba de autoría. `--all` usa `projects` por defecto; las raíces de proyecto
+propias se declaran con `--code-project-root` y una exploración `broad` es un
+opt-in explícito. El modo de limpieza mantiene `keep` por defecto. Sólo
+`--code-third-party-action trash` solicita un plan (y `--apply` lo ejecuta) para
+candidatos regulares con señales fuertes y límite configurable; lo ambiguo, las licencias,
+los contenedores y los miembros virtuales quedan fuera. Las carpetas que el
+inventario excluye (`.venv`, `node_modules`, `.git`, cachés, etc.) tampoco son
+escaneadas ni afectadas por este modo.
+
 ## Validación proporcional
 
 Reutiliza `tests/architecture/test_boundaries.py` y las pruebas focales de ingesta,

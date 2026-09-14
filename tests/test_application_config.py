@@ -50,7 +50,7 @@ from neocortex.capabilities.formats.text.text_route import TextRouteConfig
 def test_application_config_preserves_the_product_dataclass() -> None:
     assert ApplicationConfig is FrameworkConfig
     application_fields = fields(ApplicationConfig)
-    assert len(application_fields) == 180
+    assert len(application_fields) == 181
     assert {item.name for item in application_fields if item.kw_only} == {
         "dedup_keep_paths",
         "dedup_prefer_roots",
@@ -58,6 +58,7 @@ def test_application_config_preserves_the_product_dataclass() -> None:
         "run_max_bytes",
         "run_time_budget_seconds",
         "retry_recoverable_errors",
+        "code_third_party_policy",
     }
     field_names = {item.name for item in application_fields}
     assert {

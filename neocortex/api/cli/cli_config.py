@@ -10,6 +10,7 @@ import argparse
 from neocortex.runtime.config.app_paths import default_code_project_roots
 from neocortex.runtime.models import FrameworkConfig
 from neocortex.safety.route_filters import CandidateSelection
+from .cli_code_surface import code_third_party_policy_from_args
 
 __all__ = ["framework_config_from_args"]
 
@@ -81,6 +82,7 @@ def framework_config_from_args(args: argparse.Namespace) -> FrameworkConfig:
         ),
         code_include_generated=args.code_include_generated,
         code_include_vendored=args.code_include_vendored,
+        code_third_party_policy=code_third_party_policy_from_args(args),
         code_complexity_warning=args.code_complexity_warning,
         code_function_lines_warning=args.code_function_lines_warning,
         image_workers=args.image_workers,

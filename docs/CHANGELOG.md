@@ -4,6 +4,19 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-14 — Alcance seguro y procedencia de Code
+
+- `--all` deja de forzar `broad`: Code usa `projects` y sólo analiza raíces
+  configuradas; `--code-scope broad` queda como opt-in para una copia que Víctor
+  quiera explorar ampliamente.
+- La clasificación separa señales de proyecto, dependencia/vendor, binario,
+  generado, build, caché y desconocido. No afirma autoría legal ni usa red,
+  índices de paquetes o ejecución de contenido.
+- `--code-third-party-action keep` es el valor predeterminado. El modo
+  `trash --apply` sólo admite clases explícitas y candidatos regulares con
+  confianza suficiente, preserva licencias/contenedores/ambigüedades y usa la
+  misma revalidación, Papelera KIO y receipts por archivo.
+
 ## 2026-09-14 — Aplicación KIO bounded por lote
 
 - `--all --apply` y `dedupe --apply` agrupan archivos regulares en lotes de

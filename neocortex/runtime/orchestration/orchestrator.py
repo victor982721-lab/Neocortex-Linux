@@ -1123,6 +1123,11 @@ class FrameworkOrchestrator:
             "code_candidate_scope": self.config.code_candidate_scope,
             "code_include_generated": self.config.code_include_generated,
             "code_include_vendored": self.config.code_include_vendored,
+            "code_third_party_policy": (
+                None
+                if getattr(self.config, "code_third_party_policy", None) is None
+                else self.config.code_third_party_policy.to_dict()
+            ),
             "apply_actions": self.config.apply_actions,
             "runtime_cache_home": os.environ.get(XDG_CACHE_HOME_ENVIRONMENT),
             "excluded_paths": [str(path) for path in excluded_paths],
@@ -1521,6 +1526,8 @@ class FrameworkOrchestrator:
             exclusion_policy=inventory_policy,
             progress=self.progress,
             trash_backend=trash_backend,
+            third_party_policy=getattr(self.config, "code_third_party_policy", None),
+            third_party_project_roots=self.config.code_project_roots,
         )
         state.set_run_phase(run_id, "actions")
         actions = runner.execute(
