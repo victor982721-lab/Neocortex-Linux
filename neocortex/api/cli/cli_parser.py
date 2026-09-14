@@ -178,10 +178,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--dedupe-json",
-        "--json",
         dest="dedupe_json",
         action="store_true",
         help="emit the duplicate-service result as one JSON document (for --dedupe)",
+    )
+    parser.add_argument(
+        "--json",
+        dest="json_output",
+        action="store_true",
+        help="emit a single JSON summary for --all or --dedupe",
     )
     parser.add_argument(
         "--route",

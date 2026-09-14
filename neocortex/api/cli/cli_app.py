@@ -12,6 +12,7 @@ import json
 import os
 import sys
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 
 from .cli_operations import dispatch_direct_operation
@@ -32,8 +33,33 @@ _DEDUPE_SERVICE_HANDLERS = ("run_dedupe", "dedupe", "execute_dedupe")
 _SERVICE_UNAVAILABLE_EXIT_CODE = 2
 
 
+def _json_summary_payload(result: object, *, semantic_results: Sequence[tuple[str, object]], semantic_exit_code: int) -> object:
+    """Convert one completed run to a bounded JSON-safe summary."""
+
+    if is_dataclass(result):
+        payload: object = asdict(result)
+    elif isinstance(result, Mapping):
+        payload = dict(result)
+    else:
+        payload = {"result": str(result)}
+    if isinstance(payload, dict):
+        payload.setdefault("semantic_exit_code", semantic_exit_code)
+        if semantic_results:
+            payload["semantic_results"] = [
+                {"scope": scope, "result": (asdict(value) if is_dataclass(value) else value)}
+                for scope, value in semantic_results
+            ]
+    from neocortex.api.read_contract import sanitize_untrusted_payload
+
+    return sanitize_untrusted_payload(payload)
+
+
 def _service_json_requested(args: argparse.Namespace) -> bool:
-    return bool(getattr(args, "dedupe_json", False) or getattr(args, "json", False))
+    return bool(
+        getattr(args, "dedupe_json", False)
+        or getattr(args, "json_output", False)
+        or getattr(args, "json", False)
+    )
 
 
 def _service_payload(
@@ -632,7 +658,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 args,
                 progress=progress,
                 result_sink=lambda scope, value: semantic_results.append((scope, value)),
-                print_output=not professional_output,
+                print_output=not professional_output and not bool(getattr(args, "json_output", False)),
                 run_id=run_id,
                 resume_source_run_id=semantic_resume_source_run_id,
                 framework_lock_held=semantic_callback_lock_held,
@@ -792,7 +818,20 @@ def main(arguments: Sequence[str] | None = None) -> int:
         )
         return 2
 
-    if professional_output:
+    if bool(getattr(args, "json_output", False)):
+        print(
+            json.dumps(
+                _json_summary_payload(
+                    result,
+                    semantic_results=tuple(semantic_results),
+                    semantic_exit_code=semantic_exit_code,
+                ),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+    elif professional_output:
         print_professional_summary(
             result,
             args,
