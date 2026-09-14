@@ -28,6 +28,19 @@ fuera de `docs/`.
 - Regresiones aisladas cubren ambas fases y 513 archivos vacíos; no ejecutan
   `--all --apply` ni modifican el corpus personal.
 
+## 2026-09-14 — Proyección bounded de rutas y Code
+
+- `FrameworkState.route_candidate_snapshot(run_id=...)` publica sólo los
+  candidatos de la generación activa, recomendaciones abiertas ligadas a esos
+  candidatos y la evidencia mínima de fases para replay. La copia evita
+  duplicar el historial completo de Framework y conserva el límite de 256 MiB.
+- En un `--all` normal, Code consume una proyección efímera derivada del
+  `DedupIndex` que ya posee el lifecycle, y las reservas usan el resumen de la
+  generación posterior a las acciones; no se reabre el inventario WAL-backed
+  desde un worker.
+- El snapshot y la proyección se limpian al salir; no cambian el corpus ni
+  convierten una vista parcial en cobertura completa.
+
 ## 2026-09-13 — Cierre operativo consolidado 0.14.0
 
 - Dedupe Linux/KIO receipt-bound con claim same-filesystem, no-replace,

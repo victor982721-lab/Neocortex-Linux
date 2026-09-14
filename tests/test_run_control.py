@@ -874,28 +874,24 @@ def test_resume_recovers_legacy_scan_link_from_durable_inventory_evidence(
     collected_during_snapshot = False
 
     if collect_during_snapshot:
-        original_connect = sqlite3.connect
+        from neocortex.persistence import framework_state_writer as writer_module
 
-        class CollectDuringBackup(sqlite3.Connection):
-            def backup(self, target, *, progress, **kwargs):
-                def collect_and_progress(status, remaining, total):
-                    nonlocal collected_during_snapshot
-                    if not collected_during_snapshot:
-                        collected_during_snapshot = True
-                        gc.collect()
-                    progress(status, remaining, total)
+        original_projection = writer_module._project_route_candidate_view
 
-                return super().backup(target, progress=collect_and_progress, **kwargs)
+        def collect_during_projection(source, target, budget, *, run_id):
+            nonlocal collected_during_snapshot
+            if not collected_during_snapshot:
+                collected_during_snapshot = True
+                gc.collect()
+            return original_projection(source, target, budget, run_id=run_id)
 
-        def connect_for_collection(database, *args, **kwargs):
-            if str(database) == str(state_dir / "framework.sqlite3"):
-                kwargs.setdefault("factory", CollectDuringBackup)
-            return original_connect(database, *args, **kwargs)
-
-        # Keep the real writer-owned backup, pinned read version and physical
-        # identity checks. Fixture writers must already be closed when cyclic
-        # collection runs inside the pre-worker snapshot acquisition window.
-        monkeypatch.setattr(sqlite3, "connect", connect_for_collection)
+        # Fixture writers must already be closed when cyclic collection runs
+        # inside the owner-pinned projection acquisition window.
+        monkeypatch.setattr(
+            writer_module,
+            "_project_route_candidate_view",
+            collect_during_projection,
+        )
 
     def execute(context):
         seen.extend(

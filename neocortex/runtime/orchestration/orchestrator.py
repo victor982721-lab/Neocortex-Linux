@@ -65,7 +65,9 @@ from neocortex.runtime.models import (
 )
 from neocortex.runtime.orchestration.route_registry import (
     RouteAdapter,
+    CodeInventoryProjection,
     RouteExecutionContext,
+    build_code_inventory_projection,
     builtin_route_registry,
     normalize_route_selection,
 )
@@ -617,6 +619,8 @@ class FrameworkOrchestrator:
         state: FrameworkState,
         run_id: int,
         scan_id: int,
+        inventory_view: CodeInventoryProjection | None = None,
+        inventory_workload: tuple[int, int] | None = None,
     ) -> tuple[dict[str, object], GlobalResourceSummary | None]:
         self._unavailable_routes = {}
         if not self.selected_routes:
@@ -637,6 +641,8 @@ class FrameworkOrchestrator:
                 run_id=run_id,
                 scan_id=scan_id,
                 candidate_database=None,
+                inventory_view=inventory_view,
+                inventory_workload=inventory_workload,
             )
 
         # Candidates and selection evidence have already been committed. Pin
@@ -654,6 +660,8 @@ class FrameworkOrchestrator:
                 run_id=run_id,
                 scan_id=scan_id,
                 candidate_database=candidate_database,
+                inventory_view=inventory_view,
+                inventory_workload=inventory_workload,
             )
 
     def _reserve_route_work(
@@ -780,6 +788,8 @@ class FrameworkOrchestrator:
         run_id: int,
         scan_id: int,
         candidate_database: Path | None,
+        inventory_view: CodeInventoryProjection | None = None,
+        inventory_workload: tuple[int, int] | None = None,
     ) -> tuple[dict[str, object], GlobalResourceSummary | None]:
         coordinator: GlobalResourceCoordinator | None = None
         executor: ThreadPoolExecutor | None = None
@@ -814,8 +824,7 @@ class FrameworkOrchestrator:
                     raise
                 state.begin_route_runs(run_id, self.selected_routes)
 
-            inventory_workload: tuple[int, int] | None = None
-            if any(
+            if inventory_workload is None and any(
                 self.route_registry[name].input_source == "inventory_snapshot"
                 for name in self.selected_routes
             ):
@@ -840,6 +849,7 @@ class FrameworkOrchestrator:
                     progress=self._coordinated_progress,
                     resource_coordinator=coordinator,
                     cancellation=self._cancellation,
+                    inventory_view=inventory_view,
                 )
 
             def execute_route(route_name: str) -> tuple[object, int]:
@@ -1538,6 +1548,8 @@ class FrameworkOrchestrator:
         action_runner: FrameworkActions,
         plan: DedupPlan,
         actions: ActionSummary,
+        inventory_view: CodeInventoryProjection | None = None,
+        inventory_workload: tuple[int, int] | None = None,
     ) -> tuple[
         ActionSummary,
         dict[str, object],
@@ -1551,6 +1563,8 @@ class FrameworkOrchestrator:
             state=state,
             run_id=run_id,
             scan_id=scan_id,
+            inventory_view=inventory_view,
+            inventory_workload=inventory_workload,
         )
         image_summary = cast("ImageRouteSummary | None", route_results.get("image"))
         organization_plan, organization_apply = self._run_document_organization(
@@ -1610,6 +1624,18 @@ class FrameworkOrchestrator:
                 inventory.inventory_mode,
                 candidate_rows,
             )
+            inventory_view = None
+            if "code" in self.selected_routes:
+                inventory_view = build_code_inventory_projection(
+                    dedup_index,
+                    inventory.scan.scan_id,
+                    cancellation=self._cancellation,
+                )
+            # Actions may have published a reconciliation successor.  Read
+            # the post-action summary from the owner that is already open so
+            # route reservations reflect the same generation as Code and do
+            # not reopen the WAL-backed inventory database.
+            route_inventory_summary = dedup_index.scan_summary(inventory.scan.scan_id)
             (
                 actions,
                 route_results,
@@ -1625,6 +1651,11 @@ class FrameworkOrchestrator:
                 action_runner=action_runner,
                 plan=plan,
                 actions=actions,
+                inventory_view=inventory_view,
+                inventory_workload=(
+                    int(route_inventory_summary.files_seen),
+                    int(route_inventory_summary.bytes_seen),
+                ),
             )
         return _InitialWork(
             inventory,

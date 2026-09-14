@@ -22,6 +22,7 @@ from pathlib import Path
 from neocortex.persistence.sqlite_immutable import (
     ImmutableSQLiteUnavailable,
     SQLiteSnapshotBudget,
+    SQLiteSnapshotBudgetExceeded,
     SQLiteSnapshotMetrics,
     _SnapshotBudgetState,
     _coerce_snapshot_budget,
@@ -46,6 +47,8 @@ def writer_coordinated_sqlite_snapshot(
     source: Path,
     *,
     owner_identity: tuple[int, int],
+    projection: Callable[[sqlite3.Connection, sqlite3.Connection, _SnapshotBudgetState], None]
+    | None = None,
     timeout_seconds: float = 60.0,
     temp_root: Path | None = None,
     budget: SQLiteSnapshotBudget | None = None,
@@ -61,9 +64,12 @@ def writer_coordinated_sqlite_snapshot(
     allows other WAL writers (including heartbeat) to proceed without mixing
     candidate generations. A pending transaction is rejected rather than
     committed, rolled back, or passed to SQLite backup, which can deadlock on
-    its own source write transaction. Source physical replacement is rejected;
-    ordinary writes remain the SQLite owner's responsibility, not a relaxed
-    filesystem fence on ``SQLiteReadSession``.
+    its own source write transaction. When ``projection`` is supplied, it is
+    called with that same pinned owner connection and a disposable target; it
+    must create a bounded read projection without committing or rolling back
+    the owner. Source physical replacement is rejected; ordinary writes remain
+    the SQLite owner's responsibility, not a relaxed filesystem fence on
+    ``SQLiteReadSession``.
     """
 
     if (
@@ -145,20 +151,64 @@ def writer_coordinated_sqlite_snapshot(
             check_budget()
             with closing(sqlite3.connect(destination)) as target:
                 target.execute("PRAGMA trusted_schema=OFF")
-                page_size = int(connection.execute("PRAGMA page_size").fetchone()[0])
-                page_count = int(connection.execute("PRAGMA page_count").fetchone()[0])
-                # A DELETE-journal materialization needs room for the target
-                # database and a rollback journal while SQLite is recovering.
-                # Reject before backup so a tiny budget cannot transiently
-                # exceed its bound and only fail after writing the snapshot.
-                required_bytes = (page_size * page_count * 2) + (page_size * 2)
-                budget_state.before_write(required_bytes)
-                connection.backup(
-                    target,
-                    pages=max(1, budget.block_bytes // 4096),
-                    progress=check_budget,
-                    sleep=0.01,
-                )
+                if projection is None:
+                    page_size = int(connection.execute("PRAGMA page_size").fetchone()[0])
+                    page_count = int(connection.execute("PRAGMA page_count").fetchone()[0])
+                    # A DELETE-journal materialization needs room for the target
+                    # database and a rollback journal while SQLite is recovering.
+                    # Reject before backup so a tiny budget cannot transiently
+                    # exceed its bound and only fail after writing the snapshot.
+                    required_bytes = (page_size * page_count * 2) + (page_size * 2)
+                    budget_state.before_write(required_bytes)
+                    connection.backup(
+                        target,
+                        pages=max(1, budget.block_bytes // 4096),
+                        progress=check_budget,
+                        sleep=0.01,
+                    )
+                else:
+                    # A route projection writes into a disposable owner.  Keep
+                    # its rollback journal in memory so the on-disk high-water
+                    # mark is the projected database itself rather than a
+                    # second copy of it.  The target is never published before
+                    # the self-contained DELETE-journal mode is restored below.
+                    journal_mode = target.execute("PRAGMA journal_mode=MEMORY").fetchone()[0]
+                    if journal_mode != "memory":
+                        raise ImmutableSQLiteUnavailable(
+                            "SQLite coordinated snapshot projection journal mode is unavailable"
+                        )
+                    target_page_size = int(target.execute("PRAGMA page_size").fetchone()[0])
+                    budget_state.before_write(target_page_size * 2)
+                    max_pages = budget.max_temporary_bytes // target_page_size
+                    if max_pages < 1:
+                        raise ImmutableSQLiteUnavailable(
+                            "SQLite coordinated snapshot projection budget is too small"
+                        )
+                    target.execute(f"PRAGMA max_page_count={max_pages}")
+                    target.execute("BEGIN")
+                    projection_error: BaseException | None = None
+
+                    def projection_progress() -> int:
+                        nonlocal projection_error
+                        try:
+                            budget_state.checkpoint()
+                        except BaseException as exc:
+                            projection_error = exc
+                            return 1
+                        return 0
+
+                    target.set_progress_handler(projection_progress, 1000)
+                    try:
+                        projection(connection, target, budget_state)
+                        target.commit()
+                    except sqlite3.Error as exc:
+                        if projection_error is not None:
+                            raise projection_error from exc
+                        if getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_FULL:
+                            raise SQLiteSnapshotBudgetExceeded("temporary_bytes") from exc
+                        raise
+                    finally:
+                        target.set_progress_handler(None, 0)
                 check_budget()
                 # The output must be self-contained before any worker sees it.
                 if target.execute("PRAGMA journal_mode=DELETE").fetchone()[0] != "delete":

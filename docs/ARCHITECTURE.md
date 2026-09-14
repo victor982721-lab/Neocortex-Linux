@@ -564,12 +564,17 @@ starttime y limpia su grupo original aunque el líder ya haya terminado. Este
 límite de PGID no contiene descendientes que creen otra sesión o grupo.
 
 Antes de iniciar workers de contenido, `FrameworkState.route_candidate_snapshot()`
-publica una copia temporal desde la conexión writer que ya posee el owner, con
-lectura fijada, copia por páginas y comprobación acotada. `FrameworkRouteState`
-usa esa vista inmutable sólo para candidatos; eventos, ReviewTasks, acciones y
-lifecycle conservan el owner original. La copia vive hasta que terminan todos
-los workers, incluso ante error o cancelación, sin abrir un lector ordinario
-en el origen ni relajar los fences de `SQLiteReadSession`.
+publica una proyección temporal bounded desde la conexión writer que ya posee el
+owner, con lectura fijada, copia por páginas y comprobación acotada. Conserva
+únicamente la generación de candidatos, las recomendaciones abiertas ligadas a
+ella y la evidencia mínima de fases de replay; el backup completo queda para
+llamadas legacy sin una generación explícita. `FrameworkRouteState` usa esa
+vista inmutable sólo para candidatos; eventos, ReviewTasks, acciones y lifecycle
+conservan el owner original. La copia vive hasta que terminan todos los
+workers, incluso ante error o cancelación, sin abrir un lector ordinario en el
+origen ni relajar los fences de `SQLiteReadSession`. Code recibe además una
+proyección efímera de sus filas admisibles producida por el owner de inventario,
+evitando reabrir un WAL grande desde el worker.
 
 En `--all`, la misma frontera se conserva entre workers de ruta y stages
 posteriores. El progreso, transcript y estado público distinguen `complete`,

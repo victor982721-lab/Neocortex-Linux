@@ -13,7 +13,7 @@ import sqlite3
 import stat
 import time
 from collections.abc import Callable, Iterable, Mapping
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -70,6 +70,237 @@ from neocortex.runtime.orchestration.run_manifest import (
 # region [02] Implementación
 
 _PATH_COLLATION = sqlite_path_collation()
+_ROUTE_SNAPSHOT_BATCH_SIZE = 256
+
+
+class _RouteSnapshotBudget(Protocol):
+    """Small budget surface used by the bounded route projection."""
+
+    def checkpoint(self) -> None: ...
+
+    def before_write(self, size: int) -> None: ...
+
+
+_ROUTE_CANDIDATE_PROJECTION_TABLE = f"""
+CREATE TABLE route_candidates (
+    run_id INTEGER NOT NULL,
+    mime TEXT NOT NULL,
+    path TEXT NOT NULL COLLATE {_PATH_COLLATION},
+    volume_id TEXT NOT NULL,
+    file_id TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    mtime_ns INTEGER NOT NULL,
+    birthtime_ns INTEGER NOT NULL,
+    PRIMARY KEY(run_id, path)
+) WITHOUT ROWID
+"""
+
+_ROUTE_CANDIDATE_PROJECTION_INDEX = """
+CREATE INDEX route_candidates_mime_idx
+    ON route_candidates(run_id, mime, path)
+"""
+
+_ROUTE_REVIEW_PROJECTION_TABLE = """
+CREATE TABLE review_candidates (
+    route_name TEXT NOT NULL,
+    volume_id TEXT NOT NULL,
+    file_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    recommendation TEXT NOT NULL
+)
+"""
+
+_ROUTE_REVIEW_PROJECTION_INDEX = """
+CREATE INDEX review_candidates_status_idx
+    ON review_candidates(status, recommendation, route_name)
+"""
+
+_ROUTE_REVIEW_PROJECTION_IDENTITY_INDEX = """
+CREATE INDEX review_candidates_identity_idx
+    ON review_candidates(route_name, volume_id, file_id, status, recommendation)
+"""
+
+_ROUTE_INITIAL_RUN_PROJECTION_SCHEMA = """
+CREATE TABLE initial_runs (
+    run_id INTEGER PRIMARY KEY,
+    status TEXT NOT NULL
+);
+"""
+
+_ROUTE_PHASE_PROJECTION_SCHEMA = """
+CREATE TABLE route_phase_runs (
+    run_id INTEGER NOT NULL,
+    route_name TEXT NOT NULL,
+    phase_name TEXT NOT NULL,
+    status TEXT NOT NULL,
+    PRIMARY KEY(run_id, route_name, phase_name)
+) WITHOUT ROWID;
+"""
+
+
+def _sqlite_projection_value_bytes(value: object) -> int:
+    """Return a conservative bounded estimate for one SQLite value."""
+
+    if value is None:
+        return 16
+    if isinstance(value, bytes):
+        return len(value) + 32
+    if isinstance(value, str):
+        return len(value.encode("utf-8")) + 32
+    if isinstance(value, (int, float)):
+        return 32
+    return len(str(value).encode("utf-8")) + 32
+
+
+def _copy_route_projection_rows(
+    source: sqlite3.Connection,
+    target: sqlite3.Connection,
+    budget: _RouteSnapshotBudget,
+    *,
+    select_sql: str,
+    select_parameters: tuple[object, ...],
+    insert_sql: str,
+) -> None:
+    """Copy one projection stream without materializing its complete result."""
+
+    with closing(source.execute(select_sql, select_parameters)) as rows:
+        while True:
+            budget.checkpoint()
+            batch = rows.fetchmany(_ROUTE_SNAPSHOT_BATCH_SIZE)
+            if not batch:
+                return
+            # The target is journal-free, but SQLite still allocates complete pages
+            # for a write.  Reserve a conservative payload estimate before each
+            # bounded batch; the max_page_count guard in the caller is the hard
+            # ceiling and the following checkpoint verifies the actual footprint.
+            estimate = sum(
+                _sqlite_projection_value_bytes(value)
+                for row in batch
+                for value in row
+            )
+            budget.before_write(max(4096, (estimate * 2) + 8192))
+            target.executemany(insert_sql, batch)
+            budget.checkpoint()
+
+
+def _project_route_candidate_view(
+    source: sqlite3.Connection,
+    target: sqlite3.Connection,
+    budget: _RouteSnapshotBudget,
+    *,
+    run_id: int,
+) -> None:
+    """Build the minimal immutable database consumed by concurrent routes.
+
+    The Framework owner also stores historical events, caches, recovery data,
+    and review evidence.  None of those bytes are route input.  This projection
+    retains only the current run's candidates, open review recommendations,
+    and the terminal phase rows needed by an explicitly bound resume source.
+    The source connection is the already-owned, pinned writer view; no source
+    reader or corpus access is opened here.
+    """
+
+    target.execute(_ROUTE_CANDIDATE_PROJECTION_TABLE)
+    target.execute(_ROUTE_CANDIDATE_PROJECTION_INDEX)
+    target.execute(_ROUTE_REVIEW_PROJECTION_TABLE)
+    target.execute(_ROUTE_REVIEW_PROJECTION_INDEX)
+    target.execute(_ROUTE_REVIEW_PROJECTION_IDENTITY_INDEX)
+    target.execute(_ROUTE_INITIAL_RUN_PROJECTION_SCHEMA)
+    target.execute(_ROUTE_PHASE_PROJECTION_SCHEMA)
+    budget.checkpoint()
+
+    _copy_route_projection_rows(
+        source,
+        target,
+        budget,
+        select_sql="""
+            SELECT run_id,mime,path,volume_id,file_id,size,mtime_ns,birthtime_ns
+            FROM route_candidates
+            WHERE run_id=?
+            ORDER BY path
+        """,
+        select_parameters=(run_id,),
+        insert_sql="""
+            INSERT INTO route_candidates(
+                run_id,mime,path,volume_id,file_id,size,mtime_ns,birthtime_ns
+            ) VALUES(?,?,?,?,?,?,?,?)
+        """,
+    )
+
+    # Only open rows bound to a candidate in this run can satisfy the route
+    # selection EXISTS predicate.  Joining against the current generation is
+    # important: review history may be much larger than the route view and
+    # must not silently consume the bounded snapshot budget.
+    _copy_route_projection_rows(
+        source,
+        target,
+        budget,
+        select_sql="""
+            SELECT r.route_name,r.volume_id,r.file_id,r.status,r.recommendation
+            FROM review_candidates r
+            WHERE r.status='open' AND EXISTS(
+                SELECT 1 FROM route_candidates c
+                WHERE c.run_id=?
+                  AND c.volume_id=r.volume_id
+                  AND c.file_id=r.file_id
+            )
+            ORDER BY route_name,volume_id,file_id,recommendation
+        """,
+        select_parameters=(run_id,),
+        insert_sql="""
+            INSERT INTO review_candidates(
+                route_name,volume_id,file_id,status,recommendation
+            ) VALUES(?,?,?,?,?)
+        """,
+    )
+
+    # A resume route may need to inspect the terminal source run through the
+    # detached candidate database.  Discover and copy only that source row and
+    # its completed phase evidence; a malformed source id is fail-closed.
+    source_row = source.execute(
+        "SELECT source_run_id FROM initial_runs WHERE run_id=?",
+        (run_id,),
+    ).fetchone()
+    source_run_id = None
+    if source_row is not None and source_row[0] is not None:
+        try:
+            source_run_id = int(source_row[0])
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ImmutableSQLiteUnavailable(
+                "framework route snapshot source run identity is invalid"
+            ) from exc
+        if source_run_id <= 0:
+            raise ImmutableSQLiteUnavailable(
+                "framework route snapshot source run identity is invalid"
+            )
+    run_ids = (run_id,) if source_run_id is None else (run_id, source_run_id)
+    placeholders = ",".join("?" for _ in run_ids)
+    _copy_route_projection_rows(
+        source,
+        target,
+        budget,
+        select_sql=(
+            "SELECT run_id,status FROM initial_runs "
+            f"WHERE run_id IN ({placeholders}) ORDER BY run_id"
+        ),
+        select_parameters=run_ids,
+        insert_sql="INSERT INTO initial_runs(run_id,status) VALUES(?,?)",
+    )
+    _copy_route_projection_rows(
+        source,
+        target,
+        budget,
+        select_sql=(
+            "SELECT run_id,route_name,phase_name,status "
+            "FROM route_phase_runs "
+            f"WHERE run_id IN ({placeholders}) ORDER BY run_id,route_name,phase_name"
+        ),
+        select_parameters=run_ids,
+        insert_sql=(
+            "INSERT INTO route_phase_runs(run_id,route_name,phase_name,status) "
+            "VALUES(?,?,?,?)"
+        ),
+    )
 
 
 class RunBudgetExceeded(RuntimeError):
@@ -353,6 +584,16 @@ class FrameworkState:
             self._connection,
             self.path,
             owner_identity=self._connection_owner_identity,
+            projection=(
+                None
+                if run_id is None
+                else lambda source, target, snapshot_budget: _project_route_candidate_view(
+                    source,
+                    target,
+                    snapshot_budget,
+                    run_id=run_id,
+                )
+            ),
             budget=budget,
             generation=run_id if generation is None else generation,
         )

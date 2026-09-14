@@ -7,7 +7,8 @@ from dataclasses import asdict, dataclass, is_dataclass, replace
 import heapq
 from pathlib import Path
 from threading import RLock
-from typing import Any, Callable, Literal, Mapping, TYPE_CHECKING
+from typing import Any, Callable, Literal, Mapping, Protocol, TYPE_CHECKING
+
 from neocortex.runtime.orchestration.route_selection import (
     BUILTIN_ROUTE_ORDER as BUILTIN_ROUTE_ORDER,
 )
@@ -44,12 +45,20 @@ if TYPE_CHECKING:
     from neocortex.capabilities.formats.text.text_route import TextRouteConfig as TextRouteConfig
     from neocortex.capabilities.formats.video.route import VideoRoute as VideoRoute
     from neocortex.capabilities.formats.video.route import VideoRouteConfig as VideoRouteConfig
+    from neocortex.code.code_route import CodeInventory
+    from neocortex.deduplication import FileSnapshot
 
 
 # region [01] Generic route contracts and selection exports
 
 RouteLifecycleCapability = Literal["phase_resume", "safe_replay", "not_resumable"]
 RouteWorkload = tuple[int, int]
+
+
+class _InventorySnapshotSource(Protocol):
+    """Minimal inventory owner/projection seam used by the Code route."""
+
+    def snapshots(self, scan_id: int) -> Iterable[FileSnapshot]: ...
 
 # Route workers run concurrently, while all source kinds publish into the
 # same document-catalog owner.  Keep extraction parallel and serialize only
@@ -68,6 +77,10 @@ class RouteExecutionContext:
     progress: "ProgressCallback | None"
     resource_coordinator: GlobalResourceCoordinator | None
     cancellation: "CancellationToken"
+    # Normal --all runs may provide a bounded projection built by the already
+    # open inventory owner.  Keeping it optional preserves route-only and
+    # legacy test adapters, while avoiding a second WAL-backed DedupIndex.
+    inventory_view: "CodeInventory | None" = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +128,56 @@ class RouteAdapter:
             mapping,
             replayability=self.lifecycle_capability,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class CodeInventoryProjection:
+    """Bounded immutable Code input copied from the active inventory owner.
+
+    The projection contains only paths that the Code route can admit before
+    reading bytes.  It is intentionally ephemeral and in-memory: the owning
+    orchestration scope controls its lifetime and no corpus or inventory
+    database is rewritten.
+    """
+
+    records: tuple[FileSnapshot, ...]
+
+    def snapshots(self, scan_id: int) -> Iterable[FileSnapshot]:
+        if type(scan_id) is not int or scan_id <= 0:
+            raise ValueError("Code inventory projection scan_id must be positive")
+        yield from self.records
+
+
+def build_code_inventory_projection(
+    index: _InventorySnapshotSource,
+    scan_id: int,
+    *,
+    cancellation: object | None = None,
+) -> CodeInventoryProjection:
+    """Materialize the Code-admissible inventory rows from an open owner.
+
+    ``DedupIndex`` remains the sole reader of the live WAL-backed owner.  The
+    route workers consume this detached tuple, so no worker needs to run the
+    inventory schema validator or create a large temporary SQLite snapshot.
+    """
+
+    from neocortex.code.ingestion.code_candidate_scope import is_project_marker
+    from neocortex.code.ingestion.code_detection import likely_code_candidate
+    from neocortex.deduplication import FileSnapshot
+
+    checkpoint = getattr(cancellation, "checkpoint", None)
+    records: list[FileSnapshot] = []
+    for snapshot in index.snapshots(scan_id):
+        if callable(checkpoint):
+            checkpoint()
+        if not isinstance(snapshot, FileSnapshot):
+            raise TypeError("inventory owner returned an invalid FileSnapshot")
+        # Keep this projection semantically identical to CodeRoute's first
+        # admission predicate.  Project-scope discovery needs marker files;
+        # arbitrary non-code inventory rows cannot affect either pass.
+        if likely_code_candidate(snapshot.path) or is_project_marker(snapshot.path):
+            records.append(snapshot)
+    return CodeInventoryProjection(tuple(records))
 
 
 # region [01b] Bounded route workload projections
@@ -215,13 +278,12 @@ def _code_route_workload(context: RouteExecutionContext) -> RouteWorkload:
         is_project_marker,
     )
     from neocortex.code.ingestion.code_detection import likely_code_candidate
-    from neocortex.deduplication import DedupIndex
-
     config = context.config
     selected_paths = {
         str(Path(value).expanduser().absolute()) for value in config.selection.paths
     }
-    with DedupIndex(config.dedup_database) as index:
+
+    def estimate(index: _InventorySnapshotSource) -> RouteWorkload:
         project_scope = None
         if config.code_candidate_scope == "projects" and not selected_paths:
             project_scope = ProjectCandidateScope.discover(
@@ -230,6 +292,7 @@ def _code_route_workload(context: RouteExecutionContext) -> RouteWorkload:
                 include_vendored=config.code_include_vendored,
                 explicit_roots=config.code_project_roots,
             )
+
         def code_sizes() -> Iterable[int]:
             for snapshot in index.snapshots(context.scan_id):
                 if selected_paths and str(Path(snapshot.path).absolute()) not in selected_paths:
@@ -245,6 +308,18 @@ def _code_route_workload(context: RouteExecutionContext) -> RouteWorkload:
                 yield max(0, int(snapshot.size))
 
         return _bounded_workload(code_sizes(), config.code_max_documents)
+
+    projected = context.inventory_view
+    if projected is not None:
+        return estimate(projected)
+
+    # Route-only and legacy callers may not have an owner-provided projection.
+    # Preserve their historical behavior; normal --all runs always inject the
+    # bounded view before workers are created.
+    from neocortex.deduplication import DedupIndex
+
+    with DedupIndex(config.dedup_database) as index:
+        return estimate(index)
 
 
 def _candidate_workload_estimator(route_name: str) -> Callable[[RouteExecutionContext], RouteWorkload]:
@@ -554,8 +629,6 @@ def code_route_config_from_framework(config: "FrameworkConfig") -> "CodeRouteCon
 
 
 def _run_code(context: RouteExecutionContext) -> object:
-    from neocortex.deduplication import DedupIndex
-
     from neocortex.code.code_route import CodeRoute
 
     config = context.config
@@ -564,10 +637,11 @@ def _run_code(context: RouteExecutionContext) -> object:
         from neocortex.runtime.control.global_resources import CoordinatedMemoryGate
 
         gate = CoordinatedMemoryGate(context.resource_coordinator, "code")
-    with DedupIndex(config.dedup_database) as dedup_index:
+    inventory_view = context.inventory_view
+    if inventory_view is not None:
         summary = CodeRoute(
             code_route_config_from_framework(config),
-            dedup_index,
+            inventory_view,
             context.framework_state,
             context.run_id,
             context.scan_id,
@@ -575,6 +649,23 @@ def _run_code(context: RouteExecutionContext) -> object:
             cancellation=context.cancellation,
             memory_gate=gate,
         ).run()
+    else:
+        # Route-only and legacy callers may not have the owner-provided
+        # projection.  Keep their existing fallback while normal --all avoids
+        # reopening a WAL-backed inventory database from a worker.
+        from neocortex.deduplication import DedupIndex
+
+        with DedupIndex(config.dedup_database) as dedup_index:
+            summary = CodeRoute(
+                code_route_config_from_framework(config),
+                dedup_index,
+                context.framework_state,
+                context.run_id,
+                context.scan_id,
+                progress=context.progress,
+                cancellation=context.cancellation,
+                memory_gate=gate,
+            ).run()
     catalog = _update_document_catalog_after_route(context, "code")
     if catalog:
         summary = _summary_with_catalog(summary, catalog)
