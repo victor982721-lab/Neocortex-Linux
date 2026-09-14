@@ -46,15 +46,24 @@ def test_explicit_third_party_cleanup_moves_only_strong_signals(tmp_path: Path) 
     owned = root / "owned"
     owned.mkdir()
     (owned / "main.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (owned / "tool.so").write_bytes(b"\x7fELF\x02\x01\x01\x00owned")
     (root / "vendor" / "library.py").parent.mkdir()
     (root / "vendor" / "library.py").write_text("VALUE = 2\n", encoding="utf-8")
-    (root / "libfoo.so").write_bytes(b"\x7fELF\x02\x01\x01\x00fixture")
+    (root / "vendor" / "libfoo.so").write_bytes(b"\x7fELF\x02\x01\x01\x00fixture")
+    (root / "standalone.so").write_bytes(b"\x7fELF\x02\x01\x01\x00unscoped")
     (root / "vendor" / "archive.zip").write_bytes(b"PK\x03\x04not-a-code-action")
     generated = root / "generated" / "client.py"
     generated.parent.mkdir()
     generated.write_text("VALUE = 4\n", encoding="utf-8")
     (root / "loose.py").write_text("VALUE = 3\n", encoding="utf-8")
     (root / "LICENSE").write_text("keep attribution\n", encoding="utf-8")
+    metadata_files = (
+        root / "vendor" / "LICENSE-MIT",
+        root / "vendor" / "NOTICE.md",
+        root / "vendor" / "THIRD-PARTY-NOTICES.txt",
+    )
+    for metadata in metadata_files:
+        metadata.write_text("keep attribution\n", encoding="utf-8")
 
     backend = _FixtureBatchBackend()
     with DedupIndex(state_root / "dedup.sqlite3") as index:
@@ -68,7 +77,7 @@ def test_explicit_third_party_cleanup_moves_only_strong_signals(tmp_path: Path) 
                 run_id,
                 scan.scan_id,
                 apply=True,
-                trash_backend=backend,
+                trash_backend=backend,  # type: ignore[arg-type]
                 third_party_policy=CodeThirdPartyPolicy(action="trash"),
                 third_party_project_roots=(owned,),
             )
@@ -82,12 +91,15 @@ def test_explicit_third_party_cleanup_moves_only_strong_signals(tmp_path: Path) 
     assert summary.third_party_trashed == 2
     assert summary.third_party_skips == 0
     assert (owned / "main.py").exists()
+    assert (owned / "tool.so").exists()
     assert (root / "loose.py").exists()
     assert (root / "LICENSE").exists()
+    assert all(path.exists() for path in metadata_files)
     assert (root / "vendor" / "archive.zip").exists()
     assert generated.exists()
     assert not (root / "vendor" / "library.py").exists()
-    assert not (root / "libfoo.so").exists()
+    assert not (root / "vendor" / "libfoo.so").exists()
+    assert (root / "standalone.so").exists()
 
 
 def test_third_party_cleanup_is_preview_only_without_apply(tmp_path: Path) -> None:
@@ -111,7 +123,7 @@ def test_third_party_cleanup_is_preview_only_without_apply(tmp_path: Path) -> No
                 run_id,
                 scan.scan_id,
                 apply=False,
-                trash_backend=backend,
+                trash_backend=backend,  # type: ignore[arg-type]
                 third_party_policy=CodeThirdPartyPolicy(action="trash"),
             )
             summary = runner._trash_third_party_code(
@@ -123,3 +135,47 @@ def test_third_party_cleanup_is_preview_only_without_apply(tmp_path: Path) -> No
     assert summary.third_party_trashed == 0
     assert backend.calls == []
     assert candidate.exists()
+
+
+def test_applied_third_party_cleanup_precedes_route_candidate_publication(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "corpus"
+    state_root = tmp_path / "state"
+    root.mkdir()
+    state_root.mkdir()
+    owned = root / "owned"
+    owned.mkdir()
+    own_source = owned / "main.py"
+    own_source.write_text("VALUE = 1\n", encoding="utf-8")
+    vendor_source = root / "vendor" / "library.py"
+    vendor_source.parent.mkdir()
+    vendor_source.write_text("VALUE = 2\n", encoding="utf-8")
+
+    backend = _FixtureBatchBackend()
+    route_candidate_paths: set[str] = set()
+    with DedupIndex(state_root / "dedup.sqlite3") as index:
+        scan = index.scan(root)
+        plan = DedupPlanner(index).plan(scan.scan_id)
+        with FrameworkState(state_root / "framework.sqlite3") as state:
+            run_id = begin_signed_normal_run(state, root)
+            runner = FrameworkActions(
+                index,
+                state,
+                run_id,
+                scan.scan_id,
+                apply=True,
+                trash_backend=backend,  # type: ignore[arg-type]
+                third_party_policy=CodeThirdPartyPolicy(action="trash"),
+                third_party_project_roots=(owned,),
+            )
+            summary = runner.execute(plan, cleanup_empty_directories=False)
+            route_candidate_paths = {
+                snapshot.path
+                for _mime, snapshot in state.iter_route_candidates_by_prefix(run_id, "")
+            }
+
+    assert summary.third_party_trashed == 1
+    assert not vendor_source.exists()
+    assert own_source.exists()
+    assert str(vendor_source) not in route_candidate_paths

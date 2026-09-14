@@ -665,12 +665,14 @@ def _run_code(context: RouteExecutionContext) -> object:
 
     config = context.config
     code_config = code_route_config_from_framework(config)
-    if code_config.candidate_scope == "projects":
+    # Keep lightweight route-config test doubles and legacy adapters working;
+    # the canonical CodeRouteConfig always exposes these fields.
+    if getattr(code_config, "candidate_scope", None) == "projects":
         relevant_roots = _project_roots_relevant_to_corpus(
             context.root,
-            code_config.explicit_project_roots,
+            getattr(code_config, "explicit_project_roots", ()),
         )
-        if relevant_roots != code_config.explicit_project_roots:
+        if relevant_roots != getattr(code_config, "explicit_project_roots", ()):
             code_config = replace(code_config, explicit_project_roots=relevant_roots)
     gate = None
     if context.resource_coordinator is not None:

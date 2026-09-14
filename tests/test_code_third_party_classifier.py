@@ -104,8 +104,8 @@ def test_binary_status_and_extensions_are_advisory_not_ownership_proof() -> None
         "project/src/tool.so", project_roots=(Path("project"),)
     )
 
-    assert by_status.kind is ThirdPartyKind.BINARY
-    assert by_extension.kind is ThirdPartyKind.BINARY
+    assert by_status.kind is ThirdPartyKind.PROJECT_CODE
+    assert by_extension.kind is ThirdPartyKind.PROJECT_CODE
     assert by_status.is_third_party is False
     assert by_extension.is_third_party is False
     assert by_status.is_binary is by_extension.is_binary is True

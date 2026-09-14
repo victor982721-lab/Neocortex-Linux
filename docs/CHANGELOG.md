@@ -12,10 +12,10 @@ fuera de `docs/`.
 - La clasificación separa señales de proyecto, dependencia/vendor, binario,
   generado, build, caché y desconocido. No afirma autoría legal ni usa red,
   índices de paquetes o ejecución de contenido.
-- `--code-third-party-action keep` es el valor predeterminado. El modo
-  `trash --apply` sólo admite clases explícitas y candidatos regulares con
-  confianza suficiente, preserva licencias/contenedores/ambigüedades y usa la
-  misma revalidación, Papelera KIO y receipts por archivo.
+- `--all` prepara automáticamente un plan `trash` para dependencias/vendor y
+  binarios con señales fuertes; `--apply` cruza la frontera física. Se
+  preservan licencias/contenedores/ambigüedades y se usa la misma revalidación,
+  Papelera KIO y receipts por archivo. `keep` queda como override interno.
 
 ## 2026-09-14 — Aplicación KIO bounded por lote
 

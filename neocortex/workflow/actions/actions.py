@@ -80,6 +80,16 @@ _THIRD_PARTY_METADATA_NAMES = frozenset(
         "readme.md",
     }
 )
+_THIRD_PARTY_METADATA_PREFIXES = (
+    "license",
+    "licence",
+    "copying",
+    "notice",
+    "authors",
+    "third-party-notices",
+    "third_party_notices",
+    "thirdpartynotices",
+)
 TRASH_IDENTITY_ABSTENTION = (
     "Recycle Bin mutation abstained: the available Send2Trash backends resolve "
     "the source by path and cannot bind the observed file identity to the syscall"
@@ -88,6 +98,20 @@ TRASH_IDENTITY_ABSTENTION = (
 # the removed path backend to assert it is never invoked. Production code never
 # reads or calls this sentinel.
 send2trash: None = None
+
+
+def _is_third_party_metadata_name(path: str | Path) -> bool:
+    """Keep license/notice attribution files out of an origin cleanup plan."""
+
+    name = Path(path).name.casefold()
+    if name in _THIRD_PARTY_METADATA_NAMES:
+        return True
+    return any(
+        name.startswith(prefix)
+        and len(name) > len(prefix)
+        and name[len(prefix)] in {"-", "_", "."}
+        for prefix in _THIRD_PARTY_METADATA_PREFIXES
+    )
 
 
 def _third_party_binary_probe(snapshot: FileSnapshot) -> bytes | None:
@@ -168,13 +192,16 @@ class FrameworkActions:
         started = time.perf_counter_ns()
         summary = self._trash_duplicates(plan, summary)
         self._record_phase("duplicates", started, summary)
-        started = time.perf_counter_ns()
-        summary = self._validate_extensions(plan, summary)
-        self._record_phase("content-types", started, summary)
         if self._third_party_policy.mutation_requested:
             started = time.perf_counter_ns()
             summary = self._trash_third_party_code(plan, summary)
             self._record_phase("third-party-code", started, summary)
+        # Third-party effects must precede content-type candidate publication;
+        # otherwise route_candidates could retain a path already moved to
+        # Trash and a later route would read a stale source identity.
+        started = time.perf_counter_ns()
+        summary = self._validate_extensions(plan, summary)
+        self._record_phase("content-types", started, summary)
         if cleanup_empty_directories:
             started = time.perf_counter_ns()
             summary = self._trash_empty_directories(plan, summary)
@@ -1492,7 +1519,7 @@ class FrameworkActions:
                 break
             for snapshot in page:
                 completed += 1
-                if Path(snapshot.path).name.casefold() in _THIRD_PARTY_METADATA_NAMES:
+                if _is_third_party_metadata_name(snapshot.path):
                     continue
                 classification = classify_third_party_artifact(
                     snapshot.path,
@@ -1513,6 +1540,16 @@ class FrameworkActions:
                             probe,
                             project_roots=self._third_party_project_roots,
                         )
+                # A bare binary signature is deliberately not an authorship
+                # proof.  Require a dependency/vendor origin signal before the
+                # default binary class can be trashed; explicit generated,
+                # build or cache policy overrides retain their documented
+                # opt-in behavior.
+                if (
+                    classification.kind is ThirdPartyKind.BINARY
+                    and not classification.is_third_party
+                ):
+                    continue
                 if self._third_party_policy.admits(
                     classification.kind.value,
                     classification.confidence,

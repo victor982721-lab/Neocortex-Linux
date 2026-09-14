@@ -37,10 +37,11 @@ forma explícita: no se añade un techo global oculto y los flags repetibles sig
 siendo acumulativos.
 
 La procedencia de Code distingue señales fuertes de dependencia/vendor,
-generado/build/cache y binario, pero no infiere autoría. La limpieza física es
-opt-in (`--code-third-party-action trash` prepara un plan; `--apply` lo ejecuta),
-usa sólo candidatos con evidencia suficiente y conserva la revalidación/receipt
-KIO; lo ambiguo se deja intacto.
+generado/build/cache y binario, pero no infiere autoría. En el flujo normal
+`--all` prepara automáticamente la limpieza de terceros; `--apply` es el gate
+que la ejecuta. Sólo usa candidatos con evidencia suficiente y conserva la
+revalidación/receipt KIO; lo ambiguo se deja intacto. La política `keep` queda
+disponible para overrides internos de Codex.
 
 El stage Semantic integrado considera también Archive, Code y Video cuando sus
 owners, heads y dependencias están disponibles. Una dependencia ausente degrada

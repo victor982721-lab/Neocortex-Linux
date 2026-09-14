@@ -944,7 +944,17 @@ def classify_third_party_artifact(
         observed.add(ThirdPartyKind.BINARY)
         evidence.append("metadata:analysis-status:binary")
 
-    if observed:
+    # A binary inside an explicitly owned project is not evidence that it is
+    # third-party. Keep the binary fact as a secondary signal so the Code route
+    # can avoid parsing it, but do not admit it to the default cleanup policy.
+    only_binary_in_owned_scope = bool(
+        project_root is not None and observed and observed <= {ThirdPartyKind.BINARY}
+    )
+    if only_binary_in_owned_scope:
+        primary = ThirdPartyKind.PROJECT_CODE
+        confidence = 0.60
+        evidence.append("scope:explicit-project-root")
+    elif observed:
         precedence = (
             ThirdPartyKind.VENDORED,
             ThirdPartyKind.DEPENDENCY,

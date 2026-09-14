@@ -67,6 +67,7 @@ from neocortex.runtime.orchestration.route_registry import (
     RouteAdapter,
     CodeInventoryProjection,
     RouteExecutionContext,
+    _project_roots_relevant_to_corpus,
     build_code_inventory_projection,
     builtin_route_registry,
     normalize_route_selection,
@@ -1496,6 +1497,29 @@ class FrameworkOrchestrator:
         )
         return plan
 
+    def _code_project_roots_for_actions(
+        self,
+        *,
+        dedup_index: DedupIndex,
+        scan_id: int,
+        corpus_root: Path,
+    ) -> tuple[Path, ...]:
+        """Resolve the owned Code roots without opening another inventory DB."""
+
+        from neocortex.code.ingestion.code_candidate_scope import ProjectCandidateScope
+
+        configured = _project_roots_relevant_to_corpus(
+            corpus_root,
+            self.config.code_project_roots,
+        )
+        scope = ProjectCandidateScope.discover(
+            (snapshot.path for snapshot in dedup_index.snapshots(scan_id)),
+            include_generated=False,
+            include_vendored=False,
+            explicit_roots=configured,
+        )
+        return tuple(Path(root).absolute() for root in scope.roots)
+
     def _execute_initial_actions(
         self,
         *,
@@ -1506,6 +1530,7 @@ class FrameworkOrchestrator:
         plan: DedupPlan,
         excluded_paths: tuple[Path, ...],
         inventory_policy: InventoryExclusionPolicy,
+        third_party_project_roots: tuple[Path, ...] = (),
     ) -> tuple[FrameworkActions, ActionSummary]:
         trash_backend = None
         if self.config.apply_actions and os.name != "nt":
@@ -1527,7 +1552,7 @@ class FrameworkOrchestrator:
             progress=self.progress,
             trash_backend=trash_backend,
             third_party_policy=getattr(self.config, "code_third_party_policy", None),
-            third_party_project_roots=self.config.code_project_roots,
+            third_party_project_roots=third_party_project_roots,
         )
         state.set_run_phase(run_id, "actions")
         actions = runner.execute(
@@ -1613,6 +1638,14 @@ class FrameworkOrchestrator:
                 dedup_index,
                 inventory.scan.scan_id,
             )
+            third_party_project_roots = ()
+            third_party_policy = getattr(self.config, "code_third_party_policy", None)
+            if third_party_policy is not None and third_party_policy.mutation_requested:
+                third_party_project_roots = self._code_project_roots_for_actions(
+                    dedup_index=dedup_index,
+                    scan_id=inventory.scan.scan_id,
+                    corpus_root=boundary.access_policy.root,
+                )
             action_runner, actions = self._execute_initial_actions(
                 state=state,
                 run_id=run_id,
@@ -1621,6 +1654,7 @@ class FrameworkOrchestrator:
                 plan=plan,
                 excluded_paths=excluded_paths,
                 inventory_policy=boundary.exclusion_policy,
+                third_party_project_roots=third_party_project_roots,
             )
             candidate_rows = state.route_candidate_run_count(run_id)
             state.publish_initial_routing_snapshot(

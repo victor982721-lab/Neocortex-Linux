@@ -103,6 +103,14 @@ class KioTrashClaim:
         }
 
 
+class KioTrashClaimUnavailable(KioTrashUnavailable):
+    """A claim crossed the rename frontier but needs caller-owned recovery."""
+
+    def __init__(self, reason: str, detail: str, claim: KioTrashClaim):
+        self.claim = claim
+        super().__init__(reason, detail)
+
+
 @dataclass(frozen=True, slots=True)
 class KioTrashPreflight:
     """Read-only environment evidence collected before starting KIO."""
@@ -782,15 +790,34 @@ def _claim_source(source: Path, expected: FileSnapshot) -> KioTrashClaim:
     """Create a private sibling claim and retain it on all uncertain paths."""
 
     claim_directory: Path | None = None
+    claim: KioTrashClaim | None = None
     try:
         claim_directory = Path(
             tempfile.mkdtemp(prefix=".neocortex-kio-claim-", dir=os.fspath(source.parent))
         )
         os.chmod(claim_directory, 0o700)
         claim_path = claim_directory / source.name
+        claim = KioTrashClaim(source, claim_path, claim_directory, expected)
         _renameat2_noreplace(source, claim_path, expected=expected)
-        return KioTrashClaim(source, claim_path, claim_directory, expected)
-    except BaseException:
+        return claim
+    except BaseException as error:
+        if claim is not None:
+            try:
+                # A post-rename verification failure can happen after the
+                # helper crossed the frontier.  Surface the claim to the
+                # batch owner instead of losing it in a local exception.
+                claimed = os.path.lexists(claim.claim_path)
+            except OSError:
+                claimed = True
+            if claimed:
+                if isinstance(error, KioTrashUnavailable):
+                    reason, detail = error.reason, error.detail
+                elif isinstance(error, BaseException):
+                    reason = "kio_claim_failed"
+                    detail = f"{type(error).__name__}: {error}"
+                else:
+                    reason, detail = "kio_claim_failed", "private KIO claim failed"
+                raise KioTrashClaimUnavailable(reason, detail, claim) from error
         if claim_directory is not None:
             try:
                 # The directory is only ever empty before a successful claim.
@@ -2300,7 +2327,12 @@ def move_many_to_trash(
     try:
         for work in works:
             if use_claims:
-                work.claim = _claim_source(work.source, work.item.expected)
+                try:
+                    work.claim = _claim_source(work.source, work.item.expected)
+                except KioTrashClaimUnavailable as exc:
+                    work.claim = exc.claim
+                    work.kio_source = exc.claim.claim_path
+                    raise
                 work.kio_source = work.claim.claim_path
             else:
                 work.kio_source = work.source

@@ -83,8 +83,9 @@ def register_code_arguments(
         default="keep",
         help=(
             "keep identified dependency/vendor/binary artifacts as advisory "
-            "content (default), or request a bounded trash plan; the plan "
-            "needs --apply to enact and an explicit Code route"
+            "content (default for direct/internal calls), or request a bounded "
+            "trash plan; integrated --all selects that plan automatically and "
+            "--apply is still required to enact it"
         ),
     )
     code.add_argument(
@@ -257,14 +258,20 @@ def _validate_third_party_arguments(
             raise SystemExit("--code-third-party-action trash requires --all or --route code")
         if args.route_only or args.resume_run is not None:
             raise SystemExit("third-party Code trash is unavailable with --route-only/--resume-run")
-        if "root" not in explicit:
-            raise SystemExit(
-                "--code-third-party-action trash requires an explicit --root"
-            )
-        if "code_project_root" not in explicit:
-            raise SystemExit(
-                "--code-third-party-action trash requires at least one --code-project-root"
-            )
+        # Integrated ``--all`` is the controlled-corpus workflow.  Its root
+        # and marker-derived project scope are already captured by the
+        # lifecycle boundary, so no extra user flags are required.  A direct
+        # Code invocation remains stricter because it has no all-run boundary
+        # to bind the cleanup policy to.
+        if not args.all:
+            if "root" not in explicit:
+                raise SystemExit(
+                    "--code-third-party-action trash requires an explicit --root"
+                )
+            if "code_project_root" not in explicit:
+                raise SystemExit(
+                    "--code-third-party-action trash requires at least one --code-project-root"
+                )
 
 
 def _validate_explicit_root_project_scope(
@@ -281,6 +288,25 @@ def _validate_explicit_root_project_scope(
     command's established failure ordering while making the focused Code
     command fail closed before it creates inventory or Code state.
     """
+
+    if (
+        args.all
+        and args.code_candidate_scope == "projects"
+        and "code_project_root" in explicit
+    ):
+        corpus_root = Path(args.root).expanduser().absolute()
+        for project_root in tuple(args.code_project_root or ()):
+            candidate = Path(project_root).expanduser().absolute()
+            try:
+                corpus_root.relative_to(candidate)
+            except ValueError:
+                try:
+                    candidate.relative_to(corpus_root)
+                except ValueError as exc:
+                    raise SystemExit(
+                        "--code-project-root must overlap the selected --root "
+                        "when --all uses code scope=projects"
+                    ) from exc
 
     if code_direct or "root" not in explicit:
         return

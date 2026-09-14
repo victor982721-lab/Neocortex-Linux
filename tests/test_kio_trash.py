@@ -779,6 +779,48 @@ def test_batch_native_claims_are_shared_process_and_cleanup_is_durable(
         assert f"Path={item.source}\n" in info.read_text(encoding="utf-8")
 
 
+def test_claim_failure_after_rename_is_restored_and_not_lost(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_home = tmp_path / "config"
+    config_home.mkdir()
+    client = _executable(tmp_path / "kioclient5")
+    source, expected = _source(tmp_path / "source.txt")
+    item = KioTrashBatchItem(source, expected, _batch_digest(expected))
+    original = kio_trash._renameat2_noreplace
+    calls = 0
+
+    def fail_after_claim(
+        claim_source: Path,
+        claim_destination: Path,
+        *,
+        expected: FileSnapshot,
+    ) -> None:
+        nonlocal calls
+        if calls == 0:
+            calls += 1
+            os.rename(claim_source, claim_destination)
+            raise kio_trash.KioTrashUnavailable(
+                "kio_claim_unverified",
+                "injected failure after claim rename",
+            )
+        original(claim_source, claim_destination, expected=expected)
+
+    monkeypatch.setattr(kio_trash, "_renameat2_noreplace", fail_after_claim)
+    result = move_many_to_trash(
+        (item,),
+        verifier=_never_verify,
+        which=_which_for(client),
+        environment=_environment(config_home),
+    )
+
+    assert result.outcomes[0].status is KioTrashStatus.BLOCKED
+    assert result.outcomes[0].reason == "kio_claim_unverified"
+    assert source.exists()
+    assert not list(tmp_path.glob(".neocortex-kio-claim-*"))
+
+
 def test_batch_verification_failure_does_not_hide_other_item(
     tmp_path: Path,
 ) -> None:

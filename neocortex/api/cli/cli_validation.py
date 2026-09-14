@@ -52,6 +52,10 @@ ALL_PRESET = {
     # Keep the integrated command conservative: Code only admits configured
     # project roots unless the caller explicitly opts into a broader scan.
     "code_candidate_scope": "projects",
+    # The normal controlled-corpus workflow requests a third-party cleanup
+    # plan.  ``--apply`` remains the separate physical-effect gate; without it
+    # this is only a preview and does not invoke KIO.
+    "code_third_party_action": "trash",
     "ocr": "auto",
     "pdf_cache_validation": "metadata",
     "image_document_ocr": "auto",
