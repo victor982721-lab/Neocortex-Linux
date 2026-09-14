@@ -4,6 +4,18 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-14 — Snapshot de inventario reutilizado durante acciones
+
+- Las fases de archivos vacíos y validación de tipos consumen páginas bounded
+  desde el `DedupIndex` que ya posee el lifecycle, en vez de abrir un segundo
+  lector sobre el mismo WAL/SHM.
+- El cursor se cierra antes de cada efecto o escritura y la paginación por
+  ruta conserva el orden determinista para poblaciones mayores de 1,000
+  candidatos. Esto evita agotar el presupuesto temporal de snapshots de 256 MiB
+  sin retirar límites ni relajar fences.
+- Regresiones aisladas cubren ambas fases y 513 archivos vacíos; no ejecutan
+  `--all --apply` ni modifican el corpus personal.
+
 ## 2026-09-13 — Cierre operativo consolidado 0.14.0
 
 - Dedupe Linux/KIO receipt-bound con claim same-filesystem, no-replace,
