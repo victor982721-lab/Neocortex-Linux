@@ -13,6 +13,7 @@ import argparse
 import importlib
 import inspect
 import json
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import fields, is_dataclass
 from enum import Enum
@@ -41,6 +42,11 @@ _MAX_PRESENTATION_COLLECTION_ITEMS = 2_048
 _MAX_PRESENTATION_NODES = 20_000
 _MAX_PRESENTATION_STRING = 128_000
 _MAX_HUMAN_ROOTS = 64
+_MAX_HUMAN_COUNTER_ITEMS = 12
+_MAX_HUMAN_COUNTER_TEXT = 240
+_MAX_COUNTER_ITEMS = 2_048
+
+_MISSING = object()
 
 _SCANNER_TRUNCATION_REASONS = frozenset(
     {
@@ -79,6 +85,11 @@ _SUMMARY_FIELDS = (
     "records_omitted_known",
     "records_available",
     "records_included",
+    "root_quota_policy",
+    "root_entry_quota",
+    "root_entry_quotas",
+    "entry_quotas",
+    "entry_budget",
     "entries",
     "entries_returned",
     "errors",
@@ -99,6 +110,9 @@ _SUMMARY_FIELDS = (
     "category_counts",
     "reason_counts",
     "root_status_counts",
+    "record_status_counts",
+    "record_category_counts",
+    "record_reason_counts",
     "reason_summary",
     "reason_explanations",
     "aggregates",
@@ -159,6 +173,14 @@ _ROOT_SUMMARY_FIELDS = (
     "records_returned",
     "records_omitted",
     "records_omitted_known",
+    "entry_quota",
+    "root_entry_quota",
+    "quota",
+    "root_quota_policy",
+    "entry_budget",
+    "record_status_counts",
+    "record_category_counts",
+    "record_reason_counts",
     "scanner_truncated",
     "scanner_truncation_reasons",
     "truncated",
@@ -319,6 +341,268 @@ def _bool_value(value: object, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
     return default
+
+
+def _field_value(value: object, name: str, default: object = None) -> object:
+    """Read one shallow owner field without invoking arbitrary methods."""
+
+    if isinstance(value, Mapping):
+        return value.get(name, default)
+    try:
+        candidate = getattr(value, name)
+    except Exception:
+        return default
+    if callable(candidate):
+        return default
+    return candidate
+
+
+def _counter_projection(value: object) -> dict[str, int] | None:
+    """Project a bounded, non-negative counter mapping for the public envelope.
+
+    Runtime counters are metadata, not record payloads.  Keep their keys and
+    integer values shallow so publishing them cannot copy a record collection
+    or allow an untrusted owner object to grow the renderer's work without a
+    bound.  ``None`` means that the owner did not publish a mapping; an empty
+    mapping is a valid, explicit counter result.
+    """
+
+    if not isinstance(value, Mapping):
+        return None
+    result: dict[str, int] = {}
+    for index, (key, count) in enumerate(value.items()):
+        if index >= _MAX_COUNTER_ITEMS:
+            break
+        normalized_count = _non_negative_int(count)
+        if normalized_count is None:
+            continue
+        normalized_key = _enum_value(key)
+        if not isinstance(normalized_key, (str, int, float, bool)):
+            continue
+        result[_safe_text(normalized_key, limit=256)] = normalized_count
+    return result
+
+
+def _record_counter_from_records(
+    records: Sequence[object],
+    *,
+    field_names: Sequence[str],
+) -> dict[str, int] | None:
+    """Derive one record counter only when bounded records are available.
+
+    This is a compatibility fallback for old owner implementations.  It is
+    intentionally not used with root/status counters: those include boundary
+    classifications that are not record observations.  The new runtime fields
+    therefore remain semantically separate from legacy aggregate counters.
+    """
+
+    counts: Counter[str] = Counter()
+    found = False
+    for record in records:
+        value: object = None
+        for field_name in field_names:
+            value = _field_value(record, field_name, None)
+            if value is not None:
+                break
+        if value is None:
+            continue
+        normalized = _enum_value(value)
+        if not isinstance(normalized, (str, int, float, bool)):
+            continue
+        counts[_safe_text(normalized, limit=256)] += 1
+        found = True
+    return dict(counts) if found else None
+
+
+def _record_counter(
+    raw: Mapping[str, object],
+    records: Sequence[object],
+    *,
+    field_name: str,
+    aliases: Sequence[str] = (),
+    record_fields: Sequence[str],
+) -> dict[str, int] | None:
+    """Resolve an owner counter, with a bounded record-derived fallback."""
+
+    for name in (field_name, *aliases):
+        if name not in raw:
+            continue
+        projected = _counter_projection(raw.get(name))
+        if projected is not None:
+            return projected
+    return _record_counter_from_records(records, field_names=record_fields)
+
+
+def _entry_quota(value: object) -> int | None:
+    """Extract a non-negative per-root entry quota from a scalar/mapping."""
+
+    scalar = _non_negative_int(value)
+    if scalar is not None:
+        return scalar
+    if not isinstance(value, Mapping):
+        return None
+    for name in (
+        "entry_quota",
+        "root_entry_quota",
+        "quota",
+        "entries",
+        "max_entries",
+    ):
+        candidate = _non_negative_int(value.get(name))
+        if candidate is not None:
+            return candidate
+    return None
+
+
+def _quota_collection_projection(value: object) -> object | None:
+    """Keep only bounded non-negative quota values from list/map forms."""
+
+    scalar = _entry_quota(value)
+    if scalar is not None:
+        return scalar
+    if isinstance(value, (list, tuple)):
+        projected: list[int | None] = []
+        for item in value[:_MAX_PRESENTATION_ROOTS]:
+            projected.append(_entry_quota(item))
+        return projected
+    if not isinstance(value, Mapping):
+        return None
+    for nested_name in ("quotas", "values", "root_entry_quotas", "entry_quotas"):
+        nested = value.get(nested_name)
+        if nested is None or nested is value:
+            continue
+        nested_projection = _quota_collection_projection(nested)
+        if nested_projection is not None:
+            return nested_projection
+    projected_map: dict[str, int] = {}
+    for index, (key, item) in enumerate(value.items()):
+        if index >= _MAX_PRESENTATION_ROOTS:
+            break
+        quota = _entry_quota(item)
+        if quota is None:
+            continue
+        normalized_key = _enum_value(key)
+        if not isinstance(normalized_key, (str, int, float, bool)):
+            continue
+        projected_map[_safe_text(normalized_key, limit=256)] = quota
+    return projected_map
+
+
+def _quota_source_value(value: object, index: int, root: object) -> object:
+    """Resolve one quota from list/map forms used by compatible owners."""
+
+    if isinstance(value, Mapping):
+        path = _root_path(root)
+        keys: tuple[object, ...] = (index, str(index))
+        if path is not None:
+            keys += (path,)
+        for key in keys:
+            if key in value:
+                return value[key]
+        for nested_name in ("quotas", "values", "root_entry_quotas", "entry_quotas"):
+            nested = value.get(nested_name)
+            if nested is not None and nested is not value:
+                resolved = _quota_source_value(nested, index, root)
+                if resolved is not None:
+                    return resolved
+        return value
+    if isinstance(value, (list, tuple)):
+        return value[index] if index < len(value) else None
+    return value
+
+
+def _root_quota_hint(
+    raw: Mapping[str, object],
+    *,
+    index: int,
+    root: object,
+    quota_values: object = _MISSING,
+) -> int | None:
+    """Resolve a root quota from root data or the federated quota collection."""
+
+    for name in ("entry_quota", "root_entry_quota", "quota"):
+        if name in raw:
+            candidate = _entry_quota(raw.get(name))
+            if candidate is not None:
+                return candidate
+    if quota_values is not _MISSING:
+        candidate = _entry_quota(_quota_source_value(quota_values, index, root))
+        if candidate is not None:
+            return candidate
+    return None
+
+
+def _quota_projection(
+    raw: Mapping[str, object],
+    root_summaries: Sequence[Mapping[str, object]],
+    *,
+    root_count: int,
+) -> dict[str, object]:
+    """Collect the additive fair-share quota fields without inventing policy."""
+
+    projection: dict[str, object] = {}
+    policy = raw.get("root_quota_policy")
+    if policy is not None:
+        projection["root_quota_policy"] = policy
+
+    quota_values: object = _MISSING
+    for name in ("root_entry_quotas", "entry_quotas"):
+        if name in raw and raw.get(name) is not None:
+            candidate = _quota_collection_projection(raw.get(name))
+            if candidate is not None:
+                quota_values = candidate
+                projection.setdefault("root_entry_quotas", candidate)
+                if name == "entry_quotas":
+                    projection.setdefault("entry_quotas", candidate)
+                break
+    if quota_values is _MISSING and isinstance(policy, Mapping):
+        for name in ("quotas", "root_entry_quotas", "entry_quotas"):
+            if name not in policy:
+                continue
+            candidate = _quota_collection_projection(policy.get(name))
+            if candidate is not None:
+                quota_values = candidate
+                projection.setdefault("root_entry_quotas", candidate)
+                break
+
+    # A scalar is useful when every root receives the same fair-share quota;
+    # compatible owners may also use this singular field for a keyed/list
+    # collection.  Keep the published shape and do not calculate allocation
+    # locally: the scanner owns the policy.
+    if "root_entry_quota" in raw:
+        published = _quota_collection_projection(raw.get("root_entry_quota"))
+        if published is not None:
+            projection["root_entry_quota"] = published
+
+    root_values: list[int | None] = []
+    for index, root in enumerate(root_summaries):
+        root_values.append(
+            _root_quota_hint(
+                root,
+                index=index,
+                root=root,
+                quota_values=quota_values,
+            )
+        )
+    if quota_values is _MISSING and any(value is not None for value in root_values):
+        # Deriving this list from already-published root summaries is safe and
+        # makes old owner objects compatible, while retaining null slots for
+        # roots whose quota was not reported.
+        projection["root_entry_quotas"] = root_values[:root_count]
+    elif quota_values is not _MISSING:
+        # If the owner published a scalar, expose a stable per-root view too;
+        # for list/map forms the original owner shape remains authoritative.
+        scalar = _entry_quota(quota_values)
+        if scalar is not None and root_count > 0:
+            projection.setdefault(
+                "root_entry_quotas",
+                [scalar for _ in range(min(root_count, _MAX_PRESENTATION_ROOTS))],
+            )
+    if "root_entry_quota" not in projection:
+        values = [value for value in root_values if value is not None]
+        if values and len(set(values)) == 1:
+            projection["root_entry_quota"] = values[0]
+    return projection
 
 
 def _contains_marker(value: object) -> bool:
@@ -736,6 +1020,7 @@ def _compact_root(
     index: int,
     *,
     scanner_truncated: bool | None = None,
+    quota_values: object = _MISSING,
 ) -> tuple[dict[str, object], int]:
     """Project one root result while retaining every root-level counter."""
 
@@ -748,7 +1033,15 @@ def _compact_root(
     for field in _ROOT_OUTPUT_FIELDS:
         # ``summary`` can itself be a full nested projection on older owners;
         # never copy that recursively into the compact root list.
-        if field == "summary" or field == "records":
+        if field in {
+            "summary",
+            "records",
+            "record_status_counts",
+            "record_category_counts",
+            "record_reason_counts",
+            "entry_quota",
+            "root_entry_quota",
+        }:
             continue
         if field in raw:
             summary[field] = _enum_value(raw[field])
@@ -758,6 +1051,19 @@ def _compact_root(
         summary.setdefault("root", path)
         summary.setdefault("path", path)
     summary.setdefault("root_index", index)
+
+    quota = _root_quota_hint(
+        raw,
+        index=index,
+        root=value,
+        quota_values=quota_values,
+    )
+    if quota is not None:
+        # Both names are additive aliases: ``entry_quota`` is the concise
+        # per-root field while ``root_entry_quota`` is the explicit federated
+        # spelling used by the report-level policy.
+        summary.setdefault("entry_quota", quota)
+        summary.setdefault("root_entry_quota", quota)
 
     records = _sequence(raw.get("records"))
     if records is None:
@@ -771,6 +1077,20 @@ def _compact_root(
     if available is None:
         available = returned or 0
     returned = returned or 0
+
+    for field_name, record_fields in (
+        ("record_status_counts", ("status",)),
+        ("record_category_counts", ("category",)),
+        ("record_reason_counts", ("reason_code", "reason")),
+    ):
+        counter = _record_counter(
+            raw,
+            records or (),
+            field_name=field_name,
+            record_fields=record_fields,
+        )
+        if counter is not None:
+            summary[field_name] = counter
 
     records_scanned = _non_negative_int(raw.get("records_scanned"))
     if records_scanned is None:
@@ -992,10 +1312,24 @@ def _result_payload(
     raw_roots = _root_values(raw)
     owner_published_roots = bool(raw_roots)
 
+    quota_values: object = _MISSING
+    for name in ("root_entry_quotas", "entry_quotas"):
+        if name in raw and raw.get(name) is not None:
+            quota_values = raw.get(name)
+            break
+    quota_policy_value = raw.get("root_quota_policy")
+    if quota_values is _MISSING and isinstance(quota_policy_value, Mapping):
+        for name in ("quotas", "root_entry_quotas", "entry_quotas"):
+            if name in quota_policy_value and quota_policy_value.get(name) is not None:
+                quota_values = quota_policy_value.get(name)
+                break
+    if quota_values is _MISSING and "root_entry_quota" in raw:
+        quota_values = raw.get("root_entry_quota")
+
     root_summaries: list[dict[str, object]] = []
     root_values_omitted = max(0, len(raw_roots) - _MAX_PRESENTATION_ROOTS)
     for index, root in enumerate(raw_roots[:_MAX_PRESENTATION_ROOTS]):
-        summary, _ = _compact_root(root, index)
+        summary, _ = _compact_root(root, index, quota_values=quota_values)
         root_summaries.append(summary)
 
     # With no explicit ``--machine-root`` the runtime owner selects its
@@ -1003,7 +1337,7 @@ def _result_payload(
     # otherwise retain an explicit path-only fallback for compatibility.
     if not root_summaries and roots:
         for index, root in enumerate(roots[:_MAX_PRESENTATION_ROOTS]):
-            summary, _ = _compact_root(root, index)
+            summary, _ = _compact_root(root, index, quota_values=quota_values)
             root_summaries.append(summary)
         root_values_omitted = max(0, len(roots) - len(root_summaries))
 
@@ -1021,6 +1355,21 @@ def _result_payload(
         root_paths = [str(root) for root in roots]
 
     raw_records = _record_values(raw, raw_roots)
+    record_counter_fields: dict[str, dict[str, int]] = {}
+    for field_name, record_fields in (
+        ("record_status_counts", ("status",)),
+        ("record_category_counts", ("category",)),
+        ("record_reason_counts", ("reason_code", "reason")),
+    ):
+        counter = _record_counter(
+            raw,
+            raw_records,
+            field_name=field_name,
+            record_fields=record_fields,
+        )
+        if counter is not None:
+            record_counter_fields[field_name] = counter
+
     records_scanned = _non_negative_int(raw.get("records_scanned"))
     if records_scanned is None:
         records_scanned = _non_negative_int(raw.get("scanned"))
@@ -1035,6 +1384,15 @@ def _result_payload(
     if records_returned is None:
         records_returned = len(raw_records)
     records_available = max(len(raw_records), records_returned)
+
+    quota_projection = _quota_projection(
+        raw,
+        root_summaries,
+        root_count=max(
+            len(root_summaries),
+            _non_negative_int(raw.get("root_count"), len(roots)) or 0,
+        ),
+    )
 
     scanner_truncated, scanner_reasons, scanner_omitted = _scanner_facets(
         raw,
@@ -1114,6 +1472,13 @@ def _result_payload(
             "root_paths",
             "coverage_metadata",
             "omissions",
+            "record_status_counts",
+            "record_category_counts",
+            "record_reason_counts",
+            "root_quota_policy",
+            "root_entry_quota",
+            "root_entry_quotas",
+            "entry_quotas",
         }:
             continue
         result[field] = _enum_value(raw[field])
@@ -1140,6 +1505,8 @@ def _result_payload(
             "serialization": presentation,
         }
     )
+    result.update(record_counter_fields)
+    result.update(quota_projection)
     bounded_result, result_nested_clipped = _presentation_bound(result)
     if isinstance(bounded_result, Mapping):
         result = {str(key): value for key, value in bounded_result.items()}
@@ -1278,6 +1645,51 @@ def _human_scalar(value: object, *, limit: int = 64) -> str:
     return _safe_text(value, limit=limit)
 
 
+def _human_result_field(payload: Mapping[str, object], name: str) -> object:
+    """Read a summary field from the envelope or its nested owner result."""
+
+    value = payload.get(name, _MISSING)
+    if value is not _MISSING:
+        return value
+    result = payload.get("result")
+    if isinstance(result, Mapping):
+        return result.get(name)
+    return None
+
+
+def _human_counter(value: object) -> str:
+    """Render a deterministic, short counter summary for human output."""
+
+    if not isinstance(value, Mapping):
+        return "unknown"
+    rendered: list[str] = []
+    for index, (key, count) in enumerate(value.items()):
+        if index >= _MAX_HUMAN_COUNTER_ITEMS:
+            break
+        rendered.append(
+            f"{_safe_text(_enum_value(key), limit=48)}={_human_scalar(count, limit=32)}"
+        )
+    if not rendered:
+        return "none"
+    text = ",".join(rendered)
+    omitted = max(0, len(value) - len(rendered))
+    if omitted:
+        text += f",+{omitted}more"
+    return _safe_text(text, limit=_MAX_HUMAN_COUNTER_TEXT)
+
+
+def _human_quota_policy(value: object) -> str:
+    """Render only the policy label, never the complete policy mapping."""
+
+    if isinstance(value, Mapping):
+        for name in ("strategy", "mode", "policy", "name"):
+            candidate = value.get(name)
+            if candidate is not None:
+                return _safe_text(candidate, limit=64)
+        return "reported"
+    return _human_scalar(value, limit=64)
+
+
 def _emit(payload: Mapping[str, object], *, json_output: bool) -> None:
     safe_payload, renderer_truncated = _safe_payload_with_status(payload)
     if renderer_truncated:
@@ -1295,6 +1707,16 @@ def _emit(payload: Mapping[str, object], *, json_output: bool) -> None:
         return
 
     scanned, returned, truncated = _human_counts(payload)
+    quota_policy = _human_quota_policy(_human_result_field(payload, "root_quota_policy"))
+    record_status_counts = _human_counter(
+        _human_result_field(payload, "record_status_counts")
+    )
+    record_category_counts = _human_counter(
+        _human_result_field(payload, "record_category_counts")
+    )
+    record_reason_counts = _human_counter(
+        _human_result_field(payload, "record_reason_counts")
+    )
     print(
         "MACHINE-INVENTORY "
         f"status={_human_scalar(payload.get('status', 'complete'), limit=128)} "
@@ -1302,6 +1724,10 @@ def _emit(payload: Mapping[str, object], *, json_output: bool) -> None:
         f"scanned={_human_scalar(scanned)} "
         f"returned={_human_scalar(returned)} "
         f"truncated={_human_scalar(truncated, limit=16)} "
+        f"quota_policy={quota_policy} "
+        f"record_status_counts={record_status_counts} "
+        f"record_category_counts={record_category_counts} "
+        f"record_reason_counts={record_reason_counts} "
         "read_only=true"
     )
 
@@ -1318,6 +1744,10 @@ def _emit(payload: Mapping[str, object], *, json_output: bool) -> None:
             path = root.get("path", root.get("root", "unknown"))
             bytes_value = root.get("bytes")
             bytes_map = bytes_value if isinstance(bytes_value, Mapping) else {}
+            entry_quota = root.get(
+                "entry_quota",
+                root.get("root_entry_quota", root.get("quota")),
+            )
             print(
                 "  ROOT "
                 f"index={_human_scalar(root.get('root_index', index))} "
@@ -1325,7 +1755,11 @@ def _emit(payload: Mapping[str, object], *, json_output: bool) -> None:
                 f"status={_human_scalar(root.get('status', 'unknown'), limit=64)} "
                 f"coverage={_human_scalar(root.get('coverage', 'unknown'), limit=64)} "
                 f"scanned={_human_scalar(root.get('records_scanned', root.get('scanned', 0)))} "
+                f"quota={_human_scalar(entry_quota)} "
                 f"reason={_human_scalar(root.get('reason_code', 'none'), limit=96)} "
+                f"record_status_counts={_human_counter(root.get('record_status_counts'))} "
+                f"record_category_counts={_human_counter(root.get('record_category_counts'))} "
+                f"record_reason_counts={_human_counter(root.get('record_reason_counts'))} "
                 f"apparent={_human_scalar(bytes_map.get('apparent', 0))} "
                 f"allocated={_human_scalar(bytes_map.get('allocated', 0))} "
                 f"observed={_human_scalar(bytes_map.get('observed', 0))}"

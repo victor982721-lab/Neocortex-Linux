@@ -75,6 +75,25 @@ opción no elimina los límites del escáner ni el tope de serialización. Si la
 lista de resúmenes rebasa esa cota, conserva `root_count` e informa
 `serialization.root_summaries_omitted` junto con `presentation_truncated`.
 
+El límite de entradas conserva una sola cota global, pero se reparte de forma
+justa por raíz. `root_quota_policy` debe ser `equal_fair_share_v1` y
+`root_entry_quotas` muestra la cuota efectiva de cada `root_index`; cada fila de
+`root_summaries` la repite como `entry_quota`. La cuota dinámica es
+`ceil(entradas_globales_restantes / raíces_restantes)` y el sobrante de una raíz
+pequeña se devuelve para las siguientes. Una raíz con `entry_quota=0` conserva
+su resumen y queda marcada por la frontera global; no se reporta como ausente.
+El reparto sólo aplica a entradas. Profundidad y bytes siguen usando sus
+límites globales y pueden producir una terminación parcial antes de agotar la
+cuota.
+
+Para no mezclar niveles de evidencia, `records_scanned` suma sólo registros de
+entradas. `record_status_counts`, `record_category_counts` y
+`record_reason_counts` describen exclusivamente esos registros;
+`root_status_counts` cuenta una vez el estado de cada raíz. Los mapas históricos
+`status_counts`, `category_counts` y `reason_counts` pueden incluir marcadores
+de raíz para `absent`, `blocked` o `unknown`, por lo que no deben sumarse con
+los mapas `record_*`.
+
 Antes de ampliar una sonda:
 
 1. usa `--machine-root` sólo con rutas absolutas y repítelo por cada raíz que
@@ -82,8 +101,9 @@ Antes de ampliar una sonda:
 2. conserva `--machine-max-entries`, `--machine-max-depth` y
    `--machine-max-bytes` dentro de sus techos; el presupuesto es global y la
    salida explica `truncated` cuando se agota;
-3. revisa `roots`, `root_count`, resúmenes de raíz y agregados de estado,
-   categoría y razón antes de interpretar cualquier tamaño; si se pidió
+3. revisa `roots`, `root_count`, `root_quota_policy`, `root_entry_quotas`,
+   `entry_quota`, resúmenes de raíz y agregados `record_*`/`root_status_counts`
+   antes de interpretar cualquier tamaño; si se pidió
    detalle, revisa además `root_summaries`, `serialization.records_returned`
    y `serialization.records_omitted`;
 4. trata `absent`, `blocked`, `unknown` y `out_of_profile` como resultados que
@@ -91,7 +111,9 @@ Antes de ampliar una sonda:
 
 El envelope `neocortex.machine-inventory/v1` conserva `read_only=true`,
 `reason_summary`, `reason_explanations`, límites efectivos, identidad física, owner/procedencia,
-symlink/hardlink, montaje, permisos y bytes observados, aparentes y asignados.
+symlink/hardlink, montaje, permisos, `root_quota_policy`, `root_entry_quotas`,
+`entry_quota`, contadores `record_*`/`root_status_counts` y bytes observados,
+aparentes y asignados.
 Los perfiles/categorías separan `neocortex_state`, `neocortex_data` y
 `neocortex_corpus` de NeoCortex de `tmp`, `cache`, `config`, `home` y `external`;
 ningún perfil prueba por sí mismo que NeoCortex pueda retirarlo. Los estados son

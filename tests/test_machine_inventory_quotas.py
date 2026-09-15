@@ -108,6 +108,9 @@ def test_record_and_root_status_counters_have_disjoint_provenance(
     expected_root_counts = _zero_filled_counts(root_counts)
     assert dict(report.root_status_counts) == expected_root_counts
     assert sum(report.root_status_counts.values()) == report.root_count
+    summary = report.to_summary_dict()
+    assert summary["root_status_counts"] == dict(report.root_status_counts)
+    assert summary["record_status_counts"] == dict(report.record_status_counts)
 
     unvisited = [root for root in report.roots if root.records_scanned == 0]
     assert len(unvisited) >= 2

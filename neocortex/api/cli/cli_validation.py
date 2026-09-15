@@ -257,6 +257,10 @@ def _validate_machine_inventory_operation(args: argparse.Namespace) -> bool:
             option = "--" + name.replace("_", "-")
             raise SystemExit(f"{option} is outside the machine-inventory bound")
 
+    machine_json_mode = getattr(args, "machine_json_mode", "compact")
+    if machine_json_mode not in {"compact", "records"}:
+        raise SystemExit("--machine-json mode must be 'compact' or 'records'")
+
     if getattr(args, "apply", False):
         raise SystemExit("machine-inventory is read-only and cannot be combined with --apply")
     if getattr(args, "all", False):

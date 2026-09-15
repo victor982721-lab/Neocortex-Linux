@@ -241,7 +241,10 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=10_000,
         metavar="N",
-        help="bound machine-inventory entries (default: 10000)",
+        help=(
+            "global machine-inventory entry budget; the owner applies its "
+            "default fair-share quota across roots (default: 10000)"
+        ),
     )
     machine_inventory.add_argument(
         "--machine-max-depth",
@@ -268,6 +271,9 @@ def build_parser() -> argparse.ArgumentParser:
             "record projection"
         ),
     )
+    # Keep the mode explicit for Namespace callers that do not exercise the
+    # custom action (and retain ``machine_json=False`` for old callers).
+    parser.set_defaults(machine_json_mode="compact")
     parser.add_argument(
         "--route",
         default="none",

@@ -76,8 +76,11 @@ lifecycle de rutas. Los cambios concurrentes del filesystem quedan como
 
 El envelope `neocortex.machine-inventory/v1` es cerrado y declara
 `read_only=true`, operación, raíces, `root_count`, límites globales de
-`entries`/`depth`/`bytes`, `truncated`, registros bounded, conteos por
-estado/categoría, `reason_summary`, categorías/owners/procedencia y bytes
+`entries`/`depth`/`bytes`, `root_quota_policy`, `root_entry_quotas`,
+`truncated`, registros bounded, conteos `record_status_counts`,
+`record_category_counts`, `record_reason_counts` y `root_status_counts`, además
+de los históricos por estado/categoría, `reason_summary`,
+categorías/owners/procedencia y bytes
 `observed`, aparentes y asignados. Sus estados son `absent`, `observed`,
 `preserved`, `blocked`, `unknown` y `out_of_profile`. La ausencia de un root,
 la truncación o un tamaño observado no se colapsan a éxito ni a permiso para
@@ -106,6 +109,25 @@ puede ser parcial con un resumen íntegro, o completa con el detalle recortado.
 El owner Python expone esta proyección mediante `to_summary_dict()`, con
 `root_summaries`, `coverage_metadata` y `omissions`; `to_dict()` conserva la
 representación completa para consumidores que la soliciten expresamente.
+
+El reparto de entradas es global y fair-share, no una serie de escaneos
+independientes. `root_quota_policy=equal_fair_share_v1` publica en
+`root_entry_quotas` la cuota efectiva por `root_index`, y cada resumen de raíz
+expone `entry_quota`. La implementación calcula para cada raíz
+`ceil(remaining_global_entries / remaining_roots)`; al terminar una raíz, su
+crédito no usado vuelve al fondo para las siguientes. `entry_quota=0` conserva
+el resumen de la raíz como evidencia de que el fondo global se agotó, no como
+evidencia de ausencia. La política limita sólo las entradas; depth y bytes
+conservan sus vallas globales. Por diseño, la cuota es una asignación de
+observación y no demuestra cobertura completa.
+
+Los agregados mantienen una frontera explícita. `records_scanned` y los mapas
+`record_status_counts`, `record_category_counts` y `record_reason_counts`
+describen únicamente registros de entradas. `root_status_counts` cuenta el
+estado de cada raíz una vez. Los campos históricos `status_counts`,
+`category_counts` y `reason_counts` pueden incorporar marcadores de raíz
+ausente/bloqueada/desconocida para no perder evidencia cuando una raíz no
+produce registros; son compatibles, pero no deben sumarse con `record_*`.
 
 La contabilidad de bytes también es explícita: `apparent` suma `st_size`,
 `allocated` suma `st_blocks * 512` y `observed` es `apparent + allocated`, la

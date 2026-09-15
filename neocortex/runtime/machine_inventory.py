@@ -88,6 +88,14 @@ MAX_MACHINE_INVENTORY_BYTES = 1 << 50
 MAX_METADATA_LABEL_BYTES = 256
 MAX_METADATA_REASON_BYTES = 2_048
 
+# Entry admission is shared between the requested roots, not consumed by the
+# first root in enumeration order.  The quota is recomputed before each root
+# from the still-unused global entries and the roots still to visit.  Keeping
+# the policy name in the payload makes the deterministic redistribution
+# observable to callers without changing the meaning of the historical
+# ``limits.max_entries`` field (which remains the invocation-wide bound).
+MACHINE_INVENTORY_ENTRY_QUOTA_POLICY = "equal_fair_share_v1"
+
 # The three counters below deliberately retain the existing numeric wire
 # names.  This companion mapping makes their provenance explicit without
 # changing the read-only scanner or pretending that ``observed`` is another
@@ -157,7 +165,7 @@ MACHINE_INVENTORY_REASON_EXPLANATIONS: Mapping[str, str] = MappingProxyType(
         ENTRY_IDENTITY_CHANGED: "La identidad física cambió durante la observación.",
         ENTRY_DISAPPEARED: "La entrada desapareció durante la observación.",
         DEPTH_LIMIT: "La profundidad solicitada agotó el límite de observación.",
-        ENTRY_LIMIT: "La cantidad de entradas agotó el límite global.",
+        ENTRY_LIMIT: "La cantidad de entradas agotó el límite global o la cuota fair-share de la raíz.",
         BYTE_LIMIT: "Los bytes observados agotaron el límite global.",
         CANCELLED: "La consulta fue cancelada antes de completar la cobertura.",
         SCAN_UNAVAILABLE: "La enumeración no estuvo disponible.",
@@ -805,6 +813,7 @@ class MachineInventoryRootResult:
     max_entries: int = 0
     max_depth: int = 0
     max_bytes: int = 0
+    entry_quota: int = 0
 
     @property
     def root(self) -> Path:
@@ -863,6 +872,30 @@ class MachineInventoryRootResult:
         return self.records_omitted is not None
 
     @property
+    def record_status_counts(self) -> dict[str, int]:
+        """Return status counts for records only.
+
+        A root result has no synthetic root-marker records, so this is the
+        unambiguous record-only counterpart to the federated report's
+        compatibility ``status_counts`` aggregate.
+        """
+
+        return {
+            status_name: int(self.counts.get(status_name, 0))
+            for status_name in MACHINE_INVENTORY_STATUSES
+        }
+
+    @property
+    def record_category_counts(self) -> dict[str, int]:
+        counts: Counter[str] = Counter(record.category for record in self.records)
+        return dict(counts)
+
+    @property
+    def record_reason_counts(self) -> dict[str, int]:
+        counts: Counter[str] = Counter(record.reason_code for record in self.records)
+        return dict(counts)
+
+    @property
     def scanner_truncated(self) -> bool:
         """Whether the owner scanner, rather than presentation, truncated."""
 
@@ -888,6 +921,23 @@ class MachineInventoryRootResult:
             "max_entries": self.max_entries,
             "max_depth": self.max_depth,
             "max_bytes": self.max_bytes,
+        }
+
+    @property
+    def root_quota_policy(self) -> str:
+        return MACHINE_INVENTORY_ENTRY_QUOTA_POLICY
+
+    @property
+    def entry_budget(self) -> dict[str, object]:
+        """Describe this root's effective share of the global entry bound."""
+
+        return {
+            "policy": MACHINE_INVENTORY_ENTRY_QUOTA_POLICY,
+            "global_max_entries": self.max_entries,
+            "quota": self.entry_quota,
+            "entry_quota": self.entry_quota,
+            "records_scanned": self.records_scanned,
+            "records_remaining": max(0, self.entry_quota - self.records_scanned),
         }
 
     @property
@@ -970,8 +1020,14 @@ class MachineInventoryRootResult:
             "scanner_truncated": self.scanner_truncated,
             "scanner_truncation_reasons": list(self.scanner_truncation_reasons),
             "presentation_truncated": self.presentation_truncated,
+            "root_quota_policy": MACHINE_INVENTORY_ENTRY_QUOTA_POLICY,
+            "entry_quota": self.entry_quota,
+            "entry_budget": self.entry_budget,
             "bytes": self.bytes,
             "byte_semantics": self.byte_semantics,
+            "record_status_counts": self.record_status_counts,
+            "record_category_counts": self.record_category_counts,
+            "record_reason_counts": self.record_reason_counts,
             "limits": self.limits,
             "coverage_metadata": self.coverage_metadata,
             "omissions": self.omissions,
@@ -1040,10 +1096,16 @@ class MachineInventoryRootResult:
             "presentation_truncated": self.presentation_truncated,
             "byte_semantics": self.byte_semantics,
             "limits": self.limits,
+            "root_quota_policy": MACHINE_INVENTORY_ENTRY_QUOTA_POLICY,
+            "entry_quota": self.entry_quota,
+            "entry_budget": self.entry_budget,
             "coverage_metadata": self.coverage_metadata,
             "omissions": self.omissions,
             "summary": self.to_summary_dict(),
             "counts": self.counts,
+            "record_status_counts": self.record_status_counts,
+            "record_category_counts": self.record_category_counts,
+            "record_reason_counts": self.record_reason_counts,
             "bytes": self.bytes,
             "scanned": self.scanned,
             "truncated": self.truncated,
@@ -1091,6 +1153,26 @@ class MachineInventoryReport:
     network_used: bool = False
     kio_used: bool = False
     mutated: bool = False
+    # Additive counters are appended after the historical defaulted fields so
+    # positional construction of older report objects keeps its meaning.
+    record_status_counts: Mapping[str, int] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    record_category_counts: Mapping[str, int] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    record_reason_counts: Mapping[str, int] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    root_marker_status_counts: Mapping[str, int] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    root_marker_category_counts: Mapping[str, int] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    root_marker_reason_counts: Mapping[str, int] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     @property
     def schema(self) -> str:
@@ -1185,6 +1267,36 @@ class MachineInventoryReport:
         """Compact, record-free summaries for every requested root."""
 
         return tuple(root.to_summary_dict() for root in self.roots)
+
+    @property
+    def root_quota_policy(self) -> str:
+        """Name the deterministic per-root entry-budget policy."""
+
+        return MACHINE_INVENTORY_ENTRY_QUOTA_POLICY
+
+    @property
+    def root_entry_quotas(self) -> tuple[int, ...]:
+        """Effective entry quotas in stable root-index order."""
+
+        return tuple(root.entry_quota for root in self.roots)
+
+    @property
+    def entry_budget(self) -> dict[str, object]:
+        """Describe the invocation-wide bound and its root allocations."""
+
+        return {
+            "policy": self.root_quota_policy,
+            "global_max_entries": self.max_entries,
+            "root_count": self.root_count,
+            "root_entry_quotas": list(self.root_entry_quotas),
+            # These are sequential per-root caps, not reservations.  When an
+            # earlier root finishes below its cap, later caps grow and their
+            # sum can therefore exceed the global bound without permitting
+            # the scanner to exceed it.
+            "quota_cap_sum": sum(self.root_entry_quotas),
+            "records_scanned": self.records_scanned,
+            "records_remaining": max(0, self.max_entries - self.records_scanned),
+        }
 
     @property
     def summaries(self) -> tuple[dict[str, object], ...]:
@@ -1292,6 +1404,13 @@ class MachineInventoryReport:
             "status_counts": dict(self.status_counts),
             "category_counts": dict(self.category_counts),
             "reason_counts": dict(self.reason_counts),
+            "root_status_counts": dict(self.root_status_counts),
+            "record_status_counts": dict(self.record_status_counts),
+            "record_category_counts": dict(self.record_category_counts),
+            "record_reason_counts": dict(self.record_reason_counts),
+            "root_marker_status_counts": dict(self.root_marker_status_counts),
+            "root_marker_category_counts": dict(self.root_marker_category_counts),
+            "root_marker_reason_counts": dict(self.root_marker_reason_counts),
             "reason_summary": self.reason_summary,
             "reason_explanations": self.reason_explanations,
             "bytes": self.bytes,
@@ -1300,6 +1419,9 @@ class MachineInventoryReport:
             "observed_apparent_bytes": self.observed_apparent_bytes,
             "observed_allocated_bytes": self.observed_allocated_bytes,
             "root_count": self.root_count,
+            "root_quota_policy": self.root_quota_policy,
+            "root_entry_quotas": list(self.root_entry_quotas),
+            "entry_budget": self.entry_budget,
             "root_summaries": list(self.root_summaries),
             "coverage_metadata": self.coverage_metadata,
             "omissions": self.omissions,
@@ -1324,6 +1446,12 @@ class MachineInventoryReport:
             "category": dict(self.category_counts),
             "reason": dict(self.reason_counts),
             "root_status": dict(self.root_status_counts),
+            "record_status": dict(self.record_status_counts),
+            "record_category": dict(self.record_category_counts),
+            "record_reason": dict(self.record_reason_counts),
+            "root_marker_status": dict(self.root_marker_status_counts),
+            "root_marker_category": dict(self.root_marker_category_counts),
+            "root_marker_reason": dict(self.root_marker_reason_counts),
         }
 
     @property
@@ -1453,6 +1581,13 @@ class MachineInventoryReport:
             "status_counts": dict(self.status_counts),
             "category_counts": dict(self.category_counts),
             "reason_counts": dict(self.reason_counts),
+            "root_status_counts": dict(self.root_status_counts),
+            "record_status_counts": dict(self.record_status_counts),
+            "record_category_counts": dict(self.record_category_counts),
+            "record_reason_counts": dict(self.record_reason_counts),
+            "root_marker_status_counts": dict(self.root_marker_status_counts),
+            "root_marker_category_counts": dict(self.root_marker_category_counts),
+            "root_marker_reason_counts": dict(self.root_marker_reason_counts),
             "reason_summary": self.reason_summary,
             "reason_explanations": self.reason_explanations,
             "categories": self.categories,
@@ -1475,6 +1610,9 @@ class MachineInventoryReport:
             "records_omitted": self.records_omitted,
             "records_omitted_known": self.records_omitted_known,
             "root_count": self.root_count,
+            "root_quota_policy": self.root_quota_policy,
+            "root_entry_quotas": list(self.root_entry_quotas),
+            "entry_budget": self.entry_budget,
             "root_summaries": list(self.root_summaries),
             "coverage_metadata": self.coverage_metadata,
             "omissions": self.omissions,
@@ -1491,6 +1629,9 @@ class _Budget:
     max_entries: int
     max_bytes: int
     entries: int = 0
+    root_entries: int = 0
+    entry_quota: int | None = None
+    entry_limit_scope: Literal["global", "root"] | None = None
     apparent_bytes: int = 0
     allocated_bytes: int = 0
     truncated: bool = False
@@ -1505,11 +1646,28 @@ class _Budget:
         if code not in self.truncation_reasons:
             self.truncation_reasons.append(code)
 
+    def begin_root(self, entry_quota: int) -> None:
+        """Set the local entry share for the next root observation."""
+
+        self.root_entries = 0
+        self.entry_quota = entry_quota
+        self.entry_limit_scope = None
+
+    @property
+    def root_quota_exhausted(self) -> bool:
+        return self.entry_quota is not None and self.root_entries >= self.entry_quota
+
     def reserve(self) -> bool:
+        self.entry_limit_scope = None
         if self.entries >= self.max_entries:
+            self.entry_limit_scope = "global"
             self.note(ENTRY_LIMIT)
             return False
+        if self.entry_quota is not None and self.root_entries >= self.entry_quota:
+            self.entry_limit_scope = "root"
+            return False
         self.entries += 1
+        self.root_entries += 1
         return True
 
     def account(self, metadata: os.stat_result) -> tuple[int, int, int, bool]:
@@ -1718,7 +1876,12 @@ def _inspect_entry(
         context.stop(CANCELLED, "machine inventory was cancelled", truncation=True)
         return
     if not context.budget.reserve():
-        context.stop(ENTRY_LIMIT, "machine inventory entry limit exceeded", truncation=True)
+        context.stop(
+            ENTRY_LIMIT,
+            "machine inventory entry limit exceeded",
+            truncation=True,
+            global_stop=context.budget.entry_limit_scope != "root",
+        )
         return
     name = components[-1]
     path = _path_for(context.root.path, components)
@@ -1802,7 +1965,16 @@ def _inspect_entry(
         child_fd: int | None = None
         try:
             child_fd = os.open(name, _directory_flags(), dir_fd=descriptor)
-            if _has_child(child_fd):
+            has_child = _has_child(child_fd)
+            if has_child and context.budget.root_quota_exhausted:
+                context.records[-1] = _replace_record(record, truncated=True)
+                context.stop(
+                    ENTRY_LIMIT,
+                    "machine inventory root entry quota exceeded",
+                    truncation=True,
+                    global_stop=False,
+                )
+            elif has_child:
                 context.records[-1] = _replace_record(record, truncated=True)
                 context.stop(
                     DEPTH_LIMIT,
@@ -1873,10 +2045,35 @@ def _scan_directory(
     if context.cancelled is not None and context.cancelled():
         context.stop(CANCELLED, "machine inventory was cancelled", truncation=True)
         return
-    remaining = context.budget.max_entries - context.budget.entries
-    if remaining <= 0:
+    global_remaining = context.budget.max_entries - context.budget.entries
+    if global_remaining <= 0:
         context.stop(ENTRY_LIMIT, "machine inventory entry limit exceeded", truncation=True)
         return
+    local_remaining = global_remaining
+    if context.budget.entry_quota is not None:
+        local_remaining = context.budget.entry_quota - context.budget.root_entries
+        if local_remaining <= 0:
+            # Checking for a child does not reserve an entry and lets an
+            # exactly-sized root remain complete when it has no more names.
+            # If a name exists, the local quota is the boundary; do not mark
+            # the invocation-wide budget as exhausted.
+            try:
+                if _has_child(descriptor):
+                    context.stop(
+                        ENTRY_LIMIT,
+                        "machine inventory root entry quota exceeded",
+                        truncation=True,
+                        global_stop=False,
+                    )
+            except OSError as exc:
+                context.stop(
+                    ROOT_PERMISSION_DENIED
+                    if exc.errno in {errno.EACCES, errno.EPERM}
+                    else SCAN_UNAVAILABLE,
+                    _safe_reason(f"directory could not be inspected: {exc}"),
+                )
+            return
+    remaining = min(global_remaining, local_remaining)
     try:
         names, overflow = _bounded_names(descriptor, remaining)
     except OSError as exc:
@@ -1887,10 +2084,24 @@ def _scan_directory(
         return
     for name in names:
         _inspect_entry(context, descriptor, (*components, name), depth)
-        if context.budget.truncated:
+        # A depth or availability issue in one child is local to that child;
+        # continue with its siblings.  Entry-limit issues, in contrast, end
+        # this root's share, while a global budget truncation ends the scan.
+        if context.budget.truncated or context.issue_code == ENTRY_LIMIT:
             return
     if overflow:
-        context.stop(ENTRY_LIMIT, "machine inventory entry limit exceeded", truncation=True)
+        local_boundary = (
+            context.budget.entry_quota is not None
+            and local_remaining < global_remaining
+        )
+        context.stop(
+            ENTRY_LIMIT,
+            "machine inventory root entry quota exceeded"
+            if local_boundary
+            else "machine inventory entry limit exceeded",
+            truncation=True,
+            global_stop=not local_boundary,
+        )
 
 
 def _path_components_have_no_symlinks(path: Path) -> None:
@@ -1981,6 +2192,7 @@ def _make_root_result(
     max_entries: int = 0,
     max_depth: int = 0,
     max_bytes: int = 0,
+    entry_quota: int = 0,
 ) -> MachineInventoryRootResult:
     frozen_records = tuple(records)
     base_status, _, _ = _base_classification(spec)
@@ -2048,6 +2260,7 @@ def _make_root_result(
         max_entries=max_entries,
         max_depth=max_depth,
         max_bytes=max_bytes,
+        entry_quota=entry_quota,
     )
 
 
@@ -2066,6 +2279,7 @@ def _root_empty_issue(
     max_entries: int = 0,
     max_depth: int = 0,
     max_bytes: int = 0,
+    entry_quota: int = 0,
 ) -> MachineInventoryRootResult:
     return _make_root_result(
         root=root,
@@ -2082,7 +2296,16 @@ def _root_empty_issue(
         max_entries=max_entries,
         max_depth=max_depth,
         max_bytes=max_bytes,
+        entry_quota=entry_quota,
     )
+
+
+def _equal_fair_share_quota(remaining_entries: int, roots_remaining: int) -> int:
+    """Return the next root's deterministic share of remaining entries."""
+
+    if remaining_entries <= 0 or roots_remaining <= 0:
+        return 0
+    return (remaining_entries + roots_remaining - 1) // roots_remaining
 
 
 def _scan_root(
@@ -2090,9 +2313,11 @@ def _scan_root(
     index: int,
     *,
     budget: _Budget,
+    entry_quota: int,
     max_depth: int,
     cancelled: Callable[[], bool] | None,
 ) -> MachineInventoryRootResult:
+    budget.begin_root(entry_quota)
     spec = _resolved_category(root)
     try:
         _path_components_have_no_symlinks(root.path)
@@ -2106,6 +2331,7 @@ def _scan_root(
             max_entries=budget.max_entries,
             max_depth=max_depth,
             max_bytes=budget.max_bytes,
+            entry_quota=entry_quota,
         )
     try:
         metadata = os.lstat(root.path)
@@ -2119,6 +2345,7 @@ def _scan_root(
             max_entries=budget.max_entries,
             max_depth=max_depth,
             max_bytes=budget.max_bytes,
+            entry_quota=entry_quota,
         )
     except OSError as exc:
         permission = exc.errno in {errno.EACCES, errno.EPERM}
@@ -2131,6 +2358,7 @@ def _scan_root(
             max_entries=budget.max_entries,
             max_depth=max_depth,
             max_bytes=budget.max_bytes,
+            entry_quota=entry_quota,
         )
     identity = _identity(metadata)
     if stat.S_ISLNK(metadata.st_mode):
@@ -2146,6 +2374,7 @@ def _scan_root(
             max_entries=budget.max_entries,
             max_depth=max_depth,
             max_bytes=budget.max_bytes,
+            entry_quota=entry_quota,
         )
     if not stat.S_ISDIR(metadata.st_mode):
         return _root_empty_issue(
@@ -2160,6 +2389,53 @@ def _scan_root(
             max_entries=budget.max_entries,
             max_depth=max_depth,
             max_bytes=budget.max_bytes,
+            entry_quota=entry_quota,
+        )
+    global_truncation = next(
+        (
+            code
+            for code in budget.truncation_reasons
+            if code in {ENTRY_LIMIT, BYTE_LIMIT, CANCELLED}
+        ),
+        None,
+    )
+    if global_truncation is not None:
+        # Preserve a summary for every requested root without attempting a
+        # metadata entry after a global byte/entry/cancellation fence fired.
+        return _root_empty_issue(
+            root,
+            index,
+            spec,
+            code=global_truncation,
+            reason=f"machine inventory global budget already bounded by {global_truncation}",
+            metadata=metadata,
+            identity=identity,
+            exists=True,
+            truncation_reasons=(global_truncation,),
+            truncated=True,
+            max_entries=budget.max_entries,
+            max_depth=max_depth,
+            max_bytes=budget.max_bytes,
+            entry_quota=entry_quota,
+        )
+    if entry_quota <= 0:
+        # Still return the root's no-follow identity and classification, but
+        # do not enumerate any entry when the global budget has no share left.
+        return _root_empty_issue(
+            root,
+            index,
+            spec,
+            code=ENTRY_LIMIT,
+            reason="machine inventory root entry quota is zero",
+            metadata=metadata,
+            identity=identity,
+            exists=True,
+            truncation_reasons=(ENTRY_LIMIT,),
+            truncated=True,
+            max_entries=budget.max_entries,
+            max_depth=max_depth,
+            max_bytes=budget.max_bytes,
+            entry_quota=entry_quota,
         )
     try:
         descriptor = os.open(root.path, _directory_flags())
@@ -2177,6 +2453,7 @@ def _scan_root(
             max_entries=budget.max_entries,
             max_depth=max_depth,
             max_bytes=budget.max_bytes,
+            entry_quota=entry_quota,
         )
 
     start_reasons = len(budget.truncation_reasons)
@@ -2237,6 +2514,7 @@ def _scan_root(
         max_entries=budget.max_entries,
         max_depth=max_depth,
         max_bytes=budget.max_bytes,
+        entry_quota=entry_quota,
     )
 
 
@@ -2304,14 +2582,27 @@ def _build_report(
             )
             reason_code = code
             reason = f"machine inventory coverage is bounded by {code}"
-    status_counts_counter: Counter[str] = Counter(record.status for record in records)
-    category_counts_counter: Counter[str] = Counter(record.category for record in records)
-    reason_counts_counter: Counter[str] = Counter(record.reason_code for record in records)
+    # Keep record-only counters immutable while building the historical
+    # aggregate counters below.  The latter may include synthetic root
+    # markers for an absent/blocked/bounded root and therefore must not be
+    # mistaken for entry observations.
+    record_status_counts_counter: Counter[str] = Counter(record.status for record in records)
+    record_category_counts_counter: Counter[str] = Counter(record.category for record in records)
+    record_reason_counts_counter: Counter[str] = Counter(record.reason_code for record in records)
+    status_counts_counter: Counter[str] = record_status_counts_counter.copy()
+    category_counts_counter: Counter[str] = record_category_counts_counter.copy()
+    reason_counts_counter: Counter[str] = record_reason_counts_counter.copy()
+    root_marker_status_counts_counter: Counter[str] = Counter()
+    root_marker_category_counts_counter: Counter[str] = Counter()
+    root_marker_reason_counts_counter: Counter[str] = Counter()
     # Root-level absence/blocking is evidence even though a root itself is not
     # emitted as an entry record.  Empty successful roots remain zero-record
     # observations and are not double-counted here.
     for root in roots:
         if not root.records and root.status in {"absent", "blocked", "unknown"}:
+            root_marker_status_counts_counter[root.status] += 1
+            root_marker_category_counts_counter[root.category] += 1
+            root_marker_reason_counts_counter[root.reason_code] += 1
             status_counts_counter[root.status] += 1
             category_counts_counter[root.category] += 1
             reason_counts_counter[root.reason_code] += 1
@@ -2323,6 +2614,7 @@ def _build_report(
             # A root-level limit is distinct from its entry classifications;
             # preserve it so a partial scan cannot look complete in the
             # aggregate reason summary.
+            root_marker_reason_counts_counter[root.reason_code] += 1
             reason_counts_counter[root.reason_code] += 1
     status_counts: dict[str, int] = {
         status_name: int(status_counts_counter.get(status_name, 0))
@@ -2334,6 +2626,18 @@ def _build_report(
         status_name: int(root_status_counts.get(status_name, 0))
         for status_name in MACHINE_INVENTORY_STATUSES
     }
+    record_status_counts: dict[str, int] = {
+        status_name: int(record_status_counts_counter.get(status_name, 0))
+        for status_name in MACHINE_INVENTORY_STATUSES
+    }
+    record_category_counts = dict(record_category_counts_counter)
+    record_reason_counts = dict(record_reason_counts_counter)
+    root_marker_status_counts: dict[str, int] = {
+        status_name: int(root_marker_status_counts_counter.get(status_name, 0))
+        for status_name in MACHINE_INVENTORY_STATUSES
+    }
+    root_marker_category_counts = dict(root_marker_category_counts_counter)
+    root_marker_reason_counts = dict(root_marker_reason_counts_counter)
     truncation_reasons: list[str] = list(budget.truncation_reasons)
     for root in roots:
         for code in root.truncation_reasons:
@@ -2366,6 +2670,12 @@ def _build_report(
         category_counts=MappingProxyType(category_counts),
         reason_counts=MappingProxyType(reason_counts),
         root_status_counts=MappingProxyType(root_status_counts_payload),
+        record_status_counts=MappingProxyType(record_status_counts),
+        record_category_counts=MappingProxyType(record_category_counts),
+        record_reason_counts=MappingProxyType(record_reason_counts),
+        root_marker_status_counts=MappingProxyType(root_marker_status_counts),
+        root_marker_category_counts=MappingProxyType(root_marker_category_counts),
+        root_marker_reason_counts=MappingProxyType(root_marker_reason_counts),
     )
 
 
@@ -2408,11 +2718,15 @@ class MachineInventory:
         budget = _Budget(self.max_entries, self.max_bytes)
         results: list[MachineInventoryRootResult] = []
         for index, root in enumerate(self.roots):
+            remaining_entries = self.max_entries - budget.entries
+            roots_remaining = len(self.roots) - index
+            entry_quota = _equal_fair_share_quota(remaining_entries, roots_remaining)
             results.append(
                 _scan_root(
                     root,
                     index,
                     budget=budget,
+                    entry_quota=entry_quota,
                     max_depth=self.max_depth,
                     cancelled=self.cancelled,
                 )
@@ -2488,6 +2802,7 @@ __all__ = [
     "MACHINE_INVENTORY_CATEGORIES",
     "MACHINE_INVENTORY_CATEGORIES_SPECS",
     "MACHINE_INVENTORY_CATEGORY_SPECS",
+    "MACHINE_INVENTORY_ENTRY_QUOTA_POLICY",
     "MACHINE_INVENTORY_REASON_EXPLANATIONS",
     "MACHINE_INVENTORY_SCHEMA",
     "MACHINE_INVENTORY_STATUSES",

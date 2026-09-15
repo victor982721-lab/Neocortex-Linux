@@ -218,6 +218,29 @@ si una cota excepcional de presentación recorta también esa lista, lo indica
 en `serialization.root_summaries_omitted` y `presentation_truncated`, en vez de
 silenciar la omisión.
 
+El presupuesto de entradas conserva un techo global, pero ya no deja que la
+primera raíz lo consuma completo. `root_quota_policy` declara
+`equal_fair_share_v1` y `root_entry_quotas` publica la cuota efectiva por
+`root_index`; cada resumen de raíz repite su `entry_quota`. La cuota se calcula
+dinámicamente como `ceil(entradas_globales_restantes / raíces_restantes)` y el
+remanente de una raíz que termina antes se redistribuye a las siguientes. Así,
+la cuota es una reserva bounded de observación, no un segundo presupuesto ni
+una garantía de cobertura: profundidad, bytes, permisos, carreras o
+cancelación todavía pueden detener una raíz antes. `entry_quota=0` significa
+que la raíz conserva su resumen pero no recibió registros por agotarse la
+frontera global; no significa que esté ausente. `max_depth` y `max_bytes` siguen
+siendo límites globales independientes.
+
+Los contadores distinguen tres niveles. `records_scanned` suma únicamente
+registros de entradas observados por el scanner; nunca cuenta los marcadores de
+raíz. `record_status_counts`, `record_category_counts` y
+`record_reason_counts` cuentan sólo esos registros. Los nombres históricos
+`status_counts`, `category_counts` y `reason_counts` pueden incluir además un
+marcador sintético de raíz ausente, bloqueada o desconocida, mientras que
+`root_status_counts` cuenta exactamente el estado de cada raíz efectiva. Usa
+los mapas `record_*` para analizar entradas y los mapas de raíz para analizar
+cobertura de raíces; no sumes ambos niveles.
+
 El envelope separa dos fronteras de cobertura. `scanner_truncated` (y sus
 `truncation_reasons`) describe que el recorrido no pudo completar la cobertura
 por `max_entries`, `max_depth`, `max_bytes`, permisos, carrera o cancelación;
@@ -243,7 +266,10 @@ snapshot atómico del filesystem.
 
 El envelope cerrado `neocortex.machine-inventory/v1` declara
 `read_only=true`, la operación, las raíces y `root_count`, límites efectivos,
-`truncated`, registros acotados, agregados por estado/categoría/razón,
+`truncated`, registros acotados, `root_quota_policy`,
+`root_entry_quotas`, agregados `record_status_counts`,
+`record_category_counts`, `record_reason_counts` y `root_status_counts`, además
+de los agregados históricos por estado/categoría/razón,
 `reason_summary`, `reason_explanations`, el registro de categorías/owners/procedencia y bytes
 `observed`, aparentes y asignados. En la contabilidad, `apparent` es la suma de
 `st_size` (tamaño lógico), `allocated` es la suma de los bloques reportados por
@@ -254,8 +280,9 @@ por lo que sus agregados son créditos bounded y no una auditoría completa del
 uso del disco. Los estados posibles son `absent`,
 `observed`, `preserved`, `blocked`, `unknown` y `out_of_profile`; un hallazgo o
 un recorrido truncado no es un permiso de limpieza. El presupuesto de
-`entries`, `depth` y `bytes` es global para la invocación y no se retira para
-terminar una raíz.
+`entries`, `depth` y `bytes` es global para la invocación; `entries` se reparte
+con la política fair-share, sin retirar el techo ni ampliarlo para terminar una
+raíz.
 
 La clasificación separa los perfiles administrados de NeoCortex
 (`neocortex_state`, `neocortex_data`, `neocortex_corpus`) de `tmp`, `cache`,

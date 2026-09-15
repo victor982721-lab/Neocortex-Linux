@@ -4,6 +4,18 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-15 — Fair-share y contabilidad por nivel en machine-inventory
+
+- El presupuesto global de entradas se reparte por raíz con
+  `root_quota_policy=equal_fair_share_v1`. `root_entry_quotas` y
+  `root_summaries[].entry_quota` hacen visible la asignación efectiva; el
+  remanente de una raíz pequeña se redistribuye a las siguientes y una cuota
+  cero conserva el resumen sin confundirlo con ausencia.
+- Se separan los contadores de registros (`record_status_counts`,
+  `record_category_counts`, `record_reason_counts`) de los contadores de raíz
+  (`root_status_counts`). Los nombres históricos pueden incluir marcadores de
+  raíz; `records_scanned` cuenta únicamente observaciones de entradas.
+
 ## 2026-09-15 — Resumen compacto de machine-inventory
 
 - La salida predeterminada (`serialization.mode=compact`) conserva un resumen

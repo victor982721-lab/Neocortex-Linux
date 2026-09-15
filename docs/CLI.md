@@ -40,6 +40,38 @@ si el tope excepcional de presentación recorta la lista, se informa
 Sin `--machine-json`, la vista humana conserva la misma cabecera y filas
 compactas por raíz; no imprime el inventario completo por accidente.
 
+### Cuota de entradas y contadores
+
+El límite `--machine-max-entries` sigue siendo global, pero el owner lo reparte
+entre las raíces seleccionadas con `root_quota_policy` igual a
+`equal_fair_share_v1`. `root_entry_quotas` publica la cuota efectiva indexada por
+`root_index`, y cada elemento de `root_summaries` publica el mismo valor como
+`entry_quota`. Para la raíz actual, la cuota es
+`ceil(entradas_globales_restantes / raíces_restantes)`; si termina antes, las
+entradas no usadas regresan al fondo global y se asignan a las raíces
+posteriores. Ninguna raíz puede exceder su cuota efectiva. Si el fondo se
+agota, `entry_quota=0` aún produce el resumen de la raíz y el motivo de la
+frontera global; no se interpreta como `absent`. La política sólo reparte
+entradas: `--machine-max-depth` y `--machine-max-bytes` continúan siendo cotas
+globales y pueden interrumpir una raíz antes de usar su cuota.
+
+La salida separa contabilidad de registros y de raíces:
+
+- `records_scanned` cuenta sólo observaciones de entradas, no filas sintéticas
+  de resumen de una raíz.
+- `record_status_counts`, `record_category_counts` y `record_reason_counts`
+  cuentan únicamente esos registros observados.
+- `root_status_counts` cuenta una vez el estado de cada raíz efectiva.
+- `status_counts`, `category_counts` y `reason_counts` son nombres históricos
+  compatibles y pueden incluir marcadores de raíz `absent`, `blocked` o
+  `unknown`; no deben sumarse a los mapas `record_*`.
+
+`root_quota_policy`, `root_entry_quotas`, `entry_quota` y estos grupos de
+contadores forman parte de la evidencia de cobertura, no de una autorización
+de lectura adicional ni de una acción de limpieza. La vista Python
+`to_summary_dict()` conserva estos campos para que un consumidor no tenga que
+inferirlos a partir de la cantidad de registros.
+
 La salida distingue la observación de su presentación:
 
 | Campo | Significado |
@@ -77,7 +109,9 @@ válidos. Sus valores predeterminados son 10,000 entradas, profundidad 2 y 1 TiB
 de bytes observados; los registros, resúmenes, muestras y agregados también son bounded. La salida
 JSON usa el envelope cerrado `neocortex.machine-inventory/v1` y contiene
 `operation`, `read_only=true`, `roots`, `root_count`, `limits`, `truncated`,
-`root_summaries`, conteos por estado/categoría, bytes observados/aparentes/asignados,
+`root_summaries`, `root_quota_policy`, `root_entry_quotas`, conteos
+`record_status_counts`/`record_category_counts`/`record_reason_counts`,
+`root_status_counts` y los nombres históricos por estado/categoría, bytes observados/aparentes/asignados,
 `reason_summary`, `reason_explanations` y el registro de categorías, owner y procedencia.
 La colección `records` sólo aparece con `--machine-json=records` (en `result` y
 como alias de compatibilidad en el envelope).
