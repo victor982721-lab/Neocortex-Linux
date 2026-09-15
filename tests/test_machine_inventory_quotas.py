@@ -253,3 +253,29 @@ def test_machine_json_projects_separate_record_and_root_status_counts(
     assert result["root_entry_quotas"] == [1, 1, 0]
     assert result["record_status_counts"] == payload["record_status_counts"]
     assert result["root_status_counts"] == payload["root_status_counts"]
+
+
+def test_root_boundary_reason_summary_preserves_multiple_limits(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    nested = root / "00-dir"
+    nested.mkdir(parents=True, mode=0o700)
+    (nested / "child").write_bytes(b"child")
+    (root / "01-file").write_bytes(b"one")
+    (root / "02-file").write_bytes(b"two")
+
+    report = collect_machine_inventory(
+        (MachineInventoryRoot(root, category="tmp"),),
+        max_entries=2,
+        max_depth=1,
+        max_bytes=1_000_000,
+    )
+
+    # The first directory proves the requested depth is bounded; the third
+    # root entry proves the same root also hit its fair-share entry quota.
+    assert report.roots[0].truncation_reasons == ("entry_limit", "depth_limit")
+    assert report.reason_summary["entry_limit"] == 1
+    assert report.reason_summary["depth_limit"] == 1
+    assert report.root_marker_reason_counts == {
+        "entry_limit": 1,
+        "depth_limit": 1,
+    }

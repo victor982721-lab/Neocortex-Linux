@@ -2612,10 +2612,14 @@ def _build_report(
             "out_of_profile",
         }:
             # A root-level limit is distinct from its entry classifications;
-            # preserve it so a partial scan cannot look complete in the
-            # aggregate reason summary.
-            root_marker_reason_counts_counter[root.reason_code] += 1
-            reason_counts_counter[root.reason_code] += 1
+            # preserve every reported truncation reason so a partial scan
+            # cannot look complete in the aggregate reason summary.  The
+            # primary ``reason_code`` is not necessarily the only boundary
+            # (for example, a root can hit both depth and entry quota).
+            reasons = root.truncation_reasons or (root.reason_code,)
+            for code in dict.fromkeys(reasons):
+                root_marker_reason_counts_counter[code] += 1
+                reason_counts_counter[code] += 1
     status_counts: dict[str, int] = {
         status_name: int(status_counts_counter.get(status_name, 0))
         for status_name in MACHINE_INVENTORY_STATUSES
