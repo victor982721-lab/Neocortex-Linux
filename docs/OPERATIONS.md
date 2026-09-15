@@ -394,8 +394,15 @@ Primero captura un plan bounded y revisa su salida JSON:
 ```bash
 HistoricalRoot="/ruta/raiz-historica"
 Neocortex maintenance --scope historical-temp \
-  --maintenance-audit-root "$HistoricalRoot" --maintenance-json
+--maintenance-audit-root "$HistoricalRoot" --maintenance-json
 ```
+
+Si la raíz es grande, amplía sólo de forma consciente los límites del mismo
+comando, por ejemplo `--maintenance-max-entries 100000
+--maintenance-max-depth 8`. La respuesta incluye `limits`, `status_counts`,
+`reason_summary` y `largest_records`: permite ver cuánto quedó en
+`no_manifest`, permisos inseguros, actividad incierta, recovery o cobertura
+truncada, sin leer cuerpos ni convertir el tamaño observado en permiso.
 
 El plan es read-only. Sólo enumera hijos directos cuyo nombre empieza por
 `neocortex-`, intenta manifests de nombres permitidos y conserva vecinos no

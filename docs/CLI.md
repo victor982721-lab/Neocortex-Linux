@@ -220,6 +220,10 @@ escanea `/tmp` por omisión.
 Neocortex maintenance --scope historical-temp \
   --maintenance-audit-root "/ruta/raiz-historica" --maintenance-json
 Neocortex maintenance --scope historical-temp \
+  --maintenance-audit-root /tmp \
+  --maintenance-max-entries 100000 --maintenance-max-depth 8 \
+  --maintenance-json
+Neocortex maintenance --scope historical-temp \
   --maintenance-audit-root "/ruta/raiz-historica" \
   --apply --maintenance-json
 ```
@@ -244,6 +248,13 @@ con drift queda intacto y el resultado es `blocked` o `recovery_required`.
 Cada efecto escribe primero un receipt bounded fuera de la entrada y sólo lo
 marca `applied` después de verificar la ausencia del target; un cierre incierto
 queda en recuperación y se reporta en `receipts`.
+
+Para raíces históricas grandes, `--maintenance-max-*` permite una observación
+acotada más amplia sin quitar el límite. `status_counts` y `reason_summary`
+explican cada bloqueo (`no_manifest`, `permissions_unsafe`,
+`activity_uncertain`, `recovery_required`, `bounds_exceeded`, etc.) y
+`largest_records` muestra sólo los mayores registros de forma limitada. Si la
+cobertura sigue truncada, el resultado no autoriza ningún efecto.
 
 Esta frontera no usa `rm`, `shutil`, KIO ni otro cleaner externo, no abre
 SQLite y no recorre ni modifica el corpus. Un plan puede reportar una raíz

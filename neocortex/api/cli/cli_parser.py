@@ -1083,6 +1083,27 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     maintenance.add_argument(
+        "--maintenance-max-entries",
+        type=int,
+        default=10_000,
+        metavar="N",
+        help="bound historical audit entries (default: 10000)",
+    )
+    maintenance.add_argument(
+        "--maintenance-max-depth",
+        type=int,
+        default=2,
+        metavar="N",
+        help="bound historical audit depth (default: 2)",
+    )
+    maintenance.add_argument(
+        "--maintenance-max-bytes",
+        type=int,
+        default=1 << 40,
+        metavar="BYTES",
+        help="bound historical audit apparent/allocated bytes",
+    )
+    maintenance.add_argument(
         "--external-root",
         type=Path,
         default=None,

@@ -108,6 +108,10 @@ def _maintenance_requested(args: argparse.Namespace) -> bool:
         return True
     if "maintenance_audit_root" in explicit:
         return True
+    if explicit.intersection(
+        {"maintenance_max_entries", "maintenance_max_depth", "maintenance_max_bytes"}
+    ):
+        return True
     # ``--scope`` is shared with Knowledge for compatibility.  Only the two
     # maintenance values make it a maintenance request without the command;
     # personal/framework/all continue through the established Knowledge path.
@@ -199,6 +203,9 @@ def _validate_maintenance_operation(args: argparse.Namespace) -> bool:
 
     audit_root = getattr(args, "maintenance_audit_root", None)
     audit_root_explicit = "maintenance_audit_root" in explicit
+    maintenance_limits_explicit = explicit.intersection(
+        {"maintenance_max_entries", "maintenance_max_depth", "maintenance_max_bytes"}
+    )
     if scope == _HISTORICAL_MAINTENANCE_SCOPE:
         if not audit_root_explicit or audit_root is None:
             raise SystemExit(
@@ -246,9 +253,24 @@ def _validate_maintenance_operation(args: argparse.Namespace) -> bool:
                 raise SystemExit(
                     f"--maintenance-audit-root cannot equal or be inside the {label} root"
                 )
-    elif audit_root_explicit:
+        for name, minimum, maximum in (
+            ("maintenance_max_entries", 1, 100_000),
+            ("maintenance_max_depth", 0, 64),
+            ("maintenance_max_bytes", 0, 1 << 40),
+        ):
+            value = getattr(args, name, None)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < minimum
+                or value > maximum
+            ):
+                raise SystemExit(
+                    f"--{name.replace('_', '-')} is outside the historical audit bound"
+                )
+    elif audit_root_explicit or maintenance_limits_explicit:
         raise SystemExit(
-            "--maintenance-audit-root requires --scope historical-temp"
+            "historical maintenance options require --scope historical-temp"
         )
 
     if getattr(args, "all", False):

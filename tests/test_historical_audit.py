@@ -132,6 +132,17 @@ def test_only_prefixed_direct_children_are_scanned_and_neighbors_are_unmanaged(
     assert plan.unmanaged == (neighbor, ordinary)
     assert marker.read_bytes() == b"outside-scope"
     assert (ordinary / "also-remains").exists()
+    payload = plan.to_dict()
+    assert payload["limits"] == {
+        "max_entries": 10_000,
+        "max_depth": 2,
+        "max_bytes": 1 << 40,
+    }
+    reason_summary = payload["reason_summary"]
+    assert isinstance(reason_summary, list)
+    assert isinstance(reason_summary[0], dict)
+    assert reason_summary[0]["key"] == "no_manifest"
+    assert "manifest" in reason_summary[0]["explanation"]
 
 
 def test_invalid_and_other_application_manifests_are_blocked(tmp_path: Path) -> None:

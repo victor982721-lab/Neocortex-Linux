@@ -168,6 +168,13 @@ Lo desconocido, activo, no adoptado, ambiguo o cambiado se conserva o queda
 bloqueado. El flujo no llama limpiadores externos ni KIO y no abre SQLite ni el
 corpus.
 
+Para una raíz grande puedes elevar explícitamente sus límites bounded:
+`--maintenance-max-entries`, `--maintenance-max-depth` y
+`--maintenance-max-bytes`. La salida incluye `status_counts`, `reason_summary`
+con explicación humana y muestras acotadas, además de `largest_records`; así
+se distingue falta de manifest, permisos inseguros, actividad, recovery y
+cobertura truncada sin convertir ninguna categoría en permiso de borrado.
+
 `external-maintenance` es únicamente diagnóstico: exige root y categoría
 explícitos, no admite `--apply`, no descubre rutas desde HOME y no usa red,
 SQLite, KIO, sudo ni otro cleaner. Categorías sin owner (miniaturas KDE,

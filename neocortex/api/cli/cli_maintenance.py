@@ -135,9 +135,16 @@ def _historical_manager(
         ("corpus_root", getattr(args, "root", None)),
         ("state_root", getattr(args, "state_directory", None)),
         ("state_directory", getattr(args, "state_directory", None)),
+        ("max_entries", getattr(args, "maintenance_max_entries", None)),
+        ("max_depth", getattr(args, "maintenance_max_depth", None)),
+        ("max_bytes", getattr(args, "maintenance_max_bytes", None)),
     ):
-        if name in parameters and isinstance(value, (Path, str)):
+        if name not in parameters:
+            continue
+        if isinstance(value, (Path, str)):
             kwargs[name] = Path(value)
+        elif isinstance(value, int) and not isinstance(value, bool):
+            kwargs[name] = value
     manager_type: Any = HistoricalAuditManager
     return manager_type(root, **kwargs)
 
@@ -474,9 +481,39 @@ def _plan_payload(
         unmanaged = _owner_value(owner_result, "unmanaged")
         if isinstance(unmanaged, (tuple, list)):
             payload["unmanaged"] = [_value(item) for item in unmanaged[:_MAX_RECORDS]]
+            payload["unmanaged_returned"] = min(len(unmanaged), _MAX_RECORDS)
+            payload["unmanaged_truncated"] = len(unmanaged) > _MAX_RECORDS
         receipts = _owner_value(owner_result, "receipts")
         if isinstance(receipts, (tuple, list)):
             payload["receipts"] = [_value(item) for item in receipts[:_MAX_RECORDS]]
+        all_records = _owner_value(owner_result, "records")
+        if isinstance(all_records, (tuple, list)):
+            payload["records_returned"] = min(len(all_records), _MAX_RECORDS)
+            payload["records_truncated"] = len(all_records) > _MAX_RECORDS
+
+            def record_observed_bytes(record: object) -> int:
+                value = _owner_value(record, "observed_bytes")
+                return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+            ranked_records = sorted(
+                all_records,
+                key=lambda record: (
+                    -record_observed_bytes(record),
+                    str(_owner_value(record, "path") or ""),
+                ),
+            )
+            payload["largest_records"] = [
+                _record_payload(record) for record in ranked_records[:20]
+            ]
+        for name in ("status_counts", "reason_summary"):
+            value = _owner_value(owner_result, name)
+            if isinstance(value, Mapping):
+                payload[name] = _value(value)
+            elif isinstance(value, (tuple, list)):
+                payload[name] = _value(value[:64])
+        limits = _owner_value(owner_result, "limits")
+        if isinstance(limits, Mapping):
+            payload["limits"] = _value(limits)
         for name in ("adoption_id", "adoption_digest", "digest"):
             value = _owner_value(owner_result, name)
             if value is not None:

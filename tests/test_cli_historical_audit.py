@@ -93,6 +93,50 @@ def test_historical_scope_does_not_default_to_tmp_or_create_root(
     assert all(name != "apply" for name, _value in calls)
 
 
+def test_historical_scope_exposes_explicit_bounds_and_explanations(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    root = tmp_path / "historical"
+    root.mkdir(mode=0o700)
+    entry = root / "neocortex-unregistered"
+    entry.mkdir(mode=0o700)
+    entry.chmod(0o700)
+    payload_file = entry / "payload"
+    payload_file.write_bytes(b"payload")
+    payload_file.chmod(0o600)
+    code = main(
+        [
+            "maintenance",
+            "--scope",
+            "historical-temp",
+            "--maintenance-audit-root",
+            str(root),
+            "--maintenance-max-entries",
+            "123",
+            "--maintenance-max-depth",
+            "4",
+            "--maintenance-max-bytes",
+            "9876",
+            "--maintenance-json",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 0
+    payload = json.loads(captured.out)
+    assert payload["limits"] == {
+        "max_entries": 123,
+        "max_depth": 4,
+        "max_bytes": 9876,
+    }
+    reason_summary = payload["reason_summary"]
+    assert isinstance(reason_summary, list)
+    assert isinstance(reason_summary[0], dict)
+    assert reason_summary[0]["key"] == "no_manifest"
+    assert payload["records_returned"] == 1
+    assert payload["records_truncated"] is False
+
+
 def test_historical_apply_delegates_and_preserves_unverified_as_blocked(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:

@@ -744,6 +744,9 @@ class HistoricalAuditPlan:
     root_blocked: str | None = None
     truncated: bool = False
     receipts: tuple[Path, ...] = ()
+    max_entries: int = 0
+    max_depth: int = 0
+    max_bytes: int = 0
 
     @property
     def entries(self) -> tuple[HistoricalRecord, ...]:
@@ -781,6 +784,75 @@ class HistoricalAuditPlan:
             "recovery_required": self.recovery_required,
         }
 
+    @property
+    def status_counts(self) -> dict[str, int]:
+        """Return bounded lifecycle counts for every observed record."""
+
+        statuses = (
+            "adoptable",
+            "kept",
+            "active",
+            "blocked",
+            "unknown",
+            "failed",
+            "recovery_required",
+        )
+        return {status: sum(item.status == status for item in self.records) for status in statuses}
+
+    @property
+    def limits(self) -> dict[str, int]:
+        """Return the effective bounded scan limits used by this pass."""
+
+        return {
+            "max_entries": self.max_entries,
+            "max_depth": self.max_depth,
+            "max_bytes": self.max_bytes,
+        }
+
+    @property
+    def reason_summary(self) -> tuple[dict[str, object], ...]:
+        """Explain why records remain protected, bounded and non-adoptable.
+
+        The summary deliberately uses a closed set of reason keys rather than
+        echoing arbitrary manifest text or full error messages.  It gives a
+        caller an actionable explanation while keeping the output bounded and
+        avoiding a second authority for deletion.
+        """
+
+        grouped: dict[str, dict[str, object]] = {}
+        for record in self.records:
+            key = _reason_key(record)
+            bucket = grouped.setdefault(
+                key,
+                {
+                    "key": key,
+                    "explanation": _reason_explanation(key),
+                    "count": 0,
+                    "observed_bytes": 0,
+                    "sample_paths": [],
+                },
+            )
+            count_value = bucket.get("count")
+            bytes_value = bucket.get("observed_bytes")
+            bucket["count"] = (count_value if isinstance(count_value, int) else 0) + 1
+            bucket["observed_bytes"] = (
+                (bytes_value if isinstance(bytes_value, int) else 0)
+                + record.observed_bytes
+            )
+            samples = bucket["sample_paths"]
+            if isinstance(samples, list) and len(samples) < 3:
+                samples.append(str(record.path))
+        def bucket_count(item: Mapping[str, object]) -> int:
+            value = item.get("count")
+            return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+        return tuple(
+            sorted(
+                grouped.values(),
+                key=lambda item: (-bucket_count(item), str(item.get("key", ""))),
+            )
+        )
+
     def to_dict(self) -> dict[str, object]:
         return {
             "schema": HISTORICAL_AUDIT_SCHEMA,
@@ -807,6 +879,13 @@ class HistoricalAuditPlan:
             "records": [record.to_dict() for record in self.records],
             "unmanaged": [str(path) for path in self.unmanaged],
             "receipts": [str(path) for path in self.receipts],
+            "limits": {
+                "max_entries": self.max_entries,
+                "max_depth": self.max_depth,
+                "max_bytes": self.max_bytes,
+            },
+            "status_counts": self.status_counts,
+            "reason_summary": list(self.reason_summary),
         }
 
 
@@ -868,6 +947,67 @@ class _ManifestObservation:
     payload: Mapping[str, Any]
     digest: str | None
     schema: str | None
+
+
+_REASON_EXPLANATIONS: dict[str, str] = {
+    "no_manifest": "No hay manifest allow-listed que vincule productor, owner y ciclo de vida.",
+    "manifest_invalid": "El manifest existe, pero su JSON, tamaño, permisos o digest no son verificables.",
+    "foreign_manifest": "El manifest pertenece a otra aplicación o a un schema no soportado.",
+    "owner_unsupported": "El owner lógico no está registrado en este servicio histórico.",
+    "identity_claim_mismatch": "La ruta, raíz o identidad física declarada no coincide con el objeto observado.",
+    "activity_uncertain": "No existe una atestación confiable de que el trabajo esté inactivo.",
+    "adoption_binding_missing": "Faltan adoption_id/digest ligados al manifest autenticado.",
+    "adoption_not_approved": "El estado o la política no declaran explícitamente que el artefacto sea desechable.",
+    "active_lifecycle": "El productor declara el artefacto activo o en progreso.",
+    "recovery_required": "Existe una condición de recuperación o un efecto previo incompleto.",
+    "permissions_unsafe": "Owner, permisos o enlaces permiten una sustitución o acceso no seguro.",
+    "symlink": "Se detectó un enlace simbólico; no se sigue ni se usa como autoridad.",
+    "hardlink": "Se detectó un hardlink compartido; retirar el nombre podría afectar otro consumidor.",
+    "mount_boundary": "El objeto cruza o coincide con un límite de montaje no adoptable.",
+    "unsupported_type": "El tipo de archivo no es regular/directorio seguro para este owner.",
+    "bounds_exceeded": "La observación alcanzó el límite de entradas, profundidad o bytes; la cobertura es incompleta.",
+    "status": "El estado observado no tiene una explicación reconocida por el contrato.",
+}
+
+
+def _reason_key(record: "HistoricalRecord") -> str:
+    reason = (record.reason or "").casefold()
+    if record.truncated or any(
+        marker in reason
+        for marker in (
+            "bounds",
+            "entry limit",
+            "depth limit",
+            "byte limit",
+            "exceeds the entry",
+        )
+    ):
+        return "bounds_exceeded"
+    markers = (
+        ("no allow-listed manifest", "no_manifest"),
+        ("manifest is invalid", "manifest_invalid"),
+        ("another application", "foreign_manifest"),
+        ("manifest owner is unsupported", "owner_unsupported"),
+        ("path/root/identity claim", "identity_claim_mismatch"),
+        ("activity is uncertain", "activity_uncertain"),
+        ("adoption id/digest binding", "adoption_binding_missing"),
+        ("not approved for adoption", "adoption_not_approved"),
+        ("active or in progress", "active_lifecycle"),
+        ("requires recovery", "recovery_required"),
+        ("permissions", "permissions_unsafe"),
+        ("symlink", "symlink"),
+        ("hardlink", "hardlink"),
+        ("mount", "mount_boundary"),
+        ("unsupported", "unsupported_type"),
+    )
+    for marker, key in markers:
+        if marker in reason:
+            return key
+    return record.status if record.status in _REASON_EXPLANATIONS else "status"
+
+
+def _reason_explanation(key: str) -> str:
+    return _REASON_EXPLANATIONS.get(key, _REASON_EXPLANATIONS["status"])
 
 
 class HistoricalAuditManager:
@@ -935,6 +1075,9 @@ class HistoricalAuditManager:
             reason=reason,
             read_only=read_only,
             root_blocked=reason,
+            max_entries=self.max_entries,
+            max_depth=self.max_depth,
+            max_bytes=self.max_bytes,
         )
 
     def plan(self, now_ns: int | None = None) -> HistoricalAuditPlan:
@@ -1159,6 +1302,9 @@ class HistoricalAuditManager:
             read_only=False,
             root_identity=root_identity,
             truncated=truncated,
+            max_entries=self.max_entries,
+            max_depth=self.max_depth,
+            max_bytes=self.max_bytes,
         )
 
     def _scan(
@@ -1651,6 +1797,9 @@ class HistoricalAuditManager:
             read_only=read_only,
             root_identity=root_identity,
             truncated=truncated,
+            max_entries=self.max_entries,
+            max_depth=self.max_depth,
+            max_bytes=self.max_bytes,
         )
 
     def _retire(
