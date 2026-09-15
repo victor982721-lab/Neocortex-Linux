@@ -4,6 +4,23 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-15 — Resumen compacto de machine-inventory
+
+- La salida predeterminada (`serialization.mode=compact`) conserva un resumen
+  por raíz y agregados bounded sin volcar todos los registros;
+  `--machine-json=records` queda como opt-in de detalle y mantiene los límites
+  del escáner y de la serialización.
+- Se separan la cobertura del recorrido (`scanner_truncated`, límites y razones)
+  y la omisión posterior de registros (`presentation_truncated` y
+  `serialization.records_omitted`). `root_count` y los resúmenes de raíces
+  permanecen visibles aunque el presupuesto global deje raíces sin visitar; si
+  la propia presentación alcanza su cota, `root_summaries_omitted` lo hace
+  explícito.
+- Se documenta la contabilidad de `apparent` (`st_size`), `allocated`
+  (`st_blocks * 512`) y `observed` (suma usada por el presupuesto), sin
+  convertir bytes observados en espacio recuperable ni añadir acciones de
+  limpieza.
+
 ## 2026-09-15 — Inventario federado bounded y read-only de máquina
 
 - Se añade `machine-inventory` y el owner `neocortex.runtime.machine_inventory`

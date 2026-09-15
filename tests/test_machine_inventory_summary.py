@@ -101,14 +101,24 @@ def test_summary_labels_apparent_allocated_and_observed_bytes_separately(
 
     byte_values = _mapping(summary["bytes"])
     assert set(byte_values) >= {"apparent", "allocated", "observed"}
-    assert byte_values["observed"] == byte_values["apparent"] + byte_values["allocated"]
+    apparent = byte_values["apparent"]
+    allocated = byte_values["allocated"]
+    observed = byte_values["observed"]
+    assert isinstance(apparent, int)
+    assert isinstance(allocated, int)
+    assert observed == apparent + allocated
     assert summary["byte_semantics"] == dict(MACHINE_INVENTORY_BYTE_SEMANTICS)
 
     root_summaries = cast(list[object], summary["root_summaries"])
     root_summary = _mapping(root_summaries[0])
     root_bytes = _mapping(root_summary["bytes"])
     assert set(root_bytes) >= {"apparent", "allocated", "observed"}
-    assert root_bytes["observed"] == root_bytes["apparent"] + root_bytes["allocated"]
+    root_apparent = root_bytes["apparent"]
+    root_allocated = root_bytes["allocated"]
+    root_observed = root_bytes["observed"]
+    assert isinstance(root_apparent, int)
+    assert isinstance(root_allocated, int)
+    assert root_observed == root_apparent + root_allocated
     assert _mapping(root_summary["byte_semantics"]) == dict(
         MACHINE_INVENTORY_BYTE_SEMANTICS
     )

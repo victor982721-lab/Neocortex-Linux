@@ -205,6 +205,34 @@ Neocortex machine-inventory \
   --machine-json
 ```
 
+La salida JSON es **compacta por defecto**: conserva el resumen de cada raíz
+efectiva y los agregados globales, pero no vuelca todos los registros de cada
+entrada. El modo de detalle se solicita explícitamente con
+`--machine-json=records` (el modo predeterminado equivale a `compact`); aun en
+ese modo los registros siguen acotados y los límites del escáner no cambian.
+En ambos modos `root_count` cuenta las
+raíces seleccionadas, incluidas las que no alcanzaron turno de recorrido, y
+el resumen por raíz conserva `status`, `reason_code`, `counts`, `bytes`,
+`truncated` y `truncation_reasons`. El owner conserva una ranura por cada raíz;
+si una cota excepcional de presentación recorta también esa lista, lo indica
+en `serialization.root_summaries_omitted` y `presentation_truncated`, en vez de
+silenciar la omisión.
+
+El envelope separa dos fronteras de cobertura. `scanner_truncated` (y sus
+`truncation_reasons`) describe que el recorrido no pudo completar la cobertura
+por `max_entries`, `max_depth`, `max_bytes`, permisos, carrera o cancelación;
+es evidencia del owner del inventario. `presentation_truncated` indica que una
+segunda cota de serialización tuvo que truncar el detalle; la omisión deliberada
+del modo `compact` se cuenta en la faceta `presentation` pero no convierte por
+sí sola la cobertura en `truncated`. `serialization.mode`,
+`records_included`, `records_returned` y `records_omitted` explican esa
+proyección. No uses la presencia de
+`[contenido omitido por límite]` ni el tamaño de la salida para inferir que el
+escáner terminó: son capas distintas y pueden truncarse de forma independiente.
+La vista Python equivalente es `to_summary_dict()`: su `root_summaries`,
+`coverage_metadata` y `omissions` mantienen la misma separación sin incluir
+`records`.
+
 El recorrido usa `lstat`/no-follow y sólo metadata: identidad física
 (`st_dev`, `st_ino` y birthtime o sentinel), tipo, owner, permisos, montaje,
 symlink/hardlink y tamaños aparente/asignado. No lee cuerpos ni payload del
@@ -217,7 +245,13 @@ El envelope cerrado `neocortex.machine-inventory/v1` declara
 `read_only=true`, la operación, las raíces y `root_count`, límites efectivos,
 `truncated`, registros acotados, agregados por estado/categoría/razón,
 `reason_summary`, `reason_explanations`, el registro de categorías/owners/procedencia y bytes
-`observed`, aparentes y asignados. Los estados posibles son `absent`,
+`observed`, aparentes y asignados. En la contabilidad, `apparent` es la suma de
+`st_size` (tamaño lógico), `allocated` es la suma de los bloques reportados por
+el filesystem (`st_blocks * 512`) y `observed` es la métrica de presupuesto
+`apparent + allocated`; no es espacio libre ni una medida independiente de
+duplicación física. Los límites de bytes se aplican a `observed` globalmente,
+por lo que sus agregados son créditos bounded y no una auditoría completa del
+uso del disco. Los estados posibles son `absent`,
 `observed`, `preserved`, `blocked`, `unknown` y `out_of_profile`; un hallazgo o
 un recorrido truncado no es un permiso de limpieza. El presupuesto de
 `entries`, `depth` y `bytes` es global para la invocación y no se retira para

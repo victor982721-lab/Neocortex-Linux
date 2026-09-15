@@ -25,14 +25,78 @@ Neocortex machine-inventory \
   --machine-json
 ```
 
+### Resumen y detalle
+
+El JSON es compacto por defecto. Publica una fila/resumen para cada raíz
+efectiva y los agregados globales, sin serializar todos los registros de las
+entradas. Para pedir registros bounded de forma explícita usa
+`--machine-json=records` (el modo predeterminado equivale a `compact`); esta
+opción no aumenta `--machine-max-entries`, `--machine-max-depth` ni
+`--machine-max-bytes`, y la serialización conserva su propio tope. `root_count`
+y los resúmenes de raíz permanecen completos aunque
+el recorrido haya agotado el presupuesto antes de visitar una raíz posterior;
+si el tope excepcional de presentación recorta la lista, se informa
+`serialization.root_summaries_omitted` y `presentation_truncated`.
+Sin `--machine-json`, la vista humana conserva la misma cabecera y filas
+compactas por raíz; no imprime el inventario completo por accidente.
+
+La salida distingue la observación de su presentación:
+
+| Campo | Significado |
+|---|---|
+| `root_summaries` | Resumen sin registros completos para cada raíz efectiva; conserva también las raíces no visitadas por el presupuesto mientras quepa en la cota de presentación. |
+| `scanner_truncated` / `truncated` | El owner no completó el recorrido. `truncation_reasons` identifica `entry_limit`, `depth_limit`, `byte_limit`, permisos, carrera o cancelación. |
+| `serialization.mode` | `compact` por omisión; `records` sólo cuando se solicitan registros. |
+| `serialization.records_included` | Si la proyección incluyó registros; no equivale a que no existan entradas. |
+| `serialization.records_returned` / `serialization.records_omitted` | Registros serializados y registros disponibles que no se incluyeron en la respuesta. |
+| `presentation_truncated` | El límite de la proyección de salida omitió registros; es independiente de `scanner_truncated`. |
+
+En la superficie Python del owner, la misma separación se expresa en
+`coverage_metadata` y `omissions`: cada uno tiene facetas `scanner` y
+`presentation`, con `records_scanned`, `records_returned`,
+`records_omitted`/`records_omitted_known` y sus razones. La CLI puede conservar
+esas facetas dentro de `result` además del alias `serialization`; siempre usa
+la proyección `root_summaries` para no reintroducir `records` por accidente.
+El `records_omitted` de `scanner` puede ser `null` porque una valla impide
+contar entradas que quedaron fuera; `serialization.records_omitted` es, en
+cambio, el conteo conocido de registros que esta respuesta decidió no incluir.
+El modo `compact` puede tener este último valor mayor que cero con
+`presentation_truncated=false`: no es una falla del escáner.
+
+Una salida puede tener `scanner_truncated=true` y
+`presentation_truncated=false` (el escáner quedó corto, pero el resumen cabe),
+o viceversa (el escáner terminó y se limitó el detalle). No uses el marcador de
+sanitización `[contenido omitido por límite]` como señal del escáner: pertenece
+a otra frontera de presentación. Las raíces no visitadas conservan su estado y
+razón en el resumen de raíz; `root_count` no se reduce a las raíces que sí
+recibieron entradas.
+
 Los límites `--machine-max-entries`, `--machine-max-depth` y
 `--machine-max-bytes` son globales para toda la invocación y mantienen techos
 válidos. Sus valores predeterminados son 10,000 entradas, profundidad 2 y 1 TiB
-de bytes observados; los registros, muestras y agregados también son bounded. La salida
+de bytes observados; los registros, resúmenes, muestras y agregados también son bounded. La salida
 JSON usa el envelope cerrado `neocortex.machine-inventory/v1` y contiene
 `operation`, `read_only=true`, `roots`, `root_count`, `limits`, `truncated`,
-`records`, conteos por estado/categoría, bytes observados/aparentes/asignados,
+`root_summaries`, conteos por estado/categoría, bytes observados/aparentes/asignados,
 `reason_summary`, `reason_explanations` y el registro de categorías, owner y procedencia.
+La colección `records` sólo aparece con `--machine-json=records` (en `result` y
+como alias de compatibilidad en el envelope).
+
+### Semántica de bytes
+
+Los tres contadores no son sinónimos:
+
+- `apparent`: tamaño lógico de la entrada (`st_size`), sin leer el payload;
+- `allocated`: bloques reportados por el filesystem (`st_blocks * 512` en
+  Linux);
+- `observed`: crédito de presupuesto usado por el escáner, igual a
+  `apparent + allocated` de los metadatos que pudo observar.
+
+Directorios y objetos especiales normalmente aportan cero a esos tamaños. Un
+`observed` grande no es espacio recuperable, no corrige hardlinks/symlinks y no
+demuestra uso físico exclusivo. Cuando se agota `--machine-max-bytes`, el
+crédito queda limitado, se marca `byte_limit` y la cobertura pasa a ser parcial;
+el límite es global entre todas las raíces, no uno nuevo por raíz.
 
 Los estados son `absent`, `observed`, `preserved`, `blocked`, `unknown` y
 `out_of_profile`. Las categorías separan `neocortex_state`, `neocortex_data` y

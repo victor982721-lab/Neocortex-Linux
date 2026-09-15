@@ -221,14 +221,18 @@ def test_owner_failures_remain_zero_exit_diagnostics(
 def test_human_machine_output_is_read_only_and_zero_exit(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
 ) -> None:
     monkeypatch.setitem(
         sys.modules,
         "neocortex.runtime.machine_inventory",
         _owner_module(lambda **_kwargs: {"status": "unknown", "scanned": 0}),
     )
-    assert main(["machine-inventory"]) == 0
+    root = tmp_path / "machine"
+    root.mkdir()
+    assert main(["machine-inventory", "--machine-root", str(root)]) == 0
     output = capsys.readouterr()
     assert output.err == ""
     assert output.out.startswith("MACHINE-INVENTORY status=unknown")
     assert "read_only=true" in output.out
+    assert "ROOT index=0" in output.out

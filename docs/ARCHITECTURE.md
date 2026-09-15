@@ -83,6 +83,37 @@ estado/categoría, `reason_summary`, categorías/owners/procedencia y bytes
 la truncación o un tamaño observado no se colapsan a éxito ni a permiso para
 retirar archivos.
 
+La interfaz separa el resumen de la lista de registros. El modo JSON
+predeterminado serializa un resumen compacto por raíz y los agregados, sin
+volcar la colección completa; `--machine-json=records` es un opt-in para
+registros bounded (`compact` es el modo predeterminado) y conserva los mismos
+presupuestos del escáner. Los resúmenes de todas las raíces seleccionadas se
+preservan aunque el presupuesto global detenga el recorrido antes de
+visitarlas, mientras quepan en el límite de presentación. Si esa lista también
+se recorta, el resultado conserva `root_count` e informa
+`root_summaries_omitted` y `presentation_truncated`; `root_count` no es un
+alias de la cantidad de raíces con registros.
+
+La cobertura tiene dos capas independientes. `scanner_truncated` (compatible
+con `truncated`) y `truncation_reasons` describen el resultado del owner DFS y
+sus límites de entradas, profundidad, bytes o seguridad; `presentation_truncated`
+y `serialization` describen la proyección bounded que sale por la CLI. La
+proyección informa `mode`, `records_included`, `records_returned` y
+`records_omitted`; la omisión intencional del modo `compact` puede tener un
+conteo positivo sin ser un truncamiento. Nunca debe sustituirse por el marcador
+genérico de sanitización `[contenido omitido por límite]`. Así, la observación
+puede ser parcial con un resumen íntegro, o completa con el detalle recortado.
+El owner Python expone esta proyección mediante `to_summary_dict()`, con
+`root_summaries`, `coverage_metadata` y `omissions`; `to_dict()` conserva la
+representación completa para consumidores que la soliciten expresamente.
+
+La contabilidad de bytes también es explícita: `apparent` suma `st_size`,
+`allocated` suma `st_blocks * 512` y `observed` es `apparent + allocated`, la
+métrica de crédito para el presupuesto global. Son metadatos, no una lectura
+de payload ni una medida de espacio libre/recuperable; hardlinks, symlinks,
+directorios y objetos especiales mantienen sus fronteras de identidad y no se
+convierten en bytes exclusivos por sumar esos campos.
+
 El comando de consulta rechaza `--apply` y los selectores de corpus (`--root`,
 `--all`, `--dedupe` y rutas). El siguiente plano de acción permanece separado:
 requiere registro de owner y política, selección y preview explícitos,

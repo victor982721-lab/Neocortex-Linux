@@ -70,6 +70,30 @@ class ExplicitArgumentParser(argparse.ArgumentParser):
         return parsed, extras
 
 
+class _MachineJsonModeAction(argparse.Action):
+    """Keep ``--machine-json`` compatible while exposing a detail opt-in.
+
+    The original switch is a boolean and remains one for callers that use it
+    without a value.  ``--machine-json records`` (or
+    ``--machine-json=records``) is an additive spelling for the optional full
+    record projection; the default mode is explicitly compact.
+    """
+
+    def __init__(self, option_strings, dest, nargs=None, **kwargs):
+        kwargs.pop("nargs", None)
+        super().__init__(option_strings, dest, nargs="?", **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        mode = "compact" if values is None else str(values)
+        if mode not in {"compact", "records"}:
+            parser.error(
+                f"argument {option_string or '--machine-json'}: "
+                "mode must be 'compact' or 'records'"
+            )
+        setattr(namespace, self.dest, True)
+        namespace.machine_json_mode = mode
+
+
 def decimal_megabytes(value: str) -> int:
     """Convert a user-facing decimal MB value to an exact byte ceiling."""
 
@@ -235,8 +259,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     machine_inventory.add_argument(
         "--machine-json",
-        action="store_true",
-        help="emit machine-inventory as one bounded JSON envelope",
+        action=_MachineJsonModeAction,
+        default=False,
+        metavar="MODE",
+        help=(
+            "emit machine-inventory as one bounded JSON envelope; compact is "
+            "the default, use --machine-json records for the optional bounded "
+            "record projection"
+        ),
     )
     parser.add_argument(
         "--route",

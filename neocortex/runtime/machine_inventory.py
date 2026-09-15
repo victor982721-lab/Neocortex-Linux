@@ -39,6 +39,8 @@ MachineInventoryStatus = Literal[
     "out_of_profile",
 ]
 
+MachineInventoryCoverage = Literal["complete", "partial", "blocked"]
+
 MachineInventoryProfile = Literal[
     "observed",
     "preserved",
@@ -85,6 +87,25 @@ MAX_MACHINE_INVENTORY_DEPTH = 64
 MAX_MACHINE_INVENTORY_BYTES = 1 << 50
 MAX_METADATA_LABEL_BYTES = 256
 MAX_METADATA_REASON_BYTES = 2_048
+
+# The three counters below deliberately retain the existing numeric wire
+# names.  This companion mapping makes their provenance explicit without
+# changing the read-only scanner or pretending that ``observed`` is another
+# kind of storage usage.
+MACHINE_INVENTORY_BYTE_SEMANTICS: Mapping[str, str] = MappingProxyType(
+    {
+        "apparent": "metadata st_size: logical bytes reported for regular files and symlinks",
+        "allocated": "metadata st_blocks * 512: filesystem-allocated bytes reported by the host",
+        "observed": (
+            "budget-credited apparent + allocated bytes; a reporting sum, not extra storage "
+            "and not deduplicated disk usage"
+        ),
+        "budget": (
+            "max_bytes applies globally to the observed sum; when bounded, counters may be "
+            "lower than raw metadata sizes"
+        ),
+    }
+)
 
 # Stable, explanatory reason codes.  They describe evidence and boundaries;
 # none of them authorizes a filesystem effect.
@@ -781,10 +802,23 @@ class MachineInventoryRootResult:
     root_exists: bool = False
     root_type: str = "unknown"
     root_is_directory: bool = False
+    max_entries: int = 0
+    max_depth: int = 0
+    max_bytes: int = 0
 
     @property
     def root(self) -> Path:
         return self.path
+
+    @property
+    def coverage(self) -> MachineInventoryCoverage:
+        """Return scanner coverage for this root, not renderer coverage."""
+
+        if self.status == "blocked":
+            return "blocked"
+        if self.truncated or self.status in {"unknown", "absent"}:
+            return "partial"
+        return "complete"
 
     @property
     def identity(self) -> tuple[int, int, int] | None:
@@ -797,6 +831,151 @@ class MachineInventoryRootResult:
     @property
     def items(self) -> tuple[MachineInventoryRecord, ...]:
         return self.records
+
+    @property
+    def records_scanned(self) -> int:
+        """Number of record observations produced by the bounded scanner."""
+
+        return self.scanned
+
+    @property
+    def records_returned(self) -> int:
+        """Number of records present in this owner result."""
+
+        return len(self.records)
+
+    @property
+    def records_omitted(self) -> int | None:
+        """Exact omitted-record count when known, otherwise ``None``.
+
+        A bounded scan cannot count entries beyond a depth/entry/byte fence
+        without defeating that fence.  ``None`` therefore means *unknown*,
+        not zero.  A complete root (and an explicitly absent root) has an
+        exact omitted count of zero.
+        """
+
+        if self.truncated or self.status in {"blocked", "unknown"}:
+            return None
+        return 0
+
+    @property
+    def records_omitted_known(self) -> bool:
+        return self.records_omitted is not None
+
+    @property
+    def scanner_truncated(self) -> bool:
+        """Whether the owner scanner, rather than presentation, truncated."""
+
+        return self.truncated
+
+    @property
+    def scanner_truncation_reasons(self) -> tuple[str, ...]:
+        return self.truncation_reasons
+
+    @property
+    def presentation_truncated(self) -> bool:
+        """The runtime returns all owner records; renderers may trim later."""
+
+        return False
+
+    @property
+    def byte_semantics(self) -> dict[str, str]:
+        return dict(MACHINE_INVENTORY_BYTE_SEMANTICS)
+
+    @property
+    def limits(self) -> dict[str, int]:
+        return {
+            "max_entries": self.max_entries,
+            "max_depth": self.max_depth,
+            "max_bytes": self.max_bytes,
+        }
+
+    @property
+    def omissions(self) -> dict[str, dict[str, object]]:
+        """Separate scanner omissions from presentation omissions.
+
+        This owner result has no renderer, so presentation omissions are
+        explicitly zero.  A consumer that clips the result must update its
+        own presentation facet instead of relabelling scanner truncation.
+        """
+
+        return {
+            "scanner": {
+                "truncated": self.scanner_truncated,
+                "reasons": list(self.scanner_truncation_reasons),
+                "records_omitted": self.records_omitted,
+                "records_omitted_known": self.records_omitted_known,
+            },
+            "presentation": {
+                "truncated": False,
+                "reasons": [],
+                "records_omitted": 0,
+                "records_omitted_known": True,
+            },
+        }
+
+    @property
+    def coverage_metadata(self) -> dict[str, object]:
+        """Return explicit scanner/presentation coverage facets."""
+
+        return {
+            "scanner": {
+                "status": self.coverage,
+                "truncated": self.scanner_truncated,
+                "truncation_reasons": list(self.scanner_truncation_reasons),
+                "records_scanned": self.records_scanned,
+                "records_returned": self.records_returned,
+                "records_omitted": self.records_omitted,
+                "records_omitted_known": self.records_omitted_known,
+            },
+            "presentation": {
+                "status": "complete",
+                "truncated": self.presentation_truncated,
+                "records_scanned": self.records_scanned,
+                "records_returned": self.records_returned,
+                "records_omitted": 0,
+                "records_omitted_known": True,
+            },
+        }
+
+    def to_summary_dict(self) -> dict[str, object]:
+        """Return a compact root summary without the full record list."""
+
+        return {
+            "root": str(self.path),
+            "path": str(self.path),
+            "root_index": self.root_index,
+            "category": self.category,
+            "owner": self.owner,
+            "provenance": self.provenance,
+            "profile": self.profile,
+            "status": self.status,
+            "coverage": self.coverage,
+            "reason_code": self.reason_code,
+            "reason": self.reason,
+            "root_identity": None if self.root_identity is None else list(self.root_identity),
+            "identity": None if self.root_identity is None else list(self.root_identity),
+            "root_uid": self.root_uid,
+            "root_gid": self.root_gid,
+            "root_mode": self.root_mode,
+            "root_nlink": self.root_nlink,
+            "root_exists": self.root_exists,
+            "root_type": self.root_type,
+            "root_is_directory": self.root_is_directory,
+            "counts": self.counts,
+            "records_scanned": self.records_scanned,
+            "records_returned": self.records_returned,
+            "records_omitted": self.records_omitted,
+            "records_omitted_known": self.records_omitted_known,
+            "scanner_truncated": self.scanner_truncated,
+            "scanner_truncation_reasons": list(self.scanner_truncation_reasons),
+            "presentation_truncated": self.presentation_truncated,
+            "bytes": self.bytes,
+            "byte_semantics": self.byte_semantics,
+            "limits": self.limits,
+            "coverage_metadata": self.coverage_metadata,
+            "omissions": self.omissions,
+        }
 
     @property
     def root_owner_class(self) -> str:
@@ -848,6 +1027,22 @@ class MachineInventoryRootResult:
             "root_exists": self.root_exists,
             "root_type": self.root_type,
             "root_is_directory": self.root_is_directory,
+            # Additive summary/coverage fields.  ``records`` below remains
+            # the full owner result for compatibility; callers that need a
+            # compact projection should use ``to_summary_dict``.
+            "coverage": self.coverage,
+            "records_scanned": self.records_scanned,
+            "records_returned": self.records_returned,
+            "records_omitted": self.records_omitted,
+            "records_omitted_known": self.records_omitted_known,
+            "scanner_truncated": self.scanner_truncated,
+            "scanner_truncation_reasons": list(self.scanner_truncation_reasons),
+            "presentation_truncated": self.presentation_truncated,
+            "byte_semantics": self.byte_semantics,
+            "limits": self.limits,
+            "coverage_metadata": self.coverage_metadata,
+            "omissions": self.omissions,
+            "summary": self.to_summary_dict(),
             "counts": self.counts,
             "bytes": self.bytes,
             "scanned": self.scanned,
@@ -920,6 +1115,18 @@ class MachineInventoryReport:
         )
 
     @property
+    def scan_coverage(self) -> MachineInventoryCoverage:
+        """Coverage attributable to the filesystem scanner."""
+
+        return cast(MachineInventoryCoverage, self.coverage)
+
+    @property
+    def presentation_coverage(self) -> MachineInventoryCoverage:
+        """Coverage before any downstream renderer/paginator clips output."""
+
+        return "complete"
+
+    @property
     def root_results(self) -> tuple[MachineInventoryRootResult, ...]:
         return self.roots
 
@@ -930,6 +1137,179 @@ class MachineInventoryReport:
     @property
     def items(self) -> tuple[MachineInventoryRecord, ...]:
         return self.records
+
+    @property
+    def records_scanned(self) -> int:
+        """Number of bounded record observations made by the scanner."""
+
+        return self.scanned
+
+    @property
+    def records_returned(self) -> int:
+        """Number of records retained in the owner result payload."""
+
+        return len(self.records)
+
+    @property
+    def records_omitted(self) -> int | None:
+        """Exact omitted-record count, or ``None`` when a bound hides it."""
+
+        if self.truncated or self.status in {"blocked", "unknown"}:
+            return None
+        return 0
+
+    @property
+    def records_omitted_known(self) -> bool:
+        return self.records_omitted is not None
+
+    @property
+    def records_truncated(self) -> bool:
+        """Compatibility alias for scanner-side record truncation."""
+
+        return self.scanner_truncated
+
+    @property
+    def scanner_truncated(self) -> bool:
+        return self.truncated
+
+    @property
+    def scanner_truncation_reasons(self) -> tuple[str, ...]:
+        return self.truncation_reasons
+
+    @property
+    def byte_semantics(self) -> dict[str, str]:
+        return dict(MACHINE_INVENTORY_BYTE_SEMANTICS)
+
+    @property
+    def root_summaries(self) -> tuple[dict[str, object], ...]:
+        """Compact, record-free summaries for every requested root."""
+
+        return tuple(root.to_summary_dict() for root in self.roots)
+
+    @property
+    def summaries(self) -> tuple[dict[str, object], ...]:
+        """Short alias for :attr:`root_summaries`."""
+
+        return self.root_summaries
+
+    @property
+    def omissions(self) -> dict[str, dict[str, object]]:
+        """Expose scanner and presentation omission facets separately."""
+
+        scanner_roots = sum(root.coverage != "complete" for root in self.roots)
+        return {
+            "scanner": {
+                "truncated": self.scanner_truncated,
+                "reasons": list(self.scanner_truncation_reasons),
+                "records_omitted": self.records_omitted,
+                "records_omitted_known": self.records_omitted_known,
+                # Every requested root gets a bounded result object.  A root
+                # may still have partial child coverage; that distinction is
+                # represented by its own summary rather than hidden here.
+                "roots_requested": self.root_count,
+                "root_summaries_omitted": 0,
+                "roots_with_incomplete_coverage": scanner_roots,
+            },
+            "presentation": {
+                "truncated": False,
+                "reasons": [],
+                "records_omitted": 0,
+                "records_omitted_known": True,
+                "root_summaries_omitted": 0,
+            },
+        }
+
+    @property
+    def coverage_metadata(self) -> dict[str, object]:
+        """Return explicit scanner and downstream-presentation coverage."""
+
+        return {
+            "scanner": {
+                "status": self.scan_coverage,
+                "truncated": self.scanner_truncated,
+                "truncation_reasons": list(self.scanner_truncation_reasons),
+                "reason_code": self.reason_code,
+                "records_scanned": self.records_scanned,
+                "records_returned": self.records_returned,
+                "records_omitted": self.records_omitted,
+                "records_omitted_known": self.records_omitted_known,
+                "roots_requested": self.root_count,
+                "root_summaries_returned": len(self.root_summaries),
+                "root_summaries_omitted": 0,
+            },
+            "presentation": {
+                "status": self.presentation_coverage,
+                "truncated": False,
+                "records_scanned": self.records_scanned,
+                "records_returned": self.records_returned,
+                "records_omitted": 0,
+                "records_omitted_known": True,
+                "root_summaries_returned": len(self.root_summaries),
+                "root_summaries_omitted": 0,
+            },
+        }
+
+    def to_summary_dict(self) -> dict[str, object]:
+        """Return a bounded federated summary without full record payloads.
+
+        ``to_dict`` remains the compatibility/full representation.  This
+        projection is the owner-provided view for human/JSON renderers that
+        should not print every record by default.
+        """
+
+        return {
+            "schema": MACHINE_INVENTORY_SCHEMA,
+            "operation": self.operation,
+            "status": self.status,
+            "coverage": self.coverage,
+            "scan_coverage": self.scan_coverage,
+            "presentation_coverage": self.presentation_coverage,
+            "reason_code": self.reason_code,
+            "reason": self.reason,
+            "read_only": self.read_only,
+            "diagnostic_only": self.diagnostic_only,
+            "metadata_only": self.metadata_only,
+            "content_read": self.content_read,
+            "sqlite_read": self.sqlite_read,
+            "network_used": self.network_used,
+            "kio_used": self.kio_used,
+            "mutated": self.mutated,
+            "scanner_truncated": self.scanner_truncated,
+            "scanner_truncation_reasons": list(self.scanner_truncation_reasons),
+            "presentation_truncated": False,
+            "truncated": self.truncated,
+            "records_scanned": self.records_scanned,
+            "records_returned": self.records_returned,
+            "records_omitted": self.records_omitted,
+            "records_omitted_known": self.records_omitted_known,
+            "limits": {
+                "max_entries": self.max_entries,
+                "max_depth": self.max_depth,
+                "max_bytes": self.max_bytes,
+            },
+            "counts": self.counts,
+            "aggregates": self.aggregates,
+            "status_counts": dict(self.status_counts),
+            "category_counts": dict(self.category_counts),
+            "reason_counts": dict(self.reason_counts),
+            "reason_summary": self.reason_summary,
+            "reason_explanations": self.reason_explanations,
+            "bytes": self.bytes,
+            "byte_semantics": self.byte_semantics,
+            "observed_bytes": self.observed_bytes,
+            "observed_apparent_bytes": self.observed_apparent_bytes,
+            "observed_allocated_bytes": self.observed_allocated_bytes,
+            "root_count": self.root_count,
+            "root_summaries": list(self.root_summaries),
+            "coverage_metadata": self.coverage_metadata,
+            "omissions": self.omissions,
+        }
+
+    @property
+    def summary(self) -> dict[str, object]:
+        """Convenience alias for the compact owner projection."""
+
+        return self.to_summary_dict()
 
     @property
     def counts(self) -> dict[str, int]:
@@ -1013,10 +1393,6 @@ class MachineInventoryReport:
         return len(self.records)
 
     @property
-    def records_returned(self) -> int:
-        return len(self.records)
-
-    @property
     def bytes(self) -> dict[str, int]:
         return {
             "apparent": self.apparent_bytes,
@@ -1056,6 +1432,14 @@ class MachineInventoryReport:
             "mutated": self.mutated,
             "truncated": self.truncated,
             "truncation_reasons": list(self.truncation_reasons),
+            # Keep the historical full representation intact while exposing
+            # additive scanner/presentation provenance and a compact root
+            # projection for renderers that do not need every record.
+            "scan_coverage": self.scan_coverage,
+            "presentation_coverage": self.presentation_coverage,
+            "scanner_truncated": self.scanner_truncated,
+            "scanner_truncation_reasons": list(self.scanner_truncation_reasons),
+            "presentation_truncated": False,
             "limits": {
                 "max_entries": self.max_entries,
                 "max_depth": self.max_depth,
@@ -1078,6 +1462,7 @@ class MachineInventoryReport:
             "provenance": self.provenance,
             "provenance_registry": self.provenance_registry,
             "bytes": self.bytes,
+            "byte_semantics": self.byte_semantics,
             "observed_bytes": self.observed_bytes,
             "observed_apparent_bytes": self.observed_apparent_bytes,
             "observed_allocated_bytes": self.observed_allocated_bytes,
@@ -1086,7 +1471,13 @@ class MachineInventoryReport:
             "entries": self.entries_returned,
             "entries_returned": self.entries_returned,
             "records_returned": self.records_returned,
+            "records_scanned": self.records_scanned,
+            "records_omitted": self.records_omitted,
+            "records_omitted_known": self.records_omitted_known,
             "root_count": self.root_count,
+            "root_summaries": list(self.root_summaries),
+            "coverage_metadata": self.coverage_metadata,
+            "omissions": self.omissions,
             "roots": [root.to_dict() for root in self.roots],
             "records": [record.to_dict() for record in self.records],
         }
@@ -1587,6 +1978,9 @@ def _make_root_result(
     root_exists: bool,
     truncation_reasons: tuple[str, ...],
     truncated: bool,
+    max_entries: int = 0,
+    max_depth: int = 0,
+    max_bytes: int = 0,
 ) -> MachineInventoryRootResult:
     frozen_records = tuple(records)
     base_status, _, _ = _base_classification(spec)
@@ -1651,6 +2045,9 @@ def _make_root_result(
         root_exists=root_exists,
         root_type=root_type,
         root_is_directory=False if root_metadata is None else stat.S_ISDIR(root_metadata.st_mode),
+        max_entries=max_entries,
+        max_depth=max_depth,
+        max_bytes=max_bytes,
     )
 
 
@@ -1666,6 +2063,9 @@ def _root_empty_issue(
     exists: bool = False,
     truncation_reasons: tuple[str, ...] = (),
     truncated: bool = False,
+    max_entries: int = 0,
+    max_depth: int = 0,
+    max_bytes: int = 0,
 ) -> MachineInventoryRootResult:
     return _make_root_result(
         root=root,
@@ -1679,6 +2079,9 @@ def _root_empty_issue(
         root_exists=exists,
         truncation_reasons=truncation_reasons,
         truncated=truncated,
+        max_entries=max_entries,
+        max_depth=max_depth,
+        max_bytes=max_bytes,
     )
 
 
@@ -1700,6 +2103,9 @@ def _scan_root(
             spec,
             code=ROOT_PATH_SYMLINK,
             reason=_safe_reason(exc),
+            max_entries=budget.max_entries,
+            max_depth=max_depth,
+            max_bytes=budget.max_bytes,
         )
     try:
         metadata = os.lstat(root.path)
@@ -1710,6 +2116,9 @@ def _scan_root(
             spec,
             code=ROOT_ABSENT,
             reason="explicit root is absent",
+            max_entries=budget.max_entries,
+            max_depth=max_depth,
+            max_bytes=budget.max_bytes,
         )
     except OSError as exc:
         permission = exc.errno in {errno.EACCES, errno.EPERM}
@@ -1719,6 +2128,9 @@ def _scan_root(
             spec,
             code=ROOT_PERMISSION_DENIED if permission else ROOT_UNAVAILABLE,
             reason=_safe_reason(f"explicit root is unavailable: {exc}"),
+            max_entries=budget.max_entries,
+            max_depth=max_depth,
+            max_bytes=budget.max_bytes,
         )
     identity = _identity(metadata)
     if stat.S_ISLNK(metadata.st_mode):
@@ -1731,6 +2143,9 @@ def _scan_root(
             metadata=metadata,
             identity=identity,
             exists=True,
+            max_entries=budget.max_entries,
+            max_depth=max_depth,
+            max_bytes=budget.max_bytes,
         )
     if not stat.S_ISDIR(metadata.st_mode):
         return _root_empty_issue(
@@ -1742,6 +2157,9 @@ def _scan_root(
             metadata=metadata,
             identity=identity,
             exists=True,
+            max_entries=budget.max_entries,
+            max_depth=max_depth,
+            max_bytes=budget.max_bytes,
         )
     try:
         descriptor = os.open(root.path, _directory_flags())
@@ -1756,6 +2174,9 @@ def _scan_root(
             metadata=metadata,
             identity=identity,
             exists=True,
+            max_entries=budget.max_entries,
+            max_depth=max_depth,
+            max_bytes=budget.max_bytes,
         )
 
     start_reasons = len(budget.truncation_reasons)
@@ -1813,6 +2234,9 @@ def _scan_root(
         root_exists=True,
         truncation_reasons=local_reasons,
         truncated=bool(local_reasons),
+        max_entries=budget.max_entries,
+        max_depth=max_depth,
+        max_bytes=budget.max_bytes,
     )
 
 
@@ -2060,6 +2484,7 @@ __all__ = [
     "ENTRY_MOUNT_BOUNDARY",
     "ENTRY_NON_REGULAR",
     "ENTRY_SYMLINK",
+    "MACHINE_INVENTORY_BYTE_SEMANTICS",
     "MACHINE_INVENTORY_CATEGORIES",
     "MACHINE_INVENTORY_CATEGORIES_SPECS",
     "MACHINE_INVENTORY_CATEGORY_SPECS",
@@ -2073,6 +2498,7 @@ __all__ = [
     "MachineInventoryCategory",
     "MachineInventoryCategoryError",
     "MachineInventoryCategorySpec",
+    "MachineInventoryCoverage",
     "MachineInventoryError",
     "MachineInventoryManager",
     "MachineInventoryProfile",

@@ -65,6 +65,16 @@ Neocortex machine-inventory \
   --machine-json
 ```
 
+La consulta JSON entrega un **resumen compacto por defecto**. El resumen
+conserva una entrada por raíz efectiva y sus `status`, `reason_code`, conteos,
+bytes y razones de truncamiento, incluso si el presupuesto global impide
+recorrer esa raíz. `root_count` es el número de raíces seleccionadas, no el de
+raíces que alcanzaron a producir registros. Sólo solicita detalle con
+`--machine-json=records` (el modo predeterminado equivale a `compact`); la
+opción no elimina los límites del escáner ni el tope de serialización. Si la
+lista de resúmenes rebasa esa cota, conserva `root_count` e informa
+`serialization.root_summaries_omitted` junto con `presentation_truncated`.
+
 Antes de ampliar una sonda:
 
 1. usa `--machine-root` sólo con rutas absolutas y repítelo por cada raíz que
@@ -72,8 +82,10 @@ Antes de ampliar una sonda:
 2. conserva `--machine-max-entries`, `--machine-max-depth` y
    `--machine-max-bytes` dentro de sus techos; el presupuesto es global y la
    salida explica `truncated` cuando se agota;
-3. revisa `roots`, `root_count`, registros y agregados de estado, categoría y
-   razón antes de interpretar cualquier tamaño;
+3. revisa `roots`, `root_count`, resúmenes de raíz y agregados de estado,
+   categoría y razón antes de interpretar cualquier tamaño; si se pidió
+   detalle, revisa además `root_summaries`, `serialization.records_returned`
+   y `serialization.records_omitted`;
 4. trata `absent`, `blocked`, `unknown` y `out_of_profile` como resultados que
    requieren explicación, no como cero bytes ni como candidatos de limpieza.
 
@@ -84,6 +96,28 @@ Los perfiles/categorías separan `neocortex_state`, `neocortex_data` y
 `neocortex_corpus` de NeoCortex de `tmp`, `cache`, `config`, `home` y `external`;
 ningún perfil prueba por sí mismo que NeoCortex pueda retirarlo. Los estados son
 `absent`, `observed`, `preserved`, `blocked`, `unknown` y `out_of_profile`.
+
+En la API Python, `to_summary_dict()` es la proyección equivalente y expone
+`root_summaries`, `coverage_metadata` y `omissions` sin `records`; `to_dict()`
+queda reservado para el detalle completo solicitado por un consumidor.
+
+No confundas las capas de truncamiento: `scanner_truncated`/`truncated` y
+`truncation_reasons` pertenecen al recorrido (por ejemplo `entry_limit`,
+`depth_limit` o `byte_limit`); `presentation_truncated` y el objeto
+`serialization` pertenecen a la proyección de salida. La omisión deliberada
+del modo `compact` se reporta en la faceta de presentación sin implicar por sí
+sola `presentation_truncated=true`. Es válido que el escáner quede parcial
+mientras el resumen se entregue completo, o que el escáner termine y sólo se
+omitan registros por el tope de presentación. El
+texto `[contenido omitido por límite]` no sustituye esos campos ni debe usarse
+para declarar cobertura.
+
+Interpreta los bytes así: `apparent` es `st_size` (tamaño lógico), `allocated`
+es `st_blocks * 512` (bloques asignados reportados por Linux) y `observed` es
+la suma usada como crédito del presupuesto bounded. `observed` no equivale a
+espacio libre, no deduplica hardlinks y no prueba recuperabilidad. El límite de
+bytes es global y puede dejar créditos parciales en la última entrada; conserva
+la razón `byte_limit` junto con el resultado.
 
 La sonda usa `lstat`/no-follow, no lee cuerpos ni el payload del corpus, no abre
 SQLite (tampoco en modo `ro`), no escribe estado, no usa red, KIO, sudo ni
