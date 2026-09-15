@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
 import sys
 import types
 from pathlib import Path
@@ -210,6 +212,88 @@ def test_historical_apply_does_not_treat_preview_claim_as_effect_receipt(
     assert payload["status"] == "recovery_required"
     assert payload["applied"] == 0
     assert payload["recovery_required"] == 1
+
+
+def test_historical_apply_receipt_must_match_selected_root_and_record(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    audit_root = tmp_path / "root-two"
+    audit_root.mkdir(mode=0o700)
+    foreign_root = tmp_path / "root-one"
+    foreign_root.mkdir(mode=0o700)
+    receipt_path = foreign_root / "receipt.json"
+    receipt = {
+        "schema": "neocortex.historical-audit-receipt/v1",
+        "state": "applied",
+        "postcondition": "entry_absent",
+        "root": str(foreign_root),
+        "root_identity": [1, 2, 3],
+        "path": str(foreign_root / "neocortex-foreign"),
+        "path_identity": [4, 5, 6],
+        "manifest_path": str(foreign_root / "neocortex-foreign" / "manifest.json"),
+        "manifest_identity": [7, 8, 9],
+        "manifest_digest": "sha256:manifest",
+        "adoption_id": "foreign-adoption",
+        "adoption_digest": "sha256:adoption",
+        "owner": "neocortex-framework",
+        "observed_bytes": 1,
+        "apparent_bytes": 1,
+        "allocated_bytes": 1,
+    }
+    receipt["receipt_digest"] = "sha256:" + hashlib.sha256(
+        json.dumps(receipt, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    receipt_path.write_text(json.dumps(receipt, sort_keys=True), encoding="utf-8")
+    os.chmod(receipt_path, 0o600)
+    plan = {
+        "root": str(audit_root),
+        "status": "planned",
+        "records": [
+            {
+                "status": "adoptable",
+                "adoptable": True,
+                "root_identity": [10, 11, 12],
+                "path": str(audit_root / "neocortex-local"),
+                "path_identity": [13, 14, 15],
+                "manifest_path": str(audit_root / "neocortex-local" / "manifest.json"),
+                "manifest_identity": [16, 17, 18],
+                "manifest_digest": "sha256:local-manifest",
+                "adoption_id": "local-adoption",
+                "adoption_digest": "sha256:local-adoption",
+                "owner": "neocortex-framework",
+            }
+        ],
+    }
+    apply_result = {
+        "status": "applied",
+        "applied": 1,
+        "records": [],
+        "receipts": [str(receipt_path)],
+    }
+    _install_fake_manager(
+        monkeypatch,
+        plan_result=plan,
+        apply_result=apply_result,
+    )
+
+    exit_code, payload = _invoke(
+        [
+            "maintenance",
+            "--scope",
+            "historical-temp",
+            "--maintenance-audit-root",
+            str(audit_root),
+            "--apply",
+            "--maintenance-json",
+        ],
+        capsys,
+    )
+
+    assert exit_code == 2
+    assert payload["status"] == "recovery_required"
+    assert payload["applied"] == 0
 
 
 @pytest.mark.parametrize(

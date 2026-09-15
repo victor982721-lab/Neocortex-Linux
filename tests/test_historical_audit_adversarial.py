@@ -302,6 +302,39 @@ def test_receipt_directory_mount_boundary_is_fail_closed(
     assert not receipt_directory.exists()
 
 
+def test_orphaned_prepared_receipt_is_reported_for_recovery(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    entry = _adoptable_entry(root)
+    manager = HistoricalAuditManager(root)
+    plan = manager.plan()
+    record = plan.records[0]
+    assert record.root_identity is not None
+
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    root_fd = os.open(root, flags)
+    try:
+        historical_audit._write_retirement_receipt(
+            root_fd,
+            record,
+            record.root_identity,
+            frozenset(),
+        )
+    finally:
+        os.close(root_fd)
+    # Simulate the process dying after the target effect but before the
+    # prepared receipt can be finalized.
+    entry.rename(tmp_path / "orphaned-entry")
+
+    replay_plan = manager.plan()
+    replay_apply = manager.apply(plan)
+
+    assert replay_plan.recovery_required == 1
+    assert replay_plan.status == "recovery_required"
+    assert replay_apply.recovery_required == 1
+    assert replay_apply.applied == 0
+    assert (root / ".neocortex-historical-audit").is_dir()
+
+
 def test_top_level_counts_and_records_are_bounded(tmp_path: Path) -> None:
     root = _root(tmp_path)
     limit = 3

@@ -55,6 +55,7 @@ _MAX_COUNT = 1_000_000
 _MAX_BYTES = 16 * 1024 * 1024 * 1024 * 1024
 _MAX_RECEIPT_BYTES = 64 * 1024
 _HISTORICAL_RECEIPT_SCHEMA = "neocortex.historical-audit-receipt/v1"
+_MAX_RECEIPT_EFFECTS = 100_000
 
 
 def _maintenance_scope(args: argparse.Namespace) -> str | None:
@@ -250,6 +251,16 @@ def _raw_records(owner_result: object) -> Sequence[object]:
     return ()
 
 
+def _all_bounded_records(owner_result: object) -> Sequence[object]:
+    """Return enough records for effect validation, not just first-page output."""
+
+    for name in ("records", "items", "entries"):
+        value = _owner_value(owner_result, name)
+        if isinstance(value, (tuple, list)):
+            return value[:_MAX_RECEIPT_EFFECTS]
+    return ()
+
+
 def _historical_metric_count(owner_result: object, name: str) -> int:
     """Extract one historical category without collapsing safety states."""
 
@@ -356,8 +367,8 @@ def _record_payload(record: object) -> object:
     return converted
 
 
-def _receipt_is_applied(value: object) -> bool:
-    """Verify one owner receipt without following an untrusted final link.
+def _read_applied_receipt(value: object) -> Mapping[str, object] | None:
+    """Read and verify one owner receipt without following an untrusted link.
 
     The historical owner writes these receipts atomically before/after an
     effect.  The CLI presentation guard must not turn a plan claim into an
@@ -371,13 +382,13 @@ def _receipt_is_applied(value: object) -> bool:
     elif isinstance(value, str):
         path = Path(value)
     else:
-        return False
+        return None
     if not path.is_absolute() or len(str(path).encode("utf-8")) > 4096:
-        return False
+        return None
     try:
         before = path.lstat()
     except OSError:
-        return False
+        return None
     if (
         stat.S_ISLNK(before.st_mode)
         or not stat.S_ISREG(before.st_mode)
@@ -386,12 +397,12 @@ def _receipt_is_applied(value: object) -> bool:
         or bool(before.st_mode & 0o077)
         or before.st_size > _MAX_RECEIPT_BYTES
     ):
-        return False
+        return None
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
     try:
         descriptor = os.open(path, flags)
     except OSError:
-        return False
+        return None
     try:
         opened = os.fstat(descriptor)
         if (
@@ -402,7 +413,7 @@ def _receipt_is_applied(value: object) -> bool:
             or bool(opened.st_mode & 0o077)
             or opened.st_size > _MAX_RECEIPT_BYTES
         ):
-            return False
+            return None
         data = bytearray()
         while len(data) <= _MAX_RECEIPT_BYTES:
             chunk = os.read(descriptor, min(64 * 1024, _MAX_RECEIPT_BYTES + 1 - len(data)))
@@ -410,26 +421,26 @@ def _receipt_is_applied(value: object) -> bool:
                 break
             data.extend(chunk)
         if len(data) > _MAX_RECEIPT_BYTES:
-            return False
+            return None
     except OSError:
-        return False
+        return None
     finally:
         os.close(descriptor)
     try:
         parsed = json.loads(bytes(data).decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError, TypeError, ValueError):
-        return False
+        return None
     if not isinstance(parsed, Mapping):
-        return False
+        return None
     if (
         parsed.get("schema") != _HISTORICAL_RECEIPT_SCHEMA
         or parsed.get("state") != "applied"
         or parsed.get("postcondition") != "entry_absent"
     ):
-        return False
+        return None
     digest = parsed.get("receipt_digest")
     if not isinstance(digest, str) or not digest.startswith("sha256:"):
-        return False
+        return None
     body = dict(parsed)
     body.pop("receipt_digest", None)
     expected = "sha256:" + hashlib.sha256(
@@ -441,19 +452,96 @@ def _receipt_is_applied(value: object) -> bool:
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()
-    return digest == expected
+    return parsed if digest == expected else None
 
 
-def _has_verified_receipts(owner_result: object, effect_count: int) -> bool:
-    """Require one bounded, applied receipt for every reported effect."""
+def _normalized_claim(value: object) -> object:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (tuple, list)):
+        return tuple(_normalized_claim(item) for item in value)
+    if value is None or isinstance(value, (str, int, bool)):
+        return value
+    return str(value)
 
-    if effect_count <= 0 or effect_count > _MAX_RECORDS:
+
+def _receipt_claim_key(payload: Mapping[str, object]) -> tuple[object, ...]:
+    return tuple(
+        _normalized_claim(payload.get(name))
+        for name in (
+            "root",
+            "root_identity",
+            "path",
+            "path_identity",
+            "manifest_path",
+            "manifest_identity",
+            "manifest_digest",
+            "adoption_id",
+            "adoption_digest",
+            "owner",
+        )
+    )
+
+
+def _record_claim_key(record: object, root: object) -> tuple[object, ...]:
+    return tuple(
+        _normalized_claim(value)
+        for value in (
+            root,
+            _owner_value(record, "root_identity"),
+            _owner_value(record, "path"),
+            _owner_value(record, "path_identity"),
+            _owner_value(record, "manifest_path"),
+            _owner_value(record, "manifest_identity"),
+            _owner_value(record, "manifest_digest"),
+            _owner_value(record, "adoption_id"),
+            _owner_value(record, "adoption_digest"),
+            _owner_value(record, "owner"),
+        )
+    )
+
+
+def _has_verified_receipts(
+    owner_result: object,
+    effect_count: int,
+    authorization_plan: object | None,
+) -> bool:
+    """Require applied receipts matching distinct authorized records."""
+
+    if effect_count <= 0 or effect_count > _MAX_RECEIPT_EFFECTS:
         return False
     receipts = _owner_value(owner_result, "receipts")
     if not isinstance(receipts, (tuple, list)) or len(receipts) < effect_count:
         return False
-    return all(_receipt_is_applied(item) for item in receipts[:effect_count])
-
+    if authorization_plan is None:
+        return False
+    root = _owner_value(authorization_plan, "root")
+    if root is None:
+        return False
+    plan_records = _all_bounded_records(authorization_plan)
+    expected: set[tuple[object, ...]] = set()
+    for record in plan_records:
+        status = _owner_value(record, "status")
+        if isinstance(status, Enum):
+            status = status.value
+        if not (
+            _owner_value(record, "adoptable") is True
+            or _owner_value(record, "eligible") is True
+            or status in {"adoptable", "approved"}
+        ):
+            continue
+        expected.add(_record_claim_key(record, root))
+    if len(expected) < effect_count:
+        return False
+    for item in receipts[:effect_count]:
+        parsed = _read_applied_receipt(item)
+        if parsed is None:
+            return False
+        claim = _receipt_claim_key(parsed)
+        if claim not in expected:
+            return False
+        expected.remove(claim)
+    return True
 
 def _plan_payload(
     owner_result: object,
@@ -718,7 +806,11 @@ def _historical_result_is_unverified(
     has_record_claims = bool(records) and all(
         record_has_claim(record, require_adoption_id=True) for record in records
     )
-    plan_records = _raw_records(authorization_plan) if authorization_plan is not None else ()
+    plan_records = (
+        _all_bounded_records(authorization_plan)
+        if authorization_plan is not None
+        else ()
+    )
     # The currently shipped historical owner uses its authenticated manifest
     # digest as the per-entry adoption claim and does not repeat removed
     # records in the apply result.  Preserve that proof across the apply
@@ -750,7 +842,11 @@ def _historical_result_is_unverified(
         # A preview claim is necessary to identify what was authorized, but it
         # is not evidence that an effect completed.  Applied output must also
         # carry bounded, self-consistent receipts from the owner.
-        has_receipts = _has_verified_receipts(owner_result, effect_count)
+        has_receipts = _has_verified_receipts(
+            owner_result,
+            effect_count,
+            authorization_plan,
+        )
         return not (
             has_receipts
             and (has_top_level_claim or has_record_claims or has_plan_claims)
