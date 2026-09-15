@@ -49,6 +49,96 @@ from neocortex.runtime.orchestration.route_selection import (
 _MAINTENANCE_SCOPES = ("owned-temp", "audit-work", "historical-temp")
 _HISTORICAL_MAINTENANCE_SCOPE = "historical-temp"
 _EXTERNAL_COMMAND = "external-maintenance"
+_MACHINE_INVENTORY_COMMAND = "machine-inventory"
+_MACHINE_INVENTORY_BOUNDS = {
+    "machine_max_entries": (1, 1_000_000),
+    "machine_max_depth": (0, 64),
+    "machine_max_bytes": (0, 1 << 50),
+}
+_MACHINE_INVENTORY_ALLOWED_OPTIONS = frozenset(
+    {
+        "machine_root",
+        "machine_max_entries",
+        "machine_max_depth",
+        "machine_max_bytes",
+        "machine_json",
+        "json_output",
+    }
+)
+
+# JSON switches and page/filter fields belonging to direct leaves are not
+# selected operations by themselves.  Keep them out of machine-inventory as
+# well, otherwise argparse could accept a mixed invocation that the owner
+# cannot interpret.
+_DIRECT_LEAF_OPTIONS = frozenset(
+    {
+        "doctor_capabilities_json",
+        "doctor_capabilities_select",
+        "doctor_capabilities_mime_type",
+        "doctor_capabilities_input_bytes",
+        "doctor_platform_json",
+        "doctor_config_json",
+        "models_json",
+        "models_root",
+        "models_model_id",
+        "status_run",
+        "status_limit",
+        "status_json",
+        "state_health_json",
+        "state_health_scope",
+        "state_health_owner",
+        "state_health_max_owners",
+        "state_health_after_owner",
+        "state_health_timeout",
+        "action_recovery_expected_event",
+        "action_recovery_actor",
+        "confirm_reconciliation_record",
+        "action_recovery_limit",
+        "action_recovery_after",
+        "action_recovery_run",
+        "action_recovery_json",
+        "action_recovery_json_lines",
+        "retention_store",
+        "retention_batch_size",
+        "retention_min_age_days",
+        "retention_semantic_after",
+        "retention_catalog_after",
+        "retention_inventory_after",
+        "retention_framework_after",
+        "retention_json",
+        "review_status",
+        "review_recommendation",
+        "review_route",
+        "review_reason",
+        "review_volume_id",
+        "review_file_id",
+        "review_generation",
+        "review_decision_status",
+        "review_actor",
+        "review_note",
+        "review_evidence_batch_size",
+        "review_evidence_route",
+        "review_evidence_reason",
+        "review_evidence_recommendation",
+        "review_evidence_detector",
+        "review_evidence_actor",
+        "review_evidence_status",
+        "review_evidence_completeness",
+        "review_json",
+        "review_json_lines",
+        "review_after",
+        "curation_json",
+        "catalog_kind",
+        "catalog_authority",
+        "catalog_organization",
+        "catalog_client",
+        "catalog_project",
+        "catalog_workstream",
+        "organization_preview_status",
+        "organization_min_confidence",
+        "organization_max_actions",
+    }
+)
 
 # region [01] Stable presets
 
@@ -119,6 +209,73 @@ def _maintenance_requested(args: argparse.Namespace) -> bool:
         "knowledge_scope" in explicit
         and getattr(args, "scope", None) in _MAINTENANCE_SCOPES
     )
+
+
+def _validate_machine_inventory_operation(args: argparse.Namespace) -> bool:
+    """Validate the explicit, read-only federated machine diagnostic.
+
+    This runs before the ordinary framework validators.  A machine inventory
+    must never inherit the default corpus root or accidentally enter a route,
+    direct leaf, dedupe service or mutation path.  Once the configuration is
+    valid, the CLI leaf owns diagnostic outcomes and returns code 0 for them.
+    """
+
+    explicit = set(getattr(args, "_explicit_options", ()))
+    machine_option_names = {
+        "machine_root",
+        "machine_max_entries",
+        "machine_max_depth",
+        "machine_max_bytes",
+        "machine_json",
+    }
+    requested = getattr(args, "command", None) == _MACHINE_INVENTORY_COMMAND or bool(
+        explicit.intersection(machine_option_names)
+    )
+    if not requested:
+        return False
+
+    if getattr(args, "command", None) != _MACHINE_INVENTORY_COMMAND:
+        raise SystemExit("machine-inventory options require the machine-inventory command")
+
+    roots = getattr(args, "machine_root", None)
+    if roots is None:
+        roots = ()
+    if not isinstance(roots, (list, tuple)):
+        raise SystemExit("--machine-root must be repeatable PATH values")
+    for root in roots:
+        if not isinstance(root, (Path, str)) or not Path(root).is_absolute():
+            raise SystemExit("--machine-root must be an absolute path")
+
+    for name, (minimum, maximum) in _MACHINE_INVENTORY_BOUNDS.items():
+        value = getattr(args, name, None)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < minimum
+            or value > maximum
+        ):
+            option = "--" + name.replace("_", "-")
+            raise SystemExit(f"{option} is outside the machine-inventory bound")
+
+    if getattr(args, "apply", False):
+        raise SystemExit("machine-inventory is read-only and cannot be combined with --apply")
+    if getattr(args, "all", False):
+        raise SystemExit("machine-inventory cannot be combined with --all")
+    if "root" in explicit:
+        raise SystemExit("machine-inventory cannot be combined with --root; use --machine-root")
+
+    route_options = {"route", "route_only", "candidate_run", "resume_run"}
+    if explicit.intersection(route_options):
+        raise SystemExit("machine-inventory cannot be combined with --route or route options")
+    if getattr(args, "dedupe", False) or "dedupe_json" in explicit:
+        raise SystemExit("machine-inventory cannot be combined with --dedupe")
+    if selected_direct_operations(args) or explicit.intersection(_DIRECT_LEAF_OPTIONS):
+        raise SystemExit("machine-inventory cannot be combined with direct query/doctor options")
+    unsupported = sorted(explicit - _MACHINE_INVENTORY_ALLOWED_OPTIONS)
+    if unsupported:
+        options = ", ".join("--" + name.replace("_", "-") for name in unsupported)
+        raise SystemExit(f"machine-inventory cannot be combined with unsupported options: {options}")
+    return True
 
 
 def _validate_external_operation(args: argparse.Namespace) -> bool:
@@ -1002,6 +1159,8 @@ def _validate_route_only(args: argparse.Namespace) -> None:
 
 
 def validate_arguments(args: argparse.Namespace) -> None:
+    if _validate_machine_inventory_operation(args):
+        return
     if _validate_external_operation(args):
         return
     if _validate_maintenance_operation(args):

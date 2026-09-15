@@ -47,6 +47,58 @@ de abrir owners salvo que una superficie pública garantice una lectura compatib
 La ausencia de WAL no demuestra quiescencia y un fallo de fence no se corrige
 borrando sidecars ni sustituyendo el lector por `mode=ro`.
 
+## Inventario federado de máquina
+
+Para observar el control plane del host sin iniciar una corrida de contenido,
+usa `machine-inventory`. La consulta predeterminada es metadata-only y bounded:
+`HOME`, `/tmp`, cache/configuración XDG y las raíces de estado, datos y corpus de
+NeoCortex. No descubre ni recorre `/` por omisión.
+
+```bash
+Neocortex machine-inventory --machine-json
+Neocortex machine-inventory \
+  --machine-root "$HOME" \
+  --machine-root /tmp \
+  --machine-max-entries 20000 \
+  --machine-max-depth 8 \
+  --machine-max-bytes 1073741824 \
+  --machine-json
+```
+
+Antes de ampliar una sonda:
+
+1. usa `--machine-root` sólo con rutas absolutas y repítelo por cada raíz que
+   quieras incluir; no sustituyas `--root`, que sigue siendo la raíz del corpus;
+2. conserva `--machine-max-entries`, `--machine-max-depth` y
+   `--machine-max-bytes` dentro de sus techos; el presupuesto es global y la
+   salida explica `truncated` cuando se agota;
+3. revisa `roots`, `root_count`, registros y agregados de estado, categoría y
+   razón antes de interpretar cualquier tamaño;
+4. trata `absent`, `blocked`, `unknown` y `out_of_profile` como resultados que
+   requieren explicación, no como cero bytes ni como candidatos de limpieza.
+
+El envelope `neocortex.machine-inventory/v1` conserva `read_only=true`,
+`reason_summary`, `reason_explanations`, límites efectivos, identidad física, owner/procedencia,
+symlink/hardlink, montaje, permisos y bytes observados, aparentes y asignados.
+Los perfiles/categorías separan `neocortex_state`, `neocortex_data` y
+`neocortex_corpus` de NeoCortex de `tmp`, `cache`, `config`, `home` y `external`;
+ningún perfil prueba por sí mismo que NeoCortex pueda retirarlo. Los estados son
+`absent`, `observed`, `preserved`, `blocked`, `unknown` y `out_of_profile`.
+
+La sonda usa `lstat`/no-follow, no lee cuerpos ni el payload del corpus, no abre
+SQLite (tampoco en modo `ro`), no escribe estado, no usa red, KIO, sudo ni
+cleaners y no crea raíces ausentes. Una carrera de filesystem puede producir
+`blocked`/`unknown`; no se presenta como snapshot atómico. Un resultado válido
+con hallazgos o cobertura truncada conserva exit 0; sólo errores de
+configuración/argumentos producen exit 2.
+
+`machine-inventory` no admite `--apply`, `--all`, `--dedupe`, rutas ni
+operaciones directas. El próximo gate de acciones es independiente: debe
+resolver owner/procedencia, política y selección explícitas, generar preview,
+recibir autorización humana, revalidar identidad/topología/actividad junto al
+efecto y usar una vía reversible con receipt, postcondición y recovery. No
+aplicar manualmente por nombre, antigüedad o tamaño observado.
+
 ## Piloto y regresión acotada
 
 Para una nueva regresión acotada, usa una raíz que contenga sólo 20–50 elementos

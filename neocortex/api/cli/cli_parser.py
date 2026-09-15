@@ -127,17 +127,17 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run the integrated NeoCortex pre-index framework.",
         allow_abbrev=False,
     )
-    # Keep the existing flat option surface while admitting one explicit
-    # control-plane command.  This is intentionally not a subparser: all
-    # established invocations remain parsed by the same parser and the
-    # command is dispatched directly before the Framework route graph.
+    # Keep the existing flat option surface while admitting explicit
+    # control-plane commands.  This is intentionally not a subparser: all
+    # established invocations remain parsed by the same parser and commands
+    # are dispatched directly before the Framework route graph.
     parser.add_argument(
         "command",
         nargs="?",
-        choices=("maintenance", "external-maintenance"),
+        choices=("machine-inventory", "maintenance", "external-maintenance"),
         default=None,
         metavar="COMMAND",
-        help="direct maintenance or external-diagnostic command",
+        help="direct machine-inventory, maintenance or external-diagnostic command",
     )
     register_platform_arguments(parser)
     register_config_doctor_arguments(parser)
@@ -198,7 +198,45 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         dest="json_output",
         action="store_true",
-        help="emit a single JSON summary for --all or --dedupe",
+        help="emit a single JSON summary for --all, --dedupe or machine-inventory",
+    )
+    machine_inventory = parser.add_argument_group("Federated machine inventory (read-only)")
+    machine_inventory.add_argument(
+        "--machine-root",
+        action="append",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "absolute machine root to inspect; repeat for a federated read-only "
+            "diagnostic"
+        ),
+    )
+    machine_inventory.add_argument(
+        "--machine-max-entries",
+        type=int,
+        default=10_000,
+        metavar="N",
+        help="bound machine-inventory entries (default: 10000)",
+    )
+    machine_inventory.add_argument(
+        "--machine-max-depth",
+        type=int,
+        default=2,
+        metavar="N",
+        help="bound machine-inventory traversal depth (default: 2)",
+    )
+    machine_inventory.add_argument(
+        "--machine-max-bytes",
+        type=int,
+        default=1 << 40,
+        metavar="BYTES",
+        help="bound machine-inventory apparent bytes (default: 1 TiB)",
+    )
+    machine_inventory.add_argument(
+        "--machine-json",
+        action="store_true",
+        help="emit machine-inventory as one bounded JSON envelope",
     )
     parser.add_argument(
         "--route",

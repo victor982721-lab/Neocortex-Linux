@@ -4,6 +4,25 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-15 — Inventario federado bounded y read-only de máquina
+
+- Se añade `machine-inventory` y el owner `neocortex.runtime.machine_inventory`
+  para observar raíces explícitas repetibles o perfiles predeterminados acotados
+  (`HOME`, `/tmp`, cache/configuración XDG y estado, datos y corpus de NeoCortex)
+  sin recorrer `/` por omisión.
+- El envelope cerrado `neocortex.machine-inventory/v1` publica sólo metadata
+  bounded: identidad física, tipo, owner/procedencia, montaje, enlaces,
+  permisos, estados (`absent`, `observed`, `preserved`, `blocked`, `unknown`,
+  `out_of_profile`), agregados por categoría/razón, límites y bytes observados,
+  aparentes y asignados.
+- La consulta no lee payloads, no abre SQLite, no escribe estado ni corpus, no
+  usa red, KIO, sudo o cleaners y no crea raíces ausentes. `--apply`, los
+  selectores de corpus y las operaciones de ruta quedan rechazados; un hallazgo
+  o truncación bounded no acredita un permiso ni un efecto.
+- El próximo gate de acciones queda separado: owner/procedencia demostrables,
+  política y selección explícitas, preview, autorización humana, revalidación
+  junto al efecto y backend reversible con receipt, postcondición y recovery.
+
 ## 2026-09-15 — Endurecimiento de adopción histórica (fuente)
 
 - La revalidación repite el owner y schema de scratch, bloquea receipts en

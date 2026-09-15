@@ -92,6 +92,9 @@ NeoCortex puede:
 - diagnosticar raíces externas de forma explícita y read-only, separando
   observación, preservación y categorías fuera del perfil sin convertirlas en
   candidatos de limpieza;
+- consultar un inventario federado bounded de la máquina, con categorías,
+  ownership/procedencia, estados y métricas explicables, sin leer payloads ni
+  producir efectos;
 - respaldar, restaurar, inspeccionar y purgar el estado mediante comandos
   explícitos.
 
@@ -181,6 +184,57 @@ SQLite, KIO, sudo ni otro cleaner. Categorías sin owner (miniaturas KDE,
 caches generales, journal, coredumps, sesiones Codex, Papelera y backups
 externos) se reportan como `out_of_profile`/`preserved`, nunca como bytes
 recuperables.
+
+### Inventario federado de máquina
+
+`machine-inventory` es la consulta bounded y read-only del control plane local.
+Su forma predeterminada observa un conjunto conservador de perfiles: `HOME`,
+`/tmp`, las raíces XDG de cache y configuración, y las raíces de estado, datos y
+corpus de NeoCortex. No escanea `/` por omisión. Las raíces explícitas se pasan
+con `--machine-root` repetible y deben ser absolutas; `--machine-root /` sigue
+siendo posible sólo como una observación acotada solicitada explícitamente.
+
+```bash
+Neocortex machine-inventory --machine-json
+Neocortex machine-inventory \
+  --machine-root "$HOME" \
+  --machine-root /tmp \
+  --machine-max-entries 20000 \
+  --machine-max-depth 8 \
+  --machine-max-bytes 1073741824 \
+  --machine-json
+```
+
+El recorrido usa `lstat`/no-follow y sólo metadata: identidad física
+(`st_dev`, `st_ino` y birthtime o sentinel), tipo, owner, permisos, montaje,
+symlink/hardlink y tamaños aparente/asignado. No lee cuerpos ni payload del
+corpus, no abre SQLite (tampoco con `mode=ro`), no escribe estado, no usa red,
+KIO, sudo ni cleaners y no crea una raíz ausente. Un cambio concurrente puede
+degradar un registro a `blocked` o `unknown`; la salida no se presenta como un
+snapshot atómico del filesystem.
+
+El envelope cerrado `neocortex.machine-inventory/v1` declara
+`read_only=true`, la operación, las raíces y `root_count`, límites efectivos,
+`truncated`, registros acotados, agregados por estado/categoría/razón,
+`reason_summary`, `reason_explanations`, el registro de categorías/owners/procedencia y bytes
+`observed`, aparentes y asignados. Los estados posibles son `absent`,
+`observed`, `preserved`, `blocked`, `unknown` y `out_of_profile`; un hallazgo o
+un recorrido truncado no es un permiso de limpieza. El presupuesto de
+`entries`, `depth` y `bytes` es global para la invocación y no se retira para
+terminar una raíz.
+
+La clasificación separa los perfiles administrados de NeoCortex
+(`neocortex_state`, `neocortex_data`, `neocortex_corpus`) de `tmp`, `cache`,
+`config`, `home` y `external`. El perfil no es una autorización: las categorías
+sin owner probado se conservan o quedan fuera de perfil, y tamaño, antigüedad,
+nombre o una recomendación no convierten un elemento en recuperable.
+
+El comando no acepta `--apply` ni operaciones de corpus (`--root`, `--all`,
+`--dedupe` o rutas). Las acciones requieren un gate posterior e independiente:
+owner y procedencia verificables, política y selección explícitas, preview,
+autorización humana, revalidación fresca de identidad/topología/actividad y un
+backend reversible con receipt, postcondición y recovery. Ese plano de acción
+no forma parte de `machine-inventory`.
 
 `ask`, `ask --json`, `--knowledge-context` y la herramienta MCP `context` usan
 el contexto compacto v2: fuentes sin repetición, fragmentos citables y cobertura

@@ -54,6 +54,42 @@ capacidades y utilidades de seguridad de contenedores. La enumeración portable
 usa el filesystem; los módulos NTFS conservados son legado y no forman parte de
 la ruta Linux normal.
 
+### Inventario federado read-only de máquina
+
+`neocortex.runtime.machine_inventory` es el owner del inventario federado del
+host. Su consulta acepta raíces absolutas repetibles o, si no se proporcionan,
+selecciona perfiles bounded de `HOME`, `/tmp`, cache/configuración XDG y las
+raíces de estado, datos y corpus de NeoCortex; nunca escanea `/` por defecto.
+Cada raíz conserva su clasificación y procedencia: `neocortex_state`,
+`neocortex_data` y `neocortex_corpus` se mantienen separados de `tmp`, `cache`,
+`config`, `home` y `external`. El perfil es una observación de ownership, no
+una autorización.
+
+El recorrido es metadata-only mediante `lstat`/no-follow. Conserva identidad
+física (`st_dev`, `st_ino`, birthtime o sentinel), tipo, owner, permisos,
+montaje, symlink/hardlink y tamaños aparente/asignado sin leer cuerpos ni
+payload del corpus. No abre SQLite, ni siquiera con `mode=ro`, no escribe
+estado, no usa red, KIO, sudo o cleaners y no crea raíces ausentes. Esto lo
+separa del inventario de contenido: no publica owners SQLite ni inicia el
+lifecycle de rutas. Los cambios concurrentes del filesystem quedan como
+`blocked`/`unknown`; la observación no promete un snapshot atómico.
+
+El envelope `neocortex.machine-inventory/v1` es cerrado y declara
+`read_only=true`, operación, raíces, `root_count`, límites globales de
+`entries`/`depth`/`bytes`, `truncated`, registros bounded, conteos por
+estado/categoría, `reason_summary`, categorías/owners/procedencia y bytes
+`observed`, aparentes y asignados. Sus estados son `absent`, `observed`,
+`preserved`, `blocked`, `unknown` y `out_of_profile`. La ausencia de un root,
+la truncación o un tamaño observado no se colapsan a éxito ni a permiso para
+retirar archivos.
+
+El comando de consulta rechaza `--apply` y los selectores de corpus (`--root`,
+`--all`, `--dedupe` y rutas). El siguiente plano de acción permanece separado:
+requiere registro de owner y política, selección y preview explícitos,
+autorización humana, revalidación fresca de identidad/topología/actividad y un
+backend reversible con receipt, postcondición y recuperación. No se habilitan
+acciones de sistema o privilegiadas desde esta capa.
+
 ### Inventario y deduplicación
 
 La identidad física se valida con `FileIdentity` y el codec explícito del owner;
@@ -526,6 +562,10 @@ corpus, releases o modelos.
 - **Diagnóstico externo:** `external-maintenance` exige `--external-root` y
   `--external-category`, devuelve `neocortex.external-maintenance/v1` y es
   siempre metadata-only; categorías sin owner no se vuelven candidatas.
+- **Inventario de máquina:** `machine-inventory` devuelve
+  `neocortex.machine-inventory/v1` con raíces, categorías, owners/procedencia,
+  estados, límites y métricas bounded. Es siempre `read_only`; no abre SQLite,
+  no lee payload, no escribe estado/corpus y no ofrece acciones.
 - **API/SDK Python:** `state_reset_payload` ofrece el mismo preview/apply
   explícito y envelope bounded; exige raíz, scope, digest y confirmación cuando
   aplica, sin seleccionar el estado productivo por omisión.

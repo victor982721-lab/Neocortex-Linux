@@ -5,6 +5,62 @@ exacta vive en `neocortex/api/cli/cli_parser.py` y en los subparsers de
 `neocortex.api.cli.human`; este documento organiza su uso, no sustituye
 `Neocortex --help`.
 
+## Inventario federado bounded de máquina
+
+`machine-inventory` es una consulta local de metadata, siempre read-only. Sin
+raíces explícitas observa sólo perfiles bounded de `HOME`, `/tmp`, cache y
+configuración XDG, y estado, datos y corpus de NeoCortex; nunca recorre `/` por
+omisión. `--machine-root` puede repetirse para seleccionar raíces absolutas,
+incluida `/` cuando el caller la solicita conscientemente. La raíz ausente se
+reporta, pero no se crea.
+
+```bash
+Neocortex machine-inventory --machine-json
+Neocortex machine-inventory \
+  --machine-root "$HOME" \
+  --machine-root /tmp \
+  --machine-max-entries 20000 \
+  --machine-max-depth 8 \
+  --machine-max-bytes 1073741824 \
+  --machine-json
+```
+
+Los límites `--machine-max-entries`, `--machine-max-depth` y
+`--machine-max-bytes` son globales para toda la invocación y mantienen techos
+válidos. Sus valores predeterminados son 10,000 entradas, profundidad 2 y 1 TiB
+de bytes observados; los registros, muestras y agregados también son bounded. La salida
+JSON usa el envelope cerrado `neocortex.machine-inventory/v1` y contiene
+`operation`, `read_only=true`, `roots`, `root_count`, `limits`, `truncated`,
+`records`, conteos por estado/categoría, bytes observados/aparentes/asignados,
+`reason_summary`, `reason_explanations` y el registro de categorías, owner y procedencia.
+
+Los estados son `absent`, `observed`, `preserved`, `blocked`, `unknown` y
+`out_of_profile`. Las categorías separan `neocortex_state`, `neocortex_data` y
+`neocortex_corpus`, además de `tmp`, `cache`, `config`, `home` y `external`; esa
+clasificación documenta ownership/procedencia y no autoriza ninguna acción.
+
+| Perfil | Owner/procedencia observada | Tratamiento de esta consulta |
+|---|---|---|
+| `neocortex_state`, `neocortex_data`, `neocortex_corpus` | NeoCortex, sólo en las raíces canónicas identificadas | metadata observada; no se publica ni modifica el owner |
+| `tmp` | `operating-system`, raíz fija `/tmp` | observación, preservación o bloqueo |
+| `cache`, `config` | `xdg/application-cache` y `xdg/application-config` | no candidato implícito |
+| `home` | usuario; el árbol amplio no prueba ownership por elemento | sólo observación bounded |
+| `external` | raíz aportada por el caller, sin owner probado | `unknown`/`out_of_profile` o preservado |
+
+El recorrido usa `lstat`/no-follow para identidad física, tipo, permisos,
+montaje, symlink/hardlink y tamaños. No lee contenido, no abre SQLite ni
+sidecars (tampoco con `mode=ro`), no escribe estado o corpus y no usa red, KIO,
+sudo ni cleaners. Un hallazgo, una raíz ausente o cobertura truncada no es un
+error de configuración: una consulta válida conserva salida de diagnóstico y
+exit 0; los errores de argumentos, raíces o límites devuelven exit 2.
+
+No mezcles `--machine-root` con `--root`: el primero define raíces de metadata
+de la máquina y el segundo conserva su semántica de corpus. El comando rechaza
+`--apply`, `--all`, `--dedupe`, rutas y operaciones directas. El siguiente gate
+para acciones queda fuera de esta entrega y deberá aportar owner probado,
+política, selección/preview, autorización explícita, revalidación fresca y un
+backend reversible con receipt, verificación de postcondición y recovery.
+
 ## Diagnósticos federados v2
 
 La vista aditiva `content-diagnostics/v2` consulta únicamente estado publicado,

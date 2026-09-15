@@ -74,6 +74,8 @@ def _print_root_help() -> None:
 
 Consulta local:
   status, search, ask, inspect, review, knowledge, curate, state, databases
+  machine-inventory --machine-root PATH [--machine-root PATH ...]
+                        diagnóstico federado read-only y bounded
 
 Procesamiento:
   --all                 ejecuta las rutas configuradas
@@ -88,7 +90,7 @@ Procesamiento:
   --route ROUTES        ejecuta una o más rutas sobre el inventario
   --root ROOT           conserva precedencia explícita sobre la raíz por defecto
   --apply               sólo procede con una capacidad de backend verificada
-  --json                emite un resumen JSON para --all, --dedupe o --route
+  --json                emite un resumen JSON para --all, --dedupe, --route o machine-inventory
   --dedupe-json         emite el contrato JSON específico de --dedupe
   --version             muestra la identidad de la instalación activa
 

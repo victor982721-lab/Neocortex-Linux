@@ -244,6 +244,13 @@ def _dispatch_dedupe_service(args: argparse.Namespace) -> int:
 def dispatch_direct(args: argparse.Namespace) -> int | None:
     """Run a selected direct operation, or return ``None`` for a full run."""
 
+    # Machine inventory is an explicit read-only control-plane leaf.  Keep its
+    # owner import behind parsing and validation; it must never fall through
+    # to the framework inventory or route graph.
+    if getattr(args, "command", None) == "machine-inventory":
+        from .cli_machine_inventory import run_machine_inventory
+
+        return run_machine_inventory(args)
     # Maintenance is a control-plane leaf, not a Framework route.  Keep its
     # owner import lazy and dispatch it before any integrated-run decision.
     if getattr(args, "command", None) == "external-maintenance":
@@ -621,7 +628,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         # an inventory run.  Keep this fast path before parser construction so
         # it cannot create state or import route engines.
         print(
-            "Uso: Neocortex --all, --dedupe, --route ROUTES, maintenance o una operación directa"
+            "Uso: Neocortex --all, --dedupe, --route ROUTES, machine-inventory, "
+            "maintenance o una operación directa"
         )
         print("Use `Neocortex --help` para ver las opciones disponibles.")
         return 0
@@ -664,7 +672,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         # Options such as --root or --state-directory alone do not select an
         # operation.  Never turn them into an implicit inventory write.
         print(
-            "Uso: Neocortex --all, --dedupe, --route ROUTES, maintenance o una operación directa"
+            "Uso: Neocortex --all, --dedupe, --route ROUTES, machine-inventory, "
+            "maintenance o una operación directa"
         )
         print("Use `Neocortex --help` para ver las opciones disponibles.")
         return 0
