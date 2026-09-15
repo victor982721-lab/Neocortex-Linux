@@ -237,7 +237,9 @@ raíz. `record_status_counts`, `record_category_counts` y
 `record_reason_counts` cuentan sólo esos registros. Los nombres históricos
 `status_counts`, `category_counts` y `reason_counts` pueden incluir además un
 marcador sintético de raíz ausente, bloqueada o desconocida, mientras que
-`root_status_counts` cuenta exactamente el estado de cada raíz efectiva. Usa
+`root_status_counts` cuenta exactamente el estado de cada raíz efectiva y los
+mapas `root_marker_*` desglosan los marcadores que alimentan los nombres
+históricos. Usa
 los mapas `record_*` para analizar entradas y los mapas de raíz para analizar
 cobertura de raíces; no sumes ambos niveles.
 

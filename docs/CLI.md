@@ -62,6 +62,9 @@ La salida separa contabilidad de registros y de raíces:
 - `record_status_counts`, `record_category_counts` y `record_reason_counts`
   cuentan únicamente esos registros observados.
 - `root_status_counts` cuenta una vez el estado de cada raíz efectiva.
+- `root_marker_status_counts`, `root_marker_category_counts` y
+  `root_marker_reason_counts` desglosan los marcadores sintéticos que pueden
+  alimentar los nombres históricos.
 - `status_counts`, `category_counts` y `reason_counts` son nombres históricos
   compatibles y pueden incluir marcadores de raíz `absent`, `blocked` o
   `unknown`; no deben sumarse a los mapas `record_*`.
