@@ -95,6 +95,7 @@ _SUMMARY_FIELDS = (
     "records_truncated",
     "truncation_reasons",
     "state_counts",
+    "status_counts",
     "category_counts",
     "reason_counts",
     "root_status_counts",

@@ -77,6 +77,14 @@ def _owner_report(first: Path, second: Path) -> dict[str, object]:
         "records_returned": 4,
         "records_omitted": None,
         "root_count": 2,
+        "status_counts": {
+            "absent": 0,
+            "blocked": 0,
+            "observed": 2,
+            "out_of_profile": 0,
+            "preserved": 2,
+            "unknown": 4,
+        },
         "roots": roots,
         "records": records,
         "read_only": True,
@@ -142,6 +150,7 @@ def test_machine_json_defaults_to_compact_root_and_record_summary(
     # Scanner omission remains unknown; it must not be confused with the
     # four records intentionally withheld by the compact renderer.
     assert payload["records_omitted"] is None
+    assert payload["status_counts"]["preserved"] == 2
     presentation = _mapping(_mapping(payload["coverage_metadata"])["presentation"])
     assert presentation["mode"] == "compact"
     assert presentation["records_available"] == 4
