@@ -249,7 +249,8 @@ Cada efecto escribe primero un receipt bounded fuera de la entrada y sólo lo
 marca `applied` después de verificar la ausencia del target; un cierre incierto
 queda en recuperación y se reporta en `receipts`.
 
-Para raíces históricas grandes, `--maintenance-max-*` permite una observación
+Para raíces históricas grandes, `--maintenance-max-entries`,
+`--maintenance-max-depth` y `--maintenance-max-bytes` permiten una observación
 acotada más amplia sin quitar el límite. `status_counts` y `reason_summary`
 explican cada bloqueo (`no_manifest`, `permissions_unsafe`,
 `activity_uncertain`, `recovery_required`, `bounds_exceeded`, etc.) y
