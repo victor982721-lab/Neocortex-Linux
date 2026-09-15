@@ -346,7 +346,7 @@ siguen siendo por página; concatenar páginas no equivale a top-K global.
 
 ### Scratch registrado (tranche A+B)
 
-**IMPLEMENTADO Y VERIFICADO EN LA RELEASE `0.14.0-fae39d702094`:** este flujo sólo revisa
+**IMPLEMENTADO Y VERIFICADO EN LA RELEASE `0.14.0-a02f6761ece2`:** este flujo sólo revisa
 los workspaces privados registrados bajo
 `<state_directory>/scratch/<scope>`. Los scopes admitidos son `owned-temp` y
 `audit-work`; no se debe proporcionar una raíz de corpus para cambiar el

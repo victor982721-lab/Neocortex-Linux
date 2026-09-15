@@ -179,7 +179,7 @@ renombra los originales ni sustituye caracteres para inventar otra ruta.
 
 ## Mantenimiento registrado de scratch
 
-**IMPLEMENTADO Y VERIFICADO EN LA RELEASE `0.14.0-fae39d702094`:** `maintenance` es una
+**IMPLEMENTADO Y VERIFICADO EN LA RELEASE `0.14.0-a02f6761ece2`:** `maintenance` es una
 hoja de control local para el scratch registrado de NeoCortex. El alcance se
 resuelve exclusivamente bajo `<state_directory>/scratch/`:
 `owned-temp` y `audit-work`; no usa `--root` para redirigirlo ni escanea
@@ -209,7 +209,7 @@ habilitan mantenimiento sobre el corpus.
 
 ### Auditoría histórica explícita
 
-**IMPLEMENTADO Y VERIFICADO EN LA RELEASE `0.14.0-fae39d702094`:**
+**IMPLEMENTADO Y VERIFICADO EN LA RELEASE `0.14.0-a02f6761ece2`:**
 `historical-temp` no es un alias del scratch registrado ni un limpiador global.
 Requiere una raíz de auditoría absoluta y explícita mediante
 `--maintenance-audit-root`; el selector `--root` sigue siendo el corpus y se

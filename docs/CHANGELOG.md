@@ -17,6 +17,10 @@ fuera de `docs/`.
   explícitos y categorías sin owner como `out_of_profile`; no admite `--apply`,
   red, SQLite, KIO, sudo ni cleaners externos.
 
+La tranche queda lista para el gate separado de construcción/promoción de
+release; la instalación sólo se declara después de verificar el SHA final,
+launcher, rollback y smoke fuera del checkout.
+
 ## 2026-09-14 — Scratch registrado y mantenimiento acotado (fuente)
 
 - Se añade el servicio `neocortex.runtime.scratch` para crear workspaces
