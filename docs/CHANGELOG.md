@@ -4,6 +4,14 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-15 — Endurecimiento de adopción histórica (fuente)
+
+- La revalidación repite el owner y schema de scratch, bloquea receipts en
+  fronteras de montaje y limita también la superficie Python directa.
+- La CLI exige receipts `applied` auto-consistentes además de los claims del
+  preview; una aplicación activa, incompleta o sin evidencia devuelve un estado
+  no exitoso y conserva el candidato.
+
 ## 2026-09-15 — Mantenimiento completo por owners (fuente)
 
 - Archive, PDF y video integran scratch registrado con `run_id`, cierre normal
