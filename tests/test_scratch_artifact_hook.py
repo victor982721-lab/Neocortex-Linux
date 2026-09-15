@@ -233,3 +233,22 @@ def test_real_artifact_registry_tracks_a_completed_scratch_workspace(tmp_path: P
     assert record.path_identity == workspace.record.identity
     assert record.disposable is True
     assert record.retain_until_ns is not None
+
+
+def test_federated_scratch_view_reads_multiple_producer_owners_without_effects(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "scratch"
+    first = ScratchManager(root, owner="producer-a", create_root=True)
+    second = ScratchManager(root, owner="producer-b", create_root=False)
+    first.create(retain_on_success=True)
+    second.create(retain_on_success=True)
+
+    federated = ScratchManager(root, owner=None, create_root=False)
+    records = federated.records()
+    assert len(records) == 2
+    assert {record.owner for record in records} == {"producer-a", "producer-b"}
+    plan = federated.plan()
+    assert plan.kept == 2
+    with pytest.raises(ScratchSecurityError, match="read-only"):
+        federated.create()

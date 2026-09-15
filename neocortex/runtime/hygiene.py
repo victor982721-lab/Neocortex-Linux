@@ -907,9 +907,12 @@ class HygieneManager:
         try:
             cls = self._load_class("neocortex.runtime.scratch", "ScratchManager")
             try:
-                manager = cls(Path(root), owner=self.owner, create_root=False)
+                # A shared scope can contain workspaces from multiple
+                # producer owners.  ``owner=None`` is the scratch owner's
+                # read-only federated view; it cannot create/update/retire.
+                manager = cls(Path(root), owner=None, create_root=False)
             except TypeError:
-                manager = cls(Path(root), owner=self.owner)
+                manager = cls(Path(root), owner=None)
             self._scratch_managers[scope] = manager
             return manager
         except Exception as exc:

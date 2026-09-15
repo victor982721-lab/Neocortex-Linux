@@ -610,13 +610,21 @@ class ScratchManager:
         self,
         root: Path,
         *,
-        owner: str = "neocortex",
+        owner: str | None = "neocortex",
         create_root: bool = False,
         artifact_registry: Any | None = None,
         artifact_registry_root: Path | None = None,
     ) -> None:
         self.root = _validate_absolute_path(Path(root), label="scratch root")
-        self.owner = _bounded_text(owner, label="scratch owner", limit=128)
+        # ``owner=None`` is an explicitly read-only federated view for a
+        # shared scratch scope containing workspaces from several producers.
+        # Creation, lifecycle updates and retirement require an exact owner;
+        # this view is only for bounded records()/plan() inspection.
+        self.owner = (
+            None
+            if owner is None
+            else _bounded_text(owner, label="scratch owner", limit=128)
+        )
         self.create_root = bool(create_root)
         if artifact_registry is not None and artifact_registry_root is not None:
             raise ValueError(
@@ -1039,6 +1047,10 @@ class ScratchManager:
     ) -> ScratchWorkspace:
         """Create one private registered workspace after an explicit claim."""
 
+        if self.owner is None:
+            raise ScratchSecurityError(
+                "federated scratch view is read-only for workspace creation"
+            )
         if not self._ensure_root(create=self.create_root):
             raise ScratchRootError("scratch root is absent")
         if type(retain_on_success) is not bool:
@@ -1413,7 +1425,7 @@ class ScratchManager:
             and (retire_after is None or retire_after <= (time.time_ns() if now_ns is None else now_ns))
             and issue is None
         )
-        if owner != self.owner:
+        if self.owner is not None and owner != self.owner:
             issue = "owner_mismatch"
             reason = "workspace belongs to another owner"
         elif issue is not None and reason is None:
@@ -1539,6 +1551,10 @@ class ScratchManager:
         retire_after_ns: int | None = None,
         reason: str | None = None,
     ) -> ScratchRecord:
+        if self.owner is None:
+            raise ScratchSecurityError(
+                "federated scratch view is read-only for lifecycle updates"
+            )
         record = self._record_for_path(path)
         if record is None or record.record_id != record_id or record.owner != self.owner:
             raise ScratchSecurityError("scratch manifest no longer matches its owner")
@@ -1585,6 +1601,10 @@ class ScratchManager:
         return self._record_from_payload(path, updated, size_bytes=_directory_size(path))
 
     def _retire_record(self, record: ScratchRecord) -> None:
+        if self.owner is None:
+            raise ScratchSecurityError(
+                "federated scratch view is read-only for retirement"
+            )
         if record.owner != self.owner or record.state != ScratchState.COMPLETED.value:
             raise ScratchSecurityError("only this owner's completed scratch can be retired")
         self._ensure_root(create=False)
