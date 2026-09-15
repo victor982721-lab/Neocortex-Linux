@@ -2602,22 +2602,24 @@ def _build_report(
         if not root.records and root.status in {"absent", "blocked", "unknown"}:
             root_marker_status_counts_counter[root.status] += 1
             root_marker_category_counts_counter[root.category] += 1
-            root_marker_reason_counts_counter[root.reason_code] += 1
+            root_reasons = tuple(
+                dict.fromkeys((root.reason_code, *root.truncation_reasons))
+            )
+            for code in root_reasons:
+                root_marker_reason_counts_counter[code] += 1
+                reason_counts_counter[code] += 1
             status_counts_counter[root.status] += 1
             category_counts_counter[root.category] += 1
-            reason_counts_counter[root.reason_code] += 1
-        elif root.truncated and root.reason_code not in {
-            "diagnostic_only",
-            "preserved_owner",
-            "out_of_profile",
-        }:
+        elif root.truncated:
             # A root-level limit is distinct from its entry classifications;
             # preserve every reported truncation reason so a partial scan
             # cannot look complete in the aggregate reason summary.  The
             # primary ``reason_code`` is not necessarily the only boundary
             # (for example, a root can hit both depth and entry quota).
-            reasons = root.truncation_reasons or (root.reason_code,)
-            for code in dict.fromkeys(reasons):
+            reasons = dict.fromkeys((root.reason_code, *root.truncation_reasons))
+            for code in reasons:
+                if code in {"diagnostic_only", "preserved_owner", "out_of_profile"}:
+                    continue
                 root_marker_reason_counts_counter[code] += 1
                 reason_counts_counter[code] += 1
     status_counts: dict[str, int] = {
