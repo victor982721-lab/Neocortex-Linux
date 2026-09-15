@@ -1374,7 +1374,8 @@ class HistoricalAuditManager:
         self,
         root_identity: tuple[int, int, int],
         mountpoints: frozenset[Path],
-    ) -> tuple[tuple[HistoricalRecord, ...], bool]:
+        budget: _Budget,
+    ) -> tuple[tuple[HistoricalRecord, ...], bool, str | None]:
         """Surface orphaned prepared receipts as recovery evidence.
 
         A crash can occur after the target bytes are removed but before the
@@ -1387,7 +1388,7 @@ class HistoricalAuditManager:
         try:
             root_fd = os.open(self.root, flags)
         except OSError:
-            return (), False
+            return (), False, None
         try:
             try:
                 directory_fd = _receipt_directory_fd(
@@ -1398,28 +1399,103 @@ class HistoricalAuditManager:
                     create=False,
                 )
             except FileNotFoundError:
-                return (), False
-            except HistoricalAuditError:
+                return (), False, None
+            except HistoricalAuditError as exc:
                 # An unsafe/mounted receipt directory is itself a blocked
-                # boundary, but there is no safe payload to interpret here.
-                return (), False
+                # boundary.  Preserve that evidence instead of making an
+                # empty scan look successful.
+                return (
+                    (),
+                    False,
+                    _bounded_reason(f"historical receipt directory is not verifiable: {exc}"),
+                )
             try:
-                names, truncated = _bounded_names_fd(directory_fd, self.max_entries)
+                names, truncated = _bounded_names_fd(
+                    directory_fd,
+                    max(1, min(self.max_entries, self.max_entries - budget.entries + 1)),
+                )
                 recovery: list[HistoricalRecord] = []
+                issue: str | None = None
                 for name in names:
                     if not _is_retirement_receipt_name(name):
                         continue
+                    try:
+                        metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                    except OSError as exc:
+                        issue = _bounded_reason(
+                            f"historical receipt metadata is not verifiable: {exc}"
+                        )
+                        recovery.append(
+                            HistoricalRecord(
+                                path=self.root / _RECEIPT_DIRECTORY / name,
+                                name=name,
+                                status="recovery_required",
+                                reason=issue,
+                                identity_uncertain=True,
+                            )
+                        )
+                        continue
+                    _, _, _, bounded = budget.consume(metadata)
+                    if bounded:
+                        truncated = True
+                        issue = "historical receipt audit bounds were exceeded"
+                        break
                     payload = _read_receipt_fd(directory_fd, name)
-                    if payload is None or payload.get("state") != "prepared":
+                    if payload is None:
+                        issue = "historical retirement receipt is invalid or unverifiable"
+                        recovery.append(
+                            HistoricalRecord(
+                                path=self.root / _RECEIPT_DIRECTORY / name,
+                                name=name,
+                                status="recovery_required",
+                                reason=issue,
+                                identity_uncertain=True,
+                            )
+                        )
+                        continue
+                    state = payload.get("state")
+                    if state == "applied":
+                        continue
+                    if state != "prepared":
+                        issue = "historical retirement receipt has an invalid state"
+                        recovery.append(
+                            HistoricalRecord(
+                                path=self.root / _RECEIPT_DIRECTORY / name,
+                                name=name,
+                                status="recovery_required",
+                                reason=issue,
+                                identity_uncertain=True,
+                            )
+                        )
                         continue
                     if (
                         payload.get("schema") != HISTORICAL_RECEIPT_SCHEMA
                         or payload.get("root") != str(self.root)
                         or not _same_identity(payload.get("root_identity"), root_identity)
                     ):
+                        issue = "historical prepared receipt claims are invalid"
+                        recovery.append(
+                            HistoricalRecord(
+                                path=self.root / _RECEIPT_DIRECTORY / name,
+                                name=name,
+                                status="recovery_required",
+                                reason=issue,
+                                identity_uncertain=True,
+                            )
+                        )
                         continue
                     raw_path = payload.get("path")
                     if not isinstance(raw_path, str):
+                        issue = "historical prepared receipt claims are invalid"
+                        recovery.append(
+                            HistoricalRecord(
+                                path=self.root / _RECEIPT_DIRECTORY / name,
+                                name=name,
+                                status="recovery_required",
+                                reason=issue,
+                                identity_uncertain=True,
+                            )
+                        )
                         continue
                     candidate = Path(raw_path)
                     if (
@@ -1427,9 +1503,29 @@ class HistoricalAuditManager:
                         or candidate.parent != self.root
                         or not candidate.name.startswith(self.prefix)
                     ):
+                        issue = "historical prepared receipt claims are invalid"
+                        recovery.append(
+                            HistoricalRecord(
+                                path=self.root / _RECEIPT_DIRECTORY / name,
+                                name=name,
+                                status="recovery_required",
+                                reason=issue,
+                                identity_uncertain=True,
+                            )
+                        )
                         continue
                     path_identity = _parse_identity(payload.get("path_identity"))
                     if path_identity is None:
+                        issue = "historical prepared receipt claims are invalid"
+                        recovery.append(
+                            HistoricalRecord(
+                                path=self.root / _RECEIPT_DIRECTORY / name,
+                                name=name,
+                                status="recovery_required",
+                                reason=issue,
+                                identity_uncertain=True,
+                            )
+                        )
                         continue
                     raw_owner = payload.get("owner")
                     raw_manifest_digest = payload.get("manifest_digest")
@@ -1463,7 +1559,7 @@ class HistoricalAuditManager:
                             activity_uncertain=True,
                         )
                     )
-                return tuple(recovery), truncated
+                return tuple(recovery), truncated, issue
             finally:
                 os.close(directory_fd)
         finally:
@@ -1503,10 +1599,21 @@ class HistoricalAuditManager:
                     budget,
                 )
             )
-        prepared_records, prepared_truncated = self._scan_prepared_receipts(
+        prepared_records, prepared_truncated, prepared_issue = self._scan_prepared_receipts(
             root_identity,
             mountpoints,
+            budget,
         )
+        if prepared_issue is not None and not prepared_records:
+            prepared_records = (
+                HistoricalRecord(
+                    path=self.root / _RECEIPT_DIRECTORY,
+                    name=_RECEIPT_DIRECTORY,
+                    status="recovery_required",
+                    reason=prepared_issue,
+                    identity_uncertain=True,
+                ),
+            )
         if prepared_records:
             prepared_by_path = {record.path: record for record in prepared_records}
             for index, record in enumerate(records):
@@ -1520,7 +1627,10 @@ class HistoricalAuditManager:
                         reason=recovery.reason,
                         identity_uncertain=True,
                     )
-            records.extend(prepared_by_path.values())
+            available = max(0, self.max_entries - len(records))
+            if len(prepared_by_path) > available:
+                prepared_truncated = True
+            records.extend(tuple(prepared_by_path.values())[:available])
         truncated = (
             overflow
             or budget.truncated
@@ -1534,6 +1644,8 @@ class HistoricalAuditManager:
             reason = "historical audit bounds were exceeded"
         elif prepared_truncated:
             reason = "historical receipt directory exceeds the entry limit"
+        elif prepared_issue is not None:
+            reason = prepared_issue
         elif any(item.status == "recovery_required" for item in records):
             reason = "a prepared historical retirement receipt requires recovery"
         elif any(item.status == "blocked" for item in records):
@@ -2087,6 +2199,7 @@ class HistoricalAuditManager:
                         child_fd,
                         relative_path=record.path,
                         mountpoints=mountpoints,
+                        mount_digest=mount_digest,
                         root_device=root_identity[0],
                         max_entries=self.max_entries,
                         max_depth=self.max_depth,
@@ -2413,6 +2526,7 @@ def _remove_tree_fd(
     *,
     relative_path: Path,
     mountpoints: frozenset[Path],
+    mount_digest: str,
     root_device: int,
     max_entries: int,
     max_depth: int,
@@ -2425,6 +2539,11 @@ def _remove_tree_fd(
 
     if budget is None:
         budget = _Budget(max_entries, max_bytes)
+    current_mount = _mountinfo_snapshot()
+    if current_mount is None or current_mount[1] != mount_digest:
+        if removed[0]:
+            raise _EffectPartial("mount topology changed during retirement")
+        raise HistoricalAuditError("mount topology changed during retirement")
     names, names_truncated = _bounded_names_fd(directory_fd, max_entries)
     if names_truncated:
         if removed[0]:
@@ -2485,6 +2604,7 @@ def _remove_tree_fd(
                 child_fd,
                 relative_path=child_path,
                 mountpoints=mountpoints,
+                mount_digest=mount_digest,
                 root_device=root_device,
                 max_entries=max_entries,
                 max_depth=max_depth,

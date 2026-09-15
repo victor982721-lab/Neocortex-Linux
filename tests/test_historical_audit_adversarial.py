@@ -335,6 +335,26 @@ def test_orphaned_prepared_receipt_is_reported_for_recovery(tmp_path: Path) -> N
     assert (root / ".neocortex-historical-audit").is_dir()
 
 
+def test_corrupt_prepared_receipt_is_not_silently_ignored(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    receipt_directory = root / ".neocortex-historical-audit"
+    receipt_directory.mkdir(mode=0o700)
+    os.chmod(receipt_directory, 0o700)
+    corrupt = receipt_directory / "corrupt.json"
+    corrupt.write_text("{not-json", encoding="utf-8")
+    os.chmod(corrupt, 0o600)
+
+    manager = HistoricalAuditManager(root)
+    plan = manager.plan()
+    applied = manager.apply(plan)
+
+    assert plan.status == "recovery_required"
+    assert plan.recovery_required == 1
+    assert applied.status == "recovery_required"
+    assert applied.recovery_required == 1
+    assert applied.applied == 0
+
+
 def test_top_level_counts_and_records_are_bounded(tmp_path: Path) -> None:
     root = _root(tmp_path)
     limit = 3

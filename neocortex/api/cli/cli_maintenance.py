@@ -15,6 +15,7 @@ adapter never falls back to ``rm``, KIO, or the registered-scratch owner.
 from __future__ import annotations
 
 import argparse
+import heapq
 import hashlib
 import json
 import os
@@ -687,8 +688,11 @@ def _plan_payload(
                 value = _owner_value(record, "observed_bytes")
                 return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
-            ranked_records = sorted(
-                all_records,
+            bounded_records = all_records[:_MAX_RECEIPT_EFFECTS]
+            payload["largest_records_truncated"] = len(all_records) > _MAX_RECEIPT_EFFECTS
+            ranked_records = heapq.nsmallest(
+                min(20, len(bounded_records)),
+                bounded_records,
                 key=lambda record: (
                     -record_observed_bytes(record),
                     str(_owner_value(record, "path") or ""),
