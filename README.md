@@ -86,6 +86,9 @@ NeoCortex puede:
   escrituras MCP actuales publican o deciden ReviewTasks advisory;
 - exponer cobertura, errores, procedencia y localizadores cuando el productor
   puede demostrarlos;
+- auditar una raíz histórica absoluta de forma bounded y, sólo con un manifest
+  de aplicación y una adopción verificables, retirar entradas elegibles sin
+  tocar el corpus, SQLite productiva, releases, modelos ni `/tmp` por defecto;
 - respaldar, restaurar, inspeccionar y purgar el estado mediante comandos
   explícitos.
 
@@ -133,6 +136,8 @@ Neocortex --text-errors 20 --diagnostics-json
 Neocortex --archive-issues 20 --diagnostics-json
 Neocortex --root "$Root" --content-diagnostics 20 --diagnostics-owner all --diagnostics-json
 Neocortex maintenance --scope owned-temp --maintenance-json
+Neocortex maintenance --scope historical-temp \
+  --maintenance-audit-root "/ruta/raiz-historica" --maintenance-json
 ```
 
 Las preguntas explícitas sobre estado del corpus, por ejemplo
@@ -147,6 +152,16 @@ registrado bajo `state_directory/scratch`; no crea la raíz ausente ni escanea
 `/tmp`. Su forma `--apply` sólo retira workspaces propios `completed` y se
 documenta separadamente, sin tocar corpus, cachés externas, releases ni SQLite
 productiva.
+
+`maintenance --scope historical-temp` es una frontera distinta: exige
+`--maintenance-audit-root PATH` absoluto y explícito. No reutiliza `--root`, el
+estado ni una ruta predeterminada a `/tmp`, y su plan no crea la raíz ni produce
+efectos. Sólo el owner histórico puede clasificar hijos directos con prefijo
+`neocortex-` y manifests allow-listed; `--apply` vuelve a observar y retira
+únicamente entradas con identidad, actividad, manifest y adopción verificadas.
+Lo desconocido, activo, no adoptado, ambiguo o cambiado se conserva o queda
+bloqueado. El flujo no llama limpiadores externos ni KIO y no abre SQLite ni el
+corpus.
 
 `ask`, `ask --json`, `--knowledge-context` y la herramienta MCP `context` usan
 el contexto compacto v2: fuentes sin repetición, fragmentos citables y cobertura
@@ -252,6 +267,9 @@ Datos:       ${XDG_DATA_HOME:-~/.local/share}/Neocortex
 Launcher:    ~/.local/share/Neocortex/bin/Neocortex
 Alias:       ~/.local/bin/Neocortex
 ```
+
+No existe una ruta histórica canónica: `historical-temp` sólo acepta el
+`--maintenance-audit-root` absoluto de esa invocación.
 
 La instalación personal usa `tools/release_linux.py` y un wheelhouse local
 autenticado. Una extracción ordinaria del repositorio también permite construir

@@ -375,6 +375,60 @@ release instalada requiere su propio gate de promoción y verificación. Un
 `--all` sin `--apply` no cruza ninguna frontera física, aunque puede escribir
 estado derivado del lifecycle.
 
+### Auditoría histórica explícita
+
+`historical-temp` es una auditoría separada del scratch registrado. La raíz no
+se descubre desde configuración: debe pasarse como un `PATH` absoluto con
+`--maintenance-audit-root`. No uses `--root` para este flujo y no asumas
+`/tmp`; esa ruta sólo puede observarse si se selecciona explícitamente. El
+owner no crea una raíz ausente.
+
+Primero captura un plan bounded y revisa su salida JSON:
+
+```bash
+HistoricalRoot="/ruta/raiz-historica"
+Neocortex maintenance --scope historical-temp \
+  --maintenance-audit-root "$HistoricalRoot" --maintenance-json
+```
+
+El plan es read-only. Sólo enumera hijos directos cuyo nombre empieza por
+`neocortex-`, intenta manifests de nombres permitidos y conserva vecinos no
+gestionados fuera del alcance. Revisa `status`, `root_exists`,
+`historical_counts`, `historical_bytes` y `records`; `unknown`, `blocked`,
+actividad incierta, drift, enlaces, hardlinks, permisos inseguros o un manifest
+ambiguo no son candidatos. Los contadores de bytes son observaciones bounded,
+no una medición de espacio libre del filesystem.
+
+Para aplicar, la nueva invocación debe volver a satisfacer todos los claims;
+el plan mostrado no es una autorización reutilizable:
+
+```bash
+Neocortex maintenance --scope historical-temp \
+  --maintenance-audit-root "$HistoricalRoot" \
+  --apply --maintenance-json
+```
+
+El owner sólo retira una entrada cuando puede verificar en ese momento la
+identidad de raíz/ruta/manifest, la topología de montaje, permisos y una
+adopción explícita (`adoption_id` y digest ligados, aprobada, actividad no
+incierta, `state=completed` y `disposable=true`). La retirada es relativa a un
+descriptor y no sigue enlaces. No se usa `rm`, `shutil`, KIO ni un cleaner
+externo; tampoco se abre SQLite ni se modifica el corpus. Una raíz compartida
+como `/tmp` puede servir para una observación explícita, pero conserva el gate
+más estricto de propiedad/permisos para aplicar y no permite presentar el
+resultado como limpieza exitosa.
+
+La aplicación deja un receipt bounded fuera de cada entrada: primero queda
+`prepared`, y sólo tras comprobar que el target está ausente pasa a `applied`.
+Si hay drift, crecimiento fuera de límites o una falla después de retirar algún
+hijo, se conserva el receipt y el resultado exige `recovery_required`.
+
+El plan puede terminar con observaciones bloqueadas sin cruzar una frontera;
+un apply con `blocked`, `failed` o `recovery_required` devuelve salida 2 y deja
+los elementos para recuperación/decisión posterior. No borres manualmente los
+vecinos no gestionados ni conviertas una entrada desconocida en adopción por
+su nombre, edad, tamaño o contenido.
+
 ### Preferencias para conservar duplicados
 
 Sobre una muestra autorizada, las preferencias se aplican a las identidades

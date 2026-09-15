@@ -78,7 +78,10 @@ Consulta local:
 Procesamiento:
   --all                 ejecuta las rutas configuradas
   --dedupe              solicita el servicio de duplicados, sin rutas de contenido
-  maintenance --scope S planifica o retira scratch propio registrado (owned-temp|audit-work)
+  maintenance --scope S planifica o retira scratch propio o audita históricos
+                        (owned-temp|audit-work|historical-temp)
+  --maintenance-audit-root PATH
+                        raíz absoluta explícita para historical-temp; no usa /tmp por defecto
   dedupe                alias de --dedupe
   --route ROUTES        ejecuta una o más rutas sobre el inventario
   --root ROOT           conserva precedencia explícita sobre la raíz por defecto

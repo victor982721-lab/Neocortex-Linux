@@ -135,6 +135,36 @@ servicio al recibir un `scratch_directory`; si no lo recibe conserva su
 compatibilidad temporal aislada. El `--all` inicial registra la observación
 bounded de `owned-temp` en el lifecycle y no escanea `/tmp`.
 
+### Auditoría histórica y adopción explícita
+
+`maintenance --scope historical-temp` delega exclusivamente en
+`neocortex.runtime.historical_audit.HistoricalAuditManager`. Recibe una raíz
+absoluta explícita y literal; no la deriva de `--root`, del estado o de un
+default en `/tmp`, y no arranca el grafo de rutas. El plan es read-only, no crea
+la raíz y limita la observación a hijos directos con prefijo `neocortex-`, una
+lista cerrada de nombres de manifest y un presupuesto de entradas/profundidad/
+bytes. Los vecinos no prefijados son unmanaged, no candidatos implícitos.
+
+La clasificación distingue evidencia suficiente de incertidumbre. Una entrada
+sólo pasa a `adoptable` si su manifest identificado como NeoCortex contiene
+claims exactos de raíz, ruta e identidad física, digest válido, actividad
+explícitamente no incierta y una atestación `historical_adoption` aprobada con
+`adoption_id` y digest ligados; además exige `state=completed` y
+`disposable=true`. Identidad, owner/permisos, enlaces, hardlinks y límites de
+montaje se comprueban bounded; nombres, antigüedad, tamaño o un JSON de otra
+aplicación no conceden autoridad.
+
+`apply` no confía en el plan read-only: toma una observación nueva y revalida
+raíz, manifest, identidad y topología en la frontera de efecto. Sólo entonces
+retira la entrada mediante descriptor-relative/no-follow; drift, actividad
+incierta, manifest ausente/ambiguo, root no verificable o cualquier estado no
+adoptable queda preservado como `blocked` o `recovery_required`. Este owner no
+abre SQLite, no usa KIO ni un cleaner externo y no toca corpus, releases,
+modelos ni otros estados. Antes de retirar se escribe un receipt durable de
+intención fuera de la entrada y, sólo tras confirmar que la entrada desapareció,
+se cierra como `applied`; si ese cierre falla, la entrada queda en
+`recovery_required`.
+
 Cada ruta declara una capacidad de lifecycle: `phase_resume` conserva progreso
 por fase, `safe_replay` reejecuta únicamente con entradas/publicaciones
 durables e idempotencia, y `not_resumable` se rechaza explícitamente. La ruta
@@ -477,6 +507,9 @@ corpus, releases o modelos.
 ## Interfaces públicas
 
 - **CLI instalada:** `Neocortex`; el parser es la fuente exacta de argumentos.
+- **Mantenimiento histórico:** la CLI expone `historical-temp` sólo con
+  `--maintenance-audit-root` absoluto; su plan y su aplicación delegan al
+  owner histórico y no comparten autoridad con scratch, corpus o SQLite.
 - **API/SDK Python:** `state_reset_payload` ofrece el mismo preview/apply
   explícito y envelope bounded; exige raíz, scope, digest y confirmación cuando
   aplica, sin seleccionar el estado productivo por omisión.
@@ -541,6 +574,12 @@ sus rechazos read-only. En Linux, `--all --apply` y `--dedupe --apply` sí cruza
 la frontera explícita de archivos regulares mediante KIO receipt-bound; no hay
 mutación implícita en las corridas sin `--apply`. `curate apply` sigue siendo
 grant-bound y requiere un backend inyectado en una raíz contenida.
+
+La frontera `maintenance --scope historical-temp` es independiente de esas
+acciones: su plan nunca muta, y `--apply` sólo puede retirar una entrada con
+manifest/adopción verificables después de una revalidación fresca. No usa KIO,
+SQLite, `rm` ni otro cleaner externo, no selecciona `/tmp` por defecto y no
+modifica el corpus.
 
 La fuente ya contiene `neocortex.safety.kio_trash`: una foundation preparada que
 descubre `kioclient6`, `kioclient5` o `kioclient`, valida configuración y snapshot,

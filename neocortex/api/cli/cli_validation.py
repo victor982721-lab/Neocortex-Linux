@@ -3,6 +3,7 @@
 from __future__ import annotations
 import argparse
 import math
+from pathlib import Path
 
 from neocortex.platform.policy import (
     LINUX_MUTATION_REASON,
@@ -45,7 +46,8 @@ from neocortex.runtime.orchestration.route_selection import (
     normalize_route_selection,
 )
 
-_MAINTENANCE_SCOPES = ("owned-temp", "audit-work")
+_MAINTENANCE_SCOPES = ("owned-temp", "audit-work", "historical-temp")
+_HISTORICAL_MAINTENANCE_SCOPE = "historical-temp"
 
 # region [01] Stable presets
 
@@ -103,6 +105,8 @@ def _maintenance_requested(args: argparse.Namespace) -> bool:
         return True
     if "maintenance_json" in explicit:
         return True
+    if "maintenance_audit_root" in explicit:
+        return True
     # ``--scope`` is shared with Knowledge for compatibility.  Only the two
     # maintenance values make it a maintenance request without the command;
     # personal/framework/all continue through the established Knowledge path.
@@ -128,9 +132,66 @@ def _validate_maintenance_operation(args: argparse.Namespace) -> bool:
         raise SystemExit("maintenance --scope requires the maintenance command")
     if "knowledge_scope" not in explicit:
         raise SystemExit("maintenance requires --scope")
+    explicit_counts = getattr(args, "_explicit_option_counts", {})
+    if isinstance(explicit_counts, dict) and explicit_counts.get("knowledge_scope", 0) > 1:
+        raise SystemExit("maintenance accepts exactly one --scope")
     if scope not in _MAINTENANCE_SCOPES:
         raise SystemExit(
             "maintenance --scope must be one of " + ", ".join(_MAINTENANCE_SCOPES)
+        )
+
+    audit_root = getattr(args, "maintenance_audit_root", None)
+    audit_root_explicit = "maintenance_audit_root" in explicit
+    if scope == _HISTORICAL_MAINTENANCE_SCOPE:
+        if not audit_root_explicit or audit_root is None:
+            raise SystemExit(
+                "maintenance --scope historical-temp requires "
+                "--maintenance-audit-root PATH"
+            )
+        if not isinstance(audit_root, (Path, str)):
+            raise SystemExit("--maintenance-audit-root must be an absolute path")
+        audit_path = Path(audit_root)
+        if not audit_path.is_absolute():
+            raise SystemExit("--maintenance-audit-root must be absolute")
+        # ``--root`` is the corpus selector and must never be repurposed as a
+        # historical audit root.  Reject an explicitly supplied selector and
+        # the effective corpus/state locations (including lexical aliases)
+        # before the owner is imported.
+        if "root" in explicit:
+            raise SystemExit(
+                "historical maintenance cannot be combined with --root; "
+                "use --maintenance-audit-root"
+            )
+
+        def path_key(value: object) -> Path | None:
+            if not isinstance(value, (Path, str)):
+                return None
+            try:
+                return Path(value).resolve(strict=False)
+            except (OSError, RuntimeError, ValueError):
+                return Path(value).absolute()
+
+        audit_key = path_key(audit_path)
+        for label, forbidden in (
+            ("corpus", getattr(args, "root", None)),
+            ("state", getattr(args, "state_directory", None)),
+        ):
+            forbidden_key = path_key(forbidden)
+            if audit_key is None or forbidden_key is None:
+                continue
+            try:
+                inside_forbidden = audit_key == forbidden_key or audit_key.is_relative_to(
+                    forbidden_key
+                )
+            except (OSError, RuntimeError, ValueError):
+                inside_forbidden = audit_key == forbidden_key
+            if inside_forbidden:
+                raise SystemExit(
+                    f"--maintenance-audit-root cannot equal or be inside the {label} root"
+                )
+    elif audit_root_explicit:
+        raise SystemExit(
+            "--maintenance-audit-root requires --scope historical-temp"
         )
 
     if getattr(args, "all", False):

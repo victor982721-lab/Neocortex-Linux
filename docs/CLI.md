@@ -200,6 +200,51 @@ también esta área privada únicamente después de una integración verificada;
 no amplía esos límites. `--all` sin `--apply` no produce efecto físico,
 aunque el lifecycle puede escribir estado derivado.
 
+### Auditoría histórica explícita
+
+**IMPLEMENTADO EN FUENTE / focales verificados; instalación pendiente:**
+`historical-temp` no es un alias del scratch registrado ni un limpiador global.
+Requiere una raíz de auditoría absoluta y explícita mediante
+`--maintenance-audit-root`; el selector `--root` sigue siendo el corpus y se
+rechaza en esta operación. No hay valor predeterminado para la raíz y nunca se
+escanea `/tmp` por omisión.
+
+```bash
+Neocortex maintenance --scope historical-temp \
+  --maintenance-audit-root "/ruta/raiz-historica" --maintenance-json
+Neocortex maintenance --scope historical-temp \
+  --maintenance-audit-root "/ruta/raiz-historica" \
+  --apply --maintenance-json
+```
+
+La primera forma es un plan bounded y read-only: no crea la raíz ausente y
+observa sólo hijos directos con prefijo `neocortex-` y manifests de nombres
+permitidos. Los vecinos sin evidencia quedan fuera del alcance. El plan
+publica el envelope `neocortex.maintenance/v1` con `audit=historical-audit`,
+`historical_counts`, `historical_bytes` y registros limitados; los bytes son
+observaciones aparentes/asignadas del owner, no espacio de disco que se prometa
+liberar.
+
+`--apply` no convierte el plan anterior en autorización: el owner vuelve a
+escanear y revalida la raíz, el punto de montaje, la identidad de la entrada y
+del manifest, permisos, ausencia de enlaces/hardlinks peligrosos y la
+atestación de adopción. Una entrada sólo es elegible cuando el manifest de una
+aplicación NeoCortex contiene claims exactos de raíz/ruta/identidad, actividad
+explícitamente no incierta, estado `completed`, `disposable=true` y una
+adopción aprobada con `adoption_id` y digest ligados. La retirada es
+descriptor-relative y no-follow; lo desconocido, activo, conservado, ambiguo o
+con drift queda intacto y el resultado es `blocked` o `recovery_required`.
+Cada efecto escribe primero un receipt bounded fuera de la entrada y sólo lo
+marca `applied` después de verificar la ausencia del target; un cierre incierto
+queda en recuperación y se reporta en `receipts`.
+
+Esta frontera no usa `rm`, `shutil`, KIO ni otro cleaner externo, no abre
+SQLite y no recorre ni modifica el corpus. Un plan puede reportar una raíz
+explícita no disponible sin crearla; aplicar sobre una raíz compartida como
+`/tmp` conserva el gate de propiedad/permisos y no se presenta como éxito.
+En modo plan un bloqueo es una observación segura; un apply con elementos
+bloqueados, fallidos o en recuperación devuelve salida 2.
+
 ## Efectos
 
 | Clase | Ejemplos | Efecto |
@@ -213,6 +258,7 @@ aunque el lifecycle puede escribir estado derivado.
 | Aplicación grant-bound | `curate apply` | Requiere confirmación exacta y conserva su autoridad independiente |
 | Conciliación | `curate reconcile` | Registra evidencia bounded; no reintenta ni modifica corpus |
 | Mantenimiento de scratch registrado | `maintenance --scope owned-temp|audit-work` | Plan limitado a `state_directory/scratch`; `--apply` sólo retira scratch propio `completed`, sin KIO |
+| Auditoría histórica | `maintenance --scope historical-temp --maintenance-audit-root PATH` | Plan read-only sobre una raíz absoluta explícita; `--apply` sólo retira adopciones verificadas, sin `/tmp` por defecto, cleaner externo, corpus ni SQLite |
 | Dedupe/corpus Linux | `--dedupe`, `--all --apply` | Backend KIO receipt-bound, igualdad exacta, no-replace y raíz delimitada |
 
 ## Consultas cotidianas

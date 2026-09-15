@@ -19,6 +19,27 @@ fuera de `docs/`.
   contrato registrado cuando recibe un scratch explícito; las demás rutas y la
   instalación conservan sus gates independientes.
 
+## 2026-09-14 — Auditoría histórica con adopción explícita (fuente)
+
+- Se añade `neocortex.runtime.historical_audit` y el scope CLI
+  `maintenance --scope historical-temp`, que exige
+  `--maintenance-audit-root` absoluto y no reutiliza `--root`, el estado ni
+  una ruta predeterminada a `/tmp`.
+- El plan es bounded y read-only: observa sólo hijos directos con prefijo
+  `neocortex-`, manifests allow-listed y evidencia física suficiente; no crea
+  la raíz ni trata vecinos, nombres, edad o tamaño como autoridad.
+- `--apply` vuelve a escanear y sólo retira una entrada con claims exactos de
+  raíz/ruta/identidad y una adopción aprobada, ligada por `adoption_id` y
+  digest, con actividad no incierta, `state=completed` y `disposable=true`.
+  Drift, incertidumbre, enlaces, ambigüedad y estados no adoptables quedan
+  bloqueados o preservados.
+- La retirada es descriptor-relative/no-follow y no usa `rm`, `shutil`, KIO,
+  SQLite ni corpus; una raíz compartida como `/tmp` puede observarse sólo si
+  se elige explícitamente y conserva un gate más estricto para aplicar.
+- Cada retiro prepara un receipt durable fuera del candidato y sólo lo cierra
+  como `applied` tras verificar la postcondición; fallas posteriores al primer
+  efecto se reportan como `recovery_required`.
+
 ## 2026-09-14 — Alcance seguro y procedencia de Code
 
 - `--all` deja de forzar `broad`: Code usa `projects` y sólo analiza raíces

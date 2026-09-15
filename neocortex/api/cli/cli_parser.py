@@ -1070,10 +1070,29 @@ def build_parser() -> argparse.ArgumentParser:
     register_content_diagnostics_arguments(parser)
     register_semantic_arguments(parser)
 
+    # Keep this group before the Knowledge surface so the long-standing
+    # Knowledge group remains the final public group in parser help/tests.
+    maintenance = parser.add_argument_group("Scratch and historical maintenance")
+    maintenance.add_argument(
+        "--maintenance-json",
+        action="store_true",
+        help="emit maintenance as one bounded JSON object",
+    )
+    maintenance.add_argument(
+        "--maintenance-audit-root",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "explicit absolute historical-audit root; required only for "
+            "maintenance --scope historical-temp (never defaults to /tmp)"
+        ),
+    )
+
     register_knowledge_arguments(parser)
 
     # ``--scope`` is historically owned by the flat Knowledge surface.  The
-    # maintenance command reuses that spelling, but its two scopes are not
+    # maintenance command reuses that spelling, but its maintenance scopes are not
     # Knowledge scopes and are consumed only when ``command=maintenance``.
     # Extend the argparse choices after Knowledge registers the option so
     # existing personal/framework/all invocations remain unchanged.
@@ -1081,15 +1100,8 @@ def build_parser() -> argparse.ArgumentParser:
     if scope_action is not None:
         existing_choices = tuple(scope_action.choices or ())
         scope_action.choices = tuple(
-            dict.fromkeys((*existing_choices, "owned-temp", "audit-work"))
+            dict.fromkeys((*existing_choices, "owned-temp", "audit-work", "historical-temp"))
         )
-
-    maintenance = parser.add_argument_group("Registered scratch maintenance")
-    maintenance.add_argument(
-        "--maintenance-json",
-        action="store_true",
-        help="emit maintenance as one bounded JSON object",
-    )
 
     return parser
 
