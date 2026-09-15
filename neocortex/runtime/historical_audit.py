@@ -51,6 +51,12 @@ _MAX_REASON_BYTES = 8 * 1024
 _MAX_MANIFEST_DIGEST_BYTES = 128
 _MAX_ADOPTION_ID_BYTES = 256
 _MAX_MOUNTINFO_BYTES = 4 * 1024 * 1024
+# Keep the direct owner API bounded as well as the CLI.  A caller using the
+# Python surface must not be able to turn a historical audit into an
+# unbounded traversal merely by bypassing argparse.
+_MAX_API_ENTRIES = 100_000
+_MAX_API_DEPTH = 64
+_MAX_API_BYTES = 1 << 40
 
 
 class HistoricalAuditError(RuntimeError):
@@ -263,8 +269,18 @@ def _valid_receipt_digest(payload: Mapping[str, object]) -> bool:
     )
 
 
-def _receipt_directory_fd(root_fd: int) -> int:
+def _receipt_directory_fd(
+    root_fd: int,
+    *,
+    root_path: Path,
+    root_device: int,
+    mountpoints: frozenset[Path],
+) -> int:
     """Open/create the private receipt directory relative to the root fd."""
+
+    receipt_path = _lexical_path(root_path / _RECEIPT_DIRECTORY)
+    if receipt_path in mountpoints:
+        raise HistoricalAuditError("historical receipt directory is a mount boundary")
 
     try:
         os.mkdir(_RECEIPT_DIRECTORY, 0o700, dir_fd=root_fd)
@@ -278,6 +294,7 @@ def _receipt_directory_fd(root_fd: int) -> int:
         stat.S_ISLNK(before.st_mode)
         or not stat.S_ISDIR(before.st_mode)
         or before.st_uid != os.geteuid()
+        or before.st_dev != root_device
         or not _safe_mode(before, private=True)
     ):
         raise HistoricalAuditError("historical receipt directory is unsafe")
@@ -288,7 +305,11 @@ def _receipt_directory_fd(root_fd: int) -> int:
         raise HistoricalAuditError("historical receipt directory cannot be opened") from exc
     try:
         opened = os.fstat(descriptor)
-        if _identity(opened) != _identity(before) or not _safe_mode(opened, private=True):
+        if (
+            _identity(opened) != _identity(before)
+            or opened.st_dev != root_device
+            or not _safe_mode(opened, private=True)
+        ):
             raise _IdentityDrift("historical receipt directory identity changed")
     except BaseException:
         os.close(descriptor)
@@ -375,10 +396,16 @@ def _write_retirement_receipt(
     root_fd: int,
     record: "HistoricalRecord",
     root_identity: tuple[int, int, int],
+    mountpoints: frozenset[Path],
 ) -> None:
     """Durably record retirement intent before removing any candidate bytes."""
 
-    directory_fd = _receipt_directory_fd(root_fd)
+    directory_fd = _receipt_directory_fd(
+        root_fd,
+        root_path=record.path.parent,
+        root_device=root_identity[0],
+        mountpoints=mountpoints,
+    )
     try:
         payload = _with_receipt_digest(_receipt_payload(record, root_identity))
         name = f"{_receipt_token(record)}.json"
@@ -433,6 +460,7 @@ def _finalize_retirement_receipt(
     root_fd: int,
     record: "HistoricalRecord",
     root_identity: tuple[int, int, int],
+    mountpoints: frozenset[Path],
 ) -> Path:
     """Mark a prepared receipt applied only after the target is absent."""
 
@@ -445,7 +473,12 @@ def _finalize_retirement_receipt(
     else:
         raise _EffectPartial("retirement postcondition failed: entry still exists")
 
-    directory_fd = _receipt_directory_fd(root_fd)
+    directory_fd = _receipt_directory_fd(
+        root_fd,
+        root_path=record.path.parent,
+        root_device=root_identity[0],
+        mountpoints=mountpoints,
+    )
     name = f"{_receipt_token(record)}.json"
     try:
         existing = _read_receipt_fd(directory_fd, name)
@@ -1039,6 +1072,12 @@ class HistoricalAuditManager:
         ):
             if type(value) is not int or value < 0:
                 raise ValueError(f"{name} must be a non-negative integer")
+        if max_entries > _MAX_API_ENTRIES:
+            raise ValueError(f"max_entries cannot exceed {_MAX_API_ENTRIES}")
+        if max_depth > _MAX_API_DEPTH:
+            raise ValueError(f"max_depth cannot exceed {_MAX_API_DEPTH}")
+        if max_bytes > _MAX_API_BYTES:
+            raise ValueError(f"max_bytes cannot exceed {_MAX_API_BYTES}")
         if max_entries == 0:
             raise ValueError("max_entries must be positive")
         self.root = candidate
@@ -1420,7 +1459,7 @@ class HistoricalAuditManager:
         manifest_path: Path | None = None
         if stat.S_ISREG(metadata.st_mode) and _is_manifest_name(name):
             manifest_path = path
-        elif is_directory:
+        elif is_directory and not budget.truncated:
             # Manifest discovery is limited to the candidate's own root.  It
             # does not recurse or interpret arbitrary payload names.
             try:
@@ -1443,6 +1482,12 @@ class HistoricalAuditManager:
                     manifest_error = "multiple allow-listed manifests are ambiguous"
             except OSError as exc:
                 manifest_error = _bounded_reason(f"manifest directory could not be inspected: {exc}")
+        elif is_directory:
+            # Once the shared scan budget is exhausted, do not perform a
+            # second unbounded directory listing merely to look for a claim.
+            # The tree is already non-adoptable and the bounded reason remains
+            # visible in the record.
+            manifest_error = "historical audit bounds were exceeded"
         if manifest_path is not None and manifest_error is None:
             try:
                 raw, manifest_metadata = _safe_open_read(
@@ -1833,7 +1878,7 @@ class HistoricalAuditManager:
             if stat.S_ISREG(current.st_mode):
                 self._revalidate_manifest_path(record, root_identity)
                 self._assert_mount_stable(mount_digest)
-                _write_retirement_receipt(root_fd, record, root_identity)
+                _write_retirement_receipt(root_fd, record, root_identity, mountpoints)
                 self._assert_mount_stable(mount_digest)
                 self._validate_root_fd(os.fstat(root_fd), root_identity)
                 current = os.stat(record.name, dir_fd=root_fd, follow_symlinks=False)
@@ -1841,11 +1886,23 @@ class HistoricalAuditManager:
                     raise _IdentityDrift("historical entry identity changed after receipt")
                 self._validate_entry_metadata(current)
                 self._revalidate_manifest_path(record, root_identity)
+                # Re-check the directory entry immediately before unlinking;
+                # the receipt is immutable, but a same-name replacement must
+                # never be treated as the authorized inode.
+                current = os.stat(record.name, dir_fd=root_fd, follow_symlinks=False)
+                if _identity(current) != record.path_identity:
+                    raise _IdentityDrift("historical entry identity changed before unlink")
+                self._validate_entry_metadata(current)
                 os.unlink(record.name, dir_fd=root_fd)
                 final_mount = _mountinfo_snapshot()
                 if final_mount is None or final_mount[1] != mount_digest:
                     raise _EffectPartial("mount topology changed after historical retirement")
-                return _finalize_retirement_receipt(root_fd, record, root_identity)
+                return _finalize_retirement_receipt(
+                    root_fd,
+                    record,
+                    root_identity,
+                    mountpoints,
+                )
             if not stat.S_ISDIR(current.st_mode):
                 raise HistoricalAuditError("historical candidate is no longer a directory")
             child_fd = os.open(record.name, flags, dir_fd=root_fd)
@@ -1865,7 +1922,7 @@ class HistoricalAuditManager:
                 )
                 self._revalidate_manifest_fd(child_fd, record, root_identity)
                 self._assert_mount_stable(mount_digest)
-                _write_retirement_receipt(root_fd, record, root_identity)
+                _write_retirement_receipt(root_fd, record, root_identity, mountpoints)
                 self._assert_mount_stable(mount_digest)
                 self._validate_root_fd(os.fstat(root_fd), root_identity)
                 current = os.stat(record.name, dir_fd=root_fd, follow_symlinks=False)
@@ -1909,7 +1966,12 @@ class HistoricalAuditManager:
             final_mount = _mountinfo_snapshot()
             if final_mount is None or final_mount[1] != mount_digest:
                 raise _EffectPartial("mount topology changed after historical retirement")
-            return _finalize_retirement_receipt(root_fd, record, root_identity)
+            return _finalize_retirement_receipt(
+                root_fd,
+                record,
+                root_identity,
+                mountpoints,
+            )
         finally:
             os.close(root_fd)
 
@@ -1998,7 +2060,13 @@ class HistoricalAuditManager:
         payload = observation.payload
         adoption = payload.get("historical_adoption")
         if not (
-            _app_manifest(payload)
+            # Release manifests are classified for preservation only.  The
+            # historical effect boundary accepts exactly the scratch schema
+            # owned by this service and repeats the logical-owner gate that
+            # was checked during the initial scan.
+            isinstance(payload.get("schema"), str)
+            and payload.get("schema") in _SUPPORTED_MANIFEST_SCHEMAS
+            and payload.get("owner") == _HISTORICAL_OWNER
             and isinstance(adoption, Mapping)
             and type(adoption.get("approved")) is bool
             and adoption.get("approved") is True

@@ -63,6 +63,18 @@ def _write_manifest(entry: Path, payload: dict[str, object]) -> Path:
     return path
 
 
+def _refresh_manifest_digest(payload: dict[str, object]) -> None:
+    """Rebind the fixture's two digest fields after an intentional mutation."""
+
+    adoption = payload.get("historical_adoption")
+    assert isinstance(adoption, dict)
+    adoption.pop("digest", None)
+    payload.pop("manifest_digest", None)
+    digest = "sha256:" + hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
+    payload["manifest_digest"] = digest
+    adoption["digest"] = digest
+
+
 def _root(tmp_path: Path) -> Path:
     root = tmp_path / "historical-root"
     root.mkdir(mode=0o700)
@@ -230,6 +242,64 @@ def test_apply_does_not_mutate_or_honor_a_stale_read_only_plan(tmp_path: Path) -
     assert applied.status == "blocked"
     assert entry.exists()
     assert plan.to_dict() == before
+
+
+def test_owner_drift_after_plan_is_revalidated_before_retirement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _root(tmp_path)
+    entry = _adoptable_entry(root)
+    manager = HistoricalAuditManager(root)
+    plan = manager.plan()
+    assert plan.adoptable == 1
+
+    manifest_path = entry / "manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert isinstance(payload, dict)
+    payload["owner"] = "foreign-application"
+    _refresh_manifest_digest(payload)
+    _write_manifest(entry, payload)
+
+    # Keep the stale positive scan while changing the manifest immediately
+    # before the effect boundary.  A fresh scan would conservatively classify
+    # this as blocked and would not exercise the revalidation gate itself.
+    monkeypatch.setattr(
+        manager,
+        "_scan",
+        lambda _root_identity, _mountpoints: (plan.records, (), False, None),
+    )
+
+    applied = manager.apply(plan)
+
+    assert applied.applied == 0
+    assert applied.recovery_required == 1
+    assert entry.exists()
+
+
+def test_receipt_directory_mount_boundary_is_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _root(tmp_path)
+    entry = _adoptable_entry(root)
+    receipt_directory = root / ".neocortex-historical-audit"
+    monkeypatch.setattr(
+        historical_audit,
+        "_mountinfo_snapshot",
+        lambda: (frozenset({receipt_directory}), "stable-receipt-mount"),
+    )
+
+    manager = HistoricalAuditManager(root)
+    plan = manager.plan()
+    assert plan.adoptable == 1
+
+    applied = manager.apply(plan)
+
+    assert applied.applied == 0
+    assert applied.blocked == 1
+    assert entry.exists()
+    assert not receipt_directory.exists()
 
 
 def test_top_level_counts_and_records_are_bounded(tmp_path: Path) -> None:

@@ -163,6 +163,55 @@ def test_historical_apply_delegates_and_preserves_unverified_as_blocked(
     assert [name for name, _value in calls] == ["init", "plan", "apply"]
 
 
+def test_historical_apply_does_not_treat_preview_claim_as_effect_receipt(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    audit_root = tmp_path / "historical"
+    audit_root.mkdir(mode=0o700)
+    plan = {
+        "status": "planned",
+        "records": [
+            {
+                "status": "adoptable",
+                "adoptable": True,
+                "adoption_id": "preview-only",
+                "adoption_digest": "sha256:preview-only",
+            }
+        ],
+    }
+    apply_result = {
+        "status": "applied",
+        "applied": 1,
+        "records": [],
+        "receipts": [],
+    }
+    _install_fake_manager(
+        monkeypatch,
+        plan_result=plan,
+        apply_result=apply_result,
+    )
+
+    exit_code, payload = _invoke(
+        [
+            "maintenance",
+            "--scope",
+            "historical-temp",
+            "--maintenance-audit-root",
+            str(audit_root),
+            "--apply",
+            "--maintenance-json",
+        ],
+        capsys,
+    )
+
+    assert exit_code == 2
+    assert payload["status"] == "recovery_required"
+    assert payload["applied"] == 0
+    assert payload["recovery_required"] == 1
+
+
 @pytest.mark.parametrize(
     "extra",
     [

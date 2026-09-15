@@ -15,7 +15,10 @@ adapter never falls back to ``rm``, KIO, or the registered-scratch owner.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
+import stat
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, is_dataclass
@@ -50,6 +53,8 @@ _MAX_RECORDS = 100
 _MAX_TEXT = 800
 _MAX_COUNT = 1_000_000
 _MAX_BYTES = 16 * 1024 * 1024 * 1024 * 1024
+_MAX_RECEIPT_BYTES = 64 * 1024
+_HISTORICAL_RECEIPT_SCHEMA = "neocortex.historical-audit-receipt/v1"
 
 
 def _maintenance_scope(args: argparse.Namespace) -> str | None:
@@ -351,6 +356,105 @@ def _record_payload(record: object) -> object:
     return converted
 
 
+def _receipt_is_applied(value: object) -> bool:
+    """Verify one owner receipt without following an untrusted final link.
+
+    The historical owner writes these receipts atomically before/after an
+    effect.  The CLI presentation guard must not turn a plan claim into an
+    applied result when the effect receipt is absent, malformed, or replaced.
+    This is deliberately a small bounded read; it never removes or repairs a
+    receipt.
+    """
+
+    if isinstance(value, Path):
+        path = value
+    elif isinstance(value, str):
+        path = Path(value)
+    else:
+        return False
+    if not path.is_absolute() or len(str(path).encode("utf-8")) > 4096:
+        return False
+    try:
+        before = path.lstat()
+    except OSError:
+        return False
+    if (
+        stat.S_ISLNK(before.st_mode)
+        or not stat.S_ISREG(before.st_mode)
+        or before.st_uid != os.geteuid()
+        or before.st_nlink != 1
+        or bool(before.st_mode & 0o077)
+        or before.st_size > _MAX_RECEIPT_BYTES
+    ):
+        return False
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return False
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            opened.st_dev != before.st_dev
+            or opened.st_ino != before.st_ino
+            or opened.st_uid != os.geteuid()
+            or opened.st_nlink != 1
+            or bool(opened.st_mode & 0o077)
+            or opened.st_size > _MAX_RECEIPT_BYTES
+        ):
+            return False
+        data = bytearray()
+        while len(data) <= _MAX_RECEIPT_BYTES:
+            chunk = os.read(descriptor, min(64 * 1024, _MAX_RECEIPT_BYTES + 1 - len(data)))
+            if not chunk:
+                break
+            data.extend(chunk)
+        if len(data) > _MAX_RECEIPT_BYTES:
+            return False
+    except OSError:
+        return False
+    finally:
+        os.close(descriptor)
+    try:
+        parsed = json.loads(bytes(data).decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        return False
+    if not isinstance(parsed, Mapping):
+        return False
+    if (
+        parsed.get("schema") != _HISTORICAL_RECEIPT_SCHEMA
+        or parsed.get("state") != "applied"
+        or parsed.get("postcondition") != "entry_absent"
+    ):
+        return False
+    digest = parsed.get("receipt_digest")
+    if not isinstance(digest, str) or not digest.startswith("sha256:"):
+        return False
+    body = dict(parsed)
+    body.pop("receipt_digest", None)
+    expected = "sha256:" + hashlib.sha256(
+        json.dumps(
+            body,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return digest == expected
+
+
+def _has_verified_receipts(owner_result: object, effect_count: int) -> bool:
+    """Require one bounded, applied receipt for every reported effect."""
+
+    if effect_count <= 0 or effect_count > _MAX_RECORDS:
+        return False
+    receipts = _owner_value(owner_result, "receipts")
+    if not isinstance(receipts, (tuple, list)) or len(receipts) < effect_count:
+        return False
+    return all(_receipt_is_applied(item) for item in receipts[:effect_count])
+
+
 def _plan_payload(
     owner_result: object,
     *,
@@ -643,7 +747,14 @@ def _historical_result_is_unverified(
     if normalized in {"applied", "retired", "removed", "planned", "candidate"} and (
         effect_count or records or unknown
     ):
-        return not (has_top_level_claim or has_record_claims or has_plan_claims)
+        # A preview claim is necessary to identify what was authorized, but it
+        # is not evidence that an effect completed.  Applied output must also
+        # carry bounded, self-consistent receipts from the owner.
+        has_receipts = _has_verified_receipts(owner_result, effect_count)
+        return not (
+            has_receipts
+            and (has_top_level_claim or has_record_claims or has_plan_claims)
+        )
     return False
 
 
@@ -954,7 +1065,12 @@ def run_maintenance(args: argparse.Namespace) -> int:
         # failed-retained records.  Application failures are surfaced as code
         # 2 so callers cannot mistake an incomplete effect for success.
         exit_code = 0
-        if apply and payload["status"] in {"failed", "blocked", "recovery_required"}:
+        if apply and payload["status"] in {
+            "active",
+            "failed",
+            "blocked",
+            "recovery_required",
+        }:
             exit_code = 2
             payload["exit_code"] = exit_code
         _emit(payload, json_output=json_output)
