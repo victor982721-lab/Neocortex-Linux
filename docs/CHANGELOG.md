@@ -4,6 +4,19 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-15 — Mantenimiento completo por owners (fuente)
+
+- Archive, PDF y video integran scratch registrado con `run_id`, cierre normal
+  y retención `failed-retained` ante fallos; sus rutas usan raíces bajo
+  `state/scratch` sin modificar originales.
+- La retención común añade reachability bounded, validación FK/schema y
+  contabilidad separada de observado, propuesto, retirado y recuperación física;
+  Code protege lineage de graph heads y Inventory conserva checkpoints, planes y
+  sucesores. No se añade compactación ni borrado SQLite automático.
+- Se añade `external-maintenance`, diagnóstico metadata-only con root/categoría
+  explícitos y categorías sin owner como `out_of_profile`; no admite `--apply`,
+  red, SQLite, KIO, sudo ni cleaners externos.
+
 ## 2026-09-14 — Scratch registrado y mantenimiento acotado (fuente)
 
 - Se añade el servicio `neocortex.runtime.scratch` para crear workspaces

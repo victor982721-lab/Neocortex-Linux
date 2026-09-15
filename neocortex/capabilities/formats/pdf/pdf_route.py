@@ -46,6 +46,7 @@ from .pdf_isolation import (
     IsolatedExtractionConfig,
     PdfDocumentTimeout,
     _ocr_page_result,
+    pdf_recovery_scratch_root,
     stream_isolated_extraction,
 )
 from neocortex.safety.ocr_profiles import native_text_quality, resolve_ocr_profile
@@ -1845,6 +1846,8 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
             self.config.ocr_profile,
             self.config.processing_signature,
             (self._ocr_runtime.traineddata_hashes if self._ocr_runtime is not None else ()),
+            scratch_root=pdf_recovery_scratch_root(self.config.state_path),
+            run_id=self.run_id,
         )
 
     def _stream_isolated_document(

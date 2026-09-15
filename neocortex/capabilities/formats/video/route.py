@@ -38,6 +38,7 @@ from .frames import (
     VideoFrameSamplingConfig,
     resolve_video_ffmpeg,
     sampled_video_frames,
+    video_frame_scratch_root,
 )
 from .models import (
     VIDEO_ROUTE_VERSION,
@@ -101,7 +102,11 @@ VIDEO_REVIEW_REASON_CODES = frozenset(
         "video_probe_output_limit",
         "video_probe_schema",
         "video_probe_timeout",
+        "video_scratch_cleanup_error",
+        "video_scratch_error",
         "video_scratch_intersects_corpus",
+        "video_scratch_service_unavailable",
+        "video_scratch_setup_error",
         "video_source_changed",
     }
 )
@@ -228,8 +233,15 @@ class VideoRouteConfig:
     tesseract_cmd: str | None = None
     tessdata_dir: str | None = None
     selection: CandidateSelection = field(default_factory=CandidateSelection)
+    # The route owns one state-local registered workspace root for transient
+    # FFmpeg rasters.  An explicit value is useful for isolated deployments;
+    # the default is derived from the state directory and never from corpus.
+    scratch_directory: Path | None = None
 
-    def frame_sampling_config(self) -> VideoFrameSamplingConfig:
+    def frame_sampling_config(self, *, run_id: int | str | None = None) -> VideoFrameSamplingConfig:
+        scratch_directory = self.scratch_directory
+        if scratch_directory is None:
+            scratch_directory = video_frame_scratch_root(self.state_path)
         return VideoFrameSamplingConfig(
             max_frames=self.max_frames,
             interval_seconds=self.interval_seconds,
@@ -243,6 +255,8 @@ class VideoRouteConfig:
             file_timeout_seconds=self.file_timeout_seconds,
             worker_memory_bytes=self.worker_memory_bytes,
             ffmpeg_path=self.ffmpeg_path,
+            scratch_directory=scratch_directory,
+            run_id=run_id,
         )
 
     def processing_provenance(self, ocr_runtime: _OcrRuntime) -> ProcessingProvenance:
@@ -813,7 +827,7 @@ class VideoRoute:
                 source_height=primary.height,
                 duration_seconds=sampling_duration,
                 frame_rate=primary.frame_rate,
-                config=self.config.frame_sampling_config(),
+                config=self.config.frame_sampling_config(run_id=self.run_id),
                 cancellation=self.cancellation,
             ) as batch:
                 warnings.extend(batch.warnings)

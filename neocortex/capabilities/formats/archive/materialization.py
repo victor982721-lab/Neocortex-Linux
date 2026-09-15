@@ -18,6 +18,8 @@ import tempfile
 import time
 import zipfile
 import zlib
+from contextlib import contextmanager
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Callable, Literal, cast
@@ -65,6 +67,7 @@ MaterializationStatus = Literal[
 DEFAULT_MAX_ARCHIVE_INPUT_BYTES = 2 * 1024 * 1024 * 1024
 DEFAULT_MAX_TEMP_BYTES = 512 * 1024 * 1024
 ARCHIVE_STAGE_CHUNK_BYTES = 64 * 1024
+REGISTERED_SCRATCH_OWNER = "archive-materialization"
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,6 +293,97 @@ class ArchiveMaterializationError(ValueError):
 
 ManifestHook = Callable[[ArchiveManifest], None]
 JournalHook = Callable[[dict[str, object]], None]
+
+
+def _scratch_failure_reason(error: BaseException) -> str:
+    """Return a bounded failure reason suitable for a scratch manifest."""
+
+    reason = f"{type(error).__name__}: {error}".replace("\x00", "\\0")
+    if not reason:
+        reason = "archive materialization failed"
+    encoded = reason.encode("utf-8")
+    if len(encoded) <= 16 * 1024:
+        return reason
+    return encoded[: 16 * 1024 - 3].decode("utf-8", "ignore") + "..."
+
+
+def _fail_registered_workspace(workspace: object, error: BaseException) -> None:
+    """Transition a created workspace to retained failure."""
+
+    fail = getattr(workspace, "fail", None)
+    if not callable(fail):
+        raise TypeError("registered Archive scratch workspace has no fail() transition")
+    fail(_scratch_failure_reason(error))
+
+
+@contextmanager
+def _registered_scratch_workspace(
+    root: Path,
+    *,
+    metadata: Mapping[str, object] | None = None,
+) -> Iterator[Path]:
+    """Yield one runtime-owned workspace for archive staging.
+
+    The runtime ``ScratchManager`` is deliberately imported lazily so virtual
+    archive inventory remains usable without importing the lifecycle service.
+    A successful operation retires its workspace through the runtime owner;
+    any failure is retained for bounded recovery inspection.  There is no
+    unregistered cleanup fallback: losing the lifecycle transition must not
+    silently erase evidence of a failed materialization.
+    """
+
+    try:
+        from neocortex.runtime import scratch as _runtime_scratch
+    except (ImportError, ModuleNotFoundError) as error:
+        raise ArchiveMaterializationError(
+            "registered Archive scratch service is unavailable"
+        ) from error
+
+    manager_type = getattr(_runtime_scratch, "ScratchManager", None)
+    if not callable(manager_type):
+        raise ArchiveMaterializationError(
+            "registered Archive scratch service has no ScratchManager"
+        )
+    manager = manager_type(
+        root,
+        owner=REGISTERED_SCRATCH_OWNER,
+        create_root=True,
+    )
+    create = getattr(manager, "create", None)
+    if not callable(create):
+        create = getattr(manager, "create_workspace", None)
+    if not callable(create):
+        raise ArchiveMaterializationError(
+            "registered Archive scratch service has no workspace creator"
+        )
+    workspace = create(
+        run_id=None,
+        retain_on_success=False,
+        metadata={} if metadata is None else dict(metadata),
+    )
+    path = getattr(workspace, "path", None)
+    if not isinstance(path, Path):
+        raise ArchiveMaterializationError(
+            "registered Archive scratch workspace has no Path path"
+        )
+
+    try:
+        yield path
+    except BaseException as error:
+        # Never let a secondary lifecycle failure replace the extraction or
+        # publication error that the caller needs to diagnose.
+        try:
+            _fail_registered_workspace(workspace, error)
+        except BaseException:
+            pass
+        raise
+    else:
+        complete = getattr(workspace, "complete", None)
+        if not callable(complete):
+            raise ArchiveMaterializationError(
+                "registered Archive scratch workspace has no complete() transition"
+            )
+        complete()
 
 
 def _check_deadline(budget: _ScanBudget, limits: ArchiveMaterializationLimits) -> None:
@@ -811,6 +905,21 @@ def _file_digest(path: Path, *, max_bytes: int) -> tuple[int, str]:
     return _hash_file(path, max_bytes=max_bytes)
 
 
+def _discard_staging_paths(stage_paths: Mapping[str, Path]) -> None:
+    """Drop successful-operation stage names before scratch retirement.
+
+    Publication deliberately uses a no-replace hard link when possible.  The
+    destination therefore shares the stage inode until the stage name is
+    unlinked; leaving that name in a registered workspace would correctly be
+    treated by ``ScratchManager`` as a hard-linked payload and would block
+    retirement.  Unlinking removes only the private stage name and preserves
+    the published destination bytes.
+    """
+
+    for stage in stage_paths.values():
+        stage.unlink(missing_ok=True)
+
+
 def _publish_no_replace(stage: Path, destination: Path, *, expected_size: int, expected_sha256: str, max_bytes: int) -> tuple[str, str | None]:
     destination.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -1013,12 +1122,17 @@ def materialize_archive(
     limits: ArchiveMaterializationLimits | None = None,
     journal_hook: JournalHook | None = None,
     manifest_hook: ManifestHook | None = None,
+    scratch_directory: str | os.PathLike[str] | None = None,
 ) -> ArchiveManifest:
     """Scan and optionally materialize a ZIP using no-replace publication.
 
     ``apply=False`` is the default and is a pure virtual operation.  Setting
     ``apply=True`` only writes new files below ``destination``; it does not
     remove, replace or rename the source ZIP and does not call KIO/Framework.
+    Apply staging is owned by a registered private ``ScratchManager``
+    workspace.  ``scratch_directory`` may select its private manager root;
+    otherwise a sibling ``.neocortex-archive-scratch`` root is used below the
+    destination parent.
     """
 
     effective = limits or ArchiveMaterializationLimits()
@@ -1032,7 +1146,18 @@ def materialize_archive(
             manifest_hook=manifest_hook,
         )
     destination_path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="neocortex_archive_apply_", dir=str(destination_path.parent)) as directory:
+    scratch_root = (
+        Path(scratch_directory)
+        if scratch_directory is not None
+        else destination_path.parent.absolute() / ".neocortex-archive-scratch"
+    )
+    with _registered_scratch_workspace(
+        scratch_root,
+        metadata={
+            "component": REGISTERED_SCRATCH_OWNER,
+            "operation": "materialize_archive",
+        },
+    ) as directory:
         manifest, stage_paths = _scan_manifest(
             source_path,
             limits=effective,
@@ -1048,6 +1173,7 @@ def materialize_archive(
             limits=effective,
             journal_hook=journal_hook,
         )
+        _discard_staging_paths(stage_paths)
     if manifest_hook is not None:
         manifest_hook(result)
     return result

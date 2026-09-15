@@ -7,6 +7,7 @@ treated as read-only holds so this product path cannot delete their parents.
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -23,6 +24,13 @@ _REQUIRED_TABLES = frozenset({"analysis_runs"})
 _LEGACY_CHILD_TABLES = (
     "external_tool_runs",
     "code_experiment_receipts",
+)
+_GRAPH_LINEAGE_TABLES = frozenset(
+    {
+        "graph_input_snapshots",
+        "graph_generations",
+        "graph_heads",
+    }
 )
 
 
@@ -122,6 +130,113 @@ def _validate_owner_tables(connection: sqlite3.Connection) -> frozenset[str]:
     return observed
 
 
+def _validate_graph_lineage_tables(observed_tables: frozenset[str]) -> bool:
+    """Return whether the additive graph lineage owner can be inspected.
+
+    A fresh Code owner has all three tables.  Older owners may have none of
+    them, in which case retention keeps its legacy behaviour.  A partial
+    graph owner is different: ignoring the tables could make an analysis run
+    look unreferenced even though a head or a snapshot still depends on it.
+    Refuse that ambiguous schema rather than mutating through an incomplete
+    reachability view.
+    """
+
+    present = observed_tables.intersection(_GRAPH_LINEAGE_TABLES)
+    if not present:
+        return False
+    missing = _GRAPH_LINEAGE_TABLES - present
+    if missing:
+        raise RuntimeError(
+            "Code retention cannot validate graph lineage; schema is incomplete: "
+            + ",".join(sorted(missing))
+        )
+    return True
+
+
+def _metadata_source_run_id(
+    value: object,
+    *,
+    table: str,
+    identifier: str,
+) -> int | None:
+    """Read the optional source-run locator from validated graph metadata.
+
+    The graph owner stores the source run in ``graph_input_snapshots`` as a
+    typed column.  Generation metadata repeats that locator for portable
+    lineage readers, so retention also checks the denormalized copy.  A
+    malformed metadata document is an integrity ambiguity and must stop a
+    mutation rather than silently discard a potentially reachable run.
+    """
+
+    try:
+        payload = json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"Code retention cannot validate graph lineage metadata: {table}/{identifier}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(
+            f"Code retention graph lineage metadata is not an object: {table}/{identifier}"
+        )
+    source_run_id = payload.get("source_run_id")
+    if source_run_id is None:
+        return None
+    if isinstance(source_run_id, bool) or not isinstance(source_run_id, int) or source_run_id <= 0:
+        raise RuntimeError(
+            f"Code retention graph lineage source_run_id is invalid: {table}/{identifier}"
+        )
+    return source_run_id
+
+
+def _graph_lineage_run_ids(
+    connection: sqlite3.Connection,
+    observed_tables: frozenset[str],
+) -> set[int]:
+    """Return analysis runs reachable from Code graph publication/lineage.
+
+    ``graph_heads`` reaches a generation, which reaches an input snapshot.
+    The snapshot's typed ``source_run_id`` is the durable lineage edge.  All
+    snapshots are retained as lineage records, including building, aborted and
+    pruned identities; pruning their child rows does not erase the source
+    relationship.  Generation metadata is checked as a second, independent
+    edge so a damaged or hand-created fixture cannot bypass the hold merely by
+    setting the typed snapshot column to zero.
+    """
+
+    if not _validate_graph_lineage_tables(observed_tables):
+        return set()
+
+    reachable: set[int] = set()
+    for row in connection.execute(
+        "SELECT snapshot_id,source_run_id,metadata_json FROM graph_input_snapshots"
+    ):
+        snapshot_id = str(row[0])
+        source_run_id = row[1]
+        if isinstance(source_run_id, bool) or not isinstance(source_run_id, int) or source_run_id < 0:
+            raise RuntimeError(
+                f"Code retention graph lineage source_run_id is invalid: graph_input_snapshots/{snapshot_id}"
+            )
+        if source_run_id > 0:
+            reachable.add(source_run_id)
+        metadata_source = _metadata_source_run_id(
+            row[2], table="graph_input_snapshots", identifier=snapshot_id
+        )
+        if metadata_source is not None:
+            reachable.add(metadata_source)
+
+    for row in connection.execute(
+        "SELECT generation_id,metadata_json FROM graph_generations"
+    ):
+        generation_id = str(row[0])
+        metadata_source = _metadata_source_run_id(
+            row[1], table="graph_generations", identifier=generation_id
+        )
+        if metadata_source is not None:
+            reachable.add(metadata_source)
+
+    return reachable
+
+
 def _latest_run_ids(connection: sqlite3.Connection, status: str, limit: int) -> tuple[int, ...]:
     if status == "completed":
         query = "SELECT analysis_run_id FROM analysis_runs WHERE status='completed' ORDER BY analysis_run_id DESC LIMIT ?"
@@ -179,6 +294,10 @@ def plan_code_retention(
 
     protected = set(_latest_run_ids(connection, "completed", policy.keep_completed_runs))
     protected.update(_latest_run_ids(connection, "incident", policy.keep_incident_runs))
+    # Published graph heads and their input snapshots are durable Code
+    # lineage.  Never let the run-retention policy orphan that evidence, even
+    # when the source run is older than the normal completed-run window.
+    protected.update(_graph_lineage_run_ids(connection, observed_tables))
     if current_run_id is not None:
         protected.add(current_run_id)
 

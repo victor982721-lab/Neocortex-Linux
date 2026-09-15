@@ -89,6 +89,9 @@ NeoCortex puede:
 - auditar una raíz histórica absoluta de forma bounded y, sólo con un manifest
   de aplicación y una adopción verificables, retirar entradas elegibles sin
   tocar el corpus, SQLite productiva, releases, modelos ni `/tmp` por defecto;
+- diagnosticar raíces externas de forma explícita y read-only, separando
+  observación, preservación y categorías fuera del perfil sin convertirlas en
+  candidatos de limpieza;
 - respaldar, restaurar, inspeccionar y purgar el estado mediante comandos
   explícitos.
 
@@ -138,6 +141,8 @@ Neocortex --root "$Root" --content-diagnostics 20 --diagnostics-owner all --diag
 Neocortex maintenance --scope owned-temp --maintenance-json
 Neocortex maintenance --scope historical-temp \
   --maintenance-audit-root "/ruta/raiz-historica" --maintenance-json
+Neocortex external-maintenance --external-root "/ruta/externa" \
+  --external-category application_cache --external-json
 ```
 
 Las preguntas explícitas sobre estado del corpus, por ejemplo
@@ -162,6 +167,13 @@ efectos. Sólo el owner histórico puede clasificar hijos directos con prefijo
 Lo desconocido, activo, no adoptado, ambiguo o cambiado se conserva o queda
 bloqueado. El flujo no llama limpiadores externos ni KIO y no abre SQLite ni el
 corpus.
+
+`external-maintenance` es únicamente diagnóstico: exige root y categoría
+explícitos, no admite `--apply`, no descubre rutas desde HOME y no usa red,
+SQLite, KIO, sudo ni otro cleaner. Categorías sin owner (miniaturas KDE,
+caches generales, journal, coredumps, sesiones Codex, Papelera y backups
+externos) se reportan como `out_of_profile`/`preserved`, nunca como bytes
+recuperables.
 
 `ask`, `ask --json`, `--knowledge-context` y la herramienta MCP `context` usan
 el contexto compacto v2: fuentes sin repetición, fragmentos citables y cobertura

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import inspect
 import json
 import os
 import re
@@ -18,7 +19,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import Any, Literal
 
 import xxhash
 
@@ -2123,12 +2124,32 @@ class ArchiveRoute:
             return
         destination = self._materialization_destination(container_key)
         try:
-            manifest = materialize_archive(
-                snapshot.path,
-                destination,
-                apply=True,
-                limits=self._materialization_limits(),
-            )
+            materialize_kwargs: dict[str, object] = {
+                "apply": True,
+                "limits": self._materialization_limits(),
+            }
+            # Preserve injected/legacy materializers that implement the
+            # pre-registration signature, without a risky TypeError retry
+            # that could duplicate a partially applied materialization.
+            materialize_parameters: Any
+            try:
+                materialize_parameters = inspect.signature(materialize_archive).parameters
+            except (TypeError, ValueError):
+                materialize_parameters = {}
+            if (
+                "scratch_directory" in materialize_parameters
+                or any(
+                    parameter.kind is inspect.Parameter.VAR_KEYWORD
+                    for parameter in materialize_parameters.values()
+                )
+            ):
+                materialize_kwargs["scratch_directory"] = (
+                    self.config.state_path.parent
+                    / "scratch"
+                    / "archive-materialization"
+                )
+            materialize_callable: Any = materialize_archive
+            manifest = materialize_callable(snapshot.path, destination, **materialize_kwargs)
         except Exception as exc:
             counters.materialization_pending += 1
             _record_issue(

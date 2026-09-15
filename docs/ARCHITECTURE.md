@@ -135,6 +135,13 @@ servicio al recibir un `scratch_directory`; si no lo recibe conserva su
 compatibilidad temporal aislada. El `--all` inicial registra la observación
 bounded de `owned-temp` en el lifecycle y no escanea `/tmp`.
 
+Archive materialization, PDF structural recovery y video frame sampling usan
+el mismo owner registrado desde sus rutas integradas: `state/scratch/archive-
+materialization`, `state/scratch/pdf-recovery` y `state/scratch/video-frames`.
+Cada productor vincula `run_id`, conserva `failed-retained` ante error y cierra
+sólo después de publicar el resultado; las llamadas directas sin root mantienen
+su compatibilidad aislada sin recibir autoridad sobre el estado productivo.
+
 ### Auditoría histórica y adopción explícita
 
 `maintenance --scope historical-temp` delega exclusivamente en
@@ -172,6 +179,12 @@ PDF conserva `phase_resume`; las demás sólo se reanudan cuando su manifest
 declara `safe_replay`. Un adapter debe poder estimar su workload de forma
 bounded y emitir checkpoints cooperativos, sin reservar de antemano todo un
 snapshot que luego filtre candidatos.
+
+La retención por owner no comparte un writer: Code protege `analysis_runs` que
+sean fuente de graph snapshots/generations/heads; Inventory conserva el payload
+de checkpoints, planes y el componente conectado por sucesores; el planner
+común valida reachability bounded, FK/schema y estados incompletos. Es una
+superficie de diagnóstico y no una compactación general.
 
 Semantic y Code quedan ligados al mismo run, no como una operación posterior
 sin identidad. `--all` coordina las nueve rutas y, en su selección integrada,
@@ -510,6 +523,9 @@ corpus, releases o modelos.
 - **Mantenimiento histórico:** la CLI expone `historical-temp` sólo con
   `--maintenance-audit-root` absoluto; su plan y su aplicación delegan al
   owner histórico y no comparten autoridad con scratch, corpus o SQLite.
+- **Diagnóstico externo:** `external-maintenance` exige `--external-root` y
+  `--external-category`, devuelve `neocortex.external-maintenance/v1` y es
+  siempre metadata-only; categorías sin owner no se vuelven candidatas.
 - **API/SDK Python:** `state_reset_payload` ofrece el mismo preview/apply
   explícito y envelope bounded; exige raíz, scope, digest y confirmación cuando
   aplica, sin seleccionar el estado productivo por omisión.
@@ -580,6 +596,12 @@ acciones: su plan nunca muta, y `--apply` sólo puede retirar una entrada con
 manifest/adopción verificables después de una revalidación fresca. No usa KIO,
 SQLite, `rm` ni otro cleaner externo, no selecciona `/tmp` por defecto y no
 modifica el corpus.
+
+El diagnóstico externo comparte los límites de la plataforma sin convertirse
+en owner: el registry sólo describe procedencia y clasificación. Miniaturas,
+caches de aplicaciones, paquetes, journal, coredumps, sesiones Codex, backups,
+Papelera y otros árboles no administrados se reportan como `out_of_profile`,
+`preserved` o `unknown`; no hay fallback de borrado.
 
 La fuente ya contiene `neocortex.safety.kio_trash`: una foundation preparada que
 descubre `kioclient6`, `kioclient5` o `kioclient`, valida configuración y snapshot,

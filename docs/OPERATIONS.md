@@ -346,7 +346,7 @@ siguen siendo por página; concatenar páginas no equivale a top-K global.
 
 ### Scratch registrado (tranche A+B)
 
-**IMPLEMENTADO EN FUENTE / focales verificados; instalación pendiente:** este flujo sólo revisa
+**IMPLEMENTADO Y VERIFICADO EN LA RELEASE `0.14.0-fae39d702094`:** este flujo sólo revisa
 los workspaces privados registrados bajo
 `<state_directory>/scratch/<scope>`. Los scopes admitidos son `owned-temp` y
 `audit-work`; no se debe proporcionar una raíz de corpus para cambiar el
@@ -374,6 +374,12 @@ de `--all --apply` ya concilia esta área privada en la fuente verificada; la
 release instalada requiere su propio gate de promoción y verificación. Un
 `--all` sin `--apply` no cruza ninguna frontera física, aunque puede escribir
 estado derivado del lifecycle.
+
+Las rutas integradas de Archive, PDF y video ya apuntan sus temporales de
+materialización, recuperación estructural y frames a raíces registradas bajo
+`state/scratch`. En éxito el workspace se cierra y retira; en error queda
+`failed-retained` para diagnóstico posterior. No se deben sustituir esas raíces
+por el corpus, `/tmp` completo ni un directorio compartido.
 
 ### Auditoría histórica explícita
 
@@ -428,6 +434,40 @@ un apply con `blocked`, `failed` o `recovery_required` devuelve salida 2 y deja
 los elementos para recuperación/decisión posterior. No borres manualmente los
 vecinos no gestionados ni conviertas una entrada desconocida en adopción por
 su nombre, edad, tamaño o contenido.
+
+### Retención por owner y contabilidad física
+
+La retención C mantiene una sola autoridad por owner: Semantic, Catalog,
+Inventory, Framework y Code calculan reachability y protegen heads, builders,
+lineage, outbox, referencias cross-owner, checkpoints, planes y decisiones
+humanas. El planner común valida schema/FK, bloquea estados parciales o de
+recuperación y usa límites de profundidad/nodos; Code e Inventory conservan sus
+writers específicos y no se sustituyen por SQL genérico.
+
+`--retention-status` y `plan_retention(...)` siguen siendo **read-only**. Su
+salida separa `observed`, `eligible/proposed`, `retired=0` y
+`physically_recoverable=unknown`; no ejecuta `DELETE`, `VACUUM`, compactación ni
+borra WAL/SHM. Una tabla desconocida, un schema futuro, una referencia huérfana,
+un outbox sin floor o un checkpoint/recovery ambiguo bloquea la elegibilidad.
+La compactación física sólo puede ser una operación posterior, explícita y
+medida con espacio temporal, equivalencia de IDs/FTS y owner quiescente.
+
+### Diagnóstico externo explícito
+
+El frente D se ejecuta sin efectos y con root/categoría suministrados por el
+caller:
+
+```bash
+Neocortex external-maintenance \
+  --external-root "/ruta/externa" \
+  --external-category application_cache --external-json
+```
+
+La salida `neocortex.external-maintenance/v1` es metadata-only, bounded y
+`diagnostic_only=true`. Distingue `observed`, `preserved`, `blocked`, `unknown`,
+`absent` y `out_of_profile`; no ofrece `--apply` y no descubre HOME, caches,
+Papelera, sesiones Codex, journal, coredumps, backups o miniaturas KDE como
+propiedad de NeoCortex. No usa red, SQLite, KIO, sudo ni cleaners externos.
 
 ### Preferencias para conservar duplicados
 

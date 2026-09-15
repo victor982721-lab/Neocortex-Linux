@@ -48,6 +48,7 @@ from neocortex.runtime.orchestration.route_selection import (
 
 _MAINTENANCE_SCOPES = ("owned-temp", "audit-work", "historical-temp")
 _HISTORICAL_MAINTENANCE_SCOPE = "historical-temp"
+_EXTERNAL_COMMAND = "external-maintenance"
 
 # region [01] Stable presets
 
@@ -114,6 +115,62 @@ def _maintenance_requested(args: argparse.Namespace) -> bool:
         "knowledge_scope" in explicit
         and getattr(args, "scope", None) in _MAINTENANCE_SCOPES
     )
+
+
+def _validate_external_operation(args: argparse.Namespace) -> bool:
+    """Validate the explicit, metadata-only external diagnostic command."""
+
+    explicit = set(getattr(args, "_explicit_options", ()))
+    command = getattr(args, "command", None)
+    requested = command == _EXTERNAL_COMMAND or bool(
+        explicit.intersection(
+            {
+                "external_root",
+                "external_category",
+                "external_json",
+                "external_max_entries",
+                "external_max_depth",
+                "external_max_bytes",
+            }
+        )
+    )
+    if not requested:
+        return False
+    if command != _EXTERNAL_COMMAND:
+        raise SystemExit("external diagnostics require the external-maintenance command")
+    root = getattr(args, "external_root", None)
+    category = getattr(args, "external_category", None)
+    if not isinstance(root, (Path, str)) or not Path(root).is_absolute():
+        raise SystemExit("external-maintenance requires --external-root PATH absoluto")
+    if not isinstance(category, str) or not category.strip():
+        raise SystemExit("external-maintenance requires --external-category CATEGORY")
+    if getattr(args, "apply", False):
+        raise SystemExit("external-maintenance is read-only and cannot use --apply")
+    if "root" in explicit:
+        raise SystemExit(
+            "external-maintenance cannot be combined with --root; use --external-root"
+        )
+    for name, minimum in (("external_max_entries", 1), ("external_max_depth", 0), ("external_max_bytes", 0)):
+        value = getattr(args, name, None)
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            raise SystemExit(f"--{name.replace('_', '-')} is outside the diagnostic bound")
+    if getattr(args, "all", False):
+        raise SystemExit("external-maintenance cannot be combined with --all")
+    if normalize_route_selection(getattr(args, "route", "none"), BUILTIN_ROUTE_ORDER):
+        raise SystemExit("external-maintenance cannot be combined with --route")
+    if (
+        getattr(args, "route_only", False)
+        or getattr(args, "resume_run", None) is not None
+        or getattr(args, "candidate_run", None) is not None
+    ):
+        raise SystemExit("external-maintenance cannot be combined with route-only/resume options")
+    if getattr(args, "dedupe", False) or "dedupe_json" in explicit:
+        raise SystemExit("external-maintenance cannot be combined with --dedupe")
+    if "maintenance_json" in explicit or "maintenance_audit_root" in explicit:
+        raise SystemExit("external-maintenance cannot be combined with maintenance options")
+    if selected_direct_operations(args):
+        raise SystemExit("external-maintenance cannot be combined with direct query/doctor options")
+    return True
 
 
 def _validate_maintenance_operation(args: argparse.Namespace) -> bool:
@@ -923,6 +980,8 @@ def _validate_route_only(args: argparse.Namespace) -> None:
 
 
 def validate_arguments(args: argparse.Namespace) -> None:
+    if _validate_external_operation(args):
+        return
     if _validate_maintenance_operation(args):
         _validate_linux_mutation_capability(args)
         return

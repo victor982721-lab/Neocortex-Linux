@@ -54,6 +54,13 @@ RetentionObserver = Callable[[RetentionStore, str], None]
 
 DEFAULT_RETENTION_SQL_TIMEOUT_SECONDS = 30.0
 
+# Retention is a diagnostic reader.  Graph walks are deliberately bounded even
+# though the current schemas use small integer keysets.  A malformed or future
+# owner must never turn a read-only status query into an unbounded recursive
+# query (or, worse, into an implicit cleanup attempt).
+_MAX_REACHABILITY_DEPTH = 64
+_MAX_REACHABILITY_NODES = 4_096
+
 STORE_ORDER: tuple[RetentionStore, ...] = (
     "semantic",
     "catalog",
@@ -238,6 +245,70 @@ class RetentionStorePlan:
             item.estimated_bytes for item in self.items if item.disposition != "eligible"
         ) + sum(hold.estimated_bytes for hold in self.holds)
 
+    @property
+    def observed_rows(self) -> int:
+        """Logical payload rows observed in this bounded page.
+
+        ``items`` are intentionally page-limited and each item accounts for
+        its owner row plus the bounded child rows included by its query.
+        Holds are included because they are observed owner data too.  This is
+        not a count of every row in a database when ``truncated`` is true.
+        """
+
+        return sum(item.estimated_rows for item in self.items) + sum(
+            hold.rows for hold in self.holds
+        )
+
+    @property
+    def observed_bytes(self) -> int:
+        """Logical lower-bound payload bytes observed by this page."""
+
+        return sum(item.estimated_bytes for item in self.items) + sum(
+            hold.estimated_bytes for hold in self.holds
+        )
+
+    @property
+    def proposed_rows(self) -> int:
+        """Rows proposed by the dry-run classifier, never a mutation count."""
+
+        return self.eligible_rows
+
+    @property
+    def proposed_bytes(self) -> int:
+        """Bytes proposed by the dry-run classifier, never physical reclaim."""
+
+        return self.eligible_bytes
+
+    @property
+    def retired_rows(self) -> int:
+        """Rows retired by this planner (always zero; it has no apply path)."""
+
+        return 0
+
+    @property
+    def retired_bytes(self) -> int:
+        """Bytes retired by this planner (always zero; it has no apply path)."""
+
+        return 0
+
+    @property
+    def physically_recoverable_bytes(self) -> int | None:
+        """Physical recovery is not verified by a logical retention plan."""
+
+        return None
+
+    @property
+    def physical_recovery_status(self) -> str:
+        """Stable explanation for the intentionally unknown physical value."""
+
+        return "not_verified"
+
+    @property
+    def physical_reclaimable_bytes(self) -> int | None:
+        """Compatibility spelling used by other read-only evidence APIs."""
+
+        return None
+
 
 @dataclass(frozen=True, slots=True)
 class RetentionPlan:
@@ -253,6 +324,48 @@ class RetentionPlan:
     sqlite_read_snapshot_may_touch_shm: bool = True
     # Operational timing is not part of the identity of a repeatable dry-run.
     snapshot_metrics: Mapping[str, object] | None = field(default=None, compare=False)
+
+    @property
+    def observed_rows(self) -> int:
+        return sum(store.observed_rows for store in self.stores)
+
+    @property
+    def observed_bytes(self) -> int:
+        return sum(store.observed_bytes for store in self.stores)
+
+    @property
+    def proposed_rows(self) -> int:
+        return sum(store.proposed_rows for store in self.stores)
+
+    @property
+    def proposed_bytes(self) -> int:
+        return sum(store.proposed_bytes for store in self.stores)
+
+    @property
+    def retired_rows(self) -> int:
+        return 0
+
+    @property
+    def retired_bytes(self) -> int:
+        return 0
+
+    @property
+    def physically_recoverable_bytes(self) -> int | None:
+        return None
+
+    @property
+    def physical_recovery_status(self) -> str:
+        return "not_verified"
+
+    @property
+    def physical_reclaimable_bytes(self) -> int | None:
+        return None
+
+    @property
+    def compaction_supported(self) -> bool:
+        """The common retention planner never compacts SQLite owners."""
+
+        return False
 
 
 @dataclass(slots=True)
@@ -414,6 +527,12 @@ def _validate_snapshot(
             label="document catalog retention source",
             exact=True,
         )
+        pragma_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if pragma_version > document_catalog_schema.CATALOG_SCHEMA_VERSION:
+            raise RuntimeError(
+                f"document catalog schema is newer than supported: {pragma_version}; "
+                f"expected {document_catalog_schema.CATALOG_SCHEMA_VERSION}"
+            )
         return version
     if store == "inventory":
         version = _metadata_version(connection, "dedup inventory")
@@ -422,6 +541,12 @@ def _validate_snapshot(
                 f"dedup inventory schema is {version}; expected {INVENTORY_SCHEMA_VERSION}"
             )
         validate_inventory_schema(connection)
+        pragma_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if pragma_version > INVENTORY_SCHEMA_VERSION:
+            raise RuntimeError(
+                f"dedup inventory schema is newer than supported: {pragma_version}; "
+                f"expected {INVENTORY_SCHEMA_VERSION}"
+            )
         return version
     version = _metadata_version(connection, "framework")
     if version != framework_schema.SCHEMA_VERSION:
@@ -429,6 +554,12 @@ def _validate_snapshot(
             f"framework schema is {version!r}; expected {framework_schema.SCHEMA_VERSION}"
         )
     framework_schema.validate_framework_schema_v22(connection)
+    pragma_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    if pragma_version > framework_schema.SCHEMA_VERSION:
+        raise RuntimeError(
+            f"framework schema is newer than supported: {pragma_version}; "
+            f"expected {framework_schema.SCHEMA_VERSION}"
+        )
     return version
 
 
@@ -495,6 +626,150 @@ def _page_result(
     items = tuple(build(row) for row in selected)
     next_after = items[-1].key if truncated and items else None
     return items, next_after, truncated
+
+
+@dataclass(frozen=True, slots=True)
+class _ReachabilityResult:
+    """Bounded result for a parent graph rooted at live references."""
+
+    ancestors: frozenset[int]
+    complete: bool
+
+
+def _quoted_identifier(identifier: str) -> str:
+    """Quote an internal SQL identifier before interpolating it."""
+
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _bounded_parent_reachability(
+    connection: sqlite3.Connection,
+    *,
+    table: str,
+    node_column: str,
+    parent_column: str,
+    root_where: str,
+    root_parameters: Sequence[object] = (),
+    max_depth: int = _MAX_REACHABILITY_DEPTH,
+    max_nodes: int = _MAX_REACHABILITY_NODES,
+    depth_limit_is_incomplete: bool = True,
+) -> _ReachabilityResult:
+    """Collect ancestors of live roots without allowing an unbounded walk.
+
+    The table/column names and predicate are module-owned constants; identifiers
+    are quoted anyway so this helper cannot become a SQL injection seam if a
+    future owner adds a new call.  ``complete=False`` is conservative evidence:
+    callers must block eligibility rather than treating a truncated graph as
+    unreachable.
+    """
+
+    if not 1 <= max_depth <= _MAX_REACHABILITY_DEPTH:
+        raise ValueError("reachability depth is outside the planner bound")
+    if not 1 <= max_nodes <= _MAX_REACHABILITY_NODES:
+        raise ValueError("reachability node limit is outside the planner bound")
+    if not isinstance(depth_limit_is_incomplete, bool):
+        raise ValueError("reachability depth policy is invalid")
+    table_sql = _quoted_identifier(table)
+    node_sql = _quoted_identifier(node_column)
+    parent_sql = _quoted_identifier(parent_column)
+    # ``UNION ALL`` preserves depth evidence.  The depth guard is what makes a
+    # malformed cycle finite; a node seen at the final depth is incomplete if
+    # it still has a parent to follow.
+    query = f"""
+        WITH RECURSIVE ancestors(node_id, depth) AS (
+            SELECT {parent_sql}, 1
+            FROM {table_sql}
+            WHERE {root_where} AND {parent_sql} IS NOT NULL
+            UNION ALL
+            SELECT parent.{parent_sql}, ancestors.depth + 1
+            FROM {table_sql} AS parent
+            JOIN ancestors ON parent.{node_sql}=ancestors.node_id
+            WHERE ancestors.depth < ? AND parent.{parent_sql} IS NOT NULL
+        )
+        SELECT node_id, depth FROM ancestors LIMIT ?
+    """
+    rows = connection.execute(
+        query,
+        (*root_parameters, max_depth, max_nodes + 1),
+    ).fetchall()
+    truncated = len(rows) > max_nodes
+    selected = rows[:max_nodes]
+    ancestors = frozenset(int(row[0]) for row in selected if row[0] is not None)
+    if ancestors:
+        placeholders = ",".join("?" for _ in ancestors)
+        existing = {
+            int(row[0])
+            for row in connection.execute(
+                f"SELECT {node_sql} FROM {table_sql} "
+                f"WHERE {node_sql} IN ({placeholders})",
+                tuple(ancestors),
+            ).fetchall()
+        }
+        # A dangling parent is not evidence of an unreachable historical
+        # record.  It is an incomplete graph and therefore blocks eligibility.
+        if existing != set(ancestors):
+            truncated = True
+    if depth_limit_is_incomplete and any(int(row[1]) >= max_depth for row in selected):
+        truncated = True
+    return _ReachabilityResult(ancestors, not truncated)
+
+
+def _bounded_inventory_reachability(
+    connection: sqlite3.Connection,
+    *,
+    max_depth: int = _MAX_REACHABILITY_DEPTH,
+    max_nodes: int = _MAX_REACHABILITY_NODES,
+) -> _ReachabilityResult:
+    """Walk predecessor scans from every recorded successor, bounded."""
+
+    if not 1 <= max_depth <= _MAX_REACHABILITY_DEPTH:
+        raise ValueError("reachability depth is outside the planner bound")
+    if not 1 <= max_nodes <= _MAX_REACHABILITY_NODES:
+        raise ValueError("reachability node limit is outside the planner bound")
+    query = """
+        WITH RECURSIVE ancestors(scan_id, depth) AS (
+            SELECT predecessor_scan_id, 1
+            FROM inventory_scan_successors
+            WHERE predecessor_scan_id IS NOT NULL
+            UNION ALL
+            SELECT edge.predecessor_scan_id, ancestors.depth + 1
+            FROM inventory_scan_successors AS edge
+            JOIN ancestors ON edge.successor_scan_id=ancestors.scan_id
+            WHERE ancestors.depth < ? AND edge.predecessor_scan_id IS NOT NULL
+        )
+        SELECT scan_id, depth FROM ancestors LIMIT ?
+    """
+    rows = connection.execute(query, (max_depth, max_nodes + 1)).fetchall()
+    truncated = len(rows) > max_nodes
+    selected = rows[:max_nodes]
+    ancestors = frozenset(int(row[0]) for row in selected if row[0] is not None)
+    if ancestors:
+        placeholders = ",".join("?" for _ in ancestors)
+        existing = {
+            int(row[0])
+            for row in connection.execute(
+                "SELECT scan_id FROM scans "
+                f"WHERE scan_id IN ({placeholders})",
+                tuple(ancestors),
+            ).fetchall()
+        }
+        if existing != set(ancestors):
+            truncated = True
+    if any(int(row[1]) >= max_depth for row in selected):
+        truncated = True
+    return _ReachabilityResult(ancestors, not truncated)
+
+
+def _status_is_partial_or_recovery(status: object) -> bool:
+    """Recognize incomplete/uncertain owner states without broad inference."""
+
+    return str(status).strip().casefold() in {
+        "partial",
+        "ready_partial",
+        "recovery",
+        "recovering",
+        "recovery_required",
+    }
 
 
 _APPEND_ONLY_EXACT_ACCOUNTING_MAX_ROWS = 50_000
@@ -654,6 +929,19 @@ def _plan_semantic(
 ) -> RetentionStorePlan:
     connection = snapshot.connection
     assert connection is not None
+    active_builder_reachability = _bounded_parent_reachability(
+        connection,
+        table="embedding_generations",
+        node_column="generation_id",
+        parent_column="base_generation_id",
+        root_where="status='building' AND base_clone_complete=0",
+        # A generation's base is required only while its direct child is
+        # cloning.  Once that parent is available, walking older terminal
+        # bases would retain an entire historical chain without proving a
+        # live consumer.  The edge itself is still bounded and fail-closed.
+        max_depth=1,
+        depth_limit_is_incomplete=False,
+    )
     rows = connection.execute(
         """SELECT g.generation_id,g.model_signature,g.status,g.started_ns,
         g.completed_ns,
@@ -672,6 +960,8 @@ def _plan_semantic(
                  AND child.base_clone_complete=0) AS incoming_base,
         EXISTS(SELECT 1 FROM semantic_evidence evidence
                WHERE evidence.generation_id=g.generation_id) AS evidence_reference,
+        EXISTS(SELECT 1 FROM semantic_work_receipts receipt
+               WHERE receipt.generation_id=g.generation_id) AS lineage_reference,
         EXISTS(SELECT 1 FROM embedding_jobs live
                WHERE live.generation_id=g.generation_id AND live.status='leased'
                  AND live.lease_until_ns>?) AS live_lease,
@@ -727,6 +1017,13 @@ def _plan_semantic(
             reasons.append("referenced_as_generation_base")
         if bool(row["evidence_reference"]):
             reasons.append("referenced_by_semantic_evidence")
+        if bool(row["lineage_reference"]):
+            reasons.append("referenced_by_semantic_work_receipt")
+        if int(row["generation_id"]) in active_builder_reachability.ancestors:
+            # Keep the historical reason stable for callers while extending
+            # the check from one parent edge to the bounded live-builder graph.
+            if "referenced_as_generation_base" not in reasons:
+                reasons.append("referenced_as_generation_base")
         if any(
             reason in reasons
             for reason in (
@@ -737,10 +1034,18 @@ def _plan_semantic(
             )
         ):
             disposition: Disposition = "protected"
+        elif not active_builder_reachability.complete:
+            disposition = "blocked"
+            reasons.append("bounded_reachability_incomplete")
         elif bool(row["incoming_base"]):
             disposition = "blocked"
         elif bool(row["evidence_reference"]):
             disposition = "blocked"
+        elif bool(row["lineage_reference"]):
+            disposition = "blocked"
+        elif _status_is_partial_or_recovery(row["status"]):
+            disposition = "blocked"
+            reasons.append("partial_or_recovery_state")
         elif str(row["status"]) not in {"ready", "ready_partial", "failed"}:
             disposition = "blocked"
             reasons.append("unexpected_generation_status")
@@ -771,7 +1076,7 @@ def _plan_semantic(
     return RetentionStorePlan(
         snapshot.store,
         snapshot.database,
-        "ready",
+        "blocked" if not active_builder_reachability.complete else "ready",
         snapshot.schema_version,
         database_bytes,
         wal_bytes,
@@ -781,6 +1086,11 @@ def _plan_semantic(
         after,
         next_after,
         truncated,
+        detail=(
+            "bounded semantic generation reachability is incomplete"
+            if not active_builder_reachability.complete
+            else None
+        ),
     )
 
 
@@ -822,6 +1132,15 @@ def _plan_catalog(
 ) -> RetentionStorePlan:
     connection = snapshot.connection
     assert connection is not None
+    active_builder_reachability = _bounded_parent_reachability(
+        connection,
+        table="catalog_generations",
+        node_column="generation_id",
+        parent_column="base_generation_id",
+        root_where="status='building'",
+        max_depth=1,
+        depth_limit_is_incomplete=False,
+    )
     rows = connection.execute(
         """SELECT g.generation_id,g.source_kind,g.status,g.started_ns,
         g.completed_ns,g.catalog_run_id,
@@ -869,6 +1188,9 @@ def _plan_catalog(
             reasons.append("uncertain_organization_action")
         if bool(row["incoming_base"]):
             reasons.append("referenced_as_generation_base")
+        if int(row["generation_id"]) in active_builder_reachability.ancestors:
+            if "referenced_as_generation_base" not in reasons:
+                reasons.append("referenced_as_generation_base")
         if any(
             reason in reasons
             for reason in (
@@ -879,8 +1201,14 @@ def _plan_catalog(
             )
         ):
             disposition: Disposition = "protected"
+        elif not active_builder_reachability.complete:
+            disposition = "blocked"
+            reasons.append("bounded_reachability_incomplete")
         elif bool(row["incoming_base"]):
             disposition = "blocked"
+        elif _status_is_partial_or_recovery(row["status"]):
+            disposition = "blocked"
+            reasons.append("partial_or_recovery_state")
         elif str(row["status"]) not in {
             "published",
             "failed",
@@ -917,7 +1245,7 @@ def _plan_catalog(
     return RetentionStorePlan(
         snapshot.store,
         snapshot.database,
-        "ready",
+        "blocked" if not active_builder_reachability.complete else "ready",
         snapshot.schema_version,
         database_bytes,
         wal_bytes,
@@ -927,6 +1255,9 @@ def _plan_catalog(
         after,
         next_after,
         truncated,
+        "bounded catalog generation reachability is incomplete"
+        if not active_builder_reachability.complete
+        else None,
     )
 
 
@@ -973,6 +1304,7 @@ def _plan_inventory(
 ) -> RetentionStorePlan:
     connection = snapshot.connection
     assert connection is not None
+    successor_reachability = _bounded_inventory_reachability(connection)
     rows = connection.execute(
         """SELECT s.scan_id,s.root,s.status,s.started_ns,s.completed_ns,
         EXISTS(SELECT 1 FROM inventory_checkpoints c
@@ -1033,6 +1365,8 @@ def _plan_inventory(
             reasons.append("active_inventory_builder")
         if scan_id in references:
             reasons.append("referenced_by_framework_run")
+        if scan_id in successor_reachability.ancestors:
+            reasons.append("referenced_by_inventory_successor")
         if (
             not bool(row["current_head"])
             and not bool(row["previous_head"])
@@ -1043,6 +1377,9 @@ def _plan_inventory(
             reasons.append("latest_complete_without_published_head")
         if reasons:
             disposition: Disposition = "protected"
+        elif not successor_reachability.complete:
+            disposition = "blocked"
+            reasons.append("bounded_reachability_incomplete")
         elif dependency_unverified:
             disposition = "blocked"
             reasons.append("framework_dependency_unverified")
@@ -1074,7 +1411,9 @@ def _plan_inventory(
     return RetentionStorePlan(
         snapshot.store,
         snapshot.database,
-        "blocked" if dependency_unverified else "ready",
+        "blocked"
+        if (dependency_unverified or not successor_reachability.complete)
+        else "ready",
         snapshot.schema_version,
         database_bytes,
         wal_bytes,
@@ -1085,7 +1424,9 @@ def _plan_inventory(
         next_after,
         truncated,
         (
-            "framework retention dependency could not be validated"
+            "bounded inventory scan reachability is incomplete"
+            if not successor_reachability.complete
+            else "framework retention dependency could not be validated"
             if dependency_unverified
             else None
         ),
@@ -1204,6 +1545,13 @@ def _plan_framework(
 ) -> RetentionStorePlan:
     connection = snapshot.connection
     assert connection is not None
+    source_reachability = _bounded_parent_reachability(
+        connection,
+        table="initial_runs",
+        node_column="run_id",
+        parent_column="source_run_id",
+        root_where="source_run_id IS NOT NULL",
+    )
     rows = connection.execute(
         """SELECT run.run_id,run.root,run.status,run.started_ns,run.completed_ns,
         (SELECT COUNT(*) FROM initial_runs newer WHERE newer.root=run.root
@@ -1219,6 +1567,14 @@ def _plan_framework(
                ('started','applying','recovery_required')) AS uncertain_action,
         EXISTS(SELECT 1 FROM file_actions action
                WHERE action.run_id=run.run_id) AS action_evidence,
+        EXISTS(SELECT 1 FROM route_runs route
+               WHERE route.run_id=run.run_id AND route.status IN
+               ('running','partial','recovery','recovering','recovery_required'))
+               AS live_or_incomplete_route,
+        EXISTS(SELECT 1 FROM route_phase_runs phase
+               WHERE phase.run_id=run.run_id AND phase.status IN
+               ('running','partial','recovery','recovering','recovery_required'))
+               AS live_or_incomplete_phase,
         EXISTS(SELECT 1 FROM review_candidates review
                WHERE review.last_seen_run_id=run.run_id
                   OR review.resolved_run_id=run.run_id) OR
@@ -1273,6 +1629,13 @@ def _plan_framework(
             reasons.append("referenced_by_catalog_run")
         if bool(row["source_reference"]):
             reasons.append("referenced_as_source_run")
+        if run_id in source_reachability.ancestors:
+            if "referenced_as_source_run" not in reasons:
+                reasons.append("referenced_as_source_run")
+        if bool(row["live_or_incomplete_route"]):
+            reasons.append("live_or_incomplete_route")
+        if bool(row["live_or_incomplete_phase"]):
+            reasons.append("live_or_incomplete_phase")
         if any(
             reason in reasons
             for reason in (
@@ -1283,11 +1646,19 @@ def _plan_framework(
                 "file_action_audit_evidence",
                 "human_evidence_provenance",
                 "referenced_by_catalog_run",
+                "live_or_incomplete_route",
+                "live_or_incomplete_phase",
             )
         ):
             disposition: Disposition = "protected"
+        elif not source_reachability.complete:
+            disposition = "blocked"
+            reasons.append("bounded_reachability_incomplete")
         elif bool(row["source_reference"]):
             disposition = "blocked"
+        elif _status_is_partial_or_recovery(row["status"]):
+            disposition = "blocked"
+            reasons.append("partial_or_recovery_state")
         elif dependency_unverified:
             disposition = "blocked"
             reasons.append("catalog_dependency_unverified")
@@ -1319,7 +1690,9 @@ def _plan_framework(
     return RetentionStorePlan(
         snapshot.store,
         snapshot.database,
-        "blocked" if dependency_unverified else "ready",
+        "blocked"
+        if (dependency_unverified or not source_reachability.complete)
+        else "ready",
         snapshot.schema_version,
         database_bytes,
         wal_bytes,
@@ -1329,7 +1702,13 @@ def _plan_framework(
         after,
         next_after,
         truncated,
-        ("catalog retention dependency could not be validated" if dependency_unverified else None),
+        (
+            "bounded framework source reachability is incomplete"
+            if not source_reachability.complete
+            else "catalog retention dependency could not be validated"
+            if dependency_unverified
+            else None
+        ),
     )
 
 
@@ -1380,6 +1759,13 @@ def _validated_snapshot(
             inspection_budget=inspection_budget,
         ))
         version = _validate_snapshot(store, connection)
+        foreign_key_violation = connection.execute(
+            "PRAGMA foreign_key_check"
+        ).fetchone()
+        if foreign_key_violation is not None:
+            raise RuntimeError(
+                f"{store} retention source has an inconsistent foreign-key graph"
+            )
         page_size, page_count, freelist_count = (
             int(connection.execute(f"PRAGMA {name}").fetchone()[0])
             for name in ("page_size", "page_count", "freelist_count")
@@ -1672,6 +2058,20 @@ def retention_plan_payload(plan: RetentionPlan) -> dict[str, object]:
     """Return a stable JSON-ready representation of a retention plan."""
 
     return {
+        "accounting": {
+            "observed_rows": plan.observed_rows,
+            "observed_bytes": plan.observed_bytes,
+            "eligible_rows": plan.proposed_rows,
+            "eligible_bytes": plan.proposed_bytes,
+            "proposed_rows": plan.proposed_rows,
+            "proposed_bytes": plan.proposed_bytes,
+            "retired_rows": plan.retired_rows,
+            "retired_bytes": plan.retired_bytes,
+            "physically_recoverable_bytes": plan.physically_recoverable_bytes,
+            "physical_reclaimable_bytes": plan.physical_reclaimable_bytes,
+            "physical_recovery_status": plan.physical_recovery_status,
+        },
+        "compaction_supported": plan.compaction_supported,
         "deletion_supported": plan.deletion_supported,
         "dry_run": plan.dry_run,
         "estimate_kind": plan.estimate_kind,
@@ -1700,10 +2100,20 @@ def retention_plan_payload(plan: RetentionPlan) -> dict[str, object]:
                 "after": store.after,
                 "database": str(store.database),
                 "database_bytes": store.database_bytes,
+                "observed_rows": store.observed_rows,
+                "observed_bytes": store.observed_bytes,
+                "eligible_rows": store.eligible_rows,
+                "eligible_bytes": store.eligible_bytes,
+                "proposed_rows": store.proposed_rows,
+                "proposed_bytes": store.proposed_bytes,
+                "retired_rows": store.retired_rows,
+                "retired_bytes": store.retired_bytes,
+                "physically_recoverable_bytes": store.physically_recoverable_bytes,
+                "physical_reclaimable_bytes": store.physical_reclaimable_bytes,
+                "physical_recovery_status": store.physical_recovery_status,
+                "compaction_supported": False,
                 "storage": store.storage,
                 "detail": store.detail,
-                "eligible_bytes": store.eligible_bytes,
-                "eligible_rows": store.eligible_rows,
                 "holds": [
                     {
                         "estimated_bytes": hold.estimated_bytes,

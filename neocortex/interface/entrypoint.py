@@ -82,6 +82,8 @@ Procesamiento:
                         (owned-temp|audit-work|historical-temp)
   --maintenance-audit-root PATH
                         raíz absoluta explícita para historical-temp; no usa /tmp por defecto
+  external-maintenance --external-root PATH --external-category CATEGORY
+                        diagnóstico bounded read-only de una raíz externa; nunca aplica cambios
   dedupe                alias de --dedupe
   --route ROUTES        ejecuta una o más rutas sobre el inventario
   --root ROOT           conserva precedencia explícita sobre la raíz por defecto

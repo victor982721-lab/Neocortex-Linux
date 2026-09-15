@@ -246,6 +246,10 @@ def dispatch_direct(args: argparse.Namespace) -> int | None:
 
     # Maintenance is a control-plane leaf, not a Framework route.  Keep its
     # owner import lazy and dispatch it before any integrated-run decision.
+    if getattr(args, "command", None) == "external-maintenance":
+        from .cli_external_maintenance import run_external_maintenance
+
+        return run_external_maintenance(args)
     if getattr(args, "command", None) == "maintenance":
         from .cli_maintenance import run_maintenance
 

@@ -2,8 +2,9 @@
 
 The sampler never materializes frames beside the source or inside the corpus.
 It discovers a bounded set of scene/keyframe timestamps, fills the remaining
-budget with deterministic interval samples, and removes every raster when the
-context manager exits.
+budget with deterministic interval samples, and removes every raster on a
+successful context-manager exit.  A registered workspace retains a failed
+attempt for the runtime maintenance owner to inspect.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -37,6 +38,8 @@ MAX_VIDEO_FRAME_BYTES = 64 * 1024 * 1024
 MAX_VIDEO_FRAME_BATCH_BYTES = 512 * 1024 * 1024
 MAX_VIDEO_FFMPEG_DIAGNOSTIC_BYTES = 2 * 1024 * 1024
 VIDEO_FRAME_SAMPLING_POLICY = "frame-sampling-v2-frame-rate-end-guard"
+REGISTERED_SCRATCH_OWNER = "video-frame-sampler"
+VIDEO_FRAME_SCRATCH_SCOPE = "video-frames"
 _TIMESTAMP_TOLERANCE_MS = 250
 _SHOWINFO_TIMESTAMP = re.compile(rb"\bpts_time:([0-9]+(?:\.[0-9]+)?)")
 
@@ -55,6 +58,11 @@ class VideoFrameSamplingConfig:
     file_timeout_seconds: float = 300.0
     worker_memory_bytes: int = 2 * 1024 * 1024 * 1024
     ffmpeg_path: str | None = None
+    # A route supplies the state-owned registered scratch root.  ``None`` is
+    # retained for direct callers that only need the historical ephemeral API
+    # and do not have a state owner to bind to.
+    scratch_directory: Path | None = None
+    run_id: int | str | None = None
 
     def validate(self) -> None:
         if not 1 <= self.max_frames <= MAX_VIDEO_FRAMES:
@@ -511,22 +519,152 @@ def _frame_content_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
+def video_frame_scratch_root(state_path: Path) -> Path:
+    """Return the canonical state-owned root for video frame scratch."""
+
+    state = Path(state_path)
+    if not state.is_absolute():
+        state = state.absolute()
+    return state.parent / "scratch" / VIDEO_FRAME_SCRATCH_SCOPE
+
+
 def _temporary_directory_outside_corpus(corpus_root: Path) -> tempfile.TemporaryDirectory[str]:
     temporary = tempfile.TemporaryDirectory(prefix="neocortex-video-frames-")
     scratch = Path(temporary.name).resolve()
     try:
-        root = corpus_root.resolve(strict=False)
-        if scratch == root or scratch.is_relative_to(root) or root.is_relative_to(scratch):
-            raise VideoProcessingError(
-                "video_scratch_intersects_corpus",
-                "ephemeral video frame directory intersects the corpus",
-                recommendation="manual_review",
-                retryable=False,
-            )
+        _validate_video_scratch_disjoint(scratch, corpus_root)
     except BaseException:
         temporary.cleanup()
         raise
     return temporary
+
+
+def _validate_video_scratch_disjoint(scratch: Path, corpus_root: Path) -> None:
+    """Reject any scratch root that can contain or be contained by corpus."""
+
+    scratch_resolved = scratch.resolve(strict=False)
+    corpus_resolved = corpus_root.resolve(strict=False)
+    if (
+        scratch_resolved == corpus_resolved
+        or scratch_resolved.is_relative_to(corpus_resolved)
+        or corpus_resolved.is_relative_to(scratch_resolved)
+    ):
+        raise VideoProcessingError(
+            "video_scratch_intersects_corpus",
+            "video frame scratch directory intersects the corpus",
+            recommendation="manual_review",
+            retryable=False,
+        )
+
+
+@contextmanager
+def _registered_video_scratch_workspace(
+    scratch_directory: Path,
+    *,
+    corpus_root: Path,
+    run_id: int | str | None = None,
+) -> Iterator[Path]:
+    """Yield one runtime-registered workspace for sampled frame rasters.
+
+    The runtime scratch owner is deliberately the only cleanup authority for
+    this path.  Successful sampling closes the workspace through its normal
+    completion transition; a producer failure is retained as
+    ``failed-retained`` so maintenance can inspect it later.  There is no
+    filesystem cleanup fallback for an explicitly configured registered root.
+    """
+
+    _validate_video_scratch_disjoint(scratch_directory, corpus_root)
+    try:
+        from neocortex.runtime.scratch import ScratchManager
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise VideoProcessingError(
+            "video_scratch_service_unavailable",
+            "registered video frame scratch service is unavailable",
+            recommendation="manual_review",
+            retryable=False,
+        ) from exc
+
+    try:
+        manager = ScratchManager(
+            scratch_directory,
+            owner=REGISTERED_SCRATCH_OWNER,
+            create_root=True,
+        )
+        create = getattr(manager, "create", None)
+        if not callable(create):
+            create = getattr(manager, "create_workspace", None)
+        if not callable(create):
+            raise TypeError("registered video frame scratch service has no workspace creator")
+        workspace = create(
+            run_id=run_id,
+            retain_on_success=False,
+            metadata={
+                "component": REGISTERED_SCRATCH_OWNER,
+                "operation": "sampled_video_frames",
+            },
+        )
+    except Exception as exc:
+        raise VideoProcessingError(
+            "video_scratch_setup_error",
+            f"could not create registered video frame scratch workspace: {exc}",
+            recommendation="manual_review",
+            retryable=False,
+            evidence={"error_type": type(exc).__name__},
+        ) from exc
+
+    path = getattr(workspace, "path", None)
+    if not isinstance(path, Path):
+        # Do not attempt an unregistered fallback when the service contract is
+        # malformed; the caller must receive a typed, reviewable failure.
+        raise VideoProcessingError(
+            "video_scratch_setup_error",
+            "registered video frame scratch workspace has no Path path",
+            recommendation="manual_review",
+            retryable=False,
+        )
+    try:
+        yield path
+    except BaseException as error:
+        fail = getattr(workspace, "fail", None)
+        if callable(fail):
+            try:
+                fail(_video_scratch_failure_reason(error))
+            except BaseException:
+                # Preserve the producer failure.  The runtime owner will
+                # surface recovery on maintenance if retention itself failed.
+                pass
+        raise
+    else:
+        complete = getattr(workspace, "complete", None)
+        if not callable(complete):
+            raise VideoProcessingError(
+                "video_scratch_setup_error",
+                "registered video frame scratch workspace has no complete() transition",
+                recommendation="manual_review",
+                retryable=False,
+            )
+        try:
+            complete()
+        except VideoProcessingError:
+            raise
+        except Exception as exc:
+            raise VideoProcessingError(
+                "video_scratch_cleanup_error",
+                f"registered video frame scratch workspace could not close: {exc}",
+                recommendation="manual_review",
+                retryable=False,
+                evidence={"error_type": type(exc).__name__},
+            ) from exc
+
+
+def _video_scratch_failure_reason(error: BaseException) -> str:
+    """Return a bounded manifest reason without masking the primary failure."""
+
+    reason = f"{type(error).__name__}: {error}".replace("\x00", "\\0")
+    encoded = reason.encode("utf-8")
+    if len(encoded) <= 8 * 1024:
+        return reason
+    return encoded[: 8 * 1024 - 3].decode("utf-8", "ignore") + "..."
 
 
 @contextmanager
@@ -601,8 +739,17 @@ def sampled_video_frames(
             retryable=False,
         )
 
-    with _temporary_directory_outside_corpus(corpus_root) as scratch_text:
-        scratch = Path(scratch_text)
+    scratch_context: AbstractContextManager[str | Path]
+    if config.scratch_directory is None:
+        scratch_context = _temporary_directory_outside_corpus(corpus_root)
+    else:
+        scratch_context = _registered_video_scratch_workspace(
+            config.scratch_directory,
+            corpus_root=corpus_root,
+            run_id=config.run_id,
+        )
+    with scratch_context as scratch_value:
+        scratch = Path(scratch_value)
         extracted: list[ExtractedVideoFrame] = []
         extracted_bytes = 0
         for candidate in plan:
@@ -656,7 +803,9 @@ __all__ = (
     "MAX_VIDEO_FRAME_BATCH_BYTES",
     "MAX_VIDEO_FRAME_BYTES",
     "MAX_VIDEO_FRAME_PIXELS",
+    "REGISTERED_SCRATCH_OWNER",
     "VIDEO_FRAME_SAMPLING_POLICY",
+    "VIDEO_FRAME_SCRATCH_SCOPE",
     "ExtractedVideoFrame",
     "VideoFrameBatch",
     "VideoFrameCandidate",
@@ -666,6 +815,7 @@ __all__ = (
     "parse_showinfo_timestamps",
     "resolve_video_ffmpeg",
     "sampled_video_frames",
+    "video_frame_scratch_root",
 )
 
 

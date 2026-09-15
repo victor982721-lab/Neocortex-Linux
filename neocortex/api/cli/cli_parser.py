@@ -134,10 +134,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=("maintenance",),
+        choices=("maintenance", "external-maintenance"),
         default=None,
         metavar="COMMAND",
-        help="direct registered-scratch maintenance command",
+        help="direct maintenance or external-diagnostic command",
     )
     register_platform_arguments(parser)
     register_config_doctor_arguments(parser)
@@ -1062,16 +1062,10 @@ def build_parser() -> argparse.ArgumentParser:
     register_office_arguments(parser, megabyte_type=decimal_megabytes)
     register_archive_arguments(parser, megabyte_type=decimal_megabytes)
     register_text_arguments(parser, megabyte_type=decimal_megabytes)
-    register_audio_arguments(parser, megabyte_type=decimal_megabytes)
-    register_video_arguments(parser, megabyte_type=decimal_megabytes)
 
-    register_code_arguments(parser, megabyte_type=decimal_megabytes)
-
-    register_content_diagnostics_arguments(parser)
-    register_semantic_arguments(parser)
-
-    # Keep this group before the Knowledge surface so the long-standing
-    # Knowledge group remains the final public group in parser help/tests.
+    # Keep the long-standing final group ordering (audio, video, code,
+    # semantic, Knowledge) stable while grouping the control-plane options
+    # before those route surfaces.
     maintenance = parser.add_argument_group("Scratch and historical maintenance")
     maintenance.add_argument(
         "--maintenance-json",
@@ -1088,6 +1082,53 @@ def build_parser() -> argparse.ArgumentParser:
             "maintenance --scope historical-temp (never defaults to /tmp)"
         ),
     )
+    maintenance.add_argument(
+        "--external-root",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="explicit absolute root for an external metadata diagnostic",
+    )
+    maintenance.add_argument(
+        "--external-category",
+        default=None,
+        metavar="CATEGORY",
+        help="external diagnostic category; no category is cleaned",
+    )
+    maintenance.add_argument(
+        "--external-json",
+        action="store_true",
+        help="emit the external diagnostic as one bounded JSON object",
+    )
+    maintenance.add_argument(
+        "--external-max-entries",
+        type=int,
+        default=10_000,
+        metavar="N",
+        help="bound external diagnostic entries (default: 10000)",
+    )
+    maintenance.add_argument(
+        "--external-max-depth",
+        type=int,
+        default=2,
+        metavar="N",
+        help="bound external diagnostic depth (default: 2)",
+    )
+    maintenance.add_argument(
+        "--external-max-bytes",
+        type=int,
+        default=1 << 40,
+        metavar="BYTES",
+        help="bound external diagnostic apparent/allocated bytes",
+    )
+
+    register_audio_arguments(parser, megabyte_type=decimal_megabytes)
+    register_video_arguments(parser, megabyte_type=decimal_megabytes)
+
+    register_code_arguments(parser, megabyte_type=decimal_megabytes)
+
+    register_content_diagnostics_arguments(parser)
+    register_semantic_arguments(parser)
 
     register_knowledge_arguments(parser)
 

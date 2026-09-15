@@ -179,7 +179,7 @@ renombra los originales ni sustituye caracteres para inventar otra ruta.
 
 ## Mantenimiento registrado de scratch
 
-**IMPLEMENTADO EN FUENTE / focales verificados; instalación pendiente:** `maintenance` es una
+**IMPLEMENTADO Y VERIFICADO EN LA RELEASE `0.14.0-fae39d702094`:** `maintenance` es una
 hoja de control local para el scratch registrado de NeoCortex. El alcance se
 resuelve exclusivamente bajo `<state_directory>/scratch/`:
 `owned-temp` y `audit-work`; no usa `--root` para redirigirlo ni escanea
@@ -200,9 +200,16 @@ también esta área privada únicamente después de una integración verificada;
 no amplía esos límites. `--all` sin `--apply` no produce efecto físico,
 aunque el lifecycle puede escribir estado derivado.
 
+Las rutas integradas de Archive, PDF y video crean sus workspaces bajo
+`state/scratch/archive-materialization`, `state/scratch/pdf-recovery` y
+`state/scratch/video-frames`; una excepción conserva `failed-retained` y el
+cierre exitoso retira sólo el workspace registrado. Las APIs directas que no
+reciben una raíz de scratch mantienen su aislamiento de compatibilidad y no
+habilitan mantenimiento sobre el corpus.
+
 ### Auditoría histórica explícita
 
-**IMPLEMENTADO EN FUENTE / focales verificados; instalación pendiente:**
+**IMPLEMENTADO Y VERIFICADO EN LA RELEASE `0.14.0-fae39d702094`:**
 `historical-temp` no es un alias del scratch registrado ni un limpiador global.
 Requiere una raíz de auditoría absoluta y explícita mediante
 `--maintenance-audit-root`; el selector `--root` sigue siendo el corpus y se
@@ -245,6 +252,25 @@ explícita no disponible sin crearla; aplicar sobre una raíz compartida como
 En modo plan un bloqueo es una observación segura; un apply con elementos
 bloqueados, fallidos o en recuperación devuelve salida 2.
 
+### Diagnóstico externo explícito
+
+`external-maintenance` es la entrada D del plan. No es un limpiador: exige una
+raíz y una categoría explícitas, sólo lee metadatos bounded y no ofrece
+`--apply`.
+
+```bash
+Neocortex external-maintenance \
+  --external-root "/ruta/externa" \
+  --external-category desktop_thumbnail_cache --external-json
+```
+
+El envelope `neocortex.external-maintenance/v1` distingue `observed`,
+`preserved`, `blocked`, `unknown`, `absent` y `out_of_profile`, e informa
+identidad física, owner/procedencia, límites y bytes observados. Categorías sin
+owner NeoCortex (caches de aplicaciones, miniaturas KDE, paquetes, journal,
+coredumps, sesiones Codex, backups externos, Papelera KIO e históricos no
+adoptados) nunca son candidatas ni se modifican.
+
 ## Efectos
 
 | Clase | Ejemplos | Efecto |
@@ -259,6 +285,7 @@ bloqueados, fallidos o en recuperación devuelve salida 2.
 | Conciliación | `curate reconcile` | Registra evidencia bounded; no reintenta ni modifica corpus |
 | Mantenimiento de scratch registrado | `maintenance --scope owned-temp|audit-work` | Plan limitado a `state_directory/scratch`; `--apply` sólo retira scratch propio `completed`, sin KIO |
 | Auditoría histórica | `maintenance --scope historical-temp --maintenance-audit-root PATH` | Plan read-only sobre una raíz absoluta explícita; `--apply` sólo retira adopciones verificadas, sin `/tmp` por defecto, cleaner externo, corpus ni SQLite |
+| Diagnóstico externo | `external-maintenance --external-root PATH --external-category CATEGORY` | Observación metadata-only bounded; siempre read-only, sin owner implícito, `--apply`, red, SQLite, KIO o sudo |
 | Dedupe/corpus Linux | `--dedupe`, `--all --apply` | Backend KIO receipt-bound, igualdad exacta, no-replace y raíz delimitada |
 
 ## Consultas cotidianas

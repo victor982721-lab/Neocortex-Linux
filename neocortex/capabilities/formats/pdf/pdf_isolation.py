@@ -78,6 +78,8 @@ class IsolatedExtractionConfig:
     ocr_profile: OcrProfileName = "configured"
     ocr_processing_signature: str | None = None
     ocr_traineddata_hashes: tuple[tuple[str, str | None], ...] = ()
+    scratch_root: Path | None = None
+    run_id: int | str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +160,126 @@ class PdfPageSequenceAborted(RuntimeError):
 
 
 # endregion [01]
+
+
+# region [01b] Registered recovery scratch
+# Structural recovery can invoke an external repairer and therefore needs a
+# private, authenticated workspace just like the other bounded producers.  A
+# legacy direct call may still omit the root while staged callers migrate; the
+# production PDF route always supplies the state-owned root through
+# ``IsolatedExtractionConfig.scratch_root``.
+
+PDF_RECOVERY_SCRATCH_OWNER = "pdf-recovery"
+PDF_RECOVERY_SCRATCH_SCOPE = "pdf-recovery"
+
+
+def pdf_recovery_scratch_root(state_path: Path) -> Path:
+    """Return the canonical registered-scratch root for PDF recovery."""
+
+    state = Path(state_path)
+    if not state.is_absolute():
+        state = state.absolute()
+    return state.parent / "scratch" / PDF_RECOVERY_SCRATCH_SCOPE
+
+
+def _scratch_failure_reason(error: BaseException) -> str:
+    """Return a bounded reason suitable for a registered manifest."""
+
+    reason = f"{type(error).__name__}: {error}".replace("\x00", "\\0")
+    encoded = reason.encode("utf-8")
+    if len(encoded) <= 8 * 1024:
+        return reason
+    return encoded[: 8 * 1024 - 3].decode("utf-8", "ignore") + "..."
+
+
+def _fail_registered_recovery_workspace(
+    workspace: object,
+    error: BaseException,
+) -> None:
+    """Retain a failed recovery workspace without hiding the primary error."""
+
+    fail = getattr(workspace, "fail", None)
+    if not callable(fail):
+        raise TypeError("registered PDF recovery workspace has no fail() transition")
+    fail(_scratch_failure_reason(error))
+
+
+@contextmanager
+def _registered_pdf_recovery_workspace(
+    scratch_root: Path | None,
+    *,
+    run_id: int | str | None = None,
+) -> Iterator[Path]:
+    """Yield one registered PDF recovery workspace.
+
+    The runtime ``ScratchManager`` remains the sole owner of manifest
+    creation, identity checks and retirement.  On a repair/extraction error,
+    the workspace is deliberately retained as ``failed-retained`` so a later
+    maintenance pass can inspect it.  The old temporary-directory seam is
+    retained only when no root is supplied by a direct compatibility caller;
+    the integrated route supplies an explicit state-owned root.
+    """
+
+    if scratch_root is None:
+        # Direct unit/compatibility callers historically relied on this seam
+        # without a route state directory.  Do not guess a corpus-relative or
+        # global state path for those callers; the integrated route never takes
+        # this branch.
+        with tempfile.TemporaryDirectory(prefix="neocortex_pdf_recovery_") as directory:
+            yield Path(directory)
+        return
+
+    try:
+        from neocortex.runtime import scratch as _runtime_scratch
+    except (ImportError, ModuleNotFoundError) as error:
+        raise RuntimeError("registered PDF recovery scratch service is unavailable") from error
+
+    manager_type = getattr(_runtime_scratch, "ScratchManager", None)
+    if not callable(manager_type):
+        raise RuntimeError("registered PDF recovery scratch service has no ScratchManager")
+    manager = manager_type(
+        Path(scratch_root),
+        owner=PDF_RECOVERY_SCRATCH_OWNER,
+        create_root=True,
+    )
+    create = getattr(manager, "create", None)
+    if not callable(create):
+        create = getattr(manager, "create_workspace", None)
+    if not callable(create):
+        raise RuntimeError("registered PDF recovery scratch service has no workspace creator")
+    workspace = create(
+        run_id=run_id,
+        retain_on_success=False,
+        metadata={
+            "component": "pdf-isolation",
+            "operation": "qpdf-recovery",
+            "scope": PDF_RECOVERY_SCRATCH_SCOPE,
+        },
+    )
+    path = getattr(workspace, "path", None)
+    if not isinstance(path, Path):
+        raise RuntimeError("registered PDF recovery workspace has no Path path")
+
+    try:
+        yield path
+    except BaseException as error:
+        try:
+            _fail_registered_recovery_workspace(workspace, error)
+        except BaseException as cleanup_error:
+            # Preserve the repair/extraction failure as the actionable error;
+            # the manager failure remains visible as a traceback note.
+            error.add_note(
+                "PDF recovery scratch failure retention failed: "
+                f"{type(cleanup_error).__name__}: {cleanup_error}"
+            )
+        raise
+    else:
+        complete = getattr(workspace, "complete", None)
+        if not callable(complete):
+            raise RuntimeError(
+                "registered PDF recovery scratch workspace has no complete() transition"
+            )
+        complete()
 
 
 # region [02] Child extraction
@@ -620,16 +742,20 @@ def _qpdf_repaired_copy(
     *,
     primary_error: str,
     fallback_error: str,
+    scratch_root: Path | None = None,
 ):
-    """Yield a bounded temporary qpdf rewrite and always remove it afterward."""
+    """Yield a bounded qpdf rewrite in registered recovery scratch."""
 
     executable = shutil.which("qpdf")
     if executable is None:
         raise RuntimeError("qpdf recovery unavailable")
     timeout_seconds = max(30, min(300, config.ocr_timeout_seconds * 2))
     creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    with tempfile.TemporaryDirectory(prefix="neocortex_pdf_recovery_") as directory:
-        root = Path(directory)
+    configured_root = scratch_root if scratch_root is not None else config.scratch_root
+    with _registered_pdf_recovery_workspace(
+        configured_root,
+        run_id=config.run_id,
+    ) as root:
         output = root / "recovered.pdf"
         completed = run_bounded_capture(
             [executable, snapshot.path, str(output)],
@@ -894,6 +1020,7 @@ class _ChildExtractionSession:
                 self.config,
                 primary_error=primary_detail,
                 fallback_error=qpdf_error,
+                scratch_root=self.config.scratch_root,
             ) as (repaired_path, evidence):
                 self.extract_with_pymupdf(repaired_path, recovery=evidence)
                 return None

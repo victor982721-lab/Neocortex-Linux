@@ -117,6 +117,131 @@ def _delete_duplicate_group_batches(
             )
 
 
+def _validate_retention_references(
+    connection: sqlite3.Connection,
+    protected_scan_ids: tuple[int, ...],
+) -> None:
+    """Refuse pruning when the owner cannot account for a durable reference.
+
+    The legacy plan tables predate the v13 foreign keys and therefore need an
+    explicit consistency check here.  A plan row, a checkpoint, or a
+    successor is evidence, not disposable cache; silently pruning around an
+    orphan would make the remaining evidence impossible to interpret.
+    """
+
+    try:
+        foreign_keys_enabled = int(
+            connection.execute("PRAGMA foreign_keys").fetchone()[0]
+        )
+        if foreign_keys_enabled != 1:
+            raise InventoryError("inventory retention requires foreign keys to be enabled")
+        foreign_key_violation = connection.execute(
+            "PRAGMA foreign_key_check"
+        ).fetchone()
+    except sqlite3.DatabaseError as exc:
+        raise InventoryError("inventory retention could not validate foreign keys") from exc
+    if foreign_key_violation is not None:
+        raise InventoryError("inventory retention requires a consistent foreign-key graph")
+
+    successor_map = {
+        int(row[0]): int(row[1])
+        for row in connection.execute(
+            "SELECT predecessor_scan_id,successor_scan_id FROM inventory_scan_successors"
+        ).fetchall()
+    }
+    visited: set[int] = set()
+    for start in successor_map:
+        if start in visited:
+            continue
+        path: set[int] = set()
+        current = start
+        while current in successor_map:
+            if current in path:
+                raise InventoryError("inventory retention found a successor cycle")
+            if current in visited:
+                break
+            path.add(current)
+            visited.add(current)
+            current = successor_map[current]
+
+    if protected_scan_ids:
+        placeholders = ",".join("?" for _ in protected_scan_ids)
+        present = {
+            int(row[0])
+            for row in connection.execute(
+                f"SELECT scan_id FROM scans WHERE scan_id IN ({placeholders})",
+                protected_scan_ids,
+            ).fetchall()
+        }
+        missing_id = next(
+            (scan_id for scan_id in protected_scan_ids if scan_id not in present),
+            None,
+        )
+        if missing_id is not None:
+            raise InventoryError(f"inventory retention protected scan {missing_id} is missing")
+
+    # ``duplicate_plan_summaries`` and ``planned_duplicate_groups`` retain
+    # historical shapes without a scan FK.  Their source scan is still a
+    # durable ownership edge, so do not delete any payload while that edge is
+    # unresolved.  The same guard also makes orphan members fail closed.
+    for table in ("duplicate_plan_summaries", "planned_duplicate_groups"):
+        unresolved = connection.execute(
+            f"SELECT {table}.scan_id FROM {table} "
+            f"LEFT JOIN scans ON scans.scan_id={table}.scan_id "
+            f"WHERE scans.scan_id IS NULL LIMIT 1"
+        ).fetchone()
+        if unresolved is not None:
+            raise InventoryError(
+                f"inventory retention found an unresolved {table} reference"
+            )
+    orphan_member = connection.execute(
+        """SELECT 1 FROM planned_duplicate_members m
+        LEFT JOIN planned_duplicate_groups g ON g.group_id=m.group_id
+        WHERE g.group_id IS NULL LIMIT 1"""
+    ).fetchone()
+    if orphan_member is not None:
+        raise InventoryError("inventory retention found an unresolved plan member reference")
+
+
+def _retained_scan_query(protected_scan_ids: tuple[int, ...]) -> str:
+    """Return a bounded recursive query for payloads still reachable.
+
+    Successor edges are retained as metadata for the lifetime of the owner;
+    when one endpoint is still reachable, retaining the connected generation
+    payload is necessary for historical readers and for replaying a durable
+    plan/checkpoint without silently replacing its source with a newer scan.
+    """
+
+    explicit = ",".join(str(scan_id) for scan_id in protected_scan_ids) or "NULL"
+    return (
+        "WITH RECURSIVE seed(scan_id) AS ("
+        "SELECT s.scan_id FROM scans s WHERE s.status='building' "
+        "OR EXISTS(SELECT 1 FROM inventory_checkpoints c WHERE c.scan_id=s.scan_id) "
+        f"OR s.scan_id IN ({explicit}) "
+        "OR EXISTS(SELECT 1 FROM duplicate_plan_summaries p WHERE p.scan_id=s.scan_id) "
+        "OR EXISTS(SELECT 1 FROM planned_duplicate_groups g WHERE g.scan_id=s.scan_id) "
+        "OR EXISTS(SELECT 1 FROM duplicate_plan_heads h WHERE h.scan_id=s.scan_id) "
+        "OR (s.status='complete' AND s.errors=0 AND s.completed_ns IS NOT NULL "
+        "AND s.scan_id=(SELECT MAX(previous.scan_id) FROM scans previous "
+        "WHERE previous.root=s.root AND previous.status='complete' "
+        "AND previous.errors=0 AND previous.completed_ns IS NOT NULL "
+        "AND previous.scan_id<COALESCE((SELECT MAX(c.scan_id) "
+        "FROM inventory_checkpoints c WHERE c.root=s.root AND c.valid=1),0))) "
+        "OR (s.status='complete' AND s.errors=0 AND s.completed_ns IS NOT NULL "
+        "AND s.scan_id>COALESCE((SELECT MAX(c.scan_id) FROM inventory_checkpoints c "
+        "WHERE c.root=s.root AND c.valid=1),0))),"
+        "reachable(scan_id) AS ("
+        "SELECT scan_id FROM seed "
+        "UNION "
+        "SELECT edge.predecessor_scan_id FROM inventory_scan_successors edge "
+        "JOIN reachable ON reachable.scan_id=edge.successor_scan_id "
+        "UNION "
+        "SELECT edge.successor_scan_id FROM inventory_scan_successors edge "
+        "JOIN reachable ON reachable.scan_id=edge.predecessor_scan_id) "
+        "SELECT scan_id FROM reachable"
+    )
+
+
 class ScanCheckpointRepositoryMixin:
     """Persist and publish inventory scan generations and their checkpoints."""
 
@@ -506,11 +631,14 @@ class ScanCheckpointRepositoryMixin:
         *,
         protected_scan_ids: Iterable[int] | None = None,
     ) -> dict[str, int]:
-        """Prune only after every cross-store inventory hold is supplied.
+        """Prune disposable payload only after all inventory holds are known.
 
         ``None`` fails closed because this owner cannot discover framework
         references by itself. Current and previous publications are always
-        retained in addition to the explicit holds.
+        retained in addition to explicit holds. Checkpoints, durable plans,
+        and the complete successor component of any retained scan are also
+        payload roots. Scan metadata and publication/reference rows are never
+        removed here: their foreign keys are the durable audit trail.
         """
 
         removed = {
@@ -522,33 +650,20 @@ class ScanCheckpointRepositoryMixin:
         }
         if protected_scan_ids is None:
             return removed
-        protected = tuple(sorted(set(protected_scan_ids)))
+        requested_protected = tuple(protected_scan_ids)
         if any(
             isinstance(scan_id, bool) or not isinstance(scan_id, int) or scan_id < 1
-            for scan_id in protected
+            for scan_id in requested_protected
         ):
             raise ValueError("protected inventory scan identifiers must be positive")
-        explicit_holds = ",".join(str(scan_id) for scan_id in protected) or "NULL"
+        protected = tuple(sorted(set(requested_protected)))
 
-        retained_scans = (
-            """SELECT s.scan_id FROM scans s
-        WHERE s.status='building'
-           OR EXISTS(SELECT 1 FROM inventory_checkpoints c
-                     WHERE c.scan_id=s.scan_id AND c.valid=1)
-           OR s.scan_id IN ("""
-            + explicit_holds
-            + """)
-           OR (s.status='complete' AND s.errors=0 AND s.completed_ns IS NOT NULL
-               AND s.scan_id=(SELECT MAX(previous.scan_id) FROM scans previous
-                 JOIN inventory_checkpoints c ON c.root=previous.root AND c.valid=1
-                 WHERE previous.root=s.root AND previous.status='complete'
-                   AND previous.errors=0 AND previous.completed_ns IS NOT NULL
-                   AND previous.scan_id<c.scan_id))
-           OR (s.status='complete' AND s.errors=0 AND s.completed_ns IS NOT NULL
-               AND s.scan_id>COALESCE((SELECT MAX(c.scan_id)
-                                       FROM inventory_checkpoints c
-                                       WHERE c.root=s.root AND c.valid=1),0))"""
-        )
+        # Validate before the first batch.  In particular, the plan tables
+        # intentionally retain legacy shapes without scan FKs; deleting
+        # around an unresolved row would destroy the only durable provenance
+        # available for that row.
+        _validate_retention_references(self._connection, protected)
+        retained_scans = _retained_scan_query(protected)
 
         removed["plan_members"], removed["plan_groups"] = _delete_duplicate_group_batches(
             self._connection,
