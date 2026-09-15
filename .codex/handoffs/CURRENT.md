@@ -1,51 +1,41 @@
 # Handoff operativo vigente — NeoCortex
 
-**Ronda actual:** NEO-FIX-015 — aplicación KIO bounded y reconciliación por lote.
-**Actualización:** 2026-09-14T09:18:00-06:00 (America/Mexico_City).
-**Fuente viva:** HEAD == main == origin/main se comprueba al promover; el árbol debe quedar limpio.
+**Ronda actual:** NEO-HYGIENE-001 — preparación federada de higiene y procedencia.
+**Actualización:** 2026-09-15T16:27:32-06:00 (America/Mexico_City).
+**Fuente viva:** `HEAD == main == origin/main` y árbol limpio se comprueban antes de cerrar.
 
-La release activa comprobada es 0.14.0; el identificador exacto y su rollback
-inmediato se conservan en el receipt canónico vigente y en los punteros de
-instalación. `.staging` quedó vacío tras la promoción y no se retiran slots
-activos durante esta ronda.
-El receipt canónico conserva el SHA
-final, el wheel/manifest, el launcher y los punteros `current`/rollback.
-`Neocortex --version`, ayuda, doctor config, dedupe y `release_linux.py verify`
-se ejecutan fuera del checkout sin crear cobertura en estado productivo. La
-suite integral de la ronda cerró con 7710 pasadas, 67 omitidas, 103 warnings y
-42 subtests; el único fallo asociado a instalación fue la identidad del texto
-contra metadata instalada 0.13, antes de promover la release nueva. Ruff,
-compileall y Pyright de los cambios quedaron limpios.
+La release activa comprobada es `0.14.0-8a81b6f4948a-cp314-linux-x86_64`, desde
+`source_sha=8a81b6f4948a71aee8d741bcdcced62cbecdf2d1`; la release previa
+`0.14.0-d0d07467fb33-cp314-linux-x86_64` queda retenida para rollback y
+`.staging` está vacío. El receipt canónico, manifest, launcher y
+`release_linux.py verify=true` se conservan en la evidencia fechada de la
+ronda.
 
-La corrección de NEO-FUN-003 hace que las fases `empty-files` y `content-types`
-usen páginas del `DedupIndex` ya abierto, con cursor cerrado antes de cada
-efecto/escritura; regresiones cubren 513 archivos vacíos y ambas fases.
+La entrega añade `neocortex.artifact-registry/v1` con manifests privados,
+identidad, owner/producer, procedencia, categorías, estados, TTL, dependencias y
+drift; Archive, PDF, Video, Semantic y Framework registran sus workspaces
+canónicos. `Neocortex hygiene` compone registry, scratch y retención en
+`neocortex.hygiene/v1`, siempre `read_only=true`, `preview_only=true`,
+`effects_enabled=false`, `deletion_performed=0`, `file_actions=0` y
+`mutation_authorized=false`. Las vistas federadas de registry/scratch sólo leen;
+los productores mantienen sus writers.
 
-NEO-FIX-015 agrupa la frontera KIO en lotes de hasta 256 archivos regulares y
-una invocación no interactiva por lote, mantiene un receipt/recovery por
-elemento, indexa `Trash/info` una vez y reconcilia el inventario una vez por
-lote. Los vacíos difieren la reconciliación hasta consumir el plan de
-duplicados; la validación de guards y confirmación de ledger también es
-bounded. Benchmark instalado aislado de 512 duplicados: 136.685 s → 12.949 s,
-511 receipts, keeper preservado y cero errores.
+**Gates conservados:** esta ronda no borró, movió ni renombró archivos reales,
+no abrió SQLite productiva, no usó KIO/red/sudo/cleaners ni tocó corpus,
+modelos, Papelera o backups. `hygiene` rechaza `--apply`, `--all`, `--dedupe`,
+`--root` y no expone método físico. Los comandos `machine-inventory`,
+`external-maintenance`, `maintenance`, `state reset` y `curate apply` mantienen
+sus owners y autorizaciones separadas. La secuencia futura
+`preview → review → authorize → apply → verify → recovery` sigue siendo TARGET;
+los owners externos sin contrato se conservan como `unknown`, `blocked` o
+`out_of_profile`.
 
-La entrega integra dedupe exacto con KIO receipt-bound y recuperación no-replace,
-identidad ordinal para ZIPs, clasificación de unidades y materialización acotada,
-política/admisión Semantic en la frontera de fuentes, correcciones de catálogo,
-reset sin backup implícito, cuotas de retención y coordinación adaptativa de
-recursos. Las pruebas locales y el smoke sintético no aplicaron cambios al
-corpus personal; la materialización nunca retira el contenedor por inferencia.
-
-**Gates conservados:** la canaria KIO privada y la vía nativa automática se
-verificaron con testigos/receipts aislados; la restauración visual única en Dolphin
-queda pendiente porque esta sesión no expone una superficie nativa observable.
-La corrida read-only del corpus predeterminado procesó un subset acotado por
-presupuesto; 871 archivos de metadata conservaron el mismo manifiesto antes y
-después. Las consultas representativas devolvieron envelopes JSON parciales
-explicados en el expediente de auditoría. RUN_ID 3 permanece como fallo
-terminal diagnosticado; no se reintenta ni se borra su evidencia. No se ejecuta
-`Neocortex --all --apply` sobre originales ni se reanuda la campaña Semantic C3
-pausada.
+**Validación de ronda:** 117 pruebas focales de registry/scratch/hygiene/CLI y
+productores pasaron; `compileall`, `git diff --check`, namespace y Semgrep
+focal pasaron. Sondas instaladas en raíces sintéticas mostraron un preview con
+`eligible=1`, `deletion_performed=0`, `file_actions=0` y manifests sin cambios;
+una sonda default con XDG aislado no creó estado. Evidencia principal:
+`/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-15-hygiene-8a81b6f/VERIFICATION.json`.
 
 ## Evidencia de entregas anteriores (histórica)
 
