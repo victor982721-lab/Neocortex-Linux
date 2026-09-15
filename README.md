@@ -119,6 +119,53 @@ destructivo. `curate apply` conserva su frontera grant-bound independiente;
 La canaria KIO debe demostrar cuotas sin autovaciado y restauración automática;
 la restauración visual única desde Dolphin permanece como gate humano separado.
 
+## Preparación federada de `hygiene`
+
+`hygiene` es una superficie nueva de preparación end-to-end, local y bounded.
+En esta etapa sólo observa y devuelve un registro/manifest de preview:
+`read_only=true`, cero `file_actions`, cero eliminaciones y ningún cambio en
+corpus, owners, configuración o sistemas externos. No es un limpiador global ni
+un alias de `maintenance`, `state reset`, `curate apply` o
+`external-maintenance`; un eventual `--apply` pertenece a una etapa posterior.
+
+El registro de higiene relaciona cada observación con su raíz, identidad física,
+owner, fuente, procedencia, categoría, estado, snapshot/digest, límites y
+razones. Los manifests son evidencia versionada para comparar y revalidar, no
+instrucciones ni autorización. La federación consume las vistas bounded de
+scratch registrado, retención por owner, `machine-inventory` y diagnóstico
+externo; cada owner conserva autoridad sobre sus datos y un owner ausente no se
+rellena por inferencia.
+
+La salida estructurada usa `neocortex.hygiene/v1`; sus campos de seguridad
+mantienen `read_only=true`, `effects_enabled=false`, `preview_only=true`,
+`deletion_performed=0`, `actions_ready=false`,
+`physical_effect_applied=false` y `mutation_authorized=false`. Un
+`fingerprint` permite detectar drift en una reconsulta, pero no congela el
+filesystem ni convierte `eligible` en una orden.
+
+Las categorías canónicas no equivalen a una decisión de retiro:
+
+| Categoría | Tratamiento de la preparación |
+|---|---|
+| `canonical` | fuente, evidencia o estado que debe preservarse; requiere owner y procedencia |
+| `operational` | estado vivo necesario para operar; se preserva mientras no exista una política del owner |
+| `rebuildable` | derivado reconstruible sólo si el owner demuestra entradas y receta; sigue siendo conservable |
+| `temporary` | workspace acotado y registrado, con lifecycle y manifest verificables; no incluye todo `/tmp` |
+| `cache` | caché de aplicación, modelo o índice; su invalidez o reconstruibilidad son decisiones del owner |
+
+Corpus, fotografías, correo, configuraciones, modelos, backups, sesiones y
+otros datos personales pueden ser canónicos u operativos; la preparación no
+supone que sólo código y documentación sean conservables. Lo desconocido,
+externo, truncado, activo o ambiguo se conserva o queda bloqueado.
+
+El preview captura claims bounded de identidad, montaje, permisos, actividad,
+manifest, owner-head y bytes. Si una fase futura llegara a actuar, tendría que
+releer esos claims y rechazar cualquier drift antes del efecto. La secuencia
+reservada es `preview → review → authorize → apply → verify → recovery`:
+revisar no autoriza, autorizar sólo emite un grant, aplicar cruza la frontera
+física, verificar demuestra la postcondición y toda ambigüedad queda para
+`recovery`. Esta preparación no adelanta ninguno de esos efectos.
+
 ## Empieza por una consulta
 
 Estas operaciones consultan el estado publicado sin actualizar los owners ni
@@ -146,6 +193,7 @@ Neocortex maintenance --scope historical-temp \
   --maintenance-audit-root "/ruta/raiz-historica" --maintenance-json
 Neocortex external-maintenance --external-root "/ruta/externa" \
   --external-category application_cache --external-json
+Neocortex hygiene --hygiene-preview --hygiene-json
 ```
 
 Las preguntas explícitas sobre estado del corpus, por ejemplo

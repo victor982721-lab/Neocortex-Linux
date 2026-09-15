@@ -15,6 +15,8 @@ separate contracts and must not be adopted by this cleaner.
 from __future__ import annotations
 
 import hashlib
+import importlib
+import inspect
 import json
 import os
 import stat
@@ -32,6 +34,15 @@ _MAX_MANIFEST_BYTES = 512 * 1024
 _MAX_REASON_BYTES = 8 * 1024
 _MAX_METADATA_BYTES = 64 * 1024
 _MAX_RECORDS = 100_000
+_ARTIFACT_REGISTRY_MODULES = (
+    "neocortex.runtime.artifact_registry",
+    "neocortex.runtime.artifacts",
+    "neocortex.persistence.artifact_registry",
+    "neocortex.persistence.artifacts",
+    "neocortex.artifact_registry",
+)
+_ARTIFACT_PRODUCER = "scratch"
+_ARTIFACT_KIND = "temporary"
 
 
 class ScratchError(RuntimeError):
@@ -257,6 +268,123 @@ def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
         raise
 
 
+def _load_artifact_registry_type() -> Any:
+    """Load the optional ArtifactRegistry without making scratch import it.
+
+    Artifact registration is a persistence concern owned by another runtime
+    module.  Keeping this lookup lazy avoids an import cycle and, more
+    importantly, leaves read-only scratch inspection independent from that
+    optional integration.  A test or embedding application may also expose a
+    type directly on this module; that is intentionally kept as a narrow
+    dependency-injection seam.
+    """
+
+    injected = globals().get("ArtifactRegistry")
+    if callable(injected):
+        return injected
+    for module_name in _ARTIFACT_REGISTRY_MODULES:
+        try:
+            module = importlib.import_module(module_name)
+        except ModuleNotFoundError as exc:
+            # Do not hide a missing dependency raised from inside an existing
+            # registry module.  Only an absent candidate module is optional.
+            if exc.name != module_name:
+                raise
+            continue
+        registry_type = getattr(module, "ArtifactRegistry", None)
+        if callable(registry_type):
+            return registry_type
+    raise ScratchSecurityError("configured artifact registry is unavailable")
+
+
+def _invoke_artifact_callable(
+    method: Any,
+    payload: Mapping[str, Any],
+    *,
+    operation: str,
+) -> Any:
+    """Invoke one registry adapter while respecting its concrete signature.
+
+    The ArtifactRegistry contract is intentionally small, but existing
+    producers can expose a mapping helper, ``update(artifact_id, **fields)``
+    or a strict keyword signature.  Inspecting the bound callable lets this
+    adapter support those forms without a retry that could duplicate a
+    successful filesystem-backed write after an implementation-level
+    ``TypeError``.
+    """
+
+    if not callable(method):
+        raise TypeError(f"artifact registry {operation} hook is not callable")
+    try:
+        signature = inspect.signature(method)
+    except (TypeError, ValueError):
+        # Python extension callables may not expose a signature.  The
+        # preferred public contract is keyword based, so let any resulting
+        # TypeError remain an actionable registration failure.
+        return method(**dict(payload))
+
+    parameters = tuple(signature.parameters.values())
+    positional = tuple(
+        parameter
+        for parameter in parameters
+        if parameter.kind
+        in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    )
+    has_var_keyword = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters
+    )
+    mapping_names = {"record", "artifact", "entry", "payload", "data", "fields", "changes"}
+
+    # A small helper-style registry commonly accepts one mapping rather than
+    # the expanded keyword contract.  Do not mistake ``artifact_id`` for such
+    # a parameter: it is the ordinary positional form of update().
+    if (
+        len(positional) == 1
+        and not has_var_keyword
+        and positional[0].name in mapping_names
+        and positional[0].name not in payload
+    ):
+        return method(dict(payload))
+
+    # ``update(artifact_id, changes)`` is another explicit equivalent of
+    # ``update(artifact_id, **fields)``.  The mapping is copied so a registry
+    # cannot mutate the scratch manifest data held by the caller.
+    if (
+        operation == "update"
+        and len(positional) >= 2
+        and positional[1].name in mapping_names
+        and positional[0].name in payload
+        and positional[1].name not in payload
+    ):
+        first = payload[positional[0].name]
+        changes = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"artifact_id", "record_id"}
+        }
+        return method(first, changes)
+
+    positional_args: list[Any] = []
+    keyword_args: dict[str, Any] = {}
+    for parameter in parameters:
+        if parameter.kind is inspect.Parameter.VAR_POSITIONAL:
+            continue
+        if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+            keyword_args.update(payload)
+            continue
+        if parameter.name not in payload:
+            # Optional parameters can be omitted.  Required parameters are
+            # deliberately left for the normal TypeError below; wrapping it
+            # at the manager boundary preserves fail-closed behavior.
+            continue
+        value = payload[parameter.name]
+        if parameter.kind is inspect.Parameter.POSITIONAL_ONLY:
+            positional_args.append(value)
+        else:
+            keyword_args[parameter.name] = value
+    return method(*positional_args, **keyword_args)
+
+
 @dataclass(frozen=True, slots=True)
 class ScratchRecord:
     """One bounded inspection result for a registered workspace."""
@@ -280,6 +408,7 @@ class ScratchRecord:
     eligible: bool = False
     valid: bool = True
     issue: str | None = None
+    artifact_id: str | None = None
 
     @property
     def status(self) -> str:
@@ -351,6 +480,12 @@ class ScratchWorkspace:
     @property
     def record_id(self) -> str:
         return self._record_id
+
+    @property
+    def artifact_id(self) -> str | None:
+        """Return the optional cross-owner artifact identity."""
+
+        return self.record.artifact_id
 
     @property
     def state(self) -> ScratchState:
@@ -477,10 +612,24 @@ class ScratchManager:
         *,
         owner: str = "neocortex",
         create_root: bool = False,
+        artifact_registry: Any | None = None,
+        artifact_registry_root: Path | None = None,
     ) -> None:
         self.root = _validate_absolute_path(Path(root), label="scratch root")
         self.owner = _bounded_text(owner, label="scratch owner", limit=128)
         self.create_root = bool(create_root)
+        if artifact_registry is not None and artifact_registry_root is not None:
+            raise ValueError(
+                "scratch artifact_registry and artifact_registry_root are mutually exclusive"
+            )
+        self._artifact_registry = artifact_registry
+        self._artifact_registry_root = (
+            None
+            if artifact_registry_root is None
+            else _validate_absolute_path(
+                Path(artifact_registry_root), label="artifact registry root"
+            )
+        )
         if create_root:
             self._ensure_root(create=True)
 
@@ -522,6 +671,365 @@ class ScratchManager:
             detail = "scratch root must be private (mode 0700 or stricter)"
             raise ScratchSecurityError(detail)
 
+    @property
+    def _artifact_registry_configured(self) -> bool:
+        return self._artifact_registry is not None or self._artifact_registry_root is not None
+
+    def _artifact_registry_instance(self) -> Any | None:
+        """Return the injected or lazily constructed registry.
+
+        Supplying a registry object is the preferred composition seam.  A
+        root is also accepted for callers that want the runtime to construct
+        the canonical registry, but construction is delayed until a workspace
+        is actually created or transitioned.  Consequently ``records()``,
+        ``plan()`` and other read-only inspection never create a registry
+        directory or call a registry hook.
+        """
+
+        if self._artifact_registry is not None:
+            return self._artifact_registry
+        if self._artifact_registry_root is None:
+            return None
+        registry_type = _load_artifact_registry_type()
+        try:
+            try:
+                signature = inspect.signature(registry_type)
+            except (TypeError, ValueError):
+                signature = None
+            parameters = () if signature is None else tuple(signature.parameters.values())
+            accepts_root_keyword = any(
+                parameter.name == "root"
+                and parameter.kind
+                in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+                for parameter in parameters
+            ) or any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters
+            )
+            if accepts_root_keyword or signature is None:
+                self._artifact_registry = registry_type(
+                    root=self._artifact_registry_root,
+                    owner=self.owner,
+                    create_root=True,
+                )
+            else:
+                self._artifact_registry = registry_type(
+                    self._artifact_registry_root,
+                    owner=self.owner,
+                    create_root=True,
+                )
+        except BaseException as exc:
+            if isinstance(exc, ScratchSecurityError):
+                raise
+            raise ScratchSecurityError(
+                f"could not construct artifact registry: {type(exc).__name__}: {exc}"
+            ) from exc
+        return self._artifact_registry
+
+    @staticmethod
+    def _artifact_id(record_id: str) -> str:
+        return f"scratch:{record_id}"
+
+    @staticmethod
+    def _artifact_state(state: str) -> str:
+        """Project scratch lifecycle into the ArtifactRegistry vocabulary."""
+
+        # Scratch has an internal ``committing`` phase while the registry
+        # deliberately keeps a smaller public state set.  It remains active
+        # until the scratch owner has published ``completed``.
+        return {
+            ScratchState.ACTIVE.value: "active",
+            ScratchState.COMMITTING.value: "active",
+            ScratchState.COMPLETED.value: "completed",
+            ScratchState.FAILED_RETAINED.value: "failed",
+            ScratchState.RECOVERY_REQUIRED.value: "recovery_required",
+            ScratchState.RETIRED.value: "retired",
+        }.get(state, state)
+
+    @staticmethod
+    def _artifact_purpose(metadata: Mapping[str, Any]) -> str:
+        for key in ("purpose", "operation", "component"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                return _bounded_text(value, label="scratch artifact purpose", limit=512)
+        return "scratch workspace"
+
+    def _add_artifact_manifest_fields(self, payload: dict[str, Any]) -> None:
+        """Add the registry projection to one scratch manifest payload."""
+
+        record_id = payload.get("record_id")
+        if not isinstance(record_id, str) or not record_id:
+            raise ScratchSecurityError("scratch artifact projection has no record id")
+        artifact_id = payload.get("artifact_id", self._artifact_id(record_id))
+        if (
+            not isinstance(artifact_id, str)
+            or not artifact_id.strip()
+            or len(artifact_id.encode("utf-8")) > 256
+        ):
+            raise ScratchSecurityError("scratch artifact id is invalid")
+        identity = payload.get("path_identity")
+        if (
+            not isinstance(identity, list)
+            or len(identity) != 3
+            or any(type(value) is not int for value in identity)
+        ):
+            raise ScratchSecurityError("scratch artifact identity is invalid")
+        metadata = payload.get("metadata", {})
+        if not isinstance(metadata, Mapping):
+            raise ScratchSecurityError("scratch artifact metadata is invalid")
+        state = payload.get("state")
+        if not isinstance(state, str) or not state:
+            raise ScratchSecurityError("scratch artifact lifecycle state is invalid")
+        retain_on_success = payload.get("retain_on_success", False)
+        if type(retain_on_success) is not bool:
+            raise ScratchSecurityError("scratch artifact retention flag is invalid")
+        retire_after_ns = payload.get("retire_after_ns")
+        if retire_after_ns is not None and (
+            type(retire_after_ns) is not int or retire_after_ns < 0
+        ):
+            raise ScratchSecurityError("scratch artifact retention time is invalid")
+        manifest_path = payload.get("path")
+        if not isinstance(manifest_path, str):
+            raise ScratchSecurityError("scratch artifact path is invalid")
+        try:
+            path_metadata = Path(manifest_path).lstat()
+        except OSError as exc:
+            raise ScratchSecurityError("scratch artifact path is unavailable") from exc
+        if stat.S_ISLNK(path_metadata.st_mode) or not stat.S_ISDIR(path_metadata.st_mode):
+            raise ScratchSecurityError("scratch artifact path is not a directory")
+        source_ref = payload.get("source_ref", metadata.get("source_ref"))
+        payload.update(
+            {
+                "artifact_id": artifact_id,
+                "producer": _ARTIFACT_PRODUCER,
+                "purpose": self._artifact_purpose(metadata),
+                "kind": _ARTIFACT_KIND,
+                "lifecycle_state": self._artifact_state(state),
+                "artifact_state": self._artifact_state(state),
+                "identity": list(identity),
+                "source_ref": source_ref,
+                "disposable": True,
+                "path_size": max(0, int(path_metadata.st_size)),
+                "path_mtime": max(0, int(path_metadata.st_mtime_ns)),
+                "path_size_bytes": max(0, int(path_metadata.st_size)),
+                "path_mtime_ns": max(0, int(path_metadata.st_mtime_ns)),
+                "retention": {
+                    "retain_on_success": retain_on_success,
+                    "retain_until_ns": retire_after_ns,
+                },
+            }
+        )
+
+    def _artifact_payload(
+        self,
+        path: Path,
+        payload: Mapping[str, Any],
+        *,
+        state: str | None = None,
+    ) -> dict[str, Any]:
+        """Project a scratch manifest into the registry's loose contract."""
+
+        record_id = payload.get("record_id")
+        if not isinstance(record_id, str) or not record_id:
+            raise ScratchSecurityError("scratch artifact projection has no record id")
+        artifact_id = payload.get("artifact_id", self._artifact_id(record_id))
+        if (
+            not isinstance(artifact_id, str)
+            or not artifact_id.strip()
+            or len(artifact_id.encode("utf-8")) > 256
+        ):
+            raise ScratchSecurityError("scratch artifact id is invalid")
+        identity_raw = payload.get("path_identity")
+        if (
+            not isinstance(identity_raw, (list, tuple))
+            or len(identity_raw) != 3
+            or any(type(value) is not int for value in identity_raw)
+        ):
+            raise ScratchSecurityError("scratch artifact identity is invalid")
+        metadata = payload.get("metadata", {})
+        if not isinstance(metadata, Mapping):
+            raise ScratchSecurityError("scratch artifact metadata is invalid")
+        selected_state = payload.get("state") if state is None else state
+        if not isinstance(selected_state, str) or not selected_state:
+            raise ScratchSecurityError("scratch artifact lifecycle state is invalid")
+        artifact_state = self._artifact_state(selected_state)
+        retain_on_success = payload.get("retain_on_success", False)
+        if type(retain_on_success) is not bool:
+            raise ScratchSecurityError("scratch artifact retention flag is invalid")
+        retain_until_ns = payload.get("retire_after_ns")
+        if retain_until_ns is not None and (
+            type(retain_until_ns) is not int or retain_until_ns < 0
+        ):
+            raise ScratchSecurityError("scratch artifact retention time is invalid")
+        identity = tuple(identity_raw)
+        source_ref = payload.get("source_ref", metadata.get("source_ref"))
+        purpose = payload.get("purpose", self._artifact_purpose(metadata))
+        if not isinstance(purpose, str) or not purpose.strip():
+            purpose = self._artifact_purpose(metadata)
+        retention = payload.get(
+            "retention",
+            {
+                "retain_on_success": retain_on_success,
+                "retain_until_ns": retain_until_ns,
+            },
+        )
+        registry_root = self.root
+        configured_registry = self._artifact_registry
+        if configured_registry is not None:
+            candidate_root = getattr(configured_registry, "root", None)
+            if candidate_root is not None:
+                try:
+                    registry_root = Path(candidate_root)
+                except (TypeError, ValueError) as exc:
+                    raise ScratchSecurityError("artifact registry root is invalid") from exc
+        try:
+            path_metadata = path.lstat()
+        except OSError as exc:
+            raise ScratchSecurityError("scratch artifact path is unavailable") from exc
+        if stat.S_ISLNK(path_metadata.st_mode) or not stat.S_ISDIR(path_metadata.st_mode):
+            raise ScratchSecurityError("scratch artifact path is not a directory")
+        path_size_bytes = max(0, int(path_metadata.st_size))
+        path_mtime_ns = max(0, int(path_metadata.st_mtime_ns))
+        return {
+            "artifact_id": artifact_id,
+            "artifact": artifact_id,
+            # Some staged registry adapters still spell their key
+            # ``record_id``.  It identifies the same registry artifact, while
+            # ``scratch_record_id`` preserves the runtime manifest id.
+            "record_id": artifact_id,
+            "scratch_record_id": record_id,
+            "owner": payload.get("owner", self.owner),
+            "producer": _ARTIFACT_PRODUCER,
+            "run_id": payload.get("run_id"),
+            "purpose": purpose,
+            "metadata": dict(metadata),
+            "path": path,
+            "root": registry_root,
+            "kind": _ARTIFACT_KIND,
+            "state": artifact_state,
+            "lifecycle_state": artifact_state,
+            "scratch_state": selected_state,
+            "path_identity": identity,
+            "identity": identity,
+            "source_ref": source_ref,
+            "digest": payload.get("manifest_digest"),
+            "manifest_digest": payload.get("manifest_digest"),
+            "dependencies": metadata.get("dependencies", ()),
+            "disposable": True,
+            "retain_on_success": retain_on_success,
+            "retain_until_ns": retain_until_ns,
+            "retention": retention,
+            "path_size": path_size_bytes,
+            "path_mtime": path_mtime_ns,
+            "path_size_bytes": path_size_bytes,
+            "path_mtime_ns": path_mtime_ns,
+        }
+
+    @staticmethod
+    def _preserve_workspace_observation(path: Path) -> tuple[tuple[int, int, int], int, int]:
+        """Capture the directory observation used by the artifact registry."""
+
+        try:
+            metadata = path.lstat()
+        except OSError as exc:
+            raise ScratchSecurityError("scratch artifact path is unavailable") from exc
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise ScratchSecurityError("scratch artifact path is not a directory")
+        return _identity(metadata), int(metadata.st_atime_ns), int(metadata.st_mtime_ns)
+
+    @staticmethod
+    def _restore_workspace_observation(
+        path: Path,
+        observation: tuple[tuple[int, int, int], int, int],
+    ) -> None:
+        """Restore only a still-identical workspace directory's timestamps."""
+
+        expected_identity, atime_ns, mtime_ns = observation
+        try:
+            metadata = path.lstat()
+        except OSError as exc:
+            raise ScratchSecurityError("scratch workspace changed while publishing") from exc
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or not stat.S_ISDIR(metadata.st_mode)
+            or _identity(metadata) != expected_identity
+        ):
+            raise ScratchSecurityError("scratch workspace identity changed while publishing")
+        try:
+            os.utime(path, ns=(atime_ns, mtime_ns), follow_symlinks=False)
+        except OSError as exc:
+            raise ScratchSecurityError(
+                f"scratch workspace timestamps could not be preserved: {exc}"
+            ) from exc
+
+    @staticmethod
+    def _registry_method(registry: Any, names: Sequence[str]) -> Any | None:
+        for name in names:
+            method = getattr(registry, name, None)
+            if callable(method):
+                return method
+        return None
+
+    @staticmethod
+    def _raise_artifact_failure(operation: str, error: BaseException) -> None:
+        if isinstance(error, ScratchSecurityError):
+            raise error
+        raise ScratchSecurityError(
+            f"artifact registry {operation} failed: {type(error).__name__}: {error}"
+        ) from error
+
+    def _register_artifact(self, path: Path, payload: Mapping[str, Any]) -> None:
+        registry = self._artifact_registry_instance()
+        if registry is None:
+            return
+        try:
+            method = self._registry_method(
+                registry,
+                ("register", "register_artifact", "register_temporary", "record"),
+            )
+            if method is None:
+                raise TypeError("configured artifact registry has no register hook")
+            result = _invoke_artifact_callable(
+                method,
+                self._artifact_payload(path, payload),
+                operation="register",
+            )
+            if result is False:
+                raise RuntimeError("registry rejected the artifact registration")
+        except BaseException as exc:
+            self._raise_artifact_failure("register", exc)
+
+    def _update_artifact(
+        self,
+        path: Path,
+        payload: Mapping[str, Any],
+        *,
+        state: str | None = None,
+    ) -> None:
+        registry = self._artifact_registry_instance()
+        if registry is None:
+            return
+        try:
+            fields = self._artifact_payload(path, payload, state=state)
+            method = self._registry_method(
+                registry,
+                ("update", "update_artifact", "transition", "touch"),
+            )
+            if method is None:
+                # A minimal registry may expose only an idempotent register
+                # helper.  Re-registering the same artifact id is the only
+                # safe compatibility fallback; failures remain fail-closed.
+                method = self._registry_method(
+                    registry,
+                    ("register", "register_artifact", "register_temporary", "record"),
+                )
+            if method is None:
+                raise TypeError("configured artifact registry has no update hook")
+            result = _invoke_artifact_callable(method, fields, operation="update")
+            if result is False:
+                raise RuntimeError("registry rejected the artifact update")
+        except BaseException as exc:
+            self._raise_artifact_failure("update", exc)
+
     def create(
         self,
         *,
@@ -557,6 +1065,11 @@ class ScratchManager:
             created = time.time_ns()
             identity = _identity(path.lstat())
             root_identity = _identity(self.root.lstat())
+            preserved_observation = (
+                self._preserve_workspace_observation(path)
+                if self._artifact_registry_configured
+                else None
+            )
             payload: dict[str, Any] = {
                 "schema": SCRATCH_SCHEMA,
                 "record_id": record_id,
@@ -574,12 +1087,26 @@ class ScratchManager:
                 "metadata": safe_metadata,
                 "reason": None,
             }
+            if self._artifact_registry_configured:
+                # The manifest is the scratch owner's durable claim.  Write
+                # it before invoking the secondary registry so a failed hook
+                # leaves evidence for recovery rather than silently removing
+                # an unclaimed workspace.
+                self._add_artifact_manifest_fields(payload)
             payload["manifest_digest"] = _manifest_digest(payload)
             try:
                 _write_json_atomic(path / MANIFEST_NAME, payload)
             except BaseException:
                 _remove_tree_no_follow(path, expected_identity=identity)
                 raise
+            if self._artifact_registry_configured:
+                if preserved_observation is not None:
+                    self._restore_workspace_observation(path, preserved_observation)
+                # Registration is a delivery gate: callers never receive a
+                # workspace whose artifact record could not be established.
+                # Deliberately do not clean up here; the workspace remains a
+                # registered-scratch recovery subject for a later inspection.
+                self._register_artifact(path, payload)
             record = self._record_from_payload(path, payload, size_bytes=0)
             return ScratchWorkspace(self, record, retain_on_success=bool(retain_on_success))
         raise ScratchError("could not allocate a unique scratch workspace")
@@ -820,10 +1347,17 @@ class ScratchManager:
         created_ns = payload.get("created_ns")
         updated_ns = payload.get("updated_ns")
         run_id = payload.get("run_id")
+        artifact_id = payload.get("artifact_id")
         if not isinstance(record_id, str) or not record_id or len(record_id) > 128:
             raise ScratchSecurityError("scratch record id is invalid")
         if not isinstance(owner, str) or not owner or len(owner.encode("utf-8")) > 128:
             raise ScratchSecurityError("scratch owner is invalid")
+        if artifact_id is not None and (
+            not isinstance(artifact_id, str)
+            or not artifact_id.strip()
+            or len(artifact_id.encode("utf-8")) > 256
+        ):
+            raise ScratchSecurityError("scratch artifact id is invalid")
         if state not in {member.value for member in ScratchState}:
             raise ScratchSecurityError("scratch state is invalid")
         if not isinstance(manifest_path, str) or Path(manifest_path) != path:
@@ -901,6 +1435,7 @@ class ScratchManager:
             metadata=dict(metadata),
             reason=reason,
             manifest_digest=expected_digest,
+            artifact_id=artifact_id,
             eligible=eligible,
             issue=issue,
         )
@@ -1030,8 +1565,23 @@ class ScratchManager:
             updated["retire_after_ns"] = retire_after_ns
         if reason is not None:
             updated["reason"] = _bounded_text(reason, label="scratch reason")
+        if self._artifact_registry_configured:
+            self._add_artifact_manifest_fields(updated)
         updated["manifest_digest"] = _manifest_digest(updated)
+        preserved_observation = (
+            self._preserve_workspace_observation(path)
+            if self._artifact_registry_configured
+            else None
+        )
+        if self._artifact_registry_configured:
+            # Update the registry before publishing the new scratch manifest.
+            # A registry failure therefore leaves the previous scratch state
+            # intact and prevents a lifecycle transition from being reported
+            # as successful.
+            self._update_artifact(path, updated)
         _write_json_atomic(manifest_path, updated)
+        if preserved_observation is not None:
+            self._restore_workspace_observation(path, preserved_observation)
         return self._record_from_payload(path, updated, size_bytes=_directory_size(path))
 
     def _retire_record(self, record: ScratchRecord) -> None:
@@ -1050,6 +1600,30 @@ class ScratchManager:
             raise ScratchSecurityError("scratch record is no longer eligible")
         if current.path_identity is None or not _same_identity(record.path, current.path_identity):
             raise ScratchSecurityError("scratch workspace identity changed before retirement")
+        if self._artifact_registry_configured:
+            # Keep the registry lifecycle ahead of the irreversible unlink.
+            # A registry outage blocks retirement; it never turns into a
+            # filesystem cleanup fallback.
+            current_payload: dict[str, Any] = {
+                "record_id": current.record_id,
+                "artifact_id": current.artifact_id or self._artifact_id(current.record_id),
+                "owner": current.owner,
+                "run_id": current.run_id,
+                "path": str(current.path),
+                "path_identity": list(current.path_identity),
+                "state": current.state.value
+                if isinstance(current.state, ScratchState)
+                else current.state,
+                "retain_on_success": current.retain_on_success,
+                "retire_after_ns": current.retire_after_ns,
+                "metadata": dict(current.metadata),
+                "manifest_digest": current.manifest_digest,
+            }
+            self._update_artifact(
+                current.path,
+                current_payload,
+                state=ScratchState.RETIRED.value,
+            )
         _remove_tree_no_follow(record.path, expected_identity=current.path_identity)
 
 

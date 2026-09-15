@@ -143,6 +143,120 @@ autorización humana, revalidación fresca de identidad/topología/actividad y u
 backend reversible con receipt, postcondición y recuperación. No se habilitan
 acciones de sistema o privilegiadas desde esta capa.
 
+### Preparación federada de `hygiene`
+
+`hygiene` es una capa de composición para preparar una vista bounded de higiene;
+no es un owner universal ni una segunda base de datos. En la cohorte actual su
+arquitectura es **read-only/preview-only**:
+
+```text
+registry de fuentes/owners/categorías
+              │
+  manifests + claims de procedencia e identidad
+       ┌──────┼─────────┬──────────────┐
+    scratch  retención  machine-      external
+    registrado por owner inventory     diagnostic
+       └──────┴─────────┴──────────────┘
+              │
+       preview bounded, zero deletion
+```
+
+#### Presente: preparación y ownership
+
+El registry de higiene es un catálogo versionado de adaptadores y contratos,
+no una autorización. Cada registro identifica fuente, owner lógico, raíz o
+ámbito, categoría, procedencia, capacidad, límites y versión de schema. El
+manifest de una petición liga esa selección con identidad física, snapshot o
+owner-head, digest, cobertura, bytes, retención declarada, estado y razones.
+Ambos son evidencia para comparar y revalidar; no son instrucciones de workers,
+no sustituyen los manifests de los productores y no convierten texto del
+filesystem en configuración.
+
+El registry de artefactos de la fuente usa
+`neocortex.artifact-registry/v1`. Sus claims bounded ligan `artifact_id`,
+owner/producer, propósito, `run_id`, root/path, identidad de raíz y artefacto,
+`kind`, estado, `source_ref`, digest, dependencias, retención, `disposable`,
+metadata y `manifest_digest`. Sólo un manifest íntegro y una revalidación
+no-follow de root, permisos, tipo, montaje e identidad pueden clasificar una
+entrada; `canonical`, `operational`, `rebuildable`, `temporary`, `cache` y
+`external` son roles de lifecycle, no instrucciones de disposición. La
+registración o actualización del registry es una operación del owner aparte:
+la preparación `hygiene` consume sus planes y no escribe esos manifests.
+
+La autoridad permanece disjunta:
+
+- `neocortex.runtime.scratch` conserva la propiedad de los workspaces registrados
+  y sus manifests `neocortex.scratch/v1`; un nombre bajo `/tmp` no crea esa
+  relación;
+- cada owner mantiene su propio cálculo de retención, reachability, referencias,
+  heads y estados de recuperación; `hygiene` consume sólo su proyección
+  read-only y no ejecuta SQL de limpieza;
+- `neocortex.runtime.machine_inventory` conserva la observación de máquina y
+  su envelope `neocortex.machine-inventory/v1`, sin abrir SQLite ni leer
+  payloads;
+- `neocortex.runtime.external_maintenance` conserva el diagnóstico de una raíz
+  y categoría externas explícitas mediante `neocortex.external-maintenance/v1`;
+  la categoría externa no prueba ownership de NeoCortex.
+
+El agregado no eleva el nivel de confianza de una fuente. Si falta un owner o
+manifest, hay schema futuro, carrera, drift o límite agotado, conserva la
+incertidumbre y el registro queda `blocked`, `unknown`, `out_of_profile` o
+parcial según la evidencia. Una respuesta compacta no implica cobertura total.
+
+Las categorías de clasificación de higiene son ortogonales a estados y razones:
+
+| Categoría | Regla arquitectónica |
+|---|---|
+| `canonical` | Fuente de verdad, evidencia o estado no sustituible; el owner y la procedencia deben preservarse. |
+| `operational` | Estado necesario para operar, incluidos locks, ledgers, heads y metadatos vivos; no se retira por parecer derivado. |
+| `rebuildable` | Derivado potencialmente reconstruible desde inputs y receta versionada; la reconstruibilidad no prueba recuperabilidad ni autoriza retiro. |
+| `temporary` | Workspace bounded, privado, registrado y terminal según su manifest; no es sinónimo de `/tmp`. |
+| `cache` | Caché de aplicación, modelo o índice con política propia de invalidez, costo y retención; no tiene cleaner genérico. |
+
+Esta clasificación no limita lo conservable a código y documentación. Corpus,
+fotografías, correo, configuración, modelos, backups, sesiones, releases y
+otros datos personales pueden ser canónicos u operativos. La ausencia de una
+categoría segura, una procedencia externa o una referencia incompleta conduce a
+preservación/abstención, no a una selección por nombre, tamaño o antigüedad.
+
+La preparación mantiene una sola frontera de observación. No escribe owners ni
+heads, no crea `file_actions`, no mueve, renombra o retira archivos, no ejecuta
+`DELETE`, `VACUUM`, compactación o cleaners y no promete bytes recuperables.
+Este **zero deletion** es una propiedad del plano actual, no una conclusión de
+que los candidatos sean desechables.
+
+Los presupuestos son explícitos y acumulados por petición: raíces, entradas,
+profundidad, bytes, tamaño de manifests/registros, tiempo y cancelación cuando
+la fuente los soporte. El agregador no relaja una valla para completar una raíz;
+publica cobertura y remanente. Conserva las fences existentes de no-follow,
+identidad física, montaje, permisos y no apertura de SQLite cercada (tampoco en
+`mode=ro`), además de la prohibición de red, KIO, sudo y cleaners. Un manifest
+no es un snapshot atómico del filesystem.
+
+#### Target: efectos sólo mediante gates explícitos
+
+La arquitectura reserva una secuencia, actualmente fuera de `hygiene`, para
+cualquier capacidad que llegue a actuar:
+
+```text
+preview → review → authorize → apply → verify → recovery
+```
+
+`preview` publica el registry/manifest y su cobertura; `review` registra la
+decisión humana sin autorizar; `authorize` emite un grant acotado a owner,
+selección, política, actor, expiración y presupuesto; `apply` requeriría un
+backend reversible y locks; `verify` demostraría la postcondición; y
+`recovery` conservaría receipts y resolvería cualquier timeout, drift o efecto
+ambiguo. Cada transición debe revalidar junto al efecto raíz, identidad física,
+montaje, permisos, enlaces, actividad, manifest/digest, owner-head,
+categoría/política y límites. El preview nunca se convierte por sí mismo en
+autorización y no hay retry automático ante una frontera incierta.
+
+Así, `hygiene` federará evidencia sin absorber los efectos ya existentes de
+`maintenance`, `state reset`, curación, `machine-inventory` o
+`external-maintenance`. Esas superficies conservan sus owners y gates; agregar
+una fuente al registry no amplía su ámbito ni habilita su `--apply`.
+
 ### Inventario y deduplicación
 
 La identidad física se valida con `FileIdentity` y el codec explícito del owner;
@@ -619,6 +733,11 @@ corpus, releases o modelos.
   `neocortex.machine-inventory/v1` con raíces, categorías, owners/procedencia,
   estados, límites y métricas bounded. Es siempre `read_only`; no abre SQLite,
   no lee payload, no escribe estado/corpus y no ofrece acciones.
+- **Preparación de higiene:** `hygiene` compone registry y manifest versionados
+  de esas fuentes, con owners, categorías canónicas/operativas/rebuildables/
+  temporales/cache, procedencia, drift y cobertura. En esta cohorte es
+  read-only/preview-only, con zero deletion y sin `file_actions`; no es un nuevo
+  owner ni expone `apply`.
 - **API/SDK Python:** `state_reset_payload` ofrece el mismo preview/apply
   explícito y envelope bounded; exige raíz, scope, digest y confirmación cuando
   aplica, sin seleccionar el estado productivo por omisión.

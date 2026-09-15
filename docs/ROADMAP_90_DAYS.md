@@ -1,6 +1,6 @@
 # Roadmap de NeoCortex
 
-> Actualizado el 9 de septiembre de 2026. Un estado aquí no sustituye código,
+> Actualizado el 15 de septiembre de 2026. Un estado aquí no sustituye código,
 > pruebas ni una release instalada desde el SHA final; el `HEAD` documental y el
 > `source_sha` instalado se registran por separado.
 
@@ -39,6 +39,7 @@ incierta, pero no cuenta como funcionalidad entregada para los casos soportados.
 | Backup/restore/purge/reset | Implementados mediante `Neocortex databases` y `Neocortex state reset` |
 | MCP | **IMPLEMENTED:** plan/scan/verify/review/decide; authorize se omite hasta resolver un principal autenticado |
 | Lifecycle durable de `--all` | **IMPLEMENTED INSTALADO:** `current` es `0.13.0-c6d3985f7a45-cp314-linux-x86_64`; C0–C7 y la tranche post-0.13 están aceptados sobre sus `source_sha` |
+| Preparación federada de `hygiene` | **CURRENT / PREPARACIÓN:** registry y manifests de owners/procedencia, categorías y cobertura en modo read-only/preview-only; zero deletion. La cadena de efectos es TARGET y permanece bloqueada |
 
 ## 0.10.0 — Evidencia y plan de curación
 
@@ -312,6 +313,77 @@ reproducible, verificación de manifest/árbol/launcher y smoke/replay instalado
 `RC1=0`/`RC2=0` sobre 23 fixtures temporales y nueve rutas. Semantic 17, R1–R4,
 KIO real, corpus personal y poda permanecen fuera de esta tranche.
 
+## Preparación federada de `hygiene`
+
+**CURRENT / PREPARACIÓN:** `hygiene` establece una superficie local bounded para
+reunir, de extremo a extremo, el registry y los manifests de fuentes de
+higiene. El resultado de esta etapa es sólo read-only/preview-only: conserva
+owners, procedencia, identidad, cobertura, límites, retención declarada y
+razones; no publica heads, no crea `file_actions`, no modifica corpus/estado o
+sistemas externos y exige **zero deletion**. Su presencia documental o en la
+fuente no acredita una instalación ni una limpieza ejecutada.
+
+El registry versionado identifica por entrada el adaptador, owner lógico, root o
+ámbito, schema/manifest, categoría y capacidad. El manifest de la petición liga
+esas fuentes con snapshot/owner-head, digest, identidad física, montaje,
+permisos, actividad, bytes observados, cobertura y presupuesto. La federación
+consume sólo las proyecciones existentes y sus límites:
+
+- scratch registrado y sus manifests `neocortex.scratch/v1` bajo
+  `state/scratch`;
+- estado/planes de retención read-only de cada owner, sin `DELETE`, `VACUUM`,
+  compactación ni poda;
+- `neocortex.machine-inventory/v1` como observación metadata-only del host;
+- `neocortex.external-maintenance/v1` como diagnóstico de un root y categoría
+  externos explícitos, sin ownership implícito.
+
+Para artefactos locales, el registry de fuente es
+`neocortex.artifact-registry/v1` y cada manifest liga owner/producer,
+`artifact_id`, propósito, root/path, identidades físicas, `kind`, `state`,
+`source_ref`, digest, dependencias, retención, `disposable`, metadata acotada y
+`manifest_digest`. La preparación sólo consume sus operaciones read-only
+`plan`/`verify`; registrar o actualizar un artefacto sigue siendo responsabilidad
+separada del owner.
+
+Las categorías son `canonical`, `operational`, `rebuildable`, `temporary` y
+`cache`. Son clasificación, no disposición: lo canónico y operativo se
+preserva; lo rebuildable sólo es potencialmente reconstruible con inputs y
+receta demostrables; lo temporal exige registro/lifecycle; y una cache requiere
+política del owner, costo de reconstrucción y procedencia. Corpus, fotos, correo,
+configuración, modelos, backups, sesiones, releases y otros datos personales no
+se reducen a la dicotomía código/documentación: cualquiera puede ser fuente
+canónica u operativa, y lo externo, ambiguo o sin owner se conserva o se bloquea.
+
+Los límites de roots, entradas, profundidad, bytes, manifests/registros,
+tiempo y cancelación son explícitos y se propagan al manifest. Cotas agotadas,
+raíces ausentes, cobertura parcial, owners no disponibles, schemas futuros o
+drift permanecen visibles y nunca se reinterpretan como cero bytes o permiso de
+retiro. El filesystem no se trata como snapshot atómico; se conservan
+no-follow, identidad física, fences de montaje/permisos y la prohibición de
+abrir SQLite cercada, usar red/KIO/sudo o llamar cleaners.
+
+**TARGET — efectos separados:** cualquier evolución que actúe deberá cruzar, en
+orden y con evidencia independiente, `preview → review → authorize → apply →
+verify → recovery`. Review no autoriza; authorize sólo emite un grant acotado;
+apply requerirá backend reversible, locks y revalidación fresca; verify tendrá
+que demostrar la postcondición; recovery conservará receipt y resolverá toda
+ambigüedad, drift, timeout o efecto parcial. La preparación actual no expone
+`apply` y no convierte su manifest en autorización.
+
+### Criterios para el siguiente gate
+
+- registry y manifest reproducibles y acotados, con owner/procedencia por entrada
+  y categorías sin colapsar estados de cobertura;
+- federación con scratch, retención, machine-inventory y diagnóstico externo sin
+  abrir owners cercados ni duplicar sus writers;
+- replay o reconsulta que detecte cambios de identidad, manifest, owner-head,
+  política, actividad, montaje, permisos o límites y se abstenga fail-closed;
+- fixture con categorías canónicas, operativas, rebuildables, temporales y
+  cache, incluyendo entradas sin owner, donde el conteo de eliminaciones y
+  `file_actions` permanezca en cero;
+- documentación y ayuda que mantengan `hygiene` separado de los `--apply`
+  existentes y no presenten una lista de candidatos como limpieza universal.
+
 ## Orden inmediato
 
 El plan funcional autorizado prioriza identidad/ámbito y evidencia verificable,
@@ -329,6 +401,9 @@ no habilita limpieza, KIO real, reindexación global ni modelos nuevos.
 3. Tratar Semantic 17, R1–R4 y cualquier poda como decisiones separadas.
 4. Cualquier cambio posterior de código/configuración/build exige resolver de
    nuevo el SHA final y ejecutar el procedimiento de release desde el artefacto.
+5. Mantener `hygiene` en preview-only/zero deletion hasta que cada gate
+   `preview → review → authorize → apply → verify → recovery` tenga contrato,
+   revalidación, receipt y recuperación independientes.
 
 ## Límites
 

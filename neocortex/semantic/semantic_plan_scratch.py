@@ -68,6 +68,21 @@ def _fail_registered_workspace(workspace: object, error: BaseException) -> None:
     fail(_scratch_failure_reason(error))
 
 
+def _semantic_artifact_registry_root(parent: Path) -> Path | None:
+    """Derive the registry only for a canonical Semantic scratch scope."""
+
+    scratch = Path(parent)
+    if (
+        not scratch.is_absolute()
+        or scratch.parent.name != "scratch"
+        or scratch.name not in {"semantic-plan", "semantic-planner"}
+    ):
+        # Standalone planner callers can supply any private fixture directory;
+        # without a state-owned scope there is no registry root to infer.
+        return None
+    return scratch.parent.parent / "artifacts"
+
+
 @contextmanager
 def _registered_scratch_workspace(
     parent: Path,
@@ -98,10 +113,15 @@ def _registered_scratch_workspace(
             "registered Semantic scratch service has no ScratchManager"
         )
     try:
+        artifact_registry_root = _semantic_artifact_registry_root(parent)
+        manager_kwargs: dict[str, object] = {}
+        if artifact_registry_root is not None:
+            manager_kwargs["artifact_registry_root"] = artifact_registry_root
         manager = manager_type(
             parent,
             owner=REGISTERED_SCRATCH_OWNER,
             create_root=True,
+            **manager_kwargs,
         )
     except BaseException as error:
         # Before registered scratch was introduced, callers commonly supplied

@@ -4,6 +4,27 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-15 — Preparación federada de `hygiene` (documentación)
+
+- Se documenta `hygiene` como una superficie end-to-end de preparación local,
+  bounded y read-only/preview-only, con registry y manifests versionados,
+  procedencia, owners, identidad, cobertura, límites y drift explícitos.
+- La federación conserva separados scratch registrado, retención por owner,
+  `machine-inventory` y diagnóstico externo; no crea un owner universal ni
+  reutiliza una vista externa como autoridad de NeoCortex.
+- Se fijan las categorías `canonical`, `operational`, `rebuildable`,
+  `temporary` y `cache` como clasificación, no como permiso de retiro. Corpus,
+  fotografías, correo, configuración, modelos, backups, sesiones, releases y
+  otros datos personales no se reducen a “código/documentación conservables”.
+- La preparación exige límites bounded y revalidación de raíz, identidad,
+  montaje, permisos, actividad, manifest/digest, owner-head, política y bytes.
+  Su invariante es **zero deletion**: cero `file_actions`, efectos físicos,
+  `DELETE`, `VACUUM` o cleaners, sin promesa de espacio recuperable.
+- Se deja como TARGET la secuencia independiente
+  `preview → review → authorize → apply → verify → recovery`; review no
+  autoriza, authorize sólo emite un grant, y drift/ambigüedad exige recovery.
+  Esta entrada no declara instalación, release, limpieza ni efecto físico.
+
 ## 2026-09-15 — Fair-share y contabilidad por nivel en machine-inventory
 
 - El presupuesto global de entradas se reparte por raíz con

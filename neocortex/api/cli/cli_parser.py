@@ -158,10 +158,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=("machine-inventory", "maintenance", "external-maintenance"),
+        choices=("machine-inventory", "maintenance", "external-maintenance", "hygiene"),
         default=None,
         metavar="COMMAND",
-        help="direct machine-inventory, maintenance or external-diagnostic command",
+        help="direct machine-inventory, maintenance, external-diagnostic or hygiene command",
     )
     register_platform_arguments(parser)
     register_config_doctor_arguments(parser)
@@ -222,7 +222,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         dest="json_output",
         action="store_true",
-        help="emit a single JSON summary for --all, --dedupe or machine-inventory",
+        help="emit a single JSON summary for --all, --dedupe, machine-inventory or hygiene",
     )
     machine_inventory = parser.add_argument_group("Federated machine inventory (read-only)")
     machine_inventory.add_argument(
@@ -1215,6 +1215,50 @@ def build_parser() -> argparse.ArgumentParser:
         default=1 << 40,
         metavar="BYTES",
         help="bound external diagnostic apparent/allocated bytes",
+    )
+
+    hygiene = parser.add_argument_group("Read-only hygiene planning")
+    hygiene.add_argument(
+        "--hygiene-root",
+        action="append",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "absolute root to inspect for hygiene candidates; repeat for a "
+            "bounded read-only plan"
+        ),
+    )
+    hygiene.add_argument(
+        "--hygiene-max-entries",
+        type=int,
+        default=10_000,
+        metavar="N",
+        help="bound hygiene plan entries (default: 10000)",
+    )
+    hygiene.add_argument(
+        "--hygiene-max-depth",
+        type=int,
+        default=2,
+        metavar="N",
+        help="bound hygiene traversal depth (default: 2)",
+    )
+    hygiene.add_argument(
+        "--hygiene-max-bytes",
+        type=int,
+        default=1 << 40,
+        metavar="BYTES",
+        help="bound hygiene apparent/allocated bytes (default: 1 TiB)",
+    )
+    hygiene.add_argument(
+        "--hygiene-preview",
+        action="store_true",
+        help="include the bounded hygiene preview requested by the caller",
+    )
+    hygiene.add_argument(
+        "--hygiene-json",
+        action="store_true",
+        help="emit the hygiene plan as one bounded JSON object",
     )
 
     register_audio_arguments(parser, megabyte_type=decimal_megabytes)

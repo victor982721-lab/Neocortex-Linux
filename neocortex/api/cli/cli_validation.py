@@ -50,6 +50,7 @@ _MAINTENANCE_SCOPES = ("owned-temp", "audit-work", "historical-temp")
 _HISTORICAL_MAINTENANCE_SCOPE = "historical-temp"
 _EXTERNAL_COMMAND = "external-maintenance"
 _MACHINE_INVENTORY_COMMAND = "machine-inventory"
+_HYGIENE_COMMAND = "hygiene"
 _MACHINE_INVENTORY_BOUNDS = {
     "machine_max_entries": (1, 1_000_000),
     "machine_max_depth": (0, 64),
@@ -62,6 +63,24 @@ _MACHINE_INVENTORY_ALLOWED_OPTIONS = frozenset(
         "machine_max_depth",
         "machine_max_bytes",
         "machine_json",
+        "json_output",
+    }
+)
+_HYGIENE_BOUNDS = {
+    "hygiene_max_entries": (1, 1_000_000),
+    "hygiene_max_depth": (0, 64),
+    "hygiene_max_bytes": (0, 1 << 50),
+}
+_HYGIENE_ALLOWED_OPTIONS = frozenset(
+    {
+        "hygiene_root",
+        "hygiene_max_entries",
+        "hygiene_max_depth",
+        "hygiene_max_bytes",
+        "hygiene_preview",
+        "hygiene_json",
+        # Keep the flat CLI's generic JSON spelling useful for this read-only
+        # leaf, while its dedicated switch remains the documented spelling.
         "json_output",
     }
 )
@@ -279,6 +298,75 @@ def _validate_machine_inventory_operation(args: argparse.Namespace) -> bool:
     if unsupported:
         options = ", ".join("--" + name.replace("_", "-") for name in unsupported)
         raise SystemExit(f"machine-inventory cannot be combined with unsupported options: {options}")
+    return True
+
+
+def _validate_hygiene_operation(args: argparse.Namespace) -> bool:
+    """Validate the flat, strictly read-only hygiene planning command."""
+
+    explicit = set(getattr(args, "_explicit_options", ()))
+    hygiene_option_names = {
+        "hygiene_root",
+        "hygiene_max_entries",
+        "hygiene_max_depth",
+        "hygiene_max_bytes",
+        "hygiene_preview",
+        "hygiene_json",
+    }
+    requested = getattr(args, "command", None) == _HYGIENE_COMMAND or bool(
+        explicit.intersection(hygiene_option_names)
+    )
+    if not requested:
+        return False
+
+    if getattr(args, "command", None) != _HYGIENE_COMMAND:
+        raise SystemExit("hygiene options require the hygiene command")
+
+    roots = getattr(args, "hygiene_root", None)
+    if roots is None:
+        roots = ()
+    if not isinstance(roots, (list, tuple)):
+        raise SystemExit("--hygiene-root must be repeatable PATH values")
+    for root in roots:
+        if not isinstance(root, (Path, str)) or not Path(root).is_absolute():
+            raise SystemExit("--hygiene-root must be an absolute path")
+
+    for name, (minimum, maximum) in _HYGIENE_BOUNDS.items():
+        value = getattr(args, name, None)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < minimum
+            or value > maximum
+        ):
+            raise SystemExit(f"--{name.replace('_', '-')} is outside the hygiene bound")
+
+    # Hygiene is a plan/preview/verification surface only.  Do not let an
+    # action flag reach the owner, even if a future parser adds another
+    # physical-action spelling: the explicit-option allowlist below remains
+    # the final closed gate for this command.
+    if getattr(args, "apply", False):
+        raise SystemExit("hygiene is read-only and cannot be combined with --apply")
+    if getattr(args, "all", False):
+        raise SystemExit("hygiene cannot be combined with --all")
+    if getattr(args, "dedupe", False) or "dedupe_json" in explicit:
+        raise SystemExit("hygiene cannot be combined with --dedupe")
+    if "root" in explicit:
+        raise SystemExit("hygiene cannot be combined with --root; use --hygiene-root")
+    physical_options = sorted(
+        explicit.intersection({"organization_apply", "catalog_documents"})
+    )
+    if physical_options:
+        options = ", ".join("--" + name.replace("_", "-") for name in physical_options)
+        raise SystemExit(
+            "hygiene is read-only and cannot be combined with physical action options: "
+            + options
+        )
+
+    unsupported = sorted(explicit - _HYGIENE_ALLOWED_OPTIONS)
+    if unsupported:
+        options = ", ".join("--" + name.replace("_", "-") for name in unsupported)
+        raise SystemExit(f"hygiene cannot be combined with unsupported options: {options}")
     return True
 
 
@@ -1163,6 +1251,8 @@ def _validate_route_only(args: argparse.Namespace) -> None:
 
 
 def validate_arguments(args: argparse.Namespace) -> None:
+    if _validate_hygiene_operation(args):
+        return
     if _validate_machine_inventory_operation(args):
         return
     if _validate_external_operation(args):

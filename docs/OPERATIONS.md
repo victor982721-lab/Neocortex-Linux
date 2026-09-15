@@ -155,6 +155,106 @@ recibir autorización humana, revalidar identidad/topología/actividad junto al
 efecto y usar una vía reversible con receipt, postcondición y recovery. No
 aplicar manualmente por nombre, antigüedad o tamaño observado.
 
+## Preparación federada de `hygiene`
+
+Esta superficie prepara una vista end-to-end de higiene sin cruzar una frontera
+de efecto. En la cohorte actual es **read-only/preview-only**: la operación
+construye una respuesta bounded con registry y manifest, pero no escribe owners,
+no publica heads, no crea `file_actions`, no cambia el corpus o el estado y
+declara **zero deletion**. La ayuda instalada (`Neocortex hygiene --help`) es la
+fuente exacta de los selectores y límites; no agregues `--apply` ni un root por
+inferencia.
+
+Una consulta mínima y un preview con root explícito son:
+
+```bash
+Neocortex hygiene --hygiene-json
+Neocortex hygiene --hygiene-preview --hygiene-json
+Neocortex hygiene --hygiene-root "/ruta/explicita" \
+  --hygiene-max-entries 20000 --hygiene-max-depth 8 \
+  --hygiene-max-bytes 1073741824 --hygiene-preview --hygiene-json
+```
+
+Los defaults del adapter son 10,000 entradas, profundidad 2 y 1 TiB de bytes.
+Los límites del owner y los límites de serialización continúan siendo
+independientes; una cota agotada conserva `partial`/`blocked` y su razón. Un
+preview sin root explícito mantiene componentes `deferred` cuando la fuente no
+puede seleccionarse de forma segura. El envelope es
+`neocortex.hygiene/v1`; su `mode` es `plan` o `preview` y siempre declara
+`read_only=true`, `effects_enabled=false`, `preview_only=true`,
+`deletion_performed=0`, `actions_ready=false`,
+`physical_effect_applied=false`, `mutation_authorized=false` y `applied=0`.
+
+### Procedimiento de preview
+
+1. Antes de consultar, confirma la release/SHA y las rutas efectivas. Si se va a
+   leer retención o un owner con writer activo, espera su estado terminal; no
+   abras SQLite vigilada ni la sustituyas por `mode=ro`.
+2. Selecciona únicamente raíces y fuentes permitidas por `hygiene`. Mantén
+   separados scratch registrado, retención, inventario de máquina y diagnóstico
+   externo. No conviertas `/tmp`, HOME, la Papelera, caches o un backup externo
+   en una raíz administrada sólo por aparecer en la federación.
+3. Ejecuta el preview con límites explícitos o revisa los defaults efectivos que
+   devuelve la ayuda. Conserva en la evidencia de la consulta el registry, el
+   manifest, el snapshot/digest, la procedencia por entrada, el owner, el estado,
+   la cobertura, los bytes y los motivos de truncamiento/bloqueo.
+4. Revisa cada entrada por owner y categoría. `canonical` y `operational` se
+   preservan; `rebuildable` sólo expresa una posible receta de reconstrucción;
+   `temporary` exige scratch registrado y lifecycle terminal; `cache` sigue
+   sujeto al owner y al costo/receta de reconstrucción. Ninguna categoría es un
+   permiso de retiro.
+5. Separa `observed`, `preserved`, `blocked`, `unknown`, `out_of_profile` y
+   `partial`. Una raíz ausente, un manifest faltante, un owner no disponible o
+   una cota agotada requiere explicación; no se transforma en cero bytes,
+   completitud ni espacio recuperable.
+6. Comprueba el invariante de salida: zero deletion, cero `file_actions`, cero
+   movimientos/renombres/retiradas y ningún `DELETE`, `VACUUM` o cleaner. Si la
+   respuesta no puede demostrar esa frontera, el resultado se conserva como no
+   verificable y no se avanza.
+
+La federación no sustituye a los owners. Scratch se consulta desde sus manifests
+`neocortex.scratch/v1` bajo `state/scratch`; la retención se toma de sus planes
+read-only sin compactar ni podar; `machine-inventory` aporta
+`neocortex.machine-inventory/v1` metadata-only; y `external-maintenance` aporta
+`neocortex.external-maintenance/v1` sólo cuando el root y la categoría externa
+fueron seleccionados explícitamente. Un owner ausente, una categoría sin
+procedencia o una entrada con drift se conserva o se bloquea; no se rellena por
+nombre, antigüedad, tamaño o recomendación.
+
+Para artefactos registrados, el manifest de fuente usa
+`neocortex.artifact-registry/v1` y su claim incluye owner/producer, propósito,
+root/path, identidad física, `kind`, `state`, `source_ref`, digest,
+dependencias, retención, `disposable`, metadata acotada y `manifest_digest`.
+`kind` acepta `canonical`, `operational`, `rebuildable`, `temporary`, `cache` o
+`external`; un `state=completed` o `disposable=true` sólo hace visible una
+propuesta del owner y no autoriza retirarla. El registry de fuente puede tener
+operaciones de registro propias, pero el preview de `hygiene` sólo consume
+`plan`/`verify` y nunca registra, actualiza o retira una entrada.
+
+El manifest es una captura de claims y no congela el filesystem. Si una etapa
+posterior fuera autorizada, debe revalidar junto al efecto raíz, identidad física,
+montaje, permisos, symlink/hardlink, actividad, manifest/digest, owner-head,
+política/categoría, límites y bytes. Drift, crecimiento fuera de cota, writer
+activo, cambio de schema o resultado incierto producen abstención y dejan la
+evidencia para recovery. El preview no es reutilizable como autorización.
+
+### Gates posteriores (no disponibles en esta etapa)
+
+La preparación deja definida, pero no ejecuta, la cadena completa:
+
+| Gate | Qué se valida | Efecto permitido |
+|---|---|---|
+| `preview` | registry/manifest, owners, procedencia, cobertura e identidad bounded | Lectura únicamente; zero deletion. |
+| `review` | decisión humana sobre entradas, evidencia y razones | Ninguno; no autoriza. |
+| `authorize` | selección, política, actor, expiración y presupuesto en un grant | Sólo autoridad durable separada; cero efecto físico. |
+| `apply` | backend explícito, locks, revalidación fresca y receipt | Futuro; no lo expone `hygiene`. |
+| `verify` | postcondición, identidad y receipt | Futuro; no se infiere del retorno del backend. |
+| `recovery` | cualquier timeout, drift, ambigüedad o efecto parcial | Preservar evidencia y resolver; no retry ciego. |
+
+No mezcles este flujo con los `--apply` ya existentes de `maintenance`,
+`state reset`, curación o `--all`. Esos comandos mantienen su ownership y sus
+gates independientes; la federación de `hygiene` sólo prepara información.
+
 ## Piloto y regresión acotada
 
 Para una nueva regresión acotada, usa una raíz que contenga sólo 20–50 elementos

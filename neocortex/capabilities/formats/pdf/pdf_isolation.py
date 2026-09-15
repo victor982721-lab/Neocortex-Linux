@@ -204,6 +204,21 @@ def _fail_registered_recovery_workspace(
     fail(_scratch_failure_reason(error))
 
 
+def _pdf_artifact_registry_root(scratch_root: Path) -> Path | None:
+    """Derive the registry from the canonical state-owned PDF root only."""
+
+    scratch = Path(scratch_root)
+    if (
+        not scratch.is_absolute()
+        or scratch.name != PDF_RECOVERY_SCRATCH_SCOPE
+        or scratch.parent.name != "scratch"
+    ):
+        # Direct callers may still provide an unrelated private root.  There
+        # is no safe state owner to infer for that compatibility path.
+        return None
+    return scratch.parent.parent / "artifacts"
+
+
 @contextmanager
 def _registered_pdf_recovery_workspace(
     scratch_root: Path | None,
@@ -237,10 +252,16 @@ def _registered_pdf_recovery_workspace(
     manager_type = getattr(_runtime_scratch, "ScratchManager", None)
     if not callable(manager_type):
         raise RuntimeError("registered PDF recovery scratch service has no ScratchManager")
+    scratch_path = Path(scratch_root)
+    artifact_registry_root = _pdf_artifact_registry_root(scratch_path)
+    manager_kwargs: dict[str, object] = {}
+    if artifact_registry_root is not None:
+        manager_kwargs["artifact_registry_root"] = artifact_registry_root
     manager = manager_type(
-        Path(scratch_root),
+        scratch_path,
         owner=PDF_RECOVERY_SCRATCH_OWNER,
         create_root=True,
+        **manager_kwargs,
     )
     create = getattr(manager, "create", None)
     if not callable(create):

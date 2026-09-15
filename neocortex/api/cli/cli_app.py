@@ -244,6 +244,13 @@ def _dispatch_dedupe_service(args: argparse.Namespace) -> int:
 def dispatch_direct(args: argparse.Namespace) -> int | None:
     """Run a selected direct operation, or return ``None`` for a full run."""
 
+    # Hygiene is a plan/preview/verification leaf.  Its owner import stays
+    # behind parsing and validation and can never fall through to Framework or
+    # a physical file-action path.
+    if getattr(args, "command", None) == "hygiene":
+        from .cli_hygiene import run_hygiene
+
+        return run_hygiene(args)
     # Machine inventory is an explicit read-only control-plane leaf.  Keep its
     # owner import behind parsing and validation; it must never fall through
     # to the framework inventory or route graph.
@@ -629,7 +636,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         # it cannot create state or import route engines.
         print(
             "Uso: Neocortex --all, --dedupe, --route ROUTES, machine-inventory, "
-            "maintenance o una operación directa"
+            "maintenance, hygiene o una operación directa"
         )
         print("Use `Neocortex --help` para ver las opciones disponibles.")
         return 0
@@ -673,7 +680,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         # operation.  Never turn them into an implicit inventory write.
         print(
             "Uso: Neocortex --all, --dedupe, --route ROUTES, machine-inventory, "
-            "maintenance o una operación directa"
+            "maintenance, hygiene o una operación directa"
         )
         print("Use `Neocortex --help` para ver las opciones disponibles.")
         return 0

@@ -1931,10 +1931,34 @@ class FrameworkOrchestrator:
         try:
             from neocortex.runtime.scratch import ScratchManager
 
+            # Every integrated scratch owner shares the state-local artifact
+            # registry.  Construction remains lazy inside ScratchManager, so
+            # this read-only maintenance plan does not create the registry
+            # root.  Keep strict legacy test/embedding constructors working by
+            # inspecting their concrete signature before passing the optional
+            # integration seam.
+            artifact_registry_root = (
+                Path(os.path.abspath(os.fspath(self.config.state_directory)))
+                / "artifacts"
+            )
+            manager_kwargs: dict[str, object] = {}
+            try:
+                manager_signature = inspect.signature(ScratchManager)
+            except (TypeError, ValueError):
+                manager_signature = None
+            if manager_signature is None or (
+                "artifact_registry_root" in manager_signature.parameters
+                or any(
+                    parameter.kind is inspect.Parameter.VAR_KEYWORD
+                    for parameter in manager_signature.parameters.values()
+                )
+            ):
+                manager_kwargs["artifact_registry_root"] = artifact_registry_root
             manager = ScratchManager(
                 scratch_root,
                 owner=self._SCRATCH_OWNER,
                 create_root=False,
+                **manager_kwargs,
             )
             planned = manager.plan()
             result = planned

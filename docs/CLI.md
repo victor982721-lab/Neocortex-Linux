@@ -162,6 +162,156 @@ para acciones queda fuera de esta entrega y deberá aportar owner probado,
 política, selección/preview, autorización explícita, revalidación fresca y un
 backend reversible con receipt, verificación de postcondición y recovery.
 
+## Preparación federada de `hygiene` (read-only/preview-only)
+
+`hygiene` es una superficie nueva para preparar una vista end-to-end del estado
+local. La forma exacta de sus selectores y límites se consulta en
+`Neocortex hygiene --help`; en esta etapa la operación es sólo
+read-only/preview-only. El comando no admite ni interpreta `--apply`, no
+selecciona el corpus por inferencia y no convierte una recomendación en un
+permiso.
+
+La forma plana admite roots absolutos repetibles y límites propios, con defaults
+de 10,000 entradas, profundidad 2 y 1 TiB de bytes; `--hygiene-preview` cambia
+la proyección de `plan` a `preview` y `--hygiene-json` conserva el envelope
+estructurado:
+
+```bash
+Neocortex hygiene --hygiene-json
+Neocortex hygiene --hygiene-preview --hygiene-json
+Neocortex hygiene --hygiene-root "/ruta/explicita" \
+  --hygiene-max-entries 20000 --hygiene-max-depth 8 \
+  --hygiene-max-bytes 1073741824 --hygiene-preview --hygiene-json
+```
+
+Sin `--hygiene-root`, el owner no adivina `/`, `/tmp`, HOME ni el corpus: deja
+las fuentes que requieren raíz explícita como `deferred`. Los argumentos
+inválidos, roots no absolutos y cotas fuera de rango se rechazan antes de
+importar el owner. `--hygiene-preview` no es una autorización ni añade otro
+presupuesto.
+
+El preview compone dos piezas relacionadas:
+
+- **registry:** un registro versionado de fuentes, owners, categorías,
+  procedencia, capacidades y límites; cada entrada conserva quién la produce y
+  cuál es su autoridad, sin sustituir el owner;
+- **manifest:** una fotografía bounded de la petición y de sus observaciones,
+  con raíz y su identidad física, snapshot/heads, digests de manifests y
+  registros, estado, bytes, retención declarada, cobertura y razones de
+  incertidumbre. Es evidencia para comparar y revalidar, no instrucciones para
+  un worker ni un grant.
+
+El envelope cerrado es `neocortex.hygiene/v1` y conserva, además de la cobertura
+por componente, `read_only=true`, `effects_enabled=false`, `preview_only=true`,
+`deletion_performed=0`, `actions_ready=false`,
+`physical_effect_applied=false`, `mutation_authorized=false`, `applied=0`,
+`mode`, `status`, `verification`, `limits`, `counts`, `bytes`, `reasons` y un
+`fingerprint` bounded. `coverage` no es un permiso: `eligible` sólo refleja la
+propuesta del owner, mientras `protected`, `blocked`, `unknown`, `unmanaged` y
+la cobertura incompleta deben permanecer visibles. El texto humano resume la
+misma frontera y siempre muestra `deletion_performed=0`,
+`effects_enabled=false`, `actions_ready=false` y `next_gate=human_review`.
+
+Cuando la fuente es un registry de artefactos, sus manifests usan el contrato
+`neocortex.artifact-registry/v1` y deben conservar, como mínimo, `artifact_id`,
+`owner`, `producer`, `run_id`, `purpose`, `path`/`root`, identidades físicas,
+`kind`, `state`, `source_ref`, digest, dependencias, retención, `disposable`,
+metadata acotada y `manifest_digest`. La lista cerrada de `kind` incluye
+`canonical`, `operational`, `rebuildable`, `temporary`, `cache` y `external`;
+los estados del artefacto (`active`, `completed`, `failed`,
+`recovery_required`, `retired`) no son categorías. Un manifest inválido,
+inconsistente, ajeno o con drift se conserva como desconocido/bloqueado.
+
+La procedencia se conserva por entrada: raíz seleccionada, owner lógico,
+fuente/adaptador, manifest o schema observado, identidad física, instante y
+límite efectivo. Si un owner no responde, el schema es futuro, falta un
+manifest, hay una carrera o la cobertura se trunca, el resultado conserva la
+razón (`unknown`, `blocked`, `out_of_profile` o cobertura parcial) y no inventa
+una clasificación. Los nombres, tamaños, antigüedad y contenido de un registro
+no son autoridad por sí solos.
+
+### Federación y categorías
+
+La preparación federa únicamente proyecciones bounded de owners ya definidos:
+
+| Fuente | Owner/procedencia | Límite de `hygiene` |
+|---|---|---|
+| Scratch registrado | `neocortex.runtime.scratch`; manifests `neocortex.scratch/v1` bajo `state/scratch` | Lee workspaces registrados y sus estados; no convierte `/tmp` ni temporales sin manifest en scratch propio. `failed-retained` y `recovery_required` se preservan. |
+| Retención | owner de cada catálogo, inventario, Framework, Semantic o Code mediante estado/plan read-only | Consume reachability, referencias y retención declarada; no ejecuta `DELETE`, `VACUUM`, compactación ni poda. Un `eligible` es una propuesta del owner, no espacio recuperado. |
+| Inventario de máquina | `neocortex.machine-inventory/v1` | Reutiliza metadata bounded, identidad, categoría y bytes observados; no abre SQLite, no lee payload y no añade acciones. |
+| Diagnóstico externo | `neocortex.external-maintenance/v1` con raíz y categoría explícitas | Observa el entorno externo sin inferir ownership de NeoCortex; no descubre HOME, no usa red/KIO/sudo ni llama cleaners. |
+
+La cobertura del envelope identifica qué componente pudo resolverse; que una
+fuente aparezca en el registry no demuestra que haya sido visitada. En la
+preparación actual, `artifact_registry`, `owned-temp`, `audit-work` y
+`retention` son componentes de planificación; `machine-inventory` y
+`external-maintenance` conservan sus contratos de diagnóstico explícito y sólo
+pueden federarse mediante una proyección bounded disponible. Un componente
+omitido queda `deferred`/`unknown`, no se descubre por HOME ni se convierte en
+un root administrado.
+
+Las categorías canónicas de esta preparación son deliberadamente distintas de
+los estados de cobertura:
+
+| Categoría | Significado y tratamiento por defecto |
+|---|---|
+| `canonical` | Fuente de verdad, evidencia o estado no sustituible; preservar y conservar su owner/procedencia. |
+| `operational` | Estado vivo necesario para operar (incluidos locks, ledgers o heads); preservar mientras el owner no declare otra política verificable. |
+| `rebuildable` | Derivado que podría reconstruirse desde entradas y receta demostrables; no implica que sea desechable ni que el espacio sea recuperable. |
+| `temporary` | Workspace acotado, privado, registrado y con lifecycle/manifest; sólo el owner puede proponer su tratamiento. No significa “todo `/tmp`”. |
+| `cache` | Caché de aplicación, modelo o índice; su invalidación, coste de reconstrucción, licencia y retención son decisiones del owner. |
+
+Una entrada puede ser observada y a la vez quedar `preserved`, `blocked` o
+`unknown`. Corpus, fotos, correo, configuración, modelos, backups, sesiones,
+artefactos de release y datos personales pueden ser canónicos u operativos; no
+se asume que sólo código y documentación sean conservables. Lo externo, sin
+owner, ambiguo o fuera del perfil queda preservado o fuera de alcance.
+
+### Revalidación, drift y límites
+
+El manifest del preview captura claims, no congela el filesystem. Antes de
+cualquier acción futura se tendría que volver a comprobar, en la frontera del
+efecto y con el mismo límite, la raíz, identidad física, montaje, permisos,
+symlink/hardlink, actividad, manifest/digest, owner-head, categoría/política y
+bytes. Cualquier drift, ausencia, cambio de schema, crecimiento fuera de cota,
+writer activo o postcondición incierta produce abstención (`blocked` o
+`recovery_required`); no se reutiliza el preview como autorización ni se
+reintenta a ciegas.
+
+La preparación permanece bounded por raíz, entries, profundidad, bytes, tamaño
+de manifest/registro y, cuando aplique, deadline/cancelación. Los límites
+efectivos y el remanente deben aparecer en el manifest; una cota agotada es
+evidencia de cobertura parcial, no una razón para ampliar automáticamente el
+alcance. Se conservan las vallas existentes: no seguir enlaces, no recorrer `/`
+o `/tmp` sin selección explícita, no abrir SQLite cercada (tampoco con
+`mode=ro`), no leer payloads, no usar red, KIO, sudo ni cleaners.
+
+El invariante de esta etapa es **zero deletion**: la respuesta puede enumerar,
+clasificar y proponer una revisión, pero no escribe owners, no publica heads, no
+crea `file_actions`, no mueve/renombra/retira archivos, no elimina filas y no
+promete bytes recuperables. La salida de preview no acredita limpieza ni
+liberación de espacio.
+
+### Gates futuros, aún separados
+
+La preparación deja explícita la secuencia que una futura capacidad de efectos
+tendría que cruzar; no la implementa ni la salta:
+
+| Gate | Evidencia exigida | Efecto en esta etapa |
+|---|---|---|
+| `preview` | registry/manifest versionado, owners, procedencia, cobertura y límites | Sólo lectura; zero deletion. |
+| `review` | revisión humana de entradas, evidencia y razones | No autoriza ni cambia owners. |
+| `authorize` | grant acotado a selección, política, actor, expiración y presupuesto | Persiste autoridad separada; no crea `file_actions`. |
+| `apply` | backend explícito, locks, revalidación fresca y receipt reversible | Futuro; no disponible desde `hygiene`. |
+| `verify` | postcondición física y conciliación con identidad/receipt | Futuro; no se infiere del retorno del backend. |
+| `recovery` | estado ambiguo, receipt y siguiente decisión/reversión | Obligatorio ante fallo o drift; no hay retry automático. |
+
+`hygiene` no reemplaza `maintenance`, `state reset`, `curate apply`,
+`machine-inventory` ni `external-maintenance`: esas superficies conservan sus
+owners y gates actuales. En particular, un `--apply` existente de scratch o de
+auditoría histórica no se vuelve accesible por incluirlo en una federación de
+preview.
+
 ## Diagnósticos federados v2
 
 La vista aditiva `content-diagnostics/v2` consulta únicamente estado publicado,
@@ -455,6 +605,7 @@ adoptados) nunca son candidatas ni se modifican.
 | Mantenimiento de scratch registrado | `maintenance --scope owned-temp|audit-work` | Plan limitado a `state_directory/scratch`; `--apply` sólo retira scratch propio `completed`, sin KIO |
 | Auditoría histórica | `maintenance --scope historical-temp --maintenance-audit-root PATH` | Plan read-only sobre una raíz absoluta explícita; `--apply` sólo retira adopciones verificadas, sin `/tmp` por defecto, cleaner externo, corpus ni SQLite |
 | Diagnóstico externo | `external-maintenance --external-root PATH --external-category CATEGORY` | Observación metadata-only bounded; siempre read-only, sin owner implícito, `--apply`, red, SQLite, KIO o sudo |
+| Preparación de higiene | `hygiene` | Registry/manifest federado y preview bounded; read-only/preview-only, zero deletion y sin `file_actions` |
 | Dedupe/corpus Linux | `--dedupe`, `--all --apply` | Backend KIO receipt-bound, igualdad exacta, no-replace y raíz delimitada |
 
 ## Consultas cotidianas

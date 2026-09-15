@@ -557,6 +557,21 @@ def _validate_video_scratch_disjoint(scratch: Path, corpus_root: Path) -> None:
         )
 
 
+def _video_artifact_registry_root(scratch_directory: Path) -> Path | None:
+    """Derive the registry only for the canonical state-owned video root."""
+
+    scratch = Path(scratch_directory)
+    if (
+        not scratch.is_absolute()
+        or scratch.name != VIDEO_FRAME_SCRATCH_SCOPE
+        or scratch.parent.name != "scratch"
+    ):
+        # Direct callers may provide an unrelated private scratch root.  Do
+        # not guess a state directory (or a HOME/corpus-relative registry).
+        return None
+    return scratch.parent.parent / "artifacts"
+
+
 @contextmanager
 def _registered_video_scratch_workspace(
     scratch_directory: Path,
@@ -585,10 +600,15 @@ def _registered_video_scratch_workspace(
         ) from exc
 
     try:
+        artifact_registry_root = _video_artifact_registry_root(scratch_directory)
+        manager_kwargs: dict[str, object] = {}
+        if artifact_registry_root is not None:
+            manager_kwargs["artifact_registry_root"] = artifact_registry_root
         manager = ScratchManager(
             scratch_directory,
             owner=REGISTERED_SCRATCH_OWNER,
             create_root=True,
+            **manager_kwargs,
         )
         create = getattr(manager, "create", None)
         if not callable(create):
