@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 from neocortex.platform.policy import current_platform_policy
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128
 
 from neocortex.enumeration import JournalCursor, NtfsEntry, UsnChangeBatch
 from neocortex.deduplication import (
@@ -132,7 +133,9 @@ def test_policy_signature_is_versioned_canonical_and_non_cryptographic(
     )
 
     assert first.signature == second.signature
-    assert first.signature.startswith("inventory-exclusion-policy-v4:xxh3_128:")
+    assert first.signature.startswith(
+        f"inventory-exclusion-policy-v4:{HASH_ALGORITHM_128.replace('-', '_')}:"
+    )
     assert len(first.signature.rsplit(":", 1)[1]) == 32
     assert first.directory_names == frozenset({"build", "node_modules"})
     assert first.directory_prefixes == ("basetemp", "tmp")

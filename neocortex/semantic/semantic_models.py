@@ -117,11 +117,12 @@ _FINGERPRINT_GUARD_SEED = 0x4E454F43
 
 @dataclass(frozen=True, slots=True)
 class ContentFingerprint:
-    """Bounded collision guard for content reuse, based only on XXH3.
+    """Bounded collision guard for content reuse with XXH3-shaped fields.
 
-    The byte count and an independently seeded XXH3-64 guard accompany the
-    primary XXH3-128 digest.  This is not a security primitive; it is an
-    explicit, fast identity for cache invalidation and embedding reuse.
+    The byte count and an independently seeded 64-bit guard accompany the
+    primary 128-bit digest.  The native XXH3 backend is preferred, while the
+    hash compatibility layer supplies deterministic SHA-256-derived values
+    when its optional wheel is absent. This is not a security primitive.
     """
 
     xxh3_128: str
@@ -142,9 +143,9 @@ class ContentFingerprint:
 
 
 def fingerprint_bytes(payload: bytes | bytearray | memoryview) -> ContentFingerprint:
-    """Return the version-neutral XXH3 identity of an in-memory payload."""
+    """Return the version-neutral content identity of an in-memory payload."""
 
-    import xxhash
+    from neocortex.foundation.hash_compat import xxhash
 
     view = memoryview(payload)
     return ContentFingerprint(
@@ -164,9 +165,9 @@ def fingerprint_text(text: str) -> ContentFingerprint:
 
 
 def fingerprint_chunks(chunks: Iterable[bytes]) -> ContentFingerprint:
-    """Fingerprint a byte stream incrementally, without joining it in memory."""
+    """Fingerprint a byte stream incrementally without joining it in memory."""
 
-    import xxhash
+    from neocortex.foundation.hash_compat import xxhash
 
     primary = xxhash.xxh3_128()
     guard = xxhash.xxh3_64(seed=_FINGERPRINT_GUARD_SEED)

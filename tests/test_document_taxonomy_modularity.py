@@ -10,7 +10,7 @@ from dataclasses import asdict
 from typing import Any
 
 import pytest
-import xxhash
+from neocortex.foundation.hash_compat import xxhash
 
 from neocortex.documents import document_taxonomy_models
 from neocortex.documents.document_taxonomy import (

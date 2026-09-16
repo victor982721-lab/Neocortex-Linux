@@ -15,6 +15,8 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Protocol, cast
 
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128
+
 from neocortex.knowledge.knowledge_contracts import (
     PhysicalIdentityRef,
     ResourceDisposition,
@@ -276,7 +278,7 @@ def _canonical_output(payload: Mapping[str, object]) -> str:
 
 def _contract_fingerprint(payload: Mapping[str, object]) -> str:
     digest = fingerprint_text(_canonical_output(payload)).xxh3_128
-    return f"derivation-contract-v{DERIVATION_CONTRACT_SCHEMA_VERSION}:xxh3-128:{digest}"
+    return f"derivation-contract-v{DERIVATION_CONTRACT_SCHEMA_VERSION}:{HASH_ALGORITHM_128}:{digest}"
 
 
 def _payload_mapping(value: object, *, label: str) -> Mapping[str, object]:
@@ -499,7 +501,7 @@ class InputBinding:
     name: str
     revision: RevisionRef
     fingerprint: str
-    fingerprint_algorithm: str = "xxh3-128"
+    fingerprint_algorithm: str = HASH_ALGORITHM_128
     materialization: MaterializationRef | None = None
 
     def __post_init__(self) -> None:
@@ -559,7 +561,7 @@ class OutputBinding:
     name: str
     materialization: MaterializationRef
     fingerprint: str
-    fingerprint_algorithm: str = "xxh3-128"
+    fingerprint_algorithm: str = HASH_ALGORITHM_128
 
     def __post_init__(self) -> None:
         _required_text("name", self.name, limit=MAX_IDENTIFIER_CHARS)

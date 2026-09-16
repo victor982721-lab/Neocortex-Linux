@@ -33,6 +33,7 @@ from neocortex.curation.preview import CurationItem, CurationPlanPage, build_cur
 from neocortex.deduplication import (
     FileChangedError,
     FileSnapshot,
+    FULL_ALGORITHM,
     files_equal_exact,
     full_fingerprint,
     snapshot_path,
@@ -344,7 +345,7 @@ def _full_digest(snapshot: FileSnapshot) -> str:
         ) from exc
     except OSError as exc:
         raise CurationAuthorizationUnavailable(f"source cannot be hashed: {snapshot.path}") from exc
-    return "xxh3_128_full_v1:" + digest.hex()
+    return f"{FULL_ALGORITHM}:" + digest.hex()
 
 
 def _effect_manifest(
@@ -424,7 +425,7 @@ def _effect_manifest(
                             root=root,
                             keeper=keep,
                         )
-                        expected_keeper_digest = "xxh3_128_full_v1:" + reference.full_fingerprint
+                        expected_keeper_digest = f"{FULL_ALGORITHM}:" + reference.full_fingerprint
                     else:
                         if item.evidence.get("members_truncated") is True:
                             raise CurationAuthorizationError(

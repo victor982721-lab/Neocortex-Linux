@@ -9,7 +9,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Iterator
 
-import xxhash
+from neocortex.foundation.hash_compat import xxhash
 
 from neocortex.deduplication import FileSnapshot
 

@@ -1045,13 +1045,7 @@ def _read_stable_payload(
     the keeper without retaining a second copy of the file.
     """
 
-    try:
-        import xxhash
-    except ImportError as exc:  # pragma: no cover - dependency is in releases
-        raise CurationVerificationUnavailable(
-            "exact curation verification requires xxhash",
-            reason_code="dependency_unavailable",
-        ) from exc
+    from neocortex.foundation.hash_compat import xxhash
     descriptor = _open_regular_file_beneath(root, path)
     try:
         before = os.fstat(descriptor)
@@ -1124,13 +1118,7 @@ def _compare_stable_file(
 ) -> tuple[bool, str]:
     """Hash and compare one source file against a temporary keeper stream."""
 
-    try:
-        import xxhash
-    except ImportError as exc:  # pragma: no cover - dependency is in releases
-        raise CurationVerificationUnavailable(
-            "exact curation verification requires xxhash",
-            reason_code="dependency_unavailable",
-        ) from exc
+    from neocortex.foundation.hash_compat import xxhash
     descriptor = _open_regular_file_beneath(root, path)
     try:
         before = os.fstat(descriptor)

@@ -24,6 +24,7 @@ from neocortex.code.code_schema import initialize_code_state
 from neocortex.documents.document_catalog import initialize_document_catalog
 from neocortex.documents.document_resource_binding import build_resource_binding
 from neocortex.foundation.file_identity import FileIdentity
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128
 from neocortex.knowledge.knowledge_contracts import (
     KnowledgeSnapshot,
     LogicalWatermark,
@@ -449,7 +450,26 @@ def test_lookup_exact_orchestration_preserves_primary_state_bytes(
     fixture = json.loads(LOOKUP_ORCHESTRATION_FIXTURE.read_text(encoding="utf-8"))
 
     assert fixture["schema"] == "neocortex-lookup-exact-orchestration/v1"
-    assert characterization == fixture["expected"]
+    expected = fixture["expected"]
+    if HASH_ALGORITHM_128 == "xxh3-128":
+        assert characterization == expected
+    else:
+        # The checked-in characterization predates the optional backend.  The
+        # fallback intentionally changes digest values while preserving the
+        # read-only result, owner ordering and timing contract.
+        assert characterization["matches"] == expected["matches"]
+        assert characterization["reports"] == expected["reports"]
+        assert characterization["summary"] == expected["summary"]
+        assert len(characterization["result_xxh3_128"]) == 32
+        for actual, golden in zip(
+            characterization["owner_timings"], expected["owner_timings"], strict=True
+        ):
+            assert actual["owner"] == golden["owner"]
+            assert actual["executed"] == golden["executed"]
+            assert actual["measurement_scope"] == golden["measurement_scope"]
+            assert [name.split(":", 1)[0] for name in actual["ranking_names"]] == [
+                name.split(":", 1)[0] for name in golden["ranking_names"]
+            ]
     after = _state_file_bytes(state)
     database_names = {
         "code.sqlite3",

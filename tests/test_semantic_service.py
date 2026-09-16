@@ -11,6 +11,7 @@ from typing import Sequence, cast
 import pytest
 
 from neocortex.semantic import semantic_service as service
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128
 from neocortex.semantic import semantic_preparation
 from neocortex.semantic import semantic_search_service as search_implementation
 from neocortex.semantic import semantic_state as state
@@ -1355,7 +1356,7 @@ def test_changed_ocr_revision_keeps_other_head_until_its_model_republishes(
     }
     assert len(revisions) == 1
     assert str(revisions[0][0]) == service.IMAGE_OCR_TEXT_CHANNEL
-    assert "xxh3-128=" in str(revisions[0][1])
+    assert f"{HASH_ALGORITHM_128}=" in str(revisions[0][1])
     assert has_active_embeddings(database, quality_model.model_signature)
     assert has_active_embeddings(database, compact_model.model_signature)
     assert has_active_embeddings(

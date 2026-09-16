@@ -12,7 +12,7 @@ import pytest
 import neocortex.curation.application as application
 import neocortex.safety.kio_trash as kio_trash
 from neocortex.curation.application import ApplyCandidate, PosixRenameBackend
-from neocortex.deduplication import full_fingerprint, snapshot_path
+from neocortex.deduplication import FULL_ALGORITHM, full_fingerprint, snapshot_path
 from neocortex.deduplication.domain.errors import InventoryError
 from neocortex.deduplication.inventory.traversal import RootIdentity, validate_inventory_root
 from neocortex.safety.kio_trash import KioTrashStatus, KioTrashVerification, move_to_trash
@@ -32,7 +32,7 @@ def _rename_candidate(root: Path) -> ApplyCandidate:
     target.parent.mkdir(parents=True)
     source.write_bytes(b"rename fence fixture")
     snapshot = snapshot_path(source)
-    digest = "xxh3_128_full_v1:" + full_fingerprint(snapshot).hex()
+    digest = FULL_ALGORITHM + ":" + full_fingerprint(snapshot).hex()
     effect = AuthorizationEffect(
         effect_id="effect:fence",
         item_id="item:fence",

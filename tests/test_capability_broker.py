@@ -832,6 +832,7 @@ def test_required_models_are_fail_closed_until_readiness_is_attested() -> None:
     request = _request()
     manifest = replace(
         _manifest("fixture.model"),
+        required_components=(),
         required_models=("fixture-model-v1",),
     )
     status = capabilities_module.inspect_runtime_capability(

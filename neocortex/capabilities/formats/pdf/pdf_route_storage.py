@@ -8,7 +8,7 @@ import unicodedata
 import zlib
 from typing import Literal, Protocol, cast
 
-import xxhash
+from neocortex.foundation.hash_compat import xxhash
 
 from neocortex.deduplication import FileSnapshot
 from neocortex.platform.policy import sqlite_path_collation

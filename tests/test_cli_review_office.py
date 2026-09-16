@@ -7,6 +7,7 @@ import argparse
 import pytest
 
 from neocortex.deduplication import FileSnapshot
+from neocortex.foundation.hash_compat import STABLE_KEY_ALGORITHM
 from neocortex.api.cli.cli_app import dispatch_direct
 from neocortex.api.cli.cli_direct import (
     run_office_search,
@@ -209,7 +210,7 @@ def test_review_record_uses_exact_snapshot_generation_and_keeps_finding_open(
     assert "generation=21" in output
     assert "volume=aa10 file=bb20" in output
 
-    # An identical CLI retry resolves to the same stable XXH3 decision key.
+    # An identical CLI retry resolves to the same backend-independent key.
     assert dispatch_direct(args) == 0
     retry_output = capsys.readouterr().out
     assert "reused=1" in retry_output
@@ -221,7 +222,7 @@ def test_review_record_uses_exact_snapshot_generation_and_keeps_finding_open(
     assert decisions[0].actor == "victor"
     assert decisions[0].note == "Confirmed rasterized document"
     assert decisions[0].provenance["source"] == "neocortex-cli"
-    assert decisions[0].idempotency_key.startswith("neocortex-cli:xxh3-128:")
+    assert decisions[0].idempotency_key.startswith(f"neocortex-cli:{STABLE_KEY_ALGORITHM}:")
     assert decisions[0].source_status == "done"
     assert decisions[0].recommendation == "manual_review"
     assert decisions[0].retryable is False

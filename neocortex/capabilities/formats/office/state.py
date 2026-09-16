@@ -11,7 +11,7 @@ from functools import lru_cache
 import json
 from pathlib import Path
 
-import xxhash
+from neocortex.foundation.hash_compat import xxhash
 
 from neocortex.deduplication import FileSnapshot
 

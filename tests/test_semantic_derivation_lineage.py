@@ -7,7 +7,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-import xxhash
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, HASH_ALGORITHM_64, xxhash
 
 from neocortex.semantic import semantic_evidence_repository, semantic_generation_repository, semantic_schema
 from neocortex.semantic.derivation_contracts import WorkReceipt
@@ -142,7 +142,7 @@ def _stage(
                     "generation": ordinal,
                     "observed_at_utc": "2026-08-11T00:00:00Z",
                 },
-                "fingerprint_algorithm": "xxh3-128",
+                "fingerprint_algorithm": HASH_ALGORITHM_128,
                 "fingerprint": fingerprint_text(text).xxh3_128,
             },
             "consumed_materialization": {
@@ -169,7 +169,7 @@ def _stage(
                     },
                     "generation": ordinal,
                 },
-                "fingerprint_algorithm": "xxh3-128",
+                "fingerprint_algorithm": HASH_ALGORITHM_128,
                 "fingerprint": fingerprint_text(text).xxh3_128,
             },
         },
@@ -1756,7 +1756,7 @@ def test_duplicate_provider_completions_keep_one_payload_producer(
     candidate_fingerprint = fingerprint_bytes(candidate_blob)
     assert discard_contract.outputs[0].fingerprint == (
         f"{candidate_fingerprint.xxh3_128};bytes={candidate_fingerprint.byte_count};"
-        f"xxh3-64-guard={candidate_fingerprint.xxh3_64_guard}"
+        f"{HASH_ALGORITHM_64}-guard={candidate_fingerprint.xxh3_64_guard}"
     )
 
     events = read_semantic_derivation_outbox(database, limit=100)

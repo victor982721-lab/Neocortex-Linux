@@ -41,6 +41,7 @@ from .policy import (
 )
 from neocortex.foundation.processing_provenance import (
     build_processing_provenance,
+    python_runtime_component,
     resolve_tesseract_runtime,
 )
 
@@ -195,7 +196,7 @@ def _document_ocr_processing_provenance(
             "sample_max_side": DOCUMENT_OCR_SAMPLE_SIDE,
             "text_max_utf8_bytes": DOCUMENT_OCR_TEXT_MAX_UTF8_BYTES,
         },
-        (component,),
+        (python_runtime_component(), component),
         compatibility_tag=DOCUMENT_OCR_VERSION,
     )
 

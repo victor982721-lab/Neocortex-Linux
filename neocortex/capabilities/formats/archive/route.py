@@ -21,7 +21,7 @@ from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
-import xxhash
+from neocortex.foundation.hash_compat import xxhash
 
 from neocortex.deduplication import FileSnapshot
 from neocortex.deduplication.fingerprinting import snapshot_path, stat_matches_snapshot

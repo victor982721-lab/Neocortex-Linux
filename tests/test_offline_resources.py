@@ -39,6 +39,7 @@ TARGET_ENVIRONMENT = {
 }
 PROFILES = {
     "runtime-base": ("runtime",),
+    "fast-hash": ("fast-hash",),
     "build": ("build",),
     "test-base": ("test-base",),
     "documents-image": ("documents", "image"),

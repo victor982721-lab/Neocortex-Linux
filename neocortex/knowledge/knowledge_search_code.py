@@ -15,6 +15,7 @@ from typing import Any
 
 from neocortex.code.code_contracts import CodeSearchHit, CodeSearchQuery, CodeSearchRelation
 from neocortex.foundation.file_identity import FileIdentity
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, HASH_ALGORITHM_64
 from .knowledge_contracts import (
     EvidenceMethod,
     EvidenceRef,
@@ -233,7 +234,13 @@ def bounded_code_relation_value(
         return value
     fingerprint = fingerprint_text_fn(value)
     warnings.add(f"{namespace}_fingerprinted_due_to_contract_limit")
-    return f"xxh3-v1:{fingerprint.xxh3_128}:{fingerprint.byte_count}:{fingerprint.xxh3_64_guard}"
+    if HASH_ALGORITHM_128 == "xxh3-128":
+        # Preserve the established native relation identifier byte-for-byte.
+        return f"xxh3-v1:{fingerprint.xxh3_128}:{fingerprint.byte_count}:{fingerprint.xxh3_64_guard}"
+    return (
+        f"{HASH_ALGORITHM_128}-v1:{fingerprint.xxh3_128}:"
+        f"{fingerprint.byte_count}:{HASH_ALGORITHM_64}-guard={fingerprint.xxh3_64_guard}"
+    )
 
 
 def _append_relation_identifiers(

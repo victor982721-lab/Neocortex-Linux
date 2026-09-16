@@ -13,6 +13,7 @@ from neocortex.foundation.processing_provenance import (
     build_processing_provenance,
     distribution_component,
     executable_component,
+    python_runtime_component,
     resolve_tesseract_runtime,
 )
 from neocortex.safety.ocr_profiles import OcrProfileName, resolve_ocr_profile
@@ -115,6 +116,7 @@ def resolve_pdf_tesseract_runtime(
 def _pdf_processing_provenance(config: PdfRouteConfig) -> ProcessingProvenance:
     profile = resolve_ocr_profile(config.ocr_profile, config.ocr_lang)
     components: list[dict[str, Any]] = [
+        python_runtime_component(),
         distribution_component("pymupdf", "PyMuPDF"),
         executable_component("qpdf", default_name="qpdf"),
     ]

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
-import xxhash
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, xxhash
 from neocortex.platform.policy import current_platform_policy
 
 
@@ -376,7 +376,7 @@ class InventoryExclusionPolicy:
             restricted_file_names=frozenset(normalized_restricted_files),
             restricted_file_suffixes=normalized_restricted_suffixes,
             restricted_traversal_directory_keys=restricted_traversal_keys,
-            signature=f"{cls.signature_version}:xxh3_128:{digest}",
+            signature=f"{cls.signature_version}:{HASH_ALGORITHM_128.replace('-', '_')}:{digest}",
         )
 
     def excludes_directory(

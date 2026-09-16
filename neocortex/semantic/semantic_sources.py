@@ -31,6 +31,7 @@ from neocortex.platform.content_capability_manifest import (
 )
 
 from neocortex.foundation.file_identity import FileIdentityError, decode_file_identity
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128
 from .derivation_contracts import MaterializationRef
 from neocortex.knowledge.knowledge_contracts import RevisionRef, RevisionState
 from .semantic_models import (
@@ -1648,7 +1649,9 @@ def _image_descriptor_fingerprint(
     if len(value) != 16:
         raise SemanticSourceError("dedup full fingerprint must contain 16 bytes")
     return fingerprint_bytes(
-        b"dedup-full-xxh3-128-descriptor-v1\0" + value + size.to_bytes(8, "little", signed=False)
+        f"dedup-full-{HASH_ALGORITHM_128}-descriptor-v1\0".encode("utf-8")
+        + value
+        + size.to_bytes(8, "little", signed=False)
     )
 
 
@@ -1924,7 +1927,7 @@ def iter_image_source_records(
             raw_digest = bytes.fromhex(streamed_fingerprint.xxh3_128)
             fingerprint_acquisition = "streamed-source"
         fingerprint = _image_descriptor_fingerprint(raw_digest, snapshot.size)
-        fingerprint_basis = "raw-full-xxh3-128-size-descriptor-v1"
+        fingerprint_basis = f"raw-full-{HASH_ALGORITHM_128}-size-descriptor-v1"
         raw_content_xxh3_128 = raw_digest.hex()
         processing_signature = str(row["processing_signature"] or "unprocessed")
         source_status = str(row["source_status"] or "unknown")

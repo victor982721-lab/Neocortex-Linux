@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypeVar
 
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, HASH_ALGORITHM_64
+
 from .semantic_models import (
     ContentFingerprint,
     EmbeddingRole,
@@ -32,7 +34,16 @@ from .semantic_models import (
 ADMISSION_POLICY_SCHEMA = "neocortex.semantic-content-admission/v1"
 ADMISSION_IDENTITY_SCHEMA = "neocortex.semantic-identities/v1"
 ADMISSION_DECISION_SCHEMA = "neocortex.semantic-content-decision/v1"
-CONTENT_IDENTITY_ALGORITHM = "xxh3-128+xxh3-64-guard-v1"
+CONTENT_IDENTITY_ALGORITHM = f"{HASH_ALGORITHM_128}+{HASH_ALGORITHM_64}-guard-v1"
+LEGACY_CONTENT_IDENTITY_ALGORITHM = "xxh3-128+xxh3-64-guard-v1"
+FALLBACK_CONTENT_IDENTITY_ALGORITHM = "sha256-128-fallback-v1+sha256-64-fallback-v1-guard-v1"
+_SUPPORTED_CONTENT_IDENTITY_ALGORITHMS = frozenset(
+    {
+        CONTENT_IDENTITY_ALGORITHM,
+        LEGACY_CONTENT_IDENTITY_ALGORITHM,
+        FALLBACK_CONTENT_IDENTITY_ALGORITHM,
+    }
+)
 WORK_IDENTITY_ALGORITHM = "semantic-work-key-v1"
 MAX_IDENTITY_COMPONENT_CHARS = 512
 MAX_POLICY_ENTRIES = 4096
@@ -133,7 +144,7 @@ class ContentIdentity:
     algorithm: str = CONTENT_IDENTITY_ALGORITHM
 
     def __post_init__(self) -> None:
-        if self.algorithm != CONTENT_IDENTITY_ALGORITHM:
+        if self.algorithm not in _SUPPORTED_CONTENT_IDENTITY_ALGORITHMS:
             raise ValueError("unsupported content identity algorithm")
         if len(self.xxh3_128) != 32 or any(
             character not in "0123456789abcdef" for character in self.xxh3_128
@@ -759,6 +770,8 @@ __all__ = (
     "ADMISSION_IDENTITY_SCHEMA",
     "ADMISSION_POLICY_SCHEMA",
     "CONTENT_IDENTITY_ALGORITHM",
+    "FALLBACK_CONTENT_IDENTITY_ALGORITHM",
+    "LEGACY_CONTENT_IDENTITY_ALGORITHM",
     "WORK_IDENTITY_ALGORITHM",
     "ContentAdmissionDecision",
     "ContentAdmissionPolicy",

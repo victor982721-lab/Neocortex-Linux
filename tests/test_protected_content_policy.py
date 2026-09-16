@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 import neocortex.safety.protected_content as protected_content_module
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128
 from neocortex.safety.corpus_access import (
     CorpusAccessPolicy,
     ProtectedAnalysisRootError,
@@ -103,7 +104,9 @@ def test_signature_and_manifest_are_deterministic(tmp_path: Path) -> None:
     second = _capture(layout)
 
     assert first == second
-    assert first.signature.startswith("protected-content-policy-v1:xxh3_128:")
+    assert first.signature.startswith(
+        f"protected-content-policy-v1:{HASH_ALGORITHM_128.replace('-', '_')}:"
+    )
     assert len(first.signature.rsplit(":", 1)[1]) == 32
     assert first.manifest() == second.manifest()
     roles = [entry["role"] for entry in first.manifest()["entries"]]

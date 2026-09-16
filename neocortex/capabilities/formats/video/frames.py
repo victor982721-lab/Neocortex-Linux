@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-import xxhash
+from neocortex.foundation.hash_compat import xxhash
 
 from neocortex.runtime.control.bounded_subprocess import (
     SubprocessOutputLimitError,

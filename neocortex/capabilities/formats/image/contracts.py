@@ -12,6 +12,7 @@ from neocortex.foundation.processing_provenance import (
     ProcessingProvenance,
     build_processing_provenance,
     distribution_component,
+    python_runtime_component,
 )
 from neocortex.safety.ocr_profiles import OcrProfileName
 from neocortex.safety.route_filters import CandidateSelection
@@ -108,6 +109,7 @@ def _image_processing_provenance(
             "document_ocr_timeout_seconds": config.document_ocr_timeout_seconds,
         },
         (
+            python_runtime_component(),
             distribution_component("pillow", "Pillow"),
             {
                 "name": "visual-classifier",

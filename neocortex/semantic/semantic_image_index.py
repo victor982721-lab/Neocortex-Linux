@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, HASH_ALGORITHM_64
 
 from .semantic_chunking import TextChunkingConfig, TextTokenCounter
 from .semantic_backends import EmbeddingBackend
@@ -161,9 +162,9 @@ def stage_image_batch(
             item_id=record.item.item_id,
             channel=IMAGE_OCR_TEXT_CHANNEL,
             revision_token=(
-                f"xxh3-128={ocr_fingerprint.xxh3_128};"
+                f"{HASH_ALGORITHM_128}={ocr_fingerprint.xxh3_128};"
                 f"bytes={ocr_fingerprint.byte_count};"
-                f"xxh3-64-guard={ocr_fingerprint.xxh3_64_guard}"
+                f"{HASH_ALGORITHM_64}-guard={ocr_fingerprint.xxh3_64_guard}"
             ),
         )
         sections: tuple[TextSection, ...] = (record.ocr_section,)

@@ -160,16 +160,27 @@ def test_published_text_owner_status_needs_no_processing_engine(tmp_path: Path) 
     } == before
 
 
-def test_missing_base_dependency_is_reported_in_status_envelope(tmp_path: Path) -> None:
+def test_missing_stdlib_runtime_dependencies_are_reported_without_traceback(
+    tmp_path: Path,
+) -> None:
     probe = _probe(
         ("status", "--scope", "all", "--json"), tmp_path, no_site_packages=True
     )
 
-    assert probe["code"] == 1
+    assert probe["code"] == 3
     payload = json.loads(str(probe["stdout"]))
     assert payload["read_only"] is True
-    assert payload["coverage"] == "unavailable"
-    assert all("xxhash" in item["reason"] for item in payload["scopes"])
+    assert payload["coverage"] == "empty"
+    assert all(item["status"] == "empty" for item in payload["scopes"])
+    # The isolated state path is test-controlled and may itself contain the
+    # blocked dependency's name.  Inspect only the status envelope, not paths.
+    assert all(
+        "xxhash" not in json.dumps(
+            {key: value for key, value in item.items() if key != "state_directory"},
+            sort_keys=True,
+        )
+        for item in payload["scopes"]
+    )
     assert probe["stderr"] == ""
     assert not (tmp_path / "state").exists()
 

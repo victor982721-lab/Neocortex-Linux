@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128
+
 if TYPE_CHECKING:
     from .semantic_chunking import TextChunkingConfig
 from .semantic_models import (
@@ -23,7 +25,9 @@ FASTEMBED_RUNTIME_VERSION = "fastembed-0.8.0"
 TEXT_ENCODER_CONTRACT_VERSION = (
     f"{FASTEMBED_RUNTIME_VERSION}|explicit-l2-v1|reject-token-truncation-v1"
 )
-IMAGE_ENCODER_CONTRACT_VERSION = f"{FASTEMBED_RUNTIME_VERSION}|explicit-l2-v1|source-xxh3-verify-v1"
+IMAGE_ENCODER_CONTRACT_VERSION = (
+    f"{FASTEMBED_RUNTIME_VERSION}|explicit-l2-v1|source-{HASH_ALGORITHM_128}-verify-v1"
+)
 
 TEXT_MODEL_ID = "jinaai/jina-embeddings-v2-base-es"
 TEXT_MODEL_SIGNATURE = f"{TEXT_ENCODER_CONTRACT_VERSION}|{TEXT_MODEL_ID}|float16"

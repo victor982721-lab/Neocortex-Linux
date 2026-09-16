@@ -12,7 +12,7 @@ from pathlib import Path
 from neocortex.platform.policy import stat_birthtime_ns
 from typing import Any, Iterable, Iterator, Mapping, Protocol, Sequence
 
-import xxhash
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, xxhash
 
 from .semantic_config import fastembed_cache_contract
 from .semantic_models import (
@@ -402,7 +402,7 @@ class FastEmbedBackend:
             f"{contract.repository_id}\0{revision}\0{token_limit}"
         )
         digest = xxhash.xxh3_128_hexdigest(identity.encode("utf-8"))
-        return f"exact-token-fit-v1:xxh3-128:{digest}", token_limit
+        return f"exact-token-fit-v1:{HASH_ALGORITHM_128}:{digest}", token_limit
 
     def _untruncated_token_counts(
         self,

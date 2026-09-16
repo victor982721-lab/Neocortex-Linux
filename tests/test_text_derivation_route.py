@@ -15,6 +15,7 @@ import pytest
 import neocortex.capabilities.formats.text.text_route as text_route_module
 import neocortex.capabilities.formats.text.text_state as text_state_module
 from neocortex.deduplication import FileSnapshot, snapshot_path
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128
 from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
 from neocortex.foundation.file_identity import file_key_from_snapshot
 from neocortex.runtime.control.locking import FrameworkRunLock
@@ -147,7 +148,7 @@ def test_first_execution_and_cache_hit_publish_complete_causal_receipts(
         ).fetchone()
         assert revision == (
             f"resource:file:{snapshot.volume_id}:{snapshot.file_id}:{snapshot.birthtime_ns}",
-            "xxh3-128",
+            HASH_ALGORITHM_128,
             text_route_module.xxhash.xxh3_128_hexdigest(source.read_bytes()),
         )
         output_sets = [
@@ -204,7 +205,7 @@ def test_first_execution_and_cache_hit_publish_complete_causal_receipts(
             receipts[0]["stage"]["implementation_digest"]
             == receipts[0]["effective_configuration"]["implementation_digest"]
         )
-        assert capability_configuration["capability_readiness"].startswith("xxhash@")
+        assert capability_configuration["capability_readiness"] == "available"
         assert capability_configuration["capability_policy_fingerprint"].startswith("sha256:")
         assert capability_configuration["capability_selection_fingerprint"].startswith("sha256:")
 

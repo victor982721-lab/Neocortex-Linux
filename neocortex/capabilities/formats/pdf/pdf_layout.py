@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-import xxhash
+from neocortex.foundation.hash_compat import xxhash
 
 
 # region [01] Layout signature constants

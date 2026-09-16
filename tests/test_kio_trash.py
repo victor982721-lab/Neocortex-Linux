@@ -15,7 +15,7 @@ from typing import cast
 
 import pytest
 
-from neocortex.deduplication import FileSnapshot, full_fingerprint, snapshot_path
+from neocortex.deduplication import FULL_ALGORITHM, FileSnapshot, full_fingerprint, snapshot_path
 from neocortex.safety import kio_trash
 from neocortex.safety.kio_trash import (
     KIO_TRASH_URL,
@@ -79,7 +79,7 @@ def _never_verify(
 
 
 def _batch_digest(expected: FileSnapshot) -> str:
-    return "xxh3_128_full_v1:" + full_fingerprint(expected).hex()
+    return FULL_ALGORITHM + ":" + full_fingerprint(expected).hex()
 
 
 def _batch_evidence(

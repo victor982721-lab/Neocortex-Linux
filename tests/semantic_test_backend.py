@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Sequence
 
-import xxhash
+from neocortex.foundation.hash_compat import xxhash
 
 from neocortex.semantic.semantic_models import (
     BackendEmbedding,

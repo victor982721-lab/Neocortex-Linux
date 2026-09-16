@@ -35,6 +35,7 @@ from neocortex.curation.preview import build_curation_plan_page
 from neocortex.deduplication import (
     FileChangedError,
     FileSnapshot,
+    FULL_ALGORITHM,
     files_equal_exact,
     full_fingerprint,
     snapshot_path,
@@ -213,7 +214,7 @@ def _digest_snapshot(snapshot: FileSnapshot) -> str:
         ) from exc
     except OSError as exc:
         raise CurationApplicationUnavailable(f"source cannot be hashed: {snapshot.path}") from exc
-    return "xxh3_128_full_v1:" + digest.hex()
+    return f"{FULL_ALGORITHM}:" + digest.hex()
 
 
 def _validate_regular_unique(snapshot: FileSnapshot, *, role: str) -> FileSnapshot:

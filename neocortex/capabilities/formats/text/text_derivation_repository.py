@@ -38,6 +38,7 @@ from neocortex.knowledge.knowledge_contracts import (
     RevisionState,
 )
 from neocortex.foundation.file_identity import FileIdentityEncoding, decode_file_identity
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128
 from neocortex.semantic.semantic_models import canonical_json, fingerprint_text
 from .text_state import TEXT_SCHEMA_VERSION, _validate_reader, text_database
 
@@ -394,8 +395,8 @@ def _validate_text_publication_rows(
             or int(row["schema_version"]) != TEXT_SCHEMA_VERSION
             or str(row["output_resource_id"]) != resource_id
             or str(row["output_revision_id"]) != revision_id
-            or str(row["fingerprint_algorithm"]) != "xxh3-128"
-            or str(row["binding_algorithm"]) != "xxh3-128"
+            or str(row["fingerprint_algorithm"]) != HASH_ALGORITHM_128
+            or str(row["binding_algorithm"]) != HASH_ALGORITHM_128
             or str(row["fingerprint"]) != expected_fingerprint
             or str(row["binding_fingerprint"]) != expected_fingerprint
             or str(row["processing_signature"]) != str(document["processing_signature"])
@@ -2313,7 +2314,7 @@ def read_text_derivation_outbox(
                 f"Text outbox WorkReceipt is invalid: {receipt_id}"
             ) from exc
         expected_fingerprint = (
-            f"derivation-contract-v{DERIVATION_CONTRACT_SCHEMA_VERSION}:xxh3-128:"
+            f"derivation-contract-v{DERIVATION_CONTRACT_SCHEMA_VERSION}:{HASH_ALGORITHM_128}:"
             f"{fingerprint_text(payload_json).xxh3_128}"
         )
         if (
@@ -2383,7 +2384,7 @@ def read_text_work_receipts(
                 f"Text WorkReceipt columns mismatch: {row['receipt_id']}"
             )
         expected_fingerprint = (
-            f"derivation-contract-v{DERIVATION_CONTRACT_SCHEMA_VERSION}:xxh3-128:"
+            f"derivation-contract-v{DERIVATION_CONTRACT_SCHEMA_VERSION}:{HASH_ALGORITHM_128}:"
             f"{fingerprint_text(payload_json).xxh3_128}"
         )
         stored_fingerprint = str(row["receipt_fingerprint"])

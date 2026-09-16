@@ -13,7 +13,7 @@ import time
 from collections.abc import Iterable
 from pathlib import Path
 
-import xxhash
+from neocortex.foundation.hash_compat import stable_sha256_128_hexdigest
 
 from neocortex.safety.corpus_access import (
     CorpusAccessPolicy,
@@ -67,7 +67,7 @@ def _action_idempotency_key(
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode("utf-8")
-    return xxhash.xxh3_128_hexdigest(payload)
+    return stable_sha256_128_hexdigest(payload)
 
 
 def _require_json_object(value: str, *, label: str) -> None:
@@ -382,6 +382,44 @@ def begin_file_actions(
                 evidence,
                 apply_requested,
             )
+            expected = (
+                run_id,
+                action_type,
+                source_path,
+                target_path,
+                detected_mime,
+                evidence,
+                int(apply_requested),
+                *policy_values,
+            )
+            # Releases before the backend split stored XXH3-derived keys.  A
+            # retry under the SHA-256 key must still resolve that same action
+            # rather than create a second durable mutation intent.
+            legacy = connection.execute(
+                """SELECT action_id,run_id,action_type,source_path,target_path,
+                detected_mime,evidence,apply_requested,corpus_access_mode,
+                protected_root,protected_root_device_id_hex,
+                protected_root_file_id_hex,protected_root_birthtime_ns
+                FROM main.file_actions
+                WHERE run_id=? AND action_type=? AND source_path=?
+                  AND target_path IS ? AND detected_mime IS ? AND evidence IS ?
+                  AND apply_requested=?
+                ORDER BY action_id LIMIT 1""",
+                (
+                    run_id,
+                    action_type,
+                    source_path,
+                    target_path,
+                    detected_mime,
+                    evidence,
+                    int(apply_requested),
+                ),
+            ).fetchone()
+            if legacy is not None:
+                if tuple(legacy[1:]) != expected:
+                    raise RuntimeError("file action identity collision")
+                action_ids.append(int(legacy[0]))
+                continue
             result = connection.execute(
                 "INSERT INTO main.file_actions(run_id, action_type, source_path, target_path, "
                 "detected_mime, evidence, apply_requested, status, started_ns, "
@@ -413,16 +451,6 @@ def begin_file_actions(
                     WHERE idempotency_key=?""",
                     (idempotency_key,),
                 ).fetchone()
-                expected = (
-                    run_id,
-                    action_type,
-                    source_path,
-                    target_path,
-                    detected_mime,
-                    evidence,
-                    int(apply_requested),
-                    *policy_values,
-                )
                 if existing is None or tuple(existing[1:]) != expected:
                     raise RuntimeError("file action idempotency-key collision")
                 action_ids.append(int(existing[0]))

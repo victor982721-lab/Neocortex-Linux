@@ -12,7 +12,13 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
-import xxhash
+from neocortex.foundation.hash_compat import (
+    HASH_ALGORITHM_128,
+    HASH_ALGORITHM_64,
+    STABLE_KEY_ALGORITHM,
+    stable_sha256_128_hexdigest,
+    xxhash,
+)
 
 from .derivation_contracts import (
     CapabilityFailure,
@@ -52,6 +58,10 @@ SEMANTIC_EMBEDDING_DISCARD_STAGE = "semantic.embedding.provider_execution_discar
 SEMANTIC_LEGACY_PAYLOAD_ATTESTATION_STAGE = "semantic.vector_payload.legacy_attest"
 SEMANTIC_EMBEDDING_MANIFEST_STAGE = "semantic.embedding.manifest"
 SEMANTIC_GENERATION_PUBLICATION_STAGE = "semantic.embedding.publish"
+_ACTIVE_CONTENT_FINGERPRINT_ALGORITHM = (
+    f"{HASH_ALGORITHM_128}+bytes+{HASH_ALGORITHM_64}-guard"
+)
+_UNKNOWN_CONTENT_FINGERPRINT_ALGORITHM = "content-hash-algorithm-unknown-v1"
 _EFFECTIVE_CONFIG_KEYS_BY_STAGE = {
     SEMANTIC_CHUNK_STAGE: frozenset({"chunking_signature"}),
     SEMANTIC_CHUNK_MANIFEST_STAGE: frozenset(
@@ -224,7 +234,10 @@ def _stable_key(stage_id: str, parts: Sequence[object]) -> str:
             "parts": list(parts),
         }
     )
-    return "semantic-work-xxh3-128:" + xxhash.xxh3_128_hexdigest(identity.encode("utf-8"))
+    return (
+        f"semantic-work-{STABLE_KEY_ALGORITHM}:"
+        f"{stable_sha256_128_hexdigest(identity.encode('utf-8'))}"
+    )
 
 
 def _require_current_receipt_schema(connection: sqlite3.Connection) -> int:
@@ -374,10 +387,38 @@ def _binding_fingerprint(binding: Mapping[str, object]) -> tuple[str, str]:
             if byte_count is not None:
                 value += f";bytes={byte_count}"
             if guard is not None:
-                value += f";xxh3-64-guard={guard}"
+                if algorithm.startswith("xxh3-"):
+                    guard_label = "xxh3-64-guard"
+                elif algorithm.startswith("sha256-"):
+                    guard_label = f"{HASH_ALGORITHM_64}-guard"
+                else:
+                    guard_label = "hash-64-guard"
+                value += f";{guard_label}={guard}"
             return value, algorithm
     identity = canonical_json({"binding": dict(binding)})
-    return xxhash.xxh3_128_hexdigest(identity.encode("utf-8")), "xxh3-128"
+    return xxhash.xxh3_128_hexdigest(identity.encode("utf-8")), HASH_ALGORITHM_128
+
+
+def _stored_fingerprint_algorithm(raw: object) -> str:
+    """Recover an explicit persisted algorithm without relabelling bytes."""
+
+    try:
+        payload = json.loads(str(raw))
+    except (RecursionError, TypeError, ValueError):
+        return _UNKNOWN_CONTENT_FINGERPRINT_ALGORITHM
+    if not isinstance(payload, Mapping):
+        return _UNKNOWN_CONTENT_FINGERPRINT_ALGORITHM
+    pending: list[Mapping[str, object]] = [payload]
+    while pending:
+        current = pending.pop()
+        candidate = current.get("fingerprint_algorithm")
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate
+        for name in ("owner_revision", "consumed_materialization", "materialization"):
+            nested = current.get(name)
+            if isinstance(nested, Mapping):
+                pending.append(nested)
+    return _UNKNOWN_CONTENT_FINGERPRINT_ALGORITHM
 
 
 def _input_contracts(
@@ -1051,6 +1092,43 @@ def _record_work_receipt(
             "SELECT * FROM semantic_work_receipts WHERE receipt_key=?",
             (receipt_key,),
         ).fetchone()
+        if existing is None:
+            # A pre-fallback release used a backend-dependent XXH3 key.  Match
+            # the immutable work columns before allocating a second receipt,
+            # then keep the original key so its outbox reference remains
+            # canonical.  Multiple matches are ambiguous and fail closed.
+            legacy_rows = connection.execute(
+                """SELECT * FROM semantic_work_receipts
+                WHERE stage_id=? AND stage_version=? AND processing_signature=?
+                  AND status=? AND execution_mode=? AND reproducibility_class=?
+                  AND entity_kind=? AND entity_id=? AND item_revision_id IS ?
+                  AND chunk_revision_id IS ? AND generation_id IS ?
+                  AND model_signature IS ? AND payload_id IS ? AND job_id IS ?
+                  AND attempt=?
+                ORDER BY receipt_id LIMIT 2""",
+                (
+                    stage_id,
+                    stage_version,
+                    processing_signature,
+                    status,
+                    execution_mode,
+                    reproducibility_class,
+                    entity_kind,
+                    entity_id,
+                    item_revision_id,
+                    chunk_revision_id,
+                    generation_id,
+                    model_signature,
+                    payload_id,
+                    job_id,
+                    selected_attempt,
+                ),
+            ).fetchall()
+            if len(legacy_rows) > 1:
+                raise SemanticStateError("semantic receipt work identity is ambiguous")
+            if legacy_rows:
+                existing = legacy_rows[0]
+                receipt_key = str(existing["receipt_key"])
         expected = (
             (stage_id, stage_version, processing_signature, status, execution_mode,
              reproducibility_class, entity_kind, entity_id, item_revision_id,
@@ -2132,6 +2210,12 @@ def _item_revision_binding(
     ).fetchone()
     if row is None:
         raise SemanticStateError("semantic item revision disappeared")
+    native_binding = _native_source_revision_binding(connection, item_revision_id)
+    fingerprint_algorithm = (
+        _binding_fingerprint(native_binding)[1]
+        if native_binding is not None
+        else _UNKNOWN_CONTENT_FINGERPRINT_ALGORITHM
+    )
     revision = RevisionRef(
         resource_id=(
             "semantic:item:" + xxhash.xxh3_128_hexdigest(str(row["item_id"]).encode("utf-8"))
@@ -2161,7 +2245,7 @@ def _item_revision_binding(
         "source_kind": str(row["source_kind"]),
         "source_identity": str(row["source_identity"]),
         "fingerprint": {
-            "algorithm": "xxh3-128+bytes+xxh3-64-guard",
+            "algorithm": fingerprint_algorithm,
             "xxh3_128": str(row["content_xxh3_128"]),
             "byte_count": int(row["content_bytes"]),
             "xxh3_64_guard": str(row["content_xxh3_64_guard"]),
@@ -2304,6 +2388,9 @@ def _chunk_revision_binding_from_row(
         revision=revision,
         generation=chunk_revision_id,
     )
+    raw_provenance = (
+        row["provenance_json"] if "provenance_json" in row.keys() else None
+    )
     return {
         "kind": "semantic_chunk_revision",
         "chunk_id": str(row["chunk_id"]),
@@ -2312,7 +2399,11 @@ def _chunk_revision_binding_from_row(
         "revision_ref": revision,
         "materialization_ref": materialization,
         "fingerprint": {
-            "algorithm": "xxh3-128+bytes+xxh3-64-guard",
+            "algorithm": (
+                _stored_fingerprint_algorithm(raw_provenance)
+                if raw_provenance is not None
+                else _UNKNOWN_CONTENT_FINGERPRINT_ALGORITHM
+            ),
             "xxh3_128": str(row["content_xxh3_128"]),
             "byte_count": int(row["content_bytes"]),
             "xxh3_64_guard": str(row["content_xxh3_64_guard"]),
@@ -2653,7 +2744,7 @@ def _legacy_payload_attestation_binding(
         "revision_ref": revision,
         "materialization_ref": materialization,
         "fingerprint": {
-            "algorithm": "legacy-payload-attestation-xxh3-128-v1",
+            "algorithm": f"legacy-payload-attestation-{HASH_ALGORITHM_128}-v1",
             "xxh3_128": contract_fingerprint,
         },
     }
@@ -2874,7 +2965,7 @@ def _manifest_output_binding(
         "revision_ref": revision,
         "materialization_ref": materialization,
         "fingerprint": {
-            "algorithm": "ordered-causal-bindings-xxh3-128-v1",
+            "algorithm": f"ordered-causal-bindings-{HASH_ALGORITHM_128}-v1",
             "xxh3_128": digest,
         },
     }
@@ -3152,7 +3243,7 @@ def _chunk_set_output_binding(
         "chunking_signature": chunking_signature,
         "chunk_count": chunk_count,
         "fingerprint": {
-            "algorithm": "semantic-chunk-set-contract-xxh3-128-v1",
+            "algorithm": f"semantic-chunk-set-contract-{HASH_ALGORITHM_128}-v1",
             "xxh3_128": output_fingerprint,
         },
     }
@@ -3665,7 +3756,7 @@ def _payload_binding(
         "revision_ref": revision,
         "materialization_ref": materialization,
         "fingerprint": {
-            "algorithm": "xxh3-128+bytes+xxh3-64-guard",
+            "algorithm": _ACTIVE_CONTENT_FINGERPRINT_ALGORITHM,
             "xxh3_128": output_fingerprint.xxh3_128,
             "byte_count": output_fingerprint.byte_count,
             "xxh3_64_guard": output_fingerprint.xxh3_64_guard,
@@ -3785,7 +3876,7 @@ def _embedding_member_binding_from_row(
         "revision_ref": revision,
         "materialization_ref": materialization,
         "fingerprint": {
-            "algorithm": "semantic-embedding-member-contract-xxh3-128-v1",
+            "algorithm": f"semantic-embedding-member-contract-{HASH_ALGORITHM_128}-v1",
             "xxh3_128": fingerprint,
         },
     }
@@ -4305,7 +4396,7 @@ def _record_discarded_embedding_execution(
         "binding_name": "discarded_provider_execution",
         "materialization_ref": observation_materialization,
         "fingerprint": {
-            "algorithm": "xxh3-128+bytes+xxh3-64-guard",
+            "algorithm": _ACTIVE_CONTENT_FINGERPRINT_ALGORITHM,
             "xxh3_128": candidate_fingerprint.xxh3_128,
             "byte_count": candidate_fingerprint.byte_count,
             "xxh3_64_guard": candidate_fingerprint.xxh3_64_guard,
@@ -4429,9 +4520,13 @@ def _record_embedding_attempt_failure(
     if row["input_chunk_revision_id"] is not None:
         inputs.append(_chunk_revision_binding(connection, int(row["input_chunk_revision_id"])))
     if not inputs:
+        # Rows without owner revision references predate the active hash
+        # backend marker. Preserve their legacy XXH3-shaped representation
+        # rather than relabelling an unknown historical digest as fallback.
         fingerprint_value = (
             f"{row['content_xxh3_128']};bytes={int(row['content_bytes'])};"
-            f"xxh3-64-guard={row['content_xxh3_64_guard']}"
+            "xxh3-64-guard="
+            f"{row['content_xxh3_64_guard']}"
         )
         entity_kind = str(row["entity_kind"])
         entity_id = str(row["entity_id"])
@@ -4567,7 +4662,7 @@ def _generation_candidate_binding(row: sqlite3.Row, generation_id: int) -> dict[
             observed_at_utc=None,
         ),
         "fingerprint": {
-            "algorithm": "semantic-generation-candidate-xxh3-128-v1",
+            "algorithm": f"semantic-generation-candidate-{HASH_ALGORITHM_128}-v1",
             "xxh3_128": fingerprint,
         },
     }
@@ -4643,7 +4738,7 @@ def _record_generation_publication_receipt(
                 "model_signature": str(row["model_signature"]),
                 "member_count": member_count,
                 "fingerprint": {
-                    "algorithm": "generation-contract-xxh3-128-v1",
+                    "algorithm": f"generation-contract-{HASH_ALGORITHM_128}-v1",
                     "xxh3_128": generation_fingerprint,
                 },
             },

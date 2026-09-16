@@ -133,11 +133,12 @@ def test_each_published_reader_reports_missing_dependency_in_its_envelope(
     assert not state.exists()
 
 
-def test_missing_base_dependency_in_a_fresh_process_stays_inside_read_envelopes(
+def test_missing_xxhash_uses_stdlib_fallback_in_a_fresh_process(
     tmp_path: Path,
 ) -> None:
-    # Block the actual import in a fresh interpreter rather than replacing the
-    # public reader, without changing the canonical venv or creating live state.
+    # Block the optional native wheel in a fresh interpreter rather than
+    # replacing the public reader, without changing the canonical venv or
+    # creating live state.
     script = """
 import json
 from pathlib import Path
@@ -149,6 +150,21 @@ class MissingXXHash:
             raise ModuleNotFoundError("No module named 'xxhash'", name="xxhash")
 
 sys.meta_path.insert(0, MissingXXHash())
+from neocortex.foundation.hash_compat import (
+    HASH_BACKEND,
+    HAS_NATIVE_XXHASH,
+    xxhash,
+)
+assert not HAS_NATIVE_XXHASH
+assert HASH_BACKEND == "sha256-fallback"
+payload = b"fallback-payload" * 128
+one_shot = xxhash.xxh3_128_hexdigest(payload)
+incremental = xxhash.xxh3_128()
+incremental.update(payload[:17])
+incremental.update(payload[17:])
+assert incremental.hexdigest() == one_shot
+assert len(one_shot) == 32
+assert len(xxhash.xxh3_64_hexdigest(payload, seed=1)) == 16
 from neocortex.api import read_api
 from neocortex.api.read_contract import ReadOperation, validate_read_payload
 
@@ -168,10 +184,12 @@ for operation, arguments in (
     payload = getattr(read_api, operation + "_payload")(*arguments, scope="personal")
     validate_read_payload(payload, ReadOperation(operation), scope="personal")
     assert payload["read_only"] is True
-    assert "xxhash" in payload["scopes"][0]["reason"]
+    serialized = json.dumps(payload, ensure_ascii=False)
+    assert "ModuleNotFoundError" not in serialized
+    assert "base_xxhash_unavailable" not in serialized
     outcomes[operation] = payload["exit_code"]
 assert not state.exists()
-print(json.dumps(outcomes))
+print(json.dumps({"backend": HASH_BACKEND, "outcomes": outcomes}))
 """
     environment = dict(os.environ)
     environment.pop("PYTHONPATH", None)
@@ -193,7 +211,15 @@ print(json.dumps(outcomes))
         timeout=20,
     )
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == dict.fromkeys(
-        ("status", "search", "context", "evidence", "lineage", "asset_health"), 1
-    )
+    payload = json.loads(result.stdout)
+    assert payload["backend"] == "sha256-fallback"
+    assert set(payload["outcomes"]) == {
+        "status",
+        "search",
+        "context",
+        "evidence",
+        "lineage",
+        "asset_health",
+    }
+    assert all(code in {0, 3, 4} for code in payload["outcomes"].values())
     assert not tuple(tmp_path.iterdir())

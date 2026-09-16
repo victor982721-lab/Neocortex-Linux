@@ -16,7 +16,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-import xxhash
+from neocortex.foundation.hash_compat import xxhash
 
 from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
 from neocortex.platform.policy import sqlite_path_collation

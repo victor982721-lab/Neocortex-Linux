@@ -20,7 +20,6 @@ classifiers = [
 dependencies = [
     "packaging>=26,<27",
     "rich>=15,<16",
-    "xxhash>=3.8,<4",
 ]
 
 [project.urls]
@@ -34,6 +33,11 @@ Neocortex = "neocortex.interface.entrypoint:entrypoint"
 [project.optional-dependencies]
 agent = [
     "mcp==1.29.0",
+]
+# Optional native accelerator.  The product remains functional without it and
+# falls back to SHA-256 from the Python standard library.
+fast-hash = [
+    "xxhash>=3.8,<4",
 ]
 # Build frontend and base tests are independent of optional runtimes/analyzers.
 # Packaging audit tests import the same isolated backend declared by

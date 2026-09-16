@@ -17,7 +17,7 @@ from itertools import islice
 from pathlib import Path
 from typing import Literal
 
-import xxhash
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, xxhash
 from neocortex.platform.policy import UNAVAILABLE_BIRTHTIME_NS
 
 from neocortex.runtime.config.app_paths import (
@@ -274,7 +274,10 @@ class InternalPathsPolicy:
         )
         _validate_policy_topology(captured)
         payload = _manifest_payload(captured)
-        signature = f"{INTERNAL_PATHS_POLICY_VERSION}:xxh3_128:{xxhash.xxh3_128_hexdigest(payload)}"
+        signature = (
+            f"{INTERNAL_PATHS_POLICY_VERSION}:{HASH_ALGORITHM_128.replace('-', '_')}:"
+            f"{xxhash.xxh3_128_hexdigest(payload)}"
+        )
         return cls(captured, signature)
 
     def __post_init__(self) -> None:
@@ -292,7 +295,7 @@ class InternalPathsPolicy:
         )
         _validate_policy_topology(ordered)
         expected_signature = (
-            f"{INTERNAL_PATHS_POLICY_VERSION}:xxh3_128:"
+            f"{INTERNAL_PATHS_POLICY_VERSION}:{HASH_ALGORITHM_128.replace('-', '_')}:"
             f"{xxhash.xxh3_128_hexdigest(_manifest_payload(ordered))}"
         )
         if ordered != self.entries or expected_signature != self.signature:
@@ -505,7 +508,10 @@ def effective_inventory_policy_signature(
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
-    return f"{version}:xxh3_128:{xxhash.xxh3_128_hexdigest(payload)}"
+    return (
+        f"{version}:{HASH_ALGORITHM_128.replace('-', '_')}:"
+        f"{xxhash.xxh3_128_hexdigest(payload)}"
+    )
 
 
 # endregion [02]

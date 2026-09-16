@@ -58,12 +58,20 @@ necesarios, sin preparación adicional ni historial Git. Usa un venv nuevo, sin
 `dev-resources/offline/artifacts/` contiene los wheels originales del cierre
 transitivo para CPython 3.13/Linux x86_64, `locks/` fija versiones y SHA-256 por
 capacidad, y `provenance.json` conserva origen y licencias. No requiere cachés
-personales, Git LFS ni otra descarga. `constraints-linux-cp313.lock` reúne ese
-cierre, mientras el lock productivo CPython 3.14 permanece independiente.
+personales, Git LFS ni otra descarga. `xxhash` es un acelerador opcional: si no
+está instalado, NeoCortex usa SHA-256 de la biblioteca estándar conservando los
+anchos de digest y marca el backend en la procedencia; `constraints-linux-cp313.lock`
+incluye el perfil opcional `fast-hash`, mientras el lock productivo CPython 3.14
+permanece independiente. Los valores de ambos backends no son intercambiables:
+al cambiar de backend, los caches que requieran esa identidad se revalidan o
+reconstruyen. Las claves de idempotencia de acciones, reconciliaciones y CLI
+usan un digest SHA-256 estable independiente del acelerador, por lo que un
+cambio de backend no duplica una intención ya registrada.
 
 | Capacidad | Extra / recurso | Incluido offline |
 |---|---|---|
-| Runtime base, inventario, texto y Code | `packaging`, `rich`, `xxhash` y transitivos | Sí, lock `runtime-base-cp313-linux-x86_64.lock` |
+| Runtime base, inventario, texto y Code | `packaging`, `rich` y transitivos | Sí, lock `runtime-base-cp313-linux-x86_64.lock` |
+| Acelerador opcional de hashing | `xxhash` | Sí, lock `fast-hash-cp313-linux-x86_64.lock` |
 | Construcción ordinaria | `build`, backend `setuptools` y transitivos | Sí, lock `build-cp313-linux-x86_64.lock` |
 | Pruebas base | `test-base`: pytest, backend `setuptools==83.0.0` para auditorías de empaquetado y transitivos, sin plugins obligatorios | Sí, lock `test-base-cp313-linux-x86_64.lock` |
 | Documentos e imagen | `documents`, `image`: Pillow, PyMuPDF, pdfminer.six, pytesseract y transitivos | Sí, lock `documents-image-cp313-linux-x86_64.lock` |

@@ -10,11 +10,13 @@ import importlib
 import importlib.util
 import inspect
 import os
+from dataclasses import replace
 from pathlib import Path
 
 from pytest import MonkeyPatch
 
 from neocortex.semantic import semantic_planner, semantic_service
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128
 from neocortex.semantic.semantic_service_contracts import (
     SemanticPlan,
     SemanticSourcePlan,
@@ -129,6 +131,23 @@ EXPECTED_WORKLOAD_KEYS = {
 }
 
 
+def _plan_signature(plan: SemanticPlan) -> str:
+    preimage = semantic_planner._plan_payload_for_signature(
+        scope=plan.scope,
+        selected_sources=plan.selected_sources,
+        semantic_schema_version=plan.semantic_schema_version,
+        source_plans=plan.source_plans,
+        workloads=plan.workloads,
+        chunking_signature=plan.text_chunking_signature,
+        content_set_xxh3_128=plan.content_set_xxh3_128,
+        semantic_snapshot_xxh3_128=plan.semantic_snapshot_xxh3_128,
+    )
+    return (
+        f"{semantic_planner.PLAN_ALGORITHM_VERSION}:{HASH_ALGORITHM_128}:"
+        f"{fingerprint_text(canonical_json(preimage)).xxh3_128}"
+    )
+
+
 def _plan() -> SemanticPlan:
     source = SemanticSourcePlan(
         "pdf",
@@ -178,7 +197,7 @@ def _plan() -> SemanticPlan:
         None,
         "no_exact_cost_calibration",
     )
-    return SemanticPlan(
+    plan = SemanticPlan(
         "text",
         ("pdf",),
         Path("C:/fixture/semantic.sqlite3"),
@@ -188,7 +207,7 @@ def _plan() -> SemanticPlan:
         "chunking-v1",
         "1" * 32,
         "2" * 32,
-        "semantic-readonly-plan-v4:xxh3-128:6b600875ca8cf824c90437aaafb42e07",
+        "placeholder",
         1,
         1,
         1,
@@ -210,6 +229,7 @@ def _plan() -> SemanticPlan:
         None,
         None,
     )
+    return replace(plan, plan_signature=_plan_signature(plan))
 
 
 def test_planner_payload_public_wrapper_identity_is_stable() -> None:
@@ -369,16 +389,27 @@ def test_representative_payload_keysets_and_byte_golden_are_stable() -> None:
     )
     assert payload["selected_sources"] == ["pdf"]
     assert workload_payloads[0]["supported_roles"] == ["query", "passage"]
-    assert plan.plan_signature.encode("utf-8") == (
-        b"semantic-readonly-plan-v4:xxh3-128:6b600875ca8cf824c90437aaafb42e07"
-    )
+    assert plan.plan_signature == _plan_signature(plan)
     encoded = canonical_json(payload).encode("utf-8")
-    if os.name == "nt":
-        assert len(encoded) == 2683
-        expected_digest = "7f9bd971da15b3fb7ce2f1f1128721102195b43b8c7155e0eca5020f4b24110a"
-    else:
-        assert len(encoded) == 2679
-        expected_digest = "430ca856b97f5d3518864e120fbdb812ce2c1bdce281b98aafac5266e5870715"
+    expected_golden = {
+        ("nt", "xxh3-128"): (
+            2683,
+            "7f9bd971da15b3fb7ce2f1f1128721102195b43b8c7155e0eca5020f4b24110a",
+        ),
+        ("posix", "xxh3-128"): (
+            2679,
+            "430ca856b97f5d3518864e120fbdb812ce2c1bdce281b98aafac5266e5870715",
+        ),
+        ("posix", "sha256-128-fallback-v1"): (
+            2693,
+            "be679c90f8ce52d014eb27a208ecfeb5972f68eafde40a5d2ea079959ab660c6",
+        ),
+    }
+    expected_length, expected_digest = expected_golden[(
+        "nt" if os.name == "nt" else "posix",
+        HASH_ALGORITHM_128,
+    )]
+    assert len(encoded) == expected_length
     assert hashlib.sha256(encoded).hexdigest() == expected_digest
     assert semantic_service.semantic_plan_payload(plan) == payload
 
@@ -415,7 +446,7 @@ def test_signature_preimage_is_private_separate_and_byte_stable() -> None:
         "f20597ff2eae7661d778adfbb5333dc3da0bdc0f60896831f7fee639ef8383a3"
     )
     derived_signature = (
-        f"{semantic_planner.PLAN_ALGORITHM_VERSION}:xxh3-128:"
+        f"{semantic_planner.PLAN_ALGORITHM_VERSION}:{HASH_ALGORITHM_128}:"
         f"{fingerprint_text(canonical_json(preimage)).xxh3_128}"
     )
     assert derived_signature == plan.plan_signature

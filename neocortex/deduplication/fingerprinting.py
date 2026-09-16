@@ -1,4 +1,8 @@
-"""Stable file snapshots and exact or sampled XXH3 fingerprints."""
+"""Stable file snapshots and exact or sampled content fingerprints.
+
+The native XXH3 backend is preferred; :mod:`neocortex.foundation.hash_compat`
+uses deterministic SHA-256-derived values when its optional wheel is absent.
+"""
 
 from __future__ import annotations
 
@@ -10,22 +14,19 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, BinaryIO, cast
 
+from neocortex.foundation.hash_compat import HAS_NATIVE_XXHASH, HASH_BACKEND, xxhash
 from neocortex.platform.policy import stat_birthtime_ns
 
-from .domain.errors import FileChangedError, MissingDependencyError
+from .domain.errors import FileChangedError
 from .domain.models import FileSnapshot
 from .io import absolute_display_path, native_io_path
 
-try:
-    import xxhash
-except ImportError as exc:  # pragma: no cover - exercised only without dependency
-    raise MissingDependencyError(
-        "deduplication requires the native 'xxhash' package (pip install xxhash)"
-    ) from exc
-
-
-FULL_ALGORITHM = "xxh3_128_full_v1"
-PARTIAL_ALGORITHM = "xxh3_128_first_middle_last_v1_sample_262144"
+# Native installations retain the historical labels. A fallback gets its own
+# cache namespace so XXH3 and SHA-256-derived fingerprints are never mixed.
+_ALGORITHM_PREFIX = "xxh3_128" if HAS_NATIVE_XXHASH else "sha256_128_fallback"
+FULL_ALGORITHM = f"{_ALGORITHM_PREFIX}_full_v1"
+PARTIAL_ALGORITHM = f"{_ALGORITHM_PREFIX}_first_middle_last_v1_sample_262144"
+FINGERPRINT_BACKEND = HASH_BACKEND
 DEFAULT_IO_CHUNK_SIZE = 16 * 1024 * 1024
 DEFAULT_SAMPLE_SIZE = 256 * 1024
 _MIN_IO_CHUNK_SIZE = 64 * 1024
@@ -285,6 +286,7 @@ def snapshot_path(path: str | Path) -> FileSnapshot:
 __all__ = [
     "DEFAULT_IO_CHUNK_SIZE",
     "DEFAULT_SAMPLE_SIZE",
+    "FINGERPRINT_BACKEND",
     "FULL_ALGORITHM",
     "PARTIAL_ALGORITHM",
     "files_equal_exact",

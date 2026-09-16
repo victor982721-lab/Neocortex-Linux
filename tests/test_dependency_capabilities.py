@@ -28,7 +28,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BASE_DEPENDENCIES = (
     "packaging>=26,<27",
     "rich>=15,<16",
-    "xxhash>=3.8,<4",
 )
 
 AGENT_DEPENDENCIES = ("mcp==1.29.0",)
@@ -65,6 +64,7 @@ FULL_DEPENDENCIES = (
 
 OPTIONAL_DEPENDENCIES = {
     "agent": AGENT_DEPENDENCIES,
+    "fast-hash": ("xxhash>=3.8,<4",),
     "build": DEV_DEPENDENCIES,
     "test-base": ("pytest>=9.1,<10", "setuptools==83.0.0"),
     "analysis": ANALYSIS_DEPENDENCIES,
@@ -171,7 +171,11 @@ def _version_reader(available_modules: set[str]):
             for specifier in requirement.specifier
             if specifier.operator in {">=", "=="}
         )
-        for value in (*BASE_DEPENDENCIES, *FULL_DEPENDENCIES)
+        for value in (
+            *BASE_DEPENDENCIES,
+            *FULL_DEPENDENCIES,
+            *OPTIONAL_DEPENDENCIES["fast-hash"],
+        )
         for requirement in (Requirement(value),)
     }
     versions = {
@@ -228,6 +232,17 @@ def test_missing_optional_runtimes_are_explicitly_unavailable_or_degraded() -> N
     assert "image_decode_unavailable" in statuses["image"].degradation_reasons
     assert statuses["semantic"].state is CapabilityState.UNAVAILABLE
     assert statuses["ui"].state is CapabilityState.UNAVAILABLE
+
+
+def test_hash_accelerator_is_not_a_runtime_prerequisite() -> None:
+    statuses = {
+        status.capability: status for status in _inspect_with({"packaging", "rich"})
+    }
+
+    for name in ("docx", "office", "code", "text"):
+        assert statuses[name].state is CapabilityState.AVAILABLE
+        assert statuses[name].degradation_reasons == ()
+        assert all(item.requirement.component != "xxhash" for item in statuses[name].components)
 
 
 def test_optional_route_components_produce_stable_degradation_reasons() -> None:

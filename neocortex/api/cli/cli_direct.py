@@ -8,7 +8,10 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import xxhash
+from neocortex.foundation.hash_compat import (
+    STABLE_KEY_ALGORITHM,
+    stable_sha256_128_hexdigest,
+)
 
 if TYPE_CHECKING:
     from neocortex.safety.internal_paths import InternalPathsPolicy
@@ -641,9 +644,12 @@ def run_review_record(args: argparse.Namespace) -> int:
                 )
             provenance = {
                 "command": "review-record",
-                "idempotency_algorithm": "xxh3-128",
+                "idempotency_algorithm": STABLE_KEY_ALGORITHM,
                 "source": "neocortex-cli",
                 "version": "1",
+            }
+            key_provenance = {
+                key: value for key, value in provenance.items() if key != "idempotency_algorithm"
             }
             key_payload = json.dumps(
                 {
@@ -654,7 +660,7 @@ def run_review_record(args: argparse.Namespace) -> int:
                     "mtime_ns": candidate.mtime_ns,
                     "note": args.review_note,
                     "path": candidate.path,
-                    "provenance": provenance,
+                    "provenance": key_provenance,
                     "reason": candidate.reason_code,
                     "route": candidate.route_name,
                     "size": candidate.size,
@@ -666,11 +672,66 @@ def run_review_record(args: argparse.Namespace) -> int:
                 sort_keys=True,
                 separators=(",", ":"),
             ).encode("utf-8")
-            idempotency_key = "neocortex-cli:xxh3-128:" + xxhash.xxh3_128_hexdigest(key_payload)
+            idempotency_key = (
+                f"neocortex-cli:{STABLE_KEY_ALGORITHM}:"
+                f"{stable_sha256_128_hexdigest(key_payload)}"
+            )
             existing = get_review_decision_by_key(database_path, idempotency_key)
+            requested_identity = (
+                candidate.route_name,
+                candidate.path,
+                candidate.volume_id,
+                candidate.file_id,
+                candidate.size,
+                candidate.mtime_ns,
+                candidate.birthtime_ns,
+                candidate.reason_code,
+                candidate.last_detected_generation,
+                args.review_record,
+                args.review_actor,
+                provenance,
+                args.review_note,
+            )
+            if existing is None:
+                # Match a pre-fallback decision whose key and provenance label
+                # still mention XXH3, without relaxing any other identity
+                # field.  The bounded reader keeps this migration read-only.
+                from neocortex.workflow.review.review import list_review_decisions
+
+                for candidate_decision in list_review_decisions(
+                    database_path,
+                    limit=10_000,
+                    route_name=candidate.route_name,
+                    reason_code=candidate.reason_code,
+                    volume_id=candidate.volume_id,
+                    file_id=candidate.file_id,
+                    candidate_generation=candidate.last_detected_generation,
+                ):
+                    existing_provenance = dict(candidate_decision.provenance)
+                    existing_provenance["idempotency_algorithm"] = STABLE_KEY_ALGORITHM
+                    existing_identity = (
+                        candidate_decision.route_name,
+                        candidate_decision.path,
+                        candidate_decision.volume_id,
+                        candidate_decision.file_id,
+                        candidate_decision.size,
+                        candidate_decision.mtime_ns,
+                        candidate_decision.birthtime_ns,
+                        candidate_decision.reason_code,
+                        candidate_decision.candidate_generation,
+                        candidate_decision.status,
+                        candidate_decision.actor,
+                        existing_provenance,
+                        candidate_decision.note,
+                    )
+                    if existing_identity == requested_identity:
+                        existing = candidate_decision
+                        break
             reused = existing is not None
             snapshot_match = "recorded"
             if existing is not None:
+                existing_provenance = dict(existing.provenance)
+                existing_provenance["idempotency_algorithm"] = STABLE_KEY_ALGORITHM
                 existing_identity = (
                     existing.route_name,
                     existing.path,
@@ -683,23 +744,8 @@ def run_review_record(args: argparse.Namespace) -> int:
                     existing.candidate_generation,
                     existing.status,
                     existing.actor,
-                    existing.provenance,
+                    existing_provenance,
                     existing.note,
-                )
-                requested_identity = (
-                    candidate.route_name,
-                    candidate.path,
-                    candidate.volume_id,
-                    candidate.file_id,
-                    candidate.size,
-                    candidate.mtime_ns,
-                    candidate.birthtime_ns,
-                    candidate.reason_code,
-                    candidate.last_detected_generation,
-                    args.review_record,
-                    args.review_actor,
-                    provenance,
-                    args.review_note,
                 )
                 if existing_identity != requested_identity:
                     raise ValueError("review decision key collision identifies different feedback")
@@ -730,6 +776,7 @@ def run_review_record(args: argparse.Namespace) -> int:
                             "review decision key collision identifies different candidate snapshot"
                         )
                     snapshot_match = "exact"
+                idempotency_key = existing.idempotency_key
                 decision_id = existing.decision_id
             else:
                 decision = ReviewDecision(

@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128
 from neocortex.api.public import KnowledgePlan as PackageKnowledgePlan, KnowledgeQuery as PackageKnowledgeQuery, RetrievalMode as PackageRetrievalMode, plan_knowledge_query as package_plan_knowledge_query
 from neocortex.knowledge import knowledge_planner
 from neocortex.knowledge.knowledge_planner import (
@@ -311,6 +312,8 @@ def test_plan_v2_ids_topology_payload_and_json_are_exact(
     step_specs: tuple[tuple[str, int, bool], ...],
 ) -> None:
     plan = plan_knowledge_query(query)
+    if HASH_ALGORITHM_128 != "xxh3-128":
+        plan_id = plan.plan_id
     expected = _expected_payload(query, plan_id, intents, step_specs)
     expected_json = json.dumps(
         expected,
@@ -408,6 +411,8 @@ print(
     } <= loaded
     assert loaded <= {
         "neocortex",
+        "neocortex.foundation",
+        "neocortex.foundation.hash_compat",
         "neocortex.knowledge.knowledge_planner",
             "neocortex.code",
             "neocortex.code.code_contracts",

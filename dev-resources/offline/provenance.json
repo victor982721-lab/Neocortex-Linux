@@ -1374,7 +1374,7 @@
       "name": "xxhash",
       "origin_verification": "PyPI HTTPS release metadata SHA-256 and byte size",
       "profiles": [
-        "base"
+        "fast-hash"
       ],
       "requires_dist": [],
       "requires_python": ">=3.8",
@@ -1401,7 +1401,9 @@
       "mdurl==0.1.2",
       "packaging==26.2",
       "pygments==2.21.0",
-      "rich==15.0.0",
+      "rich==15.0.0"
+    ],
+    "fast-hash": [
       "xxhash==3.8.1"
     ],
     "build": [
@@ -1434,7 +1436,9 @@
   "profile_roots": {
     "base": [
       "packaging==26.2",
-      "rich==15.0.0",
+      "rich==15.0.0"
+    ],
+    "fast-hash": [
       "xxhash==3.8.1"
     ],
     "build": [

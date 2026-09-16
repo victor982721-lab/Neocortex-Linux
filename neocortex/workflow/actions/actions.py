@@ -17,12 +17,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from neocortex.platform.policy import stat_birthtime_ns
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128
 
 from neocortex.deduplication import (
     DedupIndex,
     DedupPlan,
     FileChangedError,
     FileSnapshot,
+    FULL_ALGORITHM,
     files_equal_exact,
     full_fingerprint,
     snapshot_path,
@@ -520,7 +522,7 @@ class FrameworkActions:
                 failed += 1
                 continue
             try:
-                source_digest = "xxh3_128_full_v1:" + full_fingerprint(planned).hex()
+                source_digest = f"{FULL_ALGORITHM}:" + full_fingerprint(planned).hex()
                 if reference is not None:
                     if not files_equal_exact(planned, reference):
                         raise RuntimeError("keeper changed during exact duplicate comparison")
@@ -651,7 +653,7 @@ class FrameworkActions:
                 failed += 1
                 continue
             try:
-                source_digest = "xxh3_128_full_v1:" + full_fingerprint(planned).hex()
+                source_digest = f"{FULL_ALGORITHM}:" + full_fingerprint(planned).hex()
                 if reference is not None and not files_equal_exact(planned, reference):
                     raise RuntimeError("keeper changed during exact duplicate comparison")
                 expected_json = expected_identity_json(
@@ -1286,7 +1288,7 @@ class FrameworkActions:
 
         for group in self._index.iter_duplicate_groups(plan.scan_id):
             evidence = (
-                f"xxh3-128={group.full_fingerprint};"
+                f"{HASH_ALGORITHM_128}={group.full_fingerprint};"
                 f"byte-for-byte={str(self._verify_bytes_before_trash).lower()};"
                 f"keep={group.keep.path}"
             )

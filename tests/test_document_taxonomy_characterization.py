@@ -6,7 +6,7 @@ import json
 from dataclasses import asdict, dataclass
 
 import pytest
-import xxhash
+from neocortex.foundation.hash_compat import xxhash
 
 import neocortex.documents.document_taxonomy as taxonomy_module
 from neocortex.documents.document_taxonomy import (

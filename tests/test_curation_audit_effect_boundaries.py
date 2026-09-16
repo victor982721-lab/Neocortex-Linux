@@ -24,7 +24,7 @@ from neocortex.curation.recovery import (
     restore_curation_action,
     restore_curation_preview,
 )
-from neocortex.deduplication import FileChangedError, full_fingerprint, snapshot_path
+from neocortex.deduplication import FULL_ALGORITHM, FileChangedError, full_fingerprint, snapshot_path
 from neocortex.persistence.framework_state_writer import FrameworkState
 from neocortex.safety import kio_trash
 from neocortex.safety.kio_trash import KioTrashStatus, move_to_trash
@@ -242,7 +242,7 @@ def test_reconciliation_reports_hash_race_without_raising(tmp_path, monkeypatch)
     snapshot = snapshot_path(source)
     expected = reconciliation._ExpectedIdentity(
         snapshot.volume_id, snapshot.file_id, snapshot.size, snapshot.mtime_ns,
-        snapshot.birthtime_ns, "xxh3_128_full_v1:" + full_fingerprint(snapshot).hex(),
+        snapshot.birthtime_ns, FULL_ALGORITHM + ":" + full_fingerprint(snapshot).hex(),
     )
 
     def raced(_snapshot):

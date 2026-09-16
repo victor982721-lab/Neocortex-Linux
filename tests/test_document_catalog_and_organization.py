@@ -10,6 +10,7 @@ import pytest
 
 import neocortex.documents.document_catalog_schema as catalog_schema_module
 from neocortex.deduplication import snapshot_path
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_64
 from neocortex.progress import RecordingProgress
 from neocortex.api.cli.cli_parser import build_parser
 from neocortex.api.cli.cli_validation import validate_arguments
@@ -255,7 +256,7 @@ aliases = ["PRJ-DELTA-77"]
     assert builtin.primary_organization == "SERINTRA"
     assert project.primary_client == "CLIENTE PRUEBA"
     assert project.primary_project == "Proyecto Delta"
-    assert "custom-xxh3-64=" in custom.classifier_signature
+    assert f"custom-{HASH_ALGORITHM_64}=" in custom.classifier_signature
 
 
 @pytest.mark.parametrize(

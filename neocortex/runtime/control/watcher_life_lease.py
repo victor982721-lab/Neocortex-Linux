@@ -9,10 +9,12 @@ acquired, so stale metadata can never grant ownership.
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import importlib
 import json
 import os
 import socket
+import stat
 import sys
 import time
 from dataclasses import dataclass
@@ -21,7 +23,7 @@ from typing import BinaryIO, Literal
 
 from neocortex import __version__
 
-xxhash = importlib.import_module("xxhash")
+from neocortex.foundation.hash_compat import HASH_BACKEND, xxhash
 _METADATA_SCHEMA = "neocortex-watcher-life-lease-v1"
 _MAX_METADATA_BYTES = 64 * 1024
 _MAX_ARG_COUNT = 64
@@ -55,11 +57,18 @@ class WatcherLifeLeaseConflict(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class WatcherLeaseIdentity:
-    """Canonical identity used to derive a bounded, non-cryptographic key."""
+    """Canonical identity with a legacy digest and stable lock key."""
 
     root: str
     state_directory: str
     xxh3_128: str
+
+    @property
+    def stable_lock_key(self) -> str:
+        """Return a backend-independent key for the process lock filename."""
+
+        encoded = f"{self.root}\0{self.state_directory}".encode("utf-8")
+        return hashlib.sha256(b"neocortex-watcher-life-lease-v2\0" + encoded).hexdigest()
 
 
 def _canonical_path(path: str | Path) -> str:
@@ -72,7 +81,7 @@ def watcher_lease_identity(
     root: str | Path,
     state_directory: str | Path,
 ) -> WatcherLeaseIdentity:
-    """Return the canonical root/state identity and its explicit XXH3 key."""
+    """Return the canonical root/state identity and its diagnostic digest."""
 
     canonical_root = _canonical_path(root)
     canonical_state = _canonical_path(state_directory)
@@ -166,6 +175,7 @@ def _metadata(identity: WatcherLeaseIdentity) -> dict[str, object]:
         "process_creation_time_ns": _process_creation_time_ns(os.getpid()),
         "host": socket.gethostname()[:255],
         "version": __version__,
+        "hash_backend": HASH_BACKEND,
         "argv": _bounded_argv(sys.argv),
         "root": identity.root,
         "state_directory": identity.state_directory,
@@ -228,6 +238,65 @@ def _unlock_stream(stream: BinaryIO) -> None:
         fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
 
+def _same_identity(owner: dict[str, object] | None, identity: WatcherLeaseIdentity) -> bool:
+    return bool(
+        owner is not None
+        and owner.get("root") == identity.root
+        and owner.get("state_directory") == identity.state_directory
+    )
+
+
+def _acquire_legacy_streams(
+    state: Path,
+    identity: WatcherLeaseIdentity,
+) -> list[BinaryIO]:
+    """Hold matching pre-fallback XXH3 lock files during upgrade."""
+
+    streams: list[BinaryIO] = []
+    if not state.is_dir():
+        return streams
+    for path in sorted(state.glob("watcher-life-xxh3-128-*.lock"), key=os.fspath):
+        try:
+            if not stat.S_ISREG(os.lstat(path).st_mode):
+                continue
+            stream = open(path, "r+b", buffering=0)
+        except (FileNotFoundError, NotADirectoryError, PermissionError):
+            continue
+        try:
+            _lock_stream(stream)
+        except OSError as exc:
+            owner = _read_metadata(stream)
+            status = _owner_status(owner)
+            stream.close()
+            if _same_identity(owner, identity):
+                _release_streams(streams)
+                raise WatcherLifeLeaseConflict(path, owner, status) from exc
+            continue
+        owner = _read_metadata(stream)
+        if _same_identity(owner, identity):
+            streams.append(stream)
+            continue
+        try:
+            _unlock_stream(stream)
+        finally:
+            stream.close()
+    return streams
+
+
+def _release_streams(streams: list[BinaryIO]) -> OSError | None:
+    unlock_error: OSError | None = None
+    while streams:
+        stream = streams.pop()
+        try:
+            _unlock_stream(stream)
+        except OSError as exc:
+            if unlock_error is None:
+                unlock_error = exc
+        finally:
+            stream.close()
+    return unlock_error
+
+
 # endregion [03]
 
 
@@ -240,10 +309,11 @@ class WatcherLifeLease:
     def __init__(self, root: str | Path, state_directory: str | Path) -> None:
         self.identity = watcher_lease_identity(root, state_directory)
         state = Path(self.identity.state_directory)
-        self.path = state / (f"watcher-life-xxh3-128-{self.identity.xxh3_128}.lock")
+        self.path = state / (f"watcher-life-sha256-{self.identity.stable_lock_key}.lock")
         self.owner: dict[str, object] | None = None
         self.previous_metadata: dict[str, object] | None = None
         self._stream: BinaryIO | None = None
+        self._legacy_streams: list[BinaryIO] = []
 
     @property
     def replaced_stale_metadata(self) -> bool:
@@ -251,16 +321,22 @@ class WatcherLifeLease:
 
     def __enter__(self) -> "WatcherLifeLease":
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        stream = open(self.path, "a+b", buffering=0)
-        if stream.seek(0, os.SEEK_END) == 0:
-            stream.write(b"\0")
-        stream.seek(0)
+        legacy_streams = _acquire_legacy_streams(self.path.parent, self.identity)
+        try:
+            stream = open(self.path, "a+b", buffering=0)
+            if stream.seek(0, os.SEEK_END) == 0:
+                stream.write(b"\0")
+            stream.seek(0)
+        except BaseException:
+            _release_streams(legacy_streams)
+            raise
         try:
             _lock_stream(stream)
         except OSError as exc:
             owner = _read_metadata(stream)
             status = _owner_status(owner)
             stream.close()
+            _release_streams(legacy_streams)
             raise WatcherLifeLeaseConflict(self.path, owner, status) from exc
 
         try:
@@ -284,11 +360,13 @@ class WatcherLifeLease:
                 _unlock_stream(stream)
             finally:
                 stream.close()
+                _release_streams(legacy_streams)
             raise
 
         self.previous_metadata = previous
         self.owner = owner
         self._stream = stream
+        self._legacy_streams = legacy_streams
         return self
 
     def __exit__(self, exc_type, exc, traceback) -> None:
@@ -303,6 +381,9 @@ class WatcherLifeLease:
             unlock_error = caught
         finally:
             stream.close()
+        legacy_unlock_error = _release_streams(self._legacy_streams)
+        if unlock_error is None:
+            unlock_error = legacy_unlock_error
         if unlock_error is not None and exc_type is None:
             raise unlock_error
 

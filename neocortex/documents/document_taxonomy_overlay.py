@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-import xxhash
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_64, xxhash
 
 from .document_taxonomy_models import (
     AuthoritySpec,
@@ -77,7 +77,7 @@ def load_taxonomy(path: Path | None = None) -> TechnicalTaxonomy:
         projects.append(ProjectSpec(name, client, aliases or (name,)))
     digest = xxhash.xxh3_64_hexdigest(raw)
     return TechnicalTaxonomy(
-        signature=f"{BUILTIN_TAXONOMY_VERSION}|custom-xxh3-64={digest}",
+        signature=f"{BUILTIN_TAXONOMY_VERSION}|custom-{HASH_ALGORITHM_64}={digest}",
         authorities=_deduplicate_authorities(authorities),
         organizations=_deduplicate_organizations(organizations),
         clients=_deduplicate_clients(clients),

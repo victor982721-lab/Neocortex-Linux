@@ -285,14 +285,6 @@ _BASE_REQUIREMENTS = (
         missing_reason="base_rich_unavailable",
         extra=None,
     ),
-    _distribution(
-        "xxhash",
-        "xxhash",
-        "xxhash",
-        required=True,
-        missing_reason="base_xxhash_unavailable",
-        extra=None,
-    ),
 )
 
 
@@ -588,7 +580,10 @@ CAPABILITY_MANIFESTS: tuple[CapabilityManifest, ...] = (
         network_required=False,
         privacy=CapabilityPrivacy.LOCAL_ONLY,
         optional_extra="documents",
-        required_components=("xxhash",),
+        # XXH3 is an optional accelerator.  The product's hash compatibility
+        # layer supplies a deterministic stdlib fallback, so its absence must
+        # never make the builtin text implementation unavailable.
+        required_components=(),
         required_binaries=(),
         mime_binary_alternatives=(),
         required_models=(),

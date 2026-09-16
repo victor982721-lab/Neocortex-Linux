@@ -370,10 +370,16 @@ def _identity_from_payload(payload: object) -> Any:
     raw_content = nested("content")
     if raw_content is None:
         raise ValueError("persisted content identity is missing")
+    content_algorithm = raw_content.get(
+        "algorithm", semantic.LEGACY_CONTENT_IDENTITY_ALGORITHM
+    )
+    if not isinstance(content_algorithm, str):
+        raise ValueError("persisted content identity algorithm is malformed")
     content = semantic.ContentIdentity(
         str(raw_content.get("xxh3_128", "")),
         int(raw_content.get("byte_count", -1)),
         str(raw_content.get("xxh3_64_guard", "")),
+        content_algorithm,
     )
     raw_physical = nested("physical")
     physical = (
@@ -402,10 +408,16 @@ def _identity_from_payload(payload: object) -> Any:
         work_content = nested_from(raw_work, "content")
         if work_content is None:
             raise ValueError("persisted work identity content is missing")
+        work_content_algorithm = work_content.get(
+            "algorithm", semantic.LEGACY_CONTENT_IDENTITY_ALGORITHM
+        )
+        if not isinstance(work_content_algorithm, str):
+            raise ValueError("persisted work content identity algorithm is malformed")
         work_content_identity = semantic.ContentIdentity(
             str(work_content.get("xxh3_128", "")),
             int(work_content.get("byte_count", -1)),
             str(work_content.get("xxh3_64_guard", "")),
+            work_content_algorithm,
         )
         work = semantic.WorkIdentity(
             str(raw_work.get("model_signature", "")),

@@ -20,7 +20,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Protocol
 
-import xxhash
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, xxhash
 
 from neocortex import __version__ as _NEOCORTEX_DISTRIBUTION_VERSION
 from neocortex.capabilities.broker import (
@@ -113,7 +113,7 @@ _TEXT_IMPLEMENTATION_CONFIGURATION_KEYS = (
     "implementation_schema",
 )
 _TEXT_SOURCE_REVISION_PRODUCER = "text.source"
-_TEXT_SOURCE_PROCESSING_SIGNATURE = "text-source-revision-v1:xxh3-128"
+_TEXT_SOURCE_PROCESSING_SIGNATURE = f"text-source-revision-v1:{HASH_ALGORITHM_128}"
 _TEXT_REPRESENTATION_KIND = "text_representation"
 _TEXT_FTS_KIND = "text_fts"
 _MAX_DERIVATION_VALUE_CHARS = 4_096
@@ -316,7 +316,7 @@ def _input_binding(
         "revision:text",
         {
             "byte_count": len(payload),
-            "fingerprint_algorithm": "xxh3-128",
+            "fingerprint_algorithm": HASH_ALGORITHM_128,
             "raw_xxh3_128": raw_xxh3_128,
             "resource_id": resource.resource_id,
         },
@@ -336,7 +336,7 @@ def _input_binding(
             name="source",
             revision=revision,
             fingerprint=raw_xxh3_128,
-            fingerprint_algorithm="xxh3-128",
+            fingerprint_algorithm=HASH_ALGORITHM_128,
         ),
     )
 
@@ -492,7 +492,7 @@ def _bounded_capability_text(value: str) -> str:
     if len(value) <= _MAX_DERIVATION_VALUE_CHARS:
         return value
     digest = fingerprint_text(value).xxh3_128
-    suffix = f"...[truncated;xxh3-128={digest}]"
+    suffix = f"...[truncated;{HASH_ALGORITHM_128}={digest}]"
     return value[: _MAX_DERIVATION_VALUE_CHARS - len(suffix)] + suffix
 
 
@@ -664,7 +664,7 @@ def _output_bindings(
                 generation=generation,
             ),
             fingerprint=fingerprint,
-            fingerprint_algorithm="xxh3-128",
+            fingerprint_algorithm=HASH_ALGORITHM_128,
         )
 
     return (
@@ -1048,7 +1048,7 @@ class TextRoute:
             materialization = output.materialization
             if (
                 contract is None
-                or output.fingerprint_algorithm != "xxh3-128"
+                or output.fingerprint_algorithm != HASH_ALGORITHM_128
                 or output.fingerprint != contract[1]
                 or materialization.owner != "text"
                 or materialization.kind != contract[0]

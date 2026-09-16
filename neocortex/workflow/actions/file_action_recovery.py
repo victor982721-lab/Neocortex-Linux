@@ -14,7 +14,13 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 
-from neocortex.deduplication import FileChangedError, FileSnapshot, full_fingerprint, snapshot_path
+from neocortex.deduplication import (
+    FULL_ALGORITHM,
+    FileChangedError,
+    FileSnapshot,
+    full_fingerprint,
+    snapshot_path,
+)
 from neocortex.persistence.framework_connection import connect_existing_framework
 from neocortex.persistence.framework_schema import SCHEMA_VERSION as FRAMEWORK_SCHEMA_VERSION
 from neocortex.safety.kio_trash import _verify_curation_trash_evidence
@@ -369,7 +375,7 @@ def _observe_path(path: str, expected: _ExpectedIdentity) -> tuple[str, str | No
         )
     if expected.source_digest is not None:
         try:
-            digest = "xxh3_128_full_v1:" + full_fingerprint(current).hex()
+            digest = f"{FULL_ALGORITHM}:" + full_fingerprint(current).hex()
         except (OSError, FileChangedError) as exc:
             return "error", f"full digest observation failed: {type(exc).__name__}: {exc}"
         if digest != expected.source_digest:

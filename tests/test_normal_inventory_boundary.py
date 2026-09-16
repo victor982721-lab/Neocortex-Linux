@@ -10,6 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128
 
 from neocortex.enumeration import JournalCursor
 from neocortex.deduplication import DedupIndex, InventoryCheckpoint, ScanSummary
@@ -230,7 +231,9 @@ def test_boundary_compiles_restricted_codex_allowlist_and_v2_signature(
     )
 
     assert boundary.protected_content_policy == protected_policy
-    assert boundary.effective_signature.startswith("effective-inventory-policy-v2:xxh3_128:")
+    assert boundary.effective_signature.startswith(
+        f"effective-inventory-policy-v2:{HASH_ALGORITHM_128.replace('-', '_')}:"
+    )
     assert not boundary.exclusion_policy.excludes_directory(codex)
     assert not boundary.exclusion_policy.excludes_directory(sessions)
     assert not boundary.exclusion_policy.excludes_file(agents)

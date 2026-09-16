@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 from neocortex.persistence.framework_content_admission import ContentAdmissionLedger
 from neocortex.semantic.semantic_admission import (
+    CONTENT_IDENTITY_ALGORITHM,
     ContentAdmissionPolicy,
     SemanticSingleFlight,
     evaluate_content_admission,
@@ -98,6 +99,11 @@ def test_framework_ledger_persists_policy_and_correction_in_one_owner() -> None:
         first_policy = ContentAdmissionPolicy(version=1)
         ledger.record_policy("synthetic-corpus", first_policy, recorded_ns=1)
         first = ledger.record_admission("synthetic-corpus", item, recorded_ns=2)
+        assert first.identity.content.algorithm == CONTENT_IDENTITY_ALGORITHM
+        assert (
+            ledger.current_admission("synthetic-corpus", item.item_id).identity.content.algorithm
+            == CONTENT_IDENTITY_ALGORITHM
+        )
 
         second_policy = ContentAdmissionPolicy(version=2, excluded_item_ids=(item.item_id,))
         corrected = ledger.record_admission(

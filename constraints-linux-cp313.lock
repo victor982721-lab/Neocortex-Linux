@@ -3,7 +3,8 @@
 # this closure was resolved separately against original cp313/abi3 wheels.
 # Install with --no-index --find-links dev-resources/offline/artifacts --require-hashes.
 # Artifact origin, compatibility tags and licenses: dev-resources/offline/provenance.json.
-# Combined runtime-base, build, test-base and documents-image; not the full extra.
+# Combined runtime-base, build, test-base, documents-image and optional fast-hash;
+# not the full extra.  ``xxhash`` is present only for the opt-in accelerator.
 # Inference engines/models, UI and platform integrations are intentionally absent.
 build==1.5.0 --hash=sha256:13f3eecb844759ab66efec90ca17639bbf14dc06cb2fdf37a9010322d9c50a6f
 cffi==2.1.1 --hash=sha256:a931079504ecc49efed7744c476a5c343a92fabf66dec2db95edb1b2fdc770e2

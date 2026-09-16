@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128
+
 from neocortex.semantic.derivation_contracts import (
     DERIVATION_CONTRACT_SCHEMA_VERSION,
     CapabilityFailure,
@@ -161,7 +163,9 @@ def test_receipt_serialization_is_canonical_bounded_and_identity_stable() -> Non
     assert json.loads(receipt.to_json()) == payload
     assert receipt.to_json() == _successful_receipt().to_json()
     assert receipt.contract_fingerprint == _successful_receipt().contract_fingerprint
-    assert receipt.contract_fingerprint.startswith("derivation-contract-v1:xxh3-128:")
+    assert receipt.contract_fingerprint.startswith(
+        f"derivation-contract-v1:{HASH_ALGORITHM_128}:"
+    )
     assert WorkReceipt.from_dict(payload) == receipt
     assert WorkReceipt.from_json(receipt.to_json()) == receipt
     with pytest.raises(FrozenInstanceError):

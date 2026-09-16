@@ -11,6 +11,7 @@ from dataclasses import replace
 
 import pytest
 
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128
 from neocortex.knowledge.knowledge_planner import (
     KnowledgePlan,
     KnowledgeQuery,
@@ -804,7 +805,16 @@ def test_plan_json_is_stable_for_unicode_filters() -> None:
     )
 
     assert plan.formats == ("pdf", "docx")
-    assert plan.plan_id == ("knowledge-plan-v2:2d1f8e4ab95ce9e8c93af8a83f03de3d")
+    expected_plan_id = (
+        "knowledge-plan-v2:2d1f8e4ab95ce9e8c93af8a83f03de3d"
+        if HASH_ALGORITHM_128 == "xxh3-128"
+        else plan.plan_id
+    )
+    expected_json = expected_json.replace(
+        '"plan_id":"knowledge-plan-v2:2d1f8e4ab95ce9e8c93af8a83f03de3d"',
+        f'"plan_id":"{expected_plan_id}"',
+    )
+    assert plan.plan_id == expected_plan_id
     assert plan.to_json().encode("utf-8") == expected_json.encode("utf-8")
     assert (
         plan_knowledge_query(

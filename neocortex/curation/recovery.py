@@ -23,6 +23,7 @@ from neocortex.curation.application import _open_parent_dirfd
 from neocortex.deduplication import (
     FileChangedError,
     FileSnapshot,
+    FULL_ALGORITHM,
     full_fingerprint,
     snapshot_path,
     stat_matches_snapshot,
@@ -141,7 +142,7 @@ def _canonical_json(value: object) -> str:
 
 
 def _digest(snapshot: FileSnapshot) -> str:
-    return "xxh3_128_full_v1:" + full_fingerprint(snapshot).hex()
+    return f"{FULL_ALGORITHM}:" + full_fingerprint(snapshot).hex()
 
 
 def _snapshot_identity(snapshot: FileSnapshot) -> tuple[int, int, int]:

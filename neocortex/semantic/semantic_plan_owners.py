@@ -21,7 +21,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TypeVar
 
-import xxhash
+from neocortex.foundation.hash_compat import xxhash
 
 from .semantic_chunking import TextChunkingConfig
 from .semantic_models import (

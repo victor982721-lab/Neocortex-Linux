@@ -11,7 +11,7 @@ from typing import Any, cast
 import pytest
 
 from neocortex.curation import recovery
-from neocortex.deduplication import full_fingerprint, snapshot_path
+from neocortex.deduplication import FULL_ALGORITHM, full_fingerprint, snapshot_path
 from neocortex.persistence import sqlite_backup, state_publication
 from neocortex.persistence.framework_connection import connect_existing_framework
 from neocortex.runtime.control.locking import FrameworkRunLock
@@ -140,7 +140,7 @@ def test_restore_rejects_trash_directory_replacement_before_rename(
         item_snapshot.mtime_ns,
         item_snapshot.birthtime_ns,
     )
-    digest = "xxh3_128_full_v1:" + full_fingerprint(item_snapshot).hex()
+    digest = FULL_ALGORITHM + ":" + full_fingerprint(item_snapshot).hex()
     effect = SimpleNamespace(action="trash", source=source_snapshot, source_digest=digest)
     candidate = cast(
         recovery.RestoreCandidate,

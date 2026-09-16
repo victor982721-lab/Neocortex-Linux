@@ -31,6 +31,7 @@ from neocortex.curation.preview import build_curation_plan_page
 from neocortex.deduplication import (
     DedupIndex,
     DedupPlanner,
+    FULL_ALGORITHM,
     InventoryCheckpoint,
     full_fingerprint,
     snapshot_path,
@@ -352,7 +353,7 @@ def test_posix_rename_backend_never_overwrites_existing_target(tmp_path: Path) -
     source.write_bytes(b"source")
     target.write_bytes(b"target")
     snapshot = snapshot_path(source)
-    digest = "xxh3_128_full_v1:" + full_fingerprint(snapshot).hex()
+    digest = FULL_ALGORITHM + ":" + full_fingerprint(snapshot).hex()
     effect = AuthorizationEffect(
         effect_id="effect:1",
         item_id="item:1",
@@ -576,7 +577,7 @@ def test_kio_batch_keeps_outcomes_aligned_when_one_item_fails_preflight(
     client = tmp_path / "kioclient5"
     client.write_text("fixture", encoding="utf-8")
     client.chmod(0o700)
-    valid_digest = "xxh3_128_full_v1:" + full_fingerprint(valid_snapshot).hex()
+    valid_digest = FULL_ALGORITHM + ":" + full_fingerprint(valid_snapshot).hex()
 
     def runner(command, **_kwargs):
         assert command == [str(client), "--noninteractive", "move", str(valid), "trash:/"]
@@ -615,7 +616,7 @@ def test_kio_batch_keeps_outcomes_aligned_when_one_item_fails_preflight(
     )
     outcomes = backend.apply_many_snapshots(
         (
-            (missing_snapshot, "xxh3_128_full_v1:" + "0" * 32),
+            (missing_snapshot, FULL_ALGORITHM + ":" + "0" * 32),
             (valid_snapshot, valid_digest),
         ),
         root=root,

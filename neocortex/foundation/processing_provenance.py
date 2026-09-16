@@ -1,8 +1,9 @@
 """Deterministic, compact processing signatures with auditable provenance.
 
-The signature is an XXH3 digest of a canonical JSON manifest.  The manifest
-contains only effective configuration, runtime versions and bounded artifact
-metadata; file contents are streamed and never retained in memory.
+The signature uses the optional native XXH3 backend when present and the
+SHA-256 fallback otherwise. The manifest records the effective backend and
+contains only configuration, runtime versions and bounded artifact metadata;
+file contents are streamed and never retained in memory.
 """
 
 from __future__ import annotations
@@ -20,7 +21,14 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-import xxhash
+from neocortex.foundation.hash_compat import (
+    HASH_ALGORITHM_64,
+    HASH_ALGORITHM_128,
+    HASH_BACKEND,
+    HAS_NATIVE_XXHASH,
+    hash_backend_component,
+)
+from neocortex.foundation.hash_compat import xxhash
 
 from neocortex.runtime.control.bounded_subprocess import run_bounded_capture
 
@@ -157,6 +165,9 @@ def python_runtime_component() -> dict[str, Any]:
         "implementation": platform.python_implementation(),
         "version": platform.python_version(),
         "cache_tag": sys.implementation.cache_tag,
+        "hash_backend": HASH_BACKEND,
+        "hash_algorithm_128": HASH_ALGORITHM_128,
+        "hash_algorithm_64": HASH_ALGORITHM_64,
     }
 
 
@@ -191,6 +202,9 @@ def file_artifact(path: Path, *, label: str | None = None) -> dict[str, Any]:
         "name": label or resolved.name,
         "size_bytes": stat.st_size,
         "xxh3_128": fingerprint_file_xxh3_128(resolved),
+        "hash_backend": HASH_BACKEND,
+        "hash_algorithm_128": HASH_ALGORITHM_128,
+        "hash_algorithm_64": HASH_ALGORITHM_64,
     }
 
 
@@ -202,6 +216,8 @@ def distribution_component(
 ) -> dict[str, Any]:
     """Describe an installed Python distribution and an optional bundled model."""
 
+    if distribution.casefold() == "xxhash" and not HAS_NATIVE_XXHASH:
+        return hash_backend_component(name)
     version = installed_distribution_version(distribution)
     component: dict[str, Any] = {
         "name": name,

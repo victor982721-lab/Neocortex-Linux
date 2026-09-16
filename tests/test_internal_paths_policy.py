@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 import neocortex.safety.internal_paths as internal_paths_module
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128
 from neocortex.runtime.config.app_paths import local_application_data_directory
 from neocortex.safety.corpus_access import (
     CorpusAccessPolicy,
@@ -83,7 +84,9 @@ def test_policy_signature_and_manifest_are_deterministic(tmp_path: Path) -> None
     second = _capture(layout)
 
     assert first == second
-    assert first.signature.startswith("internal-paths-policy-v1:xxh3_128:")
+    assert first.signature.startswith(
+        f"internal-paths-policy-v1:{HASH_ALGORITHM_128.replace('-', '_')}:"
+    )
     assert len(first.signature.rsplit(":", 1)[1]) == 32
     assert first.manifest() == second.manifest()
     assert [entry["role"] for entry in first.manifest()["entries"]] == [
@@ -367,10 +370,14 @@ def test_effective_inventory_signature_binds_both_layers() -> None:
     )
 
     assert first == repeated
-    assert first.startswith("effective-inventory-policy-v1:xxh3_128:")
+    assert first.startswith(
+        f"effective-inventory-policy-v1:{HASH_ALGORITHM_128.replace('-', '_')}:"
+    )
     assert first != changed
     assert protected == protected_repeated
-    assert protected.startswith("effective-inventory-policy-v2:xxh3_128:")
+    assert protected.startswith(
+        f"effective-inventory-policy-v2:{HASH_ALGORITHM_128.replace('-', '_')}:"
+    )
     assert protected not in {first, protected_changed}
 
 

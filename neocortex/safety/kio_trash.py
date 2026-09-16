@@ -29,6 +29,7 @@ from typing import cast
 from neocortex.deduplication import (
     FileChangedError,
     FileSnapshot,
+    FULL_ALGORITHM,
     full_fingerprint,
     snapshot_path,
     stat_matches_snapshot,
@@ -485,7 +486,7 @@ def _verify_curation_trash_evidence(
     observed = snapshot_path(trash_path)
     if observed != relocated or not stat_matches_snapshot(relocated, metadata):
         raise ValueError("trash destination no longer identifies the original source")
-    if "xxh3_128_full_v1:" + full_fingerprint(observed).hex() != source_digest:
+    if f"{FULL_ALGORITHM}:" + full_fingerprint(observed).hex() != source_digest:
         raise ValueError("trash destination digest changed")
     _validate_trash_info(info_path, expected.path)
     if os.path.lexists(expected.path):
@@ -1787,7 +1788,7 @@ def _batch_digest(expected: FileSnapshot, supplied: str | None) -> str:
     """Validate or compute the digest used to bind Trash evidence."""
 
     if supplied is not None:
-        digest_prefix = "xxh3_128_full_v1:"
+        digest_prefix = f"{FULL_ALGORITHM}:"
         digest = supplied.split(":", 1)[1] if ":" in supplied else ""
         if (
             not supplied.startswith(digest_prefix)
@@ -1801,7 +1802,7 @@ def _batch_digest(expected: FileSnapshot, supplied: str | None) -> str:
             )
         return supplied
     try:
-        return "xxh3_128_full_v1:" + full_fingerprint(expected).hex()
+        return f"{FULL_ALGORITHM}:" + full_fingerprint(expected).hex()
     except FileChangedError as exc:
         raise KioTrashUnavailable(
             "kio_source_changed",

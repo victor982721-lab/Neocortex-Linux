@@ -6,7 +6,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Callable, Iterable, Iterator, Sequence
 
-import xxhash
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, xxhash
 
 from .semantic_models import (
     ContentFingerprint,
@@ -192,7 +192,10 @@ def _chunk_identifier(
             "provenance": section.provenance,
         }
     )
-    return f"chunk-xxh3-128:{xxhash.xxh3_128_hexdigest(identity.encode('utf-8'))}"
+    return (
+        f"chunk-{HASH_ALGORITHM_128}:"
+        f"{xxhash.xxh3_128_hexdigest(identity.encode('utf-8'))}"
+    )
 
 
 def _exact_token_count(

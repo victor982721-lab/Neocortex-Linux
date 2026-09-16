@@ -13,6 +13,7 @@ import json
 from dataclasses import dataclass
 
 from neocortex.deduplication.domain.models import FileSnapshot
+from neocortex.deduplication.fingerprinting import FULL_ALGORITHM
 
 from neocortex.workflow.review.review_task_contracts import CanonicalJsonObject
 
@@ -36,7 +37,7 @@ AUTHORIZATION_SOURCE_HEADS_SCHEMA = "neocortex.authorization-source-heads/v1"
 AUTHORIZATION_EFFECTS_SCHEMA_VERSION = 1
 AUTHORIZATION_EFFECTS_SCHEMA = "neocortex.authorization-effects/v1"
 MAX_AUTHORIZATION_EFFECTS = 100
-_FULL_DIGEST_PREFIX = "xxh3_128_full_v1:"
+_FULL_DIGEST_PREFIX = f"{FULL_ALGORITHM}:"
 
 
 def _text(label: str, value: object, limit: int) -> str:

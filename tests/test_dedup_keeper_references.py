@@ -6,7 +6,7 @@ import hashlib
 from pathlib import Path
 
 import pytest
-import xxhash
+from neocortex.foundation.hash_compat import xxhash
 
 from neocortex.code.code_state import CodeState
 from neocortex.deduplication import DedupIndex, DedupPlanner

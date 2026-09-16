@@ -20,7 +20,7 @@ from itertools import islice
 from pathlib import Path
 from typing import Literal
 
-import xxhash
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, xxhash
 from neocortex.platform.policy import UNAVAILABLE_BIRTHTIME_NS
 
 from neocortex.safety.corpus_access import (
@@ -525,7 +525,7 @@ def _manifest_payload(entries: tuple[ProtectedPathIdentity, ...]) -> bytes:
 
 def _signature(entries: tuple[ProtectedPathIdentity, ...]) -> str:
     return (
-        f"{PROTECTED_CONTENT_POLICY_VERSION}:xxh3_128:"
+        f"{PROTECTED_CONTENT_POLICY_VERSION}:{HASH_ALGORITHM_128.replace('-', '_')}:"
         f"{xxhash.xxh3_128_hexdigest(_manifest_payload(entries))}"
     )
 

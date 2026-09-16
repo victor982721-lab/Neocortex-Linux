@@ -8,7 +8,7 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 from typing import Any, IO
 
-import xxhash
+from neocortex.foundation.hash_compat import xxhash
 
 from neocortex.runtime.control.cancellation import CancellationToken
 from neocortex.capabilities.formats.xml_safety import safe_xml_iterparse

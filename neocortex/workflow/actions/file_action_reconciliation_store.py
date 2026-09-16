@@ -17,7 +17,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 
-import xxhash
+from neocortex.foundation.hash_compat import stable_sha256_128_hexdigest
 from neocortex.workflow.actions.file_action_recovery import FileActionReconciliation
 # endregion [01]
 
@@ -158,7 +158,7 @@ def _reconciliation_key(
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode("utf-8")
-    return xxhash.xxh3_128_hexdigest(payload)
+    return stable_sha256_128_hexdigest(payload)
 
 
 def _canonical_provenance_json(raw: str) -> str:
@@ -327,9 +327,39 @@ def _existing_reconciliation(
         "WHERE reconciliation_key=?",
         (request.reconciliation_key,),
     ).fetchone()
-    if row is None:
+    if row is not None:
+        recorded = _record_from_row(row)
+        _validate_existing_reconciliation(recorded, request)
+        return recorded
+
+    # Migrate retries created by a pre-fallback release whose reconciliation
+    # key was XXH3-derived.  Match the complete immutable request identity,
+    # then retain the originally recorded key/evidence instead of appending a
+    # duplicate event under the new stable SHA-256 key.
+    reconciliation = request.reconciliation
+    legacy_row = connection.execute(
+        f"""SELECT {_EVENT_COLUMNS} FROM file_action_reconciliation_events
+        WHERE action_id=? AND previous_event_id IS ? AND action_status=?
+          AND reconciler_signature=? AND event_schema_version=? AND actor=?
+          AND provenance_json=? AND classification=? AND recommendation=?
+          AND detail=?
+        ORDER BY reconciliation_event_id LIMIT 1""",
+        (
+            reconciliation.action_id,
+            request.expected_previous_event_id,
+            reconciliation.recorded_status,
+            reconciliation.reconciler_signature,
+            FILE_ACTION_RECONCILIATION_EVENT_SCHEMA_VERSION,
+            request.actor,
+            request.provenance_json,
+            reconciliation.classification,
+            reconciliation.recommendation,
+            reconciliation.detail,
+        ),
+    ).fetchone()
+    if legacy_row is None:
         return None
-    recorded = _record_from_row(row)
+    recorded = _record_from_row(legacy_row)
     _validate_existing_reconciliation(recorded, request)
     return recorded
 

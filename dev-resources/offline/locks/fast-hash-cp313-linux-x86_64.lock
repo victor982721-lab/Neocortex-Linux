@@ -1,0 +1,2 @@
+# Optional native XXH3 accelerator for the SHA-256 fallback backend.
+xxhash==3.8.1 --hash=sha256:98ee81b4b7f3023c9cb04a78cc67610baffcb5812d92f2096cb5a5efc6f19437

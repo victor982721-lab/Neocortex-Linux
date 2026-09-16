@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, HASH_ALGORITHM_64
 from neocortex.knowledge import knowledge_search
 from neocortex.code.code_contracts import (
     CodeRelationEndpoint,
@@ -784,9 +785,15 @@ def test_bounded_code_relation_value_uses_character_limit_and_exact_fingerprint(
 
     fingerprint = fingerprint_text(over_limit)
     assert unchanged == at_limit
-    assert bounded == (
+    expected = (
         f"xxh3-v1:{fingerprint.xxh3_128}:{fingerprint.byte_count}:{fingerprint.xxh3_64_guard}"
+        if HASH_ALGORITHM_128 == "xxh3-128"
+        else (
+            f"{HASH_ALGORITHM_128}-v1:{fingerprint.xxh3_128}:{fingerprint.byte_count}:"
+            f"{HASH_ALGORITHM_64}-guard={fingerprint.xxh3_64_guard}"
+        )
     )
+    assert bounded == expected
     assert fingerprint.byte_count == 2 * len(over_limit)
     assert warnings == {"code_relation_name_fingerprinted_due_to_contract_limit"}
 
@@ -882,9 +889,15 @@ def test_code_relation_candidate_bounds_long_identifiers_without_losing_source()
     assert incomplete
     identifiers = dict(candidate.evidence.identifiers)
     fingerprint = fingerprint_text(long_name)
-    assert identifiers["code_relation_name"] == (
+    expected = (
         f"xxh3-v1:{fingerprint.xxh3_128}:{fingerprint.byte_count}:{fingerprint.xxh3_64_guard}"
+        if HASH_ALGORITHM_128 == "xxh3-128"
+        else (
+            f"{HASH_ALGORITHM_128}-v1:{fingerprint.xxh3_128}:{fingerprint.byte_count}:"
+            f"{HASH_ALGORITHM_64}-guard={fingerprint.xxh3_64_guard}"
+        )
     )
+    assert identifiers["code_relation_name"] == expected
     assert max(map(len, identifiers.values())) <= MAX_EVIDENCE_IDENTIFIER_COMPONENT_CHARS
     assert "code_relation_name_fingerprinted_due_to_contract_limit" in (candidate.warnings)
 

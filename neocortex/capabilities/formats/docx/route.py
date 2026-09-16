@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator, cast
 
-import xxhash
+from neocortex.foundation.hash_compat import xxhash
 
 from neocortex.deduplication import (
     FileChangedError,

@@ -18,7 +18,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-import xxhash
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128, xxhash
 
 from . import semantic_sources as _sources
 from .semantic_chunking import TextChunkingConfig
@@ -818,7 +818,7 @@ def assemble_semantic_plan(
         ),
         content_set_xxh3_128=result.content_set_xxh3_128,
         semantic_snapshot_xxh3_128=result.semantic_snapshot_xxh3_128,
-        plan_signature=(f"{plan_algorithm_version}:xxh3-128:{result.plan_fingerprint}"),
+        plan_signature=(f"{plan_algorithm_version}:{HASH_ALGORITHM_128}:{result.plan_fingerprint}"),
         resources=resources,
         sections=sections,
         chunks=chunks,

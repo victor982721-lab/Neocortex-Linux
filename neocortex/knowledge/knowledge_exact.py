@@ -34,6 +34,8 @@ from neocortex.documents.document_resource_binding import (
     parse_resource_binding,
 )
 from neocortex.foundation.file_identity import FileIdentity, FileIdentityError
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128
+from neocortex.deduplication.fingerprinting import FULL_ALGORITHM
 from .knowledge_contracts import (
     EvidenceMethod,
     EvidenceRef,
@@ -1339,7 +1341,7 @@ def _non_ascii_case_warning(term: ExactLookupTerm) -> tuple[str, ...]:
 
 
 _INVENTORY_KINDS = frozenset({ExactLookupKind.PATH, ExactLookupKind.NAME, ExactLookupKind.HASH})
-_FULL_INVENTORY_HASH = "xxh3_128_full_v1"
+_FULL_INVENTORY_HASH = FULL_ALGORITHM
 
 
 def _inventory_current_vector(
@@ -1582,7 +1584,7 @@ def _lookup_inventory(
             for term in terms:
                 if term.kind is ExactLookupKind.HASH and (
                     len(term.value) != 32
-                    or term.algorithm not in {None, "xxh3_128", _FULL_INVENTORY_HASH}
+                    or term.algorithm not in {None, "xxh3_128", HASH_ALGORITHM_128, _FULL_INVENTORY_HASH}
                 ):
                     reports.append(
                         _report(
@@ -1706,7 +1708,9 @@ _CODE_WATERMARK_NAMES = (
     "latest_version_id",
     "latest_analysis_run_id",
 )
-_CODE_HASH_ALGORITHMS = frozenset({None, "xxh3_128", "raw_xxh3_128", "xxh3_128_raw_v1"})
+_CODE_HASH_ALGORITHMS = frozenset(
+    {None, "xxh3_128", "raw_xxh3_128", "xxh3_128_raw_v1", HASH_ALGORITHM_128}
+)
 
 
 def _code_current_vector(

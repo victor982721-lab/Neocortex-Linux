@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from neocortex.semantic import semantic_service as service
+from neocortex.foundation.hash_compat import HASH_ALGORITHM_128
 from neocortex.semantic.semantic_models import SemanticItem, TextSection, fingerprint_text
 from neocortex.semantic.semantic_sources import SemanticSourceHead, TextSourceRecord
 from neocortex.semantic.semantic_state import semantic_database
@@ -109,7 +110,7 @@ def _text_compatible_record() -> TextSourceRecord:
                         "state": "current",
                         "observed_at_utc": None,
                     },
-                    "fingerprint_algorithm": "xxh3-128",
+                    "fingerprint_algorithm": HASH_ALGORITHM_128,
                     "fingerprint": "f" * 32,
                 },
             },
