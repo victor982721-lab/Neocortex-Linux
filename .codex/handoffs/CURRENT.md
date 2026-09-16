@@ -4,12 +4,11 @@
 **Actualización:** 2026-09-16T12:00:34-06:00 (America/Mexico_City).
 **Fuente viva:** `HEAD == main == origin/main` y árbol limpio se comprueban antes de cerrar.
 
-La release activa comprobada es `0.14.0-eabb2fa1eb1a-cp314-linux-x86_64`, desde
-`source_sha=eabb2fa1eb1aea85e6088b0422ca4c352f621bb6`; la release previa
-`0.14.0-0f24fe15874a-cp314-linux-x86_64` queda retenida para rollback y
-`.staging` está vacío. El receipt canónico, manifest, launcher y
-`release_linux.py verify=true` se conservan en la evidencia fechada de la
-ronda.
+La release activa es `0.14.0`; su identificador exacto, `source_sha`, rollback
+y manifest se comprueban siempre con el receipt canónico y
+`release_linux.py verify` antes de operar. `.staging` debe permanecer vacío y
+la release previa se conserva para rollback; este handoff no duplica una
+identidad que cambiaría al actualizar el propio archivo.
 
 La entrega añade `neocortex.artifact-registry/v1` con manifests privados,
 identidad, owner/producer, procedencia, categorías, estados, TTL, dependencias y
@@ -34,8 +33,9 @@ los owners externos sin contrato se conservan como `unknown`, `blocked` o
 productores pasaron; `compileall`, `git diff --check`, namespace y Semgrep
 focal pasaron. Sondas instaladas en raíces sintéticas mostraron un preview con
 `eligible=1`, `deletion_performed=0`, `file_actions=0` y manifests sin cambios;
-una sonda default con XDG aislado no creó estado. Evidencia principal:
-`/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-16-hygiene-eabb2fa/VERIFICATION.json`.
+una sonda default con XDG aislado no creó estado. La evidencia fechada vigente
+se conserva bajo `/home/winterboss/Documentos/NeoCortex/Auditorias/` y enlaza el
+SHA exacto en su propio manifest.
 
 ## Evidencia de entregas anteriores (histórica)
 
