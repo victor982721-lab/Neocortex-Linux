@@ -1,12 +1,12 @@
 # Handoff operativo vigente — NeoCortex
 
 **Ronda actual:** NEO-HYGIENE-001 — preparación federada de higiene y procedencia.
-**Actualización:** 2026-09-15T16:27:32-06:00 (America/Mexico_City).
+**Actualización:** 2026-09-16T11:56:23-06:00 (America/Mexico_City).
 **Fuente viva:** `HEAD == main == origin/main` y árbol limpio se comprueban antes de cerrar.
 
-La release activa comprobada es `0.14.0-8a81b6f4948a-cp314-linux-x86_64`, desde
-`source_sha=8a81b6f4948a71aee8d741bcdcced62cbecdf2d1`; la release previa
-`0.14.0-d0d07467fb33-cp314-linux-x86_64` queda retenida para rollback y
+La release activa comprobada es `0.14.0-0f24fe15874a-cp314-linux-x86_64`, desde
+`source_sha=0f24fe15874ad528a07523ad2be99ce6b84714d8`; la release previa
+`0.14.0-8a81b6f4948a-cp314-linux-x86_64` queda retenida para rollback y
 `.staging` está vacío. El receipt canónico, manifest, launcher y
 `release_linux.py verify=true` se conservan en la evidencia fechada de la
 ronda.
@@ -35,7 +35,7 @@ productores pasaron; `compileall`, `git diff --check`, namespace y Semgrep
 focal pasaron. Sondas instaladas en raíces sintéticas mostraron un preview con
 `eligible=1`, `deletion_performed=0`, `file_actions=0` y manifests sin cambios;
 una sonda default con XDG aislado no creó estado. Evidencia principal:
-`/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-15-hygiene-8a81b6f/VERIFICATION.json`.
+`/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-15-hygiene-0f24fe1/VERIFICATION.json`.
 
 ## Evidencia de entregas anteriores (histórica)
 
