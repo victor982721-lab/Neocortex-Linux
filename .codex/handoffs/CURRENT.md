@@ -1,18 +1,32 @@
 # Handoff operativo vigente — NeoCortex
 
-**Ronda actual:** NEO-HYGIENE-C01-C12 — continuidad de higiene operativa integral.
-**Actualización:** 2026-09-16T23:40:00-06:00 (America/Mexico_City).
+**Ronda actual:** NEO-STATE-RESET-QUIESCENT — corrección, publicación y reset controlado del estado SQLite.
+**Actualización:** 2026-09-17T15:40:00-06:00 (America/Mexico_City).
 **Fuente viva:** `HEAD == main == origin/main` y árbol limpio se comprueban antes de cerrar.
 
-**Estado vivo:** `HEAD == main == origin/main` (verificado en esta entrega); la release canónica `0.14.1` ya fue promovida a `current` desde la fuente final, con receipt y rollback inmediato verificados. No se seleccionó ni mutó corpus/HOME/SQLite productiva.
+**Estado vivo:** `HEAD == main == origin/main` se verificó en el commit final de esta ronda; la release canónica `0.14.1-8167a3f08f9b-cp314-linux-x86_64` fue promovida a `current` desde esa fuente, con receipt, rollback inmediato y `release_linux.py verify` comprobados. El `state reset --scope all` se aplicó con digest `76deaadf5e73c12b755acaf95a363fccb9e3878fe54cb7c90d160eef5550fbbf`: retiró sólo proyecciones regenerables, compactó Inventory/Framework/Catalog, preservó evidencia protegida y dejó staging/sidecars vacíos. Corpus, modelos y repositorio permanecen fuera del target; releases sólo cambiaron por la promoción canónica y conservan current más rollback.
 
-**Goal:** C01–C12 y la promoción canónica quedan verificadas. C01–C08 tienen implementación, regresiones y owner físico sintético: sello común, reconciliación explícita de fallos y poda de tombstones con receipt/replay; C09 tiene frontera base import-light sin errores de recopilación; C10 conserva texto 20, video 1 GiB y degradación `--all`; C11 tiene interfaz/documentación; C12 verificó wheel/venv, origen, `pip check`, cuatro headless, aceptación base y `release_linux.py verify` de la release activa.
+**Goal:** La corrección de lectura SQLite quiescente, las regresiones, la publicación en `main`, la release canónica y un `state reset --scope all` real quedaron verificables. La aceptación C01–C12 previa se conserva como procedencia histórica y no se reabre por esta ronda.
 
-**Matriz C01–C12:** C01 claims canónicas completas y bytes físicos sin corte; C02 política del registry/scratch bajo lock; C03 corrupción/ausencia de consumidores fail-closed; C04 intención durable y `recover_retirements()` sin repetir unlink; C05 sello top-level de miembros/identidad/contenido, publicación no-replace y mantenimiento paritario; C06 límites efectivos, batch guard y lecturas lineales 20/40/80/160; C07 `AgentActivity` pública, owner canónico, fallo explícito, proceso externo/reanudación y publicación; C08 `TerminalRetentionPolicy/Plan`, reconciliación `failed-retained`, cuotas y poda de tombstones con receipt; C09 base import-light y skips opcionales; C10 texto 20, video 1 GiB y `--all` degradación documentada; C11 docs/Operations/README/help reales; C12 build/install/pip-check/origen/help/smoke y aceptación final por cerrar.
+**Matriz C01–C12 (histórica):** conserva los contratos y evidencias de la ronda de higiene; sus estados no son el gate de este reset SQLite.
 
-**Validación final:** focales runtime/hygiene/CLI/productores/actividad/retención/docs **209 pasaron**; la candidata aislada final verificó identidad/origen y `pip check`, actividad/retención instalada **25 pasaron**, cuatro workflows headless **4 pasaron**, y base `7578/7639` recopilados con **61** deseleccionados sin errores de importación PIL/PySide6. La suite base completa terminó **7510 pasaron, 4 fallos históricos no relacionados, 64 omitidos, 61 deseleccionados y 36 subtests**; esos fallos se registran aparte, no se ocultan ni afectan C01–C12. Mypy mantiene errores preexistentes de dependencias opcionales.
+**Validación C01–C12 (histórica):** focales runtime/hygiene/CLI/productores/actividad/retención/docs **209 pasaron**; la candidata aislada final verificó identidad/origen y `pip check`, actividad/retención instalada **25 pasaron**, cuatro workflows headless **4 pasaron**, y base `7578/7639` recopilados con **61** deseleccionados sin errores de importación PIL/PySide6. La suite base completa terminó **7510 pasaron, 4 fallos históricos no relacionados, 64 omitidos, 61 deseleccionados y 36 subtests**; esos fallos se registran aparte, no se ocultan ni afectan C01–C12. Mypy mantiene errores preexistentes de dependencias opcionales.
 
 **Evidencia:** reauditoría adjunta bajo `/home/winterboss/Descargas/` contrastada; el paquete compacto final está en `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-17-hygiene-c01-c12/` con identidad de fuente, wheel, smoke instalado, regresiones, base/headless, receipts de instalación/verificación y `SHA256SUMS.tsv`. Se declara C01∧…∧C12 y la promoción canónica verificadas; GUI/KIO real, modelos nuevos y sesión nativa de Codex permanecen fuera de afirmación.
+
+## Corrección SQLite y reset aplicada
+
+La causa raíz fue que `require_inactive_sqlite_sidecars()` rechazaba el layout
+cerrado `-wal=0`/`-shm=32768`, forzando `snapshot_temp` y agotando 256 MiB en
+`dedup.sqlite3`. `8167a3f` centraliza el contrato con fences, locks Linux y
+guardia OFD sostenida, hace fallar cerrado layouts ambiguos y permite el reset
+zero-copy cuando el owner está quiescente. `state reset --scope all` conserva
+1,522 acciones Framework `recovery_required`, 5 resúmenes/522 grupos/1,053
+miembros de Inventory, 117,168 evidencias de huella y 22 generaciones Catalog
+publicadas; elimina checkpoints, archivos y heads regenerables sin tocar el
+Corpus. La salud posterior es `partial` honesta porque diez owners están
+ausentes tras el reset; los tres owners preservados están `healthy` y no hay
+writers ni sidecars abiertos.
 
 ## Evidencia de entregas anteriores (histórica)
 
