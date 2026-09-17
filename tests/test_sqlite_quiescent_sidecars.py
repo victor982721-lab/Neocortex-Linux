@@ -351,6 +351,14 @@ def test_symlink_and_nonregular_sqlite_paths_fail_closed(tmp_path: Path, kind: s
         preferred_sqlite_read_mode(selected)
 
 
+def test_unexpected_sqlite_sibling_is_not_ignored(tmp_path: Path) -> None:
+    path = _database(tmp_path / "owner.sqlite3")
+    _sidecar(path, "-unexpected").write_bytes(b"ambiguous")
+
+    with pytest.raises(ImmutableSQLiteUnavailable, match="unexpected sidecar"):
+        preferred_sqlite_read_mode(path)
+
+
 def test_strict_read_detects_sidecar_mutation_during_fenced_connection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -380,6 +388,30 @@ def test_strict_read_detects_sidecar_mutation_during_fenced_connection(
             max_attempts=1,
         ) as connection:
             assert connection.execute("SELECT COUNT(*) FROM probe").fetchone()[0] == 2
+
+
+def test_residual_lock_guard_is_released_when_immutable_connect_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _database(tmp_path / "owner.sqlite3")
+    _install_quiescent_residual_sidecars(path)
+    real_connect = sqlite_immutable.sqlite3.connect
+
+    def fail_immutable_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+        database = str(args[0]) if args else str(kwargs.get("database", ""))
+        if "immutable=1" in database:
+            raise sqlite3.OperationalError("injected immutable open failure")
+        return cast(Callable[..., sqlite3.Connection], real_connect)(*args, **kwargs)
+
+    monkeypatch.setattr(sqlite_immutable.sqlite3, "connect", fail_immutable_connect)
+    with pytest.raises(sqlite3.OperationalError, match="injected immutable open failure"):
+        with SQLiteReadSession(path, mode=SQLiteReadMode.IMMUTABLE_STRICT, max_attempts=1):
+            pytest.fail("injected immutable open must fail")
+    # A second probe must still be able to acquire the guard; a leaked child
+    # would retain the OFD locks and make the quiescent owner look active.
+    monkeypatch.setattr(sqlite_immutable.sqlite3, "connect", real_connect)
+    assert preferred_sqlite_read_mode(path) is SQLiteReadMode.IMMUTABLE_STRICT
 
 
 def test_oversized_quiescent_owner_uses_zero_copy_retention_view(

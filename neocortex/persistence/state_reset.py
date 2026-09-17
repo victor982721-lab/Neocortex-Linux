@@ -1558,6 +1558,7 @@ def _apply_framework_runs_staged(
 
 
 _CATALOG_REGENERABLE_TABLE_ORDER = (
+    "catalog_generation_manifests",
     "catalog_generation_documents",
     "catalog_publications",
     "catalog_generations",
@@ -1632,11 +1633,75 @@ def _apply_catalog_owner_staged(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
             )
         }
+        # Published Catalog generations are append-only evidence protected by
+        # schema triggers. A broad reset may retire an unpublished/cancelled
+        # generation, but it must retain every published generation and its
+        # base ancestors, documents, publication row and catalog run.
+        preserved_generations: set[int] = set()
+        if "catalog_generations" in table_names:
+            rows = connection.execute(
+                "SELECT generation_id,base_generation_id,status FROM catalog_generations"
+            ).fetchall()
+            pending = [int(row[0]) for row in rows if str(row[2]) == "published"]
+            base_by_generation = {
+                int(row[0]): (None if row[1] is None else int(row[1])) for row in rows
+            }
+            while pending:
+                generation_id = pending.pop()
+                if generation_id in preserved_generations:
+                    continue
+                if generation_id not in base_by_generation:
+                    raise StateResetError("catalog published generation base is missing")
+                preserved_generations.add(generation_id)
+                base = base_by_generation[generation_id]
+                if base is not None and base not in preserved_generations:
+                    pending.append(base)
+        preserved_catalog_runs: set[int] = set()
+        if preserved_generations and "catalog_generations" in table_names:
+            placeholders = ",".join("?" for _ in preserved_generations)
+            preserved_catalog_runs = {
+                int(row[0])
+                for row in connection.execute(
+                    "SELECT catalog_run_id FROM catalog_generations "
+                    f"WHERE generation_id IN ({placeholders})",
+                    tuple(sorted(preserved_generations)),
+                ).fetchall()
+            }
         connection.execute("BEGIN IMMEDIATE")
         for table in _CATALOG_REGENERABLE_TABLE_ORDER:
-            if table not in table_names or table in protected or table in _SCHEMA_METADATA_TABLES:
+            if (
+                table not in table_names
+                or (table in protected and table != "catalog_generation_manifests")
+                or table in _SCHEMA_METADATA_TABLES
+            ):
                 continue
-            connection.execute(f"DELETE FROM {_quote_identifier(table)}")
+            if table in {
+                "catalog_generation_manifests",
+                "catalog_generation_documents",
+                "catalog_generations",
+                "catalog_publications",
+            }:
+                if preserved_generations:
+                    placeholders = ",".join("?" for _ in preserved_generations)
+                    connection.execute(
+                        f"DELETE FROM {_quote_identifier(table)} "
+                        f"WHERE generation_id NOT IN ({placeholders})",
+                        tuple(sorted(preserved_generations)),
+                    )
+                else:
+                    connection.execute(f"DELETE FROM {_quote_identifier(table)}")
+            elif table == "catalog_runs":
+                if preserved_catalog_runs:
+                    placeholders = ",".join("?" for _ in preserved_catalog_runs)
+                    connection.execute(
+                        "DELETE FROM \"catalog_runs\" "
+                        f"WHERE catalog_run_id NOT IN ({placeholders})",
+                        tuple(sorted(preserved_catalog_runs)),
+                    )
+                else:
+                    connection.execute("DELETE FROM \"catalog_runs\"")
+            else:
+                connection.execute(f"DELETE FROM {_quote_identifier(table)}")
         if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
             raise StateResetError("catalog staged reset failed foreign-key verification")
         integrity = tuple(

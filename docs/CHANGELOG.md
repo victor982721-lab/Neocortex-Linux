@@ -13,7 +13,9 @@ fuera de `docs/`.
   permanecen fail-closed; el presupuesto temporal canónico de 256 MiB no se
   eleva ni se desactiva.
 - Health, value-review, retención y `state reset` reutilizan la misma primitive;
-  no se borran sidecars ni se crean backups implícitos.
+  no se borran sidecars ni se crean backups implícitos. El reset broad preserva
+  generaciones de catálogo publicadas y su evidencia protegida al retirar sólo
+  la proyección no publicada.
 
 ## 2026-09-16 — Contrato de continuidad de higiene operativa
 

@@ -660,7 +660,7 @@ def _reject_unexpected_sqlite_sidecars(path: Path) -> None:
                 suffix = entry.name[len(path.name) :]
                 if suffix not in _SQLITE_KNOWN_SIDECAR_SUFFIXES:
                     raise ImmutableSQLiteUnavailable(
-                        "SQLite owner has an unexpected sidecar: " f"{entry.name}"
+                        f"SQLite owner has an unexpected sidecar: {entry.name}"
                     )
     except ImmutableSQLiteUnavailable:
         raise
@@ -683,13 +683,9 @@ def _sqlite_owner_process_is_open(path: Path, fence: SQLiteImmutableFence) -> bo
     """
 
     if sys.platform != "linux":
-        raise ImmutableSQLiteUnavailable(
-            "SQLite owner activity cannot be verified outside Linux"
-        )
+        raise ImmutableSQLiteUnavailable("SQLite owner activity cannot be verified outside Linux")
     expected = {(fence.main.device, fence.main.inode)}
-    expected.update(
-        (identity.device, identity.inode) for _suffix, identity in fence.sidecars
-    )
+    expected.update((identity.device, identity.inode) for _suffix, identity in fence.sidecars)
     targets = {
         os.path.abspath(os.fspath(path)),
         *(os.path.abspath(f"{path}{suffix}") for suffix in _SQLITE_KNOWN_SIDECAR_SUFFIXES),
@@ -768,9 +764,7 @@ def _sqlite_lock_targets(
         (path, _SQLITE_ROLLBACK_CONTROL_LOCK_OFFSETS, fence.main)
     ]
     if set(sidecars) == {"-wal", "-shm"}:
-        targets.append(
-            (Path(f"{path}-shm"), _SQLITE_WAL_CONTROL_LOCK_OFFSETS, sidecars["-shm"])
-        )
+        targets.append((Path(f"{path}-shm"), _SQLITE_WAL_CONTROL_LOCK_OFFSETS, sidecars["-shm"]))
     return tuple(targets)
 
 
@@ -821,9 +815,7 @@ def _acquire_sqlite_writer_lock_guard(
     # byte read in this process can release SQLite's POSIX SHM locks while a
     # transaction remains open.  A sidecar-free owner has no such residual
     # ambiguity; the rollback control-lock guard below remains its check.
-    if set(dict(fence.sidecars)) == {"-wal", "-shm"} and _sqlite_owner_process_is_open(
-        path, fence
-    ):
+    if set(dict(fence.sidecars)) == {"-wal", "-shm"} and _sqlite_owner_process_is_open(path, fence):
         raise ImmutableSQLiteUnavailable(
             "SQLite owner process is active; sidecars are not proven inactive"
         )
@@ -1728,11 +1720,7 @@ def open_sidecar_safe_sqlite_connection(
     if not isinstance(force_snapshot, bool):
         raise TypeError("force_snapshot must be a boolean")
     selected = Path(path)
-    mode = (
-        SQLiteReadMode.SNAPSHOT_TEMP
-        if force_snapshot
-        else preferred_sqlite_read_mode(selected)
-    )
+    mode = SQLiteReadMode.SNAPSHOT_TEMP if force_snapshot else preferred_sqlite_read_mode(selected)
     if mode is SQLiteReadMode.IMMUTABLE_STRICT:
         # Reuse the same session kernel for strict owners so cancellation and
         # the preparation deadline cannot be bypassed by the legacy bare-

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -19,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from neocortex.persistence.framework_state_writer import FrameworkState
+from neocortex.documents.document_catalog import initialize_document_catalog
 from neocortex.persistence import sqlite_immutable
 from neocortex.persistence.sqlite_immutable import (
     SQLiteReadMode,
@@ -110,8 +112,7 @@ finally:
     if ready != "READY":
         stdout, stderr = process.communicate(timeout=5)
         raise AssertionError(
-            "live SQLite fixture failed to start: "
-            f"stdout={ready!r} {stdout!r}, stderr={stderr!r}"
+            f"live SQLite fixture failed to start: stdout={ready!r} {stdout!r}, stderr={stderr!r}"
         )
     try:
         assert process.poll() is None
@@ -253,6 +254,106 @@ def test_scope_all_preserves_recovery_evidence_while_resetting_regenerable_state
     assert row is not None and row[0] == "recovery_required"
 
 
+def test_catalog_stage_reset_keeps_published_rows_under_immutability_triggers(
+    tmp_path: Path,
+) -> None:
+    """Broad reset retires cancelled Catalog generations without aborting."""
+
+    state = tmp_path / "state"
+    state.mkdir()
+    database = state / "document_catalog.sqlite3"
+    initialize_document_catalog(database)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO catalog_runs(catalog_run_id,source_kind,mode,status,started_ns) "
+            "VALUES(1,'docx','fixture','completed',1)"
+        )
+        connection.execute(
+            "INSERT INTO catalog_runs(catalog_run_id,source_kind,mode,status,started_ns) "
+            "VALUES(2,'docx','fixture','cancelled',2)"
+        )
+        connection.execute(
+            """INSERT INTO catalog_generations(
+                generation_id,catalog_run_id,source_kind,status,started_ns,published_ns
+            ) VALUES(1,1,'docx','published',1,3)"""
+        )
+        connection.execute(
+            """INSERT INTO catalog_generations(
+                generation_id,catalog_run_id,source_kind,status,started_ns
+            ) VALUES(2,2,'docx','cancelled',2)"""
+        )
+        for generation_id, created_ns in ((1, 3), (2, 2)):
+            connection.execute(
+                """INSERT INTO catalog_generation_manifests(
+                    generation_id,source_kind,source_fence_json,created_ns
+                ) VALUES(?,?,?,?)""",
+                (generation_id, "docx", "{}", created_ns),
+            )
+            connection.execute(
+                """INSERT INTO catalog_generation_documents(
+                    generation_id,source_kind,file_key,path,volume_id,file_id,size,
+                    mtime_ns,birthtime_ns,source_status,processing_signature,
+                    classifier_signature,primary_kind,confidence,uncertainty,standard_references_json,
+                    organizations_json,topics_json,classification_json,catalog_status,
+                    last_seen_catalog_run_id,updated_ns
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    generation_id,
+                    "docx",
+                    f"fixture-{generation_id}",
+                    f"/fixture/{generation_id}.docx",
+                    "v",
+                    str(generation_id),
+                    1,
+                    1,
+                    -1,
+                    "complete",
+                    "fixture",
+                    "fixture",
+                    "document",
+                    1.0,
+                    "baja",
+                    "[]",
+                    "[]",
+                    "[]",
+                    "{}",
+                    "ready",
+                    generation_id,
+                    generation_id,
+                ),
+            )
+        connection.execute(
+            "INSERT INTO catalog_publications(source_kind,generation_id,published_ns) "
+            "VALUES('docx',1,3)"
+        )
+        connection.commit()
+
+    plan = plan_state_reset(state, scope="all")
+    assert plan.staged_owners == ("catalog",)
+    result = execute_state_reset(
+        state,
+        scope="all",
+        apply=True,
+        plan_digest=plan.plan_digest,
+        confirmation=STATE_RESET_CONFIRMATION,
+    )
+    assert isinstance(result, StateResetResult)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT status FROM catalog_generations WHERE generation_id=1"
+        ).fetchone() == ("published",)
+        assert (
+            connection.execute("SELECT 1 FROM catalog_generations WHERE generation_id=2").fetchone()
+            is None
+        )
+        assert connection.execute(
+            "SELECT generation_id FROM catalog_generation_documents ORDER BY generation_id"
+        ).fetchall() == [(1,)]
+        assert connection.execute(
+            "SELECT generation_id FROM catalog_generation_manifests ORDER BY generation_id"
+        ).fetchall() == [(1,)]
+
+
 def test_retention_large_quiescent_residual_uses_zero_copy_and_preserves_budget(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -359,9 +460,7 @@ def test_cli_state_reset_all_preview_payload_binds_targets_to_fixture_state(
     (state / "runtime-cache").mkdir()
     (state / "runtime-cache" / "fixture.bin").write_bytes(b"cache")
     (state / "curation" / "checkpoints").mkdir(parents=True)
-    (state / "curation" / "checkpoints" / "fixture.json").write_text(
-        "{}", encoding="utf-8"
-    )
+    (state / "curation" / "checkpoints" / "fixture.json").write_text("{}", encoding="utf-8")
     copies = _copy_spy(monkeypatch)
 
     exit_code = human.run_human_command(
