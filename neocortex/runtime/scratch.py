@@ -23,7 +23,7 @@ import stat
 import time
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
@@ -53,6 +53,7 @@ _ARTIFACT_KIND = "temporary"
 ENTRY_LIMIT = "entry_limit"
 DEPTH_LIMIT = "depth_limit"
 BYTE_LIMIT = "byte_limit"
+_SEAL_SCHEMA = "neocortex.scratch-seal/v1"
 
 
 def _validate_scan_limit(
@@ -185,6 +186,142 @@ def _directory_size(path: Path) -> int:
     except OSError:
         return total
     return total
+
+
+def _seal_mapping(value: object) -> dict[str, Any] | None:
+    """Validate the stable top-level workspace seal, if one is present."""
+
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ScratchSecurityError("scratch seal is not an object")
+    digest = value.get("digest")
+    members = value.get("members")
+    apparent = value.get("apparent_bytes")
+    if (
+        not isinstance(digest, str)
+        or not digest.startswith("sha256:")
+        or len(digest) != len("sha256:") + 64
+        or any(character not in "0123456789abcdef" for character in digest[7:])
+        or type(members) is not int
+        or members < 0
+        or type(apparent) is not int
+        or apparent < 0
+    ):
+        raise ScratchSecurityError("scratch seal claims are invalid")
+    schema = value.get("schema", _SEAL_SCHEMA)
+    if schema != _SEAL_SCHEMA:
+        raise ScratchSecurityError("unsupported scratch seal schema")
+    return {
+        "schema": _SEAL_SCHEMA,
+        "digest": digest,
+        "members": members,
+        "apparent_bytes": apparent,
+    }
+
+
+def _seal_from_lifecycle_reason(reason: object) -> dict[str, Any] | None:
+    """Compatibility bridge for the public activity note format.
+
+    New callers should use ``ScratchManager.seal_workspace``.  The bridge
+    promotes the existing AgentActivity close note into the authenticated
+    top-level manifest once, so future planning never depends on parsing that
+    note as its authority.
+    """
+
+    if not isinstance(reason, str) or not reason.startswith("agent-activity-note:"):
+        return None
+    try:
+        value = json.loads(reason[len("agent-activity-note:") :])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, Mapping):
+        return None
+    try:
+        return _seal_mapping(value.get("seal"))
+    except ScratchSecurityError:
+        return None
+
+
+def _sealed_workspace_digest(path: Path) -> tuple[str, int, int]:
+    """Hash every private workspace member without following links.
+
+    The representation intentionally mirrors the public activity seal: member
+    names, physical identity, size, mtime and file content are all claims.
+    Thus an equal-size replacement or edit cannot pass a completed-workspace
+    retirement check.  The traversal has hard record/byte bounds so sealing
+    cannot become an unbounded cleanup side effect.
+    """
+
+    digest = hashlib.sha256()
+    members = 0
+    apparent = 0
+    stack: list[tuple[Path, str]] = [(path, "")]
+    while stack:
+        directory, relative = stack.pop()
+        try:
+            with os.scandir(directory) as iterator:
+                entries = sorted(iterator, key=lambda item: item.name)
+        except OSError as exc:
+            raise ScratchSecurityError("workspace could not be sealed") from exc
+        for entry in entries:
+            if entry.name == MANIFEST_NAME or entry.name.startswith(f".{MANIFEST_NAME}."):
+                continue
+            members += 1
+            if members > _MAX_RECORDS:
+                raise ScratchSecurityError("workspace seal exceeds the entry limit")
+            child_relative = f"{relative}/{entry.name}" if relative else entry.name
+            try:
+                metadata = entry.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise ScratchSecurityError("workspace seal identity is unavailable") from exc
+            if stat.S_ISLNK(metadata.st_mode) or metadata.st_uid != os.geteuid():
+                raise ScratchSecurityError("workspace seal contains an unauthorized link/owner")
+            if stat.S_ISDIR(metadata.st_mode):
+                digest.update(f"D:{child_relative}:{_identity(metadata)}\n".encode())
+                stack.append((Path(entry.path), child_relative))
+                continue
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise ScratchSecurityError("workspace seal contains an unauthorized payload")
+            if metadata.st_size > _MAX_SCAN_BYTES - apparent:
+                raise ScratchSecurityError("workspace seal exceeds the byte limit")
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            try:
+                fd = os.open(entry.path, flags)
+            except OSError as exc:
+                raise ScratchSecurityError("workspace seal payload is unavailable") from exc
+            file_digest = hashlib.sha256()
+            total = 0
+            try:
+                opened = os.fstat(fd)
+                if _identity(opened) != _identity(metadata) or opened.st_size != metadata.st_size:
+                    raise ScratchSecurityError("workspace seal identity changed")
+                with os.fdopen(fd, "rb", closefd=True) as stream:
+                    fd = -1
+                    while True:
+                        chunk = stream.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > _MAX_SCAN_BYTES - apparent:
+                            raise ScratchSecurityError("workspace seal exceeds the byte limit")
+                        file_digest.update(chunk)
+                final = Path(entry.path).lstat()
+            except ScratchSecurityError:
+                raise
+            except OSError as exc:
+                raise ScratchSecurityError("workspace seal payload could not be read") from exc
+            finally:
+                if fd >= 0:
+                    os.close(fd)
+            if _identity(final) != _identity(metadata) or final.st_size != total:
+                raise ScratchSecurityError("workspace seal payload changed")
+            file_digest_value = "sha256:" + file_digest.hexdigest()
+            digest.update(
+                f"F:{child_relative}:{_identity(metadata)}:{total}:{int(metadata.st_mtime_ns)}:{file_digest_value}\n".encode()
+            )
+            apparent += total
+    return "sha256:" + digest.hexdigest(), members, apparent
 
 
 def _bounded_payload_observation(
@@ -564,6 +701,7 @@ class ScratchRecord:
     issue: str | None = None
     artifact_id: str | None = None
     payload_size_bytes: int | None = None
+    seal: Mapping[str, Any] | None = None
 
     @property
     def status(self) -> str:
@@ -859,6 +997,26 @@ class ScratchManager:
             raise ScratchSecurityError("scratch root must be private (mode 0700 or stricter)")
         return True
 
+    @contextmanager
+    def _scratch_lock(self) -> Iterable[None]:
+        """Serialize lifecycle/reconciliation writers for this scratch root."""
+
+        self._ensure_root(create=False)
+        try:
+            import fcntl
+
+            fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError as exc:
+            raise ScratchRootError("scratch root could not be locked") from exc
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
     @staticmethod
     def _mkdir_private(path: Path) -> None:
         try:
@@ -1007,6 +1165,7 @@ class ScratchManager:
         if stat.S_ISLNK(path_metadata.st_mode) or not stat.S_ISDIR(path_metadata.st_mode):
             raise ScratchSecurityError("scratch artifact path is not a directory")
         source_ref = payload.get("source_ref", metadata.get("source_ref"))
+        seal = _seal_mapping(payload.get("seal"))
         payload.update(
             {
                 "artifact_id": artifact_id,
@@ -1026,6 +1185,7 @@ class ScratchManager:
                     "retain_on_success": retain_on_success,
                     "retain_until_ns": retire_after_ns,
                 },
+                "seal": seal,
             }
         )
 
@@ -1082,6 +1242,13 @@ class ScratchManager:
                 "retain_until_ns": retain_until_ns,
             },
         )
+        seal = _seal_mapping(payload.get("seal"))
+        registry_metadata = dict(metadata)
+        if seal is not None:
+            # Keep the seal in the canonical registry projection as well as
+            # the scratch manifest so a later tombstone/recovery reader does
+            # not need to parse an opaque lifecycle note.
+            registry_metadata.setdefault("scratch_seal", seal)
         registry_root = self.root
         configured_registry = self._artifact_registry
         if configured_registry is not None:
@@ -1121,7 +1288,7 @@ class ScratchManager:
             "producer": _ARTIFACT_PRODUCER,
             "run_id": payload.get("run_id"),
             "purpose": purpose,
-            "metadata": dict(metadata),
+            "metadata": registry_metadata,
             "path": path,
             "root": registry_root,
             "kind": _ARTIFACT_KIND,
@@ -1380,6 +1547,8 @@ class ScratchManager:
             )
         budget = _ScratchScanBudget(max_entries, max_depth, max_bytes)
         records = tuple(self._scan_records(now_ns=now, budget=budget))
+        if not budget.truncated:
+            records = self._complete_seal_observations(records)
         if budget.truncated:
             records = tuple(
                 replace(
@@ -1462,6 +1631,8 @@ class ScratchManager:
                     pass
         budget = _ScratchScanBudget(max_entries, max_depth, max_bytes)
         observed = tuple(self._scan_records(now_ns=now, budget=budget))
+        if not budget.truncated:
+            observed = self._complete_seal_observations(observed)
         if budget.truncated:
             observed = tuple(
                 replace(
@@ -1570,6 +1741,21 @@ class ScratchManager:
             iterator.close()
         return tuple(values)
 
+    def _complete_seal_observations(
+        self,
+        records: Sequence[ScratchRecord],
+    ) -> tuple[ScratchRecord, ...]:
+        """Re-read seals only after the bounded root scan proves complete."""
+
+        resolved: list[ScratchRecord] = []
+        for record in records:
+            if record.issue != "seal_observation_incomplete":
+                resolved.append(record)
+                continue
+            complete = self._record_for_path(record.path)
+            resolved.append(complete if complete is not None else record)
+        return tuple(resolved)
+
     def _scan_records(
         self,
         *,
@@ -1652,7 +1838,11 @@ class ScratchManager:
                     size_bytes=observation.size_bytes,
                     now_ns=now_ns,
                     observation_issue=observation.issue,
-                    bounded_observation=budget is not None,
+                    bounded_observation=budget is not None
+                    and any(
+                        value is not None
+                        for value in (budget.max_entries, budget.max_depth, budget.max_bytes)
+                    ),
                 )
             except (OSError, UnicodeError, json.JSONDecodeError, ScratchError, TypeError, ValueError) as exc:
                 yield self._invalid_record(
@@ -1781,6 +1971,7 @@ class ScratchManager:
             type(payload_size_bytes) is not int or payload_size_bytes < 0
         ):
             raise ScratchSecurityError("scratch payload size observation is invalid")
+        seal = _seal_mapping(payload.get("seal"))
         workspace_metadata = path.lstat()
         issue: str | None = None
         if workspace_metadata.st_uid != os.geteuid() or workspace_metadata.st_mode & 0o077:
@@ -1794,6 +1985,24 @@ class ScratchManager:
             and int(size_bytes) != payload_size_bytes
         ):
             issue = "payload_changed_after_completion"
+        if issue is None and seal is not None:
+            if bounded_observation:
+                # A bounded plan cannot claim to have verified a full seal;
+                # preserve the workspace until an effect pass obtains the
+                # complete observation.
+                issue = "seal_observation_incomplete"
+            else:
+                try:
+                    observed_digest, observed_members, observed_bytes = _sealed_workspace_digest(path)
+                except ScratchSecurityError:
+                    issue = "workspace_seal_unavailable"
+                else:
+                    if (
+                        observed_digest != seal["digest"]
+                        or observed_members != seal["members"]
+                        or observed_bytes != seal["apparent_bytes"]
+                    ):
+                        issue = "workspace_seal_drift"
         eligible = (
             owner == self.owner
             and state == ScratchState.COMPLETED.value
@@ -1824,6 +2033,7 @@ class ScratchManager:
             manifest_digest=expected_digest,
             artifact_id=artifact_id,
             payload_size_bytes=payload_size_bytes,
+            seal=seal,
             eligible=eligible,
             issue=issue,
         )
@@ -2051,6 +2261,183 @@ class ScratchManager:
             normalized.append(str(path))
         return tuple(normalized)
 
+    def seal_workspace(
+        self,
+        record_id: str,
+        *,
+        seal: Mapping[str, Any] | None = None,
+    ) -> ScratchRecord:
+        """Persist a stable member/identity/content seal for one workspace.
+
+        This is the safe producer-facing form used by external activity
+        adapters.  The caller may supply a previously computed seal, but the
+        manager always recomputes it under the owner lock and rejects a
+        mismatch.  A later plan/apply recomputes the same claim, so equal-size
+        replacements and edits cannot be retired silently.
+        """
+
+        if self.owner is None:
+            raise ScratchSecurityError(
+                "federated scratch view is read-only for sealing"
+            )
+        record_id = _bounded_text(record_id, label="scratch record id", limit=128)
+        with self._scratch_lock():
+            record = next(
+                (item for item in self._scan_records(now_ns=time.time_ns()) if item.record_id == record_id),
+                None,
+            )
+            if record is None or record.owner != self.owner:
+                raise ScratchSecurityError("scratch workspace does not belong to this owner")
+            if record.state not in {
+                ScratchState.ACTIVE,
+                ScratchState.COMMITTING,
+                ScratchState.FAILED_RETAINED,
+                ScratchState.RECOVERY_REQUIRED,
+            }:
+                raise ScratchError("workspace is not sealable in its current state")
+            observed_digest, observed_members, observed_bytes = _sealed_workspace_digest(record.path)
+            observed = _seal_mapping(
+                {
+                    "schema": _SEAL_SCHEMA,
+                    "digest": observed_digest,
+                    "members": observed_members,
+                    "apparent_bytes": observed_bytes,
+                }
+            )
+            if observed is None:  # pragma: no cover - mapping is constructed above
+                raise ScratchSecurityError("scratch seal could not be constructed")
+            if seal is not None and _seal_mapping(seal) != observed:
+                raise ScratchSecurityError("scratch seal changed before publication")
+            return self._update_state(
+                record.path,
+                record.record_id,
+                ScratchState(record.state),
+                seal=observed,
+            )
+
+    # Short producer-facing alias; it is intentionally the same implementation
+    # and does not introduce a second lifecycle protocol.
+    seal = seal_workspace
+
+    def reconcile_terminal(
+        self,
+        record_id: str,
+        *,
+        release_authorized: bool,
+        evidence: Mapping[str, Any] | None = None,
+        now_ns: int | None = None,
+    ) -> ScratchRecord:
+        """Reconcile one failed/recovery workspace into completed-retain.
+
+        Age, a missing PID, and a TTL are not evidence.  This owner-side
+        operation requires an explicit release authorization plus bounded
+        evidence, validates the workspace/dependency/publication boundaries
+        under the scratch/registry locks, and leaves the payload intact for
+        the ordinary completed-workspace retirement path.
+        """
+
+        if self.owner is None:
+            raise ScratchSecurityError(
+                "federated scratch view is read-only for reconciliation"
+            )
+        if type(release_authorized) is not bool or not release_authorized:
+            raise ScratchSecurityError("terminal reconciliation requires release authorization")
+        if not isinstance(evidence, Mapping) or not evidence:
+            raise ScratchSecurityError("terminal reconciliation requires explicit evidence")
+        if len(_canonical_json(dict(evidence)).encode("utf-8")) > _MAX_METADATA_BYTES:
+            raise ScratchSecurityError("terminal reconciliation evidence exceeds the durable limit")
+        when = time.time_ns() if now_ns is None else now_ns
+        if type(when) is not int or when < 0:
+            raise ValueError("terminal reconciliation now_ns must be a non-negative integer")
+        record_id = _bounded_text(record_id, label="scratch record id", limit=128)
+        registry = self._artifact_registry_instance() if self._artifact_registry_configured else None
+        registry_lock = getattr(registry, "_registry_lock", None) if registry is not None else None
+        registry_context = registry_lock() if callable(registry_lock) else nullcontext()
+        with self._scratch_lock():
+            with registry_context:
+                records = tuple(self._scan_records(now_ns=when))
+                current = next((item for item in records if item.record_id == record_id), None)
+                if current is None or current.owner != self.owner:
+                    raise ScratchSecurityError("scratch workspace does not belong to this owner")
+                if current.state not in {
+                    ScratchState.FAILED_RETAINED,
+                    ScratchState.RECOVERY_REQUIRED,
+                }:
+                    raise ScratchError("only failed-retained or recovery-required workspaces can be reconciled")
+                if not current.valid or current.path_identity is None:
+                    raise ScratchSecurityError("terminal workspace identity is not verified")
+                if not _same_identity(current.path, current.path_identity):
+                    raise ScratchSecurityError("terminal workspace identity changed")
+                if not self._workspace_dependency_observation_complete(records):
+                    raise ScratchSecurityError("scratch dependency observation incomplete")
+                dependents = self._live_workspace_dependents(current, records)
+                if dependents:
+                    raise ScratchSecurityError(
+                        "scratch workspace has live dependents: " + ", ".join(dependents[:16])
+                    )
+                if current.state == ScratchState.RECOVERY_REQUIRED and not (
+                    evidence.get("recovered") is True
+                    or evidence.get("recovery_resolved") is True
+                ):
+                    raise ScratchSecurityError("recovery evidence is incomplete")
+                note: Mapping[str, Any] = {}
+                if isinstance(current.reason, str) and current.reason.startswith("agent-activity-note:"):
+                    try:
+                        parsed = json.loads(current.reason[len("agent-activity-note:") :])
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        parsed = {}
+                    if isinstance(parsed, Mapping):
+                        note = parsed
+                publication = note.get("publication")
+                if publication is not None and evidence.get("publication_resolved") is not True:
+                    raise ScratchSecurityError("publication reconciliation is still pending")
+                registry_snapshot: Sequence[Any] | None = None
+                if registry is not None:
+                    records_method = getattr(registry, "records", None)
+                    if callable(records_method):
+                        candidate_snapshot = records_method()
+                        registry_snapshot = (
+                            candidate_snapshot
+                            if isinstance(candidate_snapshot, Sequence)
+                            else None
+                        )
+                    if registry_snapshot is not None and current.artifact_id is not None:
+                        matching = next(
+                            (
+                                item
+                                for item in registry_snapshot
+                                if getattr(item, "artifact_id", None) == current.artifact_id
+                            ),
+                            None,
+                        )
+                        if matching is None or not getattr(matching, "valid", False):
+                            raise ScratchSecurityError("registry recovery evidence is incomplete")
+                        if getattr(matching, "owner", None) != self.owner:
+                            raise ScratchSecurityError("registry owner does not match terminal workspace")
+                reconciliation = {
+                    "schema": "neocortex.scratch-terminal-reconciliation/v1",
+                    "authorized": True,
+                    "authorized_ns": when,
+                    "prior_state": current.state.value
+                    if isinstance(current.state, ScratchState)
+                    else str(current.state),
+                    "prior_reason": current.reason,
+                    "evidence": dict(evidence),
+                }
+                metadata = dict(current.metadata)
+                metadata["terminal_reconciliation"] = reconciliation
+                return self._update_state(
+                    current.path,
+                    current.record_id,
+                    ScratchState.COMPLETED,
+                    retain_on_success=True,
+                    retire_after_ns=when,
+                    reason=current.reason,
+                    metadata=metadata,
+                )
+
+    reconcile_failed = reconcile_terminal
+
     def _update_state(
         self,
         path: Path,
@@ -2061,6 +2448,8 @@ class ScratchManager:
         result_paths: Sequence[str] | None = None,
         retire_after_ns: int | None = None,
         reason: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        seal: Mapping[str, Any] | None = None,
     ) -> ScratchRecord:
         if self.owner is None:
             raise ScratchSecurityError(
@@ -2088,6 +2477,12 @@ class ScratchManager:
             updated["retain_on_success"] = bool(retain_on_success)
         if result_paths is not None:
             updated["result_paths"] = list(result_paths)
+        if metadata is not None:
+            if not isinstance(metadata, Mapping):
+                raise ScratchSecurityError("scratch metadata is not an object")
+            if len(_canonical_json(metadata).encode("utf-8")) > _MAX_METADATA_BYTES:
+                raise ScratchSecurityError("scratch metadata exceeds the durable limit")
+            updated["metadata"] = dict(metadata)
         if state is ScratchState.COMPLETED:
             updated["retire_after_ns"] = retire_after_ns
             # Persist one bounded lifecycle observation in the workspace
@@ -2096,6 +2491,9 @@ class ScratchManager:
             updated["payload_size_bytes"] = _directory_size(path)
         if reason is not None:
             updated["reason"] = _bounded_text(reason, label="scratch reason")
+        promoted_seal = _seal_mapping(seal) if seal is not None else _seal_from_lifecycle_reason(updated.get("reason"))
+        if promoted_seal is not None:
+            updated["seal"] = promoted_seal
         if self._artifact_registry_configured:
             self._add_artifact_manifest_fields(updated)
         updated["manifest_digest"] = _manifest_digest(updated)

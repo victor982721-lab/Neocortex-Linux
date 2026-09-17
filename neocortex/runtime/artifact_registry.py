@@ -95,6 +95,9 @@ _RETIREMENT_PENDING_PHASES = frozenset(
     {"prepared", "applying", "applied_unverified", "recovery_required"}
 )
 _RETIREMENT_CONFIRMED_PHASE = "confirmed"
+_TOMBSTONE_RETENTION_SCHEMA = "neocortex.artifact-tombstone-retention/v1"
+_TOMBSTONE_RETENTION_DIR = ".tombstone-retention"
+_MAX_RETENTION_RECEIPT_BYTES = 256 * 1024
 _DISPOSABLE_KINDS = frozenset(
     {
         ArtifactKind.REBUILDABLE.value,
@@ -840,6 +843,16 @@ def _manifest_file_issue(metadata: os.stat_result) -> str | None:
     if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077 or metadata.st_nlink != 1:
         return "manifest_protection_drift"
     return None
+
+
+def _retention_receipt_digest(payload: Mapping[str, Any]) -> str:
+    unsigned = dict(payload)
+    unsigned.pop("receipt_digest", None)
+    return "sha256:" + hashlib.sha256(_canonical_json(unsigned).encode("utf-8")).hexdigest()
+
+
+def _retention_receipt_name(operation_id: str) -> str:
+    return f"receipt-{hashlib.sha256(operation_id.encode('utf-8')).hexdigest()}.json"
 
 
 def _registry_write_locked(method: Any) -> Any:
@@ -1906,6 +1919,21 @@ class ArtifactRegistry:
         truncated = False
         try:
             for entry in iterator:
+                if entry.name == _TOMBSTONE_RETENTION_DIR:
+                    try:
+                        internal = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        # Keep the entry visible as unmanaged so a concurrent
+                        # or corrupt retention store fails closed.
+                        entries.append(entry)
+                        continue
+                    if (
+                        stat.S_ISDIR(internal.st_mode)
+                        and not stat.S_ISLNK(internal.st_mode)
+                        and internal.st_uid == os.geteuid()
+                        and not internal.st_mode & 0o077
+                    ):
+                        continue
                 if len(entries) >= max_records:
                     truncated = True
                     break
@@ -2521,6 +2549,246 @@ class ArtifactRegistry:
         if include_records:
             result["records"] = [record.to_dict() for record in self.records()]
         return result
+
+    @_registry_write_locked
+    def apply_tombstone_retention(
+        self,
+        artifact_ids: Iterable[str],
+        *,
+        release_authorized: bool,
+        evidence: Mapping[str, Any] | None = None,
+        operation_id: str | None = None,
+    ) -> dict[str, object]:
+        """Prune explicitly released retired manifests, never their payloads.
+
+        This is deliberately narrower than artifact retirement.  It accepts
+        only already-retired, verified tombstones whose claimed payload is
+        absent and whose metadata does not retain recovery/replay/pin/grant
+        obligations.  A small durable receipt is written before each unlink;
+        replay observes missing manifests and confirms the prior effect rather
+        than attempting it again.  Unknown, corrupt, duplicate or truncated
+        selections remain blocked.
+        """
+
+        if self.owner is None:
+            raise ArtifactSecurityError(
+                "federated artifact registry view is read-only for retention"
+            )
+        if type(release_authorized) is not bool or not release_authorized:
+            raise ArtifactSecurityError("tombstone retention requires release authorization")
+        if not isinstance(evidence, Mapping) or not evidence:
+            raise ArtifactSecurityError("tombstone retention requires explicit evidence")
+        evidence_payload = _bounded_mapping(
+            evidence,
+            label="tombstone retention evidence",
+            limit=_MAX_RETENTION_RECEIPT_BYTES,
+        )
+        operation = operation_id or uuid.uuid4().hex
+        operation = _bounded_text(operation, label="tombstone retention operation", limit=128)
+        identifiers: list[str] = []
+        seen: set[str] = set()
+        for raw in artifact_ids:
+            identifier = _bounded_text(raw, label="tombstone artifact id", limit=MAX_ARTIFACT_ID_BYTES)
+            if identifier in seen:
+                raise ArtifactSecurityError("tombstone retention selection contains duplicates")
+            seen.add(identifier)
+            identifiers.append(identifier)
+            if len(identifiers) > min(self.max_records, 1_000):
+                raise ArtifactSecurityError("tombstone retention selection is truncated")
+
+        retention_root = self.root / _TOMBSTONE_RETENTION_DIR
+        try:
+            retention_root.mkdir(mode=0o700, exist_ok=True)
+            metadata = retention_root.lstat()
+        except OSError as exc:
+            raise ArtifactRootError("tombstone retention journal is unavailable") from exc
+        if _private_directory_issue(metadata, root=True) is not None:
+            raise ArtifactRootError("tombstone retention journal failed its private-directory check")
+        receipt_path = retention_root / _retention_receipt_name(operation)
+        try:
+            existing_raw = receipt_path.read_bytes()
+        except FileNotFoundError:
+            existing_raw = None
+        except OSError as exc:
+            raise ArtifactManifestError("tombstone retention receipt is unavailable") from exc
+        if existing_raw is not None:
+            try:
+                existing = json.loads(existing_raw.decode("utf-8"))
+            except (UnicodeError, json.JSONDecodeError) as exc:
+                raise ArtifactManifestError("tombstone retention receipt is invalid") from exc
+            if not isinstance(existing, Mapping) or existing.get("receipt_digest") != _retention_receipt_digest(existing):
+                raise ArtifactManifestError("tombstone retention receipt digest mismatch")
+            if existing.get("operation_id") != operation:
+                raise ArtifactConflictError("tombstone retention operation id collides")
+            return dict(existing)
+
+        receipt: dict[str, Any] = {
+            "schema": _TOMBSTONE_RETENTION_SCHEMA,
+            "operation_id": operation,
+            "owner": self.owner,
+            "artifact_ids": identifiers,
+            "evidence": evidence_payload,
+            "release_authorized": True,
+            "status": "applying",
+            "items": [],
+            "created_ns": time.time_ns(),
+        }
+
+        def write_receipt() -> None:
+            receipt["receipt_digest"] = _retention_receipt_digest(receipt)
+            _write_json_atomic(receipt_path, receipt, exclusive=not receipt_path.exists())
+
+        write_receipt()
+        blocked: list[dict[str, object]] = []
+        confirmed: list[str] = []
+        for identifier in identifiers:
+            try:
+                manifest_path = self._manifest_path(identifier)
+                if not manifest_path.exists():
+                    blocked.append(
+                        {"artifact_id": identifier, "reason": "tombstone manifest is absent"}
+                    )
+                    receipt["items"].append(
+                        {
+                            "artifact_id": identifier,
+                            "phase": "recovery_required",
+                            "reason": "tombstone manifest is absent",
+                        }
+                    )
+                    write_receipt()
+                    continue
+                record = self._load_record(manifest_path)
+                if not record.verified or record.owner != self.owner:
+                    raise ArtifactSecurityError("tombstone is not verified by this owner")
+                if record.state != ArtifactState.RETIRED.value:
+                    raise ArtifactSecurityError("only retired tombstones can be pruned")
+                if record.dependencies:
+                    raise ArtifactSecurityError("tombstone retains dependency claims")
+                claim = self._retirement_claim(record)
+                if claim is not None and claim.get("phase") in _RETIREMENT_PENDING_PHASES:
+                    raise ArtifactSecurityError("tombstone has pending recovery")
+                metadata = record.metadata
+                protected_keys = (
+                    "pinned",
+                    "pin",
+                    "grant_active",
+                    "authorization_active",
+                    "replay_required",
+                    "recovery_required",
+                    "evidence_required",
+                )
+                if any(metadata.get(key) is True for key in protected_keys):
+                    raise ArtifactSecurityError("tombstone retains an active obligation")
+                try:
+                    record.path.lstat()
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise ArtifactSecurityError("retired payload is still present")
+                manifest_metadata = manifest_path.lstat()
+                issue = _manifest_file_issue(manifest_metadata)
+                if issue is not None:
+                    raise ArtifactManifestError(f"tombstone manifest failed safety check: {issue}")
+                item: dict[str, Any] = {
+                    "artifact_id": identifier,
+                    "manifest": str(manifest_path),
+                    "manifest_identity": list(_identity(manifest_metadata)),
+                    "phase": "applying",
+                }
+                receipt["items"].append(item)
+                write_receipt()
+                current = manifest_path.lstat()
+                if _identity(current) != tuple(item["manifest_identity"]):
+                    raise ArtifactSecurityError("tombstone manifest changed before pruning")
+                os.unlink(manifest_path)
+                directory_fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+                item["phase"] = "confirmed"
+                item["confirmed_ns"] = time.time_ns()
+                confirmed.append(identifier)
+                write_receipt()
+            except (ArtifactRegistryError, OSError, TypeError, ValueError) as exc:
+                blocked.append({"artifact_id": identifier, "reason": str(exc)})
+                receipt["items"].append(
+                    {"artifact_id": identifier, "phase": "recovery_required", "reason": str(exc)}
+                )
+                write_receipt()
+
+        receipt["status"] = "recovery_required" if blocked else "applied"
+        receipt["confirmed"] = len(confirmed)
+        receipt["blocked"] = blocked
+        receipt["completed_ns"] = time.time_ns()
+        write_receipt()
+        return dict(receipt)
+
+    @_registry_write_locked
+    def recover_tombstone_retention(self) -> dict[str, object]:
+        """Confirm or preserve interrupted tombstone-retention receipts."""
+
+        if self.owner is None:
+            raise ArtifactSecurityError(
+                "federated artifact view is read-only for retention recovery"
+            )
+        journal = self.root / _TOMBSTONE_RETENTION_DIR
+        if not journal.exists():
+            return {"schema": _TOMBSTONE_RETENTION_SCHEMA, "status": "ready", "confirmed": 0, "recovery_required": 0}
+        entries = sorted(journal.glob("receipt-*.json"))[: min(self.max_records, 1_000)]
+        confirmed = 0
+        recovery_required = 0
+        for receipt_path in entries:
+            try:
+                payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+                if not isinstance(payload, Mapping) or payload.get("receipt_digest") != _retention_receipt_digest(payload):
+                    recovery_required += 1
+                    continue
+                if payload.get("owner") != self.owner:
+                    recovery_required += 1
+                    continue
+                changed = False
+                items = payload.get("items")
+                if not isinstance(items, list):
+                    recovery_required += 1
+                    continue
+                for item in items:
+                    if not isinstance(item, dict) or item.get("phase") != "applying":
+                        continue
+                    manifest_value = item.get("manifest")
+                    if not isinstance(manifest_value, str) or Path(manifest_value).parent != self.root:
+                        item["phase"] = "recovery_required"
+                        item["reason"] = "manifest path is not registry-local"
+                        changed = True
+                        continue
+                    if not Path(manifest_value).exists():
+                        item["phase"] = "confirmed"
+                        item["replayed"] = True
+                        changed = True
+                    else:
+                        item["phase"] = "recovery_required"
+                        item["reason"] = "manifest still exists after interrupted effect"
+                        changed = True
+                if changed:
+                    phases = [item.get("phase") for item in items if isinstance(item, Mapping)]
+                    payload = dict(payload)
+                    payload["status"] = "recovery_required" if "recovery_required" in phases else "applied"
+                    payload["items"] = items
+                    payload["recovered_ns"] = time.time_ns()
+                    payload["receipt_digest"] = _retention_receipt_digest(payload)
+                    _write_json_atomic(receipt_path, payload, exclusive=False)
+                if payload.get("status") == "recovery_required":
+                    recovery_required += 1
+                else:
+                    confirmed += 1
+            except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+                recovery_required += 1
+        return {
+            "schema": _TOMBSTONE_RETENTION_SCHEMA,
+            "status": "recovery_required" if recovery_required else "applied",
+            "confirmed": confirmed,
+            "recovery_required": recovery_required,
+        }
 
 
 # endregion [03]

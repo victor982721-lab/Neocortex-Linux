@@ -65,8 +65,27 @@ def register_agent_activity_arguments(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--agent-destination", type=Path, metavar="PATH")
     group.add_argument("--agent-deliverable-id", metavar="ID")
     group.add_argument("--agent-result", action="append", type=Path, metavar="PATH")
-    group.add_argument("--agent-reconcile-action", choices=("resume", "publish", "complete", "retire", "fail"), default="resume")
+    group.add_argument(
+        "--agent-reconcile-action",
+        choices=("resume", "publish", "complete", "retire", "fail", "release"),
+        default="resume",
+    )
     group.add_argument("--agent-failure-reason", default="external activity failed")
+    group.add_argument(
+        "--agent-release-authorized",
+        action="store_true",
+        help="explicitly authorize terminal reconciliation of a failed activity",
+    )
+    group.add_argument(
+        "--agent-recovery-resolved",
+        action="store_true",
+        help="record explicit recovery evidence when releasing a recovery-required activity",
+    )
+    group.add_argument(
+        "--agent-publication-resolved",
+        action="store_true",
+        help="record explicit publication reconciliation evidence",
+    )
     group.add_argument(
         "--agent-json",
         action="store_true",
@@ -131,6 +150,26 @@ def run_agent_activity(args: argparse.Namespace) -> int:
             if not command:
                 raise ValueError("--agent-command is required for --agent-action run")
             result = activity.run(command, check=False)
+            if result.returncode != 0:
+                # A non-zero external producer is a durable activity failure,
+                # not a successful CLI operation.  Keep the failed-retained
+                # workspace for a fresh process to reconcile and expose the
+                # failure with a non-zero command status.
+                activity.reconcile(
+                    "fail",
+                    reason=f"external process returned {result.returncode}",
+                )
+                payload = {
+                    "schema": AGENT_ACTIVITY_CLI_SCHEMA,
+                    "operation": "agent_activity",
+                    "status": "failed",
+                    "code": "AgentActivityProcessError",
+                    "reason": f"external process returned {result.returncode}",
+                    "exit_code": 2,
+                    "result": result,
+                }
+                _emit(payload, json_output=json_output)
+                return 2
         elif action == "publish":
             source = getattr(args, "agent_source", None)
             destination = getattr(args, "agent_destination", None)
@@ -148,13 +187,21 @@ def run_agent_activity(args: argparse.Namespace) -> int:
         elif action == "fail":
             result = activity.reconcile("fail", reason=getattr(args, "agent_failure_reason", "external activity failed"))
         elif action == "reconcile":
+            reconcile_action = getattr(args, "agent_reconcile_action", "resume")
+            evidence: dict[str, object] = {}
+            if getattr(args, "agent_recovery_resolved", False):
+                evidence["recovered"] = True
+            if getattr(args, "agent_publication_resolved", False):
+                evidence["publication_resolved"] = True
             result = activity.reconcile(
-                getattr(args, "agent_reconcile_action", "resume"),
+                reconcile_action,
                 source=getattr(args, "agent_source", None),
                 destination=getattr(args, "agent_destination", None),
                 deliverable_id=getattr(args, "agent_deliverable_id", None),
                 result_paths=getattr(args, "agent_result", None) or (),
                 reason=getattr(args, "agent_failure_reason", "external activity failed"),
+                release_authorized=getattr(args, "agent_release_authorized", False),
+                evidence=evidence,
             )
         else:  # pragma: no cover - argparse choices protect this branch
             raise ValueError(f"unsupported agent activity action: {action}")

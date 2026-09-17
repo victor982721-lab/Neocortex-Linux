@@ -27,7 +27,7 @@ import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Self
+from typing import TYPE_CHECKING, Any, Literal, Self, cast
 
 from neocortex.runtime.artifact_registry import (
     ArtifactConflictError,
@@ -36,6 +36,12 @@ from neocortex.runtime.artifact_registry import (
     ArtifactRegistry,
 )
 from neocortex.runtime.scratch import ScratchManager, ScratchRecord, ScratchState, ScratchWorkspace
+
+if TYPE_CHECKING:
+    from neocortex.workflow.retention.planner import (
+        TerminalRetentionPlan,
+        TerminalRetentionPolicy,
+    )
 
 __all__ = [
     "AGENT_ACTIVITY_CLI_SCHEMA",
@@ -101,6 +107,23 @@ def _bounded_text(value: object, *, label: str, limit: int) -> str:
     if len(value.encode("utf-8")) > limit:
         raise ValueError(f"{label} exceeds {limit} UTF-8 bytes")
     return value
+
+
+def _canonical_activity_owner(value: object) -> str:
+    """Validate the only owner currently wired to public maintenance.
+
+    The activity facade must not advertise arbitrary owners while the public
+    maintenance/``--all`` paths have a single canonical owner.  Keeping this
+    check at the facade boundary is safer than accepting a claim that later
+    becomes an ``owner_mismatch`` during cleanup.
+    """
+
+    owner = _bounded_text(value, label="activity owner", limit=_MAX_OWNER_BYTES)
+    if owner != DEFAULT_AGENT_OWNER:
+        raise AgentActivityConflict(
+            f"activity owner is not registered for the public lifecycle: {owner}"
+        )
+    return owner
 
 
 def _absolute_path(value: Path | str, *, label: str) -> Path:
@@ -423,7 +446,7 @@ class AgentActivity:
 
         state = _private_root(_absolute_path(state_directory, label="state directory"), create=True)
         normalized_id = _bounded_text(activity_id, label="activity_id", limit=_MAX_ACTIVITY_ID_BYTES)
-        normalized_owner = _bounded_text(owner, label="activity owner", limit=_MAX_OWNER_BYTES)
+        normalized_owner = _canonical_activity_owner(owner)
         if process_pid is not None and (
             type(process_pid) is not int or process_pid < 1
         ):
@@ -477,7 +500,7 @@ class AgentActivity:
 
         state = _absolute_path(state_directory, label="state directory")
         normalized_id = _bounded_text(activity_id, label="activity_id", limit=_MAX_ACTIVITY_ID_BYTES)
-        normalized_owner = _bounded_text(owner, label="activity owner", limit=_MAX_OWNER_BYTES)
+        normalized_owner = _canonical_activity_owner(owner)
         registry = ArtifactRegistry(state / "artifacts", owner=normalized_owner, create_root=False)
         manager = ScratchManager(
             state / "scratch" / _SCRATCH_SCOPE,
@@ -963,7 +986,7 @@ class AgentActivity:
         if record.state != ScratchState.COMPLETED:
             raise AgentActivityError("only a completed activity can be retired")
         note = _read_note(record.reason)
-        seal = note.get("seal")
+        seal = record.seal if isinstance(record.seal, Mapping) else note.get("seal")
         if not isinstance(seal, Mapping):
             raise AgentActivityChanged("completed activity has no durable seal")
         digest, members, apparent = _sealed_workspace_digest(record.path)
@@ -976,15 +999,124 @@ class AgentActivity:
         self._retired = True
         return self.snapshot()
 
+    def _terminal_registry_records(self) -> tuple[ArtifactRecord, ...]:
+        """Return this activity's bounded registry projections only."""
+
+        result: list[ArtifactRecord] = []
+        for item in _registry_records(self._registry):
+            activity = item.metadata.get(_ACTIVITY_META_KEY)
+            source_ref = item.source_ref
+            if (
+                isinstance(activity, Mapping)
+                and activity.get("activity_id") == self.activity_id
+            ) or (
+                isinstance(source_ref, Mapping)
+                and source_ref.get("activity_id") == self.activity_id
+            ):
+                result.append(item)
+        return tuple(result)
+
+    def terminal_retention_plan(
+        self,
+        *,
+        policy: "TerminalRetentionPolicy",
+        now_ns: int | None = None,
+        baseline_record_ids: Iterable[str] = (),
+    ) -> "TerminalRetentionPlan":
+        """Plan this activity's terminal registry evidence without effects.
+
+        The policy is intentionally required.  A caller must choose the
+        minimum age and category quotas explicitly; the planner still requires
+        reconciliation, release authorization and absence of recovery/pins
+        before an item can become eligible.
+        """
+
+        from neocortex.workflow.retention.planner import (
+            TerminalRetentionRecord,
+            plan_terminal_retention,
+        )
+
+        now = time.time_ns() if now_ns is None else now_ns
+        records: list[TerminalRetentionRecord] = []
+        for item in self._terminal_registry_records():
+            metadata = item.metadata
+            is_tombstone = item.state == "retired" and item.artifact_id.startswith("scratch:")
+            records.append(
+                TerminalRetentionRecord(
+                    record_id=item.artifact_id,
+                    status=item.state,
+                    category="tombstone" if is_tombstone else "other",
+                    terminal_ns=item.updated_ns if item.state in {"retired", "failed"} else None,
+                    apparent_bytes=max(0, item.path_size_bytes or 0),
+                    allocated_bytes=max(0, item.path_size_bytes or 0),
+                    physical_identity=item.path_identity,
+                    reconciled=is_tombstone,
+                    recovery_required=item.state == "recovery_required",
+                    replay_required=False,
+                    pinned=metadata.get("pinned") is True,
+                    grant_active=metadata.get("grant_active") is True,
+                    authorization_active=metadata.get("authorization_active") is True,
+                    release_authorized=is_tombstone,
+                    evidence_required=metadata.get("evidence_required") is True,
+                    tombstone=is_tombstone,
+                    owner=item.owner,
+                )
+            )
+        return plan_terminal_retention(
+            records,
+            now_ns=now,
+            policy=policy,
+            baseline_record_ids=tuple(baseline_record_ids),
+        )
+
+    def apply_terminal_retention(
+        self,
+        *,
+        policy: "TerminalRetentionPolicy",
+        now_ns: int | None = None,
+        release_authorized: bool,
+        operation_id: str | None = None,
+    ) -> dict[str, object]:
+        """Apply only eligible tombstone-manifest retention for this activity."""
+
+        if type(release_authorized) is not bool or not release_authorized:
+            raise AgentActivityConflict("terminal retention requires explicit release authorization")
+        plan = cast("TerminalRetentionPlan", self.terminal_retention_plan(policy=policy, now_ns=now_ns))
+        if getattr(plan, "status", None) != "ready" or getattr(plan, "truncated", False):
+            raise AgentActivityRecoveryRequired("terminal retention plan is incomplete")
+        eligible_ids = tuple(
+            item.record.record_id
+            for item in plan.eligible_items
+            if item.record.category == "tombstone"
+        )
+        receipt = self._registry.apply_tombstone_retention(
+            eligible_ids,
+            release_authorized=True,
+            evidence={
+                "schema": AGENT_ACTIVITY_SCHEMA,
+                "activity_id": self.activity_id,
+                "plan_fingerprint": plan.fingerprint,
+            },
+            operation_id=operation_id,
+        )
+        return {
+            "schema": AGENT_ACTIVITY_SCHEMA,
+            "activity_id": self.activity_id,
+            "plan": plan.to_dict(),
+            "receipt": receipt,
+        }
+
     def reconcile(
         self,
-        action: Literal["resume", "publish", "complete", "retire", "fail"] = "resume",
+        action: Literal["resume", "publish", "complete", "retire", "fail", "release"] = "resume",
         *,
         source: Path | str | None = None,
         destination: Path | str | None = None,
         deliverable_id: str | None = None,
         result_paths: Iterable[Path | str] = (),
         reason: str = "external activity reconciled as failed",
+        release_authorized: bool = False,
+        evidence: Mapping[str, Any] | None = None,
     ) -> ActivitySnapshot | PublishedDeliverable:
         """Reconcile durable state from a fresh process, never by age alone."""
 
@@ -1010,5 +1142,42 @@ class AgentActivity:
             return self.retire()
         if action == "fail":
             self._mark_failed(reason)
+            return self.snapshot()
+        if action == "release":
+            if type(release_authorized) is not bool or not release_authorized:
+                raise AgentActivityConflict(
+                    "terminal release requires explicit release authorization"
+                )
+            record = self._refresh_record()
+            if record.state not in {
+                ScratchState.FAILED_RETAINED,
+                ScratchState.RECOVERY_REQUIRED,
+            }:
+                raise AgentActivityError(
+                    f"activity is not awaiting terminal reconciliation: {record.state}"
+                )
+            claims = dict(evidence or {})
+            claims.setdefault("activity_id", self.activity_id)
+            claims.setdefault("workspace_id", record.record_id)
+            # Seal the failed payload before changing its state.  The owner
+            # revalidates identity/content again during reconcile and during
+            # the later retirement effect.
+            seal_digest, members, apparent = _sealed_workspace_digest(record.path)
+            self._manager.seal_workspace(
+                record.record_id,
+                seal={
+                    "schema": "neocortex.scratch-seal/v1",
+                    "digest": seal_digest,
+                    "members": members,
+                    "apparent_bytes": apparent,
+                },
+            )
+            reconciled = self._manager.reconcile_terminal(
+                record.record_id,
+                release_authorized=True,
+                evidence=claims,
+            )
+            self._record = reconciled
+            self._workspace = ScratchWorkspace(self._manager, reconciled, retain_on_success=True)
             return self.snapshot()
         raise ValueError(f"unsupported reconciliation action: {action}")

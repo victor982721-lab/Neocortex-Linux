@@ -7,10 +7,12 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 from neocortex.api.cli.cli_hygiene import _invoke_owner
 from neocortex.runtime.artifact_registry import ArtifactRegistry
 from neocortex.runtime.hygiene import HygieneManager, plan_hygiene
-from neocortex.runtime.scratch import ScratchManager
+from neocortex.runtime.scratch import ScratchManager, ScratchSecurityError, ScratchState
 
 
 def _private_file(path: Path, payload: bytes = b"x") -> None:
@@ -363,3 +365,82 @@ def test_retirement_batch_reads_registry_linearly_at_scale(tmp_path: Path) -> No
     # intentionally a generous linear ceiling, not a machine-time SLA.
     assert all(reads_by_size[count] <= count * 10 for count in reads_by_size)
     assert reads_by_size[160] < reads_by_size[20] * 10
+
+
+def test_durable_seal_blocks_equal_size_late_change(tmp_path: Path) -> None:
+    manager = ScratchManager(tmp_path / "scratch", create_root=True)
+    workspace = manager.create(retain_on_success=True)
+    payload = workspace.path / "payload.bin"
+    _private_file(payload, b"original")
+    sealed = manager.seal_workspace(workspace.record_id)
+    assert sealed.seal is not None
+    workspace.complete(retain=True)
+    payload.write_bytes(b"changed!")
+    os.chmod(payload, 0o600)
+
+    plan = manager.plan(now_ns=10**30)
+    assert plan.planned == 0
+    assert plan.blocked == 1
+    assert plan.records[0].issue == "workspace_seal_drift"
+    assert manager.apply(now_ns=10**30).applied == 0
+    assert payload.exists()
+
+
+def test_failed_terminal_reconciliation_requires_evidence_and_retains_payload(
+    tmp_path: Path,
+) -> None:
+    manager = ScratchManager(tmp_path / "scratch", create_root=True)
+    workspace = manager.create(retain_on_success=True)
+    _private_file(workspace.path / "partial.bin", b"partial")
+    failed = workspace.fail("external process interrupted")
+    with pytest.raises(ScratchSecurityError):
+        manager.reconcile_terminal(
+            failed.record_id,
+            release_authorized=False,
+            evidence={"operator": "fixture"},
+        )
+    reconciled = manager.reconcile_terminal(
+        failed.record_id,
+        release_authorized=True,
+        evidence={"operator": "fixture", "outcome": "inspected"},
+        now_ns=10**30,
+    )
+    assert reconciled.state is ScratchState.COMPLETED
+    assert reconciled.retain_on_success is True
+    assert workspace.path.exists()
+    assert manager.plan(now_ns=10**30).planned == 1
+
+
+def test_tombstone_retention_removes_only_manifest_and_replays(
+    tmp_path: Path,
+) -> None:
+    registry = ArtifactRegistry(tmp_path / "registry", owner="fixture", create_root=True)
+    manager = ScratchManager(
+        tmp_path / "scratch",
+        owner="fixture",
+        create_root=True,
+        artifact_registry=registry,
+    )
+    workspace = manager.create(retain_on_success=True)
+    workspace.complete(retain=True)
+    artifact_id = workspace.artifact_id
+    assert artifact_id is not None
+    manager.apply(now_ns=10**30)
+    manifest = registry.manifest_path(artifact_id)
+    assert not workspace.path.exists()
+    assert manifest.exists()
+    result = registry.apply_tombstone_retention(
+        [artifact_id],
+        release_authorized=True,
+        evidence={"reconciled": True, "operator": "fixture"},
+    )
+    assert result["status"] == "applied"
+    assert not manifest.exists()
+    assert list((registry.root / ".tombstone-retention").glob("receipt-*.json"))
+    replay = registry.apply_tombstone_retention(
+        [artifact_id],
+        release_authorized=True,
+        evidence={"reconciled": True, "operator": "fixture"},
+        operation_id=str(result["operation_id"]),
+    )
+    assert replay["status"] == "applied"

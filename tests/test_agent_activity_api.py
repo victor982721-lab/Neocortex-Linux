@@ -20,6 +20,7 @@ from neocortex.api.agent_activity import (
 from neocortex.api.cli.cli_agent_activity import register_agent_activity_arguments, run_agent_activity
 from neocortex.runtime.artifact_registry import ArtifactRegistry
 from neocortex.runtime.scratch import ScratchManager
+from neocortex.workflow.retention.planner import TerminalRetentionPolicy
 
 
 def test_public_activity_survives_external_process_and_replays_from_new_process(
@@ -178,3 +179,120 @@ def test_activity_registry_projection_uses_real_owner_and_no_parallel_store(tmp_
     projected = registry.verify(records[0].artifact_id)
     assert projected.owner == DEFAULT_AGENT_OWNER
     assert projected.metadata["agent_activity"]["activity_id"] == "projection"
+
+
+def test_failed_activity_can_be_explicitly_reconciled_and_terminal_tombstone_replayed(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "state"
+    activity = AgentActivity.prepare(state, "terminal-release")
+    (activity.path / "failed.bin").write_bytes(b"failed payload")
+    activity.reconcile("fail", reason="producer crashed")
+
+    # A fresh facade performs the explicit owner-authorized reconciliation;
+    # age/PID absence alone never changes the failed-retained state.
+    resumed = AgentActivity.resume(state, "terminal-release")
+    released = resumed.reconcile(
+        "release",
+        release_authorized=True,
+        evidence={"recovered": True},
+    )
+    assert released.state == "completed"
+    retired = resumed.retire()
+    assert retired.state == "retired"
+
+    policy = TerminalRetentionPolicy(minimum_age_ns=0, tombstone_count=0)
+    plan = resumed.terminal_retention_plan(policy=policy, now_ns=10**30)
+    assert plan.status == "ready"
+    assert plan.tombstone_count == 1
+    assert plan.eligible_count == 1
+    assert plan.physical_accounting_complete is True
+    receipt = resumed.apply_terminal_retention(
+        policy=policy,
+        now_ns=10**30,
+        release_authorized=True,
+        operation_id="terminal-release-op",
+    )["receipt"]
+    assert receipt["status"] == "applied"
+    replay = resumed.apply_terminal_retention(
+        policy=policy,
+        now_ns=10**30,
+        release_authorized=True,
+        operation_id="terminal-release-op",
+    )["receipt"]
+    assert replay["status"] == "applied"
+    assert not list((state / "artifacts").glob("scratch-*.json"))
+
+
+def test_maintenance_owner_honors_activity_seal_for_equal_size_late_change(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "state"
+    activity = AgentActivity.prepare(state, "sealed-maintenance")
+    payload = activity.path / "payload.bin"
+    payload.write_bytes(b"abc")
+    activity.close((payload,))
+    payload.write_bytes(b"xyz")
+
+    registry = ArtifactRegistry(state / "artifacts", owner=DEFAULT_AGENT_OWNER)
+    manager = ScratchManager(
+        state / "scratch" / "owned-temp",
+        owner=DEFAULT_AGENT_OWNER,
+        create_root=False,
+        artifact_registry=registry,
+    )
+    result = manager.apply(now_ns=10**30)
+    assert result.applied == 0
+    assert result.blocked == 1
+    assert result.records[0].issue == "workspace_seal_drift"
+    assert payload.exists()
+
+
+def test_public_activity_rejects_unregistered_owner(tmp_path: Path) -> None:
+    with pytest.raises(AgentActivityConflict, match="not registered"):
+        AgentActivity.prepare(tmp_path / "state", "unregistered", owner="external-agent")
+
+
+def test_activity_cli_surfaces_external_process_failure(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--state-directory", type=Path, required=True)
+    register_agent_activity_arguments(parser)
+    state = tmp_path / "state"
+    prepare = parser.parse_args(
+        [
+            "--state-directory",
+            str(state),
+            "--agent-activity-id",
+            "failed-cli",
+            "--agent-action",
+            "prepare",
+            "--agent-json",
+        ]
+    )
+    assert run_agent_activity(prepare) == 0
+    capsys.readouterr()
+    failed = parser.parse_args(
+        [
+            "--state-directory",
+            str(state),
+            "--agent-activity-id",
+            "failed-cli",
+            "--agent-action",
+            "run",
+            "--agent-json",
+            "--agent-command",
+            sys.executable,
+            "-c",
+            "raise SystemExit(7)",
+        ]
+    )
+    assert run_agent_activity(failed) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "failed"
+    assert payload["result"]["returncode"] == 7
+    assert AgentActivity.resume(state, "failed-cli").state == "failed-retained"

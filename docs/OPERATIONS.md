@@ -602,10 +602,9 @@ por el corpus, `/tmp` completo ni un directorio compartido.
 Una actividad externa debe usar la fachada instalada
 `neocortex.api.agent_activity.AgentActivity`; no debe importar
 `ScratchManager`/`ArtifactRegistry` para coordinar a mano el protocolo ni
-escribir manifests. La fachada compone esos owners existentes y exige un owner
-explícito. Para el productor del framework se usa `owner="neocortex-framework"`,
-que es el owner que acepta el mantenimiento público; un owner de prueba debe
-ser registrado por la integración antes de solicitar efectos.
+escribir manifests. La fachada compone esos owners existentes y exige el owner
+público registrado `owner="neocortex-framework"`; otros owners se rechazan
+hasta que exista una selección compartida y explícita en mantenimiento/`--all`.
 
 El recorrido público es:
 
@@ -627,7 +626,8 @@ El recorrido público es:
    `activity.reconcile(...)`; no reutiliza el objeto
    Python anterior. Sólo después de observar un estado terminal y la política
    de retención se solicita `activity.retire()` o el `maintenance --apply`
-   autorizado.
+   autorizado. Un fallo requiere reconciliación explícita con evidencia y
+   `release_authorized=True`; la edad o el PID ausente no son autorización.
 
 La forma exacta de argumentos se obtiene de la ayuda y firma de la distribución
 instalada; no se deben inventar flags ni escribir JSON de manifiesto desde el
@@ -644,8 +644,9 @@ La retención terminal se planifica con el owner read-only existente mediante
 separa workspaces, tombstones, logs, receipts y rollback derivado; exige
 reconciliación y liberación explícitas, protege pins/grants/replay/recovery y
 separa bytes aparentes, asignados, lógicos, físicos únicos y espacio libre
-observado. No expone `apply`: el owner del workspace/registry debe reacquirir
-su lock, revalidar identidad y confirmar el receipt antes de retirar. Edad,
+observado. El planner no expone `apply`: la fachada/owner debe reacquirir su
+lock, revalidar identidad y confirmar el receipt antes de retirar manifests
+terminales. Edad,
 TTL, PID ausente o un tombstone por sí solos nunca autorizan el efecto.
 
 Ejemplo de forma pública (los nombres de argumentos se deben confirmar con

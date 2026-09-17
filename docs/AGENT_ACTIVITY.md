@@ -54,6 +54,27 @@ El comando debe ejecutarse sólo sobre un estado sintético cuyo owner sea el
 canónico. `hygiene` conserva su contrato preview/read-only; no es un alias de
 este efecto.
 
+El único owner público registrado actualmente es `neocortex-framework`; la
+fachada rechaza owners inventados hasta que exista una selección compartida por
+mantenimiento y `--all`. Si el proceso externo termina con código distinto de
+cero, la actividad queda `failed-retained` y la CLI devuelve código 2.
+
+La liberación de un fallo requiere un proceso nuevo y autorización explícita:
+
+```python
+resumed.reconcile(
+    "release",
+    release_authorized=True,
+    evidence={"recovered": True, "operator": "fixture"},
+)
+resumed.retire()
+```
+
+La retención terminal se planea y aplica por el owner con una política
+explícita y receipt durable. Sólo puede podar manifests `retired` verificados
+cuyo payload ya no existe; nunca elimina entregables publicados ni repite un
+retiro físico confirmado.
+
 ## CLI
 
 La superficie CLI instalada es:
@@ -69,6 +90,9 @@ Neocortex agent-activity --agent-action publish --agent-activity-id ID \
 Neocortex agent-activity --agent-action complete --agent-activity-id ID \
   --agent-result /ruta/estado/scratch/owned-temp/workspace-ID/result.json \
   --agent-json
+Neocortex agent-activity --agent-action reconcile --agent-reconcile-action release \
+  --agent-release-authorized --agent-activity-id ID \
+  --state-directory /ruta/estado --agent-json
 ```
 
 La integración del parser debe conservar la forma de argv y despachar antes

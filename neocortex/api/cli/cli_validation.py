@@ -330,6 +330,15 @@ def _validate_agent_activity_operation(args: argparse.Namespace) -> bool:
     if action == "publish":
         if getattr(args, "agent_source", None) is None or getattr(args, "agent_destination", None) is None:
             raise SystemExit("agent-activity publish requires source and destination")
+    reconcile_action = getattr(args, "agent_reconcile_action", "resume")
+    if reconcile_action == "release" and not getattr(args, "agent_release_authorized", False):
+        raise SystemExit(
+            "agent-activity release requires --agent-release-authorized"
+        )
+    if action != "reconcile" and reconcile_action != "resume":
+        raise SystemExit(
+            "--agent-reconcile-action is only valid with --agent-action reconcile"
+        )
     return True
 
 
