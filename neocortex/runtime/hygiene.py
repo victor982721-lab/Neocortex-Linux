@@ -527,6 +527,7 @@ def _summary_for_owner(
         "protected_bytes": protected_bytes,
         "eligible_bytes": eligible_bytes,
         "blocked_bytes": blocked_bytes,
+        "claims": _selection_claims(owner, payload),
     }
     return _ComponentSummary(
         name=name,
@@ -551,6 +552,152 @@ def _summary_for_owner(
 
 def _source_payload(summary: _ComponentSummary) -> dict[str, object]:
     return summary.to_dict()
+
+
+_SELECTION_FIELDS: tuple[str, ...] = (
+    "artifact_id",
+    "record_id",
+    "id",
+    "owner",
+    "producer",
+    "kind",
+    "state",
+    "status",
+    "classification",
+    "eligible",
+    "path",
+    "root",
+    "path_identity",
+    "root_identity",
+    "identity",
+    "manifest_digest",
+    "dependencies",
+    "reservations",
+    "retain_until_ns",
+    "ttl_ns",
+    "retire_after_ns",
+    "disposable",
+    "retain_on_success",
+    "result_paths",
+    "reason",
+    "issue",
+)
+
+
+def _selection_claims(owner: object, payload: Mapping[str, object]) -> tuple[dict[str, object], ...]:
+    """Project stable identity/claim fields for selection verification.
+
+    Counters and reason histograms are useful summaries but are not a
+    selection identity.  This bounded projection intentionally excludes
+    volatile timestamps and observed byte counters while retaining the claims
+    that authorize an owner proposal.
+    """
+
+    raw = _attr_or_key(owner, payload, "records", "entries", "items", "stores")
+    if isinstance(raw, Mapping):
+        values: Sequence[object] = tuple(raw.values())
+    elif isinstance(raw, Sequence) and not isinstance(raw, (str, bytes, bytearray)):
+        values = tuple(raw)
+    else:
+        values = ()
+    claims: list[dict[str, object]] = []
+
+    def scalar(value: object) -> object:
+        if isinstance(value, Path):
+            return _bounded_path(value)
+        if isinstance(value, (str, int, bool)) or value is None:
+            return _bounded_text(value, limit=MAX_HYGIENE_REASON_BYTES) if isinstance(value, str) else value
+        if isinstance(value, (list, tuple, set, frozenset)):
+            return [scalar(item) for item in tuple(value)[:MAX_HYGIENE_ITEMS]]
+        if isinstance(value, Mapping):
+            return {
+                _bounded_text(key, limit=64): scalar(item)
+                for key, item in tuple(value.items())[:MAX_HYGIENE_ITEMS]
+            }
+        return _bounded_text(value, limit=MAX_HYGIENE_REASON_BYTES)
+
+    for item in values[:MAX_HYGIENE_ITEMS]:
+        if isinstance(item, Mapping):
+            source: Mapping[str, object] = item
+        else:
+            projected: dict[str, object] = {}
+            for name in _SELECTION_FIELDS:
+                try:
+                    value = getattr(item, name)
+                except AttributeError:
+                    continue
+                if value is not None:
+                    projected[name] = value
+            source = projected
+        claim = {
+            name: scalar(source[name])
+            for name in _SELECTION_FIELDS
+            if name in source
+        }
+        # Retention stores can wrap their actual selected rows in ``items``.
+        nested = source.get("items")
+        if isinstance(nested, Sequence) and not isinstance(nested, (str, bytes, bytearray)):
+            for nested_item in tuple(nested)[:MAX_HYGIENE_ITEMS]:
+                if isinstance(nested_item, Mapping):
+                    claims.append(
+                        {
+                            name: scalar(nested_item[name])
+                            for name in _SELECTION_FIELDS
+                            if name in nested_item
+                        }
+                    )
+        elif claim:
+            claims.append(claim)
+    return tuple(claims)
+
+
+def _unique_eligible_bytes(owners: Mapping[str, object]) -> tuple[int, bool]:
+    """Count recoverable bytes once when owners project one physical claim twice."""
+
+    seen: set[tuple[object, ...]] = set()
+    total = 0
+    claims_seen = False
+    for name in HYGIENE_COMPONENTS:
+        owner = owners.get(name)
+        if owner is None:
+            continue
+        payload = _owner_payload(owner)
+        raw = _attr_or_key(owner, payload, "records", "entries", "items")
+        if isinstance(raw, Mapping):
+            values: Sequence[object] = tuple(raw.values())
+        elif isinstance(raw, Sequence) and not isinstance(raw, (str, bytes, bytearray)):
+            values = tuple(raw)
+        else:
+            continue
+        for item in values[:MAX_HYGIENE_ITEMS]:
+            def value(key: str, current: object = item) -> object:
+                if isinstance(current, Mapping):
+                    return current.get(key)
+                return getattr(current, key, None)
+
+            classification = value("classification") or value("status")
+            eligible = value("eligible") is True or classification == "eligible"
+            if not eligible:
+                continue
+            size = value("size_bytes")
+            if not isinstance(size, int) or size < 0:
+                continue
+            identity = value("path_identity") or value("identity")
+            path = value("path")
+            artifact_id = value("artifact_id") or value("record_id")
+            if identity is not None:
+                key = ("identity", tuple(identity) if isinstance(identity, (list, tuple)) else identity)
+            elif path is not None:
+                key = ("path", str(path))
+            elif artifact_id is not None:
+                key = ("artifact", str(artifact_id))
+            else:
+                continue
+            claims_seen = True
+            if key not in seen:
+                seen.add(key)
+                total += size
+    return total, claims_seen
 
 
 @dataclass(frozen=True, slots=True)
@@ -580,6 +727,7 @@ class HygienePlan:
     observed_bytes: int = 0
     eligible_bytes: int = 0
     protected_bytes: int = 0
+    logical_eligible_bytes: int = 0
     blocked_bytes: int = 0
     preview_only: bool = True
     mode: str = "plan"
@@ -627,6 +775,7 @@ class HygienePlan:
             "observed": self.observed_bytes,
             "protected": self.protected_bytes,
             "eligible": self.eligible_bytes,
+            "logical_eligible": self.logical_eligible_bytes,
             "blocked": self.blocked_bytes,
             "deletion_performed": 0,
         }
@@ -1114,6 +1263,9 @@ class HygieneManager:
         blocked = sum(item.blocked for item in summaries.values())
         unknown = sum(item.unknown for item in summaries.values())
         observed = sum(item.observed for item in summaries.values())
+        logical_eligible_bytes = sum(item.eligible_bytes for item in summaries.values())
+        unique_eligible_bytes, has_physical_claims = _unique_eligible_bytes(owners)
+        eligible_bytes = unique_eligible_bytes if has_physical_claims else logical_eligible_bytes
         unmanaged: list[Path] = []
         reasons: list[str] = []
         limits: dict[str, int] = {
@@ -1183,9 +1335,10 @@ class HygieneManager:
             reasons=tuple(reasons),
             observed=observed,
             observed_bytes=sum(item.observed_bytes for item in summaries.values()),
-            eligible_bytes=sum(item.eligible_bytes for item in summaries.values()),
+            eligible_bytes=eligible_bytes,
             protected_bytes=sum(item.protected_bytes for item in summaries.values()),
             blocked_bytes=sum(item.blocked_bytes for item in summaries.values()),
+            logical_eligible_bytes=logical_eligible_bytes,
             preview_only=True,
             mode="preview" if self.preview else "plan",
             actions_ready=False,
@@ -1251,10 +1404,12 @@ class HygieneManager:
                             "artifact_registry: owner verification detected drift"
                         )
                     else:
-                        try:
-                            verified_values = tuple(result) if result is not None else ()
-                        except TypeError:
-                            verified_values = ()
+                        verified_values = (
+                            tuple(result)
+                            if isinstance(result, Sequence)
+                            and not isinstance(result, (str, bytes, bytearray))
+                            else ()
+                        )
                         if any(
                             getattr(item, "verified", True) is False
                             or getattr(item, "valid", True) is False
@@ -1263,10 +1418,7 @@ class HygieneManager:
                             drift_reasons.append(
                                 "artifact_registry: owner verification detected drift"
                             )
-                        try:
-                            valid = result.valid
-                        except AttributeError:
-                            valid = None
+                        valid = getattr(result, "valid", None)
                         if valid is False:
                             drift_reasons.append(
                                 "artifact_registry: owner verification detected drift"

@@ -22,8 +22,8 @@ from neocortex.interface.presentation.windows.main import MainWindow
 from neocortex.interface.read.curation import CurationReadRepository
 
 
-TEST_CAPABILITIES = ("base", "ui")
-pytestmark = pytest.mark.capability("base", "ui")
+TEST_CAPABILITIES = ("ui",)
+pytestmark = pytest.mark.capability("ui")
 
 
 @pytest.fixture(scope="module")

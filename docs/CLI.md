@@ -187,8 +187,11 @@ Neocortex hygiene --hygiene-root "/ruta/explicita" \
 Sin `--hygiene-root`, el owner no adivina `/`, `/tmp`, HOME ni el corpus: deja
 las fuentes que requieren raíz explícita como `deferred`. Los argumentos
 inválidos, roots no absolutos y cotas fuera de rango se rechazan antes de
-importar el owner. `--hygiene-preview` no es una autorización ni añade otro
-presupuesto.
+importar el owner. El límite de escaneo de 1 TiB y el límite de serialización
+JSON (64 KiB por defecto, ajustable entre 1 KiB y 1 MiB) son independientes;
+una observación truncada conserva `status`/razón de abstención y no se presenta
+como cobertura completa. `--hygiene-preview` no es una autorización ni añade
+otro presupuesto.
 
 El preview compone dos piezas relacionadas:
 
@@ -211,6 +214,11 @@ propuesta del owner, mientras `protected`, `blocked`, `unknown`, `unmanaged` y
 la cobertura incompleta deben permanecer visibles. El texto humano resume la
 misma frontera y siempre muestra `deletion_performed=0`,
 `effects_enabled=false`, `actions_ready=false` y `next_gate=human_review`.
+La verificación liga el fingerprint a las claims concretas (identificador,
+raíz/identidad, manifest, estado, dependencias, retención y política), no sólo
+a conteos. Cuando registry y scratch proyectan el mismo path, `bytes.eligible`
+cuenta los bytes físicos una sola vez y conserva el agregado lógico en
+`bytes.logical_eligible`.
 
 Cuando la fuente es un registry de artefactos, sus manifests usan el contrato
 `neocortex.artifact-registry/v1` y deben conservar, como mínimo, `artifact_id`,
@@ -506,6 +514,13 @@ productivas quedan fuera de este comando. `--all --apply` puede conciliar
 también esta área privada únicamente después de una integración verificada;
 no amplía esos límites. `--all` sin `--apply` no produce efecto físico,
 aunque el lifecycle puede escribir estado derivado.
+
+La hoja aislada y el hook integrado componen el mismo registry sibling
+`<state_directory>/artifacts`. Un workspace legacy sin proyección de registry
+se retira sólo por su owner de scratch; los workspaces nuevos deben quedar
+registrados en ambos owners. Un consumidor activo, fallido o recuperable que
+declare una dependencia mantiene protegido el insumo hasta liberar la claim;
+el replay de `--apply` no repite el efecto.
 
 Las rutas integradas de Archive, PDF y video crean sus workspaces bajo
 `state/scratch/archive-materialization`, `state/scratch/pdf-recovery` y

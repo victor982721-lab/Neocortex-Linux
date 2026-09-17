@@ -5,7 +5,7 @@ organizar archivos personales en Linux. Su objetivo es sustituir inventarios,
 auditorías y scripts improvisados por un flujo reproducible que conserve
 identidad, evidencia, incertidumbre y trazabilidad.
 
-La fuente vigente declara `0.14.0`. La release Linux activa se comprueba desde
+La fuente vigente declara `0.14.1`. La release Linux activa se comprueba desde
 el SHA final mediante `tools/release_linux.py verify`; el receipt canónico es
 la fuente viva de `source_sha`, `current` y el rollback inmediato. No se usan
 hashes históricos escritos en esta entrada como evidencia actual.

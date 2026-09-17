@@ -13,8 +13,14 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPoint, QSettings
-from PySide6.QtWidgets import QApplication
+try:
+    from PySide6.QtCore import QPoint, QSettings
+    from PySide6.QtWidgets import QApplication
+    from neocortex.interface.presentation.theme import STYLESHEET
+    from neocortex.interface.presentation.windows.main import MainWindow
+except ImportError:  # base profile: keep non-UI cases importable without Qt
+    QPoint = QSettings = QApplication = MainWindow = None  # type: ignore[assignment]
+    STYLESHEET = ""
 
 from neocortex.interface.application.request import (
     FULL_DEADLINE_SECONDS,
@@ -24,8 +30,6 @@ from neocortex.interface.application.request import (
 )
 from neocortex.interface.read.curation import CurationReadRepository, present_curation_snapshot
 from neocortex.interface.read.issues import route_issue_count, route_summary_mapping
-from neocortex.interface.presentation.theme import STYLESHEET
-from neocortex.interface.presentation.windows.main import MainWindow
 
 
 TEST_CAPABILITIES = ("base", "ui")
@@ -62,6 +66,8 @@ def isolated_home() -> Iterator[Path]:
 
 @pytest.fixture(scope="module")
 def application(isolated_home: Path) -> QApplication:
+    if QApplication is None:
+        pytest.skip("PySide6 is unavailable in the base profile")
     del isolated_home
     instance = QApplication.instance()
     if instance is not None and not isinstance(instance, QApplication):

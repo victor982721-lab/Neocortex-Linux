@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from neocortex.api.cli.cli_app import main
+from neocortex.runtime.artifact_registry import ArtifactRegistry
 from neocortex.runtime.scratch import ScratchManager
 
 
@@ -68,6 +69,54 @@ def test_apply_retires_only_registered_completed_workspace(tmp_path: Path, capsy
     assert payload["planned"] == 1
     assert payload["applied"] == 1
     assert not workspace.path.exists()
+
+
+def test_apply_closes_the_canonical_artifact_registry_claim(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    """The isolated leaf must compose the same registry as Framework."""
+
+    state = tmp_path / "state"
+    root = state / "scratch" / "owned-temp"
+    registry_root = state / "artifacts"
+    owner = "neocortex-framework"
+    producer = ScratchManager(
+        root,
+        owner=owner,
+        create_root=True,
+        artifact_registry_root=registry_root,
+    )
+    workspace = producer.create(retain_on_success=True)
+    (workspace.path / "payload").write_bytes(b"fixture")
+    workspace.complete(retain=True)
+    artifact_id = workspace.artifact_id
+    assert artifact_id is not None
+
+    exit_code, payload = _invoke(
+        [
+            "maintenance",
+            "--scope",
+            "owned-temp",
+            "--apply",
+            "--maintenance-json",
+            "--state-directory",
+            str(state),
+        ],
+        capsys,
+    )
+
+    registry = ArtifactRegistry(registry_root, owner=owner, create_root=False)
+    verified = registry.verify(artifact_id)
+    assert exit_code == 0
+    assert payload["status"] == "applied"
+    assert payload["planned"] == 1
+    assert payload["applied"] == 1
+    assert not workspace.path.exists()
+    assert verified.valid is True
+    assert verified.issue is None
+    assert verified.state == "retired"
+    assert registry.plan(now_ns=10**30).blocked == 0
 
 
 def test_maintenance_scope_is_required_and_state_derived_is_not_supported() -> None:

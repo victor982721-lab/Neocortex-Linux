@@ -225,7 +225,7 @@ requiere un verificador antes de emitir receipt. La configuración de cuota se
 lee sin modificar el `ktrashrc` global; se rechaza cualquier política que pueda
 podar entradas existentes. La canaria instalada debe confirmar el efecto real.
 
-La release `0.14.0` integra esa foundation con el ledger de acciones, preflight
+La release `0.14.1` integra esa foundation con el ledger de acciones, preflight
 same-filesystem y recovery sobre fixtures. La restauración automática nativa se
 verifica por bytes/identidad; la única restauración visual de Dolphin permanece
 como comprobación humana independiente.

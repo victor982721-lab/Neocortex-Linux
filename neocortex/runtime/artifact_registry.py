@@ -20,13 +20,16 @@ import json
 import os
 import re
 import stat
+import threading
 import time
 import uuid
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
+from functools import wraps
 from pathlib import Path
-from typing import Any, Self
+from typing import Any
 
 
 # region [01] Public contract and bounds
@@ -75,6 +78,13 @@ class ArtifactState(StrEnum):
 
 ARTIFACT_KINDS = frozenset(item.value for item in ArtifactKind)
 ARTIFACT_STATES = frozenset(item.value for item in ArtifactState)
+_LIVE_DEPENDENT_STATES = frozenset(
+    {
+        ArtifactState.ACTIVE.value,
+        ArtifactState.FAILED.value,
+        ArtifactState.RECOVERY_REQUIRED.value,
+    }
+)
 _DISPOSABLE_KINDS = frozenset(
     {
         ArtifactKind.REBUILDABLE.value,
@@ -381,7 +391,12 @@ def _path_size_no_follow(path: Path, *, max_entries: int, max_bytes: int) -> tup
     except OSError:
         return 0, "artifact_missing"
     if stat.S_ISREG(metadata.st_mode):
-        return min(max(0, int(metadata.st_size)), max_bytes), None
+        size = max(0, int(metadata.st_size))
+        if size > max_bytes:
+            # Preserve the physical metadata separately from the credited
+            # observation: a clipped file is not a complete, eligible claim.
+            return max_bytes, "size_truncated"
+        return size, None
     if stat.S_ISDIR(metadata.st_mode):
         size, issue, _ = _directory_size_no_follow(
             path,
@@ -786,6 +801,20 @@ def _manifest_file_issue(metadata: os.stat_result) -> str | None:
     return None
 
 
+def _registry_write_locked(method: Any) -> Any:
+    """Serialize manifest reads+writes across registry processes."""
+
+    @wraps(method)
+    def wrapped(self: "ArtifactRegistry", *args: Any, **kwargs: Any) -> Any:
+        # Registration historically creates its configured root on demand;
+        # updates must remain read-only with respect to an absent root.
+        self._ensure_root(create=method.__name__ == "register")
+        with self._registry_lock():
+            return method(self, *args, **kwargs)
+
+    return wrapped
+
+
 class ArtifactRegistry:
     """Own a private manifest root and revalidate its registered artifacts."""
 
@@ -827,6 +856,7 @@ class ArtifactRegistry:
             max_metadata_bytes,
             label="artifact max_metadata_bytes",
         )
+        self._lock_local = threading.local()
         if create_root:
             self._ensure_root(create=True)
 
@@ -852,6 +882,34 @@ class ArtifactRegistry:
         if issue is not None:
             raise ArtifactRootError(f"artifact registry root failed safety check: {issue}")
         return True
+
+    @contextmanager
+    def _registry_lock(self) -> Iterator[None]:
+        """Hold an OS lock on the registry directory without creating files."""
+
+        active_fd = getattr(self._lock_local, "fd", None)
+        if active_fd is not None:
+            # Nested calls from ScratchManager's retirement guard use the same
+            # registry object.  Reusing the descriptor avoids a second flock
+            # while preserving the outer process-wide critical section.
+            yield
+            return
+        try:
+            import fcntl
+
+            fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError as exc:
+            raise ArtifactRootError("artifact registry root could not be locked") from exc
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            self._lock_local.fd = fd
+            yield
+        finally:
+            self._lock_local.fd = None
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
 
     def _manifest_path(self, artifact_id: str) -> Path:
         return self.root / _safe_manifest_name(artifact_id)
@@ -964,8 +1022,12 @@ class ArtifactRegistry:
         owner = _bounded_text(payload.get("owner"), label="artifact owner")
         producer = _bounded_text(payload.get("producer"), label="artifact producer")
         purpose = _bounded_text(payload.get("purpose"), label="artifact purpose")
-        path = _validate_absolute_path(payload.get("path"), label="artifact path")
-        root = _validate_absolute_path(payload.get("root"), label="artifact root")
+        path_value = payload.get("path")
+        root_value = payload.get("root")
+        if not isinstance(path_value, (str, Path)) or not isinstance(root_value, (str, Path)):
+            raise ArtifactManifestError("artifact path/root claims are invalid")
+        path = _validate_absolute_path(path_value, label="artifact path")
+        root = _validate_absolute_path(root_value, label="artifact root")
         path_identity = _bounded_identity(payload.get("path_identity"), label="artifact path_identity")
         root_identity = _bounded_identity(payload.get("root_identity"), label="artifact root_identity")
         kind = payload.get("kind")
@@ -1138,6 +1200,7 @@ class ArtifactRegistry:
 
     # -- registration/update ------------------------------------------
 
+    @_registry_write_locked
     def register(
         self,
         artifact_id: str | ArtifactRecord,
@@ -1329,7 +1392,11 @@ class ArtifactRegistry:
             run_id=run_id,
             purpose=purpose,
             path=path,
-            root=self.root,
+            # ``self.root`` owns the registry manifests; ``root`` is the
+            # separately claimed artifact boundary.  Preserve the latter in
+            # the durable record so valid split-root registrations do not
+            # manufacture an ``artifact_root_drift`` on first read.
+            root=root,
             path_identity=actual_path_identity,
             root_identity=artifact_root_identity,
             kind=kind,
@@ -1357,7 +1424,7 @@ class ArtifactRegistry:
                 raise ArtifactConflictError("artifact id is already bound to an invalid manifest") from exc
             if self._registration_equal(existing, candidate):
                 return existing
-            raise ArtifactConflictError("artifact id is already registered with different fields")
+            raise ArtifactConflictError("artifact id is already registered with different fields") from None
         return self._load_record(manifest_path)
 
     def _write_registration(self, manifest_path: Path, payload: Mapping[str, Any]) -> None:
@@ -1397,22 +1464,23 @@ class ArtifactRegistry:
         )
         return all(getattr(existing, name) == getattr(candidate, name) for name in fields)
 
+    @_registry_write_locked
     def update(
         self,
         artifact: str | ArtifactRecord,
         *,
         producer: str | object = _UNSET,
-        run_id: int | str | None | object = _UNSET,
+        run_id: int | str | object | None = _UNSET,
         purpose: str | object = _UNSET,
         state: str | object = _UNSET,
         source_ref: Any = _UNSET,
-        digest: str | None | object = _UNSET,
-        dependencies: Iterable[str] | None | object = _UNSET,
-        retain_until_ns: int | None | object = _UNSET,
-        ttl_ns: int | None | object = _UNSET,
-        ttl: int | None | object = _UNSET,
+        digest: str | object | None = _UNSET,
+        dependencies: Iterable[str] | object | None = _UNSET,
+        retain_until_ns: int | object | None = _UNSET,
+        ttl_ns: int | object | None = _UNSET,
+        ttl: int | object | None = _UNSET,
         disposable: bool | object = _UNSET,
-        metadata: Mapping[str, Any] | None | object = _UNSET,
+        metadata: Mapping[str, Any] | object | None = _UNSET,
         updated_ns: int | None = None,
     ) -> ArtifactRecord:
         """Atomically update durable fields after a fresh revalidation.
@@ -1430,7 +1498,10 @@ class ArtifactRegistry:
         self._ensure_root(create=False)
         manifest_path = self._manifest_path(artifact_id)
         current = self._load_record(manifest_path)
-        if not current.verified:
+        retiring_missing_path = (
+            state == ArtifactState.RETIRED.value and current.issue == "artifact_missing"
+        )
+        if not current.verified and not retiring_missing_path:
             raise ArtifactSecurityError(current.reason or "artifact cannot be updated after drift")
         if self.owner is None:
             raise ArtifactSecurityError(
@@ -1508,11 +1579,13 @@ class ArtifactRegistry:
             # changed, derive a new deadline from the immutable creation time.
             pass
         elif "ttl_ns" in normalized:
-            merged["retain_until_ns"] = (
-                None
-                if normalized["ttl_ns"] is None
-                else current.created_ns + normalized["ttl_ns"]
-            )
+            ttl_value = normalized["ttl_ns"]
+            if ttl_value is None:
+                merged["retain_until_ns"] = None
+            elif type(ttl_value) is int:
+                merged["retain_until_ns"] = current.created_ns + ttl_value
+            else:
+                raise ValueError("artifact ttl_ns must be an integer or null")
         if "retain_until_ns" in normalized and normalized["retain_until_ns"] is None:
             # Clearing an explicit deadline also clears no TTL; a non-null TTL
             # still gives the record its derived deadline at classification.
@@ -1675,6 +1748,26 @@ class ArtifactRegistry:
             return "protected", "retention_active"
         return "eligible", "retention_expired" if deadline is not None else "disposable_completed"
 
+    @staticmethod
+    def _live_dependents(
+        target: ArtifactRecord,
+        records: Sequence[ArtifactRecord],
+    ) -> tuple[str, ...]:
+        """Return active/recoverable claims that still reference ``target``."""
+
+        dependents: list[str] = []
+        for record in records:
+            if record.artifact_id == target.artifact_id:
+                continue
+            if target.artifact_id not in record.dependencies:
+                continue
+            # An invalid or incomplete observation is conservative: its
+            # dependency claim remains live until an owner explicitly repairs
+            # or releases it.
+            if not record.valid or record.state in _LIVE_DEPENDENT_STATES:
+                dependents.append(record.artifact_id)
+        return tuple(sorted(set(dependents)))
+
     def verify(
         self,
         target: str | Path | ArtifactRecord | None = None,
@@ -1708,7 +1801,7 @@ class ArtifactRegistry:
                 except ArtifactRegistryError:
                     result = self._invalid_record(candidate, "manifest_invalid")
                     if raise_on_error:
-                        raise ArtifactManifestError(result.reason or "artifact manifest invalid")
+                        raise ArtifactManifestError(result.reason or "artifact manifest invalid") from None
                     return result
             if artifact_id is None:
                 self._ensure_root(create=False)
@@ -1720,11 +1813,12 @@ class ArtifactRegistry:
                 return result
         else:
             artifact_id = _bounded_text(
-                target,
+                str(target),
                 label="artifact_id",
                 limit=MAX_ARTIFACT_ID_BYTES,
             )
         self._ensure_root(create=False)
+        assert artifact_id is not None
         manifest_path = self._manifest_path(artifact_id)
         try:
             result = self._load_record(manifest_path)
@@ -1739,6 +1833,42 @@ class ArtifactRegistry:
 
         result = self.verify(target)
         return isinstance(result, ArtifactRecord) and result.verified
+
+    @contextmanager
+    def retirement_guard(self, artifact: str | ArtifactRecord) -> Iterator[ArtifactRecord]:
+        """Serialize dependency release with the physical retirement effect.
+
+        The caller must perform its effect while this context is held.  All
+        registry writers use the same directory lock, so a consumer cannot
+        add a new dependency between this check and the caller's unlink.
+        """
+
+        artifact_id = artifact.artifact_id if isinstance(artifact, ArtifactRecord) else artifact
+        artifact_id = _bounded_text(
+            artifact_id,
+            label="artifact_id",
+            limit=MAX_ARTIFACT_ID_BYTES,
+        )
+        self._ensure_root(create=False)
+        with self._registry_lock():
+            current = self._load_record(self._manifest_path(artifact_id))
+            if not current.verified:
+                raise ArtifactSecurityError(
+                    current.reason or "artifact cannot be retired after drift"
+                )
+            if self.owner is not None and current.owner != self.owner:
+                raise ArtifactSecurityError("artifact owner does not match this registry")
+            records, _unmanaged, truncated, _reasons = self._scan_records(
+                max_records=self.max_records,
+            )
+            if truncated:
+                raise ArtifactSecurityError("dependency observation incomplete")
+            dependents = self._live_dependents(current, records)
+            if dependents:
+                raise ArtifactSecurityError(
+                    "artifact has live dependents: " + ", ".join(dependents[:16])
+                )
+            yield current
 
     def _classify_for_owner(self, record: ArtifactRecord, *, now_ns: int) -> tuple[str, str]:
         if not record.valid:
@@ -1785,8 +1915,10 @@ class ArtifactRegistry:
         records, unmanaged, truncated, truncation_reasons = self._scan_records(
             max_records=effective_records,
         )
-        categories = {name: 0 for name in ("protected", "eligible", "blocked", "unknown")}
-        byte_categories = {name: 0 for name in categories}
+        categories: dict[str, int] = dict.fromkeys(
+            ("protected", "eligible", "blocked", "unknown"), 0
+        )
+        byte_categories: dict[str, int] = dict.fromkeys(categories, 0)
         reasons: dict[str, int] = {}
         observed_records: list[ArtifactRecord] = []
         total_bytes = 0
@@ -1794,6 +1926,24 @@ class ArtifactRegistry:
         for record in records:
             category, reason = self._classify_for_owner(record, now_ns=now)
             eligible = category == "eligible"
+            if record.issue == "size_truncated":
+                byte_truncated = True
+                category = "blocked"
+                reason = "size_truncated"
+                eligible = False
+            if eligible:
+                dependents = self._live_dependents(record, records)
+                if dependents:
+                    category = "protected"
+                    reason = "dependency_live"
+                    eligible = False
+                elif truncated:
+                    # A bounded registry scan cannot prove that no unseen
+                    # consumer references this artifact.  Fail closed rather
+                    # than presenting a partial selection as disposable.
+                    category = "blocked"
+                    reason = "dependency_observation_incomplete"
+                    eligible = False
             observed = record
             if total_bytes + record.size_bytes > effective_bytes:
                 byte_truncated = True
@@ -1883,6 +2033,11 @@ __all__ = [
     "ARTIFACT_KINDS",
     "ARTIFACT_REGISTRY_SCHEMA",
     "ARTIFACT_STATES",
+    "MANIFEST_SUFFIX",
+    "MAX_DEPENDENCIES",
+    "MAX_MANIFEST_BYTES",
+    "MAX_METADATA_BYTES",
+    "MAX_RECORDS",
     "ArtifactConflictError",
     "ArtifactKind",
     "ArtifactManifestError",
@@ -1893,9 +2048,4 @@ __all__ = [
     "ArtifactRootError",
     "ArtifactSecurityError",
     "ArtifactState",
-    "MANIFEST_SUFFIX",
-    "MAX_DEPENDENCIES",
-    "MAX_MANIFEST_BYTES",
-    "MAX_METADATA_BYTES",
-    "MAX_RECORDS",
 ]

@@ -6,7 +6,7 @@ en [RECOVERY.md](RECOVERY.md).
 
 ## Cierre operativo vigente
 
-La release `0.14.0` integra dedupe/KIO receipt-bound, el lifecycle `--all`
+La release `0.14.1` integra dedupe/KIO receipt-bound, el lifecycle `--all`
 (admisión, reutilización, reparación y ZIPs), reset/retención explícitos y el
 coordinador global adaptativo. La publicación y la instalación se verifican por
 separado con `tools/release_linux.py verify`; su receipt es la fuente viva del
@@ -588,6 +588,34 @@ materialización, recuperación estructural y frames a raíces registradas bajo
 `state/scratch`. En éxito el workspace se cierra y retira; en error queda
 `failed-retained` para diagnóstico posterior. No se deben sustituir esas raíces
 por el corpus, `/tmp` completo ni un directorio compartido.
+
+### Actividad externa determinista sobre el mismo lifecycle
+
+Una actividad local (incluido un proceso de prueba de un agente) usa la API
+existente, no escribe manifests a mano ni adopta `.codex`/`HOME` como scratch:
+
+```python
+registry = ArtifactRegistry(state / "artifacts", owner="actividad", create_root=True)
+scratch = ScratchManager(
+    state / "scratch" / "owned-temp",
+    owner="actividad",
+    create_root=True,
+    artifact_registry=registry,
+)
+workspace = scratch.create(run_id="run-local", retain_on_success=True)
+# ejecutar el proceso externo con workspace.path como su directorio exclusivo
+# publicar el entregable en otra raíz owner-owned y registrarlo como canonical
+workspace.complete((workspace.path / "resultado.bin",), retain=True)
+scratch.apply()  # revalida dependencias, identidad y cambios tardíos
+```
+
+Una interrupción conserva el workspace `active` o `failed-retained` para
+reanudación. El entregable publicado fuera de scratch conserva su propio
+registro y no se vuelve desechable por haber sido producido desde allí. El
+cierre comprueba el tamaño observado al completar; contenido añadido después
+queda bloqueado para recuperación explícita. La CLI `maintenance --scope ...
+--apply` compone el registry canónico `<state_directory>/artifacts`; su replay
+es un no-op y una consulta no crea raíces ausentes.
 
 ### Auditoría histórica explícita
 

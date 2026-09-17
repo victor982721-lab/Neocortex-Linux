@@ -4,6 +4,17 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-16 — Higiene de artefactos y lifecycle agéntico 0.14.1
+
+- Se separan los límites de escaneo y serialización de `hygiene`; una observación
+  truncada conserva su abstención y no crea raíces ausentes.
+- Registry y scratch protegen dependencias vivas bajo lock común, verifican la
+  selección concreta y concilian la CLI aislada con el registry canónico.
+- Se corrigen raíces de artefacto separadas, contabilidad de bytes recortados,
+  cambios tardíos de payload y la frontera de importación base/UI. La actividad
+  externa determinista reutiliza `ScratchManager` y `ArtifactRegistry` sin
+  adoptar HOME, `.codex` ni el corpus.
+
 ## 2026-09-15 — Preparación federada de `hygiene` (documentación)
 
 - Se documenta `hygiene` como una superficie end-to-end de preparación local,

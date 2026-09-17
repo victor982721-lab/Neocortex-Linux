@@ -26,7 +26,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Self, cast
 
 SCRATCH_SCHEMA = "neocortex.scratch/v1"
 MANIFEST_NAME = "manifest.json"
@@ -34,6 +34,8 @@ _MAX_MANIFEST_BYTES = 512 * 1024
 _MAX_REASON_BYTES = 8 * 1024
 _MAX_METADATA_BYTES = 64 * 1024
 _MAX_RECORDS = 100_000
+_MAX_SCAN_DEPTH = 64
+_MAX_SCAN_BYTES = 1 << 50
 _ARTIFACT_REGISTRY_MODULES = (
     "neocortex.runtime.artifact_registry",
     "neocortex.runtime.artifacts",
@@ -43,6 +45,43 @@ _ARTIFACT_REGISTRY_MODULES = (
 )
 _ARTIFACT_PRODUCER = "scratch"
 _ARTIFACT_KIND = "temporary"
+
+# Bounded inspection is optional for the legacy direct owner API.  The
+# hygiene federator supplies these values explicitly; ``None`` preserves the
+# historical unbounded owner-local plan used by lifecycle producers.
+ENTRY_LIMIT = "entry_limit"
+DEPTH_LIMIT = "depth_limit"
+BYTE_LIMIT = "byte_limit"
+
+
+def _validate_scan_limit(
+    value: int | None,
+    *,
+    label: str,
+    maximum: int,
+) -> int | None:
+    """Validate one optional bounded-observation limit."""
+
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"scratch {label} must be a non-negative integer or None")
+    if value > maximum:
+        raise ValueError(f"scratch {label} must be at most {maximum}")
+    return value
+
+
+def _validate_scan_limits(
+    *,
+    max_entries: int | None,
+    max_depth: int | None,
+    max_bytes: int | None,
+) -> tuple[int | None, int | None, int | None]:
+    return (
+        _validate_scan_limit(max_entries, label="max_entries", maximum=_MAX_RECORDS),
+        _validate_scan_limit(max_depth, label="max_depth", maximum=_MAX_SCAN_DEPTH),
+        _validate_scan_limit(max_bytes, label="max_bytes", maximum=_MAX_SCAN_BYTES),
+    )
 
 
 class ScratchError(RuntimeError):
@@ -145,6 +184,120 @@ def _directory_size(path: Path) -> int:
     except OSError:
         return total
     return total
+
+
+def _bounded_payload_observation(
+    path: Path,
+    budget: _ScratchScanBudget,
+) -> _PayloadObservation:
+    """Observe one workspace without exceeding the shared scan budget."""
+
+    total = 0
+    issue: str | None = None
+    truncated = False
+
+    def walk(directory: Path, depth: int) -> None:
+        nonlocal total, issue, truncated
+        try:
+            iterator = os.scandir(directory)
+        except OSError:
+            issue = issue or "payload_identity_unavailable"
+            return
+        try:
+            for entry in iterator:
+                if entry.name == MANIFEST_NAME or entry.name.startswith(f".{MANIFEST_NAME}."):
+                    continue
+                try:
+                    metadata = entry.stat(follow_symlinks=False)
+                except OSError:
+                    issue = issue or "payload_identity_unavailable"
+                    continue
+                if stat.S_ISLNK(metadata.st_mode):
+                    issue = issue or "symlink_payload"
+                    continue
+                if metadata.st_uid != os.geteuid():
+                    issue = issue or "payload_owner_drift"
+                if stat.S_ISREG(metadata.st_mode):
+                    if metadata.st_nlink > 1:
+                        issue = issue or "hardlink_payload"
+                    credited, bounded = budget.account_bytes(int(metadata.st_size))
+                    total += credited
+                    if bounded:
+                        truncated = True
+                        issue = issue or BYTE_LIMIT
+                        return
+                    continue
+                if stat.S_ISDIR(metadata.st_mode):
+                    if budget.max_depth is not None and depth >= budget.max_depth:
+                        budget.note(DEPTH_LIMIT)
+                        truncated = True
+                        issue = issue or DEPTH_LIMIT
+                        continue
+                    walk(Path(entry.path), depth + 1)
+                    if truncated and budget.max_bytes is not None and budget.observed_bytes >= budget.max_bytes:
+                        return
+                else:
+                    issue = issue or "payload_type_drift"
+        finally:
+            iterator.close()
+
+    walk(path, 0)
+    return _PayloadObservation(
+        size_bytes=total,
+        observed_bytes=total,
+        issue=issue,
+        truncated=truncated or issue in {DEPTH_LIMIT, BYTE_LIMIT},
+        size_complete=not (truncated or issue in {DEPTH_LIMIT, BYTE_LIMIT}),
+    )
+
+
+@dataclass(slots=True)
+class _ScratchScanBudget:
+    """Shared budget for one bounded scratch observation."""
+
+    max_entries: int | None
+    max_depth: int | None
+    max_bytes: int | None
+    entries: int = 0
+    observed_bytes: int = 0
+    truncated: bool = False
+    truncation_reasons: list[str] = field(default_factory=list)
+
+    def note(self, reason: str) -> None:
+        self.truncated = True
+        if reason not in self.truncation_reasons:
+            self.truncation_reasons.append(reason)
+
+    def reserve_entry(self) -> bool:
+        if self.max_entries is not None and self.entries >= self.max_entries:
+            self.note(ENTRY_LIMIT)
+            return False
+        self.entries += 1
+        return True
+
+    def account_bytes(self, apparent_bytes: int) -> tuple[int, bool]:
+        apparent = max(0, int(apparent_bytes))
+        if self.max_bytes is None:
+            self.observed_bytes += apparent
+            return apparent, False
+        remaining = max(0, self.max_bytes - self.observed_bytes)
+        credited = min(apparent, remaining)
+        self.observed_bytes += credited
+        bounded = credited < apparent
+        if bounded:
+            self.note(BYTE_LIMIT)
+        return credited, bounded
+
+
+@dataclass(frozen=True, slots=True)
+class _PayloadObservation:
+    """No-follow payload accounting for one workspace."""
+
+    size_bytes: int
+    observed_bytes: int
+    issue: str | None = None
+    truncated: bool = False
+    size_complete: bool = True
 
 
 def _workspace_payload_issue(path: Path) -> str | None:
@@ -409,6 +562,7 @@ class ScratchRecord:
     valid: bool = True
     issue: str | None = None
     artifact_id: str | None = None
+    payload_size_bytes: int | None = None
 
     @property
     def status(self) -> str:
@@ -446,6 +600,53 @@ class ScratchPlan:
     read_only: bool = True
     unmanaged: tuple[Path, ...] = ()
     root_blocked: str | None = None
+    truncated: bool = False
+    truncation_reasons: tuple[str, ...] = ()
+    max_entries: int | None = None
+    max_depth: int | None = None
+    max_bytes: int | None = None
+
+    @property
+    def complete(self) -> bool:
+        """Whether the bounded observation covered its requested scope."""
+
+        return not self.truncated and self.root_blocked is None
+
+    @property
+    def limits(self) -> dict[str, int]:
+        result: dict[str, int] = {}
+        for name, value in (
+            ("max_entries", self.max_entries),
+            ("max_depth", self.max_depth),
+            ("max_bytes", self.max_bytes),
+        ):
+            if value is not None:
+                result[name] = value
+        return result
+
+    @property
+    def counts(self) -> dict[str, int]:
+        return {
+            "observed": len(self.records),
+            "planned": self.planned,
+            "applied": self.applied,
+            "kept": self.kept,
+            "blocked": self.blocked,
+            "failed": self.failed,
+            "recovery_required": self.recovery_required,
+            "unmanaged": len(self.unmanaged),
+        }
+
+    @property
+    def bytes(self) -> dict[str, int]:
+        return {
+            "planned": self.planned_bytes,
+            "applied": self.applied_bytes,
+            "kept": self.kept_bytes,
+            "blocked": self.blocked_bytes,
+            "failed": self.failed_bytes,
+            "recovery_required": self.recovery_required_bytes,
+        }
 
     @property
     def items(self) -> tuple[ScratchRecord, ...]:
@@ -891,12 +1092,22 @@ class ScratchManager:
                     raise ScratchSecurityError("artifact registry root is invalid") from exc
         try:
             path_metadata = path.lstat()
+        except FileNotFoundError:
+            if artifact_state != "retired":
+                raise ScratchSecurityError("scratch artifact path is unavailable") from None
+            # Retirement is published after the physical effect.  The
+            # registry accepts this terminal transition using its last
+            # manifest observations; a missing path is never treated as a
+            # fresh registration or as a successful pre-effect claim.
+            path_size_bytes = max(0, int(payload.get("path_size_bytes", 0)))
+            path_mtime_ns = max(0, int(payload.get("path_mtime_ns", 0)))
         except OSError as exc:
             raise ScratchSecurityError("scratch artifact path is unavailable") from exc
-        if stat.S_ISLNK(path_metadata.st_mode) or not stat.S_ISDIR(path_metadata.st_mode):
-            raise ScratchSecurityError("scratch artifact path is not a directory")
-        path_size_bytes = max(0, int(path_metadata.st_size))
-        path_mtime_ns = max(0, int(path_metadata.st_mtime_ns))
+        else:
+            if stat.S_ISLNK(path_metadata.st_mode) or not stat.S_ISDIR(path_metadata.st_mode):
+                raise ScratchSecurityError("scratch artifact path is not a directory")
+            path_size_bytes = max(0, int(path_metadata.st_size))
+            path_mtime_ns = max(0, int(path_metadata.st_mtime_ns))
         return {
             "artifact_id": artifact_id,
             "artifact": artifact_id,
@@ -1132,7 +1343,28 @@ class ScratchManager:
             return ()
         return tuple(self._scan_records(now_ns=time.time_ns()))
 
-    def plan(self, *, now_ns: int | None = None) -> ScratchPlan:
+    def plan(
+        self,
+        *,
+        now_ns: int | None = None,
+        max_entries: int | None = None,
+        max_depth: int | None = None,
+        max_bytes: int | None = None,
+        scan_max_entries: int | None = None,
+        scan_max_depth: int | None = None,
+        scan_max_bytes: int | None = None,
+    ) -> ScratchPlan:
+        if scan_max_entries is not None:
+            max_entries = scan_max_entries
+        if scan_max_depth is not None:
+            max_depth = scan_max_depth
+        if scan_max_bytes is not None:
+            max_bytes = scan_max_bytes
+        max_entries, max_depth, max_bytes = _validate_scan_limits(
+            max_entries=max_entries,
+            max_depth=max_depth,
+            max_bytes=max_bytes,
+        )
         now = time.time_ns() if now_ns is None else now_ns
         if type(now) is not int or now < 0:
             raise ValueError("scratch now_ns must be a non-negative integer")
@@ -1141,12 +1373,31 @@ class ScratchManager:
                 self.root,
                 reason="scratch root is absent",
                 root_blocked="scratch root is absent",
+                max_entries=max_entries,
+                max_depth=max_depth,
+                max_bytes=max_bytes,
             )
-        records = tuple(self._scan_records(now_ns=now))
+        budget = _ScratchScanBudget(max_entries, max_depth, max_bytes)
+        records = tuple(self._scan_records(now_ns=now, budget=budget))
+        if budget.truncated:
+            records = tuple(
+                replace(
+                    record,
+                    eligible=False,
+                    issue=record.issue or "scan_incomplete",
+                    reason=record.reason or "scan_incomplete",
+                )
+                for record in records
+            )
         return self._summarize(
             records,
             read_only=True,
-            unmanaged=self._unmanaged_entries(),
+            unmanaged=self._unmanaged_entries(limit=max_entries),
+            truncated=budget.truncated,
+            truncation_reasons=tuple(budget.truncation_reasons),
+            max_entries=max_entries,
+            max_depth=max_depth,
+            max_bytes=max_bytes,
         )
 
     def apply(
@@ -1154,10 +1405,27 @@ class ScratchManager:
         plan: ScratchPlan | None = None,
         *,
         now_ns: int | None = None,
+        max_entries: int | None = None,
+        max_depth: int | None = None,
+        max_bytes: int | None = None,
+        scan_max_entries: int | None = None,
+        scan_max_depth: int | None = None,
+        scan_max_bytes: int | None = None,
     ) -> ScratchPlan:
         """Re-scan and retire only completed, still-eligible records."""
 
         del plan  # stale plans are never trusted as an effect authorization
+        if scan_max_entries is not None:
+            max_entries = scan_max_entries
+        if scan_max_depth is not None:
+            max_depth = scan_max_depth
+        if scan_max_bytes is not None:
+            max_bytes = scan_max_bytes
+        max_entries, max_depth, max_bytes = _validate_scan_limits(
+            max_entries=max_entries,
+            max_depth=max_depth,
+            max_bytes=max_bytes,
+        )
         now = time.time_ns() if now_ns is None else now_ns
         if type(now) is not int or now < 0:
             raise ValueError("scratch now_ns must be a non-negative integer")
@@ -1167,8 +1435,22 @@ class ScratchManager:
                 reason="scratch root is absent",
                 read_only=False,
                 root_blocked="scratch root is absent",
+                max_entries=max_entries,
+                max_depth=max_depth,
+                max_bytes=max_bytes,
             )
-        observed = tuple(self._scan_records(now_ns=now))
+        budget = _ScratchScanBudget(max_entries, max_depth, max_bytes)
+        observed = tuple(self._scan_records(now_ns=now, budget=budget))
+        if budget.truncated:
+            observed = tuple(
+                replace(
+                    record,
+                    eligible=False,
+                    issue=record.issue or "scan_incomplete",
+                    reason=record.reason or "scan_incomplete",
+                )
+                for record in observed
+            )
         candidates = [record for record in observed if record.eligible]
         applied_records: list[ScratchRecord] = []
         remaining: list[ScratchRecord] = []
@@ -1192,7 +1474,12 @@ class ScratchManager:
         summary = self._summarize(
             records_after,
             read_only=False,
-            unmanaged=self._unmanaged_entries(),
+            unmanaged=self._unmanaged_entries(limit=max_entries),
+            truncated=budget.truncated,
+            truncation_reasons=tuple(budget.truncation_reasons),
+            max_entries=max_entries,
+            max_depth=max_depth,
+            max_bytes=max_bytes,
         )
         status = (
             "recovery_required"
@@ -1223,30 +1510,65 @@ class ScratchManager:
             read_only=False,
             unmanaged=summary.unmanaged,
             root_blocked=summary.root_blocked,
+            truncated=budget.truncated,
+            truncation_reasons=tuple(budget.truncation_reasons),
+            max_entries=max_entries,
+            max_depth=max_depth,
+            max_bytes=max_bytes,
         )
 
-    def _unmanaged_entries(self) -> tuple[Path, ...]:
+    def _unmanaged_entries(self, *, limit: int | None = None) -> tuple[Path, ...]:
         """List suspicious neighbours without treating them as candidates."""
 
+        if limit == 0:
+            return ()
+
         try:
-            entries = tuple(os.scandir(self.root))
+            iterator = os.scandir(self.root)
         except OSError:
             return ()
-        return tuple(
-            self.root / entry.name
-            for entry in sorted(entries, key=lambda item: item.name)
-            if entry.name.startswith(("neocortex-", "scratch-"))
-            and not entry.name.startswith("workspace-")
-        )
-
-    def _scan_records(self, *, now_ns: int) -> Iterable[ScratchRecord]:
+        values: list[Path] = []
         try:
-            entries = tuple(os.scandir(self.root))
+            for entry in iterator:
+                if entry.name.startswith(("neocortex-", "scratch-")) and not entry.name.startswith("workspace-"):
+                    values.append(self.root / entry.name)
+                    if limit is not None and len(values) >= max(0, limit):
+                        break
+        finally:
+            iterator.close()
+        return tuple(values)
+
+    def _scan_records(
+        self,
+        *,
+        now_ns: int,
+        budget: _ScratchScanBudget | None = None,
+    ) -> Iterable[ScratchRecord]:
+        try:
+            iterator = os.scandir(self.root)
         except OSError as exc:
             raise ScratchSecurityError(f"cannot scan scratch root: {exc}") from exc
+        entries: list[os.DirEntry[str]] = []
+        try:
+            if budget is not None and budget.max_entries is not None:
+                for _ in range(budget.max_entries + 1):
+                    try:
+                        entries.append(next(iterator))
+                    except StopIteration:
+                        break
+                if len(entries) > budget.max_entries:
+                    budget.note(ENTRY_LIMIT)
+                    entries = entries[: budget.max_entries]
+            else:
+                entries.extend(iterator)
+        finally:
+            iterator.close()
         if len(entries) > _MAX_RECORDS:
             raise ScratchSecurityError("scratch root exceeds the registered-record limit")
-        for entry in sorted(entries, key=lambda item: item.name):
+        ordered_entries = sorted(entries, key=lambda item: item.name)
+        for entry in ordered_entries:
+            if budget is not None:
+                budget.entries += 1
             path = self.root / entry.name
             try:
                 metadata = path.lstat()
@@ -1287,11 +1609,18 @@ class ScratchManager:
                 payload = json.loads(raw.decode("utf-8"))
                 if not isinstance(payload, Mapping):
                     raise ScratchSecurityError("scratch manifest is not an object")
+                observation = (
+                    _bounded_payload_observation(path, budget)
+                    if budget is not None
+                    else _PayloadObservation(size_bytes=_directory_size(path), observed_bytes=0)
+                )
                 record = self._record_from_payload(
                     path,
                     payload,
-                    size_bytes=_directory_size(path),
+                    size_bytes=observation.size_bytes,
                     now_ns=now_ns,
+                    observation_issue=observation.issue,
+                    bounded_observation=budget is not None,
                 )
             except (OSError, UnicodeError, json.JSONDecodeError, ScratchError, TypeError, ValueError) as exc:
                 yield self._invalid_record(
@@ -1344,6 +1673,8 @@ class ScratchManager:
         *,
         size_bytes: int,
         now_ns: int | None = None,
+        observation_issue: str | None = None,
+        bounded_observation: bool = False,
     ) -> ScratchRecord:
         if payload.get("schema") != SCRATCH_SCHEMA:
             raise ScratchSecurityError("unsupported scratch manifest schema")
@@ -1413,12 +1744,24 @@ class ScratchManager:
         reason = payload.get("reason")
         if reason is not None and (not isinstance(reason, str) or len(reason.encode("utf-8")) > _MAX_REASON_BYTES):
             raise ScratchSecurityError("scratch reason is invalid")
+        payload_size_bytes = payload.get("payload_size_bytes")
+        if payload_size_bytes is not None and (
+            type(payload_size_bytes) is not int or payload_size_bytes < 0
+        ):
+            raise ScratchSecurityError("scratch payload size observation is invalid")
         workspace_metadata = path.lstat()
         issue: str | None = None
         if workspace_metadata.st_uid != os.geteuid() or workspace_metadata.st_mode & 0o077:
             issue = "workspace_mode_drift"
         else:
-            issue = _workspace_payload_issue(path)
+            issue = observation_issue if bounded_observation else _workspace_payload_issue(path)
+        if (
+            issue is None
+            and state == ScratchState.COMPLETED.value
+            and payload_size_bytes is not None
+            and int(size_bytes) != payload_size_bytes
+        ):
+            issue = "payload_changed_after_completion"
         eligible = (
             owner == self.owner
             and state == ScratchState.COMPLETED.value
@@ -1448,6 +1791,7 @@ class ScratchManager:
             reason=reason,
             manifest_digest=expected_digest,
             artifact_id=artifact_id,
+            payload_size_bytes=payload_size_bytes,
             eligible=eligible,
             issue=issue,
         )
@@ -1458,6 +1802,11 @@ class ScratchManager:
         *,
         read_only: bool,
         unmanaged: tuple[Path, ...] = (),
+        truncated: bool = False,
+        truncation_reasons: Sequence[str] = (),
+        max_entries: int | None = None,
+        max_depth: int | None = None,
+        max_bytes: int | None = None,
     ) -> ScratchPlan:
         planned = tuple(record for record in records if record.eligible)
         blocked = tuple(
@@ -1494,6 +1843,8 @@ class ScratchManager:
             status = "failed"
         elif blocked:
             status = "blocked"
+        elif truncated:
+            status = "blocked"
         elif planned:
             status = "planned"
         else:
@@ -1512,8 +1863,18 @@ class ScratchManager:
             failed_bytes=sum(record.size_bytes for record in failed),
             recovery_required_bytes=sum(record.size_bytes for record in recovery),
             status=status,
+            reason=(
+                next(iter(truncation_reasons))
+                if truncated and truncation_reasons
+                else None
+            ),
             read_only=read_only,
             unmanaged=unmanaged,
+            truncated=truncated,
+            truncation_reasons=tuple(dict.fromkeys(truncation_reasons)),
+            max_entries=max_entries,
+            max_depth=max_depth,
+            max_bytes=max_bytes,
         )
 
     def _record_for_path(self, path: Path) -> ScratchRecord | None:
@@ -1579,6 +1940,10 @@ class ScratchManager:
             updated["result_paths"] = list(result_paths)
         if state is ScratchState.COMPLETED:
             updated["retire_after_ns"] = retire_after_ns
+            # Persist one bounded lifecycle observation in the workspace
+            # manifest.  A later payload change is then a recovery boundary,
+            # not silently disposable material.
+            updated["payload_size_bytes"] = _directory_size(path)
         if reason is not None:
             updated["reason"] = _bounded_text(reason, label="scratch reason")
         if self._artifact_registry_configured:
@@ -1620,13 +1985,15 @@ class ScratchManager:
             raise ScratchSecurityError("scratch record is no longer eligible")
         if current.path_identity is None or not _same_identity(record.path, current.path_identity):
             raise ScratchSecurityError("scratch workspace identity changed before retirement")
-        if self._artifact_registry_configured:
-            # Keep the registry lifecycle ahead of the irreversible unlink.
-            # A registry outage blocks retirement; it never turns into a
-            # filesystem cleanup fallback.
+        if self._artifact_registry_configured and current.artifact_id is not None:
+            # The registry guard is held across the physical effect.  A live
+            # consumer cannot be registered between the dependency check and
+            # the unlink, and a failed unlink never receives a false retired
+            # state.  Legacy scratch manifests without an artifact projection
+            # remain compatible and are retired by their own owner only.
             current_payload: dict[str, Any] = {
                 "record_id": current.record_id,
-                "artifact_id": current.artifact_id or self._artifact_id(current.record_id),
+                "artifact_id": current.artifact_id,
                 "owner": current.owner,
                 "run_id": current.run_id,
                 "path": str(current.path),
@@ -1638,12 +2005,34 @@ class ScratchManager:
                 "retire_after_ns": current.retire_after_ns,
                 "metadata": dict(current.metadata),
                 "manifest_digest": current.manifest_digest,
+                "path_size_bytes": current.size_bytes,
+                "path_mtime_ns": 0,
             }
+            registry = self._artifact_registry_instance()
+            guard = getattr(registry, "retirement_guard", None) if registry is not None else None
+            if callable(guard):
+                try:
+                    with cast(Any, guard)(current.artifact_id):
+                        _remove_tree_no_follow(record.path, expected_identity=current.path_identity)
+                        self._update_artifact(
+                            current.path,
+                            current_payload,
+                            state=ScratchState.RETIRED.value,
+                        )
+                except OSError:
+                    raise
+                except ScratchSecurityError:
+                    raise
+                except BaseException as exc:
+                    self._raise_artifact_failure("retire", exc)
+                return
+            _remove_tree_no_follow(record.path, expected_identity=current.path_identity)
             self._update_artifact(
                 current.path,
                 current_payload,
                 state=ScratchState.RETIRED.value,
             )
+            return
         _remove_tree_no_follow(record.path, expected_identity=current.path_identity)
 
 

@@ -171,10 +171,17 @@ def _invoke_owner(
         parameter.name in {"roots", "hygiene_roots", "root_paths", "paths"}
         for parameter in parameters
     )
-    component_owner = not generic_owner and any(
+    # A canonical ``plan_hygiene`` owner exposes both the generic ``roots``
+    # aliases and the component-root aliases for embedders.  Do not make the
+    # presence of the former hide the latter when deciding which limits are
+    # safety/serialization bounds.
+    component_owner = any(
         parameter.name
         in {"artifact_root", "owned_temp_root", "audit_work_root", "state_directory"}
         for parameter in parameters
+    )
+    has_explicit_scan_bytes = any(
+        parameter.name == "scan_max_bytes" for parameter in parameters
     )
     has_var_keyword = any(
         parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters
@@ -204,10 +211,11 @@ def _invoke_owner(
             "state_directory",
         }:
             found = False
-        if component_owner and parameter.name == "max_bytes":
-            # The canonical owner currently uses max_bytes as its JSON
-            # serialization ceiling, not as the CLI traversal budget.  Keep
-            # the two limits independent and let the owner default stand.
+        if parameter.name == "max_bytes" and has_explicit_scan_bytes:
+            # The canonical owner uses ``max_bytes`` as its JSON serialization
+            # ceiling and ``scan_max_bytes`` as the traversal budget.  The CLI
+            # value must never be forwarded to both, otherwise the documented
+            # 1 TiB scan default is rejected by the 64 KiB--1 MiB JSON bound.
             found = False
         if not found:
             if parameter.default is not inspect.Parameter.empty:
