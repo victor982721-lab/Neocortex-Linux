@@ -4,7 +4,7 @@
 **Actualización:** 2026-09-17T15:40:00-06:00 (America/Mexico_City).
 **Fuente viva:** `HEAD == main == origin/main` y árbol limpio se comprueban antes de cerrar.
 
-**Estado vivo:** `HEAD == main == origin/main` se verificó en el commit final de esta ronda; la release canónica `0.14.1-8167a3f08f9b-cp314-linux-x86_64` fue promovida a `current` desde esa fuente, con receipt, rollback inmediato y `release_linux.py verify` comprobados. El `state reset --scope all` se aplicó con digest `76deaadf5e73c12b755acaf95a363fccb9e3878fe54cb7c90d160eef5550fbbf`: retiró sólo proyecciones regenerables, compactó Inventory/Framework/Catalog, preservó evidencia protegida y dejó staging/sidecars vacíos. Corpus, modelos y repositorio permanecen fuera del target; releases sólo cambiaron por la promoción canónica y conservan current más rollback.
+**Estado vivo:** `HEAD == main == origin/main` se verificó en el commit final de esta ronda; la release canónica correspondiente a ese `HEAD` fue promovida a `current` desde la fuente final, con receipt, rollback inmediato y `release_linux.py verify` comprobados. El `state reset --scope all` se aplicó con digest `76deaadf5e73c12b755acaf95a363fccb9e3878fe54cb7c90d160eef5550fbbf`: retiró sólo proyecciones regenerables, compactó Inventory/Framework/Catalog, preservó evidencia protegida y dejó staging/sidecars vacíos. Corpus, modelos y repositorio permanecen fuera del target; releases sólo cambiaron por la promoción canónica y conservan current más rollback.
 
 **Goal:** La corrección de lectura SQLite quiescente, las regresiones, la publicación en `main`, la release canónica y un `state reset --scope all` real quedaron verificables. La aceptación C01–C12 previa se conserva como procedencia histórica y no se reabre por esta ronda.
 
