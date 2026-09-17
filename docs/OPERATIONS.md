@@ -45,7 +45,14 @@ No inspecciones SQLite viva con clientes ordinarios. Durante una corrida larga
 observa el stream, transcript, proceso y cgroup; espera el estado terminal antes
 de abrir owners salvo que una superficie pública garantice una lectura compatible.
 La ausencia de WAL no demuestra quiescencia y un fallo de fence no se corrige
-borrando sidecars ni sustituyendo el lector por `mode=ro`.
+borrando sidecars ni sustituyendo el lector por `mode=ro`. Para seleccionar
+`immutable_strict`, el contrato central acepta sin sidecars o, únicamente tras
+una prueba de locks de sólo lectura y un fence estable antes/después, el layout
+exacto de `-wal` regular con 0 bytes y `-shm` regular con 32768 bytes. Un
+writer activo o ambiguo, un WAL o rollback journal no vacío, un SHM aislado o
+de tamaño inesperado, sidecars adicionales, symlinks o cualquier mutación
+durante el fence mantiene la abstención segura; una ruta que admita snapshot
+puede usar `snapshot_temp` sólo dentro del presupuesto acotado.
 
 ## Inventario federado de máquina
 
@@ -402,7 +409,11 @@ afirman cobertura de cada fotograma del video. Los límites por formato y las
 fences de lectura/snapshot permanecen independientes de los límites globales
 de procesamiento. Una copia de estado grande o con WAL necesita el procedimiento
 consistente autorizado; no se amplían sus presupuestos ni se abren owners activos
-para sortear una abstención.
+para sortear una abstención. El presupuesto canónico de bytes temporales para
+`snapshot_temp` permanece en 256 MiB: un owner grande que demuestre quiescencia
+mediante el layout residual exacto y la prueba read-only usa `immutable_strict`
+sin copiar el main completo; un owner activo o ambiguo sólo continúa si su
+snapshot estable cabe en ese límite y, de lo contrario, falla cerrado.
 
 Las rutas emiten `ProgressEvent` con fase, completado, total y métricas. La salida
 operativa debe mostrar al menos stage/ruta, elementos, bytes, errores, velocidad,
@@ -854,6 +865,15 @@ particular:
    reconstrucción staged; WAL/SHM/journal son parte del owner.
 3. `all` agrega los artefactos no-SQLite administrados; no convierte archivos
    desconocidos, corpus, releases, modelos o backups externos en targets.
+
+La inspección de SQLite del preview usa el contrato central de lectura segura.
+Un owner grande sin sidecars, o con exactamente `-wal=0` y `-shm=32768`, puede
+usar `immutable_strict` sólo después de que la prueba de locks de sólo lectura y
+el fence estable demuestren quiescencia. Un WAL/journal no vacío, un sidecar
+inesperado, una actividad o lock ambiguos, o cualquier drift durante la captura
+no se declara quiescente: la ruta puede intentar un `snapshot_temp` estable
+dentro de 256 MiB o abstenerse fail-closed. El reset no borra sidecars para
+fabricar esa evidencia.
 
 Aunque estén dentro de `State`, `all` conserva los backups canónicos de migración
 del catálogo `document_catalog.sqlite3.pre-vN-to-vN+1-<timestamp>.sqlite3` y su

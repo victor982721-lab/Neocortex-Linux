@@ -4,6 +4,17 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-17 — Lectura SQLite quiescente para reset y retención
+
+- Se restaura de forma central el layout residual exacto `-wal=0` y
+  `-shm=32768` como owner legible sólo con fences e identidad regulares, sonda
+  de locks Linux y guardia OFD compartida durante la lectura estricta.
+- WAL/journal no vacío, sidecars inesperados, writers activos, symlinks y drift
+  permanecen fail-closed; el presupuesto temporal canónico de 256 MiB no se
+  eleva ni se desactiva.
+- Health, value-review, retención y `state reset` reutilizan la misma primitive;
+  no se borran sidecars ni se crean backups implícitos.
+
 ## 2026-09-16 — Contrato de continuidad de higiene operativa
 
 - La documentación de CLI y Operations vincula el mantenimiento aislado y el

@@ -29,7 +29,9 @@ from typing import Literal, cast
 
 from neocortex.persistence.sqlite_immutable import (
     ImmutableSQLiteUnavailable,
+    capture_sqlite_read_fence,
     immutable_sqlite_database,
+    require_inactive_sqlite_sidecars,
 )
 from neocortex.persistence.sqlite_cancellation import (
     SQLiteCancellationBridge,
@@ -353,33 +355,29 @@ def _sidecars(path: Path) -> tuple[SQLiteSidecarHealth, ...]:
 def _sidecar_safety(path: Path) -> tuple[str | None, str | None]:
     """Return ``(status, detail)`` for a sidecar layout before SQLite opens it."""
 
-    sidecars: dict[str, os.stat_result] = {}
-    for suffix in _SIDECAR_SUFFIXES:
-        candidate = Path(f"{path}{suffix}")
-        try:
-            value = candidate.lstat()
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            return "blocked", f"SQLite sidecar cannot be inspected: {suffix} ({exc})"
-        sidecars[suffix] = value
-        if stat.S_ISLNK(value.st_mode):
-            return "blocked", f"SQLite sidecar is a symlink: {suffix}"
-        if not stat.S_ISREG(value.st_mode):
-            return "blocked", f"SQLite sidecar is not a regular file: {suffix}"
-
+    try:
+        fence = capture_sqlite_read_fence(path)
+    except FileNotFoundError:
+        # The regular-owner probe runs immediately before this helper; keep
+        # disappearance distinct from a malformed sidecar layout.
+        return "blocked", "SQLite owner disappeared during sidecar preflight"
+    except ImmutableSQLiteUnavailable as exc:
+        return "blocked", str(exc)
+    sidecars = dict(fence.sidecars)
     journal = sidecars.get("-journal")
     wal = sidecars.get("-wal")
-    if journal is not None and journal.st_size > 0:
+    if journal is not None and journal.size > 0:
         return "active", "SQLite owner has a non-empty rollback journal"
-    if wal is not None and wal.st_size > 0:
+    if wal is not None and wal.size > 0:
         return "active", "SQLite owner has a non-empty WAL"
-    if not sidecars:
-        return None, None
-    # WAL=0/SHM=32768 also occurs while a live writer holds BEGIN IMMEDIATE.
-    # Filesystem sizes cannot prove inactivity, and health must not open that
-    # source owner just to discover its locks.
-    return "blocked", "SQLite owner sidecars are not proven inactive"
+    try:
+        # The shared kernel recognizes both the sidecar-free and exact closed
+        # WAL/SHM layouts, while its path-aware lock probe rejects an active
+        # owner before health opens an immutable connection.
+        require_inactive_sqlite_sidecars(fence, path=path)
+    except ImmutableSQLiteUnavailable as exc:
+        return "blocked", str(exc)
+    return None, None
 
 
 def _regular_owner_kind(path: Path) -> tuple[str | None, str | None]:

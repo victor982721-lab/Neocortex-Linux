@@ -23,8 +23,11 @@ from neocortex.deduplication.persistence.validation import validate_inventory_sc
 from neocortex.persistence.sqlite_schema_contract import read_application_schema_version
 from neocortex.persistence.sqlite_immutable import (
     ImmutableSQLiteUnavailable,
-    SQLiteReadMode,
+    SQLiteImmutableFence,
     SQLiteReadSession,
+    capture_sqlite_read_fence,
+    preferred_sqlite_read_mode,
+    require_inactive_sqlite_sidecars,
 )
 
 from neocortex.documents import document_catalog_schema
@@ -55,7 +58,6 @@ MAX_SQLITE_CANDIDATES = 25_000
 MAX_VALUE_REVIEW_PAGE_INPUTS = 1_000
 _SQLITE_BATCH = 300
 _KEYSET_IDENTITY_BATCH = 200
-_SQLITE_SHM_REGION_SIZE_BYTES = 32_768
 _T = TypeVar("_T")
 
 
@@ -221,22 +223,6 @@ class _OwnerSpec:
     expected_version: int
     path: Path | None
     validator: Callable[[sqlite3.Connection], None]
-
-
-@dataclass(frozen=True, slots=True)
-class _SQLiteFileIdentity:
-    device: int
-    inode: int
-    mode: int
-    size: int
-    mtime_ns: int
-    ctime_ns: int
-
-
-@dataclass(frozen=True, slots=True)
-class _SQLiteReadSnapshot:
-    main: _SQLiteFileIdentity
-    sidecars: tuple[tuple[str, _SQLiteFileIdentity], ...]
 
 
 class _StateContractError(RuntimeError):
@@ -665,10 +651,15 @@ def _readonly_connection(path: Path) -> Iterator[sqlite3.Connection]:
     confirmed = _sqlite_read_snapshot(path)
     if before != confirmed:
         raise _StateContractError("SQLite owner changed before fenced value review read")
-    mode = _review_read_mode(before)
-    # An empty WAL is not evidence of inactivity: it also occurs with a live
-    # BEGIN IMMEDIATE writer.  Read admitted sidecars only in a detached copy,
-    # retaining this adapter's stronger source-stability requirement at close.
+    # Preserve value-review's fail-closed boundary for active/ambiguous
+    # sidecars while delegating the actual layout rules to the shared kernel.
+    # The path-aware preferred mode may still select a bounded detached copy
+    # for a live writer using the exact residual layout.
+    try:
+        require_inactive_sqlite_sidecars(before)
+    except ImmutableSQLiteUnavailable as exc:
+        raise _StateContractError(str(exc)) from exc
+    mode = preferred_sqlite_read_mode(path)
     session = SQLiteReadSession(
         path,
         mode=mode,
@@ -685,60 +676,10 @@ def _readonly_connection(path: Path) -> Iterator[sqlite3.Connection]:
             raise _StateContractError("SQLite owner changed during fenced value review read")
 
 
-def _sqlite_read_snapshot(path: Path) -> _SQLiteReadSnapshot:
-    main = _sqlite_file_identity(path, label="SQLite owner")
-    sidecars: list[tuple[str, _SQLiteFileIdentity]] = []
-    for suffix in ("-journal", "-wal", "-shm"):
-        candidate = Path(f"{path}{suffix}")
-        try:
-            identity = _sqlite_file_identity(candidate, label=f"SQLite sidecar {suffix}")
-        except FileNotFoundError:
-            continue
-        sidecars.append((suffix, identity))
-    return _SQLiteReadSnapshot(main=main, sidecars=tuple(sidecars))
+def _sqlite_read_snapshot(path: Path) -> SQLiteImmutableFence:
+    """Compatibility seam backed by the central fenced-read primitive."""
 
-
-def _sqlite_file_identity(path: Path, *, label: str) -> _SQLiteFileIdentity:
-    try:
-        value = path.stat()
-    except FileNotFoundError:
-        raise
-    except OSError as exc:
-        raise _StateContractError(f"{label} cannot be inspected: {path.name}") from exc
-    if not stat.S_ISREG(value.st_mode):
-        raise _StateContractError(f"{label} is not a regular file: {path.name}")
-    return _SQLiteFileIdentity(
-        device=int(value.st_dev),
-        inode=int(value.st_ino),
-        mode=int(value.st_mode),
-        size=int(value.st_size),
-        mtime_ns=int(value.st_mtime_ns),
-        ctime_ns=int(value.st_ctime_ns),
-    )
-
-
-def _review_read_mode(snapshot: _SQLiteReadSnapshot) -> SQLiteReadMode:
-    """Preserve review's admitted layouts without inferring writer inactivity."""
-
-    sidecars = dict(snapshot.sidecars)
-    journal = sidecars.get("-journal")
-    wal = sidecars.get("-wal")
-    shm = sidecars.get("-shm")
-    if journal is not None and journal.size > 0:
-        raise _StateContractError("SQLite owner has a non-empty rollback journal")
-    if wal is not None and wal.size > 0:
-        raise _StateContractError("SQLite owner has a non-empty WAL")
-    if not sidecars:
-        return SQLiteReadMode.IMMUTABLE_STRICT
-    if (
-        set(sidecars) == {"-wal", "-shm"}
-        and wal is not None
-        and wal.size == 0
-        and shm is not None
-        and shm.size == _SQLITE_SHM_REGION_SIZE_BYTES
-    ):
-        return SQLiteReadMode.SNAPSHOT_TEMP
-    raise _StateContractError("SQLite owner sidecar layout is unsupported for value review")
+    return capture_sqlite_read_fence(path)
 
 
 def _validate_owner_schema(

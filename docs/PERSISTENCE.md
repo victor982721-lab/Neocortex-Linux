@@ -68,8 +68,15 @@ byte-neutral. SQLite puede crear o tocar `-wal`/`-shm`.
 
 `SQLiteReadSession` ofrece:
 
-- `immutable_strict` para un owner quiescente, sin sidecars activos y con fence
-  verificable hasta el cierre;
+- `immutable_strict` para un owner quiescente, con identidad y fence
+  verificables hasta el cierre. El preflight central considera quiescente
+  únicamente uno de estos conjuntos: sin sidecars, o exactamente `-wal` y
+  `-shm` regulares, con `-wal` de 0 bytes y `-shm` residual de exactamente
+  32768 bytes. En el segundo caso los tamaños no bastan: una prueba de locks
+  de sólo lectura y la recaptura del fence deben demostrar que no hay un owner
+  activo y que el conjunto no cambió; durante la sesión estricta el kernel
+  conserva una guardia OFD compartida sobre los locks de control para cerrar la
+  carrera entre la sonda y la lectura;
 - `snapshot_temp` para copiar main y sidecars con fence antes/después de la
   copia y reintentos acotados ante drift; si no obtiene un conjunto estable,
   se abstiene con `ImmutableSQLiteUnavailable`.
@@ -85,13 +92,22 @@ Framework, no ese modo genérico; véase [concurrencia](ARCHITECTURE.md#concurre
 Una consulta pública no crea bases ausentes, no migra y no hace checkpoint. Los
 schemas `future`, incompatibles o corruptos producen abstención tipada.
 
-Un WAL vacío con SHM presente no demuestra que no exista un writer. La
-selección automática utiliza un snapshot en ese caso, sin retirar sidecars del
-origen. Las sesiones `immutable_strict` y las conexiones bare estrictas verifican
-el fence al cerrar. Health incluye sidecars huérfanos de owners desconocidos y
-aplica un presupuesto cooperativo a SQL y a las etapas de comprobación; no
-promete interrumpir de forma forzosa una llamada de filesystem o Python
-bloqueada.
+Un WAL vacío con SHM presente no demuestra quiescencia por sus tamaños solos.
+La selección automática sólo permite `immutable_strict` para el layout residual
+exacto descrito arriba después de la prueba de locks de sólo lectura, la
+recaptura del fence y la comprobación de cierre; no retira ni normaliza
+sidecars del origen. Un `-wal` no vacío, un rollback journal no vacío, un SHM
+aislado o de tamaño inesperado, sidecars adicionales, entradas no regulares o
+un lock/owner activo o ambiguo no son evidencia de inactividad. Esos casos
+pueden usar `snapshot_temp` únicamente en una ruta que admita una copia estable
+y dentro del presupuesto; si no, la operación se abstiene fail-closed. Nunca
+se hace una copia temporal ilimitada para superar esa frontera.
+
+Las sesiones `immutable_strict` y las conexiones bare estrictas verifican el
+fence al cerrar. Health y retención reutilizan este mismo contrato, incluidos
+los sidecars huérfanos de owners desconocidos, y aplican un presupuesto
+cooperativo a SQL y a las etapas de comprobación; no prometen interrumpir de
+forma forzosa una llamada de filesystem o Python bloqueada.
 
 Las consultas Knowledge pueden recibir un `KnowledgeReadBudget` en memoria para
 limitar filas, vectores, bytes temporales, deadline monotónico y cancelación.
@@ -174,7 +190,12 @@ una referencia histórica en autoridad nueva.
 no abre una transacción SQLite distribuida ni simula que varios archivos son una
 sola base. El motor toma los locks de writers/publicación, registra baseline y
 postcondición, y sólo declara `complete` después de verificar el conjunto. WAL,
-SHM y journals siempre se tratan como parte del owner correspondiente.
+SHM y journals siempre se tratan como parte del owner correspondiente. Para
+inspeccionar un owner grande durante preview, el layout residual exacto
+`-wal=0`/`-shm=32768` evita copiar el main completo sólo cuando la prueba de
+locks de sólo lectura y el fence demuestran quiescencia; un owner activo o
+ambiguo sigue la ruta de snapshot acotado o se bloquea si rebasa el presupuesto
+canónico.
 
 `all` usa un inventario explícito de artefactos no-SQLite gestionados (por ejemplo
 manifests, checkpoints o journals administrados) y conserva archivos desconocidos
@@ -208,8 +229,15 @@ se presenta como cobertura completa.
 
 La retención protege heads actuales/anteriores necesarios, builders, leases,
 Review, acciones inciertas y referencias cross-owner. Un plan es read-only hasta
-que exista journal y autorización explícita. No usa el tamaño de WAL como señal
-de borrado ni ejecuta `VACUUM` implícito.
+que exista journal y autorización explícita. La inspección de owners SQLite
+reutiliza el contrato de lectura segura: un owner grande quiescente con ningún
+sidecar, o con el layout residual exacto `-wal=0` y `-shm=32768` probado por
+locks de sólo lectura y fence, usa `immutable_strict` sin snapshot temporal
+completo. Un owner activo, ambiguo, con WAL/journal no vacío o con sidecars
+inesperados sólo puede usar un snapshot estable dentro del límite de
+`DEFAULT_SQLITE_SNAPSHOT_MAX_TEMPORARY_BYTES` (256 MiB); de lo contrario se
+abstiene fail-closed. No usa el tamaño de WAL como señal de borrado ni ejecuta
+`VACUUM` implícito.
 
 ## Checklist de cambio
 

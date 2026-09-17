@@ -6,7 +6,12 @@ checkpoint a writer-owned WAL.  :class:`SQLiteReadSession` centralizes the
 two safe read strategies used by the product:
 
 * ``immutable_strict`` reads an already quiescent owner with SQLite's
-  ``immutable=1`` flag and a before/after filesystem fence.
+  ``immutable=1`` flag and a before/after filesystem fence.  In addition to an
+  owner with no sidecars, the kernel accepts SQLite's closed-WAL residual
+  layout (an empty WAL and 32 KiB SHM) only after a no-byte-mutation WAL lock
+  probe proves that no writer/checkpoint/recovery lock is held; the strict
+  residual session retains an OFD shared guard over those control locks until
+  close.
 * ``snapshot_temp`` copies a bounded, stable set of main/sidecar bytes into a
   system temporary directory and reads the copy.  This is the only supported
   read strategy when a live WAL or rollback journal exists.
@@ -22,6 +27,8 @@ import sqlite3
 import stat
 import os
 import shutil
+import struct
+import sys
 import tempfile
 import threading
 import time
@@ -57,6 +64,33 @@ class SQLiteSnapshotBudgetExceeded(ImmutableSQLiteUnavailable):
 DEFAULT_SQLITE_SNAPSHOT_MAX_TEMPORARY_BYTES = 256 * 1024 * 1024
 DEFAULT_SQLITE_SNAPSHOT_PREPARE_TIMEOUT_SECONDS = 60.0
 DEFAULT_SQLITE_SNAPSHOT_BLOCK_BYTES = 1024 * 1024
+
+# SQLite's Linux locking contract uses these fixed control bytes.  The first
+# three WAL-index bytes are write/checkpoint/recovery locks (wal.h's
+# WALINDEX_LOCK_OFFSET + 0..2); the rollback VFS reserves PENDING_BYTE and
+# RESERVED_BYTE in the main file.  The Linux guard below acquires shared OFD
+# locks in a short-lived helper process and retains them for the strict read;
+# no owner bytes or sidecars are changed.  Keep the residual SHM size named
+# here rather than duplicating a magic number in planner/reader paths.
+SQLITE_WAL_EMPTY_BYTES = 0
+SQLITE_WAL_SHM_RESIDUAL_BYTES = 32 * 1024
+SQLITE_WAL_WRITE_LOCK_OFFSET = 120
+SQLITE_WAL_CHECKPOINT_LOCK_OFFSET = SQLITE_WAL_WRITE_LOCK_OFFSET + 1
+SQLITE_WAL_RECOVERY_LOCK_OFFSET = SQLITE_WAL_WRITE_LOCK_OFFSET + 2
+_SQLITE_WAL_CONTROL_LOCK_OFFSETS = (
+    SQLITE_WAL_WRITE_LOCK_OFFSET,
+    SQLITE_WAL_CHECKPOINT_LOCK_OFFSET,
+    SQLITE_WAL_RECOVERY_LOCK_OFFSET,
+)
+SQLITE_ROLLBACK_PENDING_LOCK_OFFSET = 0x40000000
+SQLITE_ROLLBACK_RESERVED_LOCK_OFFSET = SQLITE_ROLLBACK_PENDING_LOCK_OFFSET + 1
+_SQLITE_ROLLBACK_CONTROL_LOCK_OFFSETS = (
+    SQLITE_ROLLBACK_PENDING_LOCK_OFFSET,
+    SQLITE_ROLLBACK_RESERVED_LOCK_OFFSET,
+)
+_SQLITE_FLOCK_FORMAT = "@hhqqi"
+_SQLITE_KNOWN_SIDECAR_SUFFIXES = frozenset({"-journal", "-wal", "-shm"})
+_SQLITE_ACTIVITY_MAX_FDS = 4096
 
 
 @dataclass(frozen=True, slots=True)
@@ -561,6 +595,31 @@ def _sqlite_fence_bytes(fence: SQLiteImmutableFence) -> int:
     return fence.main.size + sum(identity.size for _suffix, identity in fence.sidecars)
 
 
+def _identity_from_stat(
+    value: os.stat_result,
+    *,
+    label: str,
+    name: str,
+    allow_empty: bool = False,
+) -> SQLiteFileIdentity:
+    """Build a fence identity from an already acquired ``stat`` result."""
+
+    if stat.S_ISLNK(value.st_mode):
+        raise ImmutableSQLiteUnavailable(
+            f"{label} is a symlink and not a stable regular file: {name}"
+        )
+    if not stat.S_ISREG(value.st_mode) or (value.st_size <= 0 and not allow_empty):
+        raise ImmutableSQLiteUnavailable(f"{label} is not a stable regular file: {name}")
+    return SQLiteFileIdentity(
+        device=int(value.st_dev),
+        inode=int(value.st_ino),
+        mode=int(value.st_mode),
+        size=int(value.st_size),
+        mtime_ns=int(value.st_mtime_ns),
+        ctime_ns=int(value.st_ctime_ns),
+    )
+
+
 def _file_identity(
     path: Path,
     *,
@@ -575,16 +634,325 @@ def _file_identity(
         raise
     except OSError as exc:
         raise ImmutableSQLiteUnavailable(f"{label} cannot be inspected: {path.name}") from exc
-    if not stat.S_ISREG(value.st_mode) or (value.st_size <= 0 and not allow_empty):
-        raise ImmutableSQLiteUnavailable(f"{label} is not a stable regular file: {path.name}")
-    return SQLiteFileIdentity(
-        device=int(value.st_dev),
-        inode=int(value.st_ino),
-        mode=int(value.st_mode),
-        size=int(value.st_size),
-        mtime_ns=int(value.st_mtime_ns),
-        ctime_ns=int(value.st_ctime_ns),
+    return _identity_from_stat(
+        value,
+        label=label,
+        name=path.name,
+        allow_empty=allow_empty,
     )
+
+
+def _reject_unexpected_sqlite_sidecars(path: Path) -> None:
+    """Reject SQLite-looking sibling files outside the known sidecar set.
+
+    SQLite's owner contract has exactly three sidecar names.  An unknown
+    ``<owner>-*`` sibling is an ambiguous journal/coordination artifact, not
+    evidence that the owner is quiescent.  Failing here also prevents a later
+    immutable open from silently ignoring a newly-created sidecar.
+    """
+
+    prefix = f"{path.name}-"
+    try:
+        with os.scandir(path.parent) as entries:
+            for entry in entries:
+                if not entry.name.startswith(prefix):
+                    continue
+                suffix = entry.name[len(path.name) :]
+                if suffix not in _SQLITE_KNOWN_SIDECAR_SUFFIXES:
+                    raise ImmutableSQLiteUnavailable(
+                        "SQLite owner has an unexpected sidecar: " f"{entry.name}"
+                    )
+    except ImmutableSQLiteUnavailable:
+        raise
+    except OSError as exc:
+        raise ImmutableSQLiteUnavailable(
+            f"SQLite owner sidecar directory cannot be inspected: {path.parent}"
+        ) from exc
+
+
+def _sqlite_owner_process_is_open(path: Path, fence: SQLiteImmutableFence) -> bool:
+    """Return whether this process still owns an SQLite file descriptor.
+
+    Lock state alone is not sufficient: POSIX SQLite locks are released when
+    *any* descriptor for the inode is closed by a process, so an incidental
+    byte read in a cooperating thread can make a live transaction temporarily
+    invisible to ``F_GETLK``.  A read-only ``/proc/self/fd`` scan supplies the
+    complementary same-process liveness evidence without walking every host
+    process (the isolated OFD-lock guard covers external owners).  It
+    never opens the owner or sidecars.
+    """
+
+    if sys.platform != "linux":
+        raise ImmutableSQLiteUnavailable(
+            "SQLite owner activity cannot be verified outside Linux"
+        )
+    expected = {(fence.main.device, fence.main.inode)}
+    expected.update(
+        (identity.device, identity.inode) for _suffix, identity in fence.sidecars
+    )
+    targets = {
+        os.path.abspath(os.fspath(path)),
+        *(os.path.abspath(f"{path}{suffix}") for suffix in _SQLITE_KNOWN_SIDECAR_SUFFIXES),
+    }
+    fd_directory = Path("/proc/self/fd")
+    try:
+        descriptors = tuple(sorted(fd_directory.iterdir(), key=os.fspath))
+    except OSError as exc:
+        raise ImmutableSQLiteUnavailable(
+            "SQLite owner activity cannot be inspected through /proc/self"
+        ) from exc
+    if len(descriptors) > _SQLITE_ACTIVITY_MAX_FDS:
+        raise ImmutableSQLiteUnavailable("SQLite owner activity exceeds its descriptor bound")
+    for descriptor in descriptors:
+        try:
+            target = os.readlink(descriptor)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            continue
+        target = target.removesuffix(" (deleted)")
+        if os.path.abspath(target) in targets:
+            return True
+        try:
+            metadata = os.stat(descriptor)
+        except OSError:
+            continue
+        if (int(metadata.st_dev), int(metadata.st_ino)) in expected:
+            return True
+    return False
+
+
+@dataclass(slots=True)
+class _SQLiteWriterLockGuard:
+    """A child-held shared guard over SQLite writer-control lock bytes."""
+
+    pid: int
+    release_fd: int
+    _closed: bool = False
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            try:
+                os.write(self.release_fd, b"x")
+            except OSError as exc:
+                if exc.errno not in {errno.EPIPE, errno.EBADF}:
+                    raise ImmutableSQLiteUnavailable(
+                        "SQLite writer lock guard could not be released"
+                    ) from exc
+        finally:
+            try:
+                os.close(self.release_fd)
+            except OSError:
+                pass
+        while True:
+            try:
+                _pid, status = os.waitpid(self.pid, 0)
+                break
+            except InterruptedError:
+                continue
+            except ChildProcessError:
+                return
+        if status != 0:
+            raise ImmutableSQLiteUnavailable("SQLite writer lock guard exited unexpectedly")
+
+
+def _sqlite_lock_targets(
+    path: Path,
+    fence: SQLiteImmutableFence,
+) -> tuple[tuple[Path, tuple[int, ...], SQLiteFileIdentity], ...]:
+    sidecars = dict(fence.sidecars)
+    targets: list[tuple[Path, tuple[int, ...], SQLiteFileIdentity]] = [
+        (path, _SQLITE_ROLLBACK_CONTROL_LOCK_OFFSETS, fence.main)
+    ]
+    if set(sidecars) == {"-wal", "-shm"}:
+        targets.append(
+            (Path(f"{path}-shm"), _SQLITE_WAL_CONTROL_LOCK_OFFSETS, sidecars["-shm"])
+        )
+    return tuple(targets)
+
+
+def _acquire_sqlite_writer_lock_guard(
+    path: Path,
+    fence: SQLiteImmutableFence,
+) -> _SQLiteWriterLockGuard:
+    """Hold shared SQLite control locks for the complete strict read.
+
+    A point-in-time ``GETLK`` result is not enough: a writer could begin after
+    the probe and before the immutable connection opens.  A child-held guard
+    therefore acquires shared ``F_OFD_SETLK`` locks and waits for the parent to
+    release them.  This blocks a future SQLite writer/checkpoint/recovery lock
+    without opening or mutating the owner in the reader process.  If a writer
+    already owns a lock, acquisition fails and callers fall back to the
+    bounded snapshot strategy.
+    """
+
+    if sys.platform != "linux":
+        raise ImmutableSQLiteUnavailable(
+            "SQLite owner writer-lock state cannot be verified outside Linux"
+        )
+    try:
+        import fcntl
+    except ImportError as exc:  # pragma: no cover - Linux always supplies fcntl
+        raise ImmutableSQLiteUnavailable(
+            "SQLite writer lock guard is unavailable on this Linux runtime"
+        ) from exc
+    setlk = getattr(fcntl, "F_OFD_SETLK", None)
+    if setlk is None:
+        raise ImmutableSQLiteUnavailable(
+            "SQLite writer lock guard cannot verify same-process locks"
+        )
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None or not hasattr(os, "fork") or not hasattr(os, "waitpid"):
+        raise ImmutableSQLiteUnavailable(
+            "SQLite writer lock guard is unavailable on this Linux runtime"
+        )
+    try:
+        struct.calcsize(_SQLITE_FLOCK_FORMAT)
+        int(fcntl.F_RDLCK)
+    except (AttributeError, struct.error, TypeError, ValueError) as exc:
+        raise ImmutableSQLiteUnavailable(
+            "SQLite writer lock guard has an unsupported flock ABI"
+        ) from exc
+
+    # The process scan is needed only for the residual WAL/SHM shape: a raw
+    # byte read in this process can release SQLite's POSIX SHM locks while a
+    # transaction remains open.  A sidecar-free owner has no such residual
+    # ambiguity; the rollback control-lock guard below remains its check.
+    if set(dict(fence.sidecars)) == {"-wal", "-shm"} and _sqlite_owner_process_is_open(
+        path, fence
+    ):
+        raise ImmutableSQLiteUnavailable(
+            "SQLite owner process is active; sidecars are not proven inactive"
+        )
+
+    ready_read, ready_write = os.pipe()
+    release_read, release_write = os.pipe()
+    targets = _sqlite_lock_targets(path, fence)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | nofollow
+    guard_returned = False
+    try:
+        try:
+            pid = os.fork()
+        except OSError as exc:
+            raise ImmutableSQLiteUnavailable(
+                "SQLite writer lock guard could not start its isolated holder"
+            ) from exc
+        if pid == 0:  # pragma: no cover - child outcome is asserted by parent
+            descriptors: list[int] = []
+
+            def child_status(value: bytes, code: int) -> None:
+                try:
+                    os.write(ready_write, value)
+                except BaseException:
+                    pass
+                try:
+                    os.close(ready_write)
+                except OSError:
+                    pass
+                for descriptor in reversed(descriptors):
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
+                try:
+                    os.close(release_read)
+                except OSError:
+                    pass
+                os._exit(code)
+
+            try:
+                os.close(ready_read)
+                os.close(release_write)
+                for target, offsets, expected in targets:
+                    descriptor = os.open(os.fspath(target), flags)
+                    descriptors.append(descriptor)
+                    observed = _identity_from_stat(
+                        os.fstat(descriptor),
+                        label="SQLite writer-lock target",
+                        name=target.name,
+                        allow_empty=True,
+                    )
+                    if observed != expected:
+                        child_status(b"E", 1)
+                    for offset in offsets:
+                        request = struct.pack(
+                            _SQLITE_FLOCK_FORMAT,
+                            int(fcntl.F_RDLCK),
+                            int(os.SEEK_SET),
+                            int(offset),
+                            1,
+                            0,
+                        )
+                        try:
+                            fcntl.fcntl(descriptor, setlk, request)
+                        except OSError as exc:
+                            child_status(
+                                b"A" if exc.errno in {errno.EACCES, errno.EAGAIN} else b"E",
+                                2 if exc.errno in {errno.EACCES, errno.EAGAIN} else 1,
+                            )
+                os.write(ready_write, b"1")
+                os.close(ready_write)
+                while True:
+                    try:
+                        os.read(release_read, 1)
+                        break
+                    except InterruptedError:
+                        continue
+                for descriptor in reversed(descriptors):
+                    os.close(descriptor)
+                os.close(release_read)
+                os._exit(0)
+            except BaseException:
+                child_status(b"E", 1)
+
+        os.close(ready_write)
+        ready_write = -1
+        os.close(release_read)
+        release_read = -1
+        status = os.read(ready_read, 1)
+        os.close(ready_read)
+        ready_read = -1
+        if status != b"1":
+            while True:
+                try:
+                    os.waitpid(pid, 0)
+                    break
+                except InterruptedError:
+                    continue
+            if status == b"A":
+                raise ImmutableSQLiteUnavailable(
+                    "SQLite owner writer lock is active; sidecars are not proven inactive"
+                )
+            raise ImmutableSQLiteUnavailable(
+                "SQLite writer lock guard could not verify control locks"
+            )
+        guard_returned = True
+        return _SQLiteWriterLockGuard(pid=pid, release_fd=release_write)
+    finally:
+        for descriptor in (
+            ready_read,
+            ready_write,
+            release_read,
+            release_write if not guard_returned else -1,
+        ):
+            if descriptor != -1:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+
+
+def _probe_sqlite_writer_locks(
+    path: Path,
+    fence: SQLiteImmutableFence,
+) -> None:
+    """Probe writer locks without retaining a guard for the caller."""
+
+    guard = _acquire_sqlite_writer_lock_guard(path, fence)
+    guard.close()
 
 
 def capture_sqlite_read_fence(path: Path) -> SQLiteImmutableFence:
@@ -596,6 +964,7 @@ def capture_sqlite_read_fence(path: Path) -> SQLiteImmutableFence:
     """
 
     selected = Path(path)
+    _reject_unexpected_sqlite_sidecars(selected)
     main = _file_identity(selected, label="SQLite owner")
     sidecars: list[tuple[str, SQLiteFileIdentity]] = []
     for suffix in ("-journal", "-wal", "-shm"):
@@ -615,37 +984,57 @@ def capture_sqlite_read_fence(path: Path) -> SQLiteImmutableFence:
 def capture_sqlite_immutable_fence(path: Path) -> SQLiteImmutableFence:
     """Capture a quiescent owner fence without opening SQLite."""
 
-    fence = capture_sqlite_read_fence(path)
-    require_inactive_sqlite_sidecars(fence)
+    selected = Path(path)
+    fence = capture_sqlite_read_fence(selected)
+    require_inactive_sqlite_sidecars(fence, path=selected)
     return fence
 
 
-def require_inactive_sqlite_sidecars(fence: SQLiteImmutableFence) -> None:
-    """Require no sidecars; sizes alone cannot establish writer quiescence.
+def require_inactive_sqlite_sidecars(
+    fence: SQLiteImmutableFence,
+    *,
+    path: str | Path | None = None,
+) -> None:
+    """Require a canonical inactive sidecar layout and, when possible, locks.
 
-    A writer holding ``BEGIN IMMEDIATE`` can have an empty WAL and a 32 KiB
-    SHM.  Such owners need a temporary snapshot, not an immutable source read.
-    This filesystem preflight is not a replacement for owner coordination.
+    The accepted layouts are either no sidecars or exactly one regular empty
+    WAL plus SQLite's residual 32 KiB SHM file.  Empty/isolated/extra sidecars
+    remain ambiguous.  ``path`` is optional for compatibility with callers
+    that already hold a fence; all production paths provide it so the Linux
+    read-only writer-lock probe can reject a live ``BEGIN IMMEDIATE`` before
+    selecting ``immutable_strict``.  The final immutable fence is still
+    checked at close, so this probe is evidence, not a replacement for the
+    before/after identity fence.
     """
 
     sidecars = dict(fence.sidecars)
     journal = sidecars.get("-journal")
     wal = sidecars.get("-wal")
+    shm = sidecars.get("-shm")
     if journal is not None and journal.size > 0:
         raise ImmutableSQLiteUnavailable("SQLite owner has a non-empty rollback journal")
     if wal is not None and wal.size > 0:
         raise ImmutableSQLiteUnavailable("SQLite owner has a non-empty WAL")
-    if not sidecars:
-        return
-    raise ImmutableSQLiteUnavailable("SQLite owner sidecars are not proven inactive")
+    inactive_layout = not sidecars or (
+        set(sidecars) == {"-wal", "-shm"}
+        and wal is not None
+        and wal.size == SQLITE_WAL_EMPTY_BYTES
+        and shm is not None
+        and shm.size == SQLITE_WAL_SHM_RESIDUAL_BYTES
+    )
+    if not inactive_layout:
+        raise ImmutableSQLiteUnavailable("SQLite owner sidecars are not proven inactive")
+    if path is not None:
+        _probe_sqlite_writer_locks(Path(path), fence)
 
 
 def preferred_sqlite_read_mode(path: str | Path) -> SQLiteReadMode:
     """Choose strict or temporary-copy mode from filesystem-only evidence."""
 
-    fence = capture_sqlite_read_fence(Path(path))
+    selected = Path(path)
+    fence = capture_sqlite_read_fence(selected)
     try:
-        require_inactive_sqlite_sidecars(fence)
+        require_inactive_sqlite_sidecars(fence, path=selected)
     except ImmutableSQLiteUnavailable:
         return SQLiteReadMode.SNAPSHOT_TEMP
     return SQLiteReadMode.IMMUTABLE_STRICT
@@ -681,13 +1070,26 @@ def _configure_read_connection(
     return connection
 
 
-def _verify_immutable_source(path: Path, fence: SQLiteImmutableFence) -> None:
+def _verify_immutable_source(
+    path: Path,
+    fence: SQLiteImmutableFence,
+    *,
+    verify_locks: bool = True,
+) -> None:
     try:
         after = capture_sqlite_read_fence(path)
     except (OSError, ImmutableSQLiteUnavailable) as exc:
         raise ImmutableSQLiteUnavailable("SQLite owner changed during immutable read") from exc
     if after != fence:
         raise ImmutableSQLiteUnavailable("SQLite owner changed during immutable read")
+    # Recheck writer/control locks after closing the reader.  A writer that
+    # appeared after the initial probe must not turn a strict read into a
+    # false quiescence claim merely because its bytes have not changed yet.
+    # The child-held guard is still active in the bare connection wrapper, so
+    # that wrapper asks only for the identity fence; the owning session performs
+    # the final lock check after releasing the guard.
+    if verify_locks:
+        require_inactive_sqlite_sidecars(after, path=path)
 
 
 class _FencedImmutableConnection(sqlite3.Connection):
@@ -695,11 +1097,14 @@ class _FencedImmutableConnection(sqlite3.Connection):
 
     _source_path: Path | None = None
     _source_fence: SQLiteImmutableFence | None = None
+    _writer_lock_guard: _SQLiteWriterLockGuard | None = None
 
     def close(self) -> None:
         path, fence = self._source_path, self._source_fence
+        guard = self._writer_lock_guard
         self._source_path = None
         self._source_fence = None
+        self._writer_lock_guard = None
         primary: BaseException | None = None
         try:
             super().close()
@@ -707,12 +1112,23 @@ class _FencedImmutableConnection(sqlite3.Connection):
             primary = exc
         if path is not None and fence is not None:
             try:
-                _verify_immutable_source(path, fence)
+                if guard is None:
+                    _verify_immutable_source(path, fence)
+                else:
+                    _verify_immutable_source(path, fence, verify_locks=False)
             except BaseException as exc:
                 if primary is None:
                     primary = exc
                 else:
                     primary.add_note(f"SQLite final source fence failed: {exc}")
+        if guard is not None:
+            try:
+                guard.close()
+            except BaseException as exc:
+                if primary is None:
+                    primary = exc
+                else:
+                    primary.add_note(f"SQLite writer lock guard cleanup failed: {exc}")
         if primary is not None:
             raise primary
 
@@ -732,16 +1148,31 @@ def open_immutable_sqlite_connection(
     selected = Path(path).absolute()
     if isinstance(timeout_seconds, bool) or float(timeout_seconds) <= 0:
         raise ValueError("immutable SQLite timeout must be positive")
-    fence = capture_sqlite_immutable_fence(selected)
-    if fence != capture_sqlite_immutable_fence(selected):
-        raise ImmutableSQLiteUnavailable("SQLite owner changed before immutable read")
-    connection = sqlite3.connect(
-        f"{readonly_sqlite_uri(selected)}&immutable=1",
-        uri=True,
-        timeout=float(timeout_seconds),
-        factory=_FencedImmutableConnection,
-    )
+    fence = capture_sqlite_read_fence(selected)
+    require_inactive_sqlite_sidecars(fence, path=selected)
+    guard: _SQLiteWriterLockGuard | None = None
+    if set(dict(fence.sidecars)) == {"-wal", "-shm"}:
+        # The residual WAL/SHM pair is the layout whose control locks can be
+        # held without interfering with ordinary rollback-mode readers.  A
+        # sidecar-free owner still receives the point-in-time rollback lock
+        # probe above, while its existing fence semantics remain byte-neutral
+        # for writers that appear after open.
+        guard = _acquire_sqlite_writer_lock_guard(selected, fence)
+    connection: sqlite3.Connection | None = None
     try:
+        # The guard blocks a writer from acquiring a control lock while this
+        # second fence is captured and while SQLite opens the immutable view.
+        confirmed = capture_sqlite_read_fence(selected)
+        if confirmed != fence:
+            raise ImmutableSQLiteUnavailable("SQLite owner changed before immutable read")
+        require_inactive_sqlite_sidecars(confirmed)
+        fence = confirmed
+        connection = sqlite3.connect(
+            f"{readonly_sqlite_uri(selected)}&immutable=1",
+            uri=True,
+            timeout=float(timeout_seconds),
+            factory=_FencedImmutableConnection,
+        )
         _configure_read_connection(
             connection,
             timeout_seconds=float(timeout_seconds),
@@ -750,17 +1181,28 @@ def open_immutable_sqlite_connection(
         assert isinstance(connection, _FencedImmutableConnection)
         connection._source_path = selected
         connection._source_fence = fence
+        connection._writer_lock_guard = guard
+        guard = None
         return connection
     except BaseException as exc:
-        try:
-            connection.close()
-        except BaseException as cleanup_error:
-            # Preserve the configuration/open failure as the primary error;
-            # connection cleanup is diagnostic only.
-            exc.add_note(
-                "SQLite immutable connection cleanup failed: "
-                f"{type(cleanup_error).__name__}: {cleanup_error}"
-            )
+        if connection is not None:
+            try:
+                connection.close()
+            except BaseException as cleanup_error:
+                # Preserve the configuration/open failure as the primary error;
+                # connection cleanup is diagnostic only.
+                exc.add_note(
+                    "SQLite immutable connection cleanup failed: "
+                    f"{type(cleanup_error).__name__}: {cleanup_error}"
+                )
+        if guard is not None:
+            try:
+                guard.close()
+            except BaseException as cleanup_error:
+                exc.add_note(
+                    "SQLite writer lock guard cleanup failed: "
+                    f"{type(cleanup_error).__name__}: {cleanup_error}"
+                )
         raise
 
 
@@ -1054,7 +1496,7 @@ class SQLiteReadSession:
                 if self.budget.monotonic_clock() >= self._prepare_deadline:
                     raise SQLiteSnapshotBudgetExceeded("prepare_time")
                 if self.mode is SQLiteReadMode.IMMUTABLE_STRICT:
-                    require_inactive_sqlite_sidecars(source_fence)
+                    require_inactive_sqlite_sidecars(source_fence, path=self.path)
                     self._connection = open_immutable_sqlite_connection(
                         self.path,
                         timeout_seconds=min(
@@ -1062,6 +1504,16 @@ class SQLiteReadSession:
                             self.budget.prepare_timeout_seconds,
                         ),
                     )
+                    opened_fence = getattr(self._connection, "_source_fence", source_fence)
+                    if opened_fence != source_fence:
+                        connection = self._connection
+                        self._connection = None
+                        if connection is not None:
+                            connection.close()
+                        raise ImmutableSQLiteUnavailable(
+                            "SQLite owner changed before immutable read"
+                        )
+                    self._source_fence = opened_fence
                     if self.budget.monotonic_clock() >= self._prepare_deadline:
                         connection = self._connection
                         self._connection = None
@@ -1387,6 +1839,13 @@ __all__ = [
     "DEFAULT_SQLITE_SNAPSHOT_BLOCK_BYTES",
     "DEFAULT_SQLITE_SNAPSHOT_MAX_TEMPORARY_BYTES",
     "DEFAULT_SQLITE_SNAPSHOT_PREPARE_TIMEOUT_SECONDS",
+    "SQLITE_ROLLBACK_PENDING_LOCK_OFFSET",
+    "SQLITE_ROLLBACK_RESERVED_LOCK_OFFSET",
+    "SQLITE_WAL_CHECKPOINT_LOCK_OFFSET",
+    "SQLITE_WAL_EMPTY_BYTES",
+    "SQLITE_WAL_RECOVERY_LOCK_OFFSET",
+    "SQLITE_WAL_SHM_RESIDUAL_BYTES",
+    "SQLITE_WAL_WRITE_LOCK_OFFSET",
     "ImmutableSQLiteUnavailable",
     "SQLiteFileIdentity",
     "SQLiteImmutableFence",
