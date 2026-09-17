@@ -1174,19 +1174,18 @@ def _protected_owner_tables(
     for owner in owners:
         database = state / STATE_STORE_REGISTRY.by_owner(owner).database_name
         # Owners with a registered durable-evidence contract are always
-        # inspected.  Ordinary format caches with a visible sidecar are left
-        # to the effect guard; probing a caller's live handle here could race
+        # inspected.  Ordinary format caches with a same-process handle are
+        # left to the effect guard; probing that live handle here could race
         # its own sidecar cleanup and make a read-only preview mutate its
-        # fence.  A sidecar-free cache can still be checked for an unknown
+        # fence.  Other cache owners, including closed sidecar layouts, use
+        # the central detached-read strategy and can still expose an unknown
         # non-empty schema extension.
         if owner not in _NON_REGENERABLE_TABLES:
             try:
                 uninspected_fence = capture_sqlite_read_fence(database)
             except FileNotFoundError:
                 continue
-            if uninspected_fence.sidecars or _sqlite_owner_process_is_open(
-                database, uninspected_fence
-            ):
+            if _sqlite_owner_process_is_open(database, uninspected_fence):
                 continue
         if not database.is_file():
             continue
