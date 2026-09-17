@@ -1,16 +1,18 @@
 # Handoff operativo vigente — NeoCortex
 
 **Ronda actual:** NEO-HYGIENE-C01-C12 — continuidad de higiene operativa integral.
-**Actualización:** 2026-09-17T00:30:00-06:00 (America/Mexico_City).
+**Actualización:** 2026-09-17T02:30:00-06:00 (America/Mexico_City).
 **Fuente viva:** `HEAD == main == origin/main` y árbol limpio se comprueban antes de cerrar.
 
-**Estado vivo:** `HEAD=main=origin/main=f24b7aaa510dc280100f58633f3b1f1f1909ddf1`, versión fuente `0.14.1`. La candidata aislada final se debe reconstruir desde este SHA; no se promovió `current` personal ni se seleccionó corpus/HOME/SQLite productiva.
+**Estado vivo:** `HEAD=main=origin/main=0175f6c00f6a585d50225f4ad5b9a0b6cee0965b`, versión fuente `0.14.1`. El artefacto candidato final se reconstruirá desde el SHA final de este handoff; no se promueve `current` personal ni se selecciona corpus/HOME/SQLite productiva.
 
-**Goal:** C01–C12 sigue ABIERTO. C01, C02, C03, C04, C05, C06, C07, C10 y C11 tienen regresiones/focos instalados verificados en esta ronda. C08 tiene planner terminal read-only y 51 regresiones, pero falta demostrar el balance end-to-end de abandono/retención aplicado por el owner. C09 tiene recopilación base instalada sin PIL/PySide6 (`7630/7707 collected`, 77 deselected, 0 collection errors) y 8/9 casos mínimos ejecutados, pero no se presenta como suite base completa. C12 tiene candidata/pip-check/smoke e identidad instalada, pero la aceptación integral y la evidencia final deben completarse antes del cierre.
+**Goal:** C01–C12 sigue ABIERTO. C01–C07 y C10–C11 tienen implementación y regresiones independientes verificadas; C08 tiene planner terminal bounded/read-only y pruebas, pero su balance end-to-end requiere el owner físico autorizado; C09 tiene recopilación base instalada sin PIL/PySide6 y casos mínimos ejecutados, pero la suite base completa conserva limitaciones de entorno; C12 requiere cerrar la aceptación integral sobre la candidata reconstruida y mantener separada cualquier promoción no autorizada.
 
-**Matriz C01–C12:** C01 claims completos y bytes físicos sin corte; C02 política del registry/scratch bajo lock; C03 corrupción/ausencia de consumidores fail-closed; C04 intención durable y `recover_retirements()` sin repetir unlink; C05 sello de miembros/digest y publicación no-replace; C06 límites efectivos, batch guard y lecturas lineales; C07 `AgentActivity` pública instalada + CLI + proceso externo/reanudación; C08 `TerminalRetentionPolicy/Plan` bounded read-only pendiente de efecto owner; C09 base import-light pendiente de ejecución integral; C10 texto 20, video 1 GiB y `--all` degradación documentada; C11 docs/Operations/README/help reales; C12 build/install/remote/source/artefacto final aún en aceptación.
+**Matriz C01–C12:** C01 claims canónicas completas y bytes físicos sin corte; C02 política del registry/scratch bajo lock; C03 corrupción/ausencia de consumidores fail-closed; C04 intención durable y `recover_retirements()` sin repetir unlink; C05 sello de miembros/digest y publicación no-replace; C06 límites efectivos, batch guard y lecturas lineales 20/40/80/160; C07 `AgentActivity` pública instalada + CLI + proceso externo/reanudación; C08 `TerminalRetentionPolicy/Plan` y cuotas explícitas, pendiente de efecto owner; C09 base import-light y skips opcionales; C10 texto 20, video 1 GiB y `--all` degradación documentada; C11 docs/Operations/README/help reales; C12 build/install/pip-check/origen/help/smoke y aceptación final por cerrar.
 
-**Evidencia de esta ronda:** la reauditoría adjunta bajo `/home/winterboss/Descargas/` se contrastó con fixtures locales. El paquete compacto nuevo se conservará fuera del árbol productivo bajo `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-17-hygiene-c01-c12/`. No se declaró C01∧…∧C12.
+**Validación de continuidad:** focales runtime/hygiene/CLI/productores/actividad/retención/docs pasan; los cuatro workflows headless instalados pasan; la colección base instalada queda sin errores con `7571/7632` casos y `61` deseleccionados. La corrida base extensa conserva fallos/errors no relacionados de caracterizaciones históricas, semgrep y sdist; se registran aparte y no se ocultan. Mypy mantiene errores preexistentes de dependencias opcionales.
+
+**Evidencia:** reauditoría adjunta bajo `/home/winterboss/Descargas/` contrastada; scripts del ZIP no estaban disponibles en las ubicaciones acotadas. El paquete compacto de esta ronda se conservará fuera del árbol productivo bajo `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-17-hygiene-c01-c12/`. No se declara C01∧…∧C12.
 
 ## Evidencia de entregas anteriores (histórica)
 
