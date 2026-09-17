@@ -114,6 +114,11 @@ SQLite del mismo backup, si existen. Esta excepción no cubre otras SQLite: una
 SQLite desconocida o una SQLite de `recovery`, `restore` o `staging` (con sus
 sidecars) mantiene la abstención fail-closed.
 
+En `all`, las filas `recovery_required` del Framework se conservan dentro del
+owner staged y se reportan como evidencia preservada; no se reintentan ni se
+descartan. Sólo runs/fases activas o acciones `started`/`applying` mantienen el
+bloqueo del apply.
+
 Antes de cualquier aplicación:
 
 ```bash

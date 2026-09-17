@@ -378,6 +378,10 @@ class StateResetPlan:
     # verified backup instead of being unlinked wholesale.
     protected_tables: tuple[tuple[str, tuple[str, ...]], ...] = ()
     staged_owners: tuple[str, ...] = ()
+    # A full reset stages Framework/Catalog owners and keeps uncertain
+    # file-action evidence rather than discarding it.  These IDs are reported
+    # separately from started/applying actions, which still block every scope.
+    preserved_recovery_action_ids: tuple[int, ...] = ()
 
     @property
     def entries(self) -> tuple[StateResetEntry, ...]:
@@ -426,6 +430,7 @@ class StateResetPlan:
                 owner: list(tables) for owner, tables in self.protected_tables
             },
             "staged_owners": list(self.staged_owners),
+            "preserved_recovery_action_ids": list(self.preserved_recovery_action_ids),
             "blocked_by": [
                 *[str(path) for path in self.lock_conflicts],
                 *[f"run:{value}" for value in self.active_run_ids],
@@ -959,8 +964,14 @@ def _framework_lifecycle(
     path: Path,
     *,
     include_recovery_actions: bool,
+    preserve_recovery_actions: bool = False,
     keep_run_ids: Sequence[int] = (),
-) -> tuple[FrameworkRunResetPlan | None, tuple[int, ...], tuple[int, ...]]:
+) -> tuple[
+    FrameworkRunResetPlan | None,
+    tuple[int, ...],
+    tuple[int, ...],
+    tuple[int, ...],
+]:
     """Read the canonical Framework reset plan from an immutable snapshot.
 
     ``framework_run_reset`` owns the run-history allow-list, recovery
@@ -969,7 +980,7 @@ def _framework_lifecycle(
     """
 
     if not path.is_file():
-        return None, (), tuple(sorted(set(keep_run_ids)))
+        return None, (), (), tuple(sorted(set(keep_run_ids)))
     try:
         with sqlite_read_session(
             path,
@@ -991,23 +1002,34 @@ def _framework_lifecycle(
                 keep_run_ids=effective_keep,
             )
             # A started/applying action is always an active effect frontier.
-            # Broader scopes also block on recovery_required because removing
-            # all owners would otherwise discard the evidence needed to
-            # reconcile that uncertain effect.  The runs-only scope delegates
-            # recovery retention to the Framework run-reset planner.
+            # ``scope=all`` stages Framework and preserves recovery_required
+            # rows, so those uncertain records are surfaced separately rather
+            # than blocking removal of the other regenerable owners.  The
+            # narrower runs-and-caches scope retains its conservative block.
             action_statuses = "'started','applying'"
-            if include_recovery_actions:
-                action_statuses += ",'recovery_required'"
             rows = connection.execute(
                 "SELECT action_id FROM file_actions "
                 f"WHERE status IN ({action_statuses}) ORDER BY action_id"
             ).fetchall()
             active_actions = tuple(int(row[0]) for row in rows)
+            preserved_recovery: tuple[int, ...] = ()
+            if preserve_recovery_actions:
+                rows = connection.execute(
+                    "SELECT action_id FROM file_actions "
+                    "WHERE status='recovery_required' ORDER BY action_id"
+                ).fetchall()
+                preserved_recovery = tuple(int(row[0]) for row in rows)
+            elif include_recovery_actions:
+                rows = connection.execute(
+                    "SELECT action_id FROM file_actions "
+                    "WHERE status='recovery_required' ORDER BY action_id"
+                ).fetchall()
+                active_actions += tuple(int(row[0]) for row in rows)
     except FrameworkRunResetError as exc:
         raise StateResetError(f"framework run reset plan is unavailable: {exc}") from exc
     except (OSError, sqlite3.Error, StateResetError) as exc:
         raise StateResetError(f"framework lifecycle cannot be inspected safely: {path}") from exc
-    return framework_plan, active_actions, orphaned_keep
+    return framework_plan, active_actions, preserved_recovery, orphaned_keep
 
 
 def _quote_identifier(value: str) -> str:
@@ -1207,6 +1229,7 @@ def _plan_digest(
     active_actions: tuple[int, ...],
     protected_tables: tuple[tuple[str, tuple[str, ...]], ...],
     staged_owners: tuple[str, ...],
+    preserved_recovery_action_ids: tuple[int, ...],
 ) -> str:
     payload = {
         "schema": STATE_RESET_SCHEMA,
@@ -1230,6 +1253,7 @@ def _plan_digest(
             owner: list(tables) for owner, tables in protected_tables
         },
         "staged_owners": list(staged_owners),
+        "preserved_recovery_action_ids": list(preserved_recovery_action_ids),
     }
     encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -1255,9 +1279,15 @@ def plan_state_reset(
     cross_owner_run_ids = (
         _cross_owner_run_references(selected) if scope == "runs" else ()
     )
-    framework_plan, active_actions, cross_owner_orphans = _framework_lifecycle(
+    (
+        framework_plan,
+        active_actions,
+        preserved_recovery_actions,
+        cross_owner_orphans,
+    ) = _framework_lifecycle(
         framework,
-        include_recovery_actions=scope != "runs",
+        include_recovery_actions=scope == "runs-and-caches",
+        preserve_recovery_actions=scope == "all",
         keep_run_ids=cross_owner_run_ids,
     )
     run_tables = () if framework_plan is None else framework_plan.run_tables
@@ -1350,6 +1380,7 @@ def plan_state_reset(
         active_actions,
         protected_tables,
         staged_owners,
+        preserved_recovery_actions,
     )
     return StateResetPlan(
         state_directory=selected,
@@ -1371,6 +1402,7 @@ def plan_state_reset(
         plan_digest=digest,
         protected_tables=protected_tables,
         staged_owners=staged_owners,
+        preserved_recovery_action_ids=preserved_recovery_actions,
     )
 
 

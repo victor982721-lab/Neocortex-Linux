@@ -197,6 +197,11 @@ locks de sólo lectura y el fence demuestran quiescencia; un owner activo o
 ambiguo sigue la ruta de snapshot acotado o se bloquea si rebasa el presupuesto
 canónico.
 
+En `all`, un `recovery_required` del Framework se conserva dentro del owner
+staged y se informa como `preserved_recovery_action_ids`; no autoriza reintentar
+ni descartar la evidencia. Runs, fases y acciones `started`/`applying` continúan
+siendo una frontera activa que bloquea la aplicación.
+
 `all` usa un inventario explícito de artefactos no-SQLite gestionados (por ejemplo
 manifests, checkpoints o journals administrados) y conserva archivos desconocidos
 o externos salvo que una política futura los registre expresamente. Los backups

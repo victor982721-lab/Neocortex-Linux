@@ -25,10 +25,16 @@ from neocortex.persistence.sqlite_immutable import (
     capture_sqlite_read_fence,
     preferred_sqlite_read_mode,
 )
-from neocortex.persistence.state_reset import plan_state_reset
+from neocortex.persistence.state_reset import (
+    STATE_RESET_CONFIRMATION,
+    StateResetResult,
+    execute_state_reset,
+    plan_state_reset,
+)
 from neocortex.semantic.semantic_schema import initialize_semantic_state
 from neocortex.workflow.retention import planner as retention_module
 from neocortex.workflow.retention.planner import RetentionPolicy, plan_retention
+from tests.internal_paths_test_support import begin_signed_normal_run
 
 
 _PLAN_DIGEST = re.compile(r"^[0-9a-f]{64}$")
@@ -200,6 +206,51 @@ def test_retention_large_quiescent_owner_without_sidecars_uses_strict_read(
     assert plan.snapshot_metrics["prepared_views"] == 1
     assert plan.snapshot_metrics["peak_temporary_bytes"] == 0
     assert copies == []
+
+
+def test_scope_all_preserves_recovery_evidence_while_resetting_regenerable_state(
+    tmp_path: Path,
+) -> None:
+    """A preserved uncertain file action is not discarded or a global block."""
+
+    state = tmp_path / "state"
+    state.mkdir()
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    source = corpus / "source.fixture"
+    source.write_text("fixture", encoding="utf-8")
+    database = state / "framework.sqlite3"
+    with FrameworkState(database) as framework:
+        run_id = begin_signed_normal_run(framework, corpus)
+        framework.fail_initial_run(run_id)
+        action_id = framework.begin_file_action(
+            run_id,
+            "fixture",
+            str(source),
+            str(corpus / "target.fixture"),
+            None,
+            "fixture",
+            True,
+        )
+        framework.require_file_action_recovery((action_id,), "fixture uncertain")
+
+    plan = plan_state_reset(state, scope="all")
+    assert plan.active_action_ids == ()
+    assert plan.preserved_recovery_action_ids == (action_id,)
+    result = execute_state_reset(
+        state,
+        scope="all",
+        apply=True,
+        plan_digest=plan.plan_digest,
+        confirmation=STATE_RESET_CONFIRMATION,
+    )
+    assert isinstance(result, StateResetResult)
+    assert result.status == "applied"
+    with FrameworkState(database, existing_only=True) as framework:
+        row = framework._connection.execute(
+            "SELECT status FROM file_actions WHERE action_id=?", (action_id,)
+        ).fetchone()
+    assert row is not None and row[0] == "recovery_required"
 
 
 def test_retention_large_quiescent_residual_uses_zero_copy_and_preserves_budget(
