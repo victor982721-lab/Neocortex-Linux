@@ -990,6 +990,11 @@ def sqlite_owner_effect_guard(path: str | Path) -> Iterator[SQLiteImmutableFence
 
     selected = Path(path)
     fence = capture_sqlite_read_fence(selected)
+    sidecar_names = set(dict(fence.sidecars))
+    if sidecar_names not in (set(), {"-journal"}, {"-wal", "-shm"}):
+        raise ImmutableSQLiteUnavailable(
+            "SQLite owner has an incomplete sidecar set; effect is not safe"
+        )
     guard = _acquire_sqlite_writer_lock_guard(
         selected,
         fence,

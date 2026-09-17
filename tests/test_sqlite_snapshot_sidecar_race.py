@@ -177,10 +177,9 @@ def test_force_snapshot_detaches_after_copy_while_default_strict_fences_source(
         assert tuple(connection.execute("SELECT value FROM facts").fetchone()) == ("after",)
 
     strict = sqlite_immutable.open_sidecar_safe_sqlite_connection(database)
-    with sqlite3.connect(database) as writer:
-        writer.execute("UPDATE facts SET value='strict-drift'")
-    with pytest.raises(
-        sqlite_immutable.ImmutableSQLiteUnavailable,
-        match="changed during immutable read",
-    ):
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            with sqlite3.connect(database, timeout=0.1) as writer:
+                writer.execute("UPDATE facts SET value='strict-drift'")
+    finally:
         strict.close()

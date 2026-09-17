@@ -67,7 +67,9 @@ from neocortex.persistence.sqlite_backup import (
 from neocortex.persistence.sqlite_integrity import SQLiteIntegrityPolicy
 from neocortex.persistence.sqlite_paths import existing_sqlite_uri
 from neocortex.persistence.sqlite_immutable import (
+    capture_sqlite_read_fence,
     preferred_sqlite_read_mode,
+    _sqlite_owner_process_is_open,
     sqlite_owner_effect_guard,
     sqlite_read_session,
 )
@@ -327,6 +329,28 @@ _KNOWN_OWNER_TABLES: dict[str, frozenset[str]] = {
         }
     ),
 }
+_FTS_SHADOW_SUFFIXES = ("_config", "_content", "_data", "_docsize", "_idx")
+_KNOWN_FTS_ROOTS_BY_OWNER: dict[str, frozenset[str]] = {
+    "pdf": frozenset({"page_fts"}),
+    "docx": frozenset({"document_fts"}),
+    "office": frozenset({"document_fts"}),
+    "audio": frozenset({"transcript_fts"}),
+    "video": frozenset({"frame_fts"}),
+    "archive": frozenset({"document_fts"}),
+    "text": frozenset({"document_fts"}),
+    "code": frozenset({"code_fts"}),
+}
+
+
+def _known_fts_tables(owner: str) -> frozenset[str]:
+    """Return exact FTS roots and SQLite shadow tables for one owner."""
+
+    roots = _KNOWN_FTS_ROOTS_BY_OWNER.get(owner, frozenset())
+    return frozenset(
+        table
+        for root in roots
+        for table in (root, *(root + suffix for suffix in _FTS_SHADOW_SUFFIXES))
+    )
 _NON_REGENERABLE_NAME_MARKERS = (
     "policy",
     "policie",
@@ -1102,6 +1126,24 @@ def _catalog_evidence_anomalies(
                 )
                 break
             current = value["base"]
+    # A cancelled/failed generation is still part of the owner ancestry.  A
+    # cycle or missing parent there must not be silently retired as a cache,
+    # because a later publication could otherwise inherit corrupted lineage.
+    for generation_id in sorted(by_generation):
+        visited = set()
+        current = generation_id
+        while current is not None:
+            if current in visited:
+                anomalies.append(f"generation ancestry cycle at {current}")
+                break
+            visited.add(current)
+            value = by_generation.get(current)
+            if value is None:
+                anomalies.append(
+                    f"generation {generation_id} references missing base {current}"
+                )
+                break
+            current = value["base"]
     if "catalog_publications" in table_names:
         for source_kind, generation_id in connection.execute(
             "SELECT source_kind,generation_id FROM catalog_publications"
@@ -1131,6 +1173,21 @@ def _protected_owner_tables(
     observed: list[tuple[str, tuple[str, ...]]] = []
     for owner in owners:
         database = state / STATE_STORE_REGISTRY.by_owner(owner).database_name
+        # Owners with a registered durable-evidence contract are always
+        # inspected.  Ordinary format caches with a visible sidecar are left
+        # to the effect guard; probing a caller's live handle here could race
+        # its own sidecar cleanup and make a read-only preview mutate its
+        # fence.  A sidecar-free cache can still be checked for an unknown
+        # non-empty schema extension.
+        if owner not in _NON_REGENERABLE_TABLES:
+            try:
+                uninspected_fence = capture_sqlite_read_fence(database)
+            except FileNotFoundError:
+                continue
+            if uninspected_fence.sidecars or _sqlite_owner_process_is_open(
+                database, uninspected_fence
+            ):
+                continue
         if not database.is_file():
             continue
         protected: list[str] = []
@@ -1151,6 +1208,7 @@ def _protected_owner_tables(
                 table_names = {table for table, _kind in tables}
                 explicit = _NON_REGENERABLE_TABLES.get(owner, frozenset())
                 known = _KNOWN_OWNER_TABLES.get(owner, frozenset())
+                known_fts = _known_fts_tables(owner)
                 for table, kind in tables:
                     if kind != "table":
                         continue
@@ -1161,7 +1219,7 @@ def _protected_owner_tables(
                     folded = table.casefold()
                     if (
                         table in explicit
-                        or table not in known
+                        or (table not in known and table not in known_fts)
                         or any(marker in folded for marker in _NON_REGENERABLE_NAME_MARKERS)
                     ):
                         protected.append(table)
@@ -1670,6 +1728,7 @@ def _apply_framework_runs_staged(
     plan: StateResetPlan,
     *,
     backup: DatabaseBackupResult | None,
+    promoted_guards: ExitStack,
 ) -> tuple[FrameworkRunResetResult, tuple[str, ...]]:
     """Transform a verified Framework backup and atomically promote it.
 
@@ -1773,6 +1832,10 @@ def _apply_framework_runs_staged(
             for item in target.entries
             if item.kind == "file" and item.relative_path != "framework.sqlite3"
         }
+        # Lock the staged inode before the atomic rename.  The descriptor-bound
+        # OFD guard follows that inode across ``os.replace`` and closes the
+        # promotion gap where a writer could otherwise open the new pathname.
+        promoted_guards.enter_context(sqlite_owner_effect_guard(final_database))
         os.replace(final_database, live_database)
         # The SQLite online backup is allowed to materialize an empty WAL/SHM
         # pair even when the preview saw no sidecar.  Remove every canonical
@@ -1946,6 +2009,7 @@ def _apply_inventory_owner_staged(
     plan: StateResetPlan,
     *,
     backup: DatabaseBackupResult | None,
+    promoted_guards: ExitStack,
 ) -> tuple[str, ...]:
     """Reset regenerable Inventory payload while retaining plan evidence."""
 
@@ -2048,6 +2112,7 @@ def _apply_inventory_owner_staged(
             for item in target.entries
             if item.kind == "file" and item.relative_path != "dedup.sqlite3"
         }
+        promoted_guards.enter_context(sqlite_owner_effect_guard(final_database))
         os.replace(final_database, live_database)
         for suffix in _ALL_DATABASE_SIDECAR_SUFFIXES:
             sidecar = Path(f"{live_database}{suffix}")
@@ -2085,6 +2150,7 @@ def _apply_catalog_owner_staged(
     plan: StateResetPlan,
     *,
     backup: DatabaseBackupResult | None,
+    promoted_guards: ExitStack,
 ) -> None:
     """Reset catalog projections while retaining correction/recovery rows.
 
@@ -2248,6 +2314,7 @@ def _apply_catalog_owner_staged(
             for item in target.entries
             if item.kind == "file" and item.relative_path != "document_catalog.sqlite3"
         }
+        promoted_guards.enter_context(sqlite_owner_effect_guard(final_database))
         os.replace(final_database, live_database)
         for suffix in _ALL_DATABASE_SIDECAR_SUFFIXES:
             sidecar = Path(f"{live_database}{suffix}")
@@ -2628,10 +2695,11 @@ def _manifest_payload(
     return payload
 
 
-def _apply_reset_locked(
+def _apply_reset_locked_impl(
     plan: StateResetPlan,
     *,
     backup_directory: Path | None,
+    promoted_guards: ExitStack,
 ) -> StateResetResult:
     current = plan_state_reset(
         plan.state_directory,
@@ -2774,6 +2842,7 @@ def _apply_reset_locked(
             framework_result, cleared_tables = _apply_framework_runs_staged(
                 plan,
                 backup=database_backup,
+                promoted_guards=promoted_guards,
             )
         else:
             staged_owner_entries = {
@@ -2789,17 +2858,20 @@ def _apply_reset_locked(
                 framework_result, cleared_tables = _apply_framework_runs_staged(
                     plan,
                     backup=database_backup,
+                    promoted_guards=promoted_guards,
                 )
             if "inventory" in plan.staged_owners:
                 inventory_tables = _apply_inventory_owner_staged(
                     plan,
                     backup=database_backup,
+                    promoted_guards=promoted_guards,
                 )
                 cleared_tables += inventory_tables
             if "catalog" in plan.staged_owners:
                 _apply_catalog_owner_staged(
                     plan,
                     backup=database_backup,
+                    promoted_guards=promoted_guards,
                 )
             removable_entries = tuple(
                 entry for entry in plan.entries if entry not in staged_owner_entries
@@ -2897,6 +2969,21 @@ def _apply_reset_locked(
         if isinstance(exc, StateResetError):
             raise
         raise StateResetError("state reset failed and was rolled back") from exc
+
+
+def _apply_reset_locked(
+    plan: StateResetPlan,
+    *,
+    backup_directory: Path | None,
+) -> StateResetResult:
+    """Apply one plan while retaining guards for every promoted owner."""
+
+    with ExitStack() as promoted_guards:
+        return _apply_reset_locked_impl(
+            plan,
+            backup_directory=backup_directory,
+            promoted_guards=promoted_guards,
+        )
 
 
 def execute_state_reset(

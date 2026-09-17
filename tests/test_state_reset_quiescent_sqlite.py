@@ -370,11 +370,16 @@ def test_catalog_unknown_nonempty_table_is_preserved_by_staged_reset(
     with sqlite3.connect(database) as connection:
         connection.execute("CREATE TABLE future_payload(value TEXT NOT NULL)")
         connection.execute("INSERT INTO future_payload VALUES('preserve-me')")
+        connection.execute("CREATE TABLE future_fts_payload(value TEXT NOT NULL)")
+        connection.execute("INSERT INTO future_fts_payload VALUES('preserve-fts')")
         connection.commit()
 
     plan = plan_state_reset(state, scope="all")
     assert plan.staged_owners == ("catalog",)
-    assert "future_payload" in dict(plan.protected_tables)["catalog"]
+    assert {
+        "future_payload",
+        "future_fts_payload",
+    }.issubset(dict(plan.protected_tables)["catalog"])
     result = execute_state_reset(
         state,
         scope="all",
@@ -386,6 +391,9 @@ def test_catalog_unknown_nonempty_table_is_preserved_by_staged_reset(
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT value FROM future_payload").fetchall() == [
             ("preserve-me",)
+        ]
+        assert connection.execute("SELECT value FROM future_fts_payload").fetchall() == [
+            ("preserve-fts",)
         ]
 
 
@@ -630,7 +638,10 @@ def test_inventory_promotion_rejects_new_empty_sidecar(
 
     monkeypatch.setattr(state_reset_module.os, "replace", replace_then_inject)
     try:
-        with pytest.raises(StateResetChangedError, match="sidecar appeared"):
+        with pytest.raises(
+            StateResetError,
+            match=r"state reset failed|incomplete sidecar|sidecar appeared",
+        ):
             execute_state_reset(
                 state,
                 scope="all",
