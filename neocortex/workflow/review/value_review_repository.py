@@ -25,9 +25,9 @@ from neocortex.persistence.sqlite_immutable import (
     ImmutableSQLiteUnavailable,
     SQLiteImmutableFence,
     SQLiteReadSession,
+    _require_inactive_sqlite_layout,
     capture_sqlite_read_fence,
     preferred_sqlite_read_mode,
-    require_inactive_sqlite_sidecars,
 )
 
 from neocortex.documents import document_catalog_schema
@@ -656,7 +656,10 @@ def _readonly_connection(path: Path) -> Iterator[sqlite3.Connection]:
     # The path-aware preferred mode may still select a bounded detached copy
     # for a live writer using the exact residual layout.
     try:
-        require_inactive_sqlite_sidecars(before)
+        # Validate only the filesystem shape here.  ``preferred_sqlite_read_mode``
+        # performs the path-aware lock probe and can choose a bounded detached
+        # snapshot when a same-process owner still has the residual pair open.
+        _require_inactive_sqlite_layout(before)
     except ImmutableSQLiteUnavailable as exc:
         raise _StateContractError(str(exc)) from exc
     mode = preferred_sqlite_read_mode(path)

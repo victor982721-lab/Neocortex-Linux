@@ -1492,13 +1492,7 @@ def _apply_framework_runs_staged(
             staged_connection.commit()
         staged_connection.close()
         staged_connection = None
-        backup_sqlite_online(
-            stage_database,
-            final_database,
-            policy=SQLiteBackupPolicy(
-                integrity=SQLiteIntegrityPolicy(check_mode="full")
-            ),
-        )
+        _compact_staged_sqlite(stage_database, final_database, mode=entry.mode)
         os.chmod(final_database, entry.mode)
 
         live_database = plan.state_directory / "framework.sqlite3"
@@ -1508,6 +1502,7 @@ def _apply_framework_runs_staged(
             _include_lock_conflicts=False,
         )
         _assert_plan_current(plan, current)
+        _assert_owner_entries_current(plan, "framework")
         # Sidecars belong to the old owner and must not be left attached to the
         # newly published main file.  Their exact source snapshots are already
         # present in the reset backup/raw rollback set.
@@ -1528,7 +1523,7 @@ def _apply_framework_runs_staged(
                 metadata = sidecar.lstat()
                 if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
                     raise StateResetChangedError(f"Framework sidecar is not regular: {sidecar}")
-                if sidecar not in old_sidecars and metadata.st_size > 0:
+                if sidecar not in old_sidecars:
                     raise StateResetChangedError(
                         f"Framework sidecar appeared during reset: {sidecar}"
                     )
@@ -1558,14 +1553,262 @@ def _apply_framework_runs_staged(
 
 
 _CATALOG_REGENERABLE_TABLE_ORDER = (
-    "catalog_generation_manifests",
     "catalog_generation_documents",
+    "catalog_generation_manifests",
     "catalog_publications",
     "catalog_generations",
     "catalog_runs",
     "documents",
-    "catalog_generation_manifests",
 )
+
+
+def _compact_staged_sqlite(source: Path, destination: Path, *, mode: int) -> None:
+    """Compact a transformed staging owner and verify its final bytes.
+
+    ``backup_sqlite_online`` intentionally preserves page allocation and is
+    therefore unsuitable as the last step of a reset: deleting rows from a
+    multi-gigabyte owner would leave the old file size in place.  ``VACUUM
+    INTO`` runs only against the disposable staging copy, emits a standalone
+    owner without WAL/SHM sidecars, and is followed by full integrity checks.
+    The live owner is not opened or changed by this helper.
+    """
+
+    connection: sqlite3.Connection | None = None
+    try:
+        if os.path.lexists(destination):
+            raise StateResetError(f"staged SQLite destination already exists: {destination}")
+        connection = sqlite3.connect(
+            existing_sqlite_uri(source),
+            uri=True,
+            timeout=60.0,
+        )
+        connection.execute("PRAGMA busy_timeout=60000")
+        connection.execute("PRAGMA foreign_keys=ON")
+        if connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+            raise StateResetError("staged SQLite compaction could not enable foreign_keys")
+        connection.execute("PRAGMA journal_mode=DELETE")
+        connection.execute("VACUUM INTO ?", (str(destination),))
+        connection.close()
+        connection = None
+        metadata = destination.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise StateResetError("staged SQLite compaction produced a non-regular owner")
+        os.chmod(destination, mode)
+        verification = sqlite3.connect(
+            existing_sqlite_uri(destination),
+            uri=True,
+            timeout=60.0,
+        )
+        try:
+            verification.execute("PRAGMA foreign_keys=ON")
+            if verification.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+                raise StateResetError("compacted SQLite owner foreign_keys is unavailable")
+            if verification.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                raise StateResetError("compacted SQLite owner failed foreign-key verification")
+            integrity = tuple(
+                str(row[0]) for row in verification.execute("PRAGMA integrity_check")
+            )
+            if integrity != ("ok",):
+                raise StateResetError("compacted SQLite owner failed integrity verification")
+        finally:
+            verification.close()
+        descriptor = os.open(destination.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    except StateResetError:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise StateResetError("staged SQLite compaction could not be verified") from exc
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+_INVENTORY_STAGED_TABLE_ORDER = (
+    "planned_duplicate_members",
+    "planned_duplicate_groups",
+    "duplicate_plan_summaries",
+    "duplicate_plan_heads",
+    "fingerprint_content_evidence",
+    "inventory_scan_successors",
+    "inventory_generation_heads",
+    "inventory_checkpoints",
+    "files",
+    "fingerprints",
+    "scans",
+)
+
+
+def _assert_inventory_protected_references(
+    connection: sqlite3.Connection,
+    table_names: set[str],
+) -> None:
+    """Reject durable Inventory evidence whose parent rows are missing.
+
+    Older Inventory schemas deliberately omit foreign-key declarations on the
+    duplicate-plan tables.  A broad reset must not preserve an apparently
+    healthy summary/member row that is already orphaned, because doing so
+    would turn corruption into durable evidence while deleting its possible
+    parents.
+    """
+
+    references = (
+        ("duplicate_plan_summaries", "scan_id", "scans", "scan_id"),
+        ("planned_duplicate_groups", "scan_id", "scans", "scan_id"),
+        ("planned_duplicate_members", "group_id", "planned_duplicate_groups", "group_id"),
+    )
+    for child, child_column, parent, parent_column in references:
+        if child not in table_names or parent not in table_names:
+            continue
+        orphan = connection.execute(
+            f"SELECT 1 FROM {_quote_identifier(child)} AS child "
+            f"LEFT JOIN {_quote_identifier(parent)} AS parent "
+            f"ON parent.{_quote_identifier(parent_column)} = "
+            f"child.{_quote_identifier(child_column)} "
+            f"WHERE parent.{_quote_identifier(parent_column)} IS NULL LIMIT 1"
+        ).fetchone()
+        if orphan is not None:
+            raise StateResetError(
+                f"inventory protected evidence has an orphan reference: {child}.{child_column}"
+            )
+
+
+def _apply_inventory_owner_staged(
+    plan: StateResetPlan,
+    *,
+    backup: DatabaseBackupResult | None,
+) -> tuple[str, ...]:
+    """Reset regenerable Inventory payload while retaining plan evidence."""
+
+    entry = next(
+        (
+            item
+            for target in plan.targets
+            if target.owner == "inventory"
+            for item in target.entries
+            if item.relative_path == "dedup.sqlite3"
+        ),
+        None,
+    )
+    if entry is None:
+        raise StateResetBackupError("inventory staged reset omitted dedup.sqlite3")
+    source = (
+        plan.state_directory / "dedup.sqlite3"
+        if backup is None
+        else backup.backup_directory / "dedup.sqlite3"
+    )
+    if not source.is_file():
+        raise StateResetBackupError("inventory staged reset source is missing")
+    stage_directory = Path(
+        tempfile.mkdtemp(prefix=".neocortex-state-reset-inventory-", dir=plan.state_directory)
+    )
+    stage_database = stage_directory / "dedup.sqlite3"
+    final_database = stage_directory / "dedup-final.sqlite3"
+    connection: sqlite3.Connection | None = None
+    cleared: list[str] = []
+    try:
+        if backup is None:
+            backup_sqlite_online(
+                source,
+                stage_database,
+                policy=SQLiteBackupPolicy(
+                    integrity=SQLiteIntegrityPolicy(check_mode="full")
+                ),
+            )
+        else:
+            shutil.copyfile(source, stage_database)
+        os.chmod(stage_database, entry.mode)
+        connection = sqlite3.connect(existing_sqlite_uri(stage_database), uri=True, timeout=60.0)
+        connection.execute("PRAGMA busy_timeout=60000")
+        connection.execute("PRAGMA foreign_keys=ON")
+        table_names = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            )
+        }
+        protected = set(dict(plan.protected_tables).get("inventory", ()))
+        _assert_inventory_protected_references(connection, table_names)
+        # Plan summaries/groups are durable evidence and their scan parents
+        # must remain for foreign-key integrity.  Other generation/checkpoint
+        # rows are regenerable and can be discarded in this broad reset.
+        preserved_scan_ids: set[int] = set()
+        for table in ("duplicate_plan_summaries", "planned_duplicate_groups"):
+            if table not in table_names:
+                continue
+            column = "scan_id"
+            preserved_scan_ids.update(
+                int(row[0]) for row in connection.execute(f"SELECT {column} FROM \"{table}\"")
+            )
+        connection.execute("BEGIN IMMEDIATE")
+        for table in _INVENTORY_STAGED_TABLE_ORDER:
+            if table not in table_names:
+                continue
+            if table in protected:
+                continue
+            if table == "scans":
+                if preserved_scan_ids:
+                    placeholders = ",".join("?" for _ in preserved_scan_ids)
+                    connection.execute(
+                        f"DELETE FROM \"{table}\" WHERE scan_id NOT IN ({placeholders})",
+                        tuple(sorted(preserved_scan_ids)),
+                    )
+                else:
+                    connection.execute("DELETE FROM \"scans\"")
+            elif table == "files":
+                connection.execute("DELETE FROM \"files\"")
+            elif table in {"inventory_checkpoints", "fingerprints"}:
+                connection.execute(f"DELETE FROM \"{table}\"")
+            else:
+                # Unprotected lineage tables have no durable rows to retain;
+                # delete them before their scan parents.
+                connection.execute(f"DELETE FROM \"{table}\"")
+            cleared.append(table)
+        if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+            raise StateResetError("inventory staged reset failed foreign-key verification")
+        connection.commit()
+        connection.close()
+        connection = None
+        _compact_staged_sqlite(stage_database, final_database, mode=entry.mode)
+        live_database = plan.state_directory / "dedup.sqlite3"
+        _assert_owner_entries_current(plan, "inventory")
+        old_sidecars = {
+            item.path
+            for target in plan.targets
+            if target.owner == "inventory"
+            for item in target.entries
+            if item.kind == "file" and item.relative_path != "dedup.sqlite3"
+        }
+        os.replace(final_database, live_database)
+        for suffix in _ALL_DATABASE_SIDECAR_SUFFIXES:
+            sidecar = Path(f"{live_database}{suffix}")
+            if not os.path.lexists(sidecar):
+                continue
+            metadata = sidecar.lstat()
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+                raise StateResetChangedError(f"inventory sidecar is not regular: {sidecar}")
+            if sidecar not in old_sidecars:
+                raise StateResetChangedError(
+                    f"inventory sidecar appeared during reset: {sidecar}"
+                )
+            sidecar.unlink()
+        directory_fd = os.open(
+            plan.state_directory,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+        return tuple(cleared)
+    except sqlite3.Error as exc:
+        raise StateResetError("inventory staged reset could not be promoted") from exc
+    finally:
+        if connection is not None:
+            connection.close()
+        shutil.rmtree(stage_directory, ignore_errors=True)
 
 
 def _apply_catalog_owner_staged(
@@ -1663,10 +1906,16 @@ def _apply_catalog_owner_staged(
                 int(row[0])
                 for row in connection.execute(
                     "SELECT catalog_run_id FROM catalog_generations "
-                    f"WHERE generation_id IN ({placeholders})",
+                    f"WHERE generation_id IN ({placeholders}) "
+                    "AND catalog_run_id IS NOT NULL",
                     tuple(sorted(preserved_generations)),
                 ).fetchall()
             }
+        # Generation ancestry is a self-referential immediate FK in current
+        # Catalog schemas.  Deleting an entire unpublished chain is valid, but
+        # only when SQLite defers those checks until the transaction has
+        # removed every member of the chain.
+        connection.execute("PRAGMA defer_foreign_keys=ON")
         connection.execute("BEGIN IMMEDIATE")
         for table in _CATALOG_REGENERABLE_TABLE_ORDER:
             if (
@@ -1712,19 +1961,10 @@ def _apply_catalog_owner_staged(
         connection.commit()
         connection.close()
         connection = None
-        backup_sqlite_online(
-            stage_database,
-            final_database,
-            policy=SQLiteBackupPolicy(
-                integrity=SQLiteIntegrityPolicy(check_mode="full")
-            ),
-        )
+        _compact_staged_sqlite(stage_database, final_database, mode=entry.mode)
         os.chmod(final_database, entry.mode)
         live_database = plan.state_directory / "document_catalog.sqlite3"
-        if not _entry_matches(entry):
-            raise StateResetChangedError(
-                "catalog owner changed before staged reset promotion"
-            )
+        _assert_owner_entries_current(plan, "catalog")
         old_sidecars = {
             item.path
             for target in plan.targets
@@ -1740,7 +1980,7 @@ def _apply_catalog_owner_staged(
             metadata = sidecar.lstat()
             if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
                 raise StateResetChangedError(f"catalog sidecar is not regular: {sidecar}")
-            if sidecar not in old_sidecars and metadata.st_size > 0:
+            if sidecar not in old_sidecars:
                 raise StateResetChangedError(
                     f"catalog sidecar appeared during reset: {sidecar}"
                 )
@@ -1882,6 +2122,89 @@ def _assert_plan_current(plan: StateResetPlan, current: StateResetPlan) -> None:
     for expected in plan.entries:
         if not _entry_matches(expected):
             raise StateResetChangedError(f"reset target changed before apply: {expected.path}")
+
+
+def _assert_owner_entries_current(plan: StateResetPlan, owner: str) -> None:
+    """Revalidate one SQLite owner immediately before staged promotion.
+
+    A preceding staged owner may legitimately have a new inode by this point,
+    so the complete plan digest cannot be reused for every promotion.  The
+    owner fence still includes every planned main/sidecar entry, and no new
+    canonical or unknown ``<owner>-*`` sibling may appear in the promotion
+    window.  Empty sidecars are evidence too and are never silently removed.
+    """
+
+    owner_targets = tuple(target for target in plan.targets if target.owner == owner)
+    if not owner_targets:
+        raise StateResetChangedError(f"staged reset owner is absent from the plan: {owner}")
+    expected_paths = {
+        entry.path
+        for target in owner_targets
+        for entry in target.entries
+    }
+    for path in expected_paths:
+        matching = next(
+            (
+                entry
+                for target in owner_targets
+                for entry in target.entries
+                if entry.path == path
+            ),
+            None,
+        )
+        if matching is None or not _entry_matches(matching):
+            raise StateResetChangedError(f"staged {owner} owner changed before promotion: {path}")
+    database = next(
+        (
+            entry.path
+            for target in owner_targets
+            for entry in target.entries
+            if entry.relative_path == STATE_STORE_REGISTRY.by_owner(owner).database_name
+        ),
+        None,
+    )
+    if database is None:
+        raise StateResetChangedError(f"staged {owner} owner has no main database entry")
+    prefix = f"{database.name}-"
+    try:
+        siblings = tuple(database.parent.iterdir())
+    except OSError as exc:
+        raise StateResetChangedError(
+            f"staged {owner} sidecars cannot be enumerated before promotion"
+        ) from exc
+    for sibling in siblings:
+        if sibling.name.startswith(prefix) and sibling not in expected_paths:
+            raise StateResetChangedError(
+                f"staged {owner} owner gained an unplanned sidecar: {sibling}"
+            )
+
+
+def _assert_staged_owners_have_no_sidecars(
+    plan: StateResetPlan,
+    observed: StateResetPlan,
+) -> None:
+    """Require every promoted staged owner to be detached from old sidecars."""
+
+    for owner in plan.staged_owners:
+        database_name = STATE_STORE_REGISTRY.by_owner(owner).database_name
+        found_main = False
+        for target in observed.targets:
+            if target.owner != owner:
+                continue
+            if any(
+                entry.kind == "file" and entry.relative_path == database_name
+                for entry in target.entries
+            ):
+                found_main = True
+            if any(
+                entry.kind == "file" and entry.relative_path != database_name
+                for entry in target.entries
+            ):
+                raise StateResetChangedError(
+                    f"staged {owner} owner retained or gained a SQLite sidecar"
+                )
+        if not found_main:
+            raise StateResetChangedError(f"staged {owner} owner main database is missing")
 
 
 def _delete_entries(entries: Sequence[StateResetEntry]) -> tuple[StateResetEntry, ...]:
@@ -2180,6 +2503,12 @@ def _apply_reset_locked(
                     plan,
                     backup=database_backup,
                 )
+            if "inventory" in plan.staged_owners:
+                inventory_tables = _apply_inventory_owner_staged(
+                    plan,
+                    backup=database_backup,
+                )
+                cleared_tables += inventory_tables
             if "catalog" in plan.staged_owners:
                 _apply_catalog_owner_staged(
                     plan,
@@ -2194,6 +2523,7 @@ def _apply_reset_locked(
             scope=plan.scope,
             _include_lock_conflicts=False,
         )
+        _assert_staged_owners_have_no_sidecars(plan, after)
         if plan.scope == "runs":
             if after.active_run_ids or after.active_action_ids:
                 raise StateResetError("active lifecycle appeared during run reset")

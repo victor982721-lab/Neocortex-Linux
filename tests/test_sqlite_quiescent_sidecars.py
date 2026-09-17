@@ -137,7 +137,7 @@ def test_no_sidecars_selects_strict_and_reads_without_snapshot(tmp_path: Path) -
 
     assert preferred_sqlite_read_mode(path) is SQLiteReadMode.IMMUTABLE_STRICT
     fence = capture_sqlite_read_fence(path)
-    require_inactive_sqlite_sidecars(fence)
+    require_inactive_sqlite_sidecars(fence, path=path)
     _assert_readable_without_snapshot(path)
 
 
@@ -149,11 +149,21 @@ def test_empty_wal_and_canonical_shm_are_quiescent_and_zero_copy(
 
     assert preferred_sqlite_read_mode(path) is SQLiteReadMode.IMMUTABLE_STRICT
     fence = capture_sqlite_read_fence(path)
-    require_inactive_sqlite_sidecars(fence)
+    require_inactive_sqlite_sidecars(fence, path=path)
     session = SQLiteReadSession(path, mode=preferred_sqlite_read_mode(path), max_attempts=1)
     with session as connection:
         assert connection.execute("SELECT COUNT(*) FROM probe").fetchone()[0] == 2
         assert session.temporary_database is None
+
+
+def test_residual_fence_without_owner_path_fails_closed(tmp_path: Path) -> None:
+    """A detached residual fence cannot claim lock quiescence by itself."""
+
+    path = _database(tmp_path / "owner.sqlite3")
+    _install_quiescent_residual_sidecars(path)
+    fence = capture_sqlite_read_fence(path)
+    with pytest.raises(ImmutableSQLiteUnavailable, match="owner path"):
+        require_inactive_sqlite_sidecars(fence)
 
 
 def test_strict_session_holds_writer_guard_until_close(tmp_path: Path) -> None:
@@ -187,6 +197,45 @@ finally:
         assert blocked.stdout.strip() == "BLOCKED"
     released = subprocess.run(
         [sys.executable, "-c", script, str(shm)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert released.stdout.strip() == "ACQUIRED"
+
+
+def test_sidecar_free_strict_session_holds_rollback_writer_guard(
+    tmp_path: Path,
+) -> None:
+    """The sidecar-free layout is fenced against a writer-after-probe race."""
+
+    path = _database(tmp_path / "owner.sqlite3")
+    script = """
+import errno, fcntl, os, struct, sys
+fd = os.open(sys.argv[1], os.O_RDWR)
+request = struct.pack('@hhqqi', fcntl.F_WRLCK, os.SEEK_SET, 0x40000000, 1, 0)
+try:
+    fcntl.fcntl(fd, fcntl.F_SETLK, request)
+except OSError as exc:
+    print('BLOCKED' if exc.errno in (errno.EACCES, errno.EAGAIN) else 'ERROR')
+else:
+    print('ACQUIRED')
+finally:
+    os.close(fd)
+"""
+
+    with SQLiteReadSession(path, mode=SQLiteReadMode.IMMUTABLE_STRICT, max_attempts=1):
+        blocked = subprocess.run(
+            [sys.executable, "-c", script, str(path)],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        assert blocked.stdout.strip() == "BLOCKED"
+    released = subprocess.run(
+        [sys.executable, "-c", script, str(path)],
         check=True,
         capture_output=True,
         text=True,

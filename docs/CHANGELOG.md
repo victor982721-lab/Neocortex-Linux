@@ -14,8 +14,9 @@ fuera de `docs/`.
   eleva ni se desactiva.
 - Health, value-review, retención y `state reset` reutilizan la misma primitive;
   no se borran sidecars ni se crean backups implícitos. El reset broad preserva
-  generaciones de catálogo publicadas y su evidencia protegida al retirar sólo
-  la proyección no publicada.
+  generaciones de catálogo publicadas, historial y evidencia de Inventory al
+  retirar sólo proyecciones regenerables; los owners staged se compactan y
+  referencias huérfanas o sidecars nuevos bloquean la promoción.
 
 ## 2026-09-16 — Contrato de continuidad de higiene operativa
 

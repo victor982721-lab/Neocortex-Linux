@@ -871,6 +871,13 @@ preservada y pasan con el owner staged; no se borran ni se confunden con una
 acción activa. Los estados `started`/`applying`, runs o fases activas y cualquier
 lock o drift siguen bloqueando el apply fail-closed.
 
+El mismo staging aplica a Inventory y Catalog cuando contienen evidencia
+durable: se conservan los planes de duplicados, huellas de contenido,
+generaciones publicadas, historial y padres verificables, y se compacta el owner
+antes de promoverlo. Referencias huérfanas, ancestry no conciliable o sidecars
+que aparezcan durante la promoción producen abstención; no se eliminan como
+residuos regenerables.
+
 La inspección de SQLite del preview usa el contrato central de lectura segura.
 Un owner grande sin sidecars, o con exactamente `-wal=0` y `-shm=32768`, puede
 usar `immutable_strict` sólo después de que la prueba de locks de sólo lectura y

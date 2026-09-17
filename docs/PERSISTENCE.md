@@ -74,9 +74,10 @@ byte-neutral. SQLite puede crear o tocar `-wal`/`-shm`.
   `-shm` regulares, con `-wal` de 0 bytes y `-shm` residual de exactamente
   32768 bytes. En el segundo caso los tamaños no bastan: una prueba de locks
   de sólo lectura y la recaptura del fence deben demostrar que no hay un owner
-  activo y que el conjunto no cambió; durante la sesión estricta el kernel
-  conserva una guardia OFD compartida sobre los locks de control para cerrar la
-  carrera entre la sonda y la lectura;
+  activo y que el conjunto no cambió; durante cualquier sesión estricta el
+  kernel conserva una guardia OFD compartida sobre los locks de control (también
+  para el layout sin sidecars) para cerrar la carrera entre la sonda y la
+  lectura;
 - `snapshot_temp` para copiar main y sidecars con fence antes/después de la
   copia y reintentos acotados ante drift; si no obtiene un conjunto estable,
   se abstiene con `ImmutableSQLiteUnavailable`.
@@ -201,6 +202,14 @@ En `all`, un `recovery_required` del Framework se conserva dentro del owner
 staged y se informa como `preserved_recovery_action_ids`; no autoriza reintentar
 ni descartar la evidencia. Runs, fases y acciones `started`/`applying` continúan
 siendo una frontera activa que bloquea la aplicación.
+
+Si Inventory conserva resúmenes/grupos/miembros de planes de duplicados o
+evidencia de huellas, y si Catalog conserva generaciones publicadas o historial
+de clasificación, el reset transforma esos owners en staging, conserva esas
+filas y sus padres verificables y compacta el resultado antes de promoverlo.
+Una referencia de evidencia huérfana, una generación con ancestry no conciliable
+o un sidecar nuevo durante la promoción bloquea el efecto; no se convierte en
+un target implícito ni se borra para hacer pasar el reset.
 
 `all` usa un inventario explícito de artefactos no-SQLite gestionados (por ejemplo
 manifests, checkpoints o journals administrados) y conserva archivos desconocidos

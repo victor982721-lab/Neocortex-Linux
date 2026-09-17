@@ -21,6 +21,7 @@ import pytest
 
 from neocortex.persistence.framework_state_writer import FrameworkState
 from neocortex.documents.document_catalog import initialize_document_catalog
+from neocortex.deduplication.persistence import initialize_inventory_schema
 from neocortex.persistence import sqlite_immutable
 from neocortex.persistence.sqlite_immutable import (
     SQLiteReadMode,
@@ -29,10 +30,13 @@ from neocortex.persistence.sqlite_immutable import (
 )
 from neocortex.persistence.state_reset import (
     STATE_RESET_CONFIRMATION,
+    StateResetChangedError,
     StateResetResult,
+    StateResetError,
     execute_state_reset,
     plan_state_reset,
 )
+from neocortex.persistence import state_reset as state_reset_module
 from neocortex.semantic.semantic_schema import initialize_semantic_state
 from neocortex.workflow.retention import planner as retention_module
 from neocortex.workflow.retention.planner import RetentionPolicy, plan_retention
@@ -275,7 +279,7 @@ def test_catalog_stage_reset_keeps_published_rows_under_immutability_triggers(
         connection.execute(
             """INSERT INTO catalog_generations(
                 generation_id,catalog_run_id,source_kind,status,started_ns,published_ns
-            ) VALUES(1,1,'docx','published',1,3)"""
+            ) VALUES(1,NULL,'docx','published',1,3)"""
         )
         connection.execute(
             """INSERT INTO catalog_generations(
@@ -352,6 +356,205 @@ def test_catalog_stage_reset_keeps_published_rows_under_immutability_triggers(
         assert connection.execute(
             "SELECT generation_id FROM catalog_generation_manifests ORDER BY generation_id"
         ).fetchall() == [(1,)]
+
+
+def test_inventory_stage_reset_keeps_duplicate_evidence_and_compacts_owner(
+    tmp_path: Path,
+) -> None:
+    """Broad reset clears inventory caches without discarding plan evidence."""
+
+    state = tmp_path / "state"
+    state.mkdir()
+    database = state / "dedup.sqlite3"
+    initialize_inventory_schema(database)
+    with sqlite3.connect(database) as connection:
+        connection.executescript(
+            """
+            INSERT INTO scans(
+                scan_id,root,started_ns,completed_ns,status
+            ) VALUES
+                (1,'/fixture',1,2,'complete'),
+                (2,'/regenerable',3,4,'complete');
+            INSERT INTO files(
+                scan_id,path,volume_id,file_id,size,mtime_ns,birthtime_ns
+            ) VALUES
+                (1,'/fixture/kept',X'01',X'02',1,1,1),
+                (2,'/regenerable/file',X'03',X'04',2,2,2);
+            INSERT INTO fingerprints(
+                volume_id,file_id,size,mtime_ns,birthtime_ns,algorithm,digest
+            ) VALUES
+                (X'01',X'02',1,1,1,'xxh3',X'05'),
+                (X'03',X'04',2,2,2,'xxh3',X'06');
+            INSERT INTO inventory_checkpoints(
+                root,scan_id,valid,updated_ns
+            ) VALUES('/fixture',1,1,5);
+            INSERT INTO inventory_generation_heads(
+                scan_id,content_digest,created_ns
+            ) VALUES(2,X'07',6);
+            INSERT INTO inventory_scan_successors(
+                predecessor_scan_id,successor_scan_id,created_ns,reason
+            ) VALUES(1,2,7,'fixture');
+            INSERT INTO duplicate_plan_summaries(
+                scan_id,group_count,redundant_files,reclaimable_bytes,completed_ns,
+                verification_mode,requested_policy,coverage
+            ) VALUES(1,1,1,1,8,'full_hash','exact','complete');
+            INSERT INTO planned_duplicate_groups(
+                group_id,scan_id,size,keep_path,redundant_count,reclaimable_bytes,
+                full_fingerprint,verification_mode
+            ) VALUES(1,1,1,'/fixture/kept',1,1,'digest','full_hash');
+            INSERT INTO planned_duplicate_members(
+                group_id,member_order,role,path,volume_id,file_id,size,mtime_ns,birthtime_ns
+            ) VALUES(1,0,'keep','/fixture/kept',X'01',X'02',1,1,1);
+            INSERT INTO fingerprint_content_evidence(
+                volume_id,file_id,size,mtime_ns,birthtime_ns,algorithm,content_digest
+            ) VALUES(X'01',X'02',1,1,1,'xxh3',X'08');
+            INSERT INTO duplicate_plan_heads(
+                scan_id,inventory_content_digest,plan_digest,status,completed_ns
+            ) VALUES(2,X'09',X'0a','superseded',9);
+            """
+        )
+        connection.commit()
+
+    plan = plan_state_reset(state, scope="all")
+    assert plan.staged_owners == ("inventory",)
+    result = execute_state_reset(
+        state,
+        scope="all",
+        apply=True,
+        plan_digest=plan.plan_digest,
+        confirmation=STATE_RESET_CONFIRMATION,
+    )
+    assert isinstance(result, StateResetResult)
+    assert "files" in result.cleared_tables
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT scan_id FROM duplicate_plan_summaries"
+        ).fetchall() == [(1,)]
+        assert connection.execute(
+            "SELECT group_id FROM planned_duplicate_groups"
+        ).fetchall() == [(1,)]
+        assert connection.execute(
+            "SELECT group_id FROM planned_duplicate_members"
+        ).fetchall() == [(1,)]
+        assert connection.execute(
+            "SELECT content_digest FROM fingerprint_content_evidence"
+        ).fetchall() == [(b"\x08",)]
+        assert connection.execute("SELECT scan_id FROM scans").fetchall() == [(1,)]
+        for table in (
+            "files",
+            "fingerprints",
+            "inventory_checkpoints",
+            "inventory_generation_heads",
+            "inventory_scan_successors",
+            "duplicate_plan_heads",
+        ):
+            assert connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone() == (0,)
+        assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    assert database.stat().st_size < 2 * 1024 * 1024
+    assert not Path(f"{database}-wal").exists()
+    assert not Path(f"{database}-shm").exists()
+
+
+@pytest.mark.parametrize("orphan_kind", ["summary", "member"])
+def test_inventory_stage_reset_abstains_on_orphaned_protected_evidence(
+    tmp_path: Path,
+    orphan_kind: str,
+) -> None:
+    """Corrupt protected plan rows must not become durable reset survivors."""
+
+    state = tmp_path / "state"
+    state.mkdir()
+    database = state / "dedup.sqlite3"
+    initialize_inventory_schema(database)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO scans(scan_id,root,started_ns,completed_ns,status) "
+            "VALUES(1,'/fixture',1,2,'complete')"
+        )
+        connection.execute(
+            "INSERT INTO duplicate_plan_summaries("
+            "scan_id,group_count,redundant_files,reclaimable_bytes,completed_ns,"
+            "verification_mode,requested_policy,coverage) "
+            "VALUES(1,1,1,1,3,'full_hash','exact','complete')"
+        )
+        connection.execute(
+            "INSERT INTO planned_duplicate_groups("
+            "group_id,scan_id,size,keep_path,redundant_count,reclaimable_bytes,"
+            "full_fingerprint,verification_mode) "
+            "VALUES(1,1,1,'/fixture/keep',1,1,'digest','full_hash')"
+        )
+        if orphan_kind == "summary":
+            connection.execute(
+                "INSERT INTO duplicate_plan_summaries("
+                "scan_id,group_count,redundant_files,reclaimable_bytes,completed_ns,"
+                "verification_mode,requested_policy,coverage) "
+                "VALUES(99,0,0,0,4,'full_hash','exact','complete')"
+            )
+        else:
+            connection.execute(
+                "INSERT INTO planned_duplicate_members("
+                "group_id,member_order,role,path,volume_id,file_id,size,mtime_ns,birthtime_ns) "
+                "VALUES(99,0,'keep','/fixture/orphan',X'01',X'02',1,1,1)"
+            )
+        connection.commit()
+
+    plan = plan_state_reset(state, scope="all")
+    with pytest.raises(StateResetError, match="orphan reference"):
+        execute_state_reset(
+            state,
+            scope="all",
+            apply=True,
+            plan_digest=plan.plan_digest,
+            confirmation=STATE_RESET_CONFIRMATION,
+        )
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM duplicate_plan_summaries"
+        ).fetchone() == (2 if orphan_kind == "summary" else 1,)
+
+
+def test_inventory_promotion_rejects_new_empty_sidecar(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sidecar created during promotion is evidence, even when empty."""
+
+    state = tmp_path / "state"
+    state.mkdir()
+    database = state / "dedup.sqlite3"
+    initialize_inventory_schema(database)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO scans(scan_id,root,started_ns,completed_ns,status) "
+            "VALUES(1,'/fixture',1,2,'complete')"
+        )
+        connection.execute(
+            "INSERT INTO duplicate_plan_summaries("
+            "scan_id,group_count,redundant_files,reclaimable_bytes,completed_ns,"
+            "verification_mode,requested_policy,coverage) "
+            "VALUES(1,0,0,0,3,'full_hash','exact','complete')"
+        )
+        connection.commit()
+    plan = plan_state_reset(state, scope="all")
+    real_replace = state_reset_module.os.replace
+
+    def replace_then_inject(source: str | Path, destination: str | Path) -> None:
+        real_replace(source, destination)
+        if Path(destination) == database:
+            Path(f"{database}-wal").write_bytes(b"")
+
+    monkeypatch.setattr(state_reset_module.os, "replace", replace_then_inject)
+    try:
+        with pytest.raises(StateResetChangedError, match="sidecar appeared"):
+            execute_state_reset(
+                state,
+                scope="all",
+                apply=True,
+                plan_digest=plan.plan_digest,
+                confirmation=STATE_RESET_CONFIRMATION,
+            )
+    finally:
+        Path(f"{database}-wal").unlink(missing_ok=True)
 
 
 def test_retention_large_quiescent_residual_uses_zero_copy_and_preserves_budget(
