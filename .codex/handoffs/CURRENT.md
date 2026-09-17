@@ -4,7 +4,7 @@
 **Actualización:** 2026-09-16T23:06:00-06:00 (America/Mexico_City).
 **Fuente viva:** `HEAD == main == origin/main` y árbol limpio se comprueban antes de cerrar.
 
-**Estado vivo:** `HEAD=main=7db30481c498f87ee5e12c5418a58e73e0bb645a`, `origin/main` aún requiere publicar esta integración; versión fuente `0.14.1`. El artefacto candidato final se reconstruirá desde el SHA final de este handoff; no se promueve `current` personal ni se selecciona corpus/HOME/SQLite productiva.
+**Estado vivo:** `HEAD == main == origin/main` se verificará en el cierre; la integración funcional publicada parte de `7db30481c498f87ee5e12c5418a58e73e0bb645a`, versión fuente `0.14.1`. El artefacto candidato final se reconstruirá desde el SHA final comprobado; no se promueve `current` personal ni se selecciona corpus/HOME/SQLite productiva.
 
 **Goal:** C01–C12 sigue ABIERTO hasta aceptar la candidata final. C01–C08 tienen implementación, regresiones y owner físico sintético: sello común, reconciliación explícita de fallos y poda de tombstones con receipt/replay; C09 tiene frontera base import-light; C10 conserva texto 20, video 1 GiB y degradación `--all`; C11 tiene interfaz/documentación; C12 requiere reconstruir/instalar desde el SHA final, repetir los cuatro headless, recopilar base y verificar origen/artefacto. La promoción `current` personal permanece fuera por CTBI.
 
