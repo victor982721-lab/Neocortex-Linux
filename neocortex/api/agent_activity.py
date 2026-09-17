@@ -420,6 +420,8 @@ class AgentActivity:
 
     @property
     def state(self) -> str:
+        if self._retired:
+            return ScratchState.RETIRED.value
         value = self._refresh_record().state
         return value.value if isinstance(value, ScratchState) else str(value)
 
