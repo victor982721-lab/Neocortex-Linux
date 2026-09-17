@@ -1,41 +1,16 @@
 # Handoff operativo vigente — NeoCortex
 
-**Ronda actual:** NEO-HYGIENE-001 — preparación federada de higiene y procedencia.
-**Actualización:** 2026-09-16T12:00:34-06:00 (America/Mexico_City).
+**Ronda actual:** NEO-HYGIENE-002 — cierre de higiene de artefactos y lifecycle agéntico.
+**Actualización:** 2026-09-16T23:40:00-06:00 (America/Mexico_City).
 **Fuente viva:** `HEAD == main == origin/main` y árbol limpio se comprueban antes de cerrar.
 
-La release activa es `0.14.0`; su identificador exacto, `source_sha`, rollback
-y manifest se comprueban siempre con el receipt canónico y
-`release_linux.py verify` antes de operar. `.staging` debe permanecer vacío y
-la release previa se conserva para rollback; este handoff no duplica una
-identidad que cambiaría al actualizar el propio archivo.
+**Estado final de código:** `832a29f432d628f3fc548a4c407f3d4b4b46048b` (`main == origin/main` al publicar esta ronda), versión fuente `0.14.1`. La candidata aislada se reconstruye desde el SHA final de este handoff; no se promueve `current` ni se toca corpus/HOME/SQLite productiva.
 
-La entrega añade `neocortex.artifact-registry/v1` con manifests privados,
-identidad, owner/producer, procedencia, categorías, estados, TTL, dependencias y
-drift; Archive, PDF, Video, Semantic y Framework registran sus workspaces
-canónicos. `Neocortex hygiene` compone registry, scratch y retención en
-`neocortex.hygiene/v1`, siempre `read_only=true`, `preview_only=true`,
-`effects_enabled=false`, `deletion_performed=0`, `file_actions=0` y
-`mutation_authorized=false`. Las vistas federadas de registry/scratch sólo leen;
-los productores mantienen sus writers.
+**HYG-01..06 / TEST-01:** HYG-01 corregido con presupuestos separados; HYG-02 protegido por dependencias vivas y lock de registry junto al efecto; HYG-03 fingerprint ligado a claims concretas; HYG-04 CLI aislada compone `<state_directory>/artifacts`; HYG-05 límites de scratch y bytes recortados fail-closed; HYG-06 raíces de registro/artefacto separadas; TEST-01 separa importación base/UI sin hacer Qt obligatorio.
 
-**Gates conservados:** esta ronda no borró, movió ni renombró archivos reales,
-no abrió SQLite productiva, no usó KIO/red/sudo/cleaners ni tocó corpus,
-modelos, Papelera o backups. `hygiene` rechaza `--apply`, `--all`, `--dedupe`,
-`--root` y no expone método físico. Los comandos `machine-inventory`,
-`external-maintenance`, `maintenance`, `state reset` y `curate apply` mantienen
-sus owners y autorizaciones separadas. La secuencia futura
-`preview → review → authorize → apply → verify → recovery` sigue siendo TARGET;
-los owners externos sin contrato se conservan como `unknown`, `blocked` o
-`out_of_profile`.
+**Validación observada:** 107 focales hygiene/lifecycle/CLI/integration/packaging, 213 functional/base focales, UI `--capabilities=ui` 29 pasaron. La suite base terminó 7542 pasadas, 57 omitidas, 76 deseleccionadas y 36 subtests, con un fallo de identidad de distribución porque el venv del checkout aún declara la instalación histórica `0.14.0`; la misma prueba de identidad pasó 5/5 desde una extracción de la candidata instalada aislada. Ruff pasó; Pyright pasó con sólo warnings preexistentes de helpers no usados; Mypy queda no verificado por errores preexistentes de `xxhash` opcional.
 
-**Validación de ronda:** 117 pruebas focales de registry/scratch/hygiene/CLI y
-productores pasaron; `compileall`, `git diff --check`, namespace y Semgrep
-focal pasaron. Sondas instaladas en raíces sintéticas mostraron un preview con
-`eligible=1`, `deletion_performed=0`, `file_actions=0` y manifests sin cambios;
-una sonda default con XDG aislado no creó estado. La evidencia fechada vigente
-se conserva bajo `/home/winterboss/Documentos/NeoCortex/Auditorias/` y enlaza el
-SHA exacto en su propio manifest.
+**Límites/gates:** las corridas usan fixtures privados y un proceso externo determinista; no se ejecutó sesión nativa de Codex, GUI/KIO real, corpus, modelos nuevos ni efectos personales. `hygiene` permanece preview/read-only; `maintenance --apply` sólo actúa sobre scratch registrado propio. La evidencia compacta vigente queda bajo `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-16-hygiene-832a29f/`.
 
 ## Evidencia de entregas anteriores (histórica)
 
