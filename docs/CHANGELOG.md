@@ -4,6 +4,19 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-16 — Contrato de continuidad de higiene operativa
+
+- La documentación de CLI y Operations vincula el mantenimiento aislado y el
+  lifecycle de actividad externa con owners explícitos, publicación fuera de
+  scratch, reanudación/reconciliación y retención; no presenta el preview de
+  `hygiene` como autorización física.
+- Se añade una matriz compacta C01–C12 que apunta cada garantía a su superficie
+  pública y a la evidencia independiente requerida. La matriz es un índice de
+  aceptación, no un receipt ni una declaración de cierre de una instalación.
+- README describe el uso de la fachada pública de actividad externa y mantiene
+  fuera de alcance `HOME`, `.codex`, sesiones, modelos, cachés compartidas,
+  corpus y `/tmp` no seleccionado.
+
 ## 2026-09-16 — Higiene de artefactos y lifecycle agéntico 0.14.1
 
 - Se separan los límites de escaneo y serialización de `hygiene`; una observación

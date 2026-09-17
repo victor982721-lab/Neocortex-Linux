@@ -1941,7 +1941,7 @@ class FrameworkOrchestrator:
                 Path(os.path.abspath(os.fspath(self.config.state_directory)))
                 / "artifacts"
             )
-            manager_kwargs: dict[str, object] = {}
+            manager_kwargs: dict[str, Path] = {}
             try:
                 manager_signature = inspect.signature(ScratchManager)
             except (TypeError, ValueError):

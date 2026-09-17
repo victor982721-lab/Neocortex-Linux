@@ -224,3 +224,142 @@ def test_completed_scratch_with_late_payload_is_preserved_for_recovery(tmp_path:
     assert plan.blocked == 1
     assert plan.records[0].issue == "payload_changed_after_completion"
     assert workspace.path.exists()
+
+
+def test_registry_policy_is_revalidated_before_scratch_effect(tmp_path: Path) -> None:
+    registry = ArtifactRegistry(tmp_path / "registry", owner="fixture", create_root=True)
+    manager = ScratchManager(
+        tmp_path / "scratch",
+        owner="fixture",
+        create_root=True,
+        artifact_registry=registry,
+    )
+    workspace = manager.create(retain_on_success=True)
+    workspace.complete(retain=True)
+    assert workspace.artifact_id is not None
+    artifact_id = workspace.artifact_id
+
+    registry.update(artifact_id, disposable=False)
+    blocked = manager.apply(now_ns=10**30)
+    assert blocked.applied == 0
+    assert blocked.blocked == 1
+    assert workspace.path.exists()
+    assert registry.plan(now_ns=10**30).eligible == 0
+
+    registry.update(artifact_id, disposable=True)
+    released = manager.apply(now_ns=10**30)
+    assert released.applied == 1
+    assert not workspace.path.exists()
+    retired = registry.verify(artifact_id)
+    assert retired.state == "retired"
+
+
+def test_corrupt_consumer_is_not_interpreted_as_no_dependency(tmp_path: Path) -> None:
+    registry = ArtifactRegistry(tmp_path / "registry", owner="fixture", create_root=True)
+    manager = ScratchManager(
+        tmp_path / "scratch",
+        owner="fixture",
+        create_root=True,
+        artifact_registry=registry,
+    )
+    source = manager.create(retain_on_success=True)
+    source.complete(retain=True)
+    consumer = manager.create(
+        retain_on_success=True,
+        metadata={"dependencies": [source.artifact_id]},
+    )
+    assert consumer.artifact_id is not None
+    consumer_manifest = registry.manifest_path(consumer.artifact_id)
+    consumer_manifest.write_bytes(b"{\"schema\":")
+    os.chmod(consumer_manifest, 0o600)
+
+    applied = manager.apply(now_ns=10**30)
+    assert applied.applied == 0
+    assert source.path.exists()
+    source_view = next(
+        record for record in registry.plan(now_ns=10**30).records
+        if record.artifact_id == source.artifact_id
+    )
+    assert source_view.classification == "blocked"
+    assert source_view.reason == "dependency_observation_incomplete"
+
+
+def test_post_effect_registry_failure_is_reconciled_without_repeating_unlink(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    registry_root = tmp_path / "registry"
+    scratch_root = tmp_path / "scratch"
+    registry = ArtifactRegistry(registry_root, owner="fixture", create_root=True)
+    manager = ScratchManager(
+        scratch_root,
+        owner="fixture",
+        create_root=True,
+        artifact_registry=registry,
+    )
+    workspace = manager.create(retain_on_success=True)
+    workspace.complete(retain=True)
+    artifact_id = workspace.artifact_id
+    assert artifact_id is not None
+    original_update = registry.update
+
+    def fail_after_effect(*args, **kwargs):
+        raise OSError("fixture registry confirmation failure")
+
+    monkeypatch.setattr(registry, "update", fail_after_effect)
+    first = manager.apply(now_ns=10**30)
+    assert first.applied == 0
+    assert first.blocked == 1
+    assert not workspace.path.exists()
+
+    monkeypatch.setattr(registry, "update", original_update)
+    resumed_registry = ArtifactRegistry(registry_root, owner="fixture")
+    resumed_manager = ScratchManager(
+        scratch_root,
+        owner="fixture",
+        create_root=False,
+        artifact_registry=resumed_registry,
+    )
+    replay = resumed_manager.apply(now_ns=10**30)
+    assert replay.applied == 0
+    assert replay.planned == 0
+    retired = resumed_registry.verify(artifact_id)
+    assert retired.state == "retired"
+    assert retired.verified is True
+
+
+def test_retirement_batch_reads_registry_linearly_at_scale(tmp_path: Path) -> None:
+    """The apply path shares one dependency snapshot instead of rescanning N²."""
+
+    reads_by_size: dict[int, int] = {}
+    for count in (20, 40, 80, 160):
+        root = tmp_path / f"case-{count}"
+        registry = ArtifactRegistry(root / "registry", owner="fixture", create_root=True)
+        manager = ScratchManager(
+            root / "scratch",
+            owner="fixture",
+            create_root=True,
+            artifact_registry=registry,
+        )
+        for _ in range(count):
+            workspace = manager.create(retain_on_success=True)
+            workspace.complete(retain=True)
+
+        original_read = registry._read_manifest_payload
+        reads = 0
+
+        def counted(path: Path):
+            nonlocal reads
+            reads += 1
+            return original_read(path)
+
+        registry._read_manifest_payload = counted
+        applied = manager.apply(now_ns=10**30)
+        reads_by_size[count] = reads
+        assert applied.applied == count
+
+    # The current protocol uses a bounded constant number of reads per
+    # target (including recovery and terminal confirmation); the assertion is
+    # intentionally a generous linear ceiling, not a machine-time SLA.
+    assert all(reads_by_size[count] <= count * 10 for count in reads_by_size)
+    assert reads_by_size[160] < reads_by_size[20] * 10

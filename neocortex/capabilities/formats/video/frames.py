@@ -31,7 +31,11 @@ from neocortex.runtime.control.bounded_subprocess import (
 from neocortex.runtime.control.cancellation import CancellationToken
 from neocortex.capabilities.formats.image.png import probe_png_structure
 from .models import VideoProcessingError
-from .limits import MAX_VIDEO_FRAME_PIXELS, MAX_VIDEO_FRAMES
+from .limits import (
+    DEFAULT_VIDEO_WORKER_MEMORY_BYTES,
+    MAX_VIDEO_FRAME_PIXELS,
+    MAX_VIDEO_FRAMES,
+)
 
 
 MAX_VIDEO_FRAME_BYTES = 64 * 1024 * 1024
@@ -56,7 +60,7 @@ class VideoFrameSamplingConfig:
     discovery_timeout_seconds: float = 60.0
     frame_timeout_seconds: float = 20.0
     file_timeout_seconds: float = 300.0
-    worker_memory_bytes: int = 2 * 1024 * 1024 * 1024
+    worker_memory_bytes: int = DEFAULT_VIDEO_WORKER_MEMORY_BYTES
     ffmpeg_path: str | None = None
     # A route supplies the state-owned registered scratch root.  ``None`` is
     # retained for direct callers that only need the historical ephemeral API
@@ -601,7 +605,7 @@ def _registered_video_scratch_workspace(
 
     try:
         artifact_registry_root = _video_artifact_registry_root(scratch_directory)
-        manager_kwargs: dict[str, object] = {}
+        manager_kwargs: dict[str, Path] = {}
         if artifact_registry_root is not None:
             manager_kwargs["artifact_registry_root"] = artifact_registry_root
         manager = ScratchManager(

@@ -22,7 +22,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 
 HYGIENE_SCHEMA = "neocortex.hygiene/v1"
@@ -350,6 +350,12 @@ class _ComponentSummary:
     protected_bytes: int = 0
     blocked_bytes: int = 0
     fingerprint: str = ""
+    # Selection identity is deliberately separate from the bounded diagnostic
+    # page.  ``MAX_HYGIENE_ITEMS`` limits what we show in JSON; it must never
+    # limit the claims used to decide whether a selection is still the same.
+    selection_claims: int = 0
+    selection_complete: bool = True
+    selection_fingerprint: str = ""
 
     @property
     def available(self) -> bool:
@@ -369,6 +375,9 @@ class _ComponentSummary:
             "protected_bytes": self.protected_bytes,
             "eligible_bytes": self.eligible_bytes,
             "blocked_bytes": self.blocked_bytes,
+            "selection_claims": self.selection_claims,
+            "selection_complete": self.selection_complete,
+            "selection_fingerprint": self.selection_fingerprint,
             "unmanaged": [str(path) for path in self.unmanaged[:MAX_HYGIENE_ITEMS]],
             "limits": dict(self.limits),
             "reasons": list(self.reasons[:MAX_HYGIENE_REASONS]),
@@ -391,6 +400,7 @@ def _summary_for_owner(
             status="deferred",
             blocked=1,
             reasons=(reason,),
+            selection_complete=False,
             fingerprint=_stable_digest({"name": name, "status": "deferred", "reason": reason}),
         )
 
@@ -508,7 +518,22 @@ def _summary_for_owner(
         status = "unknown"
         unknown = max(1, unknown)
 
-    complete = status not in {"deferred", "absent", "blocked", "unknown"}
+    expected_claims = eligible + protected + blocked + unknown
+    selection_fingerprint, selection_claims, selection_complete = _selection_claim_evidence(
+        owner,
+        payload,
+        expected_count=expected_claims,
+        require_count=not retention,
+    )
+    if not selection_complete:
+        reasons = tuple(
+            dict.fromkeys((*reasons, "selection_claims_incomplete"))
+        )[:MAX_HYGIENE_REASONS]
+
+    complete = (
+        status not in {"deferred", "absent", "blocked", "unknown"}
+        and selection_complete
+    )
     if status == "unknown":
         unknown = max(1, unknown)
     stable = {
@@ -527,7 +552,11 @@ def _summary_for_owner(
         "protected_bytes": protected_bytes,
         "eligible_bytes": eligible_bytes,
         "blocked_bytes": blocked_bytes,
-        "claims": _selection_claims(owner, payload),
+        "selection": {
+            "count": selection_claims,
+            "complete": selection_complete,
+            "fingerprint": selection_fingerprint,
+        },
     }
     return _ComponentSummary(
         name=name,
@@ -547,6 +576,9 @@ def _summary_for_owner(
         protected_bytes=protected_bytes,
         blocked_bytes=blocked_bytes,
         fingerprint=_stable_digest(stable),
+        selection_claims=selection_claims,
+        selection_complete=selection_complete,
+        selection_fingerprint=selection_fingerprint,
     )
 
 
@@ -558,9 +590,20 @@ _SELECTION_FIELDS: tuple[str, ...] = (
     "artifact_id",
     "record_id",
     "id",
+    "key",
     "owner",
     "producer",
+    "purpose",
     "kind",
+    "store",
+    "database",
+    "entity",
+    "scope",
+    "recorded_status",
+    "disposition",
+    "estimated_rows",
+    "estimated_bytes",
+    "schema_version",
     "state",
     "status",
     "classification",
@@ -571,6 +614,9 @@ _SELECTION_FIELDS: tuple[str, ...] = (
     "root_identity",
     "identity",
     "manifest_digest",
+    "source_ref",
+    "digest",
+    "metadata",
     "dependencies",
     "reservations",
     "retain_until_ns",
@@ -579,76 +625,166 @@ _SELECTION_FIELDS: tuple[str, ...] = (
     "disposable",
     "retain_on_success",
     "result_paths",
+    "size_bytes",
+    "payload_size_bytes",
+    "valid",
+    "verified",
     "reason",
     "issue",
 )
+
+
+def _selection_values(owner: object, payload: Mapping[str, object]) -> tuple[object, ...]:
+    """Return every owner claim, not merely the diagnostic page.
+
+    The JSON envelope deliberately has a small presentation page.  Selection
+    identity and physical accounting have a different contract: they must see
+    the complete bounded owner plan.  Keeping this extraction in one helper
+    prevents a future display limit from becoming an authorization limit.
+    """
+
+    raw = _attr_or_key(owner, payload, "records", "entries", "items", "stores")
+    if isinstance(raw, Mapping):
+        return tuple(raw.values())
+    if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes, bytearray)):
+        return tuple(raw)
+    return ()
+
+
+def _selection_source(item: object) -> Mapping[str, object]:
+    if isinstance(item, Mapping):
+        return item
+    projected: dict[str, object] = {}
+    for name in _SELECTION_FIELDS:
+        try:
+            value = getattr(item, name)
+        except AttributeError:
+            continue
+        if value is not None:
+            projected[name] = value
+    # RetentionStorePlan and similar typed owner envelopes keep their actual
+    # claim page in an ``items`` attribute.  It is intentionally not part of
+    # a claim itself, but must remain visible to the flattening step below.
+    nested = cast(Any, item).items if hasattr(item, "items") else None
+    if nested is not None:
+        projected["items"] = nested
+    return projected
+
+
+def _selection_scalar(value: object) -> object:
+    """Normalize a claim without a page-sized or string-length cutoff."""
+
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (str, int, bool)) or value is None:
+        return value
+    if isinstance(value, bytes):
+        return {"__bytes__": value.hex()}
+    if isinstance(value, (list, tuple)):
+        return [_selection_scalar(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        normalized = [_selection_scalar(item) for item in value]
+        return sorted(normalized, key=_canonical_json)
+    if isinstance(value, Mapping):
+        normalized = {
+            str(key): _selection_scalar(item)
+            for key, item in value.items()
+        }
+        return {key: normalized[key] for key in sorted(normalized)}
+    # Owner records are typed dataclasses.  This fallback is only for a
+    # lightweight embedding's scalar value and remains deterministic.
+    return str(value)
+
+
+def _selection_claim(source: Mapping[str, object]) -> dict[str, object]:
+    claim: dict[str, object] = {}
+    for name in _SELECTION_FIELDS:
+        if name not in source:
+            continue
+        value = _selection_scalar(source[name])
+        # Dependency/reservation order is not selection identity.  Canonicalize
+        # those set-like references so a filesystem/JSON ordering change does
+        # not cause drift while membership changes still do.
+        if name in {"dependencies", "reservations"} and isinstance(value, list):
+            value = sorted(value, key=_canonical_json)
+        claim[name] = value
+    return claim
 
 
 def _selection_claims(owner: object, payload: Mapping[str, object]) -> tuple[dict[str, object], ...]:
     """Project stable identity/claim fields for selection verification.
 
     Counters and reason histograms are useful summaries but are not a
-    selection identity.  This bounded projection intentionally excludes
-    volatile timestamps and observed byte counters while retaining the claims
-    that authorize an owner proposal.
+    selection identity.  This stable projection intentionally excludes
+    volatile timestamps while retaining the claims that authorize an owner
+    proposal.  The returned tuple contains the complete owner plan.  It is
+    kept as private evidence only; public JSON carries the digest and count.
     """
 
-    raw = _attr_or_key(owner, payload, "records", "entries", "items", "stores")
-    if isinstance(raw, Mapping):
-        values: Sequence[object] = tuple(raw.values())
-    elif isinstance(raw, Sequence) and not isinstance(raw, (str, bytes, bytearray)):
-        values = tuple(raw)
-    else:
-        values = ()
     claims: list[dict[str, object]] = []
 
-    def scalar(value: object) -> object:
-        if isinstance(value, Path):
-            return _bounded_path(value)
-        if isinstance(value, (str, int, bool)) or value is None:
-            return _bounded_text(value, limit=MAX_HYGIENE_REASON_BYTES) if isinstance(value, str) else value
-        if isinstance(value, (list, tuple, set, frozenset)):
-            return [scalar(item) for item in tuple(value)[:MAX_HYGIENE_ITEMS]]
-        if isinstance(value, Mapping):
-            return {
-                _bounded_text(key, limit=64): scalar(item)
-                for key, item in tuple(value.items())[:MAX_HYGIENE_ITEMS]
-            }
-        return _bounded_text(value, limit=MAX_HYGIENE_REASON_BYTES)
-
-    for item in values[:MAX_HYGIENE_ITEMS]:
-        if isinstance(item, Mapping):
-            source: Mapping[str, object] = item
-        else:
-            projected: dict[str, object] = {}
-            for name in _SELECTION_FIELDS:
-                try:
-                    value = getattr(item, name)
-                except AttributeError:
-                    continue
-                if value is not None:
-                    projected[name] = value
-            source = projected
-        claim = {
-            name: scalar(source[name])
-            for name in _SELECTION_FIELDS
-            if name in source
-        }
+    for item in _selection_values(owner, payload):
+        source = _selection_source(item)
         # Retention stores can wrap their actual selected rows in ``items``.
         nested = source.get("items")
         if isinstance(nested, Sequence) and not isinstance(nested, (str, bytes, bytearray)):
-            for nested_item in tuple(nested)[:MAX_HYGIENE_ITEMS]:
-                if isinstance(nested_item, Mapping):
-                    claims.append(
-                        {
-                            name: scalar(nested_item[name])
-                            for name in _SELECTION_FIELDS
-                            if name in nested_item
-                        }
-                    )
-        elif claim:
-            claims.append(claim)
+            for nested_item in nested:
+                nested_source = _selection_source(nested_item)
+                claim = _selection_claim(nested_source)
+                if claim:
+                    claims.append(claim)
+        else:
+            claim = _selection_claim(source)
+            if claim:
+                claims.append(claim)
+
+    # Owner plans normally arrive in path order, but canonical selection
+    # identity must not depend on an accidental mapping/page order.
+    claims.sort(key=_canonical_json)
     return tuple(claims)
+
+
+def _selection_claim_evidence(
+    owner: object,
+    payload: Mapping[str, object],
+    *,
+    expected_count: int,
+    require_count: bool = True,
+) -> tuple[str, int, bool]:
+    claims = _selection_claims(owner, payload)
+    raw_present = _attr_or_key(owner, payload, "records", "entries", "items", "stores") is not None
+    raw_values = _selection_values(owner, payload)
+    truncated = bool(_attr_or_key(owner, payload, "truncated", "incomplete", "partial"))
+    complete = not truncated
+    if raw_values and not claims:
+        complete = False
+    if expected_count > 0 and (
+        not raw_present or (require_count and len(claims) < expected_count)
+    ):
+        complete = False
+    identity_fields = {
+        "artifact_id",
+        "record_id",
+        "id",
+        "key",
+        "path",
+        "path_identity",
+        "identity",
+        "manifest_digest",
+    }
+    if expected_count > 0 and any(
+        not identity_fields.intersection(claim) for claim in claims
+    ):
+        complete = False
+    # Length-prefix each claim so concatenations cannot collide (e.g. [ab,c]
+    # versus [a,bc]).  This is an identity digest, not a user-facing JSON
+    # serialization, so no MAX_HYGIENE_ITEMS cutoff is appropriate here.
+    digest = hashlib.sha256()
+    for claim in claims:
+        encoded = _canonical_json(claim).encode("utf-8")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+    return "sha256:" + digest.hexdigest(), len(claims), complete
 
 
 def _unique_eligible_bytes(owners: Mapping[str, object]) -> tuple[int, bool]:
@@ -662,42 +798,107 @@ def _unique_eligible_bytes(owners: Mapping[str, object]) -> tuple[int, bool]:
         if owner is None:
             continue
         payload = _owner_payload(owner)
-        raw = _attr_or_key(owner, payload, "records", "entries", "items")
-        if isinstance(raw, Mapping):
-            values: Sequence[object] = tuple(raw.values())
-        elif isinstance(raw, Sequence) and not isinstance(raw, (str, bytes, bytearray)):
-            values = tuple(raw)
-        else:
-            continue
-        for item in values[:MAX_HYGIENE_ITEMS]:
-            def value(key: str, current: object = item) -> object:
-                if isinstance(current, Mapping):
-                    return current.get(key)
-                return getattr(current, key, None)
-
-            classification = value("classification") or value("status")
-            eligible = value("eligible") is True or classification == "eligible"
-            if not eligible:
-                continue
-            size = value("size_bytes")
-            if not isinstance(size, int) or size < 0:
-                continue
-            identity = value("path_identity") or value("identity")
-            path = value("path")
-            artifact_id = value("artifact_id") or value("record_id")
-            if identity is not None:
-                key = ("identity", tuple(identity) if isinstance(identity, (list, tuple)) else identity)
-            elif path is not None:
-                key = ("path", str(path))
-            elif artifact_id is not None:
-                key = ("artifact", str(artifact_id))
+        for item in _selection_values(owner, payload):
+            source = _selection_source(item)
+            nested = source.get("items")
+            nested_values: Sequence[object]
+            if isinstance(nested, Sequence) and not isinstance(nested, (str, bytes, bytearray)):
+                nested_values = tuple(nested)
             else:
-                continue
-            claims_seen = True
-            if key not in seen:
-                seen.add(key)
-                total += size
+                nested_values = (item,)
+            for nested_item in nested_values:
+                claim_seen = [False]
+                total += _add_unique_eligible_claim(nested_item, seen, claims_seen_ref=claim_seen)
+                claims_seen = claims_seen or claim_seen[0]
+
     return total, claims_seen
+
+
+def _add_unique_eligible_claim(
+    item: object,
+    seen: set[tuple[object, ...]],
+    claims_seen_ref: list[bool] | None = None,
+) -> int:
+    """Return one claim's bytes if it is eligible and not already physical."""
+
+    def value(key: str) -> object:
+        if isinstance(item, Mapping):
+            return item.get(key)
+        return getattr(item, key, None)
+
+    classification = value("classification") or value("status")
+    eligible = value("eligible") is True or classification == "eligible"
+    if not eligible:
+        return 0
+    size = value("size_bytes")
+    if not isinstance(size, int) or size < 0:
+        size = value("payload_size_bytes")
+    if not isinstance(size, int) or size < 0:
+        return 0
+    identity = value("path_identity") or value("identity")
+    path = value("path")
+    artifact_id = value("artifact_id") or value("record_id")
+    if identity is not None:
+        if isinstance(identity, (list, tuple)):
+            key = ("identity", tuple(identity))
+        else:
+            key = ("identity", identity)
+    elif artifact_id is not None:
+        key = ("artifact", str(artifact_id))
+    elif path is not None:
+        key = ("path", str(path))
+    else:
+        return 0
+    if claims_seen_ref is not None:
+        claims_seen_ref[0] = True
+    if key in seen:
+        return 0
+    seen.add(key)
+    return size
+
+
+def _physical_claims_complete(owners: Mapping[str, object]) -> bool:
+    """Whether every eligible projection has an auditable physical key.
+
+    Logical owner counters remain useful when this is false, but they cannot
+    be replaced by a partial physical sum: doing so would silently undercount
+    a real candidate merely because one owner omitted identity evidence.
+    """
+
+    for name in HYGIENE_COMPONENTS:
+        owner = owners.get(name)
+        if owner is None:
+            continue
+        payload = _owner_payload(owner)
+        for item in _selection_values(owner, payload):
+            source = _selection_source(item)
+            nested = source.get("items")
+            if isinstance(nested, Sequence) and not isinstance(nested, (str, bytes, bytearray)):
+                values: Sequence[object] = tuple(nested)
+            else:
+                values = (item,)
+            for candidate in values:
+                def value(key: str, current: object = candidate) -> object:
+                    if isinstance(current, Mapping):
+                        return current.get(key)
+                    return getattr(current, key, None)
+
+                classification = value("classification") or value("status")
+                if value("eligible") is not True and classification != "eligible":
+                    continue
+                size = value("size_bytes")
+                if not isinstance(size, int) or size < 0:
+                    size = value("payload_size_bytes")
+                identity = value("path_identity") or value("identity")
+                path = value("path")
+                artifact_id = value("artifact_id") or value("record_id")
+                if (
+                    not isinstance(size, int)
+                    or size < 0
+                    or (identity is None and path is None and artifact_id is None)
+                ):
+                    return False
+    return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -738,7 +939,12 @@ class HygienePlan:
     file_actions: int = 0
     verification: str = "unverified"
     fingerprint: str = ""
+    # ``selection_complete`` is distinct from JSON detail completeness.  A
+    # plan with a short presentation page is fine; a plan whose owner claims
+    # were not fully observed is not eligible for verification.
     json_max_bytes: int = MAX_HYGIENE_JSON_BYTES
+    selection_complete: bool = False
+    selection_claims: int = 0
     component_plans: Mapping[str, object] = field(
         default_factory=dict,
         repr=False,
@@ -808,6 +1014,10 @@ class HygienePlan:
             "applied": 0,
             "file_actions": 0,
             "coverage": coverage,
+            "selection": {
+                "complete": self.selection_complete,
+                "claims": self.selection_claims,
+            },
             "counts": self.counts,
             "protected": self.protected,
             "eligible": self.eligible,
@@ -862,6 +1072,10 @@ class HygienePlan:
                 "mutation_authorized": False,
                 "applied": 0,
                 "file_actions": 0,
+                "selection": {
+                    "complete": self.selection_complete,
+                    "claims": self.selection_claims,
+                },
                 "counts": self.counts,
                 "limits": {"max_json_bytes": self.json_max_bytes},
                 "reasons": ["hygiene JSON detail truncated"],
@@ -1263,9 +1477,16 @@ class HygieneManager:
         blocked = sum(item.blocked for item in summaries.values())
         unknown = sum(item.unknown for item in summaries.values())
         observed = sum(item.observed for item in summaries.values())
+        selection_claims = sum(item.selection_claims for item in summaries.values())
+        selection_complete = all(item.selection_complete for item in summaries.values())
         logical_eligible_bytes = sum(item.eligible_bytes for item in summaries.values())
         unique_eligible_bytes, has_physical_claims = _unique_eligible_bytes(owners)
-        eligible_bytes = unique_eligible_bytes if has_physical_claims else logical_eligible_bytes
+        physical_complete = _physical_claims_complete(owners)
+        eligible_bytes = (
+            unique_eligible_bytes
+            if has_physical_claims and physical_complete
+            else logical_eligible_bytes
+        )
         unmanaged: list[Path] = []
         reasons: list[str] = []
         limits: dict[str, int] = {
@@ -1300,6 +1521,10 @@ class HygieneManager:
                 if len(limits) >= 32:
                     break
                 limits.setdefault(f"{name}.{key}", _int(value))
+
+        if logical_eligible_bytes and not physical_complete:
+            if len(reasons) < self.max_reasons:
+                reasons.append("physical accounting incomplete; logical bytes retained")
 
         status = "blocked" if blocked else "unknown" if unknown else "planned"
         if not any(item.complete for item in summaries.values()) and not blocked and not unknown:
@@ -1348,6 +1573,8 @@ class HygieneManager:
             file_actions=0,
             verification="unverified",
             fingerprint=fingerprint,
+            selection_complete=selection_complete,
+            selection_claims=selection_claims,
             json_max_bytes=self.max_bytes,
             component_plans=owners,
             component_fingerprints=component_fingerprints,
@@ -1429,6 +1656,12 @@ class HygieneManager:
                     )
         if plan.fingerprint and plan.fingerprint != current.fingerprint:
             drift_reasons.append("hygiene plan drift detected")
+        if not plan.selection_complete or not current.selection_complete:
+            drift_reasons.append("hygiene selection claims incomplete")
+        if current.status in {"blocked", "unknown", "deferred"}:
+            drift_reasons.append(
+                f"hygiene owner observation is not complete: {current.status}"
+            )
         if not drift_reasons:
             return replace(current, status="verified", verification="verified")
 

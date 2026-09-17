@@ -31,6 +31,7 @@ from .cli_semantic_surface import register_semantic_arguments
 from .cli_text_surface import register_text_arguments
 from .cli_dedup_keeper import register_dedup_keeper_arguments
 from .cli_video_surface import register_video_arguments
+from .cli_agent_activity import register_agent_activity_arguments
 from neocortex.safety.ocr_profiles import OCR_PROFILE_CHOICES
 
 __all__ = [
@@ -158,7 +159,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=("machine-inventory", "maintenance", "external-maintenance", "hygiene"),
+        choices=("machine-inventory", "maintenance", "external-maintenance", "hygiene", "agent-activity"),
         default=None,
         metavar="COMMAND",
         help="direct machine-inventory, maintenance, external-diagnostic or hygiene command",
@@ -166,6 +167,7 @@ def build_parser() -> argparse.ArgumentParser:
     register_platform_arguments(parser)
     register_config_doctor_arguments(parser)
     register_models_arguments(parser)
+    register_agent_activity_arguments(parser)
     parser.add_argument(
         "--version",
         action="version",

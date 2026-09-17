@@ -23,6 +23,7 @@ import stat
 import time
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
@@ -1439,6 +1440,26 @@ class ScratchManager:
                 max_depth=max_depth,
                 max_bytes=max_bytes,
             )
+        # Reconcile registry intents before discovering candidates.  This is a
+        # metadata-only recovery pass: it may confirm a path already absent,
+        # but it never repeats a physical retirement.  A registry without the
+        # optional recovery hook remains compatible with legacy scratch.
+        registry_for_recovery = (
+            self._artifact_registry_instance()
+            if self._artifact_registry_configured
+            else None
+        )
+        if registry_for_recovery is not None:
+            recover = getattr(registry_for_recovery, "recover_retirements", None)
+            if callable(recover):
+                try:
+                    recover()
+                except BaseException:
+                    # Do not turn an inability to reconcile one registry into
+                    # permission to remove scratch.  The per-record guard
+                    # below will preserve the candidate and expose the
+                    # recovery boundary.
+                    pass
         budget = _ScratchScanBudget(max_entries, max_depth, max_bytes)
         observed = tuple(self._scan_records(now_ns=now, budget=budget))
         if budget.truncated:
@@ -1454,22 +1475,33 @@ class ScratchManager:
         candidates = [record for record in observed if record.eligible]
         applied_records: list[ScratchRecord] = []
         remaining: list[ScratchRecord] = []
-        for record in observed:
-            if not record.eligible:
-                remaining.append(record)
-                continue
-            try:
-                self._retire_record(record)
-            except ScratchSecurityError as exc:
-                remaining.append(
-                    replace(record, state="blocked", reason=str(exc), eligible=False)
-                )
-            except OSError as exc:
-                remaining.append(
-                    replace(record, state="failed", reason=str(exc), eligible=False)
-                )
-            else:
-                applied_records.append(record)
+        batch_factory = (
+            getattr(registry_for_recovery, "retirement_batch_guard", None)
+            if registry_for_recovery is not None
+            else None
+        )
+        batch_context = batch_factory() if callable(batch_factory) else nullcontext(None)
+        with cast(Any, batch_context) as retirement_session:
+            for record in observed:
+                if not record.eligible:
+                    remaining.append(record)
+                    continue
+                try:
+                    self._retire_record(
+                        record,
+                        workspace_records=observed,
+                        retirement_session=retirement_session,
+                    )
+                except ScratchSecurityError as exc:
+                    remaining.append(
+                        replace(record, state="blocked", reason=str(exc), eligible=False)
+                    )
+                except OSError as exc:
+                    remaining.append(
+                        replace(record, state="failed", reason=str(exc), eligible=False)
+                    )
+                else:
+                    applied_records.append(record)
         records_after = tuple(remaining)
         summary = self._summarize(
             records_after,
@@ -1878,10 +1910,128 @@ class ScratchManager:
         )
 
     def _record_for_path(self, path: Path) -> ScratchRecord | None:
-        for record in self._scan_records(now_ns=time.time_ns()):
-            if record.path == path:
-                return record
-        return None
+        """Load one known workspace without rediscovering its siblings.
+
+        Retirement used to call ``_scan_records`` for every candidate.  That
+        made an apply of N workspaces perform an N² scratch-manifest walk.  A
+        caller already holds the claimed path and identity from the bounded
+        observation, so a direct manifest read is both cheaper and narrower;
+        the manifest/root/payload identity checks remain in
+        ``_record_from_payload``.
+        """
+
+        if not _path_is_within(path, self.root):
+            return None
+        manifest_path = path / MANIFEST_NAME
+        try:
+            metadata = manifest_path.lstat()
+            if (
+                stat.S_ISLNK(metadata.st_mode)
+                or not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_uid != os.geteuid()
+                or metadata.st_mode & 0o077
+                or metadata.st_nlink != 1
+            ):
+                return None
+            raw = manifest_path.read_bytes()
+            if len(raw) > _MAX_MANIFEST_BYTES:
+                return None
+            payload = json.loads(raw.decode("utf-8"))
+            if not isinstance(payload, Mapping):
+                return None
+            size = _directory_size(path)
+            return self._record_from_payload(
+                path,
+                payload,
+                size_bytes=size,
+                now_ns=time.time_ns(),
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError, ScratchError, TypeError, ValueError) as exc:
+            # Preserve the invalid row for callers such as ScratchWorkspace.state;
+            # collapsing it to ``None`` would change a durable manifest
+            # corruption into an unrelated "claim disappeared" error.
+            try:
+                return self._invalid_record(
+                    path,
+                    f"invalid scratch manifest: {type(exc).__name__}: {exc}",
+                )
+            except BaseException:
+                return None
+
+    @staticmethod
+    def _workspace_dependencies(record: ScratchRecord) -> tuple[str, ...] | None:
+        """Return a normalized live-dependency claim or ``None`` if unknown."""
+
+        value = record.metadata.get("dependencies")
+        if value is None:
+            return ()
+        if isinstance(value, (str, bytes)) or not isinstance(value, Iterable):
+            return None
+        result: list[str] = []
+        for item in value:
+            if not isinstance(item, str) or not item.strip():
+                return None
+            result.append(item)
+        return tuple(sorted(set(result)))
+
+    def _workspace_dependency_observation_complete(
+        self,
+        records: Sequence[ScratchRecord],
+    ) -> bool:
+        """Whether this private scratch root has a complete consumer view."""
+
+        # Invalid/missing manifests are possible consumers whose dependency
+        # claims cannot be read.  The conservative boundary is this one
+        # registered scratch root, not the rest of the filesystem.
+        for record in records:
+            if not record.valid:
+                return False
+            if self._workspace_dependencies(record) is None:
+                return False
+        return True
+
+    def _live_workspace_dependents(
+        self,
+        target: ScratchRecord,
+        records: Sequence[ScratchRecord],
+        *,
+        registry_records: Sequence[Any] | None = None,
+    ) -> tuple[str, ...]:
+        target_id = target.artifact_id or self._artifact_id(target.record_id)
+        registry_by_id = {
+            getattr(item, "artifact_id", None): item
+            for item in (registry_records or ())
+            if getattr(item, "artifact_id", None)
+        }
+        dependents: list[str] = []
+        for record in records:
+            if record.record_id == target.record_id:
+                continue
+            registry_record = registry_by_id.get(record.artifact_id)
+            if registry_record is not None:
+                # The registry projection is the live authority.  The
+                # scratch metadata remains provenance and a fallback only
+                # when its registry projection is missing (for example while
+                # diagnosing a damaged/legacy owner).
+                if not getattr(registry_record, "valid", False):
+                    dependencies = None
+                else:
+                    dependencies = tuple(getattr(registry_record, "dependencies", ()))
+            else:
+                dependencies = self._workspace_dependencies(record)
+            if dependencies is None or target_id not in dependencies:
+                continue
+            if (
+                not record.valid
+                or record.state
+                in {
+                    ScratchState.ACTIVE,
+                    ScratchState.FAILED_RETAINED,
+                    ScratchState.RECOVERY_REQUIRED,
+                }
+            ):
+                dependents.append(record.record_id)
+        return tuple(sorted(set(dependents)))
 
     def _validate_result_paths(
         self,
@@ -1965,7 +2115,13 @@ class ScratchManager:
             self._restore_workspace_observation(path, preserved_observation)
         return self._record_from_payload(path, updated, size_bytes=_directory_size(path))
 
-    def _retire_record(self, record: ScratchRecord) -> None:
+    def _retire_record(
+        self,
+        record: ScratchRecord,
+        *,
+        workspace_records: Sequence[ScratchRecord] | None = None,
+        retirement_session: Any | None = None,
+    ) -> None:
         if self.owner is None:
             raise ScratchSecurityError(
                 "federated scratch view is read-only for retirement"
@@ -1985,6 +2141,34 @@ class ScratchManager:
             raise ScratchSecurityError("scratch record is no longer eligible")
         if current.path_identity is None or not _same_identity(record.path, current.path_identity):
             raise ScratchSecurityError("scratch workspace identity changed before retirement")
+        if workspace_records is None:
+            workspace_records = tuple(self._scan_records(now_ns=time.time_ns()))
+        if not self._workspace_dependency_observation_complete(workspace_records):
+            raise ScratchSecurityError("scratch dependency observation incomplete")
+        registry_snapshot: Sequence[Any] | None = None
+        if self._artifact_registry_configured:
+            registry = self._artifact_registry_instance()
+            if retirement_session is not None:
+                snapshot = getattr(retirement_session, "records", None)
+                registry_snapshot = snapshot if isinstance(snapshot, Sequence) else None
+            if registry_snapshot is None and registry is not None:
+                records_method = getattr(registry, "records", None)
+                if callable(records_method):
+                    candidate_snapshot = records_method()
+                    registry_snapshot = (
+                        candidate_snapshot
+                        if isinstance(candidate_snapshot, Sequence)
+                        else None
+                    )
+        dependents = self._live_workspace_dependents(
+            current,
+            workspace_records,
+            registry_records=registry_snapshot,
+        )
+        if dependents:
+            raise ScratchSecurityError(
+                "scratch workspace has live dependents: " + ", ".join(dependents[:16])
+            )
         if self._artifact_registry_configured and current.artifact_id is not None:
             # The registry guard is held across the physical effect.  A live
             # consumer cannot be registered between the dependency check and
@@ -2010,9 +2194,22 @@ class ScratchManager:
             }
             registry = self._artifact_registry_instance()
             guard = getattr(registry, "retirement_guard", None) if registry is not None else None
+            if retirement_session is not None:
+                guard_context = retirement_session.guard(current.artifact_id)
+            else:
+                guard_context = guard(current.artifact_id) if callable(guard) else None
             if callable(guard):
                 try:
-                    with cast(Any, guard)(current.artifact_id):
+                    with cast(Any, guard_context) as guarded:
+                        # The registry guard may have persisted an intent
+                        # claim in its own manifest.  Preserve that metadata
+                        # when the scratch projection publishes the terminal
+                        # state; otherwise the successful update would erase
+                        # the recovery receipt before it can be confirmed.
+                        if guarded is not None:
+                            guarded_metadata = getattr(guarded, "metadata", None)
+                            if isinstance(guarded_metadata, Mapping):
+                                current_payload["metadata"] = dict(guarded_metadata)
                         _remove_tree_no_follow(record.path, expected_identity=current.path_identity)
                         self._update_artifact(
                             current.path,
@@ -2026,6 +2223,12 @@ class ScratchManager:
                 except BaseException as exc:
                     self._raise_artifact_failure("retire", exc)
                 return
+            if retirement_session is not None:
+                # A session was supplied only by the canonical registry
+                # implementation; reaching this branch indicates a broken
+                # adapter, so preserve rather than unlink without its policy
+                # guard.
+                raise ScratchSecurityError("artifact retirement batch guard unavailable")
             _remove_tree_no_follow(record.path, expected_identity=current.path_identity)
             self._update_artifact(
                 current.path,

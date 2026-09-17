@@ -25,6 +25,7 @@ from neocortex.runtime.config.app_paths import (
 from neocortex.runtime.config.third_party_policy import CodeThirdPartyPolicy
 from neocortex.safety.ocr_profiles import OcrProfileName
 from neocortex.safety.route_filters import CandidateSelection
+from neocortex.capabilities.formats.video.limits import DEFAULT_VIDEO_WORKER_MEMORY_BYTES
 
 # endregion [01]
 
@@ -191,7 +192,7 @@ class FrameworkConfig:
     video_discovery_timeout_seconds: float = 60.0
     video_frame_timeout_seconds: float = 20.0
     video_file_timeout_seconds: float = 300.0
-    video_worker_memory_bytes: int = 2 * 1024 * 1024 * 1024
+    video_worker_memory_bytes: int = DEFAULT_VIDEO_WORKER_MEMORY_BYTES
     video_retry_errors: bool = False
     video_ffmpeg_path: str | None = None
     video_ffprobe_path: str | None = None

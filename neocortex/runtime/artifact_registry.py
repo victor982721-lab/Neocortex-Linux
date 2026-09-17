@@ -85,6 +85,16 @@ _LIVE_DEPENDENT_STATES = frozenset(
         ArtifactState.RECOVERY_REQUIRED.value,
     }
 )
+# ``dependencies`` are live claims for the registry owner.  A retirement
+# intent is kept in the same manifest (rather than in a second journal) so a
+# process may recover an effect after the path has disappeared.  The reserved
+# metadata key is deliberately namespaced; producer metadata remains opaque
+# to the registry except for this lifecycle claim.
+_RETIREMENT_KEY = "neocortex_retirement"
+_RETIREMENT_PENDING_PHASES = frozenset(
+    {"prepared", "applying", "applied_unverified", "recovery_required"}
+)
+_RETIREMENT_CONFIRMED_PHASE = "confirmed"
 _DISPOSABLE_KINDS = frozenset(
     {
         ArtifactKind.REBUILDABLE.value,
@@ -719,6 +729,37 @@ class ArtifactPlan:
         }
 
 
+class _RetirementBatch:
+    """Registry-lock-scoped batch used by ScratchManager.apply().
+
+    Keeping the directory lock for one bounded batch lets every target reuse
+    the same dependency observation.  Each target is still reloaded and
+    revalidated immediately before its own effect; the batch is an
+    optimization of discovery, not an authorization cache.
+    """
+
+    def __init__(
+        self,
+        registry: "ArtifactRegistry",
+        records: tuple[ArtifactRecord, ...],
+        unmanaged: tuple[Path, ...],
+        truncated: bool,
+    ) -> None:
+        self.registry = registry
+        self.records = records
+        self.unmanaged = unmanaged
+        self.truncated = truncated
+
+    @contextmanager
+    def guard(self, artifact: str | ArtifactRecord) -> Iterator[ArtifactRecord]:
+        yield from self.registry._retirement_guard_locked(
+            artifact,
+            records=self.records,
+            unmanaged=self.unmanaged,
+            truncated=self.truncated,
+        )
+
+
 # endregion [02]
 
 
@@ -941,6 +982,124 @@ class ArtifactRegistry:
             if len(values) > MAX_DEPENDENCIES:
                 raise ValueError("artifact dependencies exceed the durable limit")
         return tuple(sorted(set(values)))
+
+    @staticmethod
+    def _retirement_claim(record: ArtifactRecord) -> dict[str, Any] | None:
+        """Return the reserved retirement claim, if one is well formed.
+
+        The claim lives in the owner-controlled manifest metadata.  A
+        malformed claim is not treated as absent: callers that need a safety
+        decision must abstain instead of silently reverting to the ordinary
+        completed/disposable policy.
+        """
+
+        value = record.metadata.get(_RETIREMENT_KEY)
+        if value is None:
+            return None
+        if not isinstance(value, Mapping):
+            raise ArtifactSecurityError("retirement claim is not an object")
+        phase = value.get("phase")
+        operation_id = value.get("operation_id")
+        if phase not in _RETIREMENT_PENDING_PHASES | {_RETIREMENT_CONFIRMED_PHASE}:
+            raise ArtifactSecurityError("retirement claim has an unsupported phase")
+        if not isinstance(operation_id, str) or not operation_id:
+            raise ArtifactSecurityError("retirement claim has no operation id")
+        return dict(value)
+
+    def _metadata_with_retirement(
+        self,
+        record: ArtifactRecord,
+        *,
+        phase: str,
+        operation_id: str,
+        **observations: Any,
+    ) -> dict[str, Any]:
+        """Build bounded metadata for one durable retirement transition."""
+
+        if phase not in _RETIREMENT_PENDING_PHASES | {_RETIREMENT_CONFIRMED_PHASE}:
+            raise ValueError("unsupported retirement phase")
+        metadata = dict(record.metadata)
+        existing = metadata.get(_RETIREMENT_KEY)
+        if existing is not None:
+            if not isinstance(existing, Mapping):
+                raise ArtifactSecurityError("retirement claim is not an object")
+            previous_id = existing.get("operation_id")
+            if previous_id != operation_id:
+                raise ArtifactSecurityError("a different retirement operation is pending")
+            claim = dict(existing)
+        else:
+            claim = {
+                "operation_id": operation_id,
+                "expected_path_identity": list(record.path_identity or ()),
+                "expected_size_bytes": record.path_size_bytes,
+                "expected_mtime_ns": record.path_mtime_ns,
+                "prepared_ns": time.time_ns(),
+            }
+        claim["phase"] = phase
+        claim.update(observations)
+        metadata[_RETIREMENT_KEY] = claim
+        # Use the same bounded metadata validator as ordinary registration;
+        # it prevents a producer from turning the recovery receipt into an
+        # unbounded side channel.
+        return _bounded_mapping(
+            metadata,
+            label="artifact metadata",
+            limit=self.max_metadata_bytes,
+        )
+
+    def _dependency_observation_complete(
+        self,
+        records: Sequence[ArtifactRecord],
+        unmanaged: Sequence[Path] = (),
+        *,
+        truncated: bool = False,
+    ) -> bool:
+        """Whether the registry view can prove absence of live consumers.
+
+        An invalid manifest, an unmanaged registry entry, or a bounded scan is
+        an incomplete view of the owner-controlled dependency universe.  It is
+        safer to preserve a candidate than to interpret a lost dependency list
+        as an empty one.  This is intentionally scoped to this registry root,
+        not to every filesystem path on the machine.
+        """
+
+        return not truncated and not unmanaged and all(record.valid for record in records)
+
+    def _validate_dependencies_locked(
+        self,
+        dependencies: Sequence[str],
+        *,
+        artifact_id: str,
+    ) -> None:
+        """Validate live dependency acquisitions while holding the registry lock.
+
+        Dependency names in this owner registry are live artifact claims, not
+        free-form provenance.  Requiring a verified, non-retired target closes
+        the race where a consumer is registered after its input has already
+        been physically retired.  Producers that need historical provenance
+        should put it in ``source_ref``/``metadata`` instead.
+        """
+
+        for dependency in dependencies:
+            if dependency == artifact_id:
+                raise ArtifactSecurityError("artifact cannot depend on itself")
+            try:
+                target = self._load_record(self._manifest_path(dependency))
+            except (ArtifactRegistryError, OSError, TypeError, ValueError) as exc:
+                raise ArtifactSecurityError(
+                    f"dependency target is unavailable: {dependency}"
+                ) from exc
+            if not target.verified:
+                raise ArtifactSecurityError(
+                    f"dependency target is not verified: {dependency}"
+                )
+            claim = self._retirement_claim(target)
+            if target.state == ArtifactState.RETIRED.value or (
+                claim is not None and claim.get("phase") in _RETIREMENT_PENDING_PHASES
+            ):
+                raise ArtifactSecurityError(
+                    f"dependency target is no longer usable: {dependency}"
+                )
 
     def _payload_from_record(self, record: ArtifactRecord) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -1341,6 +1500,13 @@ class ArtifactRegistry:
             if value is not None and (type(value) is not int or value < 0):
                 raise ValueError(f"artifact {name} must be a non-negative integer or null")
         normalized_dependencies = self._normalize_dependencies(dependencies)
+        # Dependencies are live registry claims.  Validate them while the
+        # same directory lock used by retirement is held so acquisition cannot
+        # race a physical retirement of the target.
+        self._validate_dependencies_locked(
+            normalized_dependencies,
+            artifact_id=artifact_id,
+        )
         if digest is not None:
             digest = _bounded_text(digest, label="artifact digest", limit=MAX_TEXT_BYTES)
         normalized_source_ref = _bounded_json(
@@ -1436,6 +1602,21 @@ class ArtifactRegistry:
         if issue is not None:
             raise ArtifactManifestError(f"published manifest failed safety check: {issue}")
 
+    def _write_existing_registration(
+        self,
+        manifest_path: Path,
+        payload: Mapping[str, Any],
+    ) -> None:
+        """Atomically replace an already-owned manifest."""
+
+        if len(_canonical_json(payload).encode("utf-8")) > self.max_manifest_bytes:
+            raise ValueError("artifact manifest exceeds the configured size limit")
+        _write_json_atomic(manifest_path, payload, exclusive=False)
+        metadata = manifest_path.lstat()
+        issue = _manifest_file_issue(metadata)
+        if issue is not None:
+            raise ArtifactManifestError(f"published manifest failed safety check: {issue}")
+
     @staticmethod
     def _registration_equal(existing: ArtifactRecord, candidate: ArtifactRecord) -> bool:
         fields = (
@@ -1498,8 +1679,14 @@ class ArtifactRegistry:
         self._ensure_root(create=False)
         manifest_path = self._manifest_path(artifact_id)
         current = self._load_record(manifest_path)
+        try:
+            current_retirement = self._retirement_claim(current)
+        except ArtifactSecurityError:
+            raise
         retiring_missing_path = (
             state == ArtifactState.RETIRED.value and current.issue == "artifact_missing"
+            and current_retirement is not None
+            and current_retirement.get("phase") in _RETIREMENT_PENDING_PHASES
         )
         if not current.verified and not retiring_missing_path:
             raise ArtifactSecurityError(current.reason or "artifact cannot be updated after drift")
@@ -1554,6 +1741,10 @@ class ArtifactRegistry:
             )
         if "dependencies" in updates:
             normalized["dependencies"] = list(self._normalize_dependencies(updates["dependencies"]))
+            self._validate_dependencies_locked(
+                tuple(normalized["dependencies"]),
+                artifact_id=current.artifact_id,
+            )
         if "retain_until_ns" in updates:
             normalized["retain_until_ns"] = updates["retain_until_ns"]
         if "ttl_ns" in updates:
@@ -1590,6 +1781,39 @@ class ArtifactRegistry:
             # Clearing an explicit deadline also clears no TTL; a non-null TTL
             # still gives the record its derived deadline at classification.
             pass
+        if merged["state"] == ArtifactState.RETIRED.value:
+            # ScratchManager publishes the terminal state after the physical
+            # unlink.  Preserve and close the durable intent even when the
+            # caller supplies its own metadata projection; otherwise a
+            # successful retirement would lose the receipt on replay.
+            candidate_metadata = merged.get("metadata", current.metadata)
+            if not isinstance(candidate_metadata, Mapping):
+                raise ArtifactSecurityError("artifact metadata is not an object")
+            current_retirement = current.metadata.get(_RETIREMENT_KEY)
+            if current_retirement is not None and _RETIREMENT_KEY not in candidate_metadata:
+                # The scratch projection intentionally carries producer
+                # metadata, not registry-internal receipts.  Carry the
+                # reserved claim forward before closing it.
+                candidate_metadata = dict(candidate_metadata)
+                candidate_metadata[_RETIREMENT_KEY] = current_retirement
+            candidate = replace(
+                current,
+                metadata=_bounded_mapping(
+                    candidate_metadata,
+                    label="artifact metadata",
+                    limit=self.max_metadata_bytes,
+                ),
+            )
+            retirement = self._retirement_claim(candidate)
+            if retirement is not None and retirement.get("phase") in _RETIREMENT_PENDING_PHASES:
+                merged["metadata"] = self._metadata_with_retirement(
+                    candidate,
+                    phase=_RETIREMENT_CONFIRMED_PHASE,
+                    operation_id=str(retirement["operation_id"]),
+                    observed_path_exists=False,
+                    confirmed_ns=time.time_ns(),
+                    receipt={"effect": "removed", "replayed": False},
+                )
         changed = any(
             merged.get(name) != getattr(current, name)
             for name in (
@@ -1725,6 +1949,15 @@ class ArtifactRegistry:
             return "blocked", record.issue
         if not record.verified:
             return "unknown", record.issue or "manifest_invalid"
+        # A durable retirement intent is a recovery boundary.  Until its
+        # receipt is confirmed the artifact is never eligible, even if the
+        # ordinary state/kind/retention fields would otherwise qualify it.
+        try:
+            retirement = ArtifactRegistry._retirement_claim(record)
+        except ArtifactSecurityError:
+            return "blocked", "retirement_claim_invalid"
+        if retirement is not None and retirement.get("phase") in _RETIREMENT_PENDING_PHASES:
+            return "blocked", "retirement_recovery_required"
         if record.updated_ns > now_ns:
             return "protected", "future_timestamp"
         if record.state == ArtifactState.ACTIVE.value:
@@ -1836,11 +2069,14 @@ class ArtifactRegistry:
 
     @contextmanager
     def retirement_guard(self, artifact: str | ArtifactRecord) -> Iterator[ArtifactRecord]:
-        """Serialize dependency release with the physical retirement effect.
+        """Serialize policy/dependency release with the physical effect.
 
-        The caller must perform its effect while this context is held.  All
-        registry writers use the same directory lock, so a consumer cannot
-        add a new dependency between this check and the caller's unlink.
+        Entering the guard durably records an ``applying`` intent in the
+        artifact manifest before the caller unlinks anything.  If the caller
+        raises after the path has disappeared, the intent is changed to
+        ``applied_unverified`` so a fresh process can confirm the tombstone
+        without repeating the physical effect.  If the path remains, the
+        intent becomes ``recovery_required`` and the artifact is preserved.
         """
 
         artifact_id = artifact.artifact_id if isinstance(artifact, ArtifactRecord) else artifact
@@ -1851,24 +2087,272 @@ class ArtifactRegistry:
         )
         self._ensure_root(create=False)
         with self._registry_lock():
-            current = self._load_record(self._manifest_path(artifact_id))
-            if not current.verified:
-                raise ArtifactSecurityError(
-                    current.reason or "artifact cannot be retired after drift"
-                )
-            if self.owner is not None and current.owner != self.owner:
-                raise ArtifactSecurityError("artifact owner does not match this registry")
-            records, _unmanaged, truncated, _reasons = self._scan_records(
+            yield from self._retirement_guard_locked(artifact_id)
+
+    @contextmanager
+    def retirement_batch_guard(self) -> Iterator[_RetirementBatch]:
+        """Hold one registry lock for a bounded retirement batch.
+
+        The batch shares one dependency observation, eliminating the old
+        ``N`` full-registry rescans while preserving per-target reloads,
+        policy checks, and identity checks immediately before each effect.
+        """
+
+        if self.owner is None:
+            raise ArtifactSecurityError(
+                "federated artifact registry view is read-only for retirement"
+            )
+        self._ensure_root(create=False)
+        with self._registry_lock():
+            records, unmanaged, truncated, _reasons = self._scan_records(
                 max_records=self.max_records,
             )
-            if truncated:
-                raise ArtifactSecurityError("dependency observation incomplete")
-            dependents = self._live_dependents(current, records)
-            if dependents:
-                raise ArtifactSecurityError(
-                    "artifact has live dependents: " + ", ".join(dependents[:16])
+            yield _RetirementBatch(self, records, unmanaged, truncated)
+
+    def _retirement_guard_locked(
+        self,
+        artifact: str | ArtifactRecord,
+        *,
+        records: tuple[ArtifactRecord, ...] | None = None,
+        unmanaged: tuple[Path, ...] = (),
+        truncated: bool = False,
+    ) -> Iterator[ArtifactRecord]:
+        artifact_id = artifact.artifact_id if isinstance(artifact, ArtifactRecord) else artifact
+        artifact_id = _bounded_text(
+            artifact_id,
+            label="artifact_id",
+            limit=MAX_ARTIFACT_ID_BYTES,
+        )
+        current = self._load_record(self._manifest_path(artifact_id))
+        if not current.verified:
+            raise ArtifactSecurityError(
+                current.reason or "artifact cannot be retired after drift"
+            )
+        if self.owner is not None and current.owner != self.owner:
+            raise ArtifactSecurityError("artifact owner does not match this registry")
+        if records is None:
+            records, unmanaged, truncated, _reasons = self._scan_records(
+                max_records=self.max_records,
+            )
+        if not self._dependency_observation_complete(
+            records,
+            unmanaged,
+            truncated=truncated,
+        ):
+            raise ArtifactSecurityError("dependency observation incomplete")
+        category, reason = self._classify_for_owner(current, now_ns=time.time_ns())
+        if category != "eligible":
+            raise ArtifactSecurityError(f"artifact policy prevents retirement: {reason}")
+        dependents = self._live_dependents(current, records)
+        if dependents:
+            raise ArtifactSecurityError(
+                "artifact has live dependents: " + ", ".join(dependents[:16])
+            )
+        prepared = self._prepare_retirement_locked(current)
+        try:
+            yield prepared
+        except BaseException:
+            # Never let a recovery bookkeeping failure hide the primary effect
+            # error.  The original manifest remains protected if this write is
+            # itself interrupted; a later recover_retirements() can retry the
+            # metadata-only reconciliation.
+            try:
+                self._record_retirement_failure_locked(prepared)
+            except BaseException:
+                pass
+            raise
+        else:
+            # A caller may use the guard only to inspect/coordinate and then
+            # decide not to perform the effect.  If the path and completed
+            # state are still intact, remove the pending intent so it does
+            # not permanently block a valid dependency acquisition.  A
+            # missing path or terminal state is left durable for recovery.
+            try:
+                latest = self._load_record(self._manifest_path(prepared.artifact_id))
+                if (
+                    latest.state == ArtifactState.COMPLETED.value
+                    and latest.verified
+                    and latest.path.exists()
+                ):
+                    self._clear_retirement_intent_locked(latest)
+            except BaseException:
+                # Conservatively retain the intent; the next apply/recovery
+                # pass will reconcile it without repeating an effect.
+                pass
+
+    def _prepare_retirement_locked(self, record: ArtifactRecord) -> ArtifactRecord:
+        existing = self._retirement_claim(record)
+        if existing is not None and existing.get("phase") in _RETIREMENT_PENDING_PHASES:
+            raise ArtifactSecurityError("artifact retirement already requires recovery")
+        operation_id = uuid.uuid4().hex
+        metadata = self._metadata_with_retirement(
+            record,
+            phase="applying",
+            operation_id=operation_id,
+            applying_ns=time.time_ns(),
+        )
+        updated = replace(
+            record,
+            metadata=metadata,
+            updated_ns=max(record.updated_ns, time.time_ns()),
+        )
+        payload = self._payload_from_record(updated)
+        manifest_path = record.manifest_path or self._manifest_path(record.artifact_id)
+        _write_json_atomic(manifest_path, payload, exclusive=False)
+        metadata_stat = manifest_path.lstat()
+        issue = _manifest_file_issue(metadata_stat)
+        if issue is not None:
+            raise ArtifactManifestError(f"published manifest failed safety check: {issue}")
+        return self._record_from_payload(
+            payload,
+            manifest_path=manifest_path,
+        )
+
+    def _record_retirement_failure_locked(self, record: ArtifactRecord) -> None:
+        """Persist the post-exception observation without performing effects."""
+
+        manifest_path = record.manifest_path or self._manifest_path(record.artifact_id)
+        try:
+            payload = self._read_manifest_payload(manifest_path)
+            raw = self._record_from_payload(payload, manifest_path=manifest_path, revalidate=False)
+            claim = self._retirement_claim(raw)
+            if claim is None:
+                return
+            try:
+                raw.path.lstat()
+            except FileNotFoundError:
+                phase = "applied_unverified"
+                observed: dict[str, Any] = {
+                    "observed_path_exists": False,
+                    "observed_ns": time.time_ns(),
+                }
+                state = raw.state
+            else:
+                phase = "recovery_required"
+                observed = {
+                    "observed_path_exists": True,
+                    "observed_ns": time.time_ns(),
+                }
+                state = ArtifactState.RECOVERY_REQUIRED.value
+            metadata = self._metadata_with_retirement(
+                raw,
+                phase=phase,
+                operation_id=str(claim["operation_id"]),
+                **observed,
+            )
+            updated = replace(
+                raw,
+                state=state,
+                metadata=metadata,
+                updated_ns=max(raw.updated_ns, time.time_ns()),
+            )
+            updated_payload = self._payload_from_record(updated)
+            self._write_existing_registration(manifest_path, updated_payload)
+        except FileNotFoundError:
+            # A missing manifest cannot be safely reconstructed.  Preserve the
+            # absence as an external recovery obligation rather than inventing
+            # a retired row.
+            return
+
+    def _clear_retirement_intent_locked(self, record: ArtifactRecord) -> None:
+        metadata = dict(record.metadata)
+        metadata.pop(_RETIREMENT_KEY, None)
+        updated = replace(
+            record,
+            metadata=_bounded_mapping(metadata, label="artifact metadata"),
+            updated_ns=max(record.updated_ns, time.time_ns()),
+        )
+        manifest_path = record.manifest_path or self._manifest_path(record.artifact_id)
+        self._write_existing_registration(manifest_path, self._payload_from_record(updated))
+
+    @_registry_write_locked
+    def recover_retirements(self) -> dict[str, object]:
+        """Reconcile durable retirement intents without repeating effects.
+
+        A missing claimed path plus an ``applying``/``applied_unverified``
+        intent is sufficient evidence that the physical effect happened.  The
+        recovery only publishes the terminal manifest state; it never creates
+        or removes a workspace.  Existing paths are retained and moved to a
+        recovery-required state for explicit reconciliation.
+        """
+
+        if self.owner is None:
+            raise ArtifactSecurityError(
+                "federated artifact registry view is read-only for recovery"
+            )
+        if not self._ensure_root(create=False):
+            return {
+                "schema": "neocortex.artifact-retirement-recovery/v1",
+                "status": "ready",
+                "confirmed": 0,
+                "recovery_required": 0,
+                "truncated": False,
+            }
+        entries, truncated, _reasons = self._scan_entries(max_records=self.max_records)
+        confirmed: list[str] = []
+        recovery: list[str] = []
+        for entry in entries:
+            if not entry.name.endswith(MANIFEST_SUFFIX):
+                continue
+            manifest_path = self.root / entry.name
+            try:
+                payload = self._read_manifest_payload(manifest_path)
+                raw = self._record_from_payload(
+                    payload,
+                    manifest_path=manifest_path,
+                    revalidate=False,
                 )
-            yield current
+                claim = self._retirement_claim(raw)
+            except (ArtifactRegistryError, OSError, TypeError, ValueError):
+                continue
+            if claim is None or claim.get("phase") not in _RETIREMENT_PENDING_PHASES:
+                continue
+            try:
+                raw.path.lstat()
+            except FileNotFoundError:
+                metadata = self._metadata_with_retirement(
+                    raw,
+                    phase=_RETIREMENT_CONFIRMED_PHASE,
+                    operation_id=str(claim["operation_id"]),
+                    observed_path_exists=False,
+                    confirmed_ns=time.time_ns(),
+                    receipt={"effect": "removed", "replayed": True},
+                )
+                updated = replace(
+                    raw,
+                    state=ArtifactState.RETIRED.value,
+                    metadata=metadata,
+                    updated_ns=max(raw.updated_ns, time.time_ns()),
+                )
+                updated_payload = self._payload_from_record(updated)
+                self._write_existing_registration(manifest_path, updated_payload)
+                confirmed.append(raw.artifact_id)
+            else:
+                metadata = self._metadata_with_retirement(
+                    raw,
+                    phase="recovery_required",
+                    operation_id=str(claim["operation_id"]),
+                    observed_path_exists=True,
+                    recovery_ns=time.time_ns(),
+                )
+                updated = replace(
+                    raw,
+                    state=ArtifactState.RECOVERY_REQUIRED.value,
+                    metadata=metadata,
+                    updated_ns=max(raw.updated_ns, time.time_ns()),
+                )
+                updated_payload = self._payload_from_record(updated)
+                self._write_existing_registration(manifest_path, updated_payload)
+                recovery.append(raw.artifact_id)
+        return {
+            "schema": "neocortex.artifact-retirement-recovery/v1",
+            "status": "blocked" if recovery or truncated else "applied",
+            "confirmed": len(confirmed),
+            "confirmed_artifacts": confirmed,
+            "recovery_required": len(recovery),
+            "recovery_artifacts": recovery,
+            "truncated": truncated,
+        }
 
     def _classify_for_owner(self, record: ArtifactRecord, *, now_ns: int) -> tuple[str, str]:
         if not record.valid:
@@ -1923,6 +2407,11 @@ class ArtifactRegistry:
         observed_records: list[ArtifactRecord] = []
         total_bytes = 0
         byte_truncated = False
+        dependency_complete = self._dependency_observation_complete(
+            records,
+            unmanaged,
+            truncated=truncated,
+        )
         for record in records:
             category, reason = self._classify_for_owner(record, now_ns=now)
             eligible = category == "eligible"
@@ -1932,12 +2421,20 @@ class ArtifactRegistry:
                 reason = "size_truncated"
                 eligible = False
             if eligible:
-                dependents = self._live_dependents(record, records)
-                if dependents:
+                if not dependency_complete:
+                    # A malformed/foreign/omitted registry entry may be the
+                    # consumer that protects this artifact.  Do not turn the
+                    # missing information into an empty dependency set.
+                    category = "blocked"
+                    reason = "dependency_observation_incomplete"
+                    eligible = False
+                else:
+                    dependents = self._live_dependents(record, records)
+                if eligible and dependents:
                     category = "protected"
                     reason = "dependency_live"
                     eligible = False
-                elif truncated:
+                elif eligible and truncated:
                     # A bounded registry scan cannot prove that no unseen
                     # consumer references this artifact.  Fail closed rather
                     # than presenting a partial selection as disposable.

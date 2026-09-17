@@ -268,6 +268,10 @@ def dispatch_direct(args: argparse.Namespace) -> int | None:
         from .cli_maintenance import run_maintenance
 
         return run_maintenance(args)
+    if getattr(args, "command", None) == "agent-activity":
+        from .cli_agent_activity import run_agent_activity
+
+        return run_agent_activity(args)
     if getattr(args, "dedupe", False):
         return _dispatch_dedupe_service(args)
     # Configuration doctor is a parser-owned leaf rather than a product
@@ -636,7 +640,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         # it cannot create state or import route engines.
         print(
             "Uso: Neocortex --all, --dedupe, --route ROUTES, machine-inventory, "
-            "maintenance, hygiene o una operación directa"
+            "maintenance, hygiene, agent-activity o una operación directa"
         )
         print("Use `Neocortex --help` para ver las opciones disponibles.")
         return 0
@@ -680,7 +684,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         # operation.  Never turn them into an implicit inventory write.
         print(
             "Uso: Neocortex --all, --dedupe, --route ROUTES, machine-inventory, "
-            "maintenance, hygiene o una operación directa"
+            "maintenance, hygiene, agent-activity o una operación directa"
         )
         print("Use `Neocortex --help` para ver las opciones disponibles.")
         return 0

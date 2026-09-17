@@ -31,7 +31,6 @@ from .pdf_route_models import (
     PDF_PAGE_SEQUENCE_ERROR_LIMIT,
     STRUCTURAL_RECOVERY_VERSION,
 )
-from neocortex.safety.ocr_image_preprocess import orient_and_deskew
 from neocortex.safety.ocr_profiles import (
     OcrOrientation,
     OcrProfileName,
@@ -459,6 +458,11 @@ def _ocr_profile_result(
     *,
     render_dpi: float,
 ) -> PdfOcrPageResult:
+    # OCR is an optional documents capability.  Keep the structural PDF
+    # recovery surface import-light so the base profile can collect and use
+    # qpdf recovery without importing Pillow merely to bind this module.
+    from neocortex.safety.ocr_image_preprocess import orient_and_deskew
+
     plan = resolve_ocr_profile(config.ocr_profile, config.ocr_lang)
     try:
         orientation = _run_tesseract_osd(pytesseract, image, config)

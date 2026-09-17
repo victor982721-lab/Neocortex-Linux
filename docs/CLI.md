@@ -320,6 +320,31 @@ owners y gates actuales. En particular, un `--apply` existente de scratch o de
 auditoría histórica no se vuelve accesible por incluirlo en una federación de
 preview.
 
+### Matriz compacta de aceptación del circuito
+
+La siguiente matriz es el índice operativo de los contratos de esta capacidad;
+no sustituye los receipts de una corrida ni declara por sí sola que una
+instalación esté aceptada. La evidencia fechada y el `source_sha` pertenecen al
+paquete de auditoría fuera del árbol productivo.
+
+| Criterio | Superficie que debe demostrarlo | Evidencia mínima independiente |
+|---|---|---|
+| C01 selección completa | `hygiene`/registry y su verificación | claims canónicas completas, truncación explícita y bytes aparentes únicos |
+| C02 política junto al efecto | `maintenance --apply` y owner de registry/scratch | revalidación bajo lock; una política de conservación bloquea el retiro |
+| C03 dependencias | manifests de `ArtifactRegistry` y guard de scratch | consumidor íntegro, corrupto o concurrente preserva el insumo hasta liberar la claim |
+| C04 recuperación | receipt/estado de `maintenance` | fallos antes, durante y después del efecto se reanudan sin repetir un retiro confirmado |
+| C05 publicación y sello | interfaz pública de actividad externa | entregable fuera de scratch, `no-replace`, cambio tardío bloqueado y preexistentes intactos |
+| C06 límites y escala | límites de `hygiene`/`maintenance` | entradas, profundidad, bytes, cancelación y lecturas bounded; lote sin barrido N² evitable |
+| C07 actividad externa | `neocortex.api.agent_activity` instalado | prepare, proceso determinista, publish, close, resume/reconcile y owner explícito |
+| C08 abandono/retención | lifecycle y planner de retención por owner | éxito, fallo y abandono reconciliados; tombstones y bytes separados por política |
+| C09 perfil base | wheel en venv runtime-base/test-base | recopilación sin Pillow/PySide6; skips opcionales explícitos |
+| C10 workflows headless | selección funcional actual | texto, video y `--all` pasan bajo contratos reproducibles, sin skips/xfail |
+| C11 instrucciones | este manual, Operations y README | los comandos/métodos documentados existen en la distribución instalada |
+| C12 aceptación instalada | wheel final y launcher | `pip check`, versión, origen, help, smoke fuera del checkout y receipt de artefacto |
+
+Un criterio no demostrado queda pendiente o bloqueado en el registro de la
+ronda; no se convierte en `verificado` por el hecho de que otro renglón pase.
+
 ## Diagnósticos federados v2
 
 La vista aditiva `content-diagnostics/v2` consulta únicamente estado publicado,
@@ -494,8 +519,10 @@ renombra los originales ni sustituye caracteres para inventar otra ruta.
 
 ## Mantenimiento registrado de scratch
 
-**IMPLEMENTADO Y VERIFICADO EN LA RELEASE `0.14.0-a02f6761ece2`:** `maintenance` es una
-hoja de control local para el scratch registrado de NeoCortex. El alcance se
+`maintenance` es una hoja de control local para el scratch registrado de
+NeoCortex. En la distribución instalada se debe comprobar la versión y el
+`source_sha` del artefacto antes de usarlo; esta documentación no convierte un
+hash histórico en identidad de la instalación. El alcance se
 resuelve exclusivamente bajo `<state_directory>/scratch/`:
 `owned-temp` y `audit-work`; no usa `--root` para redirigirlo ni escanea
 `/tmp`. La consulta predeterminada sólo genera un plan bounded, no crea la
@@ -531,7 +558,6 @@ habilitan mantenimiento sobre el corpus.
 
 ### Auditoría histórica explícita
 
-**IMPLEMENTADO Y VERIFICADO EN LA RELEASE `0.14.0-a02f6761ece2`:**
 `historical-temp` no es un alias del scratch registrado ni un limpiador global.
 Requiere una raíz de auditoría absoluta y explícita mediante
 `--maintenance-audit-root`; el selector `--root` sigue siendo el corpus y se

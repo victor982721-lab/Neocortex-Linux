@@ -287,7 +287,10 @@ def test_real_text_code_inventory_duplicate_and_incremental_workflow(
     first = lab.process("text,code", *options)
     _progress(first)
     assert _summary(first, "run_id=")["files"] == "20"
-    assert _summary(first, "route=text ")["processed"] == "19"
+    # All 20 authored base fixtures have a supported text MIME (including the
+    # CSV and the four code files, which Code also indexes as content).  The
+    # previous 19 expectation silently dropped one supported file.
+    assert _summary(first, "route=text ")["processed"] == "20"
     assert _summary(first, "code_candidates=")["code_processed"] == "4"
     assert _summary(first, "duplicate_groups=")["duplicate_groups"] == "1"
     assert _summary(first, "action_mode=")["action_mode"] == "dry-run"
@@ -295,7 +298,7 @@ def test_real_text_code_inventory_duplicate_and_incremental_workflow(
 
     replay = lab.process("text,code", *options)
     assert _summary(replay, "route=text ")["processed"] == "0"
-    assert _summary(replay, "route=text ")["cache_hits"] == "19"
+    assert _summary(replay, "route=text ")["cache_hits"] == "20"
     assert _summary(replay, "code_candidates=")["code_processed"] == "0"
     assert _summary(replay, "code_candidates=")["code_cache_hits"] == "4"
     assert lab.query(
@@ -340,7 +343,7 @@ def test_real_text_code_inventory_duplicate_and_incremental_workflow(
     assert _summary(update, "route=text ")["processed"] == "1"
     replay = lab.process("text,code", *options)
     assert _summary(replay, "code_candidates=")["code_cache_hits"] == "4"
-    assert _summary(replay, "route=text ")["cache_hits"] == "19"
+    assert _summary(replay, "route=text ")["cache_hits"] == "20"
     assert lab.query("code.sqlite3", "SELECT COUNT(*) FROM file_versions") == [[5]]
     assert _hashes(lab.corpus) == changed_bytes
     _terminal_status(lab, {"text", "code"})
@@ -678,10 +681,14 @@ raise SystemExit(exit_code)
     assert "faster-whisper" in result.stdout + result.stderr
     audit = json.loads(audit_path.read_text(encoding="utf-8"))
     assert audit["network_attempts"] == []
-    # With no inference backend, the only children are local tool-version probes.
-    # No unaudited inference or processing worker may have been launched.
+    # With no inference backend, only bounded local media probes are allowed.
+    # ffprobe may inspect the selected audio fixture before the typed missing
+    # model result is published; no inference/worker process may be launched.
+    assert all(Path(command[0]).name in {"ffmpeg", "ffprobe"} for command in audit["children"])
     assert all(
-        Path(command[0]).name in {"ffmpeg", "ffprobe"} and command[1:] == ["-version"]
+        Path(command[0]).name == "ffmpeg"
+        or command[1:] == ["-version"]
+        or command[1:3] == ["-v", "error"]
         for command in audit["children"]
     )
     assert _hashes(model_cache) == {}, "a missing model is not permission to download weights"
@@ -692,12 +699,15 @@ raise SystemExit(exit_code)
     )
     status = lab.cli("--state-directory", str(lab.state), "--status", "--status-json")
     _assert_completed(status)
-    run = json.loads(status.stdout.splitlines()[0])
+    status_payload = json.loads(status.stdout.splitlines()[0])
+    run = status_payload["runs"][0]
     assert run["status"] == "failed"
     routes = {route["route_name"]: route for route in run["routes"]}
     assert set(routes) == set(registered), "--all selection must retain every registered route"
     assert routes["audio"]["status"] == "failed"
-    assert routes["audio"]["error_type"] == "WhisperRuntimeError"
+    # The current public degradation contract names the unavailable optional
+    # capability explicitly; older releases surfaced WhisperRuntimeError.
+    assert routes["audio"]["error_type"] == "AudioRuntimeUnavailableError"
     assert routes["text"]["status"] == routes["code"]["status"] == "completed"
     audio_error = lab.query(
         "framework.sqlite3", "SELECT error_message FROM route_runs WHERE route_name='audio'"

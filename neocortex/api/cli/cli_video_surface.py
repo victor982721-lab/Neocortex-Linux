@@ -6,7 +6,11 @@ from collections.abc import Callable
 
 from .cli_operations import DirectOperationFamily, selected_direct_operations
 from neocortex.safety.ocr_profiles import OCR_PROFILE_CHOICES
-from neocortex.capabilities.formats.video.limits import MAX_VIDEO_FRAME_PIXELS, MAX_VIDEO_FRAMES
+from neocortex.capabilities.formats.video.limits import (
+    DEFAULT_VIDEO_WORKER_MEMORY_BYTES,
+    MAX_VIDEO_FRAME_PIXELS,
+    MAX_VIDEO_FRAMES,
+)
 
 __all__ = (
     "register_video_arguments",
@@ -56,7 +60,12 @@ def register_video_arguments(
     video.add_argument("--video-discovery-timeout", type=float, default=60.0)
     video.add_argument("--video-frame-timeout", type=float, default=20.0)
     video.add_argument("--video-file-timeout", type=float, default=300.0)
-    video.add_argument("--video-worker-memory-mb", type=int, default=2048)
+    video.add_argument(
+        "--video-worker-memory-mb",
+        type=int,
+        default=DEFAULT_VIDEO_WORKER_MEMORY_BYTES // (1024 * 1024),
+        help="per-worker reservation; defaults to the minimum adaptive global budget",
+    )
     video.add_argument(
         "--retry-video-errors",
         action="store_true",

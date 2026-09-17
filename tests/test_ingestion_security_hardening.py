@@ -9,11 +9,9 @@ from argparse import Namespace
 from pathlib import Path
 
 import pytest
-from PIL import Image
 
 from neocortex.api.cli import cli_audio, cli_video
 from neocortex.capabilities.formats.archive.route import _xml_text
-from neocortex.capabilities.formats.image.isolation import image_worker_memory_reservation
 from neocortex.capabilities.formats.office.extraction import extract_office_document
 from neocortex.capabilities.formats.office.models import OfficeExtractionError
 from neocortex.capabilities.formats.pdf import pdf_isolation
@@ -26,6 +24,8 @@ from neocortex.capabilities.formats.xml_safety import (
 from neocortex.deduplication import snapshot_path
 from neocortex.runtime.control.cancellation import CancellationToken
 from neocortex.runtime.control.bounded_subprocess import SubprocessOutputLimitError
+
+TEST_CAPABILITIES = ("base", "image")
 
 
 def test_xml_declarations_are_rejected_before_entity_expansion() -> None:
@@ -118,7 +118,14 @@ def test_qpdf_recovery_uses_bounded_subprocess_capture(
     assert observed["stderr_limit_bytes"] == 256 * 1024
 
 
+@pytest.mark.capability("image")
 def test_image_decode_rejects_final_symlink(tmp_path: Path) -> None:
+    # Pillow belongs to the image capability.  Keep it out of module import
+    # time so the remaining base security regressions collect without the
+    # optional image runtime.
+    from PIL import Image
+    from neocortex.capabilities.formats.image.isolation import image_worker_memory_reservation
+
     target = tmp_path / "target.png"
     link = tmp_path / "candidate.png"
     Image.new("RGB", (16, 16), "white").save(target)

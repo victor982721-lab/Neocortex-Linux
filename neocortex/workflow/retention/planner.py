@@ -14,13 +14,15 @@ must define resumable batches and rollback independently of this diagnostic.
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from neocortex.deduplication.persistence.ddl import SCHEMA_VERSION as INVENTORY_SCHEMA_VERSION
 from neocortex.deduplication.persistence.validation import validate_inventory_schema
@@ -366,6 +368,938 @@ class RetentionPlan:
         """The common retention planner never compacts SQLite owners."""
 
         return False
+
+
+TerminalRetentionDisposition = Literal["eligible", "protected", "blocked"]
+TerminalRetentionCategory = Literal[
+    "workspace",
+    "tombstone",
+    "terminal_log",
+    "summary",
+    "receipt",
+    "rollback_derived",
+    "other",
+]
+
+_TERMINAL_RETENTION_CATEGORIES = frozenset(
+    {
+        "workspace",
+        "tombstone",
+        "terminal_log",
+        "summary",
+        "receipt",
+        "rollback_derived",
+        "other",
+    }
+)
+_TERMINAL_RETENTION_STATES = frozenset(
+    {
+        "completed",
+        "failed",
+        "failed-retained",
+        "cancelled",
+        "abandoned",
+        "retired",
+    }
+)
+_TERMINAL_LIVE_STATES = frozenset(
+    {
+        "active",
+        "committing",
+        "running",
+        "building",
+        "partial",
+        "recovering",
+        "recovery",
+        "recovery_required",
+    }
+)
+_MAX_TERMINAL_RETENTION_RECORDS = 100_000
+_MAX_TERMINAL_RETENTION_BYTES = 4 * 1024 * 1024 * 1024
+_MAX_TERMINAL_RECORD_ID_BYTES = 256
+
+
+def _validate_terminal_quota(value: object, *, label: str, maximum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= maximum:
+        raise ValueError(f"{label} must be between 0 and {maximum}")
+    return value
+
+
+def _validate_terminal_non_negative(value: object, *, label: str, maximum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= maximum:
+        raise ValueError(f"{label} must be between 0 and {maximum}")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalRetentionPolicy:
+    """Bounded policy for terminal activity evidence and tombstones.
+
+    This policy is intentionally a read-only planning contract.  It does not
+    grant a caller permission to remove a workspace or a manifest.  An item
+    can be eligible only after its owner has recorded reconciliation and an
+    explicit release authorization; age, a missing PID, or a TTL on its own is
+    never sufficient.
+
+    The four product-history quotas mirror the existing common retention
+    vocabulary.  ``workspace_*`` and ``tombstone_*`` bound activity-owned
+    terminal material and registry evidence respectively.  A quota is applied
+    only to records that have already passed the safety gates, so an active,
+    pinned, replay-required, or otherwise uncertain record cannot be evicted
+    merely because a count is full.
+    """
+
+    minimum_age_ns: int | None = None
+    max_records: int = _MAX_TERMINAL_RETENTION_RECORDS
+    max_bytes: int = _MAX_TERMINAL_RETENTION_BYTES
+    workspace_count: int = 2
+    workspace_bytes: int = 512 * 1024 * 1024
+    tombstone_count: int = 2
+    tombstone_bytes: int = 64 * 1024 * 1024
+    terminal_log_count: int = 2
+    terminal_log_bytes: int = 512 * 1024 * 1024
+    summary_count: int = 30
+    summary_bytes: int = 64 * 1024 * 1024
+    receipt_count: int = 30
+    receipt_bytes: int = 128 * 1024 * 1024
+    rollback_derived_count: int = 1
+    rollback_derived_bytes: int = 128 * 1024 * 1024
+
+    def __post_init__(self) -> None:
+        if self.minimum_age_ns is not None:
+            _validate_terminal_non_negative(
+                self.minimum_age_ns,
+                label="terminal minimum_age_ns",
+                maximum=(1 << 63) - 1,
+            )
+        _validate_terminal_quota(
+            self.max_records,
+            label="terminal max_records",
+            maximum=_MAX_TERMINAL_RETENTION_RECORDS,
+        )
+        _validate_terminal_non_negative(
+            self.max_bytes,
+            label="terminal max_bytes",
+            maximum=_MAX_TERMINAL_RETENTION_BYTES,
+        )
+        for name, value in (
+            ("workspace_count", self.workspace_count),
+            ("tombstone_count", self.tombstone_count),
+            ("terminal_log_count", self.terminal_log_count),
+            ("summary_count", self.summary_count),
+            ("receipt_count", self.receipt_count),
+            ("rollback_derived_count", self.rollback_derived_count),
+        ):
+            _validate_terminal_quota(
+                value,
+                label=f"terminal {name}",
+                maximum=_MAX_TERMINAL_RETENTION_RECORDS,
+            )
+        for name, value in (
+            ("workspace_bytes", self.workspace_bytes),
+            ("tombstone_bytes", self.tombstone_bytes),
+            ("terminal_log_bytes", self.terminal_log_bytes),
+            ("summary_bytes", self.summary_bytes),
+            ("receipt_bytes", self.receipt_bytes),
+            ("rollback_derived_bytes", self.rollback_derived_bytes),
+        ):
+            _validate_terminal_non_negative(
+                value,
+                label=f"terminal {name}",
+                maximum=_MAX_TERMINAL_RETENTION_BYTES,
+            )
+
+    @classmethod
+    def from_retention_policy(cls, policy: RetentionPolicy) -> "TerminalRetentionPolicy":
+        """Adapt the common planner's explicit product-history quotas.
+
+        ``RetentionPolicy.minimum_age_ns=None`` deliberately remains
+        unconfigured here.  This preserves the common planner's safe default:
+        an operator must opt into an age before a terminal record can become a
+        candidate.
+        """
+
+        if not isinstance(policy, RetentionPolicy):
+            raise TypeError("retention policy is invalid")
+        return cls(
+            minimum_age_ns=policy.minimum_age_ns,
+            max_records=min(policy.batch_size * 1_000, _MAX_TERMINAL_RETENTION_RECORDS),
+            max_bytes=min(policy.snapshot_max_temporary_bytes, _MAX_TERMINAL_RETENTION_BYTES),
+            terminal_log_count=policy.terminal_log_count,
+            terminal_log_bytes=policy.terminal_log_bytes,
+            summary_count=policy.summary_count,
+            summary_bytes=policy.summary_bytes,
+            receipt_count=policy.receipt_count,
+            receipt_bytes=policy.receipt_bytes,
+            rollback_derived_count=policy.rollback_derived_count,
+        )
+
+    def quota(self, category: TerminalRetentionCategory) -> tuple[int, int]:
+        """Return the count and apparent-byte quota for one category."""
+
+        if category == "workspace":
+            return self.workspace_count, self.workspace_bytes
+        if category == "tombstone":
+            return self.tombstone_count, self.tombstone_bytes
+        if category == "terminal_log":
+            return self.terminal_log_count, self.terminal_log_bytes
+        if category == "summary":
+            return self.summary_count, self.summary_bytes
+        if category == "receipt":
+            return self.receipt_count, self.receipt_bytes
+        if category == "rollback_derived":
+            return self.rollback_derived_count, self.rollback_derived_bytes
+        return self.workspace_count, self.workspace_bytes
+
+    def to_dict(self) -> dict[str, int | None]:
+        return {
+            "minimum_age_ns": self.minimum_age_ns,
+            "max_records": self.max_records,
+            "max_bytes": self.max_bytes,
+            "workspace_count": self.workspace_count,
+            "workspace_bytes": self.workspace_bytes,
+            "tombstone_count": self.tombstone_count,
+            "tombstone_bytes": self.tombstone_bytes,
+            "terminal_log_count": self.terminal_log_count,
+            "terminal_log_bytes": self.terminal_log_bytes,
+            "summary_count": self.summary_count,
+            "summary_bytes": self.summary_bytes,
+            "receipt_count": self.receipt_count,
+            "receipt_bytes": self.receipt_bytes,
+            "rollback_derived_count": self.rollback_derived_count,
+            "rollback_derived_bytes": self.rollback_derived_bytes,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalRetentionRecord:
+    """A bounded, owner-provided terminal observation.
+
+    This is a projection, not a second registry.  Owners may construct it
+    directly or pass a mapping/object with the same fields to
+    :func:`plan_terminal_retention`.  The planner never follows ``path`` or
+    invokes owner methods; the owner remains responsible for identity,
+    recovery and physical-effect revalidation.
+    """
+
+    record_id: str
+    status: str
+    category: TerminalRetentionCategory = "workspace"
+    terminal_ns: int | None = None
+    apparent_bytes: int = 0
+    allocated_bytes: int = 0
+    physical_identity: tuple[int, int, int] | None = None
+    reconciled: bool = False
+    recovery_required: bool = False
+    replay_required: bool = False
+    pinned: bool = False
+    grant_active: bool = False
+    authorization_active: bool = False
+    release_authorized: bool = False
+    evidence_required: bool = False
+    retain_until_ns: int | None = None
+    tombstone: bool = False
+    owner: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.record_id, str) or not self.record_id.strip():
+            raise ValueError("terminal record_id must be non-empty text")
+        if len(self.record_id.encode("utf-8")) > _MAX_TERMINAL_RECORD_ID_BYTES:
+            raise ValueError("terminal record_id exceeds the durable size limit")
+        if not isinstance(self.status, str) or not self.status.strip():
+            raise ValueError("terminal status must be non-empty text")
+        if self.category not in _TERMINAL_RETENTION_CATEGORIES:
+            raise ValueError(f"unsupported terminal retention category: {self.category!r}")
+        for name, value in (
+            ("terminal_ns", self.terminal_ns),
+            ("retain_until_ns", self.retain_until_ns),
+        ):
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+            ):
+                raise ValueError(f"terminal {name} must be a non-negative integer or None")
+        for name, value in (
+            ("apparent_bytes", self.apparent_bytes),
+            ("allocated_bytes", self.allocated_bytes),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"terminal {name} must be a non-negative integer")
+        for name in (
+            "reconciled",
+            "recovery_required",
+            "replay_required",
+            "pinned",
+            "grant_active",
+            "authorization_active",
+            "release_authorized",
+            "evidence_required",
+            "tombstone",
+        ):
+            if type(getattr(self, name)) is not bool:
+                raise TypeError(f"terminal {name} must be a boolean")
+        if self.physical_identity is not None:
+            if (
+                not isinstance(self.physical_identity, (tuple, list))
+                or len(self.physical_identity) != 3
+                or any(type(value) is not int for value in self.physical_identity)
+                or self.physical_identity[0] < 0
+                or self.physical_identity[1] < 0
+                or self.physical_identity[2] < -1
+            ):
+                raise ValueError("terminal physical_identity is invalid")
+            object.__setattr__(self, "physical_identity", tuple(self.physical_identity))
+        if self.owner is not None and (
+            not isinstance(self.owner, str) or not self.owner.strip()
+        ):
+            raise ValueError("terminal owner must be non-empty text or None")
+        if self.category == "tombstone" and not self.tombstone:
+            object.__setattr__(self, "tombstone", True)
+
+    @property
+    def status_normalized(self) -> str:
+        return self.status.strip().casefold()
+
+    @property
+    def terminal(self) -> bool:
+        return self.status_normalized in _TERMINAL_RETENTION_STATES
+
+    @property
+    def logical_bytes(self) -> int:
+        return self.apparent_bytes
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "record_id": self.record_id,
+            "status": self.status,
+            "category": self.category,
+            "terminal_ns": self.terminal_ns,
+            "apparent_bytes": self.apparent_bytes,
+            "allocated_bytes": self.allocated_bytes,
+            "physical_identity": (
+                None if self.physical_identity is None else list(self.physical_identity)
+            ),
+            "reconciled": self.reconciled,
+            "recovery_required": self.recovery_required,
+            "replay_required": self.replay_required,
+            "pinned": self.pinned,
+            "grant_active": self.grant_active,
+            "authorization_active": self.authorization_active,
+            "release_authorized": self.release_authorized,
+            "evidence_required": self.evidence_required,
+            "retain_until_ns": self.retain_until_ns,
+            "tombstone": self.tombstone,
+            "owner": self.owner,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalRetentionItem:
+    """Classification of one terminal observation."""
+
+    record: TerminalRetentionRecord
+    disposition: TerminalRetentionDisposition
+    reasons: tuple[str, ...]
+
+    @property
+    def record_id(self) -> str:
+        return self.record.record_id
+
+    @property
+    def apparent_bytes(self) -> int:
+        return self.record.apparent_bytes
+
+    @property
+    def allocated_bytes(self) -> int:
+        return self.record.allocated_bytes
+
+    def to_dict(self) -> dict[str, object]:
+        payload = self.record.to_dict()
+        payload.update({"disposition": self.disposition, "reasons": list(self.reasons)})
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalRetentionPlan:
+    """Read-only bounded terminal-retention decision and accounting.
+
+    ``eligible`` is a proposal only.  There is intentionally no apply method:
+    the owning ScratchManager/ArtifactRegistry must reacquire its own lock,
+    revalidate identity and commit a durable effect/recovery receipt.
+    """
+
+    now_ns: int
+    policy: TerminalRetentionPolicy
+    items: tuple[TerminalRetentionItem, ...]
+    status: str = "ready"
+    truncated: bool = False
+    truncation_reasons: tuple[str, ...] = ()
+    omitted_records: int | None = None
+    baseline_record_ids: tuple[str, ...] = ()
+    free_bytes: int | None = None
+    physical_accounting_complete: bool = True
+    fingerprint: str = ""
+
+    @property
+    def records(self) -> tuple[TerminalRetentionRecord, ...]:
+        return tuple(item.record for item in self.items)
+
+    @property
+    def eligible_items(self) -> tuple[TerminalRetentionItem, ...]:
+        return tuple(item for item in self.items if item.disposition == "eligible")
+
+    @property
+    def protected_items(self) -> tuple[TerminalRetentionItem, ...]:
+        return tuple(item for item in self.items if item.disposition == "protected")
+
+    @property
+    def blocked_items(self) -> tuple[TerminalRetentionItem, ...]:
+        return tuple(item for item in self.items if item.disposition == "blocked")
+
+    @property
+    def observed_count(self) -> int:
+        return len(self.items)
+
+    @property
+    def eligible_count(self) -> int:
+        return len(self.eligible_items)
+
+    @property
+    def protected_count(self) -> int:
+        return len(self.protected_items)
+
+    @property
+    def blocked_count(self) -> int:
+        return len(self.blocked_items)
+
+    @property
+    def observed_apparent_bytes(self) -> int:
+        return sum(item.apparent_bytes for item in self.items)
+
+    @property
+    def observed_allocated_bytes(self) -> int:
+        return sum(item.allocated_bytes for item in self.items)
+
+    @property
+    def logical_apparent_bytes(self) -> int:
+        """Apparent bytes, including duplicate owner projections."""
+
+        return self.observed_apparent_bytes
+
+    @property
+    def eligible_apparent_bytes(self) -> int:
+        return sum(item.apparent_bytes for item in self.eligible_items)
+
+    @property
+    def protected_apparent_bytes(self) -> int:
+        return sum(item.apparent_bytes for item in self.protected_items)
+
+    @property
+    def blocked_apparent_bytes(self) -> int:
+        return sum(item.apparent_bytes for item in self.blocked_items)
+
+    @property
+    def recovery_pending_count(self) -> int:
+        return sum(
+            item.record.recovery_required
+            or item.record.replay_required
+            or item.record.status_normalized in {"recovery_required", "recovering", "recovery"}
+            for item in self.items
+        )
+
+    @property
+    def tombstone_count(self) -> int:
+        return sum(item.record.tombstone for item in self.items)
+
+    @property
+    def unique_workspace_count(self) -> int:
+        """Count physical workspace identities, not registry projections."""
+
+        return len(
+            {
+                item.record.physical_identity
+                for item in self.items
+                if item.record.category == "workspace"
+                and item.record.physical_identity is not None
+            }
+        )
+
+    @property
+    def preserved_terminal_count(self) -> int:
+        return self.protected_count + self.blocked_count
+
+    @property
+    def terminal_overhead_apparent_bytes(self) -> int:
+        """Apparent bytes of durable tombstone/terminal evidence observed."""
+
+        return sum(
+            item.apparent_bytes
+            for item in self.items
+            if item.record.tombstone
+            or item.record.category
+            in {"terminal_log", "summary", "receipt", "rollback_derived"}
+        )
+
+    @property
+    def new_terminal_records(self) -> int:
+        known = set(self.baseline_record_ids)
+        return sum(
+            item.record.terminal and item.record.record_id not in known for item in self.items
+        )
+
+    @property
+    def pending_recovery_bytes(self) -> int:
+        return sum(
+            item.apparent_bytes
+            for item in self.items
+            if item.record.recovery_required
+            or item.record.replay_required
+            or item.record.status_normalized in {"recovery_required", "recovering", "recovery"}
+        )
+
+    def _unique_bytes(self, items: Sequence[TerminalRetentionItem]) -> tuple[int, int, bool, int]:
+        seen: dict[tuple[int, int, int], tuple[int, int]] = {}
+        missing = 0
+        for item in items:
+            identity = item.record.physical_identity
+            if identity is None:
+                missing += 1
+                continue
+            current = seen.get(identity)
+            apparent = item.apparent_bytes
+            allocated = item.allocated_bytes
+            if current is None:
+                seen[identity] = (apparent, allocated)
+            else:
+                # A projection may report different observations for the same
+                # object.  Max is conservative and prevents double-counting
+                # while avoiding an under-report caused by an older projection.
+                seen[identity] = (max(current[0], apparent), max(current[1], allocated))
+        return (
+            sum(value[0] for value in seen.values()),
+            sum(value[1] for value in seen.values()),
+            missing == 0,
+            missing,
+        )
+
+    @property
+    def unique_apparent_bytes(self) -> int:
+        return self._unique_bytes(self.items)[0]
+
+    @property
+    def unique_allocated_bytes(self) -> int:
+        return self._unique_bytes(self.items)[1]
+
+    @property
+    def physical_unique_count(self) -> int:
+        identities = {
+            item.record.physical_identity
+            for item in self.items
+            if item.record.physical_identity is not None
+        }
+        return len(identities)
+
+    @property
+    def physical_recovery_status(self) -> str:
+        return "not_verified"
+
+    @property
+    def reason_counts(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for item in self.items:
+            for reason in item.reasons:
+                counts[reason] = counts.get(reason, 0) + 1
+        return dict(sorted(counts.items()))
+
+    @property
+    def bytes(self) -> dict[str, int | None]:
+        return {
+            "observed_apparent": self.observed_apparent_bytes,
+            "observed_allocated": self.observed_allocated_bytes,
+            "logical_apparent": self.logical_apparent_bytes,
+            "unique_apparent": self.unique_apparent_bytes,
+            "unique_allocated": self.unique_allocated_bytes,
+            "eligible_apparent": self.eligible_apparent_bytes,
+            "protected_apparent": self.protected_apparent_bytes,
+            "blocked_apparent": self.blocked_apparent_bytes,
+            "preserved_apparent": self.protected_apparent_bytes + self.blocked_apparent_bytes,
+            "planned_release_apparent": self.eligible_apparent_bytes,
+            "terminal_overhead_apparent": self.terminal_overhead_apparent_bytes,
+            "free": self.free_bytes,
+        }
+
+    @property
+    def counts(self) -> dict[str, int | None]:
+        return {
+            "observed": self.observed_count,
+            "eligible": self.eligible_count,
+            "protected": self.protected_count,
+            "blocked": self.blocked_count,
+            "tombstones": self.tombstone_count,
+            "unique_workspaces": self.unique_workspace_count,
+            "preserved_terminal": self.preserved_terminal_count,
+            "recovery_pending": self.recovery_pending_count,
+            "new_terminal_records": self.new_terminal_records,
+            "omitted": self.omitted_records,
+        }
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema": "neocortex.terminal-retention/v1",
+            "status": self.status,
+            "now_ns": self.now_ns,
+            "read_only": True,
+            "truncated": self.truncated,
+            "truncation_reasons": list(self.truncation_reasons),
+            "omitted_records": self.omitted_records,
+            "policy": self.policy.to_dict(),
+            "counts": self.counts,
+            "bytes": self.bytes,
+            "physical_unique_count": self.physical_unique_count,
+            "physical_accounting_complete": self.physical_accounting_complete,
+            "physical_recovery_status": self.physical_recovery_status,
+            "baseline_record_ids": list(self.baseline_record_ids),
+            "reason_counts": self.reason_counts,
+            "fingerprint": self.fingerprint,
+            "items": [item.to_dict() for item in self.items],
+        }
+
+
+def _terminal_value(source: object, *names: str, default: object = None) -> object:
+    if isinstance(source, Mapping):
+        for name in names:
+            if name in source:
+                return source[name]
+        return default
+    for name in names:
+        try:
+            value = getattr(source, name)
+        except AttributeError:
+            continue
+        if value is not None:
+            return value
+    return default
+
+
+def _terminal_bool(source: object, *names: str, default: bool = False) -> bool:
+    value = _terminal_value(source, *names, default=default)
+    if type(value) is not bool:
+        raise ValueError(f"terminal {names[0]} must be a boolean")
+    return value
+
+
+def _terminal_int(source: object, *names: str, default: int | None = None) -> int | None:
+    value = _terminal_value(source, *names, default=default)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"terminal {names[0]} must be a non-negative integer or None")
+    return value
+
+
+def _coerce_terminal_record(source: object) -> TerminalRetentionRecord:
+    if isinstance(source, TerminalRetentionRecord):
+        return source
+    record_id = _terminal_value(
+        source,
+        "record_id",
+        "artifact_id",
+        "workspace_id",
+        "id",
+    )
+    status = _terminal_value(source, "status", "state", "recorded_status")
+    if not isinstance(record_id, str) or not record_id.strip():
+        raise ValueError("terminal record must provide a non-empty record_id")
+    if not isinstance(status, str) or not status.strip():
+        raise ValueError(f"terminal record {record_id!r} must provide status")
+    category_value = _terminal_value(source, "category", "kind", "role", default="workspace")
+    if category_value in {"temporary", "cache", "rebuildable"}:
+        category_value = "workspace"
+    if category_value in {"canonical", "operational", "external"}:
+        category_value = "other"
+    if category_value == "registry_tombstone":
+        category_value = "tombstone"
+    if category_value not in _TERMINAL_RETENTION_CATEGORIES:
+        raise ValueError(f"unsupported terminal retention category: {category_value!r}")
+    category = cast(TerminalRetentionCategory, category_value)
+    terminal_ns = _terminal_int(
+        source,
+        "terminal_ns",
+        "completed_ns",
+        "finished_ns",
+        "retired_ns",
+        "updated_ns",
+    )
+    apparent = _terminal_int(
+        source,
+        "apparent_bytes",
+        "size_bytes",
+        "payload_size_bytes",
+        "estimated_bytes",
+        default=0,
+    )
+    allocated = _terminal_int(source, "allocated_bytes", "physical_bytes", default=0)
+    identity = _terminal_value(
+        source,
+        "physical_identity",
+        "path_identity",
+        "identity",
+    )
+    if identity is not None:
+        if not isinstance(identity, (tuple, list)) or len(identity) != 3:
+            raise ValueError("terminal physical_identity is invalid")
+        identity = tuple(identity)
+    tombstone = _terminal_bool(source, "tombstone", default=category_value == "tombstone")
+    evidence_value = _terminal_value(source, "evidence_required", default=None)
+    evidence_required = tombstone if evidence_value is None else _terminal_bool(
+        source, "evidence_required"
+    )
+    return TerminalRetentionRecord(
+        record_id=record_id,
+        status=status,
+        category=category,
+        terminal_ns=terminal_ns,
+        apparent_bytes=0 if apparent is None else apparent,
+        allocated_bytes=0 if allocated is None else allocated,
+        physical_identity=identity,
+        reconciled=_terminal_bool(source, "reconciled", "reconciled_ok"),
+        recovery_required=_terminal_bool(source, "recovery_required", "recovery_pending"),
+        replay_required=_terminal_bool(source, "replay_required", "replay_pending"),
+        pinned=_terminal_bool(source, "pinned", "pin"),
+        grant_active=_terminal_bool(source, "grant_active", "grant", "lease_active"),
+        authorization_active=_terminal_bool(
+            source, "authorization_active", "retention_authorized", "authorization"
+        ),
+        release_authorized=_terminal_bool(source, "release_authorized", "releasable"),
+        evidence_required=evidence_required,
+        retain_until_ns=_terminal_int(source, "retain_until_ns", "retire_after_ns"),
+        tombstone=tombstone,
+        owner=cast(str | None, _terminal_value(source, "owner")),
+    )
+
+
+def _terminal_fingerprint(
+    items: Sequence[TerminalRetentionItem], policy: TerminalRetentionPolicy
+) -> str:
+    claims = {
+        "policy": policy.to_dict(),
+        "items": [
+            {
+                "record": item.record.to_dict(),
+                "disposition": item.disposition,
+                "reasons": list(item.reasons),
+            }
+            for item in sorted(
+                items,
+                key=lambda value: (
+                    value.record.record_id,
+                    value.record.status_normalized,
+                    value.record.terminal_ns if value.record.terminal_ns is not None else -1,
+                ),
+            )
+        ],
+    }
+    encoded = json.dumps(
+        claims,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def plan_terminal_retention(
+    records: Iterable[TerminalRetentionRecord | Mapping[str, object] | object],
+    *,
+    now_ns: int,
+    policy: TerminalRetentionPolicy | RetentionPolicy | None = None,
+    baseline_record_ids: Collection[str] | None = None,
+    free_bytes: int | None = None,
+    cancelled: Callable[[], bool] | None = None,
+) -> TerminalRetentionPlan:
+    """Classify terminal owner observations under one bounded dry-run policy.
+
+    ``records`` must be a projection obtained from the canonical owner.  This
+    function does not scan filesystem paths, read manifests, infer liveness
+    from PIDs, or mutate anything.  A count/byte fence stops observation before
+    the next record and marks the whole selection incomplete; no item is then
+    eligible.  Owners must pass explicit ``reconciled`` and
+    ``release_authorized`` claims for any terminal cleanup to be considered.
+    """
+
+    if isinstance(policy, RetentionPolicy):
+        selected_policy = TerminalRetentionPolicy.from_retention_policy(policy)
+    elif policy is None:
+        selected_policy = TerminalRetentionPolicy()
+    elif isinstance(policy, TerminalRetentionPolicy):
+        selected_policy = policy
+    else:
+        raise TypeError("terminal retention policy is invalid")
+    if isinstance(now_ns, bool) or not isinstance(now_ns, int) or now_ns < 0:
+        raise ValueError("terminal retention now_ns must be a non-negative integer")
+    if free_bytes is not None and (
+        isinstance(free_bytes, bool) or not isinstance(free_bytes, int) or free_bytes < 0
+    ):
+        raise ValueError("terminal free_bytes must be a non-negative integer or None")
+    baseline = tuple(sorted(set(baseline_record_ids or ())))
+    if any(
+        not isinstance(value, str) or not value.strip() for value in baseline
+    ):
+        raise ValueError("terminal baseline_record_ids must contain non-empty text")
+    if any(len(value.encode("utf-8")) > _MAX_TERMINAL_RECORD_ID_BYTES for value in baseline):
+        raise ValueError("terminal baseline_record_ids contain an oversized identifier")
+
+    bounded: list[TerminalRetentionRecord] = []
+    omitted: int | None = None
+    truncated = False
+    truncation_reasons: list[str] = []
+    observed_budget = 0
+    source_is_sequence = isinstance(records, Sequence) and not isinstance(records, (str, bytes))
+    known_total = len(records) if source_is_sequence else None  # type: ignore[arg-type]
+    iterator = iter(records)
+    while True:
+        if cancelled is not None and cancelled():
+            raise RetentionPlanningCancelled("terminal retention planning was cancelled")
+        if len(bounded) >= selected_policy.max_records:
+            truncated = True
+            truncation_reasons.append("record_limit")
+            if known_total is not None:
+                omitted = max(0, known_total - len(bounded))
+            break
+        try:
+            raw = next(iterator)
+        except StopIteration:
+            break
+        record = _coerce_terminal_record(raw)
+        observation_cost = record.apparent_bytes + record.allocated_bytes
+        if observation_cost > selected_policy.max_bytes - observed_budget:
+            truncated = True
+            truncation_reasons.append("byte_limit")
+            if known_total is not None:
+                omitted = max(0, known_total - len(bounded))
+            break
+        bounded.append(record)
+        observed_budget += observation_cost
+    if truncated and omitted is None and known_total is not None:
+        omitted = max(0, known_total - len(bounded))
+
+    # Duplicate IDs are an invalid observation boundary.  Keep the records in
+    # the evidence, but prevent either projection from becoming eligible.
+    id_counts: dict[str, int] = {}
+    for record in bounded:
+        id_counts[record.record_id] = id_counts.get(record.record_id, 0) + 1
+
+    candidates_by_category: dict[TerminalRetentionCategory, list[int]] = {}
+    preliminary: dict[int, tuple[TerminalRetentionDisposition, list[str]]] = {}
+    for index, record in enumerate(bounded):
+        reasons: list[str] = []
+        status = record.status_normalized
+        if id_counts[record.record_id] > 1:
+            reasons.append("duplicate_record_id")
+        if status in _TERMINAL_LIVE_STATES:
+            reasons.append("state_not_terminal")
+        elif status not in _TERMINAL_RETENTION_STATES:
+            reasons.append("unknown_status")
+        if record.recovery_required or status in {"recovery_required", "recovering", "recovery"}:
+            reasons.append("recovery_required")
+        if record.replay_required:
+            reasons.append("replay_required")
+        if record.pinned:
+            reasons.append("pinned")
+        if record.grant_active:
+            reasons.append("grant_active")
+        if record.authorization_active:
+            reasons.append("authorization_active")
+        if record.evidence_required:
+            reasons.append("evidence_required")
+        if not record.reconciled:
+            reasons.append("reconciliation_required")
+        if not record.release_authorized:
+            reasons.append("release_not_authorized")
+        if record.terminal_ns is None:
+            reasons.append("terminal_timestamp_missing")
+        elif selected_policy.minimum_age_ns is None:
+            reasons.append("age_policy_not_configured")
+        elif (
+            record.terminal_ns > now_ns
+            or now_ns - record.terminal_ns < selected_policy.minimum_age_ns
+        ):
+            reasons.append("minimum_age_not_reached")
+        if record.retain_until_ns is not None and now_ns < record.retain_until_ns:
+            reasons.append("retention_active")
+        if reasons:
+            preliminary[index] = (
+                "protected" if "unknown_status" not in reasons else "blocked",
+                reasons,
+            )
+            continue
+        category: TerminalRetentionCategory = (
+            "tombstone" if record.tombstone else record.category
+        )
+        candidates_by_category.setdefault(category, []).append(index)
+        preliminary[index] = ("protected", ["policy_window"])
+
+    # Quotas keep the newest safe records.  Sorting ties by ID gives a stable
+    # decision independent of input order, which is important for replay.
+    for category, indexes in candidates_by_category.items():
+        count_limit, byte_limit = selected_policy.quota(category)
+        ranked = sorted(
+            indexes,
+            key=lambda index: (
+                bounded[index].terminal_ns if bounded[index].terminal_ns is not None else -1,
+                bounded[index].record_id,
+            ),
+            reverse=True,
+        )
+        kept_count = 0
+        kept_bytes = 0
+        keep: set[int] = set()
+        for index in ranked:
+            record = bounded[index]
+            if kept_count >= count_limit or (
+                kept_count > 0 and kept_bytes + record.apparent_bytes > byte_limit
+            ):
+                continue
+            keep.add(index)
+            kept_count += 1
+            kept_bytes += record.apparent_bytes
+        for index in ranked:
+            if index in keep:
+                continue
+            preliminary[index] = ("eligible", ["terminal_retention_expired"])
+
+    items: list[TerminalRetentionItem] = []
+    for index, record in enumerate(bounded):
+        disposition, reasons = preliminary[index]
+        if truncated:
+            disposition = "blocked"
+            reasons = list(dict.fromkeys(("observation_incomplete", *reasons)))
+        items.append(TerminalRetentionItem(record, disposition, tuple(reasons)))
+    status = (
+        "blocked"
+        if truncated or any(item.disposition == "blocked" for item in items)
+        else "ready"
+    )
+    complete = all(item.record.physical_identity is not None for item in items)
+    plan = TerminalRetentionPlan(
+        now_ns=now_ns,
+        policy=selected_policy,
+        items=tuple(items),
+        status=status,
+        truncated=truncated,
+        truncation_reasons=tuple(dict.fromkeys(truncation_reasons)),
+        omitted_records=omitted,
+        baseline_record_ids=baseline,
+        free_bytes=free_bytes,
+        physical_accounting_complete=complete,
+    )
+    return replace(plan, fingerprint=_terminal_fingerprint(plan.items, selected_policy))
+
+
+def terminal_retention_plan_payload(plan: TerminalRetentionPlan) -> dict[str, object]:
+    """Return the bounded JSON envelope for terminal retention evidence."""
+
+    return plan.to_dict()
 
 
 @dataclass(slots=True)
@@ -2160,7 +3094,15 @@ __all__ = [
     "RetentionPlanningCancelled",
     "RetentionPolicy",
     "RetentionStorePlan",
+    "TerminalRetentionCategory",
+    "TerminalRetentionDisposition",
+    "TerminalRetentionItem",
+    "TerminalRetentionPlan",
+    "TerminalRetentionPolicy",
+    "TerminalRetentionRecord",
     "plan_retention",
+    "plan_terminal_retention",
     "retention_plan_payload",
+    "terminal_retention_plan_payload",
 ]
 # endregion [02]

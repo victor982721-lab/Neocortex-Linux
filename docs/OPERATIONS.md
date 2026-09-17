@@ -554,11 +554,15 @@ siguen siendo por página; concatenar páginas no equivale a top-K global.
 
 ### Scratch registrado (tranche A+B)
 
-**IMPLEMENTADO Y VERIFICADO EN LA RELEASE `0.14.0-a02f6761ece2`:** este flujo sólo revisa
-los workspaces privados registrados bajo
+Este flujo sólo revisa los workspaces privados registrados bajo
 `<state_directory>/scratch/<scope>`. Los scopes admitidos son `owned-temp` y
 `audit-work`; no se debe proporcionar una raíz de corpus para cambiar el
 alcance y no se inspecciona `/tmp`.
+
+Antes de ejecutar una operación desde un entorno instalado, comprueba
+`Neocortex --version`, el origen del módulo y el `source_sha` del artefacto
+seleccionado. Los hashes de releases históricas que aparezcan en informes no
+son una identidad viva ni autorizan cambiar de instalación.
 
 La consulta no crea la raíz ausente y no tiene efecto físico. Ejecuta primero
 el plan bounded:
@@ -567,6 +571,10 @@ el plan bounded:
 Neocortex maintenance --scope owned-temp --maintenance-json
 Neocortex maintenance --scope audit-work --maintenance-json
 ```
+
+La trazabilidad de este flujo frente a C01–C12 se mantiene en la
+[matriz compacta de aceptación de la CLI](CLI.md#matriz-compacta-de-aceptación-del-circuito);
+esta página describe el procedimiento y no duplica sus criterios.
 
 Sólo aplica después de revisar la salida y confirmar que los candidatos son
 scratch propio, registrado y marcado `completed`:
@@ -591,31 +599,83 @@ por el corpus, `/tmp` completo ni un directorio compartido.
 
 ### Actividad externa determinista sobre el mismo lifecycle
 
-Una actividad local (incluido un proceso de prueba de un agente) usa la API
-existente, no escribe manifests a mano ni adopta `.codex`/`HOME` como scratch:
+Una actividad externa debe usar la fachada instalada
+`neocortex.api.agent_activity.AgentActivity`; no debe importar
+`ScratchManager`/`ArtifactRegistry` para coordinar a mano el protocolo ni
+escribir manifests. La fachada compone esos owners existentes y exige un owner
+explícito. Para el productor del framework se usa `owner="neocortex-framework"`,
+que es el owner que acepta el mantenimiento público; un owner de prueba debe
+ser registrado por la integración antes de solicitar efectos.
+
+El recorrido público es:
+
+1. `AgentActivity.prepare(state_directory, activity_id, owner=...)` crea el
+   workspace privado registrado bajo el `state_directory` explícito y expone
+   su ruta exclusiva en `activity.path`.
+2. `activity.run(argv, ...)` ejecuta el proceso externo sin shell implícito,
+   usando sólo esa ruta como cwd y sin redirigir `HOME`, `.codex`, credenciales,
+   modelos ni cachés compartidas.
+3. `activity.publish(source, destination, ...)` copia de forma no-replace el resultado a una raíz
+   de entregables separada y registra allí el artefacto canonical. Una ruta
+   preexistente o un digest distinto se conserva y produce conflicto; nunca se
+   sobreescribe un archivo ajeno.
+4. `activity.close(result_paths=...)` sella los miembros e identidad observados y finaliza
+   el workspace. Un cambio posterior, incluso con el mismo tamaño, bloquea el
+   retiro para recuperación explícita.
+5. Tras una caída, un proceso nuevo llama
+   `AgentActivity.resume(state_directory, activity_id, owner=...)` y
+   `activity.reconcile(...)`; no reutiliza el objeto
+   Python anterior. Sólo después de observar un estado terminal y la política
+   de retención se solicita `activity.retire()` o el `maintenance --apply`
+   autorizado.
+
+La forma exacta de argumentos se obtiene de la ayuda y firma de la distribución
+instalada; no se deben inventar flags ni escribir JSON de manifiesto desde el
+agente. El API devuelve estado durable, identidad, publicación pendiente y
+recuperación requerida, de modo que una interrupción no se presenta como
+éxito. Un entregable publicado fuera de scratch conserva su propio registro y
+no se vuelve desechable por haber sido producido desde allí. El comando
+`maintenance --scope owned-temp --apply` sigue componiendo el registry canónico
+`<state_directory>/artifacts`; su replay es idempotente y una consulta no crea
+raíces ausentes.
+
+La retención terminal se planifica con el owner read-only existente mediante
+`plan_terminal_retention(...)` y `TerminalRetentionPolicy`. La planificación
+separa workspaces, tombstones, logs, receipts y rollback derivado; exige
+reconciliación y liberación explícitas, protege pins/grants/replay/recovery y
+separa bytes aparentes, asignados, lógicos, físicos únicos y espacio libre
+observado. No expone `apply`: el owner del workspace/registry debe reacquirir
+su lock, revalidar identidad y confirmar el receipt antes de retirar. Edad,
+TTL, PID ausente o un tombstone por sí solos nunca autorizan el efecto.
+
+Ejemplo de forma pública (los nombres de argumentos se deben confirmar con
+`inspect.signature` o la documentación instalada antes de automatizarlo):
 
 ```python
-registry = ArtifactRegistry(state / "artifacts", owner="actividad", create_root=True)
-scratch = ScratchManager(
-    state / "scratch" / "owned-temp",
-    owner="actividad",
-    create_root=True,
-    artifact_registry=registry,
+import sys
+from pathlib import Path
+
+from neocortex.api.agent_activity import AgentActivity
+
+state = Path("/ruta/estado-prueba")
+destination_root = Path("/ruta/entregables-prueba")
+activity = AgentActivity.prepare(
+    state_directory=state,
+    activity_id="actividad-fixture-001",
+    owner="neocortex-framework",
 )
-workspace = scratch.create(run_id="run-local", retain_on_success=True)
-# ejecutar el proceso externo con workspace.path como su directorio exclusivo
-# publicar el entregable en otra raíz owner-owned y registrarlo como canonical
-workspace.complete((workspace.path / "resultado.bin",), retain=True)
-scratch.apply()  # revalida dependencias, identidad y cambios tardíos
+# activity.run((sys.executable, "-c", "..."))
+# activity.publish(activity.path / "resultado.bin", destination_root / "resultado.bin")
+# activity.close(result_paths=(activity.path / "resultado.bin",))
+# Si el coordinador cae:
+# resumed = AgentActivity.resume(state, "actividad-fixture-001")
+# resumed.reconcile(action="resume")
 ```
 
-Una interrupción conserva el workspace `active` o `failed-retained` para
-reanudación. El entregable publicado fuera de scratch conserva su propio
-registro y no se vuelve desechable por haber sido producido desde allí. El
-cierre comprueba el tamaño observado al completar; contenido añadido después
-queda bloqueado para recuperación explícita. La CLI `maintenance --scope ...
---apply` compone el registry canónico `<state_directory>/artifacts`; su replay
-es un no-op y una consulta no crea raíces ausentes.
+La prueba del producto debe ejecutar ese recorrido desde el wheel instalado,
+fuera del checkout, con un proceso determinista que falle y luego se reanude.
+La prueba no equivale a una sesión nativa de Codex y no autoriza limpiar HOME,
+`.codex`, el corpus, modelos, sesiones o `/tmp`.
 
 ### Auditoría histórica explícita
 

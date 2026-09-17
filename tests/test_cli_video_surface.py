@@ -105,6 +105,15 @@ def test_video_route_arguments_project_every_safety_bound(tmp_path: Path) -> Non
     assert route.ocr_timeout_seconds == 8
 
 
+def test_video_default_worker_reservation_fits_minimum_global_budget() -> None:
+    args = build_parser().parse_args(())
+
+    # The global coordinator's minimum adaptive budget is one GiB.  The
+    # public default must be admitted on that floor; callers needing a larger
+    # reservation still opt in explicitly with --video-worker-memory-mb.
+    assert args.video_worker_memory_mb == 1024
+
+
 @pytest.mark.parametrize(
     ("arguments", "message"),
     (

@@ -233,6 +233,27 @@ caches generales, journal, coredumps, sesiones Codex, Papelera y backups
 externos) se reportan como `out_of_profile`/`preserved`, nunca como bytes
 recuperables.
 
+### Actividad externa registrada
+
+Una actividad de agente que necesite auxiliares propios usa la fachada pública
+instalada `neocortex.api.agent_activity.AgentActivity`. La fachada prepara un
+workspace bajo un `state_directory` explícito, conserva el owner externo
+declarado, ejecuta el proceso únicamente sobre ese workspace, publica el
+entregable en una raíz separada con política no-replace y permite cerrar,
+reanudar/reconciliar y retirar conforme al registry y al mantenimiento. No se
+escriben manifests desde el agente y no se adoptan `HOME`, `.codex`, sesiones,
+modelos, cachés compartidas, `/tmp` completo ni el corpus.
+
+El owner `neocortex-framework` es el productor canónico compatible con la CLI
+de mantenimiento; un owner distinto sólo es válido si la integración lo
+registra expresamente. Ante una caída, el proceso nuevo debe reabrir la
+actividad por su identificador durable y observar la recuperación antes de
+retirar. Una actividad fallida o con publicación incierta permanece conservada
+o `recovery_required`; edad, PID ausente o TTL no son autorización de borrado.
+Consulta [Operación → actividad externa](docs/OPERATIONS.md#actividad-externa-determinista-sobre-el-mismo-lifecycle)
+para el recorrido y [CLI → matriz de aceptación](docs/CLI.md#matriz-compacta-de-aceptación-del-circuito)
+para la evidencia independiente.
+
 ### Inventario federado de máquina
 
 `machine-inventory` es la consulta bounded y read-only del control plane local.

@@ -48,6 +48,7 @@ from .models import (
     VideoRouteSummary,
 )
 from .probe import probe_video, resolve_video_ffprobe
+from .limits import DEFAULT_VIDEO_WORKER_MEMORY_BYTES
 from .state import (
     VideoFrameEvidence,
     cached_video_document,
@@ -221,7 +222,7 @@ class VideoRouteConfig:
     discovery_timeout_seconds: float = 60.0
     frame_timeout_seconds: float = 20.0
     file_timeout_seconds: float = 300.0
-    worker_memory_bytes: int = 2 * 1024 * 1024 * 1024
+    worker_memory_bytes: int = DEFAULT_VIDEO_WORKER_MEMORY_BYTES
     retry_errors: bool = False
     retry_recoverable_errors: bool = False
     ffmpeg_path: str | None = None

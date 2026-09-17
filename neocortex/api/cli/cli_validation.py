@@ -51,6 +51,7 @@ _HISTORICAL_MAINTENANCE_SCOPE = "historical-temp"
 _EXTERNAL_COMMAND = "external-maintenance"
 _MACHINE_INVENTORY_COMMAND = "machine-inventory"
 _HYGIENE_COMMAND = "hygiene"
+_AGENT_ACTIVITY_COMMAND = "agent-activity"
 _MACHINE_INVENTORY_BOUNDS = {
     "machine_max_entries": (1, 1_000_000),
     "machine_max_depth": (0, 64),
@@ -253,6 +254,7 @@ def _validate_machine_inventory_operation(args: argparse.Namespace) -> bool:
     if not requested:
         return False
 
+
     if getattr(args, "command", None) != _MACHINE_INVENTORY_COMMAND:
         raise SystemExit("machine-inventory options require the machine-inventory command")
 
@@ -299,6 +301,37 @@ def _validate_machine_inventory_operation(args: argparse.Namespace) -> bool:
         options = ", ".join("--" + name.replace("_", "-") for name in unsupported)
         raise SystemExit(f"machine-inventory cannot be combined with unsupported options: {options}")
     return True
+
+
+def _validate_agent_activity_operation(args: argparse.Namespace) -> bool:
+    """Validate the public external-activity lifecycle leaf."""
+
+    if getattr(args, "command", None) != _AGENT_ACTIVITY_COMMAND:
+        return False
+    activity_id = getattr(args, "agent_activity_id", None)
+    if not isinstance(activity_id, str) or not activity_id.strip():
+        raise SystemExit("agent-activity requires --agent-activity-id")
+    owner = getattr(args, "agent_owner", None)
+    if not isinstance(owner, str) or not owner.strip():
+        raise SystemExit("agent-activity requires a non-empty --agent-owner")
+    state = getattr(args, "state_directory", None)
+    if not isinstance(state, Path) or not state.is_absolute():
+        raise SystemExit("agent-activity requires an absolute state directory")
+    if getattr(args, "all", False) or getattr(args, "apply", False):
+        raise SystemExit("agent-activity cannot be combined with --all/--apply")
+    if normalize_route_selection(getattr(args, "route", "none"), BUILTIN_ROUTE_ORDER):
+        raise SystemExit("agent-activity cannot be combined with --route")
+    action = getattr(args, "agent_action", "status")
+    command = getattr(args, "agent_command", None)
+    if action == "run" and not command:
+        raise SystemExit("agent-activity run requires --agent-command")
+    if action != "run" and command:
+        raise SystemExit("--agent-command is only valid with --agent-action run")
+    if action == "publish":
+        if getattr(args, "agent_source", None) is None or getattr(args, "agent_destination", None) is None:
+            raise SystemExit("agent-activity publish requires source and destination")
+    return True
+
 
 
 def _validate_hygiene_operation(args: argparse.Namespace) -> bool:
@@ -1251,6 +1284,8 @@ def _validate_route_only(args: argparse.Namespace) -> None:
 
 
 def validate_arguments(args: argparse.Namespace) -> None:
+    if _validate_agent_activity_operation(args):
+        return
     if _validate_hygiene_operation(args):
         return
     if _validate_machine_inventory_operation(args):
