@@ -1,16 +1,16 @@
 # Handoff operativo vigente — NeoCortex
 
-**Ronda actual:** NEO-HYGIENE-002 — cierre de higiene de artefactos y lifecycle agéntico.
-**Actualización:** 2026-09-16T23:40:00-06:00 (America/Mexico_City).
+**Ronda actual:** NEO-HYGIENE-C01-C12 — continuidad de higiene operativa integral.
+**Actualización:** 2026-09-17T00:30:00-06:00 (America/Mexico_City).
 **Fuente viva:** `HEAD == main == origin/main` y árbol limpio se comprueban antes de cerrar.
 
-**Estado final de código:** `832a29f432d628f3fc548a4c407f3d4b4b46048b` (`main == origin/main` al publicar esta ronda), versión fuente `0.14.1`. La candidata aislada se reconstruye desde el SHA final de este handoff; no se promueve `current` ni se toca corpus/HOME/SQLite productiva.
+**Estado vivo:** `HEAD=main=origin/main=f24b7aaa510dc280100f58633f3b1f1f1909ddf1`, versión fuente `0.14.1`. La candidata aislada final se debe reconstruir desde este SHA; no se promovió `current` personal ni se seleccionó corpus/HOME/SQLite productiva.
 
-**HYG-01..06 / TEST-01:** HYG-01 corregido con presupuestos separados; HYG-02 protegido por dependencias vivas y lock de registry junto al efecto; HYG-03 fingerprint ligado a claims concretas; HYG-04 CLI aislada compone `<state_directory>/artifacts`; HYG-05 límites de scratch y bytes recortados fail-closed; HYG-06 raíces de registro/artefacto separadas; TEST-01 separa importación base/UI sin hacer Qt obligatorio.
+**Goal:** C01–C12 sigue ABIERTO. C01, C02, C03, C04, C05, C06, C07, C10 y C11 tienen regresiones/focos instalados verificados en esta ronda. C08 tiene planner terminal read-only y 51 regresiones, pero falta demostrar el balance end-to-end de abandono/retención aplicado por el owner. C09 tiene recopilación base instalada sin PIL/PySide6 (`7630/7707 collected`, 77 deselected, 0 collection errors) y 8/9 casos mínimos ejecutados, pero no se presenta como suite base completa. C12 tiene candidata/pip-check/smoke e identidad instalada, pero la aceptación integral y la evidencia final deben completarse antes del cierre.
 
-**Validación observada:** 107 focales hygiene/lifecycle/CLI/integration/packaging, 213 functional/base focales, UI `--capabilities=ui` 29 pasaron. La suite base terminó 7542 pasadas, 57 omitidas, 76 deseleccionadas y 36 subtests, con un fallo de identidad de distribución porque el venv del checkout aún declara la instalación histórica `0.14.0`; la misma prueba de identidad pasó 5/5 desde una extracción de la candidata instalada aislada. Ruff pasó; Pyright pasó con sólo warnings preexistentes de helpers no usados; Mypy queda no verificado por errores preexistentes de `xxhash` opcional.
+**Matriz C01–C12:** C01 claims completos y bytes físicos sin corte; C02 política del registry/scratch bajo lock; C03 corrupción/ausencia de consumidores fail-closed; C04 intención durable y `recover_retirements()` sin repetir unlink; C05 sello de miembros/digest y publicación no-replace; C06 límites efectivos, batch guard y lecturas lineales; C07 `AgentActivity` pública instalada + CLI + proceso externo/reanudación; C08 `TerminalRetentionPolicy/Plan` bounded read-only pendiente de efecto owner; C09 base import-light pendiente de ejecución integral; C10 texto 20, video 1 GiB y `--all` degradación documentada; C11 docs/Operations/README/help reales; C12 build/install/remote/source/artefacto final aún en aceptación.
 
-**Límites/gates:** las corridas usan fixtures privados y un proceso externo determinista; no se ejecutó sesión nativa de Codex, GUI/KIO real, corpus, modelos nuevos ni efectos personales. `hygiene` permanece preview/read-only; `maintenance --apply` sólo actúa sobre scratch registrado propio. La evidencia compacta vigente queda bajo `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-16-hygiene-832a29f/`.
+**Evidencia de esta ronda:** la reauditoría adjunta bajo `/home/winterboss/Descargas/` se contrastó con fixtures locales. El paquete compacto nuevo se conservará fuera del árbol productivo bajo `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-17-hygiene-c01-c12/`. No se declaró C01∧…∧C12.
 
 ## Evidencia de entregas anteriores (histórica)
 
