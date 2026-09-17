@@ -14,7 +14,8 @@ CLI_MODULES = tuple(sorted(path.stem for path in CLI_ROOT.glob("cli_*.py")))
 
 
 def test_canonical_cli_modules_are_owned_by_the_api_tree() -> None:
-    assert len(CLI_MODULES) == 41
+    assert len(CLI_MODULES) == 42
+    assert "cli_agent_activity" in CLI_MODULES
     assert "cli_content_diagnostics" in CLI_MODULES
     assert "cli_dedup_keeper" in CLI_MODULES
     assert "cli_hygiene" in CLI_MODULES

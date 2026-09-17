@@ -23,6 +23,7 @@ _ACTIVE_DOCUMENTS = frozenset(
         "docs/ARCHITECTURE.md",
         "docs/CHANGELOG.md",
         "docs/CLI.md",
+        "docs/AGENT_ACTIVITY.md",
         "docs/FILE_INTELLIGENCE_AND_CURATION.md",
         "docs/KNOWLEDGE.md",
         "docs/KNOWLEDGE_OPERATIONAL_QUERY.md",

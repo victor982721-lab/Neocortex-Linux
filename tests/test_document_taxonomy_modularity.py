@@ -30,6 +30,8 @@ from neocortex.documents.document_taxonomy import (
     document_classifier_signature,
     semantic_label_inventory,
 )
+
+TEST_CAPABILITIES = ("documents",)
 # endregion [01]
 
 # region [02] Implementación

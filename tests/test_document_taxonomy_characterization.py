@@ -16,6 +16,8 @@ from neocortex.documents.document_taxonomy import (
     classify_document,
 )
 
+TEST_CAPABILITIES = ("documents",)
+
 
 @dataclass(frozen=True, slots=True)
 class _TaxonomyCase:

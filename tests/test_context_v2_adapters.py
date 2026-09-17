@@ -19,7 +19,7 @@ from neocortex.capabilities.formats.text.text_state import initialize_text_state
 from neocortex.interface.entrypoint import entrypoint
 
 
-TEST_CAPABILITIES = ("base", "agent")
+TEST_CAPABILITIES = ("agent",)
 
 
 @pytest.fixture
