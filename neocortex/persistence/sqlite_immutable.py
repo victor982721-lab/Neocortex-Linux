@@ -666,6 +666,11 @@ def _reject_unexpected_sqlite_sidecars(path: Path) -> None:
                     )
     except ImmutableSQLiteUnavailable:
         raise
+    except FileNotFoundError:
+        # Let the main-owner probe report the canonical missing-database
+        # error; scanning a missing parent must not turn it into a sidecar
+        # policy failure.
+        return
     except OSError as exc:
         raise ImmutableSQLiteUnavailable(
             f"SQLite owner sidecar directory cannot be inspected: {path.parent}"
@@ -760,6 +765,41 @@ def _sqlite_owner_process_has_writer_lock(fence: SQLiteImmutableFence) -> bool:
     return False
 
 
+def _sqlite_owner_process_has_wal_writer_lock(fence: SQLiteImmutableFence) -> bool:
+    """Detect this process's WAL writer/checkpoint/recovery lock."""
+
+    shm = dict(fence.sidecars).get("-shm")
+    if shm is None:
+        return False
+    if sys.platform != "linux":
+        raise ImmutableSQLiteUnavailable("SQLite owner locks cannot be verified outside Linux")
+    device = f"{os.major(shm.device):02x}:{os.minor(shm.device):02x}"
+    identity = f"{device}:{shm.inode}"
+    try:
+        lines = Path("/proc/locks").read_text(encoding="ascii").splitlines()
+    except OSError as exc:
+        raise ImmutableSQLiteUnavailable(
+            "SQLite owner locks cannot be inspected through /proc/locks"
+        ) from exc
+    pid = str(os.getpid())
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 8 or fields[1] != "POSIX" or fields[3] != "WRITE":
+            continue
+        if fields[4] != pid or fields[5] != identity:
+            continue
+        try:
+            start = int(fields[6])
+            end = int(fields[7]) if fields[7] != "EOF" else sys.maxsize
+        except ValueError as exc:
+            raise ImmutableSQLiteUnavailable(
+                "SQLite WAL lock record has an invalid byte range"
+            ) from exc
+        if any(start <= offset <= end for offset in _SQLITE_WAL_CONTROL_LOCK_OFFSETS):
+            return True
+    return False
+
+
 @dataclass(slots=True)
 class _SQLiteWriterLockGuard:
     """A shared OFD guard over SQLite writer-control lock bytes."""
@@ -801,6 +841,8 @@ def _sqlite_lock_targets(
 def _acquire_sqlite_writer_lock_guard(
     path: Path,
     fence: SQLiteImmutableFence,
+    *,
+    require_process_quiescence: bool = True,
 ) -> _SQLiteWriterLockGuard:
     """Hold shared SQLite control locks for the complete strict read.
 
@@ -842,13 +884,25 @@ def _acquire_sqlite_writer_lock_guard(
     # rollback owners are covered by the actual OFD lock acquisition below;
     # ordinary same-process readers do not hold RESERVED/PENDING bytes.
     sidecar_names = set(dict(fence.sidecars))
-    if sidecar_names == {"-wal", "-shm"} and _sqlite_owner_process_is_open(path, fence):
+    if (
+        require_process_quiescence
+        and sidecar_names == {"-wal", "-shm"}
+        and _sqlite_owner_process_is_open(path, fence)
+    ):
         raise ImmutableSQLiteUnavailable(
             "SQLite owner process is active; sidecars are not proven inactive"
         )
     if not sidecar_names and _sqlite_owner_process_has_writer_lock(fence):
         raise ImmutableSQLiteUnavailable(
             "SQLite owner process holds a rollback writer lock; sidecars are not proven inactive"
+        )
+    if (
+        not require_process_quiescence
+        and sidecar_names == {"-wal", "-shm"}
+        and _sqlite_owner_process_has_wal_writer_lock(fence)
+    ):
+        raise ImmutableSQLiteUnavailable(
+            "SQLite owner process holds a WAL writer lock; sidecars are not proven inactive"
         )
 
     targets = _sqlite_lock_targets(path, fence)
@@ -895,6 +949,61 @@ def _acquire_sqlite_writer_lock_guard(
             except OSError:
                 pass
         raise
+
+
+@contextmanager
+def sqlite_owner_lock_guard(path: str | Path) -> Iterator[SQLiteImmutableFence]:
+    """Hold a verified SQLite owner guard across a caller-owned effect.
+
+    The caller must keep the context for the entire operation that depends on
+    owner quiescence.  A point probe alone is insufficient: a writer can start
+    after the probe and before a staged copy or promotion.  Active/ambiguous
+    sidecars are rejected before the guard is acquired.
+    """
+
+    selected = Path(path)
+    fence = capture_sqlite_read_fence(selected)
+    require_inactive_sqlite_sidecars(fence, path=selected)
+    guard = _acquire_sqlite_writer_lock_guard(selected, fence)
+    try:
+        confirmed = capture_sqlite_read_fence(selected)
+        if confirmed != fence:
+            raise ImmutableSQLiteUnavailable(
+                "SQLite owner changed while acquiring its effect guard"
+            )
+        _require_inactive_sqlite_layout(confirmed)
+        yield confirmed
+    finally:
+        guard.close()
+
+
+@contextmanager
+def sqlite_owner_effect_guard(path: str | Path) -> Iterator[SQLiteImmutableFence]:
+    """Hold owner locks for a reset effect without requiring a clean layout.
+
+    A reset may intentionally remove a closed owner whose WAL/journal still
+    contains committed bytes.  The effect guard therefore rejects unknown
+    sidecars and active control locks, but does not require the immutable-read
+    inactivity layout; the plan and owner fence still bind every path before
+    promotion.
+    """
+
+    selected = Path(path)
+    fence = capture_sqlite_read_fence(selected)
+    guard = _acquire_sqlite_writer_lock_guard(
+        selected,
+        fence,
+        require_process_quiescence=False,
+    )
+    try:
+        confirmed = capture_sqlite_read_fence(selected)
+        if confirmed != fence:
+            raise ImmutableSQLiteUnavailable(
+                "SQLite owner changed while acquiring its effect guard"
+            )
+        yield confirmed
+    finally:
+        guard.close()
 
 
 def _probe_sqlite_writer_locks(
@@ -1824,5 +1933,7 @@ __all__ = [
     "open_sidecar_safe_sqlite_connection",
     "preferred_sqlite_read_mode",
     "require_inactive_sqlite_sidecars",
+    "sqlite_owner_effect_guard",
+    "sqlite_owner_lock_guard",
     "sqlite_read_session",
 ]

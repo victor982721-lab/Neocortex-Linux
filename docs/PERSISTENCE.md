@@ -234,6 +234,13 @@ conciliable, el motor se abstiene fail-closed. Si una reversión o publicación
 quedan inciertas, conserva lo necesario y expone `recovery_required` en vez de
 reintentar.
 
+Durante `apply` se conserva además una guardia SQLite de control para cada
+owner target desde la revalidación hasta el efecto y la promoción. Un WAL o
+journal cerrado puede retirarse como parte del reset, pero un writer que ya
+exista o aparezca después del preview no puede competir con el reemplazo: la
+guardia aborta antes de borrar o promover. Las tablas no reconocidas con filas
+se tratan como evidencia protegida, no como caché regenerable.
+
 La operación no migra ni abre el corpus, no modifica bytes originales y no toca
 los directorios de releases/modelos. Una nueva corrida debe volver a crear sólo
 las proyecciones que sus writers publiquen; la ausencia temporal de un owner no

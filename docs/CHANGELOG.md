@@ -16,7 +16,9 @@ fuera de `docs/`.
   no se borran sidecars ni se crean backups implícitos. El reset broad preserva
   generaciones de catálogo publicadas, historial y evidencia de Inventory al
   retirar sólo proyecciones regenerables; los owners staged se compactan y
-  referencias huérfanas o sidecars nuevos bloquean la promoción.
+  referencias huérfanas, sidecars nuevos o writers SQLite que aparezcan durante
+  el apply bloquean la promoción; las extensiones de schema no vacías quedan
+  protegidas.
 
 ## 2026-09-16 — Contrato de continuidad de higiene operativa
 

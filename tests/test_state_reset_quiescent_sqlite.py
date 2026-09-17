@@ -358,6 +358,91 @@ def test_catalog_stage_reset_keeps_published_rows_under_immutability_triggers(
         ).fetchall() == [(1,)]
 
 
+def test_catalog_unknown_nonempty_table_is_preserved_by_staged_reset(
+    tmp_path: Path,
+) -> None:
+    """A schema extension cannot silently turn a Catalog owner into a delete target."""
+
+    state = tmp_path / "state"
+    state.mkdir()
+    database = state / "document_catalog.sqlite3"
+    initialize_document_catalog(database)
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE future_payload(value TEXT NOT NULL)")
+        connection.execute("INSERT INTO future_payload VALUES('preserve-me')")
+        connection.commit()
+
+    plan = plan_state_reset(state, scope="all")
+    assert plan.staged_owners == ("catalog",)
+    assert "future_payload" in dict(plan.protected_tables)["catalog"]
+    result = execute_state_reset(
+        state,
+        scope="all",
+        apply=True,
+        plan_digest=plan.plan_digest,
+        confirmation=STATE_RESET_CONFIRMATION,
+    )
+    assert isinstance(result, StateResetResult)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT value FROM future_payload").fetchall() == [
+            ("preserve-me",)
+        ]
+
+
+@pytest.mark.parametrize("anomaly", ["missing-manifest", "ancestry-cycle"])
+def test_catalog_published_evidence_anomaly_abstains_before_promotion(
+    tmp_path: Path,
+    anomaly: str,
+) -> None:
+    """Missing manifests and cyclic ancestry are not resettable evidence."""
+
+    state = tmp_path / "state"
+    state.mkdir()
+    database = state / "document_catalog.sqlite3"
+    initialize_document_catalog(database)
+    with sqlite3.connect(database) as connection:
+        if anomaly == "missing-manifest":
+            connection.execute(
+                "INSERT INTO catalog_generations("
+                "generation_id,catalog_run_id,source_kind,status,started_ns) "
+                "VALUES(1,NULL,'docx','published',1)"
+            )
+        else:
+            connection.execute(
+                "INSERT INTO catalog_generations("
+                "generation_id,catalog_run_id,source_kind,base_generation_id,status,started_ns) "
+                "VALUES(1,NULL,'docx',2,'published',1)"
+            )
+            connection.execute(
+                "INSERT INTO catalog_generations("
+                "generation_id,catalog_run_id,source_kind,base_generation_id,status,started_ns) "
+                "VALUES(2,NULL,'docx',1,'published',2)"
+            )
+            for generation_id in (1, 2):
+                connection.execute(
+                    "INSERT INTO catalog_generation_manifests("
+                    "generation_id,source_kind,source_fence_json,created_ns) "
+                    "VALUES(?,?,?,?)",
+                    (generation_id, "docx", "{}", generation_id),
+                )
+        connection.commit()
+
+    plan = plan_state_reset(state, scope="all")
+    assert "catalog" in plan.staged_owners
+    with pytest.raises(StateResetError, match="not reconcilable"):
+        execute_state_reset(
+            state,
+            scope="all",
+            apply=True,
+            plan_digest=plan.plan_digest,
+            confirmation=STATE_RESET_CONFIRMATION,
+        )
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM catalog_generations").fetchone() == (
+            1 if anomaly == "missing-manifest" else 2,
+        )
+
+
 def test_inventory_stage_reset_keeps_duplicate_evidence_and_compacts_owner(
     tmp_path: Path,
 ) -> None:
@@ -555,6 +640,122 @@ def test_inventory_promotion_rejects_new_empty_sidecar(
             )
     finally:
         Path(f"{database}-wal").unlink(missing_ok=True)
+
+
+def test_inventory_promotion_rejects_changed_planned_sidecar(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A replacement writer cannot hide behind a reused sidecar pathname."""
+
+    state = tmp_path / "state"
+    state.mkdir()
+    database = state / "dedup.sqlite3"
+    initialize_inventory_schema(database)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO scans(scan_id,root,started_ns,completed_ns,status) "
+            "VALUES(1,'/fixture',1,2,'complete')"
+        )
+        connection.execute(
+            "INSERT INTO duplicate_plan_summaries("
+            "scan_id,group_count,redundant_files,reclaimable_bytes,completed_ns,"
+            "verification_mode,requested_policy,coverage) "
+            "VALUES(1,0,0,0,3,'full_hash','exact','complete')"
+        )
+        connection.commit()
+    Path(f"{database}-wal").write_bytes(b"")
+    Path(f"{database}-shm").write_bytes(b"\0" * _QUIESCENT_SHM_BYTES)
+    plan = plan_state_reset(state, scope="all")
+    real_replace = state_reset_module.os.replace
+
+    def replace_then_mutate(source: str | Path, destination: str | Path) -> None:
+        real_replace(source, destination)
+        if Path(destination) == database:
+            Path(f"{database}-wal").write_bytes(b"new-writer-content")
+
+    monkeypatch.setattr(state_reset_module.os, "replace", replace_then_mutate)
+    try:
+        with pytest.raises(StateResetChangedError, match="sidecar changed"):
+            execute_state_reset(
+                state,
+                scope="all",
+                apply=True,
+                plan_digest=plan.plan_digest,
+                confirmation=STATE_RESET_CONFIRMATION,
+            )
+    finally:
+        Path(f"{database}-wal").unlink(missing_ok=True)
+        Path(f"{database}-shm").unlink(missing_ok=True)
+
+
+def test_state_reset_rejects_writer_started_after_preview(
+    tmp_path: Path,
+) -> None:
+    """SQLite owner guards close the preview-to-apply writer race."""
+
+    state = tmp_path / "state"
+    state.mkdir()
+    database = _semantic_owner(state, large=False)
+    plan = plan_state_reset(state, scope="all")
+    assert "semantic" not in plan.staged_owners
+    with _external_live_writer(database):
+        with pytest.raises(StateResetError, match=r"writer lock|sidecars|digest"):
+            execute_state_reset(
+                state,
+                scope="all",
+                apply=True,
+                plan_digest=plan.plan_digest,
+                confirmation=STATE_RESET_CONFIRMATION,
+            )
+    assert database.exists()
+
+
+
+def test_state_reset_rejects_external_rollback_writer_after_preview(
+    tmp_path: Path,
+) -> None:
+    """An owner without sidecars is still protected from a live writer."""
+
+    state = tmp_path / "state"
+    state.mkdir()
+    database = _semantic_owner(state, large=False)
+    plan = plan_state_reset(state, scope="all")
+    script = """
+import sqlite3, sys
+connection = sqlite3.connect(sys.argv[1])
+connection.execute('BEGIN IMMEDIATE')
+print('READY', flush=True)
+sys.stdin.read(1)
+connection.rollback()
+connection.close()
+"""
+    writer = subprocess.Popen(
+        [sys.executable, "-c", script, str(database)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert writer.stdout is not None
+        assert writer.stdout.readline().strip() == "READY"
+        with pytest.raises(StateResetError, match=r"writer lock|digest|sidecars"):
+            execute_state_reset(
+                state,
+                scope="all",
+                apply=True,
+                plan_digest=plan.plan_digest,
+                confirmation=STATE_RESET_CONFIRMATION,
+            )
+    finally:
+        if writer.poll() is None:
+            assert writer.stdin is not None
+            writer.stdin.write("x")
+            writer.stdin.flush()
+        writer.wait(timeout=10)
+        assert writer.returncode == 0
+    assert database.exists()
 
 
 def test_retention_large_quiescent_residual_uses_zero_copy_and_preserves_budget(

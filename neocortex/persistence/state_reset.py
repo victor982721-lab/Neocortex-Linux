@@ -41,7 +41,7 @@ import stat
 import tempfile
 import time
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -68,6 +68,7 @@ from neocortex.persistence.sqlite_integrity import SQLiteIntegrityPolicy
 from neocortex.persistence.sqlite_paths import existing_sqlite_uri
 from neocortex.persistence.sqlite_immutable import (
     preferred_sqlite_read_mode,
+    sqlite_owner_effect_guard,
     sqlite_read_session,
 )
 from neocortex.persistence.state_publication import (
@@ -178,6 +179,151 @@ _NON_REGENERABLE_TABLES: dict[str, frozenset[str]] = {
             "duplicate_plan_summaries",
             "planned_duplicate_groups",
             "planned_duplicate_members",
+        }
+    ),
+}
+# Schema extensions are never silently discarded.  These are the known table
+# names for every registered owner; a non-empty table outside its owner's
+# allow-list becomes a staged/protected owner until a dedicated transform owns
+# it.  The list is intentionally structural, not a claim that every table is
+# disposable.
+_KNOWN_OWNER_TABLES: dict[str, frozenset[str]] = {
+    "framework": frozenset(
+        {
+            "content_type_cache",
+            *_RUN_LEDGER_TABLES,
+            "metadata",
+            "review_candidates",
+            "review_decisions",
+            "review_evidence_examples",
+            "review_evidence_progress",
+            "review_task_batch_memberships",
+            "review_task_batches",
+            "review_task_events",
+            "review_task_scan_progress",
+            "review_task_source_publications",
+            "review_tasks",
+        }
+    ),
+    "inventory": frozenset(
+        {
+            "duplicate_plan_heads",
+            "duplicate_plan_summaries",
+            "files",
+            "fingerprint_content_evidence",
+            "fingerprints",
+            "inventory_checkpoints",
+            "inventory_generation_heads",
+            "inventory_scan_successors",
+            "metadata",
+            "planned_duplicate_groups",
+            "planned_duplicate_members",
+            "scans",
+        }
+    ),
+    "catalog": frozenset(
+        {
+            "catalog_generation_documents",
+            "catalog_generation_manifests",
+            "catalog_generations",
+            "catalog_publications",
+            "catalog_runs",
+            "classification_corrections",
+            "classification_history",
+            "documents",
+            "metadata",
+            "organization_plans",
+        }
+    ),
+    "semantic": frozenset(
+        {
+            "embedding_generation_members",
+            "embedding_generations",
+            "embedding_jobs",
+            "embedding_models",
+            "image_embeddings",
+            "label_prototypes",
+            "metadata",
+            "published_embedding_heads",
+            "schema_migrations",
+            "semantic_chunk_derivations",
+            "semantic_chunk_revisions",
+            "semantic_derivation_outbox",
+            "semantic_evidence",
+            "semantic_item_revisions",
+            "semantic_items",
+            "semantic_work_receipts",
+            "text_channel_revisions",
+            "text_chunks",
+            "text_embeddings",
+            "vector_payloads",
+            "vector_spaces",
+        }
+    ),
+    "pdf": frozenset(
+        {"document_warnings", "documents", "metadata", "page_errors", "page_staging", "pages", "pdf_inventory"}
+    ),
+    "docx": frozenset(
+        {"document_diagnostics", "document_parts", "documents", "docx_inventory", "layout_groups", "metadata", "pdf_counterparts"}
+    ),
+    "office": frozenset({"documents", "metadata", "office_inventory", "xlsx_cells"}),
+    "audio": frozenset({"audio_inventory", "documents", "metadata", "segments"}),
+    "video": frozenset({"documents", "frames", "metadata", "video_inventory"}),
+    "image": frozenset({"images", "images_without_nudenet", "metadata"}),
+    "archive": frozenset(
+        {"archive_issues", "archive_logical_documents", "containers", "documents", "metadata"}
+    ),
+    "text": frozenset(
+        {
+            "documents",
+            "metadata",
+            "text_derivation_attempts",
+            "text_derivation_input_bindings",
+            "text_derivation_outbox",
+            "text_derivation_output_bindings",
+            "text_input_revisions",
+            "text_materialization_heads",
+            "text_materializations",
+            "text_work_receipts",
+        }
+    ),
+    "code": frozenset(
+        {
+            "analysis_runs",
+            "code_chunks",
+            "code_experiment_receipts",
+            "code_references",
+            "dependencies",
+            "diagnostics",
+            "embedding_links",
+            "external_findings",
+            "external_metrics",
+            "external_relations",
+            "external_run_contracts",
+            "external_run_counters",
+            "external_run_inputs",
+            "external_run_replays",
+            "external_tool_runs",
+            "file_versions",
+            "files",
+            "graph_batches",
+            "graph_checkpoints",
+            "graph_generation_metadata",
+            "graph_generation_migrations",
+            "graph_generations",
+            "graph_heads",
+            "graph_input_snapshots",
+            "graph_memberships",
+            "graph_snapshot_inputs",
+            "invalidation_history",
+            "metadata",
+            "metrics",
+            "project_edges",
+            "project_memberships",
+            "projects",
+            "schema_migrations",
+            "symbols",
+            "version_relations",
         }
     ),
 }
@@ -888,27 +1034,102 @@ def _database_entries(state: Path, owner: str) -> tuple[StateResetEntry, ...]:
     return tuple(result)
 
 
+def _catalog_evidence_anomalies(
+    connection: sqlite3.Connection,
+    table_names: set[str],
+) -> tuple[str, ...]:
+    """Return published Catalog references that cannot be reconciled safely."""
+
+    if "catalog_generations" not in table_names:
+        if "catalog_publications" in table_names:
+            return ("catalog publications table has no generation owner",)
+        if "catalog_generation_manifests" in table_names:
+            return ("catalog generation manifests have no generation owner",)
+        return ()
+    rows = connection.execute(
+        "SELECT generation_id,base_generation_id,status FROM catalog_generations"
+    ).fetchall()
+    by_generation = {
+        int(row[0]): {
+            "base": None if row[1] is None else int(row[1]),
+            "status": str(row[2]),
+        }
+        for row in rows
+    }
+    published = tuple(
+        generation_id
+        for generation_id, value in sorted(by_generation.items())
+        if value["status"] == "published"
+    )
+    anomalies: list[str] = []
+    if published and "catalog_generation_manifests" not in table_names:
+        anomalies.append("published generation manifests table is missing")
+    if published and "catalog_publications" not in table_names:
+        anomalies.append("published catalog publications table is missing")
+    elif published:
+        manifest_ids = {
+            int(row[0])
+            for row in connection.execute(
+                "SELECT generation_id FROM catalog_generation_manifests"
+            ).fetchall()
+        }
+        missing_manifests = tuple(value for value in published if value not in manifest_ids)
+        if missing_manifests:
+            anomalies.append(
+                "published generations lack manifests: "
+                + ",".join(str(value) for value in missing_manifests[:16])
+            )
+        orphan_manifests = tuple(
+            value for value in sorted(manifest_ids) if value not in by_generation
+        )
+        if orphan_manifests:
+            anomalies.append(
+                "generation manifests reference missing generations: "
+                + ",".join(str(value) for value in orphan_manifests[:16])
+            )
+    for generation_id in published:
+        visited: set[int] = set()
+        current: int | None = generation_id
+        while current is not None:
+            if current in visited:
+                anomalies.append(f"published generation ancestry cycle at {current}")
+                break
+            visited.add(current)
+            value = by_generation.get(current)
+            if value is None:
+                anomalies.append(
+                    f"published generation {generation_id} references missing base {current}"
+                )
+                break
+            current = value["base"]
+    if "catalog_publications" in table_names:
+        for source_kind, generation_id in connection.execute(
+            "SELECT source_kind,generation_id FROM catalog_publications"
+        ).fetchall():
+            observed = by_generation.get(int(generation_id))
+            if observed is None or observed["status"] != "published":
+                anomalies.append(
+                    f"publication {source_kind!s} points to non-published generation "
+                    f"{generation_id}"
+                )
+    return tuple(dict.fromkeys(anomalies))
+
+
 def _protected_owner_tables(
     state: Path,
     owners: Sequence[str],
 ) -> tuple[tuple[str, tuple[str, ...]], ...]:
     """Find durable rows that make whole-owner unlinking unsafe.
 
-    This is deliberately a small owner-aware read.  It does not infer
-    protection from arbitrary payload text and it never opens a live database
-    with a bare ``mode=ro`` connection.  Unknown schemas are handled by the
-    normal reset/schema fences; this helper only recognizes the concrete
-    non-regenerable tables already owned by NeoCortex.
+    This is deliberately an owner-aware read.  It does not infer protection
+    from arbitrary payload text and it never opens a live database with a bare
+    ``mode=ro`` connection.  Known regenerable tables are allow-listed per
+    owner; any non-empty table outside that structural set is staged so a
+    schema extension cannot be discarded by whole-file removal.
     """
 
     observed: list[tuple[str, tuple[str, ...]]] = []
     for owner in owners:
-        # Owners without a concrete non-regenerable extension have no reason
-        # to be opened during reset planning.  In particular, avoid even a
-        # detached inspection of ordinary format caches whose historical WAL
-        # sidecars are themselves part of the read-only fence.
-        if owner not in _NON_REGENERABLE_TABLES:
-            continue
         database = state / STATE_STORE_REGISTRY.by_owner(owner).database_name
         if not database.is_file():
             continue
@@ -927,7 +1148,9 @@ def _protected_owner_tables(
                         "ORDER BY name"
                     )
                 )
+                table_names = {table for table, _kind in tables}
                 explicit = _NON_REGENERABLE_TABLES.get(owner, frozenset())
+                known = _KNOWN_OWNER_TABLES.get(owner, frozenset())
                 for table, kind in tables:
                     if kind != "table":
                         continue
@@ -938,6 +1161,7 @@ def _protected_owner_tables(
                     folded = table.casefold()
                     if (
                         table in explicit
+                        or table not in known
                         or any(marker in folded for marker in _NON_REGENERABLE_NAME_MARKERS)
                     ):
                         protected.append(table)
@@ -951,6 +1175,10 @@ def _protected_owner_tables(
                         for row in keys
                     ):
                         protected.append("metadata")
+                if owner == "catalog":
+                    anomalies = _catalog_evidence_anomalies(connection, table_names)
+                    if anomalies:
+                        protected.append("catalog_generations")
         except (OSError, sqlite3.Error, StateResetError) as exc:
             raise StateResetError(
                 f"protected owner rows cannot be inspected safely: {owner}"
@@ -1210,6 +1438,38 @@ def _held_locks(state: Path) -> Iterator[None]:
                 fcntl.flock(descriptor, fcntl.LOCK_UN)
             finally:
                 os.close(descriptor)
+
+
+@contextmanager
+def _held_sqlite_owner_guards(plan: StateResetPlan) -> Iterator[None]:
+    """Hold SQLite control-lock guards for every owner in an apply plan."""
+
+    paths: list[Path] = []
+    seen: set[Path] = set()
+    for target in plan.targets:
+        if target.owner is None or target.kind not in {"run-ledger", "sqlite-owner"}:
+            continue
+        database_name = STATE_STORE_REGISTRY.by_owner(target.owner).database_name
+        database = next(
+            (
+                entry.path
+                for entry in target.entries
+                if entry.kind == "file" and entry.relative_path == database_name
+            ),
+            None,
+        )
+        if database is None:
+            raise StateResetChangedError(
+                f"reset target has no SQLite main database: {target.owner}"
+            )
+        if database in seen:
+            continue
+        seen.add(database)
+        paths.append(database)
+    with ExitStack() as stack:
+        for path in paths:
+            stack.enter_context(sqlite_owner_effect_guard(path))
+        yield
 
 
 def _plan_digest(
@@ -1507,8 +1767,10 @@ def _apply_framework_runs_staged(
         # newly published main file.  Their exact source snapshots are already
         # present in the reset backup/raw rollback set.
         old_sidecars = {
-            item.path
-            for item in plan.entries
+            item.path: item
+            for target in plan.targets
+            if target.owner == "framework"
+            for item in target.entries
             if item.kind == "file" and item.relative_path != "framework.sqlite3"
         }
         os.replace(final_database, live_database)
@@ -1523,9 +1785,14 @@ def _apply_framework_runs_staged(
                 metadata = sidecar.lstat()
                 if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
                     raise StateResetChangedError(f"Framework sidecar is not regular: {sidecar}")
-                if sidecar not in old_sidecars:
+                expected_sidecar = old_sidecars.get(sidecar)
+                if expected_sidecar is None:
                     raise StateResetChangedError(
                         f"Framework sidecar appeared during reset: {sidecar}"
+                    )
+                if not _entry_matches(expected_sidecar):
+                    raise StateResetChangedError(
+                        f"Framework sidecar changed during reset: {sidecar}"
                     )
                 sidecar.unlink()
         directory_fd = os.open(
@@ -1775,7 +2042,7 @@ def _apply_inventory_owner_staged(
         live_database = plan.state_directory / "dedup.sqlite3"
         _assert_owner_entries_current(plan, "inventory")
         old_sidecars = {
-            item.path
+            item.path: item
             for target in plan.targets
             if target.owner == "inventory"
             for item in target.entries
@@ -1789,10 +2056,13 @@ def _apply_inventory_owner_staged(
             metadata = sidecar.lstat()
             if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
                 raise StateResetChangedError(f"inventory sidecar is not regular: {sidecar}")
-            if sidecar not in old_sidecars:
+            expected_sidecar = old_sidecars.get(sidecar)
+            if expected_sidecar is None:
                 raise StateResetChangedError(
                     f"inventory sidecar appeared during reset: {sidecar}"
                 )
+            if not _entry_matches(expected_sidecar):
+                raise StateResetChangedError(f"inventory sidecar changed during reset: {sidecar}")
             sidecar.unlink()
         directory_fd = os.open(
             plan.state_directory,
@@ -1876,6 +2146,12 @@ def _apply_catalog_owner_staged(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
             )
         }
+        anomalies = _catalog_evidence_anomalies(connection, table_names)
+        if anomalies:
+            raise StateResetError(
+                "catalog published evidence is not reconcilable: "
+                + "; ".join(anomalies[:8])
+            )
         # Published Catalog generations are append-only evidence protected by
         # schema triggers. A broad reset may retire an unpublished/cancelled
         # generation, but it must retain every published generation and its
@@ -1966,7 +2242,7 @@ def _apply_catalog_owner_staged(
         live_database = plan.state_directory / "document_catalog.sqlite3"
         _assert_owner_entries_current(plan, "catalog")
         old_sidecars = {
-            item.path
+            item.path: item
             for target in plan.targets
             if target.owner == "catalog"
             for item in target.entries
@@ -1980,10 +2256,13 @@ def _apply_catalog_owner_staged(
             metadata = sidecar.lstat()
             if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
                 raise StateResetChangedError(f"catalog sidecar is not regular: {sidecar}")
-            if sidecar not in old_sidecars:
+            expected_sidecar = old_sidecars.get(sidecar)
+            if expected_sidecar is None:
                 raise StateResetChangedError(
                     f"catalog sidecar appeared during reset: {sidecar}"
                 )
+            if not _entry_matches(expected_sidecar):
+                raise StateResetChangedError(f"catalog sidecar changed during reset: {sidecar}")
             sidecar.unlink()
         directory_fd = os.open(
             plan.state_directory,
@@ -2407,6 +2686,14 @@ def _apply_reset_locked(
             (plan.state_directory / STATE_PUBLICATION_JOURNAL_FILENAME,),
             reason=f"state publication status is {current.publication_status}",
         )
+    unsupported_staged_owners = tuple(
+        sorted(set(plan.staged_owners) - {"framework", "inventory", "catalog"})
+    )
+    if unsupported_staged_owners:
+        raise StateResetError(
+            "reset refuses protected owners without a staged transform: "
+            + ", ".join(unsupported_staged_owners)
+        )
 
     has_database_targets = bool(
         any(
@@ -2693,7 +2980,8 @@ def execute_state_reset(
             ),
         )
     with _held_locks(plan.state_directory):
-        return _apply_reset_locked(plan, backup_directory=selected_backup)
+        with _held_sqlite_owner_guards(plan):
+            return _apply_reset_locked(plan, backup_directory=selected_backup)
 
 
 def apply_state_reset(

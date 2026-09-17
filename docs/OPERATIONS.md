@@ -878,6 +878,12 @@ antes de promoverlo. Referencias huérfanas, ancestry no conciliable o sidecars
 que aparezcan durante la promoción producen abstención; no se eliminan como
 residuos regenerables.
 
+El `apply` mantiene una guardia de locks SQLite para cada owner seleccionado
+desde la revalidación hasta la promoción. Un writer que aparezca después del
+preview aborta antes del borrado, incluso si el cambio todavía no alteró el
+tamaño del archivo; las extensiones de schema con filas quedan staged y no se
+descartan por inferencia.
+
 La inspección de SQLite del preview usa el contrato central de lectura segura.
 Un owner grande sin sidecars, o con exactamente `-wal=0` y `-shm=32768`, puede
 usar `immutable_strict` sólo después de que la prueba de locks de sólo lectura y
