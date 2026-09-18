@@ -8,16 +8,15 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import cast
 
 from ..domain.models import DedupPlan, FileSnapshot
+from ..domain.fingerprint_observation import ExactComparisonObservation, FingerprintObservation, FingerprintReadFailure
+from ..domain.errors import FileChangedError
 from ..domain.evidence import KeeperPolicy
 from ..fingerprinting import (
     FULL_ALGORITHM,
     PARTIAL_ALGORITHM,
     files_equal_exact,
-    full_fingerprint,
-    partial_fingerprint,
     snapshot_path,
 )
 from ..inventory.index import DedupIndex
@@ -55,19 +54,25 @@ class DedupPlanner:
             raise TypeError("keeper_validation must be callable")
         self._keeper_validation = keeper_validation
 
-    def _fingerprint(self, snapshot: FileSnapshot, *, partial: bool) -> tuple[bytes, bool]:
+    def _fingerprint(self, snapshot: FileSnapshot, *, partial: bool) -> FingerprintObservation:
         algorithm = PARTIAL_ALGORITHM if partial else FULL_ALGORITHM
-        validated_cache = getattr(self._index, "validated_cached_fingerprint", None)
-        if callable(validated_cache):
-            cached = cast(
-                Callable[[FileSnapshot, str], bytes | None], validated_cache
-            )(snapshot, algorithm)
-        else:
-            cached = self._index.cached_fingerprint(snapshot, algorithm)
-        if cached is not None:
-            return cached, False
-        digest = partial_fingerprint(snapshot) if partial else full_fingerprint(snapshot)
-        return digest, True
+        observation = self._index.observe_fingerprint(snapshot, algorithm)
+        assert observation is not None  # cached_only=False always observes content.
+        return observation
+
+    @staticmethod
+    def _compare_exact(left: FileSnapshot, right: FileSnapshot) -> ExactComparisonObservation:
+        read_bytes = 0
+
+        def observe(count: int) -> None:
+            nonlocal read_bytes
+            read_bytes += count
+
+        try:
+            equal = files_equal_exact(left, right, read_observer=observe)
+        except FileChangedError as exc:
+            raise FingerprintReadFailure(str(exc), exact_comparison_bytes=read_bytes) from exc
+        return ExactComparisonObservation(equal, read_bytes)
 
     def plan(
         self,
@@ -90,7 +95,7 @@ class DedupPlanner:
             exact_compare=exact_compare,
             fingerprint=self._fingerprint,
             capture_snapshot=snapshot_path,
-            exact_matcher=files_equal_exact,
+            exact_matcher=self._compare_exact,
             keeper_policy=self._keeper_policy,
             keeper_validation=self._keeper_validation,
         ).run()

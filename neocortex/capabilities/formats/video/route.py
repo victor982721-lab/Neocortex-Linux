@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from neocortex.runtime.control.locking import FrameworkRunLock
+
+from ..fts_lookup import initialize_format_fts_lookup
+
 import json
 import math
 import sqlite3
@@ -431,8 +435,17 @@ class VideoRoute:
 
     def run(self) -> VideoRouteSummary:
         self.cancellation.checkpoint()
-        self._recoverable_retry_keys.clear()
         self._validate()
+        lock_path = self.config.state_path.with_suffix(
+            self.config.state_path.suffix + ".route.lock"
+        )
+        self.config.state_path.parent.mkdir(parents=True, exist_ok=True)
+        with FrameworkRunLock(lock_path):
+            return self._run_locked()
+
+    def _run_locked(self) -> VideoRouteSummary:
+        self.cancellation.checkpoint()
+        self._recoverable_retry_keys.clear()
         initialize_video_state(self.config.state_path)
         metrics = self._plan()
         # Candidate accounting is independent of native tool availability.  In
@@ -442,6 +455,9 @@ class VideoRoute:
             with video_database(self.config.state_path, create=False) as connection:
                 connection.commit()
                 if self._should_prune():
+                    initialize_format_fts_lookup(
+                        connection, "frame_fts", checkpoint=self.cancellation.checkpoint
+                    )
                     metrics.pruned = prune_stale_video_documents(connection, self.run_id)
                     connection.commit()
             self._report(metrics, finished=True)
@@ -466,6 +482,9 @@ class VideoRoute:
         ocr_runtime = self.ocr_runtime_resolver(self.config)
         processing = self.config.processing_provenance(ocr_runtime)
         with video_database(self.config.state_path, create=False) as connection:
+            initialize_format_fts_lookup(
+                connection, "frame_fts", checkpoint=self.cancellation.checkpoint
+            )
             self._run_candidates(connection, processing.signature, ocr_runtime, metrics)
             connection.commit()
             if self._should_prune():

@@ -229,12 +229,17 @@ def query_vector(
     backend_factory: BackendFactory,
     cancellation_check: Callable[[], None] | None = None,
 ) -> tuple[float, ...]:
+    from neocortex.runtime.control.read_operation import remaining_read_limit, read_checkpoint
+    remaining_read_limit(1, vectors=True)
+    remaining_read_limit(1)
+    read_checkpoint()
     embedding_backend = backend_factory(
         model,
         cache_dir=cache_dir,
         local_files_only=local_files_only,
         threads=threads,
     )
+    read_checkpoint()
     return _query_vector_from_backend(
         model,
         query,

@@ -166,6 +166,8 @@ def test_code_tree_has_no_legacy_wrappers_or_orphaned_modules() -> None:
         "code_schema.py",
         "code_state.py",
         "code_graph_generations.py",
+        "code_graph_revision.py",
+        "code_fts_lookup.py",
         "ingestion/__init__.py",
         "ingestion/code_analyzer_common.py",
         "ingestion/code_analyzers.py",

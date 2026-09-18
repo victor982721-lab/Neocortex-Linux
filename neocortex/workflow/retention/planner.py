@@ -1487,7 +1487,7 @@ def _validate_snapshot(
         raise RuntimeError(
             f"framework schema is {version!r}; expected {framework_schema.SCHEMA_VERSION}"
         )
-    framework_schema.validate_framework_schema_v22(connection)
+    framework_schema.validate_framework_schema(connection)
     pragma_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
     if pragma_version > framework_schema.SCHEMA_VERSION:
         raise RuntimeError(

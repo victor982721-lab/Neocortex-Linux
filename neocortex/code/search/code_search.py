@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 import sqlite3
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -335,6 +335,7 @@ def _text_rows(
     query: CodeSearchQuery,
     mode: str,
     fetch_limit: int,
+    row_admission: Callable[[int], None] | None = None,
 ) -> tuple[_SearchRow, ...]:
     project = _project_sql()
     if mode == "fts":
@@ -366,7 +367,18 @@ def _text_rows(
         if mode == "literal":
             prefix = (*prefix, query.text)
         params = (*prefix, *_filter_parameters(query), fetch_limit)
-    return tuple(_SearchRow.from_sql(row) for row in connection.execute(sql, params))
+    return tuple(_SearchRow.from_sql(row) for row in _admitted_rows(connection.execute(sql, params), row_admission))
+
+
+def _admitted_rows(
+    cursor: sqlite3.Cursor, row_admission: Callable[[int], None] | None,
+) -> Iterator[sqlite3.Row]:
+    """Charge each observed row before constructing relations or rankings."""
+
+    for row in cursor:
+        if row_admission is not None:
+            row_admission(1)
+        yield row
 
 
 def _symbol_rows(
@@ -374,6 +386,7 @@ def _symbol_rows(
     query: CodeSearchQuery,
     mode: str,
     fetch_limit: int,
+    row_admission: Callable[[int], None] | None = None,
 ) -> tuple[_SearchRow, ...]:
     search = query.symbol or query.text
     if mode not in {"complexity"} and not search:
@@ -402,7 +415,7 @@ def _symbol_rows(
     WHERE {predicate} AND {_COMMON_FILTER}
     ORDER BY COALESCE(s.complexity,0) DESC,s.qualified_name LIMIT ?"""
     params = (mode, *mode_params, *_filter_parameters(query), fetch_limit)
-    return tuple(_SearchRow.from_sql(row) for row in connection.execute(sql, params))
+    return tuple(_SearchRow.from_sql(row) for row in _admitted_rows(connection.execute(sql, params), row_admission))
 
 
 def _reference_rows(
@@ -410,6 +423,7 @@ def _reference_rows(
     query: CodeSearchQuery,
     mode: str,
     fetch_limit: int,
+    row_admission: Callable[[int], None] | None = None,
 ) -> tuple[_SearchRow, ...]:
     search = query.text or query.symbol
     if not search:
@@ -456,7 +470,7 @@ def _reference_rows(
     params = (mode, search, search, *_filter_parameters(query), fetch_limit)
     return tuple(
         _SearchRow.from_sql(row, relation=_reference_relation(row))
-        for row in connection.execute(sql, params)
+        for row in _admitted_rows(connection.execute(sql, params), row_admission)
     )
 
 
@@ -464,6 +478,7 @@ def _dependency_rows(
     connection: sqlite3.Connection,
     query: CodeSearchQuery,
     fetch_limit: int,
+    row_admission: Callable[[int], None] | None = None,
 ) -> tuple[_SearchRow, ...]:
     if not query.text:
         return ()
@@ -491,7 +506,7 @@ def _dependency_rows(
     params = (query.text, *_filter_parameters(query), fetch_limit)
     return tuple(
         _SearchRow.from_sql(row, relation=_dependency_relation(row))
-        for row in connection.execute(sql, params)
+        for row in _admitted_rows(connection.execute(sql, params), row_admission)
     )
 
 
@@ -499,6 +514,7 @@ def _diagnostic_rows(
     connection: sqlite3.Connection,
     query: CodeSearchQuery,
     fetch_limit: int,
+    row_admission: Callable[[int], None] | None = None,
 ) -> tuple[_SearchRow, ...]:
     search = query.diagnostic or query.text
     if not search:
@@ -515,7 +531,7 @@ def _diagnostic_rows(
     ORDER BY CASE d.severity WHEN 'error' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,
     d.diagnostic_id LIMIT ?"""
     params = (search, search, *_filter_parameters(query), fetch_limit)
-    return tuple(_SearchRow.from_sql(row) for row in connection.execute(sql, params))
+    return tuple(_SearchRow.from_sql(row) for row in _admitted_rows(connection.execute(sql, params), row_admission))
 
 
 _SQLITE_SIGNED_INTEGER_MAX = 9_223_372_036_854_775_807
@@ -718,6 +734,7 @@ def _semantic_rows(
     *,
     model_cache: Path | None,
     threads: int | None,
+    row_admission: Callable[[int], None] | None = None,
 ) -> tuple[_SearchRow, ...]:
     """Resolve optional text-vector hits back to current structured code rows."""
 
@@ -733,6 +750,8 @@ def _semantic_rows(
     )
     rows: list[_SearchRow] = []
     for position, hit in enumerate(hits, start=1):
+        if row_admission is not None:
+            row_admission(1)
         if position % _CANCELLATION_BATCH_ROWS == 0:
             cancellation.checkpoint()
         resolution = _semantic_code_resolution(hit)
@@ -816,17 +835,18 @@ def _search_rows_for_mode(
     *,
     semantic_model_cache: Path | None,
     semantic_threads: int | None,
+    row_admission: Callable[[int], None] | None = None,
 ) -> tuple[_SearchRow, ...]:
     if mode in {"literal", "fts", "path", "language"}:
-        return _text_rows(connection, query, mode, fetch_limit)
+        return _text_rows(connection, query, mode, fetch_limit, row_admission)
     if mode in {"symbol", "definition", "signature", "complexity"}:
-        return _symbol_rows(connection, query, mode, fetch_limit)
+        return _symbol_rows(connection, query, mode, fetch_limit, row_admission)
     if mode in {"reference", "import", "call"}:
-        return _reference_rows(connection, query, mode, fetch_limit)
+        return _reference_rows(connection, query, mode, fetch_limit, row_admission)
     if mode == "dependency":
-        return _dependency_rows(connection, query, fetch_limit)
+        return _dependency_rows(connection, query, fetch_limit, row_admission)
     if mode == "diagnostic":
-        return _diagnostic_rows(connection, query, fetch_limit)
+        return _diagnostic_rows(connection, query, fetch_limit, row_admission)
     if mode == "semantic":
         return _semantic_rows(
             code_database,
@@ -836,6 +856,7 @@ def _search_rows_for_mode(
             cancellation,
             model_cache=semantic_model_cache,
             threads=semantic_threads,
+            row_admission=row_admission,
         )
     raise AssertionError(f"unhandled code search mode: {mode}")
 
@@ -849,6 +870,7 @@ def _search_rankings(
     *,
     semantic_model_cache: Path | None,
     semantic_threads: int | None,
+    row_admission: Callable[[int], None] | None = None,
 ) -> tuple[tuple[str, tuple[_SearchRow, ...]], ...]:
     rankings: list[tuple[str, tuple[_SearchRow, ...]]] = []
     with readonly_code_database(
@@ -870,6 +892,7 @@ def _search_rankings(
                         cancellation,
                         semantic_model_cache=semantic_model_cache,
                         semantic_threads=semantic_threads,
+                        row_admission=row_admission,
                     )
                     rankings.append((mode, rows))
                     cancellation.checkpoint()
@@ -977,6 +1000,7 @@ def search_code(
     semantic_model_cache: Path | None = None,
     semantic_threads: int | None = None,
     cancellation_check: CancellationCheck | None = None,
+    row_admission: Callable[[int], None] | None = None,
 ) -> tuple[CodeSearchHit, ...]:
     """Return explained current hits using reciprocal-rank signal fusion.
 
@@ -987,6 +1011,8 @@ def search_code(
     """
 
     cancellation = SQLiteCancellationBridge(cancellation_check)
+    if row_admission is not None and not callable(row_admission):
+        raise TypeError("Code search row_admission must be callable")
     cancellation.checkpoint()
     modes = _mode_plan(query)
     fetch_limit = min(5000, max(query.limit * 8, 64))
@@ -998,6 +1024,7 @@ def search_code(
         cancellation,
         semantic_model_cache=semantic_model_cache,
         semantic_threads=semantic_threads,
+        row_admission=row_admission,
     )
     return _rank_search_rows(rankings, query, cancellation)
 

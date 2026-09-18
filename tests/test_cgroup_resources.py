@@ -24,6 +24,19 @@ def _files(root: Path, **values: str | int) -> Path:
     return root
 
 
+def _memory_stat(root: Path, **overrides: int) -> None:
+    values = {
+        "file": 800, "shmem": 100, "inactive_file": 500,
+        "file_dirty": 30, "file_writeback": 20, "file_mapped": 40,
+        "unevictable": 10, "active_file": 200, "slab_reclaimable": 100,
+    }
+    values.update(overrides)
+    (root / "memory.stat").write_text(
+        "\n".join(f"{key} {value}" for key, value in values.items()) + "\n",
+        encoding="ascii",
+    )
+
+
 def _proc_fixture(tmp_path: Path, membership: str, mount_root: str = "/"):
     mount = tmp_path / "unified"
     mount.mkdir(exist_ok=True)
@@ -197,6 +210,137 @@ def test_ancestor_memory_high_includes_sibling_pressure(tmp_path):
     assert snapshot.limit_bytes == 2 * GIB
     assert snapshot.high_bytes == 3 * GIB
     assert snapshot.available_bytes == 0
+
+
+def test_clean_inactive_file_cache_restores_only_conservative_headroom(tmp_path, monkeypatch):
+    root = _files(tmp_path, memory_max=1000, memory_current=900)
+    _memory_stat(root)
+    monkeypatch.setattr(cgroup_runtime, "cgroup_v2_directories", lambda: (root,))
+    monkeypatch.setattr(
+        memory_runtime, "_host_physical_memory_snapshot", lambda *args, **kwargs: (2000, 2000),
+    )
+
+    snapshot = cgroup_runtime.cgroup_memory_snapshot()
+
+    assert snapshot.raw_available_bytes == 100
+    assert snapshot.estimated_reclaimable_file_bytes == 400
+    assert snapshot.available_bytes == 500
+    # Exercise the same gate used by routes: the existing reserve is maintained.
+    gate = memory_runtime.WeightedMemoryGate(
+        memory_runtime.MemoryResourceLimits(
+            memory_budget_bytes=300,
+            min_free_memory_bytes=200,
+            min_free_commit_bytes=0,
+            wait_timeout_seconds=0,
+        )
+    )
+    with gate.admit(250):
+        assert gate._reserved == 250
+    with pytest.raises(memory_runtime.MemoryBudgetExceeded):
+        with gate.admit(301):
+            pytest.fail("the configured budget must still constrain admission")
+    _files(root, memory_current=951)
+    with pytest.raises(memory_runtime.MemoryHeadroomTimeout):
+        with gate.admit(250):
+            pytest.fail("the configured free-memory floor must still constrain admission")
+    assert gate._reserved == 0
+
+
+@pytest.mark.parametrize("excluded", ["file_dirty", "file_writeback", "file_mapped", "unevictable"])
+def test_dirty_mapped_writeback_or_unevictable_file_is_not_added(tmp_path, excluded):
+    root = _files(tmp_path, memory_max=1000, memory_current=900)
+    _memory_stat(root, **{excluded: 500})
+
+    snapshot = cgroup_runtime.cgroup_memory_snapshot((root,))
+
+    assert snapshot.available_bytes == snapshot.raw_available_bytes == 100
+    assert snapshot.estimated_reclaimable_file_bytes == 0
+
+
+@pytest.mark.parametrize("overrides", [
+    {"inactive_file": 0, "active_file": 700, "slab_reclaimable": 800},
+    {"file": 800, "shmem": 800, "inactive_file": 0},
+    {"file": 800, "shmem": 700, "inactive_file": 500},
+    {"file": 950},
+    {"file_dirty": 801},
+    {"unevictable": 901},
+])
+def test_other_cache_or_contradictory_counters_never_add_capacity(tmp_path, overrides):
+    root = _files(tmp_path, memory_max=1000, memory_current=900)
+    _memory_stat(root, **overrides)
+
+    snapshot = cgroup_runtime.cgroup_memory_snapshot((root,))
+
+    assert snapshot.available_bytes == snapshot.raw_available_bytes == 100
+    assert snapshot.estimated_reclaimable_file_bytes == 0
+
+
+@pytest.mark.parametrize("mutation", ["missing", "duplicate", "negative", "malformed", "non_ascii"])
+def test_incomplete_or_malformed_memory_stat_falls_back_to_raw_margin(tmp_path, mutation):
+    root = _files(tmp_path, memory_max=1000, memory_current=900)
+    _memory_stat(root)
+    path = root / "memory.stat"
+    original = path.read_text(encoding="ascii")
+    changed = {
+        "missing": original.replace("file_mapped 40\n", ""),
+        "duplicate": original + "inactive_file 500\n",
+        "negative": original.replace("file_mapped 40", "file_mapped -1"),
+        "malformed": original.replace("file_mapped 40", "file_mapped 40 40"),
+        "non_ascii": original + "counter é\n",
+    }[mutation]
+    path.write_text(changed, encoding="utf-8")
+
+    snapshot = cgroup_runtime.cgroup_memory_snapshot((root,))
+
+    assert snapshot.available_bytes == snapshot.raw_available_bytes == 100
+    assert snapshot.estimated_reclaimable_file_bytes == 0
+
+
+@pytest.mark.parametrize("high,expected", [(950, 50), (900, 0), (850, 0)])
+def test_memory_high_remains_a_raw_pressure_boundary_with_reclaimable_file(
+    tmp_path, high, expected,
+):
+    root = _files(tmp_path, memory_max=1000, memory_high=high, memory_current=900)
+    _memory_stat(root)
+
+    snapshot = cgroup_runtime.cgroup_memory_snapshot((root,))
+
+    assert snapshot.limit_bytes == 1000
+    assert snapshot.high_bytes == high
+    assert snapshot.available_bytes == snapshot.raw_available_bytes == expected
+    assert snapshot.estimated_reclaimable_file_bytes == 0
+
+
+def test_parent_margin_still_constrains_child_reclaim_estimate(tmp_path):
+    parent = _files(tmp_path, memory_max=1100, memory_current=900)
+    child = _files(parent / "job", memory_max=1000, memory_current=900)
+    _memory_stat(child)
+
+    snapshot = cgroup_runtime.cgroup_memory_snapshot((child, parent))
+
+    assert snapshot.raw_available_bytes == 100
+    assert snapshot.available_bytes == 200
+    assert snapshot.estimated_reclaimable_file_bytes == 100
+
+
+@pytest.mark.parametrize("recaptured,expected", [("950", 450), ("800", 500), (None, 0)])
+def test_reclaim_estimate_recaptures_current_and_never_uses_a_failed_read(
+    tmp_path, monkeypatch, recaptured, expected,
+):
+    root = _files(tmp_path, memory_max=1000, memory_current=900)
+    _memory_stat(root)
+    original_read = cgroup_runtime._read_ascii
+    current_reads = iter(("900", recaptured))
+
+    def read(path):
+        return next(current_reads) if path.name == "memory.current" else original_read(path)
+
+    monkeypatch.setattr(cgroup_runtime, "_read_ascii", read)
+
+    snapshot = cgroup_runtime.cgroup_memory_snapshot((root,))
+
+    assert snapshot.available_bytes == expected
+    assert snapshot.unreadable_current == ((root / "memory.current",) if recaptured is None else ())
 
 
 @pytest.mark.parametrize("host_available,expected", [(5 * GIB, GIB), (GIB // 2, GIB // 2)])

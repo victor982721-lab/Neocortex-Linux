@@ -1,6 +1,7 @@
 """Bounded exact-vector search and semantic-hit resolution repository."""
 
 from __future__ import annotations
+from neocortex.runtime.control.read_operation import read_rows, read_checkpoint, remaining_read_limit
 import heapq
 import hashlib
 import json
@@ -544,6 +545,7 @@ def _scan_exact_page(
     heap: list[tuple[ExactSearchHeapKey, int, SearchHit]] = []
     best_by_item: dict[str, tuple[ExactSearchHeapKey, int, SearchHit]] = {}
     best_by_evidence: dict[tuple[str, str], tuple[ExactSearchHeapKey, int, SearchHit]] = {}
+    max_vectors = remaining_read_limit(max_vectors, vectors=True)
     scanned = 0
     last_ref_id = after_ref_id
     has_more = False
@@ -573,6 +575,7 @@ def _scan_exact_page(
                 has_more = True
                 break
             selected_rows = rows[:remaining]
+            read_checkpoint(vectors=len(selected_rows))
             page_hits = _exact_search_hits(selected_rows, query, query_vector)
             for hit in page_hits:
                 if cancellation_check is not None and scanned % 128 == 0:
@@ -676,7 +679,7 @@ def _search_exact_page(
         raise ValueError("select exact_index or vector_backend, not both")
     _validate_text_scope(query.target_modality, text_scope)
     selected_diagnostic_ids = validate_diagnostic_item_ids(diagnostic_item_ids)
-    budget = VectorSearchBudget(limit, max_vectors, batch_size)
+    budget = VectorSearchBudget(limit, remaining_read_limit(max_vectors, vectors=True), batch_size)
     if cancellation_check is not None:
         cancellation_check()
     owner_path = Path(path).absolute()
@@ -711,6 +714,10 @@ def _search_exact_page(
             finally:
                 native.close()
         validate_vector_page(result, request, budget)
+        if fallback_reason is None and not isinstance(backend, NativeExactVectorSearch):
+            # External backends receive the admitted upper bound before
+            # execution. Settle the actual count before hydration/next page.
+            read_checkpoint(vectors=result.page.scanned)
         if capture_sqlite_read_fence(owner_path) != fence:
             raise SemanticStateError("semantic owner changed during vector query; no implicit retry")
         if cancellation_check is not None:
@@ -964,7 +971,7 @@ def _load_search_hit_snapshots(
 ) -> dict[int, sqlite3.Row]:
     placeholders = ",".join("?" for _ in member_ids)
     with semantic_database(path, readonly=True) as connection:
-        rows = connection.execute(
+        rows = read_rows(connection.execute(
             f"""SELECT member.member_id,member.generation_id,
                 member.model_signature,member.entity_kind,member.entity_id,
                 member.item_id,model.vector_space,model.modality,
@@ -1019,7 +1026,7 @@ def _load_search_hit_snapshots(
               ON c.chunk_revision_id=member.chunk_revision_id
             WHERE member.member_id IN ({placeholders})""",
             member_ids,
-        ).fetchall()
+        ))
     return {int(row["member_id"]): row for row in rows}
 
 

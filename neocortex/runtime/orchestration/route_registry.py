@@ -786,6 +786,7 @@ def _update_document_catalog_after_route(
                     progress=context.progress,
                     progress_operation=source_kind,
                     cancellation=context.cancellation,
+                    source_root=context.root,
                 )
                 for source_path, document_kind in sources
             )

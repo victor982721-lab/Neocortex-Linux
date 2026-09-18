@@ -17,6 +17,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Iterator
 
+from .code_graph_revision import graph_revision
+
 
 GENERATION_SCHEMA_VERSION = 1
 DEFAULT_HEAD_NAME = "default"
@@ -151,6 +153,32 @@ class GraphPublicationResult:
 
 
 @dataclass(frozen=True, slots=True)
+class GraphObservation:
+    """A completed run's observation, preserving the original graph producer."""
+
+    observer_run_id: int
+    producer_run_id: int
+    snapshot_id: str
+    input_digest: str
+    generation_id: str
+    generation_digest: str
+    head_name: str
+    head_revision: int
+    item_count: int
+    graph_revision: int
+    resolver_signature: str
+    processing_signature: str
+    contract: str = "code-graph-observation-v1"
+
+    def publication(self) -> GraphPublicationResult:
+        return GraphPublicationResult(
+            self.producer_run_id, self.snapshot_id, self.generation_id,
+            self.generation_digest, self.head_name, self.head_revision,
+            self.item_count, reused=True,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class PublishedGraph:
     """Validated view of a published generation and its immutable members."""
 
@@ -214,7 +242,51 @@ def _cursor(value: str | None, *, required: bool = False) -> str | None:
 
 
 def _hash(value: object, name: str) -> str:
-    return hashlib.sha256(_json(value, name).encode("utf-8")).hexdigest()
+    """Hash canonical JSON without applying a per-metadata limit to a graph."""
+
+    digest = hashlib.sha256()
+    encoder = json.JSONEncoder(
+        ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")
+    )
+    try:
+        for piece in encoder.iterencode(value):
+            digest.update(piece.encode("utf-8"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be JSON-serializable") from exc
+    return digest.hexdigest()
+
+
+def _hash_input_rows(
+    rows: Iterable[sqlite3.Row],
+    cancellation_check: Callable[[], None] | None,
+) -> str:
+    """Stream the exact historical canonical array, ordered by input key."""
+
+    digest = hashlib.sha256(b"[")
+    encoder = json.JSONEncoder(
+        ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")
+    )
+    for index, row in enumerate(rows):
+        if cancellation_check is not None:
+            cancellation_check()
+        if index:
+            digest.update(b",")
+        # Emit the historical sorted field order. Keep the already canonical
+        # metadata bytes: decoding and re-encoding would reorder numeric keys
+        # in nested mappings after JSON converts them into strings.
+        digest.update(b'{"content_digest":')
+        digest.update(encoder.encode(row[1]).encode("utf-8"))
+        digest.update(b',"key":')
+        digest.update(encoder.encode(row[0]).encode("utf-8"))
+        digest.update(b',"metadata":')
+        digest.update(str(row[4]).encode("utf-8"))
+        digest.update(b',"observed_path":')
+        digest.update(encoder.encode(row[3]).encode("utf-8"))
+        digest.update(b',"source_version_id":')
+        digest.update(encoder.encode(row[2]).encode("utf-8"))
+        digest.update(b'}')
+    digest.update(b"]")
+    return digest.hexdigest()
 
 
 def _now(value: int | None, name: str) -> int:
@@ -249,19 +321,6 @@ def _member(item: GraphMembership) -> GraphMembership:
         else _index(item.source_version_id, "source_version_id"),
         dict(item.metadata),
     )
-
-
-def _input_payload(items: Sequence[CodeInput]) -> list[dict[str, object]]:
-    return [
-        {
-            "key": item.key,
-            "content_digest": item.content_digest,
-            "source_version_id": item.source_version_id,
-            "observed_path": item.observed_path,
-            "metadata": dict(item.metadata),
-        }
-        for item in items
-    ]
 
 
 def _member_payload(items: Sequence[GraphMembership]) -> list[dict[str, object]]:
@@ -391,10 +450,78 @@ class CodeGraphGenerationStore:
             "summary": summary,
         }
 
-    def _legacy_input_snapshot_items(self) -> tuple[CodeInput, ...]:
+    def observe_publication(
+        self, observer_run_id: int, publication: GraphPublicationResult,
+        *, resolver_signature: str,
+    ) -> GraphObservation:
+        observer = self.validate_source_run_id(observer_run_id)
+        signature = str(observer["processing_signature"])
+        self.validate_source_run_id(publication.source_run_id, expected_processing_signature=signature)
+        head = self.get_head(publication.head_name)
+        generation = self.get_generation(publication.generation_id)
+        snapshot = self.get_input_snapshot(publication.snapshot_id)
+        if (
+            head is None or generation is None or snapshot is None
+            or head.generation_id != publication.generation_id
+            or head.generation_digest != publication.generation_digest
+            or head.revision != publication.head_revision
+            or generation.status != "published"
+            or generation.snapshot_id != snapshot.snapshot_id
+            or generation.generation_digest != publication.generation_digest
+            or generation.metadata.get("source_run_id") != publication.source_run_id
+            or generation.metadata.get("processing_signature") != signature
+            or generation.metadata.get("input_digest") != snapshot.input_digest
+            or snapshot.source_run_id != publication.source_run_id
+            or snapshot.status != "sealed"
+        ):
+            raise GenerationConflict("Code graph publication observation differs from the current head")
+        return GraphObservation(
+            observer_run_id, publication.source_run_id, snapshot.snapshot_id,
+            snapshot.input_digest, generation.generation_id, publication.generation_digest,
+            head.head_name, head.revision, publication.item_count,
+            graph_revision(self._connection), _text(resolver_signature, "resolver_signature"), signature,
+        )
+
+    def reusable_observation(
+        self, observer_run_id: int, *, processing_signature: str, resolver_signature: str,
+    ) -> GraphObservation | None:
+        """Validate a receipt and transactional revision without scanning graph rows."""
+
+        source = self.validate_source_run_id(observer_run_id, expected_processing_signature=processing_signature)
+        summary = source["summary"]
+        if not isinstance(summary, dict):
+            return None
+        payload = summary.get("graph_publication")
+        if payload is None:
+            return None  # a v7 producer gets one normal v8 publication
+        if not isinstance(payload, dict):
+            raise GenerationSchemaError("Code graph observation is malformed")
+        try:
+            observation = GraphObservation(**payload)
+            for name in ("observer_run_id", "producer_run_id", "head_revision", "item_count", "graph_revision"):
+                _index(getattr(observation, name), name)
+            for name in ("snapshot_id", "input_digest", "generation_id", "generation_digest", "head_name"):
+                _text(getattr(observation, name), name)
+        except (TypeError, ValueError) as exc:
+            raise GenerationSchemaError("Code graph observation is malformed") from exc
+        if (
+            observation.contract != "code-graph-observation-v1"
+            or observation.observer_run_id != observer_run_id
+            or observation.resolver_signature != resolver_signature
+            or observation.processing_signature != processing_signature
+            or observation.graph_revision != graph_revision(self._connection)
+        ):
+            return None
+        expected = self.observe_publication(
+            observer_run_id, observation.publication(), resolver_signature=resolver_signature
+        )
+        if expected != observation:
+            raise GenerationConflict("Code graph observation no longer matches its publication")
+        return observation
+
+    def _legacy_input_snapshot_items(self) -> Iterable[CodeInput]:
         """Capture current file identities without opening source files."""
 
-        items: list[CodeInput] = []
         for row in self._connection.execute(
             """SELECT file_id,version_id,path_observed,size,mtime_ns,
             raw_xxh3_128,text_xxh3_128,structure_xxh3_128,analysis_status,
@@ -428,24 +555,25 @@ class CodeGraphGenerationStore:
                         and not any(character.isspace() for character in value)
                     )
                 ),
-                _hash(payload, "file input"),
+                None,
             )
-            items.append(
-                CodeInput(
-                    f"file:{file_id}",
-                    digest,
-                    version_id,
-                    path,
-                    {
-                        "analysis_status": str(row[8]),
-                        "artifact_kind": str(row[11]),
-                        "language": None if row[10] is None else str(row[10]),
-                    },
-                )
+            if digest is None:
+                digest = _hash(payload, "file input")
+            yield CodeInput(
+                f"file:{file_id}",
+                digest,
+                version_id,
+                path,
+                {
+                    "analysis_status": str(row[8]),
+                    "artifact_kind": str(row[11]),
+                    "language": None if row[10] is None else str(row[10]),
+                },
             )
-        return tuple(items)
 
-    def _legacy_graph_memberships(self) -> tuple[GraphMembership, ...]:
+    def _legacy_graph_memberships(
+        self, *, cancellation_check: Callable[[], None] | None = None,
+    ) -> tuple[GraphMembership, ...]:
         """Materialize a deterministic, current graph projection.
 
         This is a bridge for the existing Code producer: the legacy tables
@@ -462,6 +590,8 @@ class CodeGraphGenerationStore:
             payload: Mapping[str, object],
             source_version_id: int | None = None,
         ) -> None:
+            if cancellation_check is not None:
+                cancellation_check()
             members.append(
                 GraphMembership(
                     key,
@@ -668,16 +798,62 @@ class CodeGraphGenerationStore:
         *,
         metadata: Mapping[str, object] | None = None,
         created_ns: int | None = None,
+        cancellation_check: Callable[[], None] | None = None,
     ) -> InputSnapshot:
         snapshot_id = _text(snapshot_id, "snapshot_id")
         source_run_id = _index(source_run_id, "source_run_id")
-        items = tuple(sorted((_input(item) for item in inputs), key=lambda item: item.key))
-        if len({item.key for item in items}) != len(items):
-            raise ValueError("snapshot input keys must be unique")
-        input_digest = _hash(_input_payload(items), "snapshot inputs")
         metadata_json = _json(dict(metadata or {}), "snapshot metadata")
         created = _now(created_ns, "created_ns")
         with self._transaction() as connection:
+            # Sort in SQLite instead of holding the inputs, their payload
+            # copies and a complete JSON byte string in memory simultaneously.
+            # Every item's metadata keeps its original 256 KiB bound.
+            connection.execute(
+                "CREATE TEMP TABLE _code_snapshot_inputs("
+                "input_key TEXT PRIMARY KEY,content_digest TEXT NOT NULL,"
+                "source_version_id INTEGER,observed_path TEXT,metadata_json TEXT NOT NULL) WITHOUT ROWID"
+            )
+            try:
+                batch: list[tuple[object, ...]] = []
+                input_count = 0
+                insert = "INSERT INTO temp._code_snapshot_inputs VALUES(?,?,?,?,?)"
+                for raw_item in inputs:
+                    if cancellation_check is not None:
+                        cancellation_check()
+                    item = _input(raw_item)
+                    batch.append((item.key, item.content_digest, item.source_version_id,
+                                  item.observed_path, _json(dict(item.metadata), "input metadata")))
+                    input_count += 1
+                    if len(batch) >= 256:
+                        connection.executemany(insert, batch)
+                        batch.clear()
+                if batch:
+                    connection.executemany(insert, batch)
+                input_digest = _hash_input_rows(
+                    connection.execute(
+                        "SELECT input_key,content_digest,source_version_id,observed_path,metadata_json "
+                        "FROM temp._code_snapshot_inputs ORDER BY input_key"
+                    ),
+                    cancellation_check,
+                )
+                return self._store_input_snapshot(
+                    snapshot_id, source_run_id, input_digest, input_count, metadata_json, created
+                )
+            except sqlite3.IntegrityError as exc:
+                if "_code_snapshot_inputs.input_key" in str(exc):
+                    raise ValueError("snapshot input keys must be unique") from exc
+                raise
+            finally:
+                connection.execute("DROP TABLE temp._code_snapshot_inputs")
+
+    def _store_input_snapshot(
+        self, snapshot_id: str, source_run_id: int, input_digest: str,
+        input_count: int, metadata_json: str, created: int,
+    ) -> InputSnapshot:
+        """Publish the sorted staging rows inside create_input_snapshot's transaction."""
+
+        connection = self._connection
+        with self._transaction():
             row = connection.execute(
                 "SELECT source_run_id,input_digest,input_count,status,created_ns,metadata_json "
                 "FROM graph_input_snapshots WHERE snapshot_id=?",
@@ -687,7 +863,7 @@ class CodeGraphGenerationStore:
                 if (int(row[0]), str(row[1]), int(row[2]), str(row[5])) != (
                     source_run_id,
                     input_digest,
-                    len(items),
+                    input_count,
                     metadata_json,
                 ):
                     raise GenerationConflict(f"input snapshot differs: {snapshot_id}")
@@ -695,27 +871,19 @@ class CodeGraphGenerationStore:
             connection.execute(
                 "INSERT INTO graph_input_snapshots(snapshot_id,source_run_id,input_digest,input_count,status,created_ns,metadata_json) "
                 "VALUES(?,?,?,?,'sealed',?,?)",
-                (snapshot_id, source_run_id, input_digest, len(items), created, metadata_json),
+                (snapshot_id, source_run_id, input_digest, input_count, created, metadata_json),
             )
-            connection.executemany(
-                "INSERT INTO graph_snapshot_inputs(snapshot_id,input_key,content_digest,source_version_id,observed_path,metadata_json) VALUES(?,?,?,?,?,?)",
-                (
-                    (
-                        snapshot_id,
-                        item.key,
-                        item.content_digest,
-                        item.source_version_id,
-                        item.observed_path,
-                        _json(dict(item.metadata), "input metadata"),
-                    )
-                    for item in items
-                ),
+            connection.execute(
+                "INSERT INTO graph_snapshot_inputs(snapshot_id,input_key,content_digest,source_version_id,observed_path,metadata_json) "
+                "SELECT ?,input_key,content_digest,source_version_id,observed_path,metadata_json "
+                "FROM temp._code_snapshot_inputs ORDER BY input_key",
+                (snapshot_id,),
             )
             return InputSnapshot(
                 snapshot_id,
                 source_run_id,
                 input_digest,
-                len(items),
+                input_count,
                 "sealed",
                 created,
                 json.loads(metadata_json),
@@ -1190,6 +1358,7 @@ class CodeGraphGenerationStore:
                 source_id,
                 inputs,
                 metadata=snapshot_metadata,
+                cancellation_check=cancellation_check,
             )
             generation = self.start_generation(
                 snapshot.snapshot_id,
@@ -1197,7 +1366,7 @@ class CodeGraphGenerationStore:
                 metadata={**snapshot_metadata, "input_digest": snapshot.input_digest},
             )
             if generation.status == "building":
-                members = self._legacy_graph_memberships()
+                members = self._legacy_graph_memberships(cancellation_check=cancellation_check)
                 for batch_index, start in enumerate(range(0, len(members), batch_size)):
                     check_cancelled()
                     batch = members[start : start + batch_size]
@@ -1255,7 +1424,9 @@ class CodeGraphGenerationStore:
             # rollback generation and tombstone older rows without touching a
             # head or an in-progress generation.
             self.prune_generations(keep=2)
-            item_count = len(self.list_memberships(generation_id))
+            item_count = int(self._connection.execute(
+                "SELECT COUNT(*) FROM graph_memberships WHERE generation_id=?", (generation_id,)
+            ).fetchone()[0])
             return GraphPublicationResult(
                 source_id,
                 snapshot.snapshot_id,
@@ -1428,6 +1599,7 @@ __all__ = [
     "GenerationStateError",
     "GraphGeneration",
     "GraphMembership",
+    "GraphObservation",
     "GraphPublicationResult",
     "InputSnapshot",
     "PublishedGraph",

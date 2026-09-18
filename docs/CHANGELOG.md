@@ -4,6 +4,40 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-18 — Reutilización de caché y continuidad de ejecución
+
+- Code calcula los digests agregados por bloques, conservando su representación
+  canónica y los límites por elemento. El esquema v8 añade revisiones
+  transaccionales para vincular nuevos recorridos a una generación publicada
+  compatible, sin copiar de nuevo sus entradas y membresías.
+- Audio, Video, Office, DOCX, Archive y Code consultan FTS por mapas temporales
+  de identidad a rowid, mantenidos en las mismas transacciones que el índice.
+  Se preservan duplicados, reparación y rollback; los replays sin cambios
+  evitan reindexar rutas y cuerpos idénticos.
+- Audio valida la transcripción y la procedencia vigente antes de repetir
+  ffprobe. Text reutiliza la representación ya descomprimida y validada sólo
+  mientras conserva la observación de la conexión que autoriza su publicación.
+- Inventory v15 registra versiones de cambio de archivos para observar deltas
+  portables y reutilizar publicaciones sin cambios. La versión de metadata no
+  sustituye la prueba de contenido; el plan reutiliza el digest completo ya
+  calculado en la misma observación y contabiliza las lecturas reales.
+- El catálogo integrado conserva la raíz de origen. Sus recibos de observación
+  reutilizan la generación compatible y mantienen identificado al productor;
+  la caché por documento incluye todos los campos de clasificación y sus límites.
+- Framework v24 indexa candidatos por corrida e identidad física. Sus
+  proyecciones SQLite comprueban cancelación y deadline durante el trabajo en
+  la conexión fuente y restauran los controles del owner al terminar.
+- El scheduler inicia cada ruta cuando terminan sus dependencias. La
+  organización conserva etapas pendientes y checkpoints para reanudar sin
+  anunciar una corrida completa mientras falte el trabajo solicitado.
+- Knowledge comparte presupuestos entre preparación, consultas y reintentos,
+  y reutiliza observaciones verificadas dentro del intento. Semantic conserva
+  source heads y recibos de compatibilidad vinculados a fences exactas, sin
+  cambiar la procedencia de la publicación reutilizada.
+- La admisión de CPU evita descontar dos veces el trabajo propio. En Linux,
+  el margen de memoria incorpora una estimación conservadora de caché inactiva
+  limpia y conserva las reservas configuradas y la presión de `memory.high`.
+
 ## 2026-09-18 — Correcciones integradas de auditoría y Text
 
 - Text centraliza la consulta FTS y revalida publicación/procedencia en replay;

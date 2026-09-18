@@ -7,7 +7,7 @@ import sqlite3
 import time
 import zlib
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -22,6 +22,9 @@ from .code_contracts import (
     DiagnosticRecord,
 )
 from .code_schema import connect_code_state, initialize_code_state
+from .code_fts_lookup import CodeFTSLookup
+from .code_graph_revision import graph_revision
+from .code_graph_generations import GenerationConflict, GenerationError
 from .code_retention import (
     CodeRetentionPolicy,
     CodeRetentionResult,
@@ -36,7 +39,7 @@ from neocortex.persistence.sqlite_cancellation import (
 )
 
 if TYPE_CHECKING:
-    from .code_graph_generations import CodeGraphGenerationStore
+    from .code_graph_generations import CodeGraphGenerationStore, GraphObservation
 
 # region [01] Repository records and helpers
 
@@ -66,6 +69,12 @@ class CachedCodeVersion:
     references: int
     diagnostics: int
     fts_rows_repaired: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _GraphReuseProof:
+    analysis_run_id: int
+    observation: GraphObservation
 
 
 @dataclass(frozen=True, slots=True)
@@ -286,6 +295,10 @@ class CodeState:
         self.retention_policy = retention_policy
         self._version_count_cache: dict[int, tuple[int, int, int]] | None = None
         self._graph_generation_store: CodeGraphGenerationStore | None = None
+        self._fts_lookup = CodeFTSLookup(self.connection)
+        self._graph_reuse_proof: _GraphReuseProof | None = None
+        self.last_graph_publication_reused = False
+        self.last_graph_publication_milliseconds = 0
 
     def close(self) -> None:
         self._graph_generation_store = None
@@ -314,6 +327,9 @@ class CodeState:
         processing_signature: str,
     ) -> int:
         now = time.time_ns()
+        self._graph_reuse_proof = None
+        self.last_graph_publication_reused = False
+        self.last_graph_publication_milliseconds = 0
         with self.connection:
             self.connection.execute(
                 """UPDATE analysis_runs SET status='interrupted',completed_ns=?,
@@ -343,10 +359,13 @@ class CodeState:
         partial: bool,
         graph_current: bool = False,
         retention_policy: CodeRetentionPolicy | None = None,
+        cancellation_check: CancellationCheck | None = None,
     ) -> CodeRetentionResult | None:
         """Complete one run and optionally publish its graph-completion fence."""
 
-        with self.connection:
+        cancellation = SQLiteCancellationBridge(cancellation_check)
+        cancellation.checkpoint()
+        with sqlite_cancellation_scope(self.connection, cancellation), self.connection:
             updated = self.connection.execute(
                 """UPDATE analysis_runs SET status=?,completed_ns=?,candidates=?,
                 processed=?,cache_hits=?,errors=?,summary_json=?,error_type=NULL,
@@ -371,7 +390,40 @@ class CodeState:
                 # legacy graph, and advances its head with CAS.  Nested
                 # savepoints keep the run status, graph fence and generation
                 # head atomic on failure or cancellation.
-                self.graph_generation_store.publish_legacy_graph(analysis_run_id)
+                publication_started = time.perf_counter_ns()
+                proof = self._graph_reuse_proof
+                if proof is not None and proof.analysis_run_id == analysis_run_id:
+                    if graph_revision(self.connection) != proof.observation.graph_revision:
+                        raise GenerationConflict("Code graph changed after its reuse proof")
+                    verified = self.graph_generation_store.reusable_observation(
+                        proof.observation.observer_run_id,
+                        processing_signature=proof.observation.processing_signature,
+                        resolver_signature=CODE_GRAPH_RESOLVER_SIGNATURE,
+                    )
+                    if verified != proof.observation:
+                        raise GenerationConflict("Code graph head changed after its reuse proof")
+                    publication = proof.observation.publication()
+                else:
+                    publication = self.graph_generation_store.publish_legacy_graph(
+                        analysis_run_id, cancellation_check=cancellation_check
+                    )
+                observation = self.graph_generation_store.observe_publication(
+                    analysis_run_id, publication, resolver_signature=CODE_GRAPH_RESOLVER_SIGNATURE
+                )
+                cancellation.checkpoint()
+                self.last_graph_publication_reused = publication.reused
+                self.last_graph_publication_milliseconds = (
+                    time.perf_counter_ns() - publication_started
+                ) // 1_000_000
+                persisted_summary = {
+                    **summary, "graph_publication": asdict(observation),
+                    "graph_generation_reused": int(publication.reused),
+                    "publication_milliseconds": self.last_graph_publication_milliseconds,
+                }
+                self.connection.execute(
+                    "UPDATE analysis_runs SET summary_json=? WHERE analysis_run_id=?",
+                    (_json(persisted_summary), analysis_run_id),
+                )
                 self.connection.execute(
                     """INSERT INTO metadata(key,value) VALUES(?,?)
                     ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
@@ -424,6 +476,7 @@ class CodeState:
         may have published graph-affecting file state without finalizing it.
         """
 
+        self._graph_reuse_proof = None
         marker = self.connection.execute(
             "SELECT value FROM metadata WHERE key=?",
             (_GRAPH_COMPLETION_KEY,),
@@ -475,6 +528,17 @@ class CodeState:
             or graph_milliseconds < 0
         ):
             return None
+        try:
+            observation = self.graph_generation_store.reusable_observation(
+                completed_analysis_run_id,
+                processing_signature=processing_signature,
+                resolver_signature=CODE_GRAPH_RESOLVER_SIGNATURE,
+            )
+        except (GenerationError, ValueError, TypeError):
+            return None
+        if observation is None:
+            return None
+        self._graph_reuse_proof = _GraphReuseProof(analysis_run_id, observation)
         row = self.connection.execute(
             "SELECT COUNT(*) FROM projects WHERE status='current'"
         ).fetchone()
@@ -739,12 +803,11 @@ class CodeState:
             # accepting an unproven remainder as a cache result.
             self._cached_code_fts_rows(version_id, validate_coverage=True)
             return None
+        predicate, parameters = self._fts_lookup.predicate(version_id)
         actual_rows = self.connection.execute(
-            """SELECT chunk_id,version_id,path,project,language,symbol,signature,body
-            FROM code_fts WHERE version_id=? OR chunk_id IN(
-                SELECT chunk_id FROM code_chunks WHERE version_id=?
-            )""",
-            (version_id, version_id),
+            f"""SELECT chunk_id,version_id,path,project,language,symbol,signature,body
+            FROM code_fts WHERE {predicate}""",
+            parameters,
         ).fetchall()
         actual_by_chunk: dict[int, list[tuple[object, ...]]] = {}
         malformed = False
@@ -785,18 +848,16 @@ class CodeState:
         if expected is None:
             return None
 
-        self.connection.execute(
-            """DELETE FROM code_fts WHERE version_id=? OR chunk_id IN(
-                SELECT chunk_id FROM code_chunks WHERE version_id=?
-            )""",
-            (version_id, version_id),
-        )
-        self.connection.executemany(
-            """INSERT INTO code_fts(
-            chunk_id,version_id,path,project,language,symbol,signature,body)
-            VALUES(?,?,?,?,?,?,?,?)""",
-            expected,
-        )
+        self._fts_lookup.delete(predicate, parameters)
+        for expected_row in expected:
+            cursor = self.connection.execute(
+                """INSERT INTO code_fts(
+                chunk_id,version_id,path,project,language,symbol,signature,body)
+                VALUES(?,?,?,?,?,?,?,?)""",
+                expected_row,
+            )
+            self._fts_lookup.record(_lastrowid(cursor), expected_row[1], expected_row[0])
+        self._fts_lookup.acknowledge()
         return max(len(actual_rows), len(expected))
 
     def _cached_error_is_retryable(self, version_id: int, provenance_json: object) -> bool:
@@ -841,6 +902,7 @@ class CodeState:
         """
 
         _validate_optional_raw_fingerprint(raw_xxh3_128, raw_xxh3_64_guard)
+        self._fts_lookup.invalidate_if_changed()
         volume_id, physical_file_id = _identity(snapshot)
         lookup_started = time.perf_counter_ns()
         row = self.connection.execute(
@@ -942,6 +1004,7 @@ class CodeState:
             elapsed_nanoseconds["cache_update"] = elapsed_nanoseconds.get("cache_update", 0) + (
                 time.perf_counter_ns() - update_started
             )
+        self._fts_lookup.acknowledge()
         return CachedCodeVersion(
             version_id,
             status,
@@ -1065,6 +1128,7 @@ class CodeState:
         framework_run_id: int,
     ) -> tuple[int, bool]:
         source = analysis.input
+        self._fts_lookup.invalidate_if_changed()
         with self.connection:
             file_id, previous, path_conflicts = self._claim_file(source.snapshot, framework_run_id)
             invalidated_ns = self._invalidate_previous(previous, framework_run_id)
@@ -1128,6 +1192,7 @@ class CodeState:
             references=len(analysis.references),
             diagnostics=len(analysis.diagnostics),
         )
+        self._fts_lookup.acknowledge()
         return version_id, previous is not None
 
     def store_skipped(
@@ -1135,6 +1200,7 @@ class CodeState:
         observation: SkippedCodeObservation,
         framework_run_id: int,
     ) -> tuple[int, bool]:
+        self._fts_lookup.invalidate_if_changed()
         with self.connection:
             file_id, previous, path_conflicts = self._claim_file(
                 observation.snapshot, framework_run_id
@@ -1206,7 +1272,7 @@ class CodeState:
                     ),
                 )
                 chunk_id = _lastrowid(cursor)
-                self.connection.execute(
+                fts_cursor = self.connection.execute(
                     """INSERT INTO code_fts(chunk_id,version_id,path,project,language,
                     symbol,signature,body) VALUES(?,?,?,'',?,'','',?)""",
                     (
@@ -1217,12 +1283,14 @@ class CodeState:
                         observation.text_excerpt,
                     ),
                 )
+                self._fts_lookup.record(_lastrowid(fts_cursor), version_id, chunk_id)
         self._cache_version_counts(
             version_id,
             symbols=0,
             references=0,
             diagnostics=1,
         )
+        self._fts_lookup.acknowledge()
         return version_id, previous is not None
 
     def _insert_version(
@@ -1518,7 +1586,7 @@ class CodeState:
                 ),
             )
             chunk_id = _lastrowid(cursor)
-            self.connection.execute(
+            fts_cursor = self.connection.execute(
                 """INSERT INTO code_fts(
                 chunk_id,version_id,path,project,language,symbol,signature,body)
                 VALUES(?,?,?,'',?,?,?,?)""",
@@ -1532,6 +1600,7 @@ class CodeState:
                     chunk.text,
                 ),
             )
+            self._fts_lookup.record(_lastrowid(fts_cursor), version_id, chunk_id)
 
     def _insert_project_hints(
         self,

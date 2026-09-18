@@ -16,6 +16,7 @@ from .ddl import (
     build_v10_schema,
     build_v11_schema,
     build_v12_schema,
+    build_v13_schema,
 )
 
 
@@ -26,7 +27,7 @@ def metadata_contract() -> SQLiteSchemaContract:
 
 @lru_cache(maxsize=1)
 def inventory_schema_contract() -> SQLiteSchemaContract:
-    """Return the exact structural contract for inventory schema v12."""
+    """Return the exact structural contract for the current inventory schema."""
 
     return schema_contract_from_builder(build_current_schema)
 
@@ -64,3 +65,8 @@ def inventory_v11_schema_contract() -> SQLiteSchemaContract:
 @lru_cache(maxsize=1)
 def inventory_v12_schema_contract() -> SQLiteSchemaContract:
     return schema_contract_from_builder(build_v12_schema)
+
+
+@lru_cache(maxsize=1)
+def inventory_v13_schema_contract() -> SQLiteSchemaContract:
+    return schema_contract_from_builder(build_v13_schema)

@@ -2,6 +2,16 @@
 
 from __future__ import annotations
 
+from neocortex.runtime.control.locking import FrameworkRunLock
+
+from ..fts_lookup import (
+    delete_format_fts_keys,
+    format_fts_key_predicate,
+    initialize_format_fts_lookup,
+    insert_format_fts_row,
+    refresh_format_fts_path,
+)
+
 import io
 import json
 import os
@@ -1221,7 +1231,7 @@ class DocxRoute:
             ).fetchall()
             if not keys:
                 return removed
-            connection.executemany("DELETE FROM document_fts WHERE file_key=?", keys)
+            delete_format_fts_keys(connection, "document_fts", tuple(row[0] for row in keys))
             removed += int(
                 connection.executemany("DELETE FROM documents WHERE file_key=?", keys).rowcount
             )
@@ -1322,10 +1332,7 @@ class DocxRoute:
                 raise _LiveDocxCachePathConflict(
                     f"cached DOCX path is still owned by a live inventory identity: {snapshot.path}"
                 )
-            connection.execute(
-                "DELETE FROM document_fts WHERE file_key=?",
-                (owner_key,),
-            )
+            delete_format_fts_keys(connection, "document_fts", (owner_key,))
             connection.execute(
                 "DELETE FROM layout_groups WHERE representative_file_key=?",
                 (owner_key,),
@@ -1349,15 +1356,12 @@ class DocxRoute:
         # Preserve the narrow historical path-ownership seam used by callers
         # that construct a route probe without a full route configuration.
         if not hasattr(self, "config"):
-            connection.execute(
-                "UPDATE document_fts SET path=? WHERE file_key=?",
-                (snapshot.path, key),
-            )
+            refresh_format_fts_path(connection, "document_fts", key, snapshot.path)
             return 0
         if cache_status not in {"complete", "partial"}:
             # Error caches have no durable text representation.  Remove any
             # orphaned index row rather than allowing a stale search hit.
-            connection.execute("DELETE FROM document_fts WHERE file_key=?", (key,))
+            delete_format_fts_keys(connection, "document_fts", (key,))
             return 0
         row = connection.execute(
             """SELECT file_key,path,title,author,text_zlib,text_chars,text_xxh3_128,
@@ -1381,15 +1385,16 @@ class DocxRoute:
             str(row["author"] or ""),
             body,
         )
+        predicate, parameters = format_fts_key_predicate(connection, "document_fts", (key,))
         fts_rows = connection.execute(
-            "SELECT path,title,author,body FROM document_fts WHERE file_key=?",
-            (key,),
+            f"SELECT path,title,author,body FROM document_fts WHERE {predicate}",
+            parameters,
         ).fetchall()
         if len(fts_rows) == 1 and tuple(fts_rows[0]) == expected:
             return 0
-        connection.execute("DELETE FROM document_fts WHERE file_key=?", (key,))
-        connection.execute(
-            "INSERT INTO document_fts(file_key,path,title,author,body) VALUES(?,?,?,?,?)",
+        delete_format_fts_keys(connection, "document_fts", (key,))
+        insert_format_fts_row(
+            connection, "document_fts", ("file_key", "path", "title", "author", "body"),
             (key, *expected),
         )
         return 1
@@ -1505,12 +1510,11 @@ class DocxRoute:
         key = _file_key(snapshot)
         now = time.time_ns()
         failure_code = result.diagnostics[0].code if result.diagnostics else None
-        connection.execute(
-            f"""DELETE FROM document_fts WHERE file_key IN(
-            SELECT file_key FROM documents
-            WHERE path=? COLLATE {_PATH_COLLATION} AND file_key<>?)""",
+        conflicting_keys = tuple(row[0] for row in connection.execute(
+            f"SELECT file_key FROM documents WHERE path=? COLLATE {_PATH_COLLATION} AND file_key<>?",
             (snapshot.path, key),
-        )
+        ))
+        delete_format_fts_keys(connection, "document_fts", conflicting_keys)
         connection.execute(
             f"DELETE FROM documents WHERE path=? COLLATE {_PATH_COLLATION} AND file_key<>?",
             (snapshot.path, key),
@@ -1590,9 +1594,9 @@ class DocxRoute:
             ),
         )
         self._write_diagnostics(connection, key, result.diagnostics)
-        connection.execute("DELETE FROM document_fts WHERE file_key=?", (key,))
-        connection.execute(
-            "INSERT INTO document_fts(file_key,path,title,author,body) VALUES(?,?,?,?,?)",
+        delete_format_fts_keys(connection, "document_fts", (key,))
+        insert_format_fts_row(
+            connection, "document_fts", ("file_key", "path", "title", "author", "body"),
             (
                 key,
                 snapshot.path,
@@ -1610,12 +1614,11 @@ class DocxRoute:
     ) -> DocxFailure:
         key = _file_key(snapshot)
         failure = classify_docx_exception(exc)
-        connection.execute(
-            f"""DELETE FROM document_fts WHERE file_key=? OR file_key IN(
-            SELECT file_key FROM documents
-            WHERE path=? COLLATE {_PATH_COLLATION} AND file_key<>?)""",
-            (key, snapshot.path, key),
-        )
+        conflicting_keys = tuple(row[0] for row in connection.execute(
+            f"SELECT file_key FROM documents WHERE path=? COLLATE {_PATH_COLLATION} AND file_key<>?",
+            (snapshot.path, key),
+        ))
+        delete_format_fts_keys(connection, "document_fts", (key, *conflicting_keys))
         connection.execute(
             f"DELETE FROM documents WHERE path=? COLLATE {_PATH_COLLATION} AND file_key<>?",
             (snapshot.path, key),
@@ -1980,6 +1983,15 @@ class DocxRoute:
 
     def run(self) -> DocxRouteSummary:
         self.cancellation.checkpoint()
+        lock_path = self.config.state_path.with_suffix(
+            self.config.state_path.suffix + ".route.lock"
+        )
+        self.config.state_path.parent.mkdir(parents=True, exist_ok=True)
+        with FrameworkRunLock(lock_path):
+            return self._run_locked()
+
+    def _run_locked(self) -> DocxRouteSummary:
+        self.cancellation.checkpoint()
         self._recoverable_retry_keys.clear()
         total = eligible = selected_count = 0
         processed = cache_hits = cached_errors = extracted = errors = layouts = 0
@@ -2022,6 +2034,9 @@ class DocxRoute:
 
         report()
         with docx_database(self.config.state_path) as connection:
+            initialize_format_fts_lookup(
+                connection, "document_fts", checkpoint=self.cancellation.checkpoint
+            )
             self._stage_inventory(connection)
             total, eligible = self._selected_counts(connection)
             selected_count = (

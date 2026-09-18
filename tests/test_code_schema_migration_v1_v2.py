@@ -390,6 +390,7 @@ def test_v1_to_current_migration_preserves_rows_relations_and_fts(tmp_path: Path
         assert metadata == {
             "preserved_marker": "keep-me",
             "schema_version": str(code_schema.CODE_SCHEMA_VERSION),
+            "code_graph_revision_v1": "1",
         }
         assert int(connection.execute("PRAGMA user_version").fetchone()[0]) == (
             code_schema.CODE_SCHEMA_VERSION
@@ -540,6 +541,7 @@ def test_v2_to_v3_migration_preserves_legacy_external_runs(tmp_path: Path) -> No
         assert dict(connection.execute("SELECT key,value FROM metadata")) == {
             "preserved_marker": "keep-me",
             "schema_version": str(code_schema.CODE_SCHEMA_VERSION),
+            "code_graph_revision_v1": "1",
         }
         assert int(connection.execute("PRAGMA user_version").fetchone()[0]) == (
             code_schema.CODE_SCHEMA_VERSION

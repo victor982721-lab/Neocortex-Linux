@@ -353,6 +353,11 @@ class ScanCheckpointRepositoryMixin:
             (successor_id, source_id),
         )
         self._connection.execute(
+            "INSERT INTO inventory_file_change_versions(scan_id,path,ctime_ns) "
+            "SELECT ?,path,ctime_ns FROM inventory_file_change_versions WHERE scan_id=?",
+            (successor_id, source_id),
+        )
+        self._connection.execute(
             "INSERT INTO inventory_generation_heads(scan_id,content_digest,created_ns) "
             "VALUES(?,?,?)",
             (successor_id, source_digest, now),

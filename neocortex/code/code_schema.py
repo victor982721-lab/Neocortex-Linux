@@ -9,6 +9,7 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
+from .code_graph_revision import install_graph_revision_guards
 
 from neocortex.persistence.sqlite_connection import (
     READONLY_EXISTING,
@@ -29,7 +30,7 @@ from neocortex.persistence.sqlite_schema_contract import (
 # region [01] Versioned DDL
 
 
-CODE_SCHEMA_VERSION = 7
+CODE_SCHEMA_VERSION = 8
 _PATH_COLLATION = sqlite_path_collation()
 
 
@@ -934,11 +935,11 @@ def readonly_code_database(
     if connect is connect_code_state and selected.is_file():
         from neocortex.persistence.sqlite_immutable import (
             preferred_sqlite_read_mode,
-            sqlite_read_session,
         )
+        from neocortex.runtime.control.read_operation import operation_sqlite_session
 
         mode = preferred_sqlite_read_mode(selected)
-        with sqlite_read_session(selected, mode=mode, timeout_seconds=60) as connection:
+        with operation_sqlite_session(selected, mode=mode, timeout_seconds=60) as connection:
             yield connection
         return
     connection = connect(selected, readonly=True, create=False)
@@ -958,6 +959,7 @@ def _build_current_schema(connection: sqlite3.Connection) -> None:
     _execute(connection, _CURRENT_V1_DDL)
     _execute(connection, _PRODUCT_V2_DDL)
     _execute(connection, _GRAPH_GENERATION_DDL)
+    install_graph_revision_guards(connection)
 
 
 def _build_legacy_current_schema(connection: sqlite3.Connection) -> None:
@@ -968,6 +970,12 @@ def _build_legacy_current_schema(connection: sqlite3.Connection) -> None:
     _execute(connection, _V3_DDL)
     _execute(connection, _V4_DDL)
     _execute(connection, _V7_DDL)
+
+
+def _build_retained_legacy_current_schema(connection: sqlite3.Connection) -> None:
+    _build_legacy_current_schema(connection)
+    _execute(connection, _GRAPH_GENERATION_DDL)
+    install_graph_revision_guards(connection)
 
 
 def _build_legacy_schema(
@@ -1001,7 +1009,34 @@ def _legacy_code_schema_contract(version: int) -> SQLiteSchemaContract:
 
 @lru_cache(maxsize=1)
 def _legacy_current_code_schema_contract() -> SQLiteSchemaContract:
-    return schema_contract_from_builder(_build_legacy_current_schema)
+    return schema_contract_from_builder(_build_retained_legacy_current_schema)
+
+
+@lru_cache(maxsize=4)
+def _code_v7_schema_contract(legacy_objects: bool, has_graph: bool) -> SQLiteSchemaContract:
+    def build(connection: sqlite3.Connection) -> None:
+        if legacy_objects:
+            _build_legacy_current_schema(connection)
+        else:
+            _execute(connection, _CURRENT_V1_DDL)
+            _execute(connection, _PRODUCT_V2_DDL)
+        if has_graph:
+            _execute(connection, _GRAPH_GENERATION_DDL)
+    return schema_contract_from_builder(build)
+
+
+def validate_code_schema_v7(connection: sqlite3.Connection) -> None:
+    """Validate every historically supported v7 shape without upgrading it."""
+
+    if _read_version(connection) != 7:
+        raise RuntimeError("legacy Code read requires schema v7")
+    legacy = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='external_tool_runs'"
+    ).fetchone() is not None
+    has_graph = _graph_generation_schema_state(connection) == "current"
+    validate_sqlite_schema_contract(
+        connection, _code_v7_schema_contract(legacy, has_graph), label="code v7", exact=True
+    )
 
 
 def validate_code_schema(connection: sqlite3.Connection) -> None:
@@ -1024,6 +1059,9 @@ def _validate_legacy_code_schema(
     connection: sqlite3.Connection,
     version: int,
 ) -> None:
+    if version == 7:
+        validate_code_schema_v7(connection)
+        return
     validate_sqlite_schema_contract(
         connection,
         _legacy_code_schema_contract(version),
@@ -1226,6 +1264,14 @@ def _create_fresh(connection: sqlite3.Connection, applied_ns: int) -> None:
         applied_ns + 6,
     )
     _ensure_graph_generation_schema(connection, applied_ns=applied_ns + 7)
+    _migrate_seven_to_eight(connection, applied_ns + 8)
+
+
+def _migrate_seven_to_eight(connection: sqlite3.Connection, applied_ns: int) -> None:
+    validate_code_schema_v7(connection)
+    _ensure_graph_generation_schema(connection, applied_ns=applied_ns)
+    install_graph_revision_guards(connection)
+    _record_migration(connection, 8, "transactional Code graph revision and reusable publication observations", applied_ns)
 
 
 def _migrate_one_to_two(connection: sqlite3.Connection, applied_ns: int) -> None:
@@ -1467,9 +1513,11 @@ def initialize_code_state(path: Path) -> None:
             elif current == 6:
                 _migrate_six_to_seven(connection, applied_ns)
             elif current == 7:
-                _ensure_graph_generation_schema(connection, applied_ns=applied_ns)
+                _migrate_seven_to_eight(connection, applied_ns)
             else:
                 raise RuntimeError(f"unsupported code migration start: {current}")
+            if current is not None and current < 7:
+                _migrate_seven_to_eight(connection, applied_ns + 8)
             validate_code_schema(connection)
             _validate_migration_history(connection)
             _validate_code_storage_integrity(connection, label="code migrated state")
@@ -1547,5 +1595,6 @@ __all__ = [
     "readonly_code_database",
     "remove_checkpointed_code_sidecars",
     "validate_code_schema",
+    "validate_code_schema_v7",
     "verify_code_storage_integrity",
 ]

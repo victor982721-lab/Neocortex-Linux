@@ -17,7 +17,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
-from neocortex.deduplication.persistence.validation import validate_inventory_schema
+from neocortex.deduplication.persistence.validation import validate_inventory_schema, validate_inventory_schema_v14
 from neocortex.persistence.sqlite_schema_contract import (
     read_application_schema_version,
     validate_sqlite_schema_contract,
@@ -32,12 +32,14 @@ from neocortex.capabilities.formats.archive import state as archive_state
 from neocortex.capabilities.formats.docx.schema import validate_docx_schema
 from neocortex.capabilities.formats.office import state as office_state
 from neocortex.capabilities.formats.video import state as video_state
-from neocortex.code.code_schema import validate_code_schema
+from neocortex.code.code_schema import validate_code_schema, validate_code_schema_v7
 from neocortex.persistence.framework_schema import (
     validate_framework_schema_v19,
     validate_framework_schema_v20,
     validate_framework_schema_v21,
     validate_framework_schema_v22,
+    validate_framework_schema_v23,
+    validate_framework_schema,
 )
 from .knowledge_contracts import (
     ActiveModel,
@@ -332,13 +334,15 @@ _OWNER_VALIDATORS: dict[
     str,
     tuple[_Validator, tuple[tuple[int, _Validator], ...]],
 ] = {
-    "inventory": (validate_inventory_schema, ()),
+    "inventory": (validate_inventory_schema, ((14, validate_inventory_schema_v14),)),
     "framework": (
-        validate_framework_schema_v22,
+        validate_framework_schema,
         (
             (19, validate_framework_schema_v19),
             (20, validate_framework_schema_v20),
             (21, validate_framework_schema_v21),
+            (22, validate_framework_schema_v22),
+            (23, validate_framework_schema_v23),
         ),
     ),
     "catalog": (_validate_catalog, ()),
@@ -356,7 +360,7 @@ _OWNER_VALIDATORS: dict[
             (9, _validate_semantic_legacy_v9),
         ),
     ),
-    "code": (validate_code_schema, ()),
+    "code": (validate_code_schema, ((7, validate_code_schema_v7),)),
     "archive": (_validate_archive, ()),
     "text": (_validate_text, ()),
 }
@@ -775,13 +779,31 @@ def _capture_available_owner(
     immutable_fence: SQLiteImmutableFence | None = None
     read_session: SQLiteReadSession | None = None
     connection: sqlite3.Connection | None = None
-    if immutable is None and preferred_sqlite_read_mode(path) is SQLiteReadMode.SNAPSHOT_TEMP:
+    from .knowledge_read_operation import snapshot_read_budget, admit_snapshot, charge_snapshot
+    operation_budget = snapshot_read_budget()
+    if operation_budget is not None or (
+        immutable is None and preferred_sqlite_read_mode(path) is SQLiteReadMode.SNAPSHOT_TEMP
+    ):
+        selected_mode = preferred_sqlite_read_mode(path)
+        admit_snapshot(path, selected_mode.value)
         read_session = SQLiteReadSession(
             path,
-            mode=SQLiteReadMode.SNAPSHOT_TEMP,
+            mode=selected_mode,
             timeout_seconds=60.0,
+            budget=operation_budget,
         )
-        connection = read_session.open()
+        from neocortex.runtime.control.read_operation import snapshot_allowance
+        with snapshot_allowance():
+            connection = read_session.open()
+        try:
+            charge_snapshot(read_session.metrics.temporary_bytes)
+        except BaseException:
+            read_session.close()
+            raise
+        if selected_mode is SQLiteReadMode.IMMUTABLE_STRICT:
+            immutable_fence = read_session.source_fence
+        # The session owns the handle; do not close/reopen it midway.
+        immutable = None
     else:
         if immutable is None:
             immutable = True
@@ -874,6 +896,10 @@ def _capture_available_owner(
             with sqlite_cancellation_scope(connection, sqlite_cancellation):
                 after_version = _observed_schema_version(connection, spec)
                 if after_version != observed_version:
+                    after = before
+                elif between_observations is None and immutable_fence is not None:
+                    if capture_sqlite_immutable_fence(path) != immutable_fence:
+                        raise ImmutableSQLiteUnavailable("SQLite owner changed before reused observation")
                     after = before
                 else:
                     validator(connection)
@@ -992,8 +1018,23 @@ def _capture_owner(
             "contains an inaccessible owner state path",
             str(exc),
         ) from exc
+    from .knowledge_read_operation import current_read_operation
+    operation = current_read_operation()
+    cache_key = (str(path.absolute()), spec)
+    cache_fence = None
+    if operation is not None and between_observations is None:
+        try:
+            cache_fence = capture_sqlite_immutable_fence(path)
+        except (OSError, RuntimeError):
+            pass  # Live/uncertain owners retain the full observation path.
+        cached = operation.observations.get(cache_key)
+        if cache_fence is not None and cached is not None and cached[0] == cache_fence:
+            cancellation.checkpoint()
+            if capture_sqlite_immutable_fence(path) == cache_fence:
+                operation.observations_reused += 1
+                return cached[1]
     try:
-        return _capture_available_owner(
+        result = _capture_available_owner(
             path,
             spec,
             attempt=attempt,
@@ -1001,6 +1042,13 @@ def _capture_owner(
             cancellation=cancellation,
             immutable=immutable,
         )
+        if (
+            operation is not None and cache_fence is not None
+            and result[0].state is OwnerAvailability.AVAILABLE and not result[0].changed
+            and capture_sqlite_immutable_fence(path) == cache_fence
+        ):
+            operation.observations[cache_key] = (cache_fence, result)
+        return result
     except (sqlite3.Error, RuntimeError, ValueError) as exc:
         if cancellation.raised_here(exc):
             raise

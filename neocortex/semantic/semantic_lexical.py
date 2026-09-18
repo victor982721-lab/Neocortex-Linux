@@ -6,6 +6,7 @@ not share a calibrated scale; callers can combine ranks with RRF instead.
 """
 
 from __future__ import annotations
+from neocortex.runtime.control.read_operation import read_rows, read_checkpoint, read_query_limit
 import math
 import re
 import sqlite3
@@ -1347,6 +1348,7 @@ def _search_cjk_substrings(
     conditions = " AND ".join(f"instr(lower({content}),lower(?))>0" for _term in terms)
     sql = spec.cjk_sql.format(conditions=conditions)
     parameters: tuple[object, ...] = (terms[0], *terms, limit)
+    read_checkpoint(rows=scanned_rows)
     return connection.execute(sql, parameters).fetchall(), scanned_rows
 
 
@@ -1410,12 +1412,12 @@ def _search_compiled_source(
             query_spec = _archive_source_spec(spec, connection)
             applied_query = query_plan.primary_query
             query_strategy = query_plan.primary_strategy
-            rows = connection.execute(query_spec.sql, (applied_query, limit)).fetchall()
+            rows = read_rows(connection.execute(query_spec.sql, (applied_query, read_query_limit(limit))))
             for fallback_strategy, fallback_query in query_plan.fallbacks:
                 if rows:
                     break
                 cancellation.checkpoint()
-                rows = connection.execute(query_spec.sql, (fallback_query, limit)).fetchall()
+                rows = read_rows(connection.execute(query_spec.sql, (fallback_query, read_query_limit(limit))))
                 if rows:
                     applied_query = fallback_query
                     query_strategy = fallback_strategy

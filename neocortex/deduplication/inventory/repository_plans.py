@@ -18,6 +18,7 @@ from ..domain.models import (
     VerificationMode,
 )
 from ..domain.evidence import DedupPolicy, PlanCoverage, DuplicateMemberProof
+from ..domain.fingerprint_observation import FingerprintObservation
 from ..planning.keeper import KeeperRank
 from .plan_evidence import decode_group_proof, decode_member_proof, encode_proof
 from .generation import duplicate_plan_digest
@@ -43,6 +44,7 @@ class PlanRepositoryMixin:
             DROP TABLE IF EXISTS temp.planning_seen;
             DROP TABLE IF EXISTS temp.planning_fingerprints;
             DROP TABLE IF EXISTS temp.planning_observations;
+            DROP TABLE IF EXISTS temp.planning_full_observations;
             CREATE TEMP TABLE planning_seen(
                 volume_id BLOB NOT NULL,
                 file_id BLOB NOT NULL,
@@ -72,6 +74,12 @@ class PlanRepositoryMixin:
             ) WITHOUT ROWID;
             CREATE INDEX planning_observation_identity_idx
                 ON planning_observations(volume_id,file_id);
+            CREATE TEMP TABLE planning_full_observations(
+                volume_id BLOB NOT NULL, file_id BLOB NOT NULL,
+                path TEXT NOT NULL, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL,
+                birthtime_ns INTEGER NOT NULL, full_digest BLOB NOT NULL, ctime_ns INTEGER NOT NULL,
+                PRIMARY KEY(volume_id,file_id)
+            ) WITHOUT ROWID;
             """
         )
 
@@ -80,6 +88,38 @@ class PlanRepositoryMixin:
             self._connection.execute("DELETE FROM planning_seen")
             self._connection.execute("DELETE FROM planning_fingerprints")
             self._connection.execute("DELETE FROM planning_observations")
+            self._connection.execute("DELETE FROM planning_full_observations")
+
+    def store_planning_full_observations(self, rows: Iterable[FingerprintObservation]) -> None:
+        """Spill validated full digests with their in-run change version."""
+
+        with self._connection:
+            self._connection.executemany(
+                "INSERT OR REPLACE INTO planning_full_observations VALUES(?,?,?,?,?,?,?,?)",
+                ((_id_blob(item.snapshot.volume_id), _id_blob(item.snapshot.file_id),
+                  item.snapshot.path, item.snapshot.size, item.snapshot.mtime_ns,
+                  item.snapshot.birthtime_ns, item.full_digest, item.ctime_ns) for item in rows),
+            )
+
+    def planning_full_observation(self, snapshot: FileSnapshot) -> FingerprintObservation | None:
+        """Reuse a full digest only while the exact physical observation holds."""
+
+        from ..fingerprinting import FULL_ALGORITHM, require_fingerprint_change_version
+
+        row = self._connection.execute(
+            "SELECT full_digest,ctime_ns FROM planning_full_observations "
+            "WHERE volume_id=? AND file_id=? AND path=? AND size=? AND mtime_ns=? AND birthtime_ns=?",
+            (_id_blob(snapshot.volume_id), _id_blob(snapshot.file_id), snapshot.path,
+             snapshot.size, snapshot.mtime_ns, snapshot.birthtime_ns),
+        ).fetchone()
+        if row is None:
+            return None
+        require_fingerprint_change_version(snapshot, int(row[1]))
+        return FingerprintObservation(
+            snapshot=snapshot, algorithm=FULL_ALGORITHM, digest=bytes(row[0]),
+            full_digest=bytes(row[0]), ctime_ns=int(row[1]), computed=True,
+            reused_full_digest=True,
+        )
 
     def store_planning_observations(
         self, rows: Iterable[tuple[FileSnapshot, KeeperRank, int]],

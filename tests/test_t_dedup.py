@@ -164,7 +164,7 @@ class HashingTests(unittest.TestCase):
 
             with patch(
                 "neocortex.deduplication.fingerprinting.os.fstat",
-                side_effect=(left_stat, right_stat, changed_left_stat),
+                side_effect=(left_stat, right_stat, left_stat, right_stat, changed_left_stat, right_stat),
             ):
                 with self.assertRaises(FileChangedError):
                     files_equal_exact(left_snapshot, right_snapshot)
@@ -413,7 +413,9 @@ class PlannerTests(unittest.TestCase):
                 self.assertEqual(first.statistics.partial_hash_files, 2)
                 self.assertEqual(first.statistics.full_hash_files, 2)
                 self.assertEqual(second.statistics.partial_hash_files, 0)
-                self.assertEqual(second.statistics.full_hash_files, 0)
+                self.assertEqual(second.statistics.full_hash_files, 2)
+                self.assertEqual(second.statistics.cache_validation_reads, 2)
+                self.assertEqual(second.statistics.full_digest_reuses, 2)
                 self.assertEqual(first.verification_mode, "full_hash")
                 self.assertEqual(second.verification_mode, "full_hash")
 

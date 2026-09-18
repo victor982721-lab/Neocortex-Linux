@@ -1880,14 +1880,26 @@ def semantic_source_heads(
     selected = tuple(dict.fromkeys(source_kinds))
     if not selected or any(kind not in SOURCE_DATABASE_NAMES for kind in selected):
         raise ValueError("semantic source head kinds are invalid")
-    return tuple(
-        _image_source_head(state_directory)
-        if source_kind == IMAGE_SOURCE_KIND
-        else _video_source_head(state_directory)
-        if source_kind == VIDEO_SOURCE_KIND
-        else _text_source_head(state_directory, source_kind)
-        for source_kind in selected
-    )
+    from .semantic_source_head_cache import cached_source_head
+
+    def project(source_kind: str) -> SemanticSourceHead:
+        paths: tuple[Path, ...] = (semantic_source_database(state_directory, source_kind),)
+        if source_kind == IMAGE_SOURCE_KIND:
+            paths += (state_directory / "dedup.sqlite3",)
+            def builder():
+                return _image_source_head(state_directory)
+        elif source_kind == VIDEO_SOURCE_KIND:
+            paths += (semantic_source_database(state_directory, "audio"),)
+            def builder():
+                return _video_source_head(state_directory)
+        else:
+            def builder():
+                return _text_source_head(state_directory, source_kind)
+        contract = [SEMANTIC_SOURCE_HEAD_PROTOCOL, SOURCE_ADAPTER_VERSION,
+                    IMAGE_SOURCE_ADAPTER_VERSION, CODE_SOURCE_ADAPTER_VERSION]
+        return cached_source_head(source_kind, paths, contract, builder, SemanticSourceHead)
+
+    return tuple(project(source_kind) for source_kind in selected)
 
 
 def iter_image_source_records(

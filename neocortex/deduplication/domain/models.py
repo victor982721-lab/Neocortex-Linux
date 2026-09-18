@@ -96,6 +96,12 @@ class PlanStatistics:
     full_hash_files: int
     exact_compare_files: int
     changed_or_unreadable_files: int
+    hash_read_bytes: int = 0
+    cache_validation_reads: int = 0
+    cache_validation_bytes: int = 0
+    fingerprint_cache_hits: int = 0
+    full_digest_reuses: int = 0
+    exact_comparison_bytes: int = 0
 
 
 @dataclass(frozen=True, slots=True)

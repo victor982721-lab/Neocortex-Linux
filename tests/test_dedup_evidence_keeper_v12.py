@@ -42,7 +42,9 @@ def test_policy_and_actual_proof_round_trip_without_authority(tmp_path: Path, ex
     assert plan.coverage == "complete"
     assert plan.statistics.exact_compare_files == int(exact)
     assert replay.statistics.exact_compare_files == int(exact)
-    assert replay.statistics.full_hash_files == 0
+    assert replay.statistics.full_hash_files == 2
+    assert replay.statistics.cache_validation_reads == 2
+    assert replay.statistics.fingerprint_cache_hits == 2
     group = plan.groups[0]
     assert group.proof is not None
     assert group.proof.proof_version == PROOF_VERSION
@@ -59,7 +61,7 @@ def test_policy_and_actual_proof_round_trip_without_authority(tmp_path: Path, ex
     assert member.compared_to_identity == group.keep.identity
     assert member.comparison_bytes == (group.size if exact else None)
     assert ("byte_for_byte_comparison" in member.missing_checks) is not exact
-    assert all(proof.fingerprint_source == "cached" for proof in replay.groups[0].member_proofs)
+    assert all(proof.fingerprint_source == "computed" for proof in replay.groups[0].member_proofs)
     with DedupIndex(database) as index:
         assert tuple(index.iter_duplicate_groups(scan.scan_id)) == replay.groups
     with sqlite3.connect(database) as connection:

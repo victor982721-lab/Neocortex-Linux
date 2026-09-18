@@ -12,6 +12,7 @@ module deliberately has no dependency on ``knowledge_search`` or
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
+from neocortex.knowledge.knowledge_read_operation import read_rows, read_query_limit
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from types import TracebackType
@@ -261,8 +262,8 @@ def _read_catalog_rows(
                     "json_extract(project.value,'$.project')) END=? COLLATE NOCASE))"
                 )
                 parameters.extend((plan.project, plan.project))
-            requested_limit = min(max_candidates, target_limit + 1)
-            rows = connection.execute(
+            requested_limit = read_query_limit(min(max_candidates, target_limit + 1))
+            rows = read_rows(connection.execute(
                 f"""WITH expected(source_kind,generation_id) AS (
                 VALUES {values})
                 SELECT d.source_kind,d.file_key,d.path,d.volume_id,d.file_id,
@@ -281,7 +282,7 @@ def _read_catalog_rows(
                 ORDER BY d.confidence DESC,d.source_kind,d.path COLLATE NOCASE
                 LIMIT ?""",
                 (*parameters, requested_limit),
-            ).fetchall()
+            ))
             return rows, head_reason
     except BaseException as exc:
         primary_error = exc

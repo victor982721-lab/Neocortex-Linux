@@ -31,7 +31,9 @@ from neocortex.integrations.inventory.reconcile import reconcile_usn_window
 from neocortex.runtime.orchestration.orchestrator import RouteExecutionError
 from neocortex.documents.document_organization import (
     OrganizationApplySummary,
-    OrganizationPlanSummary,
+)
+from neocortex.documents.document_organization_planning import (
+    plan_document_organization as plan_document_organization_owner,
 )
 from neocortex.documents.document_catalog import initialize_document_catalog
 from neocortex.platform.policy import default_corpus_root
@@ -641,6 +643,9 @@ class OrchestratorTests(unittest.TestCase):
                 image_memory_budget_bytes=256 * 1024 * 1024,
                 image_min_free_memory_bytes=0,
                 image_min_free_commit_bytes=0,
+                global_memory_budget_bytes=256 * 1024 * 1024,
+                global_min_free_memory_bytes=128 * 1024 * 1024,
+                global_min_free_commit_bytes=128 * 1024 * 1024,
             )
             first = FrameworkOrchestrator(config).run_initial()
             self.assertIsNotNone(first.image)
@@ -1193,7 +1198,16 @@ class OrchestratorTests(unittest.TestCase):
                     corpus / "Consulta_Tecnica_Organizada",
                 )
                 self.assertEqual(min_confidence, 0.8)
-                return OrganizationPlanSummary(1, considered=2, planned=2)
+                # The ordering spy still executes the owner so Framework can
+                # reconcile a real completed receipt and scoped plan checkpoint.
+                return plan_document_organization_owner(
+                    _catalog,
+                    destination,
+                    source_scope=source_scope,
+                    min_confidence=min_confidence,
+                    progress=progress,
+                    mutation_guard=mutation_guard,
+                )
 
             def apply_all(_catalog, destination, *, progress, mutation_guard):
                 order.append("apply")

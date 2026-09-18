@@ -32,7 +32,7 @@ _DECLARATIONS: dict[str, dict[TableLifecycleRole, tuple[str, ...]]] = {
     },
     'inventory': {
         'authoritative': ('duplicate_plan_summaries', 'fingerprint_content_evidence', 'planned_duplicate_groups', 'planned_duplicate_members'),
-        'operational': ('duplicate_plan_heads', 'inventory_checkpoints', 'inventory_generation_heads', 'inventory_scan_successors', 'scans'),
+        'operational': ('duplicate_plan_heads', 'inventory_checkpoints', 'inventory_file_change_versions', 'inventory_generation_heads', 'inventory_scan_successors', 'scans'),
         'schema_metadata': ('metadata',),
         'derived': ('files', 'fingerprints'),
     },

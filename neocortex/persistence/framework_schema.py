@@ -29,7 +29,7 @@ from neocortex.persistence.framework_content_admission import (
 )
 
 
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 _PATH_COLLATION = sqlite_path_collation()
 
 
@@ -80,6 +80,11 @@ def _route_candidates_table_statement(path_collation: str) -> str:
 
 _ROUTE_CANDIDATES_TABLE_STATEMENT = _route_candidates_table_statement(_PATH_COLLATION)
 _V21_ROUTE_CANDIDATES_TABLE_STATEMENT = _route_candidates_table_statement("NOCASE")
+
+_ROUTE_CANDIDATES_IDENTITY_INDEX_STATEMENT = """
+CREATE INDEX IF NOT EXISTS route_candidates_identity_idx
+    ON route_candidates(run_id, volume_id, file_id)
+"""
 
 
 _REVIEW_EVIDENCE_TABLE_STATEMENT = """
@@ -829,6 +834,7 @@ _INDEX_STATEMENTS = (
     CREATE INDEX IF NOT EXISTS route_candidates_mime_idx
         ON route_candidates(run_id, mime, path)
     """,
+    _ROUTE_CANDIDATES_IDENTITY_INDEX_STATEMENT,
     """
     CREATE INDEX IF NOT EXISTS review_candidates_status_idx
         ON review_candidates(status, recommendation, route_name, path)
@@ -1648,6 +1654,7 @@ _NAMED_INDEXES = {
     "file_action_events_action_idx": "file_action_events",
     "file_action_reconciliation_events_action_idx": ("file_action_reconciliation_events"),
     "route_candidates_mime_idx": "route_candidates",
+    "route_candidates_identity_idx": "route_candidates",
     "review_candidates_status_idx": "review_candidates",
     "review_candidates_path_idx": "review_candidates",
     "review_decisions_identity_idx": "review_decisions",
@@ -2307,6 +2314,12 @@ def _migrate_22_to_23(connection: sqlite3.Connection) -> None:
     connection.execute("SELECT key,value FROM metadata LIMIT 0")
 
 
+def _migrate_23_to_24(connection: sqlite3.Connection) -> None:
+    """Index the identity join used by the writer's route projection."""
+
+    connection.execute(_ROUTE_CANDIDATES_IDENTITY_INDEX_STATEMENT)
+
+
 _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     1: _migrate_1_to_2,
     2: _migrate_2_to_3,
@@ -2330,6 +2343,7 @@ _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     20: _migrate_20_to_21,
     21: _migrate_21_to_22,
     22: _migrate_22_to_23,
+    23: _migrate_23_to_24,
 }
 
 
@@ -2387,6 +2401,18 @@ def _build_exact_schema(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
+def _build_v23_exact_schema(connection: sqlite3.Connection) -> None:
+    """Retain the deployed v22/v23 DDL before the identity index existed."""
+
+    for statement in _TABLE_STATEMENTS:
+        connection.execute(statement)
+    for statement in _INDEX_STATEMENTS:
+        if statement != _ROUTE_CANDIDATES_IDENTITY_INDEX_STATEMENT:
+            connection.execute(statement)
+    for statement in _TRIGGER_STATEMENTS:
+        connection.execute(statement)
+
+
 def _build_v21_exact_schema(connection: sqlite3.Connection) -> None:
     """Reconstruct the exact pre-path-policy Framework contract.
 
@@ -2402,7 +2428,8 @@ def _build_v21_exact_schema(connection: sqlite3.Connection) -> None:
             else statement
         )
     for statement in _INDEX_STATEMENTS:
-        connection.execute(statement)
+        if statement != _ROUTE_CANDIDATES_IDENTITY_INDEX_STATEMENT:
+            connection.execute(statement)
     for statement in _TRIGGER_STATEMENTS:
         if statement in {
             _REVIEW_TASKS_VALIDATE_INSERT_TRIGGER_STATEMENT,
@@ -2490,6 +2517,11 @@ def _exact_schema_contract() -> SQLiteSchemaContract:
 
 
 @lru_cache(maxsize=1)
+def _v23_exact_schema_contract() -> SQLiteSchemaContract:
+    return schema_contract_from_builder(_build_v23_exact_schema)
+
+
+@lru_cache(maxsize=1)
 def _v21_exact_schema_contract() -> SQLiteSchemaContract:
     return schema_contract_from_builder(_build_v21_exact_schema)
 
@@ -2547,13 +2579,34 @@ def validate_framework_schema_v21(connection: sqlite3.Connection) -> None:
 
 
 def validate_framework_schema_v22(connection: sqlite3.Connection) -> None:
-    """Validate the exact current v22 contract without creating or migrating state."""
+    """Validate the exact legacy v22 DDL without creating or migrating state."""
+
+    _validate_framework_exact_contract(connection, _v23_exact_schema_contract(), label="framework v22")
+
+
+def validate_framework_schema_v23(connection: sqlite3.Connection) -> None:
+    """Validate the exact legacy v23 DDL without creating or migrating state."""
+
+    _validate_framework_exact_contract(connection, _v23_exact_schema_contract(), label="framework v23")
+
+
+def validate_framework_schema(connection: sqlite3.Connection) -> None:
+    """Validate the current owner DDL without creating or migrating state."""
+
+    _validate_framework_exact_contract(
+        connection, _exact_schema_contract(), label=f"framework v{SCHEMA_VERSION}"
+    )
+
+
+def _validate_framework_exact_contract(
+    connection: sqlite3.Connection, contract: SQLiteSchemaContract, *, label: str
+) -> None:
 
     try:
         validate_sqlite_schema_contract(
             connection,
-            _exact_schema_contract(),
-            label="framework v22",
+            contract,
+            label=label,
             exact=True,
             allowed_extra_tables=_allowed_framework_extension_tables(connection),
             allowed_extra_objects=_allowed_framework_extension_objects(connection),
@@ -2561,7 +2614,7 @@ def validate_framework_schema_v22(connection: sqlite3.Connection) -> None:
         validate_authorization_extension(connection)
         validate_content_admission_extension(connection)
     except SQLiteSchemaContractError as exc:
-        raise RuntimeError(f"framework v22 schema contract validation failed: {exc}") from exc
+        raise RuntimeError(f"{label} schema contract validation failed: {exc}") from exc
 
 
 @lru_cache(maxsize=1)
@@ -2806,9 +2859,12 @@ def initialize_framework_schema(
 
     initial_version = _read_schema_version(connection)
     _require_supported_version(initial_version)
-    if initial_version in {22, SCHEMA_VERSION}:
+    if initial_version == SCHEMA_VERSION:
         # Reject a falsely current database without repairing or otherwise mutating it.
         _validate_schema(connection)
+        _validate_framework_storage_integrity(connection, label=f"framework v{initial_version}")
+    elif initial_version in {22, 23}:
+        validate_framework_schema_v23(connection)
         _validate_framework_storage_integrity(connection, label=f"framework v{initial_version}")
     elif initial_version == 21:
         # The path-policy migration must start from the exact prior contract.
@@ -2831,9 +2887,9 @@ def initialize_framework_schema(
                 (str(SCHEMA_VERSION),),
             )
         elif version < SCHEMA_VERSION:
-            if version == 22:
-                _validate_schema(connection)
-                _validate_framework_storage_integrity(connection, label="framework v22 locked preflight")
+            if version in {22, 23}:
+                validate_framework_schema_v23(connection)
+                _validate_framework_storage_integrity(connection, label=f"framework v{version} locked preflight")
             elif version == 21:
                 validate_framework_schema_v21(connection)
                 _validate_framework_storage_integrity(
@@ -2854,8 +2910,8 @@ def initialize_framework_schema(
         _validate_schema(connection)
         post_migration()
         _validate_schema(connection)
-        if initial_version in {20, 21, 22}:
-            _validate_framework_storage_integrity(connection, label="framework v23 migration")
+        if initial_version in {20, 21, 22, 23}:
+            _validate_framework_storage_integrity(connection, label=f"framework v{SCHEMA_VERSION} migration")
         connection.commit()
     except _FrameworkSchemaMigrationError as exc:
         connection.rollback()

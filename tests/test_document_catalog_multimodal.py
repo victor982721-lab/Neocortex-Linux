@@ -499,6 +499,21 @@ def test_independent_multimodal_catalog_producers_serialize_and_replay(
         source_by_kind["archive"],
         container_status="complete",
     )
+    # Integrated producers now preserve the selected corpus scope. This
+    # fixture therefore needs the physical container evidence that a current
+    # Archive owner publishes; legacy unanchored rows stay covered elsewhere.
+    from neocortex.foundation.file_identity import FileIdentity
+    from neocortex.platform.policy import stat_birthtime_ns
+    anchor = source_by_kind["archive"].stat()
+    anchor_key = FileIdentity(anchor.st_dev, anchor.st_ino).packed_key
+    with sqlite3.connect(tmp_path / "archive.sqlite3") as connection:
+        for field in ("size", "mtime_ns", "birthtime_ns"):
+            connection.execute(f"ALTER TABLE containers ADD COLUMN {field} INTEGER")
+        connection.execute(
+            "UPDATE containers SET container_key=?,size=?,mtime_ns=?,birthtime_ns=?",
+            (anchor_key, anchor.st_size, anchor.st_mtime_ns, stat_birthtime_ns(anchor)),
+        )
+        connection.execute("UPDATE documents SET container_key=?", (anchor_key,))
     _make_image_owner(tmp_path / "image.sqlite3", source_by_kind["image"])
     _make_video_owner(tmp_path / "video.sqlite3", source_by_kind["video"])
     _make_code_owner(

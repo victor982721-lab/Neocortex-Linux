@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 
 def _update_value(digest: "hashlib._Hash", value: object) -> None:
@@ -30,20 +30,29 @@ def _hash_rows(
     parameters: Iterable[object],
     *,
     domain: bytes,
+    work_check: Callable[[], None] | None = None,
 ) -> bytes:
+    if work_check is not None:
+        work_check()
     digest = hashlib.sha256(domain)
     count = 0
     for row in connection.execute(query, tuple(parameters)):
         count += 1
+        if work_check is not None and count % 128 == 0:
+            work_check()
         digest.update(b"R")
         for value in row:
             _update_value(digest, value)
     digest.update(b"C")
     digest.update(count.to_bytes(8, "big"))
+    if work_check is not None:
+        work_check()
     return digest.digest()
 
 
-def inventory_content_digest(connection: sqlite3.Connection, scan_id: int) -> bytes:
+def inventory_content_digest(
+    connection: sqlite3.Connection, scan_id: int, *, work_check: Callable[[], None] | None = None,
+) -> bytes:
     """Return the canonical identity of one persisted inventory generation."""
 
     return _hash_rows(
@@ -52,6 +61,7 @@ def inventory_content_digest(connection: sqlite3.Connection, scan_id: int) -> by
         FROM files WHERE scan_id=? ORDER BY path""",
         (scan_id,),
         domain=b"NEOCORTEX_INVENTORY_CONTENT_V1\0",
+        work_check=work_check,
     )
 
 

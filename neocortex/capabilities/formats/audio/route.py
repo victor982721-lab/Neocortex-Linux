@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from neocortex.runtime.control.locking import FrameworkRunLock
+
 import json
 import math
 import sqlite3
@@ -37,6 +39,13 @@ from .models import (
 from .probe import probe_media
 from .state import audio_database, initialize_audio_state
 from .whisper import WhisperTranscriber, resolve_whisper_runtime
+from ..fts_lookup import (
+    delete_format_fts_keys,
+    format_fts_key_predicate,
+    initialize_format_fts_lookup,
+    insert_format_fts_row,
+    refresh_format_fts_path,
+)
 from neocortex.runtime.control.cancellation import CancellationToken
 from neocortex.foundation.file_identity import file_key_from_snapshot as _file_key
 from neocortex.foundation.processing_provenance import ProcessingProvenance
@@ -214,7 +223,7 @@ class _TranscriberLease:
         self._transcriber: Transcriber | None = None
 
     def resolve_processing(self) -> ProcessingProvenance:
-        """Called only after a current probe proves an audio stream is present."""
+        """Resolve only after a current or reusable probe proves an audio stream."""
 
         if self.processing is None:
             runtime = self._route.runtime_resolver(
@@ -309,8 +318,17 @@ class AudioRoute:
 
     def run(self) -> AudioRouteSummary:
         self.cancellation.checkpoint()
-        self._recoverable_retry_keys.clear()
         self._validate()
+        lock_path = self.config.state_path.with_suffix(
+            self.config.state_path.suffix + ".route.lock"
+        )
+        self.config.state_path.parent.mkdir(parents=True, exist_ok=True)
+        with FrameworkRunLock(lock_path):
+            return self._run_locked()
+
+    def _run_locked(self) -> AudioRouteSummary:
+        self.cancellation.checkpoint()
+        self._recoverable_retry_keys.clear()
         initialize_audio_state(self.config.state_path)
         ordered_mimes = self._ordered_mimes()
         metrics = self._plan(ordered_mimes)
@@ -319,6 +337,9 @@ class AudioRoute:
         lease = _TranscriberLease(self)
         try:
             with audio_database(self.config.state_path, create=False) as connection:
+                initialize_format_fts_lookup(
+                    connection, "transcript_fts", checkpoint=self.cancellation.checkpoint
+                )
                 self._run_candidates(
                     connection,
                     ordered_mimes,
@@ -413,6 +434,11 @@ class AudioRoute:
                 if self._consume_cached(connection, snapshot, mime, cached, metrics, reviews):
                     self._commit_batch(connection, metrics, reviews)
                     continue
+                if self._consume_current_transcript(
+                    connection, snapshot, mime, lease, metrics, reviews
+                ):
+                    self._commit_batch(connection, metrics, reviews)
+                    continue
                 self._transcribe_candidate(
                     connection,
                     snapshot,
@@ -425,6 +451,45 @@ class AudioRoute:
                 self._commit_batch(connection, metrics, reviews)
             if metrics.processed >= metrics.selected:
                 break
+
+    def _consume_current_transcript(
+        self,
+        connection: sqlite3.Connection,
+        snapshot: FileSnapshot,
+        mime: str,
+        lease: _TranscriberLease,
+        metrics: _AudioRunMetrics,
+        reviews: _AudioReviewBuffer,
+    ) -> bool:
+        """Reuse a proven audio-stream result before starting another probe.
+
+        The stored probe is a witness only for the same physical observation.
+        The current speech/probe provenance must still match exactly; drift
+        proceeds through normal probing and extraction.  No model is loaded.
+        """
+
+        row = connection.execute(
+            """SELECT media_metadata_json FROM documents WHERE file_key=?
+            AND size=? AND mtime_ns=? AND birthtime_ns=?
+            AND status IN ('complete','no_speech')""",
+            (_file_key(snapshot), snapshot.size, snapshot.mtime_ns, snapshot.birthtime_ns),
+        ).fetchone()
+        if row is None:
+            return False
+        try:
+            metadata = json.loads(str(row["media_metadata_json"]))
+            if (
+                not isinstance(metadata, dict)
+                or type(metadata.get("audio_streams")) is not int
+                or metadata["audio_streams"] < 1
+                or not same_snapshot(snapshot, snapshot_path(snapshot.path))
+            ):
+                return False
+        except (OSError, TypeError, ValueError):
+            return False
+        signature = lease.resolve_processing().signature
+        cached = _cached_document(connection, snapshot, signature)
+        return self._consume_cached(connection, snapshot, mime, cached, metrics, reviews)
 
     def _consume_cached(
         self,
@@ -795,9 +860,10 @@ def _audio_fts_matches(
     title: str,
     text: str,
 ) -> bool:
+    predicate, parameters = format_fts_key_predicate(connection, "transcript_fts", (key,))
     rows = connection.execute(
-        "SELECT file_key,path,title,body FROM transcript_fts WHERE file_key=?",
-        (key,),
+        f"SELECT file_key,path,title,body FROM transcript_fts WHERE {predicate}",
+        parameters,
     ).fetchall()
     if len(rows) != 1:
         return False
@@ -939,9 +1005,9 @@ def _repair_cached_audio_derivatives(
                 ),
             )
         if not _audio_fts_matches(connection, key, snapshot.path, title, text):
-            connection.execute("DELETE FROM transcript_fts WHERE file_key=?", (key,))
-            connection.execute(
-                "INSERT INTO transcript_fts(file_key,path,title,body) VALUES(?,?,?,?)",
+            delete_format_fts_keys(connection, "transcript_fts", (key,))
+            insert_format_fts_row(
+                connection, "transcript_fts", ("file_key", "path", "title", "body"),
                 (key, snapshot.path, title, text),
             )
         return True
@@ -953,8 +1019,9 @@ def _repair_cached_audio_derivatives(
             "SELECT 1 FROM segments WHERE file_key=? LIMIT 1", (key,)
         ).fetchone() is not None:
             return False
+        predicate, parameters = format_fts_key_predicate(connection, "transcript_fts", (key,))
         fts_exists = connection.execute(
-            "SELECT 1 FROM transcript_fts WHERE file_key=? LIMIT 1", (key,)
+            f"SELECT 1 FROM transcript_fts WHERE {predicate} LIMIT 1", parameters
         ).fetchone() is not None
         try:
             stored_text_chars = 0 if row["text_chars"] is None else int(row["text_chars"])
@@ -996,7 +1063,7 @@ def _repair_cached_audio_derivatives(
                 (title, key),
             )
         if fts_exists:
-            connection.execute("DELETE FROM transcript_fts WHERE file_key=?", (key,))
+            delete_format_fts_keys(connection, "transcript_fts", (key,))
         return True
 
     # Cached failures are intentionally reusable when retry_errors is false.
@@ -1059,7 +1126,7 @@ def _remove_path_conflict(
     ).fetchone()
     if conflict is not None:
         key = str(conflict[0])
-        connection.execute("DELETE FROM transcript_fts WHERE file_key=?", (key,))
+        delete_format_fts_keys(connection, "transcript_fts", (key,))
         connection.execute("DELETE FROM documents WHERE file_key=?", (key,))
 
 
@@ -1076,10 +1143,7 @@ def _refresh_cached_path(
         WHERE file_key=?""",
         (mime, snapshot.path, run_id, time.time_ns(), key),
     )
-    connection.execute(
-        "UPDATE transcript_fts SET path=? WHERE file_key=?",
-        (snapshot.path, key),
-    )
+    refresh_format_fts_path(connection, "transcript_fts", key, snapshot.path)
 
 
 def _probe_metadata(probe: MediaProbe) -> dict[str, object]:
@@ -1183,11 +1247,10 @@ def _store_success(
             for segment in result.segments
         ),
     )
-    connection.execute("DELETE FROM transcript_fts WHERE file_key=?", (key,))
+    delete_format_fts_keys(connection, "transcript_fts", (key,))
     if result.text:
-        connection.execute(
-            """INSERT INTO transcript_fts(file_key,path,title,body)
-            VALUES(?,?,?,?)""",
+        insert_format_fts_row(
+            connection, "transcript_fts", ("file_key", "path", "title", "body"),
             (key, snapshot.path, title, result.text),
         )
 
@@ -1244,7 +1307,7 @@ def _store_error(
         ),
     )
     connection.execute("DELETE FROM segments WHERE file_key=?", (key,))
-    connection.execute("DELETE FROM transcript_fts WHERE file_key=?", (key,))
+    delete_format_fts_keys(connection, "transcript_fts", (key,))
 
 
 def _store_no_audio(
@@ -1335,7 +1398,7 @@ def _prune_stale_documents(connection: sqlite3.Connection, run_id: int) -> int:
     for offset in range(0, len(stale_keys), 256):
         batch = stale_keys[offset : offset + 256]
         placeholders = ",".join("?" for _ in batch)
-        connection.execute(f"DELETE FROM transcript_fts WHERE file_key IN ({placeholders})", batch)
+        delete_format_fts_keys(connection, "transcript_fts", batch)
         connection.execute(f"DELETE FROM documents WHERE file_key IN ({placeholders})", batch)
     connection.execute("DELETE FROM audio_inventory WHERE last_seen_run_id<>?", (run_id,))
     return len(stale_keys)

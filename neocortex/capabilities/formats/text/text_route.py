@@ -77,9 +77,11 @@ from neocortex.safety.route_filters import CandidateSelection
 from neocortex.capabilities.formats.xml_safety import safe_xml_fromstring
 from neocortex.semantic.semantic_models import canonical_json, fingerprint_text
 from .text_derivation_repository import (
+    TextCacheObservation,
     TextDerivationAttemptStart,
     TextDerivationIntegrityError,
     TextReusableDerivation,
+    TextValidatedRepresentation,
     abandon_running_text_derivations,
     begin_text_derivation_attempt_from_connection,
     cancel_text_derivation_attempt,
@@ -89,6 +91,8 @@ from .text_derivation_repository import (
     read_reusable_text_derivation_from_connection,
     read_reusable_text_failure_from_connection,
     succeed_text_derivation_attempt,
+    validate_text_cache_observation,
+    validate_text_publication_from_connection,
 )
 from .text_state import TEXT_SCHEMA_VERSION, initialize_text_state, text_database
 from .text_fts_lookup import (
@@ -281,6 +285,7 @@ class _TextDerivationWork:
     stage: StageDescriptor
     capability_selection: CapabilitySelection
     started_monotonic_ns: int
+    cache_observation: TextCacheObservation | None = field(default=None, kw_only=True)
 
     def receipt_id(self, outcome: WorkOutcome) -> str:
         return _stable_identifier(
@@ -532,7 +537,7 @@ def _selection_allows_reuse(selection: CapabilitySelection) -> bool:
 
 def _record_extracted_counters(
     counters: dict[str, int],
-    extracted: _ExtractedText,
+    extracted: _ExtractedText | TextValidatedRepresentation,
 ) -> None:
     counters["text_chars"] += len(extracted.text)
     counters["truncated"] += int(extracted.truncated)
@@ -961,65 +966,6 @@ class TextRoute:
             max(4 * 1024 * 1024, snapshot.size * 3 + self.config.max_text_chars * 4)
         )
 
-    def _cached_extracted(
-        self,
-        connection: sqlite3.Connection,
-        file_key: str,
-        revision: RevisionRef,
-        signature: str,
-    ) -> _ExtractedText | None:
-        row = connection.execute(
-            "SELECT * FROM documents WHERE file_key=?",
-            (file_key,),
-        ).fetchone()
-        if (
-            row is None
-            or str(row["status"]) != "complete"
-            or str(row["processing_signature"]) != signature
-            or row["revision_id"] is None
-            or str(row["revision_id"]) != revision.revision_id
-            or row["text_zlib"] is None
-            or row["text_xxh3_128"] is None
-        ):
-            return None
-        fts_predicate, fts_parameters = text_fts_file_key_predicate(connection, (file_key,))
-        fts_rows = connection.execute(
-            "SELECT file_key,path,content_kind,title,author,body "
-            f"FROM document_fts WHERE {fts_predicate}",
-            fts_parameters,
-        ).fetchall()
-        if len(fts_rows) != 1:
-            return None
-        try:
-            text = zlib.decompress(bytes(row["text_zlib"])).decode("utf-8", "strict")
-            metadata = json.loads(str(row["metadata_json"]))
-        except (TypeError, UnicodeError, ValueError, zlib.error):
-            return None
-        if not isinstance(metadata, dict) or any(not isinstance(key, str) for key in metadata):
-            return None
-        extracted = _ExtractedText(
-            text=text,
-            content_kind=str(row["content_kind"]),
-            media_type=str(row["media_type"]),
-            title=None if row["title"] is None else str(row["title"]),
-            author=None if row["author"] is None else str(row["author"]),
-            metadata=metadata,
-            truncated=bool(row["text_truncated"]),
-            detail=None if row["detail"] is None else str(row["detail"]),
-        )
-        encoded = text.encode("utf-8")
-        fts = fts_rows[0]
-        physical_output_matches = (
-            int(row["text_chars"]) == len(text)
-            and str(row["text_xxh3_128"]) == xxhash.xxh3_128_hexdigest(encoded)
-            and str(fts["file_key"]) == file_key
-            and str(fts["content_kind"]) == extracted.content_kind
-            and str(fts["title"]) == (extracted.title or "")
-            and str(fts["author"]) == (extracted.author or "")
-            and str(fts["body"]) == extracted.text
-        )
-        return extracted if physical_output_matches else None
-
     def _reusable_derivation(
         self,
         connection: sqlite3.Connection,
@@ -1027,7 +973,7 @@ class TextRoute:
         resource: ResourceRef,
         revision: RevisionRef,
         signature: str,
-    ) -> tuple[TextReusableDerivation, _ExtractedText] | None:
+    ) -> tuple[TextReusableDerivation, TextValidatedRepresentation] | None:
         try:
             reusable = read_reusable_text_derivation_from_connection(
                 connection,
@@ -1039,15 +985,22 @@ class TextRoute:
             return None
         if reusable is None or reusable.revision.revision_id != revision.revision_id:
             return None
-        extracted = self._cached_extracted(connection, file_key, revision, signature)
-        if extracted is None:
+        extracted = reusable.representation
+        if (
+            extracted is None
+            or reusable.observation is None
+            or extracted.file_key != file_key
+            or extracted.revision_id != revision.revision_id
+            or extracted.resource_id != resource.resource_id
+            or extracted.processing_signature != signature
+        ):
             return None
         expected = {
             "text_representation": (
                 _TEXT_REPRESENTATION_KIND,
-                _representation_fingerprint(extracted),
+                extracted.representation_fingerprint,
             ),
-            "text_fts": (_TEXT_FTS_KIND, _fts_fingerprint(file_key, extracted)),
+            "text_fts": (_TEXT_FTS_KIND, extracted.fts_fingerprint),
         }
         if len(reusable.outputs) != len(expected):
             return None
@@ -1348,6 +1301,7 @@ class TextRoute:
         capability_selection: CapabilitySelection,
         *,
         causation_id: str | None,
+        cache_observation: TextCacheObservation | None = None,
     ) -> _TextDerivationWork:
         stage = _stage_descriptor(provenance)
         recorded_ns = time.time_ns()
@@ -1376,7 +1330,7 @@ class TextRoute:
                 "stage_version": stage.stage_version,
             },
         )
-        begin_text_derivation_attempt_from_connection(
+        next_observation = begin_text_derivation_attempt_from_connection(
             connection,
             TextDerivationAttemptStart(
                 attempt_id=attempt_id,
@@ -1392,6 +1346,7 @@ class TextRoute:
                 recorded_ns=recorded_ns,
                 causation_id=causation_id,
             ),
+            cache_observation=cache_observation,
         )
         return _TextDerivationWork(
             attempt_id=attempt_id,
@@ -1401,6 +1356,7 @@ class TextRoute:
             stage=stage,
             capability_selection=capability_selection,
             started_monotonic_ns=started_monotonic_ns,
+            cache_observation=next_observation,
         )
 
     @staticmethod
@@ -1417,6 +1373,14 @@ class TextRoute:
         file_key = file_key_from_snapshot(snapshot)
         connection.execute("BEGIN IMMEDIATE")
         try:
+            if work.cache_observation is not None:
+                validate_text_cache_observation(connection, work.cache_observation)
+            else:
+                # Standalone callers without a committed observation retain
+                # full validation at this publication boundary.
+                validate_text_publication_from_connection(
+                    connection, file_key, work.revision.revision_id
+                )
             self._refresh_cached_document(
                 connection,
                 snapshot,
@@ -1755,6 +1719,7 @@ class TextRoute:
                             causation_id=(
                                 None if reusable is None else reusable.producer_receipt_id
                             ),
+                            cache_observation=None if reusable is None else reusable.observation,
                         )
                         try:
                             self.cancellation.checkpoint()

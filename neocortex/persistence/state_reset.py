@@ -114,6 +114,9 @@ _PUBLICATION_FILES = (
     STATE_PUBLICATION_JOURNAL_FILENAME,
     STATE_CONTENT_PUBLICATION_MANIFEST_FILENAME,
 )
+# These bounded writer-owned receipts are disposable evidence caches.  Their
+# absence forces owner validation; they are never an authoritative SQLite owner.
+_DERIVED_OWNER_CACHE_FILES = (("semantic", "semantic.sqlite3.replay-receipts.json"),)
 _RUN_LEDGER_TABLES = (
     "file_action_reconciliation_events",
     "file_action_events",
@@ -796,6 +799,7 @@ def _known_state_paths(state: Path, scope: StateResetScope) -> set[Path]:
         for suffix in _ALL_DATABASE_SIDECAR_SUFFIXES
     )
     known.update(state / name for name in _PUBLICATION_FILES)
+    known.update(state / name for _owner, name in _DERIVED_OWNER_CACHE_FILES)
     known.update(_content_manifest_candidates(state))
     known.update(_lock_paths(state))
     if scope == "all":
@@ -1544,6 +1548,18 @@ def plan_state_reset(
                     entries=publication_entries,
                 )
             )
+        for owner, name in _DERIVED_OWNER_CACHE_FILES:
+            entry = _entry_for(selected, selected / name, kind="file")
+            if entry is not None:
+                targets.append(
+                    StateResetTarget(
+                        target_id=f"derived-cache:{owner}",
+                        kind="managed-artifact",
+                        owner=owner,
+                        action="remove-files",
+                        entries=(entry,),
+                    )
+                )
         if scope == "all":
             for target_id, root in (
                 ("runtime-cache", selected / "runtime-cache"),
@@ -1858,6 +1874,7 @@ _INVENTORY_STAGED_TABLE_ORDER = (
     "duplicate_plan_summaries",
     "duplicate_plan_heads",
     "fingerprint_content_evidence",
+    "inventory_file_change_versions",
     "inventory_scan_successors",
     "inventory_generation_heads",
     "inventory_checkpoints",

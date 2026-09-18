@@ -29,6 +29,11 @@ def test_public_text_route_replays_and_reaches_search_output(
         "--text-max-count",
         "1",
         "--strict-exit-codes",
+        # The real governor remains active. This one-file CLI fixture uses
+        # explicit, small public limits instead of the desktop's 3 GiB reserve.
+        "--global-min-free-memory-mb", "128",
+        "--global-min-free-commit-mb", "128",
+        "--global-memory-budget-mb", "256",
     )
     assert entrypoint(arguments) == 0
     first = capsys.readouterr()

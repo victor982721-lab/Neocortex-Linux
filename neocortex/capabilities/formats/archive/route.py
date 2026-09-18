@@ -2,6 +2,16 @@
 
 from __future__ import annotations
 
+from neocortex.runtime.control.locking import FrameworkRunLock
+
+from ..fts_lookup import (
+    delete_format_fts_keys,
+    format_fts_key_predicate,
+    initialize_format_fts_lookup,
+    insert_format_fts_row,
+    insert_format_fts_rows,
+)
+
 import io
 import inspect
 import json
@@ -981,11 +991,10 @@ def _delete_container(connection: sqlite3.Connection, container_key: str) -> int
             "SELECT COUNT(*) FROM documents WHERE container_key=?", (container_key,)
         ).fetchone()[0]
     )
-    connection.execute(
-        "DELETE FROM document_fts WHERE file_key IN "
-        "(SELECT file_key FROM documents WHERE container_key=?)",
-        (container_key,),
-    )
+    keys = tuple(row[0] for row in connection.execute(
+        "SELECT file_key FROM documents WHERE container_key=?", (container_key,)
+    ))
+    delete_format_fts_keys(connection, "document_fts", keys)
     connection.execute("DELETE FROM containers WHERE container_key=?", (container_key,))
     return count
 
@@ -1123,9 +1132,9 @@ def _store_member(
             int(document_role != "document_component"),
         ),
     )
-    connection.execute(
-        "INSERT INTO document_fts(file_key,path,container_path,container_name,"
-        "member_chain,content_kind,body) VALUES(?,?,?,?,?,?,?)",
+    insert_format_fts_row(
+        connection, "document_fts",
+        ("file_key", "path", "container_path", "container_name", "member_chain", "content_kind", "body"),
         (
             file_key,
             path,
@@ -1824,13 +1833,18 @@ def _repair_cached_container_fts(
         max_text_chars=max_text_chars,
     )
     expected_by_key = {row[0]: row for row in expected}
-    actual_rows = connection.execute(
-        """SELECT file_key,path,container_path,container_name,member_chain,
-        content_kind,body FROM document_fts WHERE file_key IN(
-            SELECT file_key FROM documents WHERE container_key=?
-        )""",
-        (container_key,),
-    ).fetchall()
+    actual_rows: list[sqlite3.Row] = []
+    keys = tuple(row[0] for row in connection.execute(
+        "SELECT file_key FROM documents WHERE container_key=?", (container_key,)
+    ))
+    for offset in range(0, len(keys), 500):
+        predicate, parameters = format_fts_key_predicate(
+            connection, "document_fts", keys[offset:offset + 500]
+        )
+        actual_rows.extend(connection.execute(
+            f"""SELECT file_key,path,container_path,container_name,member_chain,
+            content_kind,body FROM document_fts WHERE {predicate}""", parameters,
+        ).fetchall())
     actual_by_key: dict[str, list[tuple[object, ...]]] = {}
     for row in actual_rows:
         actual_by_key.setdefault(str(row["file_key"]), []).append(
@@ -1851,16 +1865,10 @@ def _repair_cached_container_fts(
     if complete:
         return 0
 
-    connection.execute(
-        """DELETE FROM document_fts WHERE file_key IN(
-            SELECT file_key FROM documents WHERE container_key=?
-        )""",
-        (container_key,),
-    )
-    connection.executemany(
-        """INSERT INTO document_fts(
-        file_key,path,container_path,container_name,member_chain,content_kind,body)
-        VALUES(?,?,?,?,?,?,?)""",
+    delete_format_fts_keys(connection, "document_fts", keys)
+    insert_format_fts_rows(
+        connection, "document_fts",
+        ("file_key", "path", "container_path", "container_name", "member_chain", "content_kind", "body"),
         expected,
     )
     return len(expected)
@@ -2274,6 +2282,15 @@ class ArchiveRoute:
     def run(self) -> ArchiveRouteSummary:
         self.cancellation.checkpoint()
         self._validate()
+        lock_path = self.config.state_path.with_suffix(
+            self.config.state_path.suffix + ".route.lock"
+        )
+        self.config.state_path.parent.mkdir(parents=True, exist_ok=True)
+        with FrameworkRunLock(lock_path):
+            return self._run_locked()
+
+    def _run_locked(self) -> ArchiveRouteSummary:
+        self.cancellation.checkpoint()
         initialize_archive_state(self.config.state_path)
         candidate_pool, eligible, selected_count = self._selected_counts()
         processed = cache_hits = cached_errors = complete = partial = errors = 0
@@ -2310,6 +2327,9 @@ class ArchiveRoute:
             )
 
         with archive_database(self.config.state_path, create=False) as connection:
+            initialize_format_fts_lookup(
+                connection, "document_fts", checkpoint=self.cancellation.checkpoint
+            )
             iterator = self.framework_state.iter_selected_route_candidates(
                 self.run_id,
                 ARCHIVE_MIME,

@@ -27,7 +27,7 @@ from neocortex.knowledge.knowledge_contracts import (
 REVIEW_TASK_CONTRACT_SCHEMA_VERSION = 1
 # Compatibility export; repository readers use the Framework owner's version.
 # Keep this import-light constant in sync with that owner (covered by tests).
-REVIEW_TASK_FRAMEWORK_SCHEMA_VERSION = 23
+REVIEW_TASK_FRAMEWORK_SCHEMA_VERSION = 24
 REVIEW_TASK_PRIORITY_ALGORITHM = "impact-x-uncertainty-x-irreversibility-v1"
 REVIEW_TASK_SOURCE_FINGERPRINT_PREFIX = "review-task-source-snapshot-v1:sha256:"
 

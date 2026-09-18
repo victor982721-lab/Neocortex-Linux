@@ -284,6 +284,14 @@ def test_real_cli_uses_only_current_published_code_references(
             str(state),
             "--route",
             "text",
+            # Exercise keeper publication with real admission sized for this
+            # three-file fixture, independent of host-wide default headroom.
+            "--global-min-free-memory-mb",
+            "128",
+            "--global-min-free-commit-mb",
+            "128",
+            "--global-memory-budget-mb",
+            "256",
             "--no-document-catalog",
             "--dedup-policy",
             "exact",

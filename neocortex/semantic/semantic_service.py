@@ -284,6 +284,20 @@ def _backend(
     local_files_only: bool,
     threads: int | None,
 ) -> EmbeddingBackend:
+    from neocortex.runtime.control.read_operation import current_read_operation
+    operation = current_read_operation()
+    if operation is not None and operation.requires_supervision:
+        operation.checkpoint()
+        # The originating allowance remains the only deadline/clock and
+        # exception authority. Polling its checkpoint terminates native work
+        # without converting Knowledge's typed failure into an index error.
+        work = SemanticWorkBudget(cancellation_check=operation.checkpoint)
+        supervised = DeadlineEmbeddingBackend(
+            model, cache_dir=cache_dir, local_files_only=local_files_only,
+            threads=threads, work_budget=work,
+        )
+        operation.closers.append(supervised.close)
+        return supervised
     return _preparation.backend(
         model,
         cache_dir=cache_dir,
@@ -506,33 +520,36 @@ def index_text_embeddings(
     # The empty policy is deliberately equivalent to the historical iterator,
     # while callers with a persisted/corrected policy can pass it explicitly.
     policy = _active_admission_policy()
+    from .semantic_source_budget import semantic_source_read_budget
+    from .semantic_source_head_cache import source_head_receipts
     try:
-        result = _text_index.index_text_embeddings(
-            state_directory,
-            source_kinds=source_kinds,
-            model=model,
-            model_cache_override=model_cache,
-            local_files_only=local_files_only,
-            threads=threads,
-            chunking=chunking,
-            backend_factory=_index_backend_factory(budget),
-            source_record_iterator=_admitted_text_source_iterator(policy),
-            generation_runner=partial(_run_generation, progress=progress),
-            work_budget=budget,
-            progress=progress,
-        )
-        if "code" in result.sources and result.complete:
-            if len(result.generations) != 1:
-                raise RuntimeError("Code Semantic linking requires exactly one text generation")
-            from neocortex.code.search.code_semantic_links import synchronize_code_embedding_links
-
-            summary = result.generations[0].summary
-            synchronize_code_embedding_links(
+        with semantic_source_read_budget(budget), source_head_receipts(state_directory / SEMANTIC_DATABASE_NAME):
+            result = _text_index.index_text_embeddings(
                 state_directory,
-                generation_id=summary.generation_id,
-                model_signature=summary.model_signature,
+                source_kinds=source_kinds,
+                model=model,
+                model_cache_override=model_cache,
+                local_files_only=local_files_only,
+                threads=threads,
+                chunking=chunking,
+                backend_factory=_index_backend_factory(budget),
+                source_record_iterator=_admitted_text_source_iterator(policy),
+                generation_runner=partial(_run_generation, progress=progress),
+                work_budget=budget,
+                progress=progress,
             )
-        return result
+            if "code" in result.sources and result.complete:
+                if len(result.generations) != 1:
+                    raise RuntimeError("Code Semantic linking requires exactly one text generation")
+                from neocortex.code.search.code_semantic_links import synchronize_code_embedding_links
+
+                summary = result.generations[0].summary
+                synchronize_code_embedding_links(
+                    state_directory,
+                    generation_id=summary.generation_id,
+                    model_signature=summary.model_signature,
+                )
+            return result
     finally:
         budget.close_registered_resources()
 
@@ -553,21 +570,24 @@ def index_image_embeddings(
 
     budget = work_budget or SemanticWorkBudget()
     policy = _active_admission_policy()
+    from .semantic_source_budget import semantic_source_read_budget
+    from .semantic_source_head_cache import source_head_receipts
     try:
-        return _image_index.index_image_embeddings(
-            state_directory,
-            model_cache_override=model_cache,
-            local_files_only=local_files_only,
-            threads=threads,
-            embed_ocr_text=embed_ocr_text,
-            ocr_model=ocr_model,
-            chunking=chunking,
-            backend_factory=_index_backend_factory(budget),
-            source_record_iterator=_admitted_image_source_iterator(policy),
-            generation_runner=partial(_run_generation, progress=progress),
-            work_budget=budget,
-            progress=progress,
-        )
+        with semantic_source_read_budget(budget), source_head_receipts(state_directory / SEMANTIC_DATABASE_NAME):
+            return _image_index.index_image_embeddings(
+                state_directory,
+                model_cache_override=model_cache,
+                local_files_only=local_files_only,
+                threads=threads,
+                embed_ocr_text=embed_ocr_text,
+                ocr_model=ocr_model,
+                chunking=chunking,
+                backend_factory=_index_backend_factory(budget),
+                source_record_iterator=_admitted_image_source_iterator(policy),
+                generation_runner=partial(_run_generation, progress=progress),
+                work_budget=budget,
+                progress=progress,
+            )
     finally:
         budget.close_registered_resources()
 

@@ -7,7 +7,7 @@ import sqlite3
 from neocortex.platform.policy import sqlite_path_collation
 
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 SCHEMA_LABEL = "dedup inventory"
 PATH_COLLATION = sqlite_path_collation()
 METADATA_DDL = """
@@ -245,7 +245,16 @@ V13_DDL = (
     V13_SUCCESSOR_DDL,
     V13_PLAN_HEAD_DDL,
 )
-CURRENT_DDL = V13_DDL
+V15_FILE_CHANGE_VERSIONS_DDL = f"""
+    CREATE TABLE inventory_file_change_versions (
+        scan_id INTEGER NOT NULL,
+        path TEXT NOT NULL COLLATE {PATH_COLLATION},
+        ctime_ns INTEGER NOT NULL CHECK(ctime_ns>=0),
+        PRIMARY KEY(scan_id,path),
+        FOREIGN KEY(scan_id,path) REFERENCES files(scan_id,path) ON DELETE CASCADE
+    ) WITHOUT ROWID
+    """
+CURRENT_DDL = (*V13_DDL, V15_FILE_CHANGE_VERSIONS_DDL)
 
 # The first seven v9 statements own generation publication; later statements
 # are unchanged cache/plan objects shared with v6 and v7. Explicit legacy
@@ -478,3 +487,9 @@ def build_v11_schema(connection: sqlite3.Connection) -> None:
 
 def build_v12_schema(connection: sqlite3.Connection) -> None:
     execute_ddl(connection, V12_DDL)
+
+
+def build_v13_schema(connection: sqlite3.Connection) -> None:
+    """Versions 13 and 14 share the same physical structure."""
+
+    execute_ddl(connection, V13_DDL)

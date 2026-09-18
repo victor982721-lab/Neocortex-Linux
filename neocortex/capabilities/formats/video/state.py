@@ -6,6 +6,13 @@ frames remain ephemeral and are never copied into this database or the corpus.
 
 from __future__ import annotations
 
+from ..fts_lookup import (
+    delete_format_fts_keys,
+    format_fts_key_predicate,
+    insert_format_fts_rows,
+    refresh_format_fts_path,
+)
+
 import json
 import math
 import re
@@ -438,7 +445,7 @@ def _remove_path_conflict(connection: sqlite3.Connection, snapshot: FileSnapshot
     if conflict is None:
         return
     stale = str(conflict[0])
-    connection.execute("DELETE FROM frame_fts WHERE file_key=?", (stale,))
+    delete_format_fts_keys(connection, "frame_fts", (stale,))
     connection.execute("DELETE FROM documents WHERE file_key=?", (stale,))
 
 
@@ -502,7 +509,7 @@ def refresh_cached_video(
             key,
         ),
     )
-    connection.execute("UPDATE frame_fts SET path=? WHERE file_key=?", (snapshot.path, key))
+    refresh_format_fts_path(connection, "frame_fts", key, snapshot.path)
 
 
 def _video_fts_matches(
@@ -512,10 +519,11 @@ def _video_fts_matches(
     title: str,
     frames: tuple[sqlite3.Row, ...],
 ) -> bool:
+    predicate, parameters = format_fts_key_predicate(connection, "frame_fts", (key,))
     rows = connection.execute(
-        """SELECT file_key,path,title,timestamp_ms,body
-        FROM frame_fts WHERE file_key=? ORDER BY CAST(timestamp_ms AS INTEGER),rowid""",
-        (key,),
+        f"""SELECT file_key,path,title,timestamp_ms,body
+        FROM frame_fts WHERE {predicate} ORDER BY CAST(timestamp_ms AS INTEGER),rowid""",
+        parameters,
     ).fetchall()
     if len(rows) != len(frames):
         return False
@@ -628,10 +636,9 @@ def repair_cached_video_derivatives(
         )
 
     if not _video_fts_matches(connection, key, snapshot.path, title, frames):
-        connection.execute("DELETE FROM frame_fts WHERE file_key=?", (key,))
-        connection.executemany(
-            """INSERT INTO frame_fts(file_key,path,title,timestamp_ms,body)
-            VALUES(?,?,?,?,?)""",
+        delete_format_fts_keys(connection, "frame_fts", (key,))
+        insert_format_fts_rows(
+            connection, "frame_fts", ("file_key", "path", "title", "timestamp_ms", "body"),
             (
                 (
                     key,
@@ -933,7 +940,7 @@ def store_video_success(
         ),
     )
     connection.execute("DELETE FROM frames WHERE file_key=?", (key,))
-    connection.execute("DELETE FROM frame_fts WHERE file_key=?", (key,))
+    delete_format_fts_keys(connection, "frame_fts", (key,))
     connection.executemany(
         """INSERT INTO frames(
         file_key,frame_index,timestamp_ms,sampling_reasons_json,width,height,
@@ -959,8 +966,8 @@ def store_video_success(
             for frame in frames
         ),
     )
-    connection.executemany(
-        "INSERT INTO frame_fts(file_key,path,title,timestamp_ms,body) VALUES(?,?,?,?,?)",
+    insert_format_fts_rows(
+        connection, "frame_fts", ("file_key", "path", "title", "timestamp_ms", "body"),
         ((key, snapshot.path, title, frame.timestamp_ms, frame.ocr_text) for frame in frames),
     )
 
@@ -1025,7 +1032,7 @@ def store_video_error(
         ),
     )
     connection.execute("DELETE FROM frames WHERE file_key=?", (key,))
-    connection.execute("DELETE FROM frame_fts WHERE file_key=?", (key,))
+    delete_format_fts_keys(connection, "frame_fts", (key,))
 
 
 def prune_stale_video_documents(connection: sqlite3.Connection, run_id: int) -> int:
@@ -1038,7 +1045,7 @@ def prune_stale_video_documents(connection: sqlite3.Connection, run_id: int) -> 
     for offset in range(0, len(stale), 256):
         batch = stale[offset : offset + 256]
         placeholders = ",".join("?" for _ in batch)
-        connection.execute(f"DELETE FROM frame_fts WHERE file_key IN ({placeholders})", batch)
+        delete_format_fts_keys(connection, "frame_fts", batch)
         connection.execute(f"DELETE FROM documents WHERE file_key IN ({placeholders})", batch)
     connection.execute("DELETE FROM video_inventory WHERE last_seen_run_id<>?", (run_id,))
     return len(stale)

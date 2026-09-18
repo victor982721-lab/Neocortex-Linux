@@ -134,7 +134,7 @@ def test_semantic_rows_abstain_before_search_without_prerequisites(
         "(code_database: 'Path', connection: 'sqlite3.Connection', query: "
         "'CodeSearchQuery', fetch_limit: 'int', cancellation: "
         "'SQLiteCancellationBridge', *, model_cache: 'Path | None', threads: "
-        "'int | None') -> 'tuple[_SearchRow, ...]'"
+        "'int | None', row_admission: 'Callable[[int], None] | None' = None) -> 'tuple[_SearchRow, ...]'"
     )
     source = tmp_path / "prerequisite.py"
     source.write_text("def guarded_search():\n    return 'ready'\n", encoding="utf-8")

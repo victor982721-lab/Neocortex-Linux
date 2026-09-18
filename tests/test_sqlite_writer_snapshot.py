@@ -17,7 +17,10 @@ from neocortex.persistence.sqlite_immutable import (
     capture_sqlite_read_fence,
     immutable_sqlite_database,
 )
-from neocortex.persistence.sqlite_writer_snapshot import writer_coordinated_sqlite_snapshot
+from neocortex.persistence.sqlite_writer_snapshot import (
+    SQLiteProgressConnection,
+    writer_coordinated_sqlite_snapshot,
+)
 
 
 def _owner_identity(path: Path) -> tuple[int, int]:
@@ -40,6 +43,175 @@ def _source_bytes(path: Path) -> tuple[object, dict[str, str]]:
         suffix: hashlib.sha256(Path(f"{path}{suffix}").read_bytes()).hexdigest()
         for suffix in ("", *(item[0] for item in fence.sidecars))
     }
+
+
+@pytest.mark.parametrize("control", ("deadline", "cancelled", "raising"))
+def test_projection_source_sql_is_interrupted_and_owner_is_reusable(
+    tmp_path: Path, control: str
+) -> None:
+    path = tmp_path / "framework.sqlite3"
+    visited = 0
+    now = 0.0
+    control_error = KeyboardInterrupt("fixture cancellation")
+
+    def visit(value: int) -> int:
+        nonlocal visited, now
+        visited += 1
+        if visited >= 10:
+            now = 2.0
+        return value
+
+    def cancelled() -> bool:
+        if control == "raising" and visited >= 10:
+            raise control_error
+        return control == "cancelled" and visited >= 10
+
+    def projection(source, target, budget) -> None:
+        target.execute("CREATE TABLE projection(value INTEGER)")
+        source.execute(
+            """WITH RECURSIVE numbers(n) AS (
+                VALUES(1) UNION ALL SELECT n+1 FROM numbers WHERE n<10000
+            ) SELECT SUM(visit(n)) FROM numbers"""
+        ).fetchone()
+        budget.checkpoint()
+
+    with closing(_create_owner(path, factory=SQLiteProgressConnection)) as owner:
+        owner.create_function("visit", 1, visit)
+        previous_timeout = owner.execute("PRAGMA busy_timeout").fetchone()[0]
+        error_type = KeyboardInterrupt if control == "raising" else SQLiteSnapshotBudgetExceeded
+        with pytest.raises(error_type) as raised:
+            with writer_coordinated_sqlite_snapshot(
+                owner,
+                path,
+                owner_identity=_owner_identity(path),
+                projection=projection,
+                temp_root=tmp_path,
+                budget=SQLiteSnapshotBudget(
+                    prepare_timeout_seconds=1.0 if control == "deadline" else 60.0,
+                    monotonic_clock=lambda: now,
+                    cancellation_check=cancelled,
+                ),
+            ):
+                pytest.fail("an interrupted source must not publish its projection")
+        assert 10 <= visited < 1000
+        if control == "raising":
+            assert raised.value is control_error
+        assert not owner.in_transaction
+        assert owner.execute("PRAGMA busy_timeout").fetchone()[0] == previous_timeout
+        assert owner._progress_registration == (None, 0)
+        # A fresh read and snapshot prove that cancellation did not poison the
+        # borrowed owner or leave a source handler bound to the expired budget.
+        assert owner.execute("SELECT value FROM probe").fetchone() == (7,)
+        with writer_coordinated_sqlite_snapshot(
+            owner, path, owner_identity=_owner_identity(path), temp_root=tmp_path
+        ) as snapshot:
+            assert snapshot.exists()
+    assert not list(tmp_path.glob("neocortex-route-snapshot-*"))
+
+
+def test_projection_composes_and_restores_the_owner_progress_handler(tmp_path: Path) -> None:
+    path = tmp_path / "framework.sqlite3"
+    calls = 0
+
+    def owner_progress() -> int:
+        nonlocal calls
+        calls += 1
+        return 0
+
+    query = """WITH RECURSIVE numbers(n) AS (
+        VALUES(1) UNION ALL SELECT n+1 FROM numbers WHERE n<100
+    ) SELECT SUM(n) FROM numbers"""
+
+    def projection(source, target, _budget) -> None:
+        before = calls
+        assert source.execute(query).fetchone() == (5050,)
+        assert calls > before
+        target.execute("CREATE TABLE projection(value INTEGER)")
+
+    with closing(_create_owner(path, factory=SQLiteProgressConnection)) as owner:
+        owner.set_progress_handler(owner_progress, 250)
+        with writer_coordinated_sqlite_snapshot(
+            owner,
+            path,
+            owner_identity=_owner_identity(path),
+            projection=projection,
+            temp_root=tmp_path,
+        ):
+            assert owner._progress_registration == (owner_progress, 250)
+            before = calls
+            owner.execute(query).fetchone()
+            assert calls > before
+        assert owner._progress_registration == (owner_progress, 250)
+    assert not list(tmp_path.glob("neocortex-route-snapshot-*"))
+
+
+def test_untracked_projection_owner_is_rejected_without_replacing_its_handler(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "framework.sqlite3"
+    calls = 0
+
+    def owner_progress() -> int:
+        nonlocal calls
+        calls += 1
+        return 0
+
+    with closing(_create_owner(path)) as owner:
+        owner.set_progress_handler(owner_progress, 1)
+        with pytest.raises(ImmutableSQLiteUnavailable, match="progress-aware owner"):
+            with writer_coordinated_sqlite_snapshot(
+                owner,
+                path,
+                owner_identity=_owner_identity(path),
+                projection=lambda *_: pytest.fail("untracked callback was borrowed"),
+                temp_root=tmp_path,
+            ):
+                pytest.fail("untracked callback was borrowed")
+        before = calls
+        assert owner.execute("SELECT value FROM probe").fetchone() == (7,)
+        assert calls > before
+        assert not owner.in_transaction
+    assert not list(tmp_path.glob("neocortex-route-snapshot-*"))
+
+
+@pytest.mark.parametrize("error_type", (KeyboardInterrupt, RuntimeError, sqlite3.OperationalError))
+def test_projection_preserves_an_owner_callback_exception_and_restores_control(
+    tmp_path: Path, error_type: type[BaseException],
+) -> None:
+    path = tmp_path / "framework.sqlite3"
+    active = False
+    error = error_type("owner control")
+
+    def owner_progress() -> int:
+        if active:
+            raise error
+        return 0
+
+    def projection(source, target, _budget) -> None:
+        nonlocal active
+        target.execute("CREATE TABLE projection(value INTEGER)")
+        active = True
+        source.execute("SELECT value FROM probe").fetchone()
+
+    with closing(_create_owner(path, factory=SQLiteProgressConnection)) as owner:
+        owner.set_progress_handler(owner_progress, 1)
+        try:
+            with pytest.raises(error_type) as raised:
+                with writer_coordinated_sqlite_snapshot(
+                    owner,
+                    path,
+                    owner_identity=_owner_identity(path),
+                    projection=projection,
+                    temp_root=tmp_path,
+                ):
+                    pytest.fail("the owner cancellation must stop the projection")
+            assert raised.value is error
+        finally:
+            active = False
+        assert owner._progress_registration == (owner_progress, 1)
+        assert not owner.in_transaction
+        assert owner.execute("SELECT value FROM probe").fetchone() == (7,)
+    assert not list(tmp_path.glob("neocortex-route-snapshot-*"))
 
 
 def test_snapshot_reads_wal_commits_and_opens_no_source_reader(

@@ -117,6 +117,56 @@ def test_route_snapshot_projection_keeps_owner_transaction_idle_after_failure(
         assert not state._connection.in_transaction
 
 
+def test_route_projection_joins_historical_reviews_by_indexed_identity(tmp_path: Path) -> None:
+    database = tmp_path / "framework.sqlite3"
+    count = 1000
+    with FrameworkState(database) as state:
+        run_id = state.begin_initial_run(tmp_path, None)
+        state.store_route_candidates(run_id, (
+            ("text/plain", FileSnapshot(str(tmp_path / f"current-{i:05}"), 1, i + 1, 20, 30, -1))
+            for i in range(count)
+        ))
+        with state._connection:
+            state._connection.executemany(
+                """INSERT INTO review_candidates(
+                    route_name,volume_id,file_id,reason_code,path,size,mtime_ns,
+                    birthtime_ns,source_status,recommendation,retryable,confidence,
+                    evidence_json,detector_version,status,first_detected_ns,
+                    last_detected_ns,last_seen_run_id
+                ) VALUES('text','1',?,'fixture',?,20,30,-1,'error',
+                    'retry',1,1.0,'{}','fixture','open',1,1,?)""",
+                ((f"{i + count + 1:x}", str(tmp_path / f"old-{i:05}"), run_id) for i in range(count)),
+            )
+        source_instructions = 0
+        source_queries: list[str] = []
+
+        def source_progress() -> int:
+            nonlocal source_instructions
+            source_instructions += 1000
+            # Quadratic work previously used ~8 million VM instructions for
+            # this empty join. A generous bound avoids timing-dependent tests.
+            return int(source_instructions >= 300_000)
+
+        state._connection.set_progress_handler(source_progress, 1000)
+        state._connection.set_trace_callback(source_queries.append)
+        try:
+            with state.route_candidate_snapshot(run_id=run_id) as snapshot:
+                with immutable_sqlite_database(snapshot) as reader:
+                    assert reader.execute("SELECT COUNT(*) FROM route_candidates").fetchone()[0] == count
+                    assert reader.execute("SELECT COUNT(*) FROM review_candidates").fetchone()[0] == 0
+            assert source_instructions < 300_000
+        finally:
+            state._connection.set_progress_handler(None, 0)
+            state._connection.set_trace_callback(None)
+        review_query = next(query for query in source_queries if "FROM review_candidates r" in query)
+        plan = tuple(str(row[3]) for row in state._connection.execute("EXPLAIN QUERY PLAN " + review_query))
+        assert any(
+            "route_candidates_identity_idx" in step
+            and "run_id=? AND volume_id=? AND file_id=?" in step
+            for step in plan
+        )
+
+
 def test_projection_source_does_not_open_another_framework_connection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

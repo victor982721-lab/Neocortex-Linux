@@ -187,10 +187,10 @@ def test_route_admits_each_analysis_and_graph_without_route_wide_reservation(
         estimate_code_analysis_memory_bytes(first.stat().st_size, 100_000),
         estimate_code_analysis_memory_bytes(second.stat().st_size, 100_000),
     ]
-    assert len(gate.estimates) == 3  # two candidates plus one graph phase
+    assert len(gate.estimates) == 4  # two candidates, graph resolution and publication
     assert gate.max_active == 1
     assert gate.active == 0
-    assert gate.events == ["enter", "exit"] * 3
+    assert gate.events == ["enter", "exit"] * 4
 
     warm_gate = _TrackingGate()
     gate = warm_gate

@@ -255,6 +255,11 @@ class InventoryBatch:
             self._before_flush()
         with self._connection:
             self._connection.executemany(FILE_UPSERT_SQL, self._rows)
+            self._connection.executemany(
+                "INSERT OR REPLACE INTO inventory_file_change_versions(scan_id,path,ctime_ns) VALUES(?,?,?)",
+                ((self._scan_id, item.path, item.ctime_ns) for item in self._observations
+                 if item.ctime_ns is not None and item.ctime_ns >= 0),
+            )
         # A cancellation/deadline that becomes true while SQLite commits must
         # leave the batch unpublished in the checkpoint.  The committed rows
         # are deliberately retained as a recoverable tail and removed by the

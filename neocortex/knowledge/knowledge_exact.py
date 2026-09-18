@@ -11,6 +11,8 @@ database.  Missing and incompatible state is reported without creating files.
 """
 
 from __future__ import annotations
+from neocortex.runtime.control.read_operation import operation_sqlite_session
+from neocortex.knowledge.knowledge_read_operation import read_rows, read_checkpoint
 import json
 import re
 import sqlite3
@@ -53,7 +55,6 @@ from .knowledge_snapshot import KnowledgeStatePaths
 from neocortex.semantic.semantic_models import canonical_json, fingerprint_text
 from neocortex.persistence.sqlite_immutable import (
     preferred_sqlite_read_mode,
-    sqlite_read_session,
 )
 from neocortex.persistence.sqlite_connection import SQLiteConnectionPolicy
 
@@ -904,7 +905,8 @@ class _QueryControl:
         connection.set_progress_handler(progress, progress_interval)
         try:
             try:
-                rows = tuple(connection.execute(sql, parameters).fetchall())
+                read_checkpoint()
+                rows = tuple(read_rows(connection.execute(sql, parameters)))
             except sqlite3.OperationalError as exc:
                 if self.cancellation_failure is not None:
                     raise self.cancellation_failure from None
@@ -1010,7 +1012,7 @@ def _flatten_heads(heads: Sequence[tuple[str, int]]) -> tuple[object, ...]:
 
 @contextmanager
 def _inventory_database(path: Path):
-    with sqlite_read_session(
+    with operation_sqlite_session(
         path,
         mode=preferred_sqlite_read_mode(path),
         timeout_seconds=_EXACT_INVENTORY_SQLITE_POLICY.timeout_seconds,
@@ -1020,7 +1022,7 @@ def _inventory_database(path: Path):
 
 @contextmanager
 def _catalog_database(path: Path):
-    with sqlite_read_session(
+    with operation_sqlite_session(
         path,
         mode=preferred_sqlite_read_mode(path),
         timeout_seconds=60.0,

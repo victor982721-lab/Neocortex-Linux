@@ -19,6 +19,7 @@ from neocortex.progress import ProgressCallback, ProgressEvent, emit_progress
 
 from neocortex.integrations.inventory.reconcile import reconcile_usn_window
 from neocortex.persistence.framework_state_writer import FrameworkState
+from neocortex.deduplication.inventory.portable import prepare_portable_inventory
 
 if TYPE_CHECKING:
     from neocortex.integrations.inventory.reconcile import ReconcileResult
@@ -46,6 +47,10 @@ class PreparedInventory:
     inventory_attempts: int
     inventory_mode: Literal["full", "incremental"]
     inventory_policy_signature: str
+    observed_files: int = 0
+    changed_files: int = 0
+    persistent_file_rows_written: int = 0
+    reused_generation: bool = False
 
 
 # endregion [01]
@@ -151,17 +156,21 @@ def _full_inventory_without_journal(
 ) -> PreparedInventory:
     """Capture one honest portable snapshot without inventing a USN cursor."""
 
-    scan = index.scan(
-        root,
-        exclusion_policy=exclusion_policy,
-        progress=progress,
-    )
+    observation = None
+    # ``allow_incremental`` gates journal replay, not reuse after a complete
+    # portable filesystem observation. Linux still observes every file.
+    if publish_checkpoint:
+        observation = prepare_portable_inventory(index, root, exclusion_policy=exclusion_policy, progress=progress)
+        scan = observation.scan
+    else:
+        scan = index.scan(root, exclusion_policy=exclusion_policy, progress=progress)
     if scan.errors:
         raise InventoryError(
             f"inventory scan {scan.scan_id} was partial with "
             f"{scan.errors} traversal errors; no checkpoint was published"
         )
-    index.refresh_scan_aggregates(scan.scan_id)
+    if observation is None or not observation.reused_generation:
+        index.refresh_scan_aggregates(scan.scan_id)
     if publish_checkpoint:
         index.bind_inventory_checkpoint(
             InventoryCheckpoint(
@@ -182,6 +191,10 @@ def _full_inventory_without_journal(
         inventory_attempts=1,
         inventory_mode="full",
         inventory_policy_signature=exclusion_policy.signature,
+        observed_files=scan.files_seen if observation is None else observation.observed_files,
+        changed_files=scan.files_seen if observation is None else observation.changed_files,
+        persistent_file_rows_written=scan.files_seen if observation is None else observation.persistent_file_rows_written,
+        reused_generation=observation is not None and observation.reused_generation,
     )
 
 
@@ -354,6 +367,10 @@ def prepare_inventory(
             "attempts": prepared.inventory_attempts,
             "pruned": removed_state,
             "elapsed_ns": time.perf_counter_ns() - started,
+            "observed_files": prepared.observed_files,
+            "changed_files": prepared.changed_files,
+            "persistent_file_rows_written": prepared.persistent_file_rows_written,
+            "reused_generation": prepared.reused_generation,
         },
     )
     if prepared.inventory_mode == "incremental":

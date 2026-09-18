@@ -12,7 +12,7 @@ import math
 import time
 from dataclasses import dataclass, field
 from collections.abc import Mapping
-from typing import Callable, Any
+from typing import Callable, Any, NoReturn
 
 
 KNOWLEDGE_READ_BUDGET_SCHEMA = "neocortex.knowledge-read-budget/v1"
@@ -104,6 +104,11 @@ class KnowledgeReadBudget:
             self.deadline_seconds = float(self.deadline_seconds)
 
     @property
+    def interruptible(self) -> bool:
+        """Whether blocking native work needs a cancellable worker boundary."""
+        return self.deadline_ns is not None or self.deadline_seconds is not None or self.cancellation_check is not None
+
+    @property
     def rows_remaining(self) -> int | None:
         return None if self.max_rows is None else max(0, self.max_rows - self.rows_used)
 
@@ -173,6 +178,21 @@ class KnowledgeReadBudget:
         self.rows_used += rows
         self.vectors_used += vectors
         self.temporary_bytes_used += temporary_bytes
+
+    def remaining_seconds(self) -> float | None:
+        """Return this operation's remaining time in its own clock domain."""
+        self.checkpoint()
+        deadline = self.deadline_ns if self.deadline_ns is not None else self._relative_deadline_ns
+        if deadline is None:
+            return None
+        remaining = (deadline - self._now_ns()) / 1_000_000_000
+        if remaining <= 0:
+            self.reject("deadline_exceeded")
+        return remaining
+
+    def reject(self, reason: str) -> NoReturn:
+        """Expose this budget's typed failure to neutral read adapters."""
+        raise KnowledgeReadBudgetExceeded(reason)
 
     def to_dict(self) -> dict[str, object]:
         """Return bounded accounting without exposing callback internals."""

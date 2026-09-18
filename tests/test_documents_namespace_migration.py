@@ -13,8 +13,13 @@ MODULES = tuple(sorted(path.stem for path in DOCUMENTS_ROOT.glob("document*.py")
 
 
 def test_document_modules_are_owned_by_the_canonical_tree() -> None:
-    assert len(MODULES) == 19
-    assert {"document_organization_scope", "document_resource_binding"} <= set(MODULES)
+    assert len(MODULES) == 21
+    assert {
+        "document_catalog_replay",
+        "document_organization_recovery",
+        "document_organization_scope",
+        "document_resource_binding",
+    } <= set(MODULES)
     for name in MODULES:
         product = __import__(f"neocortex.documents.{name}", fromlist=[name])
         assert Path(product.__file__).resolve().is_relative_to(DOCUMENTS_ROOT)

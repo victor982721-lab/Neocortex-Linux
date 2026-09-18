@@ -19,7 +19,7 @@ from neocortex.workflow.review import review_task_contracts as _contracts
 from neocortex.persistence.framework_connection import connect_existing_framework
 from neocortex.persistence.framework_schema import (
     SCHEMA_VERSION as FRAMEWORK_SCHEMA_VERSION,
-    validate_framework_schema_v22,
+    validate_framework_schema,
 )
 from neocortex.workflow.review.review_task_contracts import (
     MAX_REVIEW_TASK_READ_PAGE,
@@ -117,8 +117,7 @@ def _require_review_task_schema(connection: sqlite3.Connection) -> None:
             f"{FRAMEWORK_SCHEMA_VERSION}; observed {observed!r}"
         )
     try:
-        # Version 23 adds metadata freshness fences; its exact DDL remains v22.
-        validate_framework_schema_v22(connection)
+        validate_framework_schema(connection)
     except (RuntimeError, sqlite3.DatabaseError) as exc:
         raise ReviewTaskRepositoryError(
             f"Framework schema {FRAMEWORK_SCHEMA_VERSION} does not match "

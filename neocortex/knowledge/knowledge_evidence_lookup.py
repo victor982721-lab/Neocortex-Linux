@@ -6,6 +6,7 @@ the user's search and silently rebinding a citation alias.
 """
 
 from __future__ import annotations
+from neocortex.knowledge.knowledge_read_operation import read_rows
 
 import json
 import hashlib
@@ -98,23 +99,23 @@ def _owner_record(
         "code": {"current"},
     }
     if owner == "archive":
-        rows = connection.execute(
+        rows = read_rows(connection.execute(
             """SELECT d.*,c.status AS container_status,c.path AS current_container_path,
                       c.mtime_ns AS container_mtime_ns,c.birthtime_ns AS container_birthtime_ns,
                       c.processing_signature AS container_processing_signature,
                       c.last_seen_run_id AS container_last_seen_run_id
                FROM documents d JOIN containers c ON c.container_key=d.container_key
                WHERE d.file_key=? LIMIT 2""", (file_key,),
-        ).fetchall()
+        ))
     elif owner == "image":
-        rows = connection.execute(
+        rows = read_rows(connection.execute(
             "SELECT * FROM images WHERE file_key=? LIMIT 2", (file_key,),
-        ).fetchall()
+        ))
     elif owner == "code":
         volume, separator, physical_file = file_key.partition(":")
         if not separator or not volume or not physical_file:
             raise EvidenceLookupError("invalid_evidence_reference")
-        rows = connection.execute(
+        rows = read_rows(connection.execute(
             """SELECT f.volume_id,f.physical_file_id,f.current_path AS path,
                       f.status,f.last_seen_run_id,v.version_id,v.size,v.mtime_ns,
                       v.birthtime_ns,v.processing_signature,v.analysis_status,
@@ -123,11 +124,11 @@ def _owner_record(
                WHERE f.volume_id=? AND f.physical_file_id=? AND f.status='current'
                  AND v.invalidated_ns IS NULL LIMIT 2""",
             (volume, physical_file),
-        ).fetchall()
+        ))
     else:
-        rows = connection.execute(
+        rows = read_rows(connection.execute(
             "SELECT * FROM documents WHERE file_key=? LIMIT 2", (file_key,),
-        ).fetchall()
+        ))
     if len(rows) != 1 or rows[0]["status"] not in statuses[owner]:
         raise EvidenceLookupError("published_evidence_absent_or_ambiguous")
     row = rows[0]
@@ -298,10 +299,10 @@ def _validate_owner_locator(
             ).fetchone() is not None:
                 raise EvidenceLookupError("evidence_locator_changed")
         else:
-            parts = connection.execute(
+            parts = read_rows(connection.execute(
                 "SELECT part_kind FROM document_parts WHERE file_key=? AND part_name=? LIMIT 2",
                 (row["file_key"], resolved.section_id),
-            ).fetchall()
+            ))
             if len(parts) != 1 or resolved.section_kind != f"docx_{parts[0]['part_kind']}":
                 raise EvidenceLookupError("evidence_locator_changed")
     elif owner == "archive":
@@ -313,11 +314,11 @@ def _validate_owner_locator(
             segment_index = int(resolved.section_id)
         except (TypeError, ValueError):
             raise EvidenceLookupError("invalid_evidence_reference") from None
-        segment = connection.execute(
+        segment = read_rows(connection.execute(
             "SELECT start_ms,end_ms,text FROM segments "
             "WHERE file_key=? AND segment_index=? LIMIT 2",
             (row["file_key"], segment_index),
-        ).fetchall()
+        ))
         if len(segment) != 1:
             raise EvidenceLookupError("evidence_locator_changed")
         actual = segment[0]
@@ -338,11 +339,11 @@ def _validate_owner_locator(
             frame_index = int(resolved.section_id)
         except (TypeError, ValueError):
             raise EvidenceLookupError("invalid_evidence_reference") from None
-        rows = connection.execute(
+        rows = read_rows(connection.execute(
             "SELECT timestamp_ms,content_xxh3_128,ocr_available,ocr_text "
             "FROM frames WHERE file_key=? AND frame_index=? LIMIT 2",
             (row["file_key"], frame_index),
-        ).fetchall()
+        ))
         if len(rows) != 1 or not bool(rows[0]["ocr_available"]):
             raise EvidenceLookupError("published_evidence_absent_or_ambiguous")
         actual = rows[0]
@@ -366,11 +367,11 @@ def _validate_owner_locator(
             raise EvidenceLookupError("unsupported_evidence_lookup")
         if resolved.section_id is None or not resolved.section_id.isdecimal():
             raise EvidenceLookupError("invalid_evidence_reference")
-        rows = connection.execute(
+        rows = read_rows(connection.execute(
             """SELECT start_line,end_line,symbol_id,text FROM code_chunks
                WHERE version_id=? AND chunk_index=? LIMIT 2""",
             (row["version_id"], int(resolved.section_id)),
-        ).fetchall()
+        ))
         if len(rows) != 1:
             raise EvidenceLookupError("evidence_locator_changed")
         actual = rows[0]
@@ -541,7 +542,7 @@ def _semantic_evidence(
             observation = _observe_owner(connection, "semantic")
             if _canonical_records(source.get("retrieval_publication")) != _canonical_records(observation["publications"]):
                 raise EvidenceLookupError("retrieval_publication_changed")
-            rows = connection.execute(
+            rows = read_rows(connection.execute(
                 """SELECT member.member_id,member.entity_id,member.item_id,
                           member.model_signature,model.vector_space,member.generation_id,chunk.text_chars
                    FROM embedding_generation_members member
@@ -563,7 +564,7 @@ def _semantic_evidence(
                      AND generation.status='ready'
                      AND revision.source_kind=? AND revision.source_identity=? LIMIT 2""",
                 (generation, entity_id, source_kind, file_key),
-            ).fetchall()
+            ))
             if len(rows) != 1:
                 raise EvidenceLookupError("published_evidence_absent_or_ambiguous")
             member = rows[0]
@@ -673,26 +674,26 @@ def lookup_owner_evidence(
             _validate_owner_locator(connection, owner, row, resolved)
             owners.append(semantic_observation)
         elif owner in {"text", "docx"}:
-            rows = connection.execute(
+            rows = read_rows(connection.execute(
                 """SELECT d.*,length(f.body) AS evidence_total_chars
                    FROM documents d JOIN document_fts f ON f.file_key=d.file_key
                    WHERE d.file_key=? AND d.status IN (?,?) LIMIT 2""",
                 (file_key, "complete", "partial" if owner == "docx" else "complete"),
-            ).fetchall()
+            ))
             if len(rows) != 1:
                 raise EvidenceLookupError("published_evidence_absent_or_ambiguous")
             start_char, end_char = _lexical_range(
                 owner, locator, page=page, total=int(rows[0]["evidence_total_chars"]),
             )
-            rows = connection.execute(
+            rows = read_rows(connection.execute(
                 """SELECT d.*,substr(f.body,?+1,?) AS evidence_text,length(f.body) AS evidence_total_chars
                    FROM documents d JOIN document_fts f ON f.file_key=d.file_key
                    WHERE d.file_key=? AND d.status IN (?,?) LIMIT 2""",
                 (start_char, end_char - start_char, file_key,
                  "complete", "partial" if owner == "docx" else "complete"),
-            ).fetchall()
+            ))
         elif owner == "audio":
-            rows = connection.execute(
+            rows = read_rows(connection.execute(
                 """SELECT d.*,length(f.body) AS evidence_total_chars,
                           (SELECT COUNT(*) FROM segments s
                            WHERE s.file_key=d.file_key) AS evidence_segment_count,
@@ -706,7 +707,7 @@ def lookup_owner_evidence(
                    WHERE d.file_key=? AND d.status IN ('complete','no_speech')
                    LIMIT 2""",
                 (file_key,),
-            ).fetchall()
+            ))
             if len(rows) != 1:
                 raise EvidenceLookupError("published_evidence_absent_or_ambiguous")
             # Lexical Audio historically publishes one aggregate transcript
@@ -733,7 +734,7 @@ def lookup_owner_evidence(
             start_char, end_char = _lexical_range(
                 owner, audio_range_locator, page=page, total=int(rows[0]["evidence_total_chars"]),
             )
-            rows = connection.execute(
+            rows = read_rows(connection.execute(
                 """SELECT d.*,substr(f.body,?+1,?) AS evidence_text,
                           length(f.body) AS evidence_total_chars,
                           (SELECT COUNT(*) FROM segments s
@@ -748,12 +749,12 @@ def lookup_owner_evidence(
                    WHERE d.file_key=? AND d.status IN ('complete','no_speech')
                    LIMIT 2""",
                 (start_char, end_char - start_char, file_key),
-            ).fetchall()
+            ))
         elif owner == "video":
             frame = locator.get("section_id")
             if isinstance(frame, bool) or not isinstance(frame, str) or not frame.isdecimal():
                 raise EvidenceLookupError("invalid_evidence_reference")
-            rows = connection.execute(
+            rows = read_rows(connection.execute(
                 """SELECT d.*,fr.timestamp_ms AS evidence_timestamp_ms,
                           fr.content_xxh3_128 AS evidence_content_xxh3_128,
                           fr.ocr_available,fr.ocr_text AS evidence_text,
@@ -763,7 +764,7 @@ def lookup_owner_evidence(
                      AND d.status IN ('complete','partial') AND fr.ocr_available=1
                    LIMIT 2""",
                 (file_key, int(frame)),
-            ).fetchall()
+            ))
             if len(rows) != 1:
                 raise EvidenceLookupError("published_evidence_absent_or_ambiguous")
             if any(
@@ -785,7 +786,7 @@ def lookup_owner_evidence(
                 },
                 page=None, total=int(rows[0]["evidence_total_chars"] or 0),
             )
-            rows = connection.execute(
+            rows = read_rows(connection.execute(
                 """SELECT d.*,fr.timestamp_ms AS evidence_timestamp_ms,
                           fr.content_xxh3_128 AS evidence_content_xxh3_128,
                           fr.ocr_available,substr(fr.ocr_text,?+1,?) AS evidence_text,
@@ -795,26 +796,26 @@ def lookup_owner_evidence(
                      AND d.status IN ('complete','partial') AND fr.ocr_available=1
                    LIMIT 2""",
                 (start_char, end_char - start_char, file_key, int(frame)),
-            ).fetchall()
+            ))
         else:
-            rows = connection.execute(
+            rows = read_rows(connection.execute(
                 """SELECT d.*,length(f.text) AS evidence_total_chars
                    FROM documents d JOIN page_fts f ON f.file_key=d.file_key
                    WHERE d.file_key=? AND CAST(f.page_number AS INTEGER)=?
                      AND d.status IN ('done','partial') LIMIT 2""", (file_key, page),
-            ).fetchall()
+            ))
             if len(rows) != 1:
                 raise EvidenceLookupError("published_evidence_absent_or_ambiguous")
             start_char, end_char = _lexical_range(
                 owner, locator, page=page, total=int(rows[0]["evidence_total_chars"]),
             )
-            rows = connection.execute(
+            rows = read_rows(connection.execute(
                 """SELECT d.*,substr(f.text,?+1,?) AS evidence_text,length(f.text) AS evidence_total_chars
                    FROM documents d JOIN page_fts f ON f.file_key=d.file_key
                    WHERE d.file_key=? AND CAST(f.page_number AS INTEGER)=?
                      AND d.status IN ('done','partial') LIMIT 2""",
                 (start_char, end_char - start_char, file_key, page),
-            ).fetchall()
+            ))
         if lexical:
             if len(rows) != 1:
                 raise EvidenceLookupError("published_evidence_absent_or_ambiguous")

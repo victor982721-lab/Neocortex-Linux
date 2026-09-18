@@ -13,7 +13,7 @@ import sqlite3
 import time
 import zlib
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -224,10 +224,62 @@ class TextDocumentLineage:
 
 
 @dataclass(frozen=True, slots=True)
+class TextCacheObservation:
+    """A committed publication observation scoped to exactly one connection."""
+
+    connection: sqlite3.Connection = field(repr=False, compare=False)
+    data_version: int
+    total_changes: int
+
+
+def _text_cache_observation(connection: sqlite3.Connection) -> TextCacheObservation | None:
+    # A later rollback could invalidate uncommitted source rows without another
+    # total_changes increment.  Such reads never grant a replay observation.
+    if connection.in_transaction:
+        return None
+    return TextCacheObservation(
+        connection, int(connection.execute("PRAGMA data_version").fetchone()[0]),
+        connection.total_changes,
+    )
+
+
+def validate_text_cache_observation(
+    connection: sqlite3.Connection, observation: TextCacheObservation,
+) -> None:
+    if (
+        observation.connection is not connection
+        or observation.data_version != int(connection.execute("PRAGMA data_version").fetchone()[0])
+        or observation.total_changes != connection.total_changes
+    ):
+        raise TextDerivationIntegrityError("Text publication changed after its cache observation")
+
+
+@dataclass(frozen=True, slots=True)
+class TextValidatedRepresentation:
+    file_key: str
+    revision_id: str
+    resource_id: str
+    processing_signature: str
+    path: str
+    text: str
+    content_kind: str
+    media_type: str
+    title: str | None
+    author: str | None
+    metadata_json: str
+    truncated: bool
+    detail: str | None
+    representation_fingerprint: str
+    fts_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
 class TextReusableDerivation:
     producer_receipt_id: str
     revision: RevisionRef
     outputs: tuple[OutputBinding, ...]
+    representation: TextValidatedRepresentation | None = field(default=None, kw_only=True, compare=False)
+    observation: TextCacheObservation | None = field(default=None, kw_only=True, compare=False, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -311,7 +363,7 @@ def _validate_text_publication_rows(
     fts_rows: tuple[sqlite3.Row, ...],
     revision: sqlite3.Row | None,
     rows: tuple[sqlite3.Row, ...],
-) -> tuple[str, ...]:
+) -> tuple[tuple[str, ...], TextValidatedRepresentation]:
     if (
         document is None
         or str(document["status"]) != "complete"
@@ -405,7 +457,24 @@ def _validate_text_publication_rows(
             raise TextDerivationIntegrityError(
                 f"current Text output head contradicts its publication: {file_key}"
             )
-    return tuple({str(row["producer_receipt_id"]) for row in rows})
+    representation = TextValidatedRepresentation(
+        file_key=file_key,
+        revision_id=revision_id,
+        resource_id=resource_id,
+        processing_signature=str(document["processing_signature"]),
+        path=str(document["path"]),
+        text=text,
+        content_kind=str(document["content_kind"]),
+        media_type=str(document["media_type"]),
+        title=None if document["title"] is None else str(document["title"]),
+        author=None if document["author"] is None else str(document["author"]),
+        metadata_json=str(document["metadata_json"]),
+        truncated=bool(document["text_truncated"]),
+        detail=None if document["detail"] is None else str(document["detail"]),
+        representation_fingerprint=expected["text_representation"][1],
+        fts_fingerprint=expected["text_fts"][1],
+    )
+    return tuple({str(row["producer_receipt_id"]) for row in rows}), representation
 
 
 def validate_text_publications_from_connection(
@@ -413,6 +482,7 @@ def validate_text_publications_from_connection(
     publications: tuple[tuple[str, str], ...],
     *,
     lookup_available: bool | None = None,
+    _representations: dict[str, TextValidatedRepresentation] | None = None,
 ) -> None:
     """Validate a bounded Text publication window with set-based owner queries."""
 
@@ -498,14 +568,14 @@ def validate_text_publications_from_connection(
         for row in heads:
             heads_by_resource.setdefault(str(row["resource_id"]), []).append(row)
         receipt_ids: list[str] = []
+        representations: dict[str, TextValidatedRepresentation] = {}
         for file_key, revision_id in batch:
             revision = revisions_by_id.get(revision_id)
             resource_id = None if revision is None else str(revision["resource_id"])
             publication_heads = (
                 () if resource_id is None else tuple(heads_by_resource.get(resource_id, ()))
             )
-            receipt_ids.extend(
-                _validate_text_publication_rows(
+            validated_receipts, representation = _validate_text_publication_rows(
                     file_key,
                     revision_id,
                     documents_by_key.get(file_key),
@@ -513,10 +583,14 @@ def validate_text_publications_from_connection(
                     revision,
                     publication_heads,
                 )
-            )
+            receipt_ids.extend(validated_receipts)
+            if _representations is not None:
+                representations[file_key] = representation
         _validated_terminal_receipts(
             connection, tuple(receipt_ids), lookup_available=lookup_available
         )
+        if _representations is not None:
+            _representations.update(representations)
 
 
 def validate_text_publication_from_connection(
@@ -745,7 +819,9 @@ def _materialization_columns(
 def begin_text_derivation_attempt_from_connection(
     connection: sqlite3.Connection,
     start: TextDerivationAttemptStart,
-) -> None:
+    *,
+    cache_observation: TextCacheObservation | None = None,
+) -> TextCacheObservation | None:
     """Commit a running attempt through one caller-owned, currently idle connection."""
 
     if not isinstance(start, TextDerivationAttemptStart):
@@ -754,6 +830,8 @@ def begin_text_derivation_attempt_from_connection(
         raise ValueError("Text attempt begin requires an idle caller connection")
     connection.execute("BEGIN IMMEDIATE")
     try:
+        if cache_observation is not None:
+            validate_text_cache_observation(connection, cache_observation)
         for binding in start.inputs:
             _persist_input_revision(connection, binding, start.recorded_ns)
         stage = start.stage
@@ -808,7 +886,11 @@ def begin_text_derivation_attempt_from_connection(
         connection.rollback()
         raise
     else:
+        refreshed_observation = None if cache_observation is None else TextCacheObservation(
+            connection, cache_observation.data_version, connection.total_changes,
+        )
         connection.commit()
+        return refreshed_observation
 
 
 def begin_text_derivation_attempt(path: Path, start: TextDerivationAttemptStart) -> None:
@@ -2032,6 +2114,7 @@ def read_reusable_text_derivation_from_connection(
     _required_text("file_key", file_key)
     _required_text("stage_id", stage_id)
     _required_text("processing_signature", processing_signature)
+    observation = _text_cache_observation(connection)
     document = connection.execute(
         """SELECT revision_id FROM documents
         WHERE file_key=? AND status='complete'""",
@@ -2041,8 +2124,10 @@ def read_reusable_text_derivation_from_connection(
         return None
     revision_id = str(document["revision_id"])
     lookup_available = text_route_lookups_available(connection)
-    validate_text_publication_from_connection(
-        connection, file_key, revision_id, lookup_available=lookup_available
+    representations: dict[str, TextValidatedRepresentation] = {}
+    validate_text_publications_from_connection(
+        connection, ((file_key, revision_id),), lookup_available=lookup_available,
+        _representations=representations,
     )
     revision_row = connection.execute(
         "SELECT * FROM text_input_revisions WHERE revision_id=?", (revision_id,)
@@ -2101,10 +2186,14 @@ def read_reusable_text_derivation_from_connection(
         )
         for row in rows
     )
+    if observation is not None:
+        validate_text_cache_observation(connection, observation)
     return TextReusableDerivation(
         producer_receipt_id=next(iter(producer_receipts)),
         revision=_revision_from_row(revision_row),
         outputs=outputs,
+        representation=representations[file_key],
+        observation=observation,
     )
 
 

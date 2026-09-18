@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import stat
 import struct
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, BinaryIO, cast
@@ -157,6 +157,23 @@ def _assert_unchanged(snapshot: FileSnapshot, stat: os.stat_result) -> None:
         raise FileChangedError(f"file changed while processing: {snapshot.path}")
 
 
+def fingerprint_change_version(snapshot: FileSnapshot) -> int:
+    """Read a no-follow descriptor's change time without reading its content."""
+
+    descriptor = _open_regular_descriptor(snapshot)
+    try:
+        return os.fstat(descriptor).st_ctime_ns
+    finally:
+        _close_quietly(descriptor)
+
+
+def require_fingerprint_change_version(snapshot: FileSnapshot, ctime_ns: int) -> None:
+    """Reject stale in-run content evidence, including restored-mtime rewrites."""
+
+    if fingerprint_change_version(snapshot) != ctime_ns:
+        raise FileChangedError(f"file content observation changed: {snapshot.path}")
+
+
 def _validated_io_chunk_size(chunk_size: int) -> int:
     if isinstance(chunk_size, bool) or not isinstance(chunk_size, int):
         raise TypeError("chunk_size must be an integer")
@@ -171,24 +188,33 @@ def _adaptive_buffer_capacity(file_size: int, chunk_size: int) -> int:
     return min(chunk_size, max(1, file_size))
 
 
-def full_fingerprint(snapshot: FileSnapshot, *, chunk_size: int = DEFAULT_IO_CHUNK_SIZE) -> bytes:
+def full_fingerprint(
+    snapshot: FileSnapshot, *, chunk_size: int = DEFAULT_IO_CHUNK_SIZE,
+    read_observer: Callable[[int], None] | None = None,
+) -> bytes:
     """Return an XXH3-128 digest after streaming the entire file once."""
 
     chunk_size = _validated_io_chunk_size(chunk_size)
     hasher = xxhash.xxh3_128()
     try:
         with _open_regular_stream(snapshot) as stream:
+            before_ctime_ns = os.fstat(stream.fileno()).st_ctime_ns
             buffer = bytearray(_adaptive_buffer_capacity(snapshot.size, chunk_size))
             view = memoryview(buffer)
             bytes_read = 0
             while count := cast(Any, stream).readinto(buffer):
                 bytes_read += count
+                if read_observer is not None:
+                    read_observer(count)
                 if bytes_read > snapshot.size:
                     raise FileChangedError(f"file grew while processing: {snapshot.path}")
                 hasher.update(view[:count])
             if bytes_read != snapshot.size:
                 raise FileChangedError(f"file was truncated while processing: {snapshot.path}")
-            _assert_unchanged(snapshot, os.fstat(stream.fileno()))
+            after_stat = os.fstat(stream.fileno())
+            _assert_unchanged(snapshot, after_stat)
+            if after_stat.st_ctime_ns != before_ctime_ns:
+                raise FileChangedError(f"file changed while hashing: {snapshot.path}")
     except FileChangedError:
         raise
     except OSError as exc:
@@ -196,7 +222,10 @@ def full_fingerprint(snapshot: FileSnapshot, *, chunk_size: int = DEFAULT_IO_CHU
     return hasher.digest()
 
 
-def partial_fingerprint(snapshot: FileSnapshot, *, sample_size: int = DEFAULT_SAMPLE_SIZE) -> bytes:
+def partial_fingerprint(
+    snapshot: FileSnapshot, *, sample_size: int = DEFAULT_SAMPLE_SIZE,
+    read_observer: Callable[[int], None] | None = None,
+) -> bytes:
     """Hash deterministic first/middle/last ranges, including their offsets."""
 
     if sample_size < 4096:
@@ -208,15 +237,21 @@ def partial_fingerprint(snapshot: FileSnapshot, *, sample_size: int = DEFAULT_SA
     hasher.update(struct.pack("<QQ", size, sample_size))
     try:
         with _open_regular_stream(snapshot) as stream:
+            before_ctime_ns = os.fstat(stream.fileno()).st_ctime_ns
             for offset in offsets:
                 stream.seek(offset)
                 expected = min(sample_size, size - offset)
                 data = stream.read(expected)
+                if read_observer is not None:
+                    read_observer(len(data))
                 if len(data) != expected:
                     raise FileChangedError(f"file was truncated while sampling: {snapshot.path}")
                 hasher.update(struct.pack("<QQ", offset, len(data)))
                 hasher.update(data)
-            _assert_unchanged(snapshot, os.fstat(stream.fileno()))
+            after_stat = os.fstat(stream.fileno())
+            _assert_unchanged(snapshot, after_stat)
+            if after_stat.st_ctime_ns != before_ctime_ns:
+                raise FileChangedError(f"file changed while sampling: {snapshot.path}")
     except FileChangedError:
         raise
     except OSError as exc:
@@ -229,6 +264,7 @@ def files_equal_exact(
     right: FileSnapshot,
     *,
     chunk_size: int = DEFAULT_IO_CHUNK_SIZE,
+    read_observer: Callable[[int], None] | None = None,
 ) -> bool:
     """Perform the final byte comparison required before a destructive policy."""
 
@@ -237,6 +273,8 @@ def files_equal_exact(
         return False
     try:
         with _open_regular_stream(left) as left_stream, _open_regular_stream(right) as right_stream:
+            left_ctime_ns = os.fstat(left_stream.fileno()).st_ctime_ns
+            right_ctime_ns = os.fstat(right_stream.fileno()).st_ctime_ns
             capacity = _adaptive_buffer_capacity(left.size, chunk_size)
             left_buffer = bytearray(capacity)
             right_buffer = bytearray(capacity)
@@ -247,6 +285,8 @@ def files_equal_exact(
             while True:
                 left_count = cast(Any, left_stream).readinto(left_buffer)
                 right_count = cast(Any, right_stream).readinto(right_buffer)
+                if read_observer is not None:
+                    read_observer(left_count + right_count)
                 if left_count != right_count:
                     equal = False
                     break
@@ -258,8 +298,12 @@ def files_equal_exact(
                     break
             if equal and bytes_compared != left.size:
                 raise FileChangedError("file was truncated or grew during exact comparison")
-            _assert_unchanged(left, os.fstat(left_stream.fileno()))
-            _assert_unchanged(right, os.fstat(right_stream.fileno()))
+            left_stat = os.fstat(left_stream.fileno())
+            right_stat = os.fstat(right_stream.fileno())
+            _assert_unchanged(left, left_stat)
+            _assert_unchanged(right, right_stat)
+            if left_stat.st_ctime_ns != left_ctime_ns or right_stat.st_ctime_ns != right_ctime_ns:
+                raise FileChangedError("file changed during exact comparison")
             return equal
     except FileChangedError:
         raise
@@ -290,8 +334,10 @@ __all__ = [
     "FULL_ALGORITHM",
     "PARTIAL_ALGORITHM",
     "files_equal_exact",
+    "fingerprint_change_version",
     "full_fingerprint",
     "partial_fingerprint",
+    "require_fingerprint_change_version",
     "snapshot_path",
     "stat_matches_snapshot",
 ]

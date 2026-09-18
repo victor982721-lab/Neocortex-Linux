@@ -7,6 +7,7 @@
 # endregion [00]
 # region [01] Dependencias del módulo
 from __future__ import annotations
+from neocortex.knowledge.knowledge_read_operation import read_rows, read_query_limit
 import json
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
@@ -200,9 +201,8 @@ def open_direct_readonly_sqlite(
         and sqlite_row_factory is sqlite3.Row
         and sqlite_operational_error is sqlite3.OperationalError
     ):
-        from neocortex.persistence.sqlite_immutable import open_immutable_sqlite_connection
-
-        return open_immutable_sqlite_connection(path, timeout_seconds=60.0)
+        from neocortex.runtime.control.read_operation import operation_strict_sqlite_connection
+        return operation_strict_sqlite_connection(path, timeout_seconds=60.0)
 
     connection = sqlite_connect(
         readonly_sqlite_uri(path),
@@ -639,6 +639,7 @@ def _inventory_rows(
     )
     validity_where = " WHERE h.plan_valid=0 OR summary.scan_id IS NOT NULL" if extended_heads else ""
     valid_join_guard = "h.plan_valid=1 AND " if extended_heads else ""
+    remaining = read_query_limit(remaining)
     result = connection.execute(
         f"""WITH wanted(volume_id,file_id,birthtime_ns) AS (VALUES {wanted_values}),
         {head_cte} AS (VALUES {head_values})
@@ -672,7 +673,7 @@ def _inventory_rows(
         ORDER BY f.volume_id,f.file_id,f.birthtime_ns, g.scan_id,g.group_id LIMIT ?""",
         (*parameters, remaining + 1),
     )
-    return cast(list[InventoryRow], result.fetchall())
+    return cast(list[InventoryRow], read_rows(result))
 
 
 def _record_inventory_row(

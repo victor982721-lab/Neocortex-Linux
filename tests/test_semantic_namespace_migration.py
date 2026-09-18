@@ -71,6 +71,7 @@ EXPECTED_MODULES = frozenset(
         "semantic_service",
         "semantic_service_contracts",
         "semantic_source_budget",
+        "semantic_source_head_cache",
         "semantic_sources",
         "semantic_state",
         "semantic_status_service",

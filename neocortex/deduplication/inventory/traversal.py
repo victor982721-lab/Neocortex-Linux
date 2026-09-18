@@ -201,6 +201,7 @@ class FileObservation:
     size: int
     mtime_ns: int
     birthtime_ns: int
+    ctime_ns: int | None = None
 
     @classmethod
     def capture(
@@ -215,6 +216,7 @@ class FileObservation:
             size=item_stat.st_size,
             mtime_ns=item_stat.st_mtime_ns,
             birthtime_ns=stat_birthtime_ns(item_stat),
+            ctime_ns=getattr(item_stat, "st_ctime_ns", None),
         )
 
 

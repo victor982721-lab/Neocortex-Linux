@@ -307,6 +307,7 @@ def test_depth_ratio_and_total_budgets_fail_closed_without_writing_files(
         tmp_path / "archive.sqlite3",
         tmp_path / "archive.sqlite3-shm",
         tmp_path / "archive.sqlite3-wal",
+        tmp_path / "archive.sqlite3.route.lock",
     }
     assert not search_archive_state(tmp_path / "archive.sqlite3", "oculto")
 

@@ -311,6 +311,7 @@ def _content_compatible_text_replay(
     current_heads: Sequence[SemanticSourceHead],
     replay_scope: str,
     current_entry: Mapping[str, object],
+    model_signature: str,
 ) -> bool:
     """Allow replay after route-signature churn only when text content is stable.
 
@@ -354,6 +355,30 @@ def _content_compatible_text_replay(
     from .semantic_sources import semantic_source_database
 
     owner = semantic_source_database(state_directory, "text")
+    from .semantic_source_head_cache import (
+        compatibility_receipt_key, compatible_receipt_matches, store_compatible_receipt,
+    )
+    from neocortex.persistence.sqlite_immutable import capture_sqlite_immutable_fence
+    from dataclasses import asdict
+    database = state_directory / SEMANTIC_DATABASE_NAME
+    try:
+        owner_fence = capture_sqlite_immutable_fence(owner)
+        semantic_fence = capture_sqlite_immutable_fence(database)
+    except (OSError, RuntimeError):
+        return False
+    receipt_binding = {
+        "generation_id": generation_id,
+        "published_provenance": provenance,
+        "current_entry": dict(current_entry),
+        "owner_path": str(owner.absolute()),
+        "owner_fence": asdict(owner_fence),
+        "semantic_path": str(database.absolute()),
+        "semantic_fence": asdict(semantic_fence),
+    }
+    receipt_key = compatibility_receipt_key(model_signature, replay_scope)
+    if compatible_receipt_matches(database, receipt_key, receipt_binding):
+        return (capture_sqlite_immutable_fence(owner) == owner_fence
+                and capture_sqlite_immutable_fence(database) == semantic_fence)
     try:
         with immutable_sqlite_database(owner, timeout_seconds=30) as owner_connection:
             query, parameters = _source_head_query(owner_connection, "text")
@@ -398,6 +423,10 @@ def _content_compatible_text_replay(
                     return False
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             return False
+    if (capture_sqlite_immutable_fence(owner) != owner_fence
+        or capture_sqlite_immutable_fence(database) != semantic_fence):
+        return False
+    store_compatible_receipt(database, receipt_key, receipt_binding)
     return True
 
 
@@ -859,6 +888,7 @@ def index_text_embeddings(
                 current_heads=source_heads,
                 replay_scope=replay_scope,
                 current_entry=replay_entry,
+                model_signature=selected_model.model_signature,
             )
             content_compatible_replay = accepted
             return accepted
@@ -867,7 +897,10 @@ def index_text_embeddings(
             database,
             model_signature=selected_model.model_signature,
             required_source_head_ledger={replay_scope: replay_entry},
-            writer_coordinated=True,
+            # Keep the whole generation/compatibility validation under the
+            # reader's source fence. Its receipt stores that exact fence;
+            # it must never certify a later writer view of the same owner.
+            writer_coordinated=False,
             source_head_compatibility=(
                 source_head_compatibility
                 if "text" in selected_sources

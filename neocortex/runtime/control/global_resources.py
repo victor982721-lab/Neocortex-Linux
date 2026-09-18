@@ -794,7 +794,17 @@ class GlobalResourceCoordinator:
             self.native_thread_slots = cpu_capacity
         self._last_cpu_capacity = cpu_capacity
         self._update_pressure_locked(snapshot, sample, cpu_load)
-        effective_cpu_slots = self._effective_cpu_capacity(cpu_load, cpu_capacity)
+        # The built-in whole-system sample includes the work already charged
+        # to _cpu_in_use.  Reducing the total capacity by that same load would
+        # count our active jobs twice.  Keep it as telemetry; only an explicit
+        # caller-owned load probe can reduce the affinity/cgroup capacity.
+        admission_cpu_load = (
+            cpu_load
+            if not self._using_default_cpu_probe
+            or (sample is not None and sample.cpu_load_percent is not None)
+            else None
+        )
+        effective_cpu_slots = self._effective_cpu_capacity(admission_cpu_load, cpu_capacity)
         if cpu_load is None and self._cpu_pressure:
             effective_cpu_slots = min(
                 effective_cpu_slots,

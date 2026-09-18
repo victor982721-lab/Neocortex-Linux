@@ -16,6 +16,12 @@ import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+from .document_catalog_replay import catalog_sql_cancellation
+
+if TYPE_CHECKING:
+    from neocortex.runtime.control.cancellation import CancellationToken
 
 from neocortex.platform.policy import sqlite_path_collation
 
@@ -299,6 +305,7 @@ def plan_document_organization(
     mutation_guard: CorpusMutationGuard | None = None,
     corpus_policy: OrganizationCorpusPolicy | Mapping[str, object] | None = None,
     organization_policy: OrganizationCorpusPolicy | Mapping[str, object] | None = None,
+    cancellation: CancellationToken | None = None,
 ) -> OrganizationPlanSummary:
     """Persist proposed destinations; never create directories or move files."""
 
@@ -320,7 +327,7 @@ def plan_document_organization(
         raise ValueError(f"organization root is protected: {root_reason}")
     _reject_state_destination(catalog_path, root)
     initialize_document_catalog(catalog_path)
-    with document_catalog_database(catalog_path) as connection:
+    with document_catalog_database(catalog_path) as connection, catalog_sql_cancellation(connection, cancellation):
         source_scope.verify(connection)
         run_id = _begin_organization_run(connection, "plan", root, source_scope=source_scope)
         considered = planned = review = blocked = organized = 0
@@ -336,6 +343,8 @@ def plan_document_organization(
                 """SELECT * FROM documents WHERE active=1
                 ORDER BY path,source_kind,file_key"""
             ):
+                if cancellation is not None:
+                    cancellation.checkpoint()
                 assessment = assess_organization_resource(candidate, source_scope)
                 if assessment.included:
                     metadata = (assessment.binding or {}).get("representation_metadata", {})
@@ -390,6 +399,8 @@ def plan_document_organization(
                 organized=0,
             )
             for row in rows:
+                if cancellation is not None:
+                    cancellation.checkpoint()
                 considered += 1
                 status = _plan_catalog_document(
                     connection,
@@ -449,6 +460,8 @@ def plan_document_organization(
             )
             return summary
         except BaseException as exc:
+            # Recovery writes must survive an interrupted SQL statement.
+            connection.set_progress_handler(None, 0)
             connection.rollback()
             _fail_organization_run(connection, run_id, exc)
             raise

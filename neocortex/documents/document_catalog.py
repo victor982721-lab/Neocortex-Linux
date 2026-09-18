@@ -66,6 +66,17 @@ from .document_resource_binding import (
     parse_resource_binding,
     physical_identity_from_components,
 )
+from .document_catalog_replay import (
+    RECEIPT_KEY,
+    CatalogClassificationEvidence,
+    CatalogInputDigest,
+    CatalogReplayReceipt,
+    catalog_sql_cancellation,
+    corrections_digest,
+    document_input_marker,
+    current_projection_matches,
+    latest_receipt,
+)
 from neocortex.runtime.control.cancellation import CancellationRequested
 from neocortex.foundation.file_identity import (
     FileIdentity,
@@ -183,6 +194,9 @@ class CatalogUpdateSummary:
     stale_marked: int = 0
     source_stale: int = 0
     source_missing: bool = False
+    publication_state: Literal["published", "unchanged", "unavailable"] = "published"
+    generation_id: int | None = None
+    reused_from_catalog_run_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -970,8 +984,12 @@ def validate_catalog_publication_scope(
             raise CatalogPublicationConflict("catalog publication root identity changed")
     except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError) as exc:
         raise CatalogPublicationConflict("catalog publication root identity is invalid") from exc
+    try:
+        source_fence = observed_source_fence(connection, manifest)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise CatalogPublicationConflict("catalog publication observation is invalid") from exc
     if manifest.source_path is None or not _source_fence_matches(
-        Path(manifest.source_path), manifest.source_fence_json
+        Path(manifest.source_path), source_fence
     ):
         raise CatalogPublicationConflict("catalog publication source fence changed")
     return manifest
@@ -1232,6 +1250,122 @@ def _preserve_catalog_outside_scope(
         )
 
 
+def observed_source_fence(connection: sqlite3.Connection, manifest: CatalogPublicationManifest) -> str:
+    """Use a new observation without rewriting the producer's manifest."""
+
+    receipt = latest_receipt(connection, manifest.source_kind)
+    if receipt is None or receipt.generation_id != manifest.generation_id:
+        return manifest.source_fence_json
+    if (
+        receipt.generation_digest != manifest.generation_digest
+        or receipt.input_manifest_digest != manifest.input_manifest_digest
+        or receipt.source_path != manifest.source_path
+        or receipt.source_root != manifest.source_root
+        or receipt.source_root_identity_json != manifest.source_root_identity_json
+        or receipt.input_policy_signature != manifest.input_policy_signature
+    ):
+        raise ValueError("catalog observation does not bind the published manifest")
+    producer = connection.execute(
+        "SELECT catalog_run_id FROM catalog_generations WHERE generation_id=?",
+        (manifest.generation_id,),
+    ).fetchone()
+    if producer is None or int(producer[0]) != receipt.producer_catalog_run_id:
+        raise ValueError("catalog observation producer changed")
+    return receipt.source_fence_json
+
+
+def try_reuse_catalog(
+    connection: sqlite3.Connection,
+    source_path: Path,
+    source_kind: SourceKind,
+    *,
+    source_root: Path | None,
+    root_identity: tuple[int, int, int] | None,
+    taxonomy: TechnicalTaxonomy,
+    max_text_chars: int,
+    framework_run_id: int | None,
+    verify_source_paths: bool,
+    cancellation: CancellationToken | None,
+) -> CatalogUpdateSummary | None:
+    """Return an exact observation or a conservative rebuild requirement.
+
+    Changed inputs return to the owner's per-document input markers, so one
+    changed file does not discard compatible classifications of its peers.
+    No generation, staging row or current projection is written on replay.
+    """
+
+    previous = latest_receipt(connection, source_kind)
+    if previous is None or not source_path.is_file():
+        return None
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        manifest = read_catalog_publication_manifest(connection, source_kind)
+        root_json = _root_identity_json(root_identity)
+        signature = document_classifier_signature(taxonomy)
+        if (
+            previous.generation_id != manifest.generation_id
+            or previous.source_path != str(Path(os.path.abspath(source_path)))
+            or previous.source_root != (None if source_root is None else str(source_root))
+            or previous.source_root_identity_json != root_json
+            or previous.input_policy_signature != (CATALOG_INPUT_POLICY if source_root is not None else None)
+            or previous.classifier_signature != signature
+            or previous.max_text_chars != max_text_chars
+            or previous.corrections_digest != corrections_digest(connection)
+            or previous.generation_digest != manifest.generation_digest
+            or previous.input_manifest_digest != manifest.input_manifest_digest
+            or not current_projection_matches(connection, manifest.generation_id, source_kind)
+        ):
+            return None
+        # Reconcile the immutable producer as well as the observed head before
+        # writing another receipt; a valid checksum cannot substitute its owner.
+        observed_source_fence(connection, manifest)
+        fence = _source_fence_json(source_path)
+        old_fence, new_fence = json.loads(previous.source_fence_json), json.loads(fence)
+        if any(old_fence.get(key) != new_fence.get(key) for key in ("path", "volume_id", "file_id", "birthtime_ns")):
+            return None
+        inputs = CatalogInputDigest()
+        with _readonly_source(source_path, cancellation=cancellation) as source:
+            for document in _iter_source_documents(source, source_kind, verify_source_paths=verify_source_paths, source_root=source_root):
+                if cancellation is not None:
+                    cancellation.checkpoint()
+                if source_root is not None and not _source_document_is_in_scope(document, source_root):
+                    continue
+                if verify_source_paths and not _catalog_source_is_virtual(document) and not _source_snapshot_is_current(document):
+                    return None
+                document = _attach_resource_binding(document)
+                inputs.add(document)
+        if inputs.count != previous.input_count or inputs.digest != previous.input_digest:
+            return None
+        if not _source_fence_matches(source_path, fence):
+            raise CatalogSourceDrift("catalog source changed during replay observation")
+        if source_root is not None and _catalog_input_root(source_root)[1] != root_identity:
+            raise CatalogSourceDrift("catalog replay root identity changed")
+        if cancellation is not None:
+            cancellation.checkpoint()
+        run_id = next_operational_identity(connection, "catalog", "catalog_runs", "catalog_run_id")
+        summary = CatalogUpdateSummary(
+            catalog_run_id=run_id, source_kind=source_kind, candidates=inputs.count,
+            cache_hits=inputs.count, publication_state="unchanged",
+            generation_id=manifest.generation_id,
+            reused_from_catalog_run_id=previous.producer_catalog_run_id,
+        )
+        receipt = replace(previous, observation_catalog_run_id=run_id, source_fence_json=fence)
+        now = time.time_ns()
+        connection.execute(
+            "INSERT INTO catalog_runs(catalog_run_id,framework_run_id,source_kind,mode,status,started_ns,completed_ns,summary_json) "
+            "VALUES(?,?,?,'classify','completed',?,?,?)",
+            (run_id, framework_run_id, source_kind, now, now,
+             json.dumps({**asdict(summary), RECEIPT_KEY: receipt.payload()}, sort_keys=True, separators=(",", ":"))),
+        )
+        connection.commit()
+        return summary
+    finally:
+        if connection.in_transaction:
+            # Cleanup must not itself be interrupted by the cancelled query.
+            connection.set_progress_handler(None, 0)
+            connection.rollback()
+
+
 def update_document_catalog_source(
     catalog_path: Path,
     source_path: Path,
@@ -1259,6 +1393,27 @@ def update_document_catalog_source(
     taxonomy = load_taxonomy(taxonomy_path)
     initialize_document_catalog(catalog_path)
     with _CATALOG_WRITE_LOCK, document_catalog_database(catalog_path) as catalog:
+        try:
+            with catalog_sql_cancellation(catalog, cancellation):
+                reused = try_reuse_catalog(
+                    catalog, source_path, source_kind,
+                    source_root=scoped_root, root_identity=root_identity,
+                    taxonomy=taxonomy, max_text_chars=max_text_chars,
+                    framework_run_id=framework_run_id,
+                    verify_source_paths=verify_source_paths, cancellation=cancellation,
+                )
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise CatalogPublicationConflict("catalog replay observation is invalid") from exc
+        if reused is not None:
+            _emit_catalog_progress(
+                progress, operation=progress_operation or source_kind,
+                source_kind=source_kind, completed=reused.candidates,
+                total=reused.candidates, classified=0, cache_hits=reused.cache_hits,
+                errors=0, review=0, finished=True,
+            )
+            return reused
+        input_digest = CatalogInputDigest()
+        correction_fence = corrections_digest(catalog)
         build = _begin_catalog_run(
             catalog,
             source_kind=source_kind,
@@ -1272,6 +1427,7 @@ def update_document_catalog_source(
                 catalog_run_id=build.catalog_run_id,
                 source_kind=source_kind,
                 source_missing=True,
+                publication_state="unavailable",
             )
             _abandon_catalog_build(catalog, build, summary)
             _emit_catalog_progress(
@@ -1291,7 +1447,7 @@ def update_document_catalog_source(
         try:
             if scoped_root is not None:
                 _preserve_catalog_outside_scope(catalog, build, scoped_root)
-            with _readonly_source(source_path) as source:
+            with _readonly_source(source_path, cancellation=cancellation) as source:
                 candidate_total = _source_document_count(source, source_kind)
                 _emit_catalog_progress(
                     progress,
@@ -1325,11 +1481,13 @@ def update_document_catalog_source(
                         source_stale += 1
                         continue
                     document = _attach_resource_binding(document)
+                    input_digest.add(document)
                     if _catalog_cache_hit(
                         catalog,
                         document,
                         taxonomy,
                         source_root=scoped_root,
+                        max_text_chars=max_text_chars,
                     ):
                         _stage_cached_document(catalog, build, document)
                         hits += 1
@@ -1359,6 +1517,7 @@ def update_document_catalog_source(
                                 document,
                                 classification,
                                 source_root=scoped_root,
+                                max_text_chars=max_text_chars,
                             )
                             classified += 1
                             if (
@@ -1413,7 +1572,14 @@ def update_document_catalog_source(
                 raise CatalogSourceDrift("catalog source changed before publication")
             if scoped_root is not None and _catalog_input_root(scoped_root)[1] != root_identity:
                 raise RuntimeError("catalog input root identity changed before publication")
-            summary = _publish_catalog_build(catalog, build, summary)
+            if corrections_digest(catalog) != correction_fence:
+                raise CatalogSourceDrift("catalog corrections changed before publication")
+            evidence = None if errors or source_stale else CatalogClassificationEvidence(
+                input_digest=input_digest.digest, input_count=input_digest.count,
+                classifier_signature=document_classifier_signature(taxonomy),
+                max_text_chars=max_text_chars, corrections_digest=correction_fence,
+            )
+            summary = _publish_catalog_build(catalog, build, summary, classification_evidence=evidence)
             _emit_catalog_progress(
                 progress,
                 operation=progress_operation or source_kind,
@@ -1713,6 +1879,8 @@ def _publish_catalog_build(
     connection: sqlite3.Connection,
     build: CatalogBuild,
     summary: CatalogUpdateSummary,
+    *,
+    classification_evidence: CatalogClassificationEvidence | None = None,
 ) -> CatalogUpdateSummary:
     """Atomically project a complete generation if its base pointer is current."""
 
@@ -1786,7 +1954,7 @@ def _publish_catalog_build(
                 (build.source_kind, build.generation_id),
             ).fetchone()[0]
         )
-        published_summary = replace(summary, stale_marked=stale)
+        published_summary = replace(summary, stale_marked=stale, generation_id=build.generation_id)
         now = time.time_ns()
         _replace_catalog_projection(connection, build, now=now)
         if build.base_generation_id is None:
@@ -1816,12 +1984,32 @@ def _publish_catalog_build(
             published_ns=? WHERE generation_id=? AND status='building'""",
             (now, now, build.generation_id),
         )
+        summary_payload: dict[str, object] = asdict(published_summary)
+        if classification_evidence is not None and build.source_path is not None:
+            receipt = CatalogReplayReceipt(
+                observation_catalog_run_id=build.catalog_run_id,
+                generation_id=build.generation_id,
+                producer_catalog_run_id=build.catalog_run_id,
+                source_kind=build.source_kind, source_path=build.source_path,
+                source_fence_json=build.source_fence_json,
+                source_root=build.source_root,
+                source_root_identity_json=build.source_root_identity_json,
+                input_policy_signature=build.input_policy_signature,
+                classifier_signature=classification_evidence.classifier_signature,
+                max_text_chars=classification_evidence.max_text_chars,
+                corrections_digest=classification_evidence.corrections_digest,
+                input_digest=classification_evidence.input_digest,
+                input_count=classification_evidence.input_count,
+                generation_digest=generation_digest,
+                input_manifest_digest=input_manifest_digest,
+            )
+            summary_payload[RECEIPT_KEY] = receipt.payload()
         connection.execute(
             """UPDATE catalog_runs SET status='completed',completed_ns=?,summary_json=?
             WHERE catalog_run_id=? AND status='running'""",
             (
                 now,
-                json.dumps(asdict(published_summary), sort_keys=True, separators=(",", ":")),
+                json.dumps(summary_payload, sort_keys=True, separators=(",", ":")),
                 build.catalog_run_id,
             ),
         )
@@ -1898,14 +2086,15 @@ def _replace_catalog_projection(
 
 
 @contextmanager
-def _readonly_source(path: Path):
+def _readonly_source(path: Path, *, cancellation: "CancellationToken | None" = None):
     try:
         mode = preferred_sqlite_read_mode(path)
-        with sqlite_read_session(path, mode=mode, timeout_seconds=60.0) as connection:
+        with sqlite_read_session(path, mode=mode, timeout_seconds=60.0, cancellation_check=None if cancellation is None else cancellation.checkpoint) as connection:
             before_stat = _source_fence_json(path)
             before_data_version = int(connection.execute("PRAGMA data_version").fetchone()[0])
             try:
-                yield connection
+                with catalog_sql_cancellation(connection, cancellation):
+                    yield connection
             finally:
                 after_data_version = int(
                     connection.execute("PRAGMA data_version").fetchone()[0]
@@ -2493,7 +2682,7 @@ def _code_source_identity(
         ).fetchall()
     )
     if len(versions) > 1 or (
-        versions and str(versions[0][0]) not in {str(number) for number in range(1, 8)}
+        versions and str(versions[0][0]) not in {str(number) for number in range(1, 9)}
     ):
         raise ResourceBindingError(
             "Code owner schema is unsupported",
@@ -2501,7 +2690,7 @@ def _code_source_identity(
             encoding="code-owner-schema",
             value=versions,
         )
-    if versions and str(versions[0][0]) == "7":
+    if versions and str(versions[0][0]) in {"7", "8"}:
         # A declared current producer always owns hex. Never reinterpret a
         # stale current identity as decimal just because that matches a path.
         return hexadecimal
@@ -2887,6 +3076,7 @@ def _catalog_cache_hit(
     taxonomy: TechnicalTaxonomy,
     *,
     source_root: Path | None = None,
+    max_text_chars: int = MAX_CLASSIFICATION_TEXT_CHARS,
 ) -> bool:
     row = connection.execute(
         "SELECT * FROM documents WHERE source_kind=? AND file_key=?",
@@ -2895,6 +3085,12 @@ def _catalog_cache_hit(
     if row is None or str(row["catalog_status"]) == "error":
         return False
     classifier_signature = document_classifier_signature(taxonomy)
+    try:
+        payload = json.loads(str(row["classification_json"]))
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(payload, dict) or payload.get("_catalog_input") != document_input_marker(document, classifier_signature, max_text_chars):
+        return False
     corrections = _applicable_classification_corrections(
         connection,
         document,
@@ -2979,6 +3175,7 @@ def _store_classification(
     classification: DocumentClassification,
     *,
     source_root: Path | None = None,
+    max_text_chars: int = MAX_CLASSIFICATION_TEXT_CHARS,
 ) -> None:
     now = time.time_ns()
     classification, correction_marker, catalog_status_override = (
@@ -2990,6 +3187,7 @@ def _store_classification(
         )
     )
     classification_payload = asdict(classification)
+    classification_payload["_catalog_input"] = document_input_marker(document, classification.classifier_signature, max_text_chars)
     if correction_marker:
         # This marker is only a cache-validation aid.  It is part of the
         # durable classification evidence so a manual revocation or source

@@ -577,6 +577,11 @@ def test_contract_cold_import_stays_free_of_owners_pil_planner_and_service() -> 
     baseline = frozenset(
         {
             "neocortex",
+            # The neutral read allowance uses only stdlib at import time;
+            # owner and SQLite preparation dependencies remain lazy.
+            "neocortex.runtime",
+            "neocortex.runtime.control",
+            "neocortex.runtime.control.read_operation",
             "neocortex.semantic",
             "neocortex.semantic.semantic_contract_validation",
             "neocortex.semantic.semantic_lexical",

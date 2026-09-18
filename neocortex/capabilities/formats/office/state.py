@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 import sqlite3
+from ..fts_lookup import (
+    delete_format_fts_keys,
+    format_fts_key_predicate,
+    insert_format_fts_row,
+)
 import time
 import zlib
 from collections import Counter
@@ -546,7 +551,7 @@ def _remove_path_conflict(
         (snapshot.path, _file_key(snapshot)),
     ).fetchone()
     if conflict is not None:
-        connection.execute("DELETE FROM document_fts WHERE file_key=?", (str(conflict[0]),))
+        delete_format_fts_keys(connection, "document_fts", (str(conflict[0]),))
         connection.execute("DELETE FROM documents WHERE file_key=?", (str(conflict[0]),))
 
 
@@ -573,7 +578,7 @@ def _refresh_cached_path(
         if row is not None:
             # Error caches have no durable text representation.  Remove any
             # orphaned index row rather than allowing a stale search hit.
-            connection.execute("DELETE FROM document_fts WHERE file_key=?", (_file_key(snapshot),))
+            delete_format_fts_keys(connection, "document_fts", (_file_key(snapshot),))
         return False
     text = _cached_office_representation(
         row,
@@ -587,16 +592,18 @@ def _refresh_cached_path(
         str(row["author"] or ""),
         text,
     )
+    predicate, parameters = format_fts_key_predicate(
+        connection, "document_fts", (_file_key(snapshot),)
+    )
     fts_rows = connection.execute(
-        "SELECT format,path,title,author,body FROM document_fts WHERE file_key=?",
-        (_file_key(snapshot),),
+        f"SELECT format,path,title,author,body FROM document_fts WHERE {predicate}",
+        parameters,
     ).fetchall()
-    if len(fts_rows) == 1 and tuple(fts_rows[0])[1:] == (format_name, *expected):
+    if len(fts_rows) == 1 and tuple(fts_rows[0]) == (format_name, *expected):
         return False
-    connection.execute("DELETE FROM document_fts WHERE file_key=?", (_file_key(snapshot),))
-    connection.execute(
-        """INSERT INTO document_fts(file_key,format,path,title,author,body)
-        VALUES(?,?,?,?,?,?)""",
+    delete_format_fts_keys(connection, "document_fts", (_file_key(snapshot),))
+    insert_format_fts_row(
+        connection, "document_fts", ("file_key", "format", "path", "title", "author", "body"),
         (_file_key(snapshot), format_name, *expected),
     )
     return True
@@ -646,7 +653,7 @@ def _store_success(
             time.time_ns(),
         ),
     )
-    connection.execute("DELETE FROM document_fts WHERE file_key=?", (_file_key(snapshot),))
+    delete_format_fts_keys(connection, "document_fts", (_file_key(snapshot),))
     connection.execute("DELETE FROM xlsx_cells WHERE file_key=?", (_file_key(snapshot),))
     if document.xlsx_cells:
         connection.executemany(
@@ -672,9 +679,8 @@ def _store_success(
                 for cell in document.xlsx_cells
             ),
         )
-    connection.execute(
-        """INSERT INTO document_fts(file_key,format,path,title,author,body)
-        VALUES(?,?,?,?,?,?)""",
+    insert_format_fts_row(
+        connection, "document_fts", ("file_key", "format", "path", "title", "author", "body"),
         (
             _file_key(snapshot),
             document.format,
@@ -726,7 +732,7 @@ def _store_error(
             time.time_ns(),
         ),
     )
-    connection.execute("DELETE FROM document_fts WHERE file_key=?", (_file_key(snapshot),))
+    delete_format_fts_keys(connection, "document_fts", (_file_key(snapshot),))
     connection.execute("DELETE FROM xlsx_cells WHERE file_key=?", (_file_key(snapshot),))
 
 
@@ -740,7 +746,7 @@ def _prune_stale_documents(connection: sqlite3.Connection, run_id: int) -> int:
     for offset in range(0, len(stale_keys), 256):
         batch = stale_keys[offset : offset + 256]
         placeholders = ",".join("?" for _ in batch)
-        connection.execute(f"DELETE FROM document_fts WHERE file_key IN ({placeholders})", batch)
+        delete_format_fts_keys(connection, "document_fts", batch)
         connection.execute(f"DELETE FROM documents WHERE file_key IN ({placeholders})", batch)
     connection.execute("DELETE FROM office_inventory WHERE last_seen_run_id<>?", (run_id,))
     return len(stale_keys)

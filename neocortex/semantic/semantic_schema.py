@@ -83,12 +83,31 @@ class SemanticReadContext:
             SQLiteSnapshotReuseCache,
         )
 
+        from neocortex.runtime.control.read_operation import snapshot_read_budget
+
+        operation_budget = snapshot_read_budget()
+        if operation_budget is not None:
+            max_temporary_bytes = min(max_temporary_bytes, operation_budget.max_temporary_bytes)
+        self._charged_temporary_bytes = 0
         self._generation = object() if generation is None else generation
         hash(self._generation)
+        def check_cancellation() -> bool | None:
+            if operation_budget is not None and operation_budget.cancellation_check is not None:
+                decision = operation_budget.cancellation_check()
+                if decision is not None and decision is not False:
+                    return decision
+            if cancellation_check is not None and (
+                operation_budget is None or cancellation_check != operation_budget.cancellation_check
+            ):
+                return cancellation_check()
+            return None
+
         self._budget = SQLiteSnapshotBudget(
             max_temporary_bytes=max_temporary_bytes,
-            prepare_timeout_seconds=timeout_seconds,
-            cancellation_check=cancellation_check,
+            prepare_timeout_seconds=min(timeout_seconds, operation_budget.prepare_timeout_seconds)
+            if operation_budget is not None else timeout_seconds,
+            cancellation_check=check_cancellation
+            if operation_budget is not None or cancellation_check is not None else None,
         )
         self._cache = SQLiteSnapshotReuseCache(max_temporary_bytes=max_temporary_bytes)
         self._fences: dict[str, object] = {}
@@ -127,7 +146,10 @@ class SemanticReadContext:
         previous = self._fences.get(key)
         if previous is not None and previous != fence:
             raise SemanticStateError("semantic owner changed within one read operation")
-        with self._cache.acquire(
+        from neocortex.runtime.control.read_operation import admit_snapshot, charge_snapshot, snapshot_allowance
+        if previous is None:
+            admit_snapshot(selected, mode)
+        with snapshot_allowance(), self._cache.acquire(
             selected,
             generation=self._generation,
             mode=mode,
@@ -137,6 +159,9 @@ class SemanticReadContext:
             if capture_sqlite_read_fence(selected) != fence:
                 raise SemanticStateError("semantic owner changed while preparing its read view")
             self._fences[key] = fence
+            peak = self._cache.snapshot_metrics.peak_temporary_bytes
+            charge_snapshot(max(0, peak - self._charged_temporary_bytes))
+            self._charged_temporary_bytes = max(peak, self._charged_temporary_bytes)
             yield connection
 
     def close(self) -> None:
@@ -216,8 +241,8 @@ def semantic_database(
         from neocortex.persistence.sqlite_immutable import (
             SQLiteReadMode,
             preferred_sqlite_read_mode,
-            sqlite_read_session,
         )
+        from neocortex.runtime.control.read_operation import operation_sqlite_session
 
         selected_mode = (
             preferred_sqlite_read_mode(path)
@@ -226,14 +251,23 @@ def semantic_database(
         )
         context = read_context if read_context is not None else _SEMANTIC_READ_CONTEXT.get()
         read = (
-            sqlite_read_session(path, mode=selected_mode, timeout_seconds=60.0)
+            operation_sqlite_session(path, mode=selected_mode, timeout_seconds=60.0)
             if context is None
             else context.acquire(path, mode=selected_mode.value)
         )
         with read as connection:
             _configure_common_connection(connection)
             _configure_read_connection(connection)
-            yield connection
+            from neocortex.runtime.control.read_operation import current_read_operation
+            operation = current_read_operation()
+            if operation is None:
+                yield connection
+            else:
+                from neocortex.persistence.sqlite_cancellation import SQLiteCancellationBridge, sqlite_cancellation_scope
+                bridge = SQLiteCancellationBridge(operation.checkpoint)
+                with sqlite_cancellation_scope(connection, bridge):
+                    yield connection
+                operation.checkpoint()
         return
     with private_state_creation():
         ensure_private_state_directory(path)

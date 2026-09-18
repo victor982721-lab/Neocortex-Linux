@@ -15,7 +15,7 @@ from neocortex.persistence.framework_authorization_schema import (
 from neocortex.persistence.framework_connection import connect_existing_framework
 from neocortex.persistence.framework_schema import (
     SCHEMA_VERSION as FRAMEWORK_SCHEMA_VERSION,
-    validate_framework_schema_v22,
+    validate_framework_schema,
 )
 from neocortex.workflow.authorization.contracts import (
     AUTHORIZATION_EFFECTS_SCHEMA_VERSION,
@@ -77,7 +77,7 @@ def _require_framework(connection: sqlite3.Connection) -> None:
             f"AuthorizationGrant requires Framework schema {FRAMEWORK_SCHEMA_VERSION}; observed {observed!r}"
         )
     try:
-        validate_framework_schema_v22(connection)
+        validate_framework_schema(connection)
     except RuntimeError as exc:
         raise AuthorizationGrantRepositoryError(
             "Framework schema is incompatible with AuthorizationGrant"

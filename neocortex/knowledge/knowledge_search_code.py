@@ -6,6 +6,7 @@ side can be imported first without creating a cycle.
 """
 
 from __future__ import annotations
+from neocortex.knowledge.knowledge_read_operation import read_checkpoint, read_query_limit, read_rows
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
@@ -110,16 +111,9 @@ def code_version_metadata(
             and getattr(connect_code_state_fn, "__module__", "") == "neocortex.code.code_schema"
             and getattr(connect_code_state_fn, "__name__", "") == "connect_code_state"
         ):
-            from neocortex.persistence.sqlite_immutable import (
-                preferred_sqlite_read_mode,
-                sqlite_read_session,
-            )
+            from neocortex.runtime.control.read_operation import operation_sqlite_session
 
-            manager: Any = sqlite_read_session(
-                path,
-                mode=preferred_sqlite_read_mode(path),
-                timeout_seconds=60.0,
-            )
+            manager: Any = operation_sqlite_session(path, timeout_seconds=60.0)
         else:
             manager = nullcontext(connect_code_state_fn(path, readonly=True))
             close_direct_connection = True
@@ -137,7 +131,7 @@ def code_version_metadata(
                     if not batch:
                         continue
                     placeholders = ",".join("?" for _ in batch)
-                    rows = connection.execute(
+                    rows = read_rows(connection.execute(
                         f"""SELECT v.version_id,f.volume_id,f.physical_file_id,v.size,
                         v.mtime_ns,v.birthtime_ns,v.raw_xxh3_128,v.processing_signature,v.analyzer_id,
                         v.analyzer_version,v.analysis_status,v.first_observed_run_id,
@@ -147,7 +141,7 @@ def code_version_metadata(
                         AND f.current_version_id=v.version_id AND f.status='current'
                         AND v.invalidated_ns IS NULL""",
                         batch,
-                    ).fetchall()
+                    ))
                     result.update((int(row["version_id"]), row) for row in rows)
     except BaseException as primary_error:
         if direct_connection is not None:
@@ -629,8 +623,12 @@ def _read_code_owner(
     dependencies: _RankingDependencies,
 ) -> _MaterializedCodeRanking:
     target_limit = dependencies.planned_candidate_limit(plan, "structural_code")
-    requested_limit = min(dependencies.max_candidates, target_limit + 1)
+    requested_limit = read_query_limit(min(dependencies.max_candidates, target_limit + 1))
     cancellation_callback = cancellation.checkpoint if cancellation.enabled else None
+    from .knowledge_read_operation import current_read_operation
+    operation = current_read_operation()
+    admission = ({"row_admission": lambda count: read_checkpoint(rows=count)}
+                 if operation is not None and operation.budget is not None else {})
     materialized_hits = dependencies.search_code_fn(
         paths.code,
         dependencies.code_search_query_type(
@@ -651,6 +649,7 @@ def _read_code_owner(
             limit=requested_limit,
         ),
         cancellation_check=cancellation_callback,
+        **admission,
     )
     ranked_hits = tuple(
         (source_rank, hit)

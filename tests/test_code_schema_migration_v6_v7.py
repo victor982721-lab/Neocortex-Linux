@@ -100,13 +100,13 @@ def test_v6_to_v7_preserves_every_v3_field_and_accepts_only_v3_or_v4(
     initialize_code_state(database)
 
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (7,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (code_schema.CODE_SCHEMA_VERSION,)
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
-        ).fetchone() == ("7",)
+        ).fetchone() == (str(code_schema.CODE_SCHEMA_VERSION),)
         assert connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
-        ).fetchall() == [(version,) for version in range(1, 8)]
+        ).fetchall() == [(version,) for version in range(1, code_schema.CODE_SCHEMA_VERSION + 1)]
         assert _receipt_rows(connection) == before
         assert connection.execute(
             """SELECT hex(CAST(payload_json AS BLOB))

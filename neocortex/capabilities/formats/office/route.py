@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from neocortex.runtime.control.locking import FrameworkRunLock
+
+from ..fts_lookup import initialize_format_fts_lookup
+
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -324,12 +328,24 @@ class OfficeRoute:
 
     def run(self) -> OfficeRouteSummary:
         self.cancellation.checkpoint()
-        self._recoverable_retry_keys.clear()
         self._validate()
+        lock_path = self.config.state_path.with_suffix(
+            self.config.state_path.suffix + ".route.lock"
+        )
+        self.config.state_path.parent.mkdir(parents=True, exist_ok=True)
+        with FrameworkRunLock(lock_path):
+            return self._run_locked()
+
+    def _run_locked(self) -> OfficeRouteSummary:
+        self.cancellation.checkpoint()
+        self._recoverable_retry_keys.clear()
         initialize_office_state(self.config.state_path)
         metrics = _OfficeRunMetrics(*self._selected_counts())
         reconciliations: list[ReviewCandidateReconciliation] = []
         with office_database(self.config.state_path, create=False) as connection:
+            initialize_format_fts_lookup(
+                connection, "document_fts", checkpoint=self.cancellation.checkpoint
+            )
             self._run_candidates(connection, metrics, reconciliations)
             connection.commit()
             self._flush_reviews(reconciliations)

@@ -16,7 +16,7 @@ import tempfile
 import time
 from collections.abc import Callable
 from collections.abc import Iterator
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, nullcontext
 from pathlib import Path
 
 from neocortex.persistence.sqlite_immutable import (
@@ -28,6 +28,50 @@ from neocortex.persistence.sqlite_immutable import (
     _coerce_snapshot_budget,
     capture_sqlite_immutable_fence,
 )
+
+
+class SQLiteProgressConnection(sqlite3.Connection):
+    """Writer connection whose progress callback can be borrowed and restored.
+
+    The stdlib connection has no getter for its progress handler.  Tracking
+    successful registrations lets a writer lend a bounded read projection
+    without silently replacing a pre-existing owner cancellation callback.
+    """
+
+    _progress_registration: tuple[Callable[[], int | None] | None, int] = (None, 0)
+
+    def set_progress_handler(
+        self, progress_handler: Callable[[], int | None] | None, n: int, /
+    ) -> None:
+        super().set_progress_handler(progress_handler, n)
+        self._progress_registration = (
+            (progress_handler, n) if progress_handler is not None and n > 0 else (None, 0)
+        )
+
+
+@contextmanager
+def _temporary_progress_handler(
+    connection: sqlite3.Connection,
+    callback: Callable[[], int | None] | None,
+    instructions: int,
+    previous: tuple[Callable[[], int | None] | None, int] = (None, 0),
+) -> Iterator[None]:
+    """Borrow one callback slot without masking the operation's exception."""
+
+    connection.set_progress_handler(callback, instructions)
+    try:
+        yield
+    finally:
+        primary = sys.exception()
+        try:
+            connection.set_progress_handler(*previous)
+        except BaseException as cleanup_error:
+            if primary is None:
+                raise
+            primary.add_note(
+                "SQLite snapshot progress handler restore failed: "
+                f"{type(cleanup_error).__name__}: {cleanup_error}"
+            )
 
 
 def _require_owner_identity(path: Path, expected: tuple[int, int]) -> None:
@@ -67,7 +111,10 @@ def writer_coordinated_sqlite_snapshot(
     its own source write transaction. When ``projection`` is supplied, it is
     called with that same pinned owner connection and a disposable target; it
     must create a bounded read projection without committing or rolling back
-    the owner. Source physical replacement is rejected; ordinary writes remain
+    the owner. A projection requires ``SQLiteProgressConnection`` so the
+    owner's existing progress handler can be composed and restored; untracked
+    callbacks cannot be safely borrowed through the stdlib API. Source
+    physical replacement is rejected; ordinary writes remain
     the SQLite owner's responsibility, not a relaxed filesystem fence on
     ``SQLiteReadSession``.
     """
@@ -101,6 +148,10 @@ def writer_coordinated_sqlite_snapshot(
         raise ImmutableSQLiteUnavailable(
             "SQLite coordinated snapshot requires an idle owner transaction"
         )
+    if projection is not None and not isinstance(connection, SQLiteProgressConnection):
+        raise ImmutableSQLiteUnavailable(
+            "SQLite coordinated projection requires a progress-aware owner connection"
+        )
     started = budget.monotonic_clock()
     source = Path(source).absolute()
     _require_owner_identity(source, owner_identity)
@@ -116,9 +167,15 @@ def writer_coordinated_sqlite_snapshot(
         temporary_root=directory,
         deadline=started + budget.prepare_timeout_seconds,
     )
+    control_error: BaseException | None = None
 
     def check_budget(_status: int = 0, _remaining: int = 0, _total: int = 0) -> None:
-        budget_state.checkpoint()
+        nonlocal control_error
+        try:
+            budget_state.checkpoint()
+        except BaseException as exc:
+            control_error = exc
+            raise
 
     primary_error: BaseException | None = None
     preparation_complete = False
@@ -191,24 +248,58 @@ def writer_coordinated_sqlite_snapshot(
                     def projection_progress() -> int:
                         nonlocal projection_error
                         try:
-                            budget_state.checkpoint()
+                            check_budget()
                         except BaseException as exc:
                             projection_error = exc
                             return 1
                         return 0
 
-                    target.set_progress_handler(projection_progress, 1000)
+                    assert isinstance(connection, SQLiteProgressConnection)
+                    previous_source_progress = connection._progress_registration
+                    previous_callback, previous_instructions = previous_source_progress
+                    source_interval = (
+                        1000
+                        if previous_callback is None
+                        else math.gcd(1000, previous_instructions)
+                    )
+                    source_instructions = 0
+
+                    def source_progress() -> int | None:
+                        nonlocal source_instructions, projection_error, control_error
+                        source_instructions += source_interval
+                        if source_instructions % 1000 == 0 and projection_progress():
+                            return 1
+                        if (
+                            previous_callback is not None
+                            and source_instructions % previous_instructions == 0
+                        ):
+                            try:
+                                return previous_callback()
+                            except BaseException as exc:
+                                projection_error = exc
+                                control_error = exc
+                                return 1
+                        return 0
+
                     try:
-                        projection(connection, target, budget_state)
-                        target.commit()
+                        with (
+                            _temporary_progress_handler(target, projection_progress, 1000),
+                            _temporary_progress_handler(
+                                connection,
+                                source_progress,
+                                source_interval,
+                                previous_source_progress,
+                            ),
+                        ):
+                            check_budget()
+                            projection(connection, target, budget_state)
+                            target.commit()
                     except sqlite3.Error as exc:
                         if projection_error is not None:
                             raise projection_error from exc
                         if getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_FULL:
                             raise SQLiteSnapshotBudgetExceeded("temporary_bytes") from exc
                         raise
-                    finally:
-                        target.set_progress_handler(None, 0)
                 check_budget()
                 # The output must be self-contained before any worker sees it.
                 if target.execute("PRAGMA journal_mode=DELETE").fetchone()[0] != "delete":
@@ -220,7 +311,7 @@ def writer_coordinated_sqlite_snapshot(
                 def integrity_progress() -> int:
                     nonlocal budget_error
                     try:
-                        budget_state.checkpoint()
+                        check_budget()
                     except BaseException as exc:
                         budget_error = exc
                         return 1
@@ -241,6 +332,8 @@ def writer_coordinated_sqlite_snapshot(
                     )
                 check_budget()
         except sqlite3.Error as exc:
+            if exc is control_error:
+                raise
             if (
                 getattr(exc, "sqlite_errorcode", None)
                 in (sqlite3.SQLITE_INTERRUPT, sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
@@ -253,21 +346,40 @@ def writer_coordinated_sqlite_snapshot(
         finally:
             primary = sys.exception()
             cleanup_error: sqlite3.Error | None = None
-            if began_read:
-                try:
-                    connection.rollback()
-                except sqlite3.Error as exc:
-                    cleanup_error = exc
-            if previous_busy_timeout is not None:
-                try:
-                    connection.execute(f"PRAGMA busy_timeout={previous_busy_timeout}")
-                except sqlite3.Error as exc:
-                    if cleanup_error is None:
-                        cleanup_error = exc
-                    else:
-                        cleanup_error.add_note(
-                            f"SQLite snapshot busy timeout restore failed: {exc}"
-                        )
+            # The owner's callback may itself have cancelled this projection.
+            # Borrowed-transaction rollback must finish before that callback is
+            # restored, otherwise it can interrupt ROLLBACK and strand a read.
+            cleanup_progress = (
+                _temporary_progress_handler(
+                    connection, None, 0, connection._progress_registration
+                )
+                if isinstance(connection, SQLiteProgressConnection)
+                else nullcontext()
+            )
+            try:
+                with cleanup_progress:
+                    if began_read:
+                        try:
+                            connection.rollback()
+                        except sqlite3.Error as exc:
+                            cleanup_error = exc
+                    if previous_busy_timeout is not None:
+                        try:
+                            connection.execute(f"PRAGMA busy_timeout={previous_busy_timeout}")
+                        except sqlite3.Error as exc:
+                            if cleanup_error is None:
+                                cleanup_error = exc
+                            else:
+                                cleanup_error.add_note(
+                                    f"SQLite snapshot busy timeout restore failed: {exc}"
+                                )
+            except BaseException as control_cleanup_error:
+                if primary is None:
+                    raise
+                primary.add_note(
+                    "SQLite snapshot owner control cleanup failed: "
+                    f"{type(control_cleanup_error).__name__}: {control_cleanup_error}"
+                )
             if cleanup_error is not None:
                 if primary is None:
                     raise ImmutableSQLiteUnavailable(
@@ -302,4 +414,4 @@ def writer_coordinated_sqlite_snapshot(
             )
 
 
-__all__ = ["writer_coordinated_sqlite_snapshot"]
+__all__ = ["SQLiteProgressConnection", "writer_coordinated_sqlite_snapshot"]

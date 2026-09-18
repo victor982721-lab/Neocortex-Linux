@@ -14,6 +14,7 @@ import pytest
 
 from neocortex.persistence.framework_schema import initialize_framework_schema
 from neocortex.persistence.framework_schema import SCHEMA_VERSION
+from neocortex.persistence import framework_schema
 from neocortex.persistence.framework_state_writer import FrameworkState
 # endregion [01]
 
@@ -241,4 +242,91 @@ def test_keyboard_interrupt_during_state_construction_closes_connection(
         assert verification.execute(
             "SELECT name FROM sqlite_master WHERE name='metadata'"
         ).fetchone() is None
+
+
+@pytest.mark.parametrize("version", (20, 21, 22, 23))
+def test_route_identity_index_migration_preserves_legacy_rows(version: int) -> None:
+    builders = {
+        20: framework_schema._build_v20_exact_schema,
+        21: framework_schema._build_v21_exact_schema,
+        22: framework_schema._build_v23_exact_schema,
+        23: framework_schema._build_v23_exact_schema,
+    }
+    connection = sqlite3.connect(":memory:")
+    try:
+        builders[version](connection)
+        connection.execute("INSERT INTO metadata VALUES('schema_version',?)", (str(version),))
+        rows = (
+            (1, "text/plain", "/fixture/a", "1", "2", 10, 20, -1),
+            (1, "text/plain", "/fixture/hardlink", "1", "2", 10, 20, -1),
+            (2, "text/plain", "/fixture/other-run", "1", "2", 10, 20, -1),
+        )
+        connection.executemany("INSERT INTO route_candidates VALUES(?,?,?,?,?,?,?,?)", rows)
+        connection.commit()
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_schema WHERE name='route_candidates_identity_idx'"
+        ).fetchone() is None
+
+        initialize_framework_schema(connection, lambda: None)
+
+        assert connection.execute(
+            "SELECT * FROM route_candidates ORDER BY run_id,path"
+        ).fetchall() == list(rows)
+        assert connection.execute(
+            "SELECT value FROM metadata WHERE key='schema_version'"
+        ).fetchone() == (str(SCHEMA_VERSION),)
+        assert tuple(row[2] for row in connection.execute(
+            "PRAGMA index_info(route_candidates_identity_idx)"
+        )) == ("run_id", "volume_id", "file_id")
+        framework_schema.validate_framework_schema(connection)
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    finally:
+        connection.close()
+
+
+def test_route_identity_index_migration_rolls_back_on_interruption() -> None:
+    connection = sqlite3.connect(":memory:")
+    try:
+        framework_schema._build_v23_exact_schema(connection)
+        connection.execute("INSERT INTO metadata VALUES('schema_version','23')")
+        connection.commit()
+        before = _objects(connection)
+
+        def interrupted() -> None:
+            assert connection.execute(
+                "SELECT 1 FROM sqlite_schema WHERE name='route_candidates_identity_idx'"
+            ).fetchone() == (1,)
+            raise KeyboardInterrupt
+
+        with pytest.raises(KeyboardInterrupt):
+            initialize_framework_schema(connection, interrupted)
+        assert not connection.in_transaction
+        assert _objects(connection) == before
+        assert connection.execute(
+            "SELECT value FROM metadata WHERE key='schema_version'"
+        ).fetchone() == ("23",)
+        framework_schema.validate_framework_schema_v23(connection)
+    finally:
+        connection.close()
+
+
+def test_route_identity_index_migration_rejects_unknown_legacy_index() -> None:
+    connection = sqlite3.connect(":memory:")
+    try:
+        framework_schema._build_v23_exact_schema(connection)
+        connection.execute("INSERT INTO metadata VALUES('schema_version','23')")
+        connection.execute(
+            "CREATE INDEX route_candidates_identity_idx ON route_candidates(path)"
+        )
+        connection.commit()
+        before = _objects(connection)
+        with pytest.raises(RuntimeError, match="schema contract validation failed"):
+            initialize_framework_schema(connection, lambda: None)
+        assert _objects(connection) == before
+        assert connection.execute(
+            "SELECT value FROM metadata WHERE key='schema_version'"
+        ).fetchone() == ("23",)
+    finally:
+        connection.close()
 # endregion [02]

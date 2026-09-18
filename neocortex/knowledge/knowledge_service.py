@@ -445,6 +445,28 @@ class KnowledgeSearchService:
         _attempt_consumer: Callable[[KnowledgeSearchResult], object] | None = None,
         _consumer_commit: Callable[[object], None] | None = None,
     ) -> KnowledgeSearchResult:
+        """Search with one allowance shared by preparation and every retry."""
+        from .knowledge_read_operation import knowledge_read_operation
+
+        if read_budget is not None and not isinstance(read_budget, KnowledgeReadBudget):
+            raise ValueError("read_budget must be a KnowledgeReadBudget when provided")
+        with knowledge_read_operation(read_budget, cancellation_check) as operation:
+            return self._search(
+                query, cancellation_check=(operation.checkpoint if read_budget is not None else cancellation_check),
+                read_metrics_sink=read_metrics_sink, read_budget=read_budget,
+                _attempt_consumer=_attempt_consumer, _consumer_commit=_consumer_commit,
+            )
+
+    def _search(
+        self,
+        query: KnowledgeQuery,
+        *,
+        cancellation_check: CancellationCheck | None = None,
+        read_metrics_sink: ReadMetricsSink | None = None,
+        read_budget: KnowledgeReadBudget | None = None,
+        _attempt_consumer: Callable[[KnowledgeSearchResult], object] | None = None,
+        _consumer_commit: Callable[[object], None] | None = None,
+    ) -> KnowledgeSearchResult:
         """Execute against a stable view, retrying the whole retrieval once."""
 
         if read_metrics_sink is not None and not callable(read_metrics_sink):
@@ -472,10 +494,15 @@ class KnowledgeSearchService:
 
         first_view_changed = False
         for service_attempt in (1, 2):
+            from .knowledge_read_operation import current_read_operation
+            operation = current_read_operation()
+            if operation is not None:
+                operation.observations.clear()
             if read_budget is not None:
                 read_budget.checkpoint()
             snapshot_started_ns = clock()
             before = self._collect_snapshot(cancellation_check)
+            _checkpoint(cancellation_check)
             phase_timings.append(
                 KnowledgePhaseTiming(
                     KnowledgeTimingPhase.SNAPSHOT_BEFORE,
@@ -501,6 +528,10 @@ class KnowledgeSearchService:
             result: KnowledgeSearchResult | None = None
             with _read_attempt_scope(read_context):
                 execution_error: OSError | RuntimeError | None = None
+                spent_before = (
+                    (read_budget.rows_used, read_budget.vectors_used, read_budget.temporary_bytes_used)
+                    if read_budget is not None else (0, 0, 0)
+                )
                 try:
                     if trusted_clock_handoff:
                         result = _default_search_executor(
@@ -517,14 +548,14 @@ class KnowledgeSearchService:
                             before,
                             cancellation_check=cancellation_check,
                         )
-                    if read_budget is not None:
+                    if read_budget is not None and not trusted_clock_handoff:
                         peak_temporary = read_context.metrics.get("peak_temporary_bytes", 0)
                         read_budget.checkpoint(
-                            rows=max(0, int(result.rows_scanned)),
-                            vectors=max(0, int(result.vectors_scanned)),
+                            rows=max(0, int(result.rows_scanned) - (read_budget.rows_used - spent_before[0])),
+                            vectors=max(0, int(result.vectors_scanned) - (read_budget.vectors_used - spent_before[1])),
                             temporary_bytes=max(
                                 0,
-                                peak_temporary
+                                peak_temporary - (read_budget.temporary_bytes_used - spent_before[2])
                                 if isinstance(peak_temporary, int)
                                 and not isinstance(peak_temporary, bool)
                                 else 0,

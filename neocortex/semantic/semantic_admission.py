@@ -352,7 +352,7 @@ def semantic_identity_for_item(
     if model_signature is not None or role is not None:
         if model_signature is None or role is None:
             raise ValueError("model_signature and role must be supplied together")
-        selected_processing = processing_signature
+        selected_processing: object = processing_signature
         if selected_processing is None:
             selected_processing = item.source_revision.get("processing_signature", "")
         selected_work = WorkIdentity(

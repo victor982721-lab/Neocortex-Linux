@@ -109,6 +109,56 @@ class CgroupMemorySnapshot:
     visible_cgroups: int
     unreadable_current: tuple[Path, ...] = ()
     high_bytes: int | None = None
+    raw_available_bytes: int | None = None
+    estimated_reclaimable_file_bytes: int = 0
+
+
+def _inactive_file_reclaim_estimate(directory: Path, current: int) -> int:
+    """Estimate clean unmapped inactive file cache, never promise its reclaim.
+
+    memory.current includes page cache, so max-current alone can report no
+    useful capacity after a file-heavy run. Linux memory.stat separates file
+    types from reclaim lists: cap inactive_file by file-shmem, then subtract
+    all observed dirty, writeback, mapped and unevictable bytes. Those sets
+    can overlap, making this deliberately conservative. Active file cache,
+    tmpfs/shmem, slab and anonymous memory never add estimated headroom.
+    Missing, malformed or contradictory accounting retains the raw margin.
+    See docs.kernel.org/admin-guide/cgroup-v2.html#memory.
+    """
+
+    required = {
+        "file", "shmem", "inactive_file", "file_dirty", "file_writeback",
+        "file_mapped", "unevictable",
+    }
+    raw = _read_ascii(directory / "memory.stat")
+    if raw is None:
+        return 0
+    values: dict[str, int] = {}
+    for line in raw.splitlines():
+        parts = line.split()
+        if not parts or parts[0] not in required:
+            continue
+        if len(parts) != 2 or parts[0] in values:
+            return 0
+        value = _unsigned(parts[1])
+        if value is None:
+            return 0
+        values[parts[0]] = value
+    if set(values) != required:
+        return 0
+    file_bytes = values["file"]
+    if (
+        file_bytes > current
+        or values["shmem"] > file_bytes
+        or values["inactive_file"] > file_bytes - values["shmem"]
+        or any(values[name] > file_bytes for name in ("file_dirty", "file_writeback", "file_mapped"))
+        or values["unevictable"] > current
+    ):
+        return 0
+    unavailable = sum(values[name] for name in (
+        "file_dirty", "file_writeback", "file_mapped", "unevictable",
+    ))
+    return max(0, values["inactive_file"] - unavailable)
 
 
 def cgroup_memory_snapshot(
@@ -119,8 +169,10 @@ def cgroup_memory_snapshot(
     Subtract each ancestor's *own* current consumption, not the leaf's use:
     siblings may have consumed most of a parent's remaining allowance.  Once a
     finite limit is known, an unreadable current value cannot mean free memory;
-    reserve no new headroom until a later sample can measure it.  memory.high
-    constrains pressure-free headroom, but is kept separate from the hard max:
+    reserve no new headroom until a later sample can measure it. A complete
+    memory.stat may add a conservative estimate of clean inactive file cache
+    to the hard-limit margin. memory.high still constrains raw pressure-free
+    headroom, and is kept separate from the hard max:
     reaching its throttle/reclaim threshold does not reduce physical capacity.
     """
 
@@ -128,6 +180,7 @@ def cgroup_memory_snapshot(
     limits: list[int] = []
     highs: list[int] = []
     headrooms: list[int] = []
+    raw_headrooms: list[int] = []
     unreadable: list[Path] = []
     for directory in visible:
         maximum = _unsigned(_read_ascii(directory / "memory.max"))
@@ -143,14 +196,39 @@ def cgroup_memory_snapshot(
         if current is None:
             unreadable.append(directory / "memory.current")
             headrooms.append(0)
+            raw_headrooms.append(0)
         else:
-            headrooms.append(max(0, min(bounds) - current))
+            reclaimable = (
+                0 if maximum is None else _inactive_file_reclaim_estimate(directory, current)
+            )
+            if reclaimable:
+                # Account for growth while the additional counters were read.
+                # An unreadable recapture cannot authorize the estimate.
+                after = _unsigned(_read_ascii(directory / "memory.current"))
+                if after is None:
+                    unreadable.append(directory / "memory.current")
+                    headrooms.append(0)
+                    raw_headrooms.append(0)
+                    continue
+                current = max(current, after)
+            raw_margin = max(0, min(bounds) - current)
+            raw_headrooms.append(raw_margin)
+            margins = []
+            if maximum is not None:
+                margins.append(max(0, maximum - current + reclaimable))
+            if high is not None:
+                margins.append(max(0, high - current))
+            headrooms.append(min(margins))
+    available = min(headrooms, default=None)
+    raw_available = min(raw_headrooms, default=None)
     return CgroupMemorySnapshot(
         min(limits, default=None),
-        min(headrooms, default=None),
+        available,
         len(visible),
         tuple(unreadable),
         min(highs, default=None),
+        raw_available,
+        0 if available is None or raw_available is None else max(0, available - raw_available),
     )
 
 

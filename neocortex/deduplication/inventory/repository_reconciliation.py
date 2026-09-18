@@ -50,6 +50,13 @@ def _upsert_reconciled_snapshot(
 ) -> None:
     volume = _id_blob(snapshot.volume_id)
     file_id = _id_blob(snapshot.file_id)
+    # FileSnapshot intentionally has no portable change version. A journal
+    # update must not retain an older ctime observation as if it were fresh.
+    connection.execute(
+        "DELETE FROM inventory_file_change_versions WHERE scan_id=? AND (path=? OR path IN ("
+        "SELECT path FROM files WHERE scan_id=? AND volume_id=? AND file_id=?))",
+        (scan_id, snapshot.path, scan_id, volume, file_id),
+    )
     connection.execute(
         "UPDATE files SET size=?, mtime_ns=?, birthtime_ns=? "
         "WHERE volume_id=? AND file_id=? AND scan_id=?",

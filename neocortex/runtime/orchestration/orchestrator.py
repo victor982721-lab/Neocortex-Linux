@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import os
-import inspect
 import sqlite3
 import threading
 import time
@@ -18,7 +17,7 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 from neocortex.platform.policy import stat_birthtime_ns
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 from neocortex.enumeration.errors import NtfsUsnError
 from neocortex.enumeration.models import JournalCursor
@@ -194,6 +193,7 @@ class FrameworkOrchestrator:
     ):
         self.config = config or FrameworkConfig()
         self._unavailable_routes: dict[str, str] = {}
+        self._organization_resume_pending = False
         if self.config.dedup_policy not in {"fast", "exact"}:
             raise ValueError("dedup_policy must be 'fast' or 'exact'")
         from .dedup_keeper import preflight_keeper_inputs, validate_keeper_configuration
@@ -495,134 +495,23 @@ class FrameworkOrchestrator:
         state: FrameworkState,
         run_id: int,
     ) -> tuple["OrganizationPlanSummary | None", "OrganizationApplySummary | None"]:
-        """Produce advisory destinations without requiring authority to move."""
+        """Complete the durable planning obligation before later consumers."""
 
-        if not (
+        if not self._organization_resume_pending and not (
             self.config.document_catalog_enabled
             and ORGANIZABLE_ROUTE_NAMES.intersection(self.selected_routes)
         ):
             return None, None
-        if not self.config.document_catalog_database.is_file():
-            state.record_event(
-                run_id,
-                "warning",
-                "document-organization-plan",
-                "Plan no disponible: todavía no hay un catálogo durable",
-                {"reason": "catalog_unavailable", "effects": "none"},
-            )
-            return None, None
-        from neocortex.documents.document_organization import (
-            apply_all_document_organization,
-            capture_organization_input_scope,
-            default_organization_root,
-            plan_document_organization,
-        )
-        from neocortex.documents.document_organization_planning import OrganizationCorpusPolicy
+        from .organization_lifecycle import run_organization_stages
 
-        organization_root = self.config.organization_root
-        if organization_root is None:
-            organization_root = default_organization_root(
-                self.config.framework_database,
-                analysis_root=root,
-            )
-        else:
-            organization_root = Path(os.path.abspath(organization_root.expanduser()))
-
-        if self._cancellation.is_cancelled:
-            raise KeyboardInterrupt
-        state.set_run_phase(run_id, "organization_plan")
-        source_scope = capture_organization_input_scope(
-            self.config.document_catalog_database,
-            root,
-        )
-        organization_arguments: dict[str, Any] = {
-            "source_scope": source_scope,
-            "min_confidence": self.config.organization_min_confidence,
-            "progress": self.progress,
-            "mutation_guard": state.corpus_mutation_guard(run_id),
-            # Integrated ``--all`` is the user's explicit corpus workflow.  A
-            # reversible destination is safe for general, uncertain, sensitive
-            # and non-technical categories; true unknowns still go to
-            # ``Sin_clasificar`` and technical failures remain pending.
-            "corpus_policy": OrganizationCorpusPolicy(
-                allow_general=True,
-                allow_uncertain=True,
-                allow_sensitive=True,
-                allow_nontechnical=True,
+        return run_organization_stages(
+            self.config, root=root, state=state, run_id=run_id,
+            progress=self.progress, cancellation=self._cancellation,
+            reserve=lambda stage, reservation, items: self._reserve_lifecycle_stage_work(
+                state, run_id, stage, reservation, items=items,
+                bytes_count=0, worker="organization",
             ),
-        }
-        # A patched/embedded legacy adapter may expose the pre-policy
-        # signature. Inspect its actual side effect before invocation so a
-        # compatibility call cannot execute the planner twice.
-        signature_target = getattr(plan_document_organization, "side_effect", None)
-        if not callable(signature_target):
-            signature_target = plan_document_organization
-        parameters: Mapping[str, inspect.Parameter]
-        try:
-            parameters = inspect.signature(signature_target).parameters
-        except (TypeError, ValueError):
-            parameters = {}
-        accepts_policy = (
-            "corpus_policy" in parameters
-            or any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
         )
-        if not accepts_policy:
-            organization_arguments.pop("corpus_policy", None)
-        plan_summary = plan_document_organization(
-            self.config.document_catalog_database,
-            organization_root,
-            **organization_arguments,
-        )
-        state.record_event(
-            run_id,
-            "warning" if plan_summary.blocked else "info",
-            "document-organization-plan",
-            "Plan de organización técnica completado",
-            {"organization_root": str(organization_root), **asdict(plan_summary)},
-        )
-        self._reserve_lifecycle_stage_work(
-            state,
-            run_id,
-            "organization_plan",
-            f"organization:plan:{plan_summary.catalog_run_id}",
-            items=int(plan_summary.considered),
-            bytes_count=0,
-            worker="organization",
-        )
-        if self._cancellation.is_cancelled:
-            raise KeyboardInterrupt
-        if not self.config.apply_actions:
-            return plan_summary, None
-        state.set_run_phase(run_id, "organization_apply")
-        apply_summary = apply_all_document_organization(
-            self.config.document_catalog_database,
-            organization_root,
-            progress=self.progress,
-            mutation_guard=state.corpus_mutation_guard(run_id),
-        )
-        apply_issues = (
-            apply_summary.stale
-            + apply_summary.blocked
-            + apply_summary.failed
-            + apply_summary.cache_pending
-        )
-        state.record_event(
-            run_id,
-            "warning" if apply_issues else "info",
-            "document-organization-apply",
-            "Aplicación de organización técnica completada",
-            {"organization_root": str(organization_root), **asdict(apply_summary)},
-        )
-        self._reserve_lifecycle_stage_work(
-            state,
-            run_id,
-            "organization_apply",
-            f"organization:apply:{apply_summary.catalog_run_id}",
-            items=int(apply_summary.selected),
-            bytes_count=0,
-            worker="organization",
-        )
-        return plan_summary, apply_summary
 
     def _run_content_routes(
         self,
@@ -873,16 +762,50 @@ class FrameworkOrchestrator:
 
             results: dict[str, object] = {}
             failures: dict[str, BaseException] = {}
+            # Validate the complete selected DAG before starting any worker.
+            # Dispatch below follows individual terminal dependencies, rather
+            # than imposing a barrier on unrelated routes in the same wave.
+            self._route_execution_stages()
             executor = ThreadPoolExecutor(
                 max_workers=len(self.selected_routes),
                 thread_name_prefix="neocortex-route",
             )
 
-            def drain_stage(stage_futures: dict[Future[tuple[object, int]], str]) -> None:
-                pending = set(stage_futures)
-                while pending:
+            remaining = set(self.selected_routes)
+            settled: set[str] = set()
+            selected = set(self.selected_routes)
+            pending: set[Future[tuple[object, int]]] = set()
+
+            def drain_ready_routes() -> None:
+                nonlocal pending
+                assert executor is not None
+                while pending or remaining:
                     if self._cancellation.is_cancelled:
                         raise KeyboardInterrupt
+                    for route_name in self.selected_routes:
+                        if route_name not in remaining:
+                            continue
+                        adapter = self.route_registry[route_name]
+                        if any(
+                            dependency in selected and dependency not in settled
+                            for dependency in adapter.depends_on
+                        ):
+                            continue
+                        self._reserve_route_work(
+                            state=state,
+                            run_id=run_id,
+                            route_name=route_name,
+                            input_source=adapter.input_source,
+                            inventory_workload=inventory_workload,
+                            context=route_context(route_name),
+                            stage="routes",
+                        )
+                        future = executor.submit(execute_route, route_name)
+                        futures[future] = route_name
+                        pending.add(future)
+                        remaining.remove(route_name)
+                    if not pending:
+                        raise ValueError("route dependency scheduler has no ready work")
                     completed, pending = wait(
                         pending,
                         timeout=0.1,
@@ -896,7 +819,7 @@ class FrameworkOrchestrator:
                     if self._cancellation.is_cancelled:
                         raise KeyboardInterrupt
                     for future in completed:
-                        route_name = stage_futures[future]
+                        route_name = futures[future]
                         adapter = self.route_registry[route_name]
                         try:
                             summary, elapsed_ns = future.result()
@@ -933,27 +856,12 @@ class FrameworkOrchestrator:
                                 },
                             )
                             self._finish_route_progress(route_name, "failed")
+                        # Dependencies are optional producer ordering hints.
+                        # A typed failure is terminal too, but is recorded
+                        # before any consumer can observe the producer.
+                        settled.add(route_name)
 
-            # Submit one dependency wave at a time.  Independent routes retain
-            # the previous parallel behavior, while a route such as Video waits
-            # for the selected Audio producer to publish its optional link.
-            for stage_routes in self._route_execution_stages():
-                stage_futures: dict[Future[tuple[object, int]], str] = {}
-                for route_name in stage_routes:
-                    adapter = self.route_registry[route_name]
-                    self._reserve_route_work(
-                        state=state,
-                        run_id=run_id,
-                        route_name=route_name,
-                        input_source=adapter.input_source,
-                        inventory_workload=inventory_workload,
-                        context=route_context(route_name),
-                        stage="routes",
-                    )
-                    future = executor.submit(execute_route, route_name)
-                    futures[future] = route_name
-                    stage_futures[future] = route_name
-                drain_stage(stage_futures)
+            drain_ready_routes()
         except KeyboardInterrupt:
             interrupted = True
             self.request_cancellation()
@@ -1360,6 +1268,10 @@ class FrameworkOrchestrator:
         publish_manifest = getattr(state, "publish_run_manifest", None)
         if callable(publish_manifest):
             publish_manifest(run_id, manifest.event_payload())
+            if self.config.document_catalog_enabled and ORGANIZABLE_ROUTE_NAMES.intersection(self.selected_routes):
+                from .organization_lifecycle import register_organization_stages
+
+                register_organization_stages(state, run_id, self.config, boundary.access_policy.root)
             if self._lifecycle_stage_runner is not None:
                 # Publish the dependent stage before any worker starts.  If
                 # the process dies in the hand-off to the stage runner, the
@@ -2597,7 +2509,11 @@ class FrameworkOrchestrator:
         source_run_id: int,
     ) -> None:
         semantic_only_resume = False
+        self._organization_resume_pending = False
         if self.config.resume_run_id is not None:
+            from .organization_lifecycle import organization_pending
+
+            self._organization_resume_pending = organization_pending(state, source_run_id)
             resumable = state.resumable_route_names(source_run_id)
             unknown = tuple(name for name in resumable if name not in self.route_registry)
             if unknown:
@@ -2621,7 +2537,7 @@ class FrameworkOrchestrator:
                     state,
                     source_run_id,
                 )
-        if not self.selected_routes and not semantic_only_resume:
+        if not self.selected_routes and not semantic_only_resume and not self._organization_resume_pending:
             raise ValueError(f"run {source_run_id} has no resumable content routes")
         read_capabilities = getattr(state, "read_run_route_capabilities", None)
         if callable(read_capabilities) and self.config.resume_run_id is not None:
@@ -2674,7 +2590,7 @@ class FrameworkOrchestrator:
         )
         candidate_rows = state.route_candidate_run_count(source_run_id)
         if not self.selected_routes:
-            # Semantic-only recovery consumes no Framework route input and
+            # Stage-only recovery consumes no Framework route input and
             # therefore must not require a retained candidate snapshot or a
             # fresh inventory validation.  Still bind it to the same corpus
             # root before creating the operational lifecycle row.
@@ -2847,6 +2763,10 @@ class FrameworkOrchestrator:
                         details=self._lifecycle_stage_details,
                         idempotency_key="semantic:pending",
                     )
+                if self._organization_resume_pending:
+                    from .organization_lifecycle import copy_organization_stages
+
+                    copy_organization_stages(state, source.run_id, run_id)
                 self._active_run = (self.config.framework_database, run_id)
         except BaseException as exc:
             abort_start(exc)
@@ -2934,6 +2854,8 @@ class FrameworkOrchestrator:
                 run_id=run_id,
                 scan_id=source.scan_id,
             )
+            if self._organization_resume_pending:
+                self._run_document_organization(root=boundary.access_policy.root, state=state, run_id=run_id)
             if finalize:
                 self._complete_route_only_run(state, boundary, source, run_id)
         except KeyboardInterrupt:

@@ -620,7 +620,7 @@ def test_fresh_current_schema_has_exact_empty_review_task_schema(tmp_path: Path)
         connection.execute("PRAGMA foreign_keys=ON")
         initialize_framework_schema(connection, lambda: None)
 
-        assert framework_schema.SCHEMA_VERSION == 23
+        assert framework_schema.SCHEMA_VERSION == 24
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
         ).fetchone() == (str(framework_schema.SCHEMA_VERSION),)

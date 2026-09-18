@@ -529,9 +529,9 @@ def test_published_catalog_records_replayable_manifest_and_digest(tmp_path: Path
         ).fetchone()[0]
     assert generation_status == "published"
 
-    # A replay creates a successor generation with the same logical content
-    # digest, while its source fence/input manifest remains independently bound.
-    update_document_catalog_source(
+    # A replay records a new observation linked to the original producer,
+    # without copying the immutable members or replacing its manifest.
+    observed = update_document_catalog_source(
         catalog,
         source_database,
         "docx",
@@ -540,7 +540,9 @@ def test_published_catalog_records_replayable_manifest_and_digest(tmp_path: Path
     )
     with document_catalog_database(catalog, readonly=True) as connection:
         replay = read_catalog_publication_manifest(connection, "docx")
-    assert replay.generation_id != manifest.generation_id
+    assert replay.generation_id == manifest.generation_id
+    assert observed.publication_state == "unchanged"
+    assert observed.reused_from_catalog_run_id is not None
     assert replay.generation_digest == manifest.generation_digest
 
 

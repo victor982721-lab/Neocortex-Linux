@@ -102,7 +102,6 @@ from neocortex.persistence.sqlite_cancellation import (
 from neocortex.persistence.sqlite_immutable import (
     open_immutable_sqlite_connection,
     preferred_sqlite_read_mode,
-    sqlite_read_session,
 )
 from neocortex.persistence.sqlite_paths import readonly_sqlite_uri
 
@@ -312,7 +311,8 @@ def _open_code_readonly_for_knowledge(
 def _code_read_session_for_knowledge(path: Path):
     """Provide a lifecycle-owning reader for code metadata batches."""
 
-    return sqlite_read_session(
+    from neocortex.runtime.control.read_operation import operation_sqlite_session
+    return operation_sqlite_session(
         path,
         mode=preferred_sqlite_read_mode(path),
         timeout_seconds=60.0,
@@ -714,6 +714,19 @@ def _catalog_identifiers(value: object) -> tuple[tuple[str, str], ...]:
     return _catalog_identifiers_impl(value, json_loads_fn=json.loads)
 
 
+def _budgeted_catalog_database(default):
+    from neocortex.runtime.control.read_operation import current_read_operation, operation_sqlite_session
+    operation = current_read_operation()
+    if operation is None or (operation.budget is None and operation.cancellation is None):
+        return default
+
+    def open_catalog(path, *, readonly=False):
+        if not readonly:
+            raise ValueError("Knowledge catalog session must be read-only")
+        return operation_sqlite_session(path)
+    return open_catalog
+
+
 def _catalog_ranking(
     paths: KnowledgeStatePaths,
     plan: KnowledgePlan,
@@ -735,7 +748,7 @@ def _catalog_ranking(
         cancellation_bridge_type=SQLiteCancellationBridge,
         # The public factory installs sqlite3.Row before yielding; its concrete
         # sqlite3 annotations are narrower than the catalog reader protocol.
-        document_catalog_database_fn=cast(_CatalogDatabaseFactory, document_catalog_database),
+        document_catalog_database_fn=cast(_CatalogDatabaseFactory, _budgeted_catalog_database(document_catalog_database)),
         sqlite_cancellation_scope_fn=sqlite_cancellation_scope,
         sqlite_error_type=sqlite3.Error,
         reraise_captured_cancellation_fn=_reraise_captured_cancellation,

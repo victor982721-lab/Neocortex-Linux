@@ -23,7 +23,7 @@ from neocortex.persistence.framework_authorization_schema import (
 )
 from neocortex.persistence.framework_schema import (
     SCHEMA_VERSION as FRAMEWORK_SCHEMA_VERSION,
-    validate_framework_schema_v22,
+    validate_framework_schema,
 )
 from neocortex.persistence.sqlite_immutable import (
     SQLiteReadSession,
@@ -252,7 +252,7 @@ def _validate_framework_read(connection: sqlite3.Connection) -> None:
             "Framework schema is incompatible: "
             f"expected {FRAMEWORK_SCHEMA_VERSION}, observed {observed!r}"
         )
-    validate_framework_schema_v22(connection)
+    validate_framework_schema(connection)
 
 
 def _read_grants(connection: sqlite3.Connection, limit: int) -> tuple[CurationGrantView, ...]:

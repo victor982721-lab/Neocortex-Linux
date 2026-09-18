@@ -120,6 +120,8 @@ def _pdf_config(path: Path, **overrides) -> PdfRouteConfig:
         "workers": 1,
         "ocr_workers": 1,
         "min_free_bytes": 0,
+        # Small repair/cache fixtures retain real admission with explicit headroom.
+        "memory_backpressure_bytes": 128 * 1024**2,
     }
     values.update(overrides)
     return PdfRouteConfig(path, **values)

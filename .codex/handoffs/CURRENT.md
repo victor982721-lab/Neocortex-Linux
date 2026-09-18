@@ -1,134 +1,93 @@
 # Handoff operativo vigente — NeoCortex
 
-**Ronda:** NEO-AUDIT-UNIFIED-20260918.
-**Actualizado:** 2026-09-18T11:08:20.876225+00:00.
-**Fuente integral acreditada:** `51b345cff039dd62ccf35a84c40148c0ed5c2078`. Este cambio sólo actualiza el handoff;
-el código, los tests, los locks y las herramientas coinciden con esa fuente.
+**Ronda:** NEO-PERFORMANCE-FIXES-20260918.
+**Actualizado:** 2026-09-18T20:04:10.074113+00:00.
+**Base remota autenticada:** `c0b7ae873a5c29a518582e624d29d2587cc759c3`.
+**Árbol de código/tests aceptado:** `a4ae1e7d29fe2a9b0871a235772d54bea20117b8`.
 
-## Alcance autorizado y resultado de fuente
+## Alcance y resultado
 
-Se implementaron las correcciones de las auditorías de limpieza, EndToEnd y
-Text. La autorización del usuario comprende publicación, integración a main,
-instalación y validación offline en un laboratorio privado y entrega de un ZIP,
-un plan y un prompt únicos; no requiere nuevas confirmaciones para esta ronda.
-El remoto inicial autenticado fue `victor982721-lab/Neocortex-Linux`,
-`main=f3bbf439d7c5b192f1509b1675bc64a139602320`. Se conserva su historia mediante
-commits sucesivos en `fix/unified-audit-20260918`, sin force push.
+El usuario autorizó aplicar en el repositorio remoto las correcciones de los
+17 hallazgos de velocidad, estabilidad, caché y aprovechamiento de contratos.
+Se implementaron mediante seis agentes distribuidos por dominios, con un solo
+responsable de integración/Git y revisión independiente de fronteras críticas.
+La publicación va directamente a `main`, sin ramas, PR, force push ni Actions.
+Esta ronda publica fuente; no incluye una nueva instalación.
 
-R7 terminó con **8644 casos únicos recogidos:
-8571 aprobados, 73 omitidos,
-0 fallidos y 0 sin ejecutar**.
-Las subpruebas se cuentan por separado: `{"passed": 49}`.
-El resultado exacto, los nodeids, motivos de omisión, JUnit, logs y el manifest
-de los 1.476 archivos congelados se conservan en
-`work/implementation/full_validation/acceptance-r7-final/` del paquete de entrega.
-No se excluyeron capacidades del producto. Los límites de plataforma y fixtures
-opcionales siguen identificados en esos recibos; no equivalen a pruebas Windows.
+Las mejoras conservan identidad, evidencia, publicación completa, revalidación
+junto al efecto, cancelación y abstención ante incertidumbre. En particular:
 
-Ruff pasó en los archivos Python modificados. Mypy comparó 83 archivos afectados
-de producción/herramientas: 58 diagnósticos en la base, 37 actuales, cero nuevos
-y 21 retirados. Las 37 incidencias previas permanecen como deuda; esto no es una
-certificación de tipado limpio de todo el repositorio.
+- Code calcula el digest agregado por streaming, indexa identidad FTS y reutiliza
+  publicaciones mediante recibos ligados al productor original.
+- Audio evita ffprobe en hits vigentes; Office/Audio/Video evitan escrituras FTS
+  idénticas; seis owners usan lookups TEMP tipados bajo ownership de writer.
+- Text transporta una representación descomprimida validada y revalida su
+  observación bajo transacción antes de publicar.
+- Dedup reutiliza hashes completos dentro de una planificación tras revalidar
+  identidad/ctime; Inventory portable conserva el scan sin reinsertar files
+  cuando el recorrido íntegro demuestra que no cambió.
+- Knowledge comparte presupuesto durante las operaciones y reusa observaciones
+  sólo dentro del intento estable; Semantic usa recibos acotados ligados a los
+  fences de fuente y destino. El sidecar derivado participa del reset exacto.
+- Framework indexa candidatos, propaga source_root, conserva organización
+  pendiente con recuperación durable y libera sucesores por dependencia concreta.
+- SQLite permite cancelación durante preparación fuente y restaura callbacks;
+  el governor evita descontar otra vez la CPU propia y estima conservadoramente
+  caché inactiva limpia recuperable sin retirar cuotas, reservas ni memory.high.
 
-## Correcciones concretas incorporadas
+## Validación exacta
 
-- Lifecycle de 13 owners, reset operacional con barreras de frescura, recuperación
-  durable, separación de selección/resultado físico y preservación de cambios
-  concurrentes. Text/Semantic/Code protegidos se rechazan antes de efectos cuando
-  no existe una transformación autorizada; el reset no promete borrar todo.
-- Manifiesto y journal Archive durables independientes del estado derivado,
-  prueba de reconstruibilidad por identidad/SHA/CRC/tamaño y parentesco
-  estructural; compensación y retiro sólo después de acreditar el contrato.
-- Scratch registrado, adopción exacta, sellado que incluye manifests anidados,
-  política POSIX por descriptor, observación incremental con cancelación y
-  checkpoints, cuotas, límites de montaje y abstención tipada ante encoding no
-  soportado. El control durable y tombstones legítimos se conservan.
-- Preparación nativa de rutas integrada en el orquestador, antes de efectos,
-  con deadline y cancelación; aislamiento KIO y contratos públicos de lectura.
-- Text usa lookups TEMP indexados por conexión writer y mantiene rowid, FTS,
-  identidad, schema durable y cache hits. No requiere reprocesamiento masivo.
-- Orden/rank semántico global coherente con top K y proyección vectorial exacta
-  sustituible. El benchmark compara el backend nativo y persistido; no introduce
-  ANN ni atribuye calidad del Corpus a un microbenchmark.
-- Parser de imports relativos corregido: cero ciclos eager y nueve conjuntos
-  diferidos exactos, con miembros/aristas/contextos revisados. El DTO trasladado
-  conserva su alias y compatibilidad; los ciclos retenidos no se presentan como
-  eliminados.
-- Grants que exceden 65.536 bytes o tienen metadata inválida devuelven
-  CurationAuthorizationError antes de publicar autorización/acciones. La API
-  mantiene authorization_denied/exit 1 y la CLI sólo anuncia un grant completo
-  con ID. No se amplió el límite ni se truncó la evidencia autorizada.
-- Distribución Linux con copias del ejecutable de venv, identidad nativa SQLite
-  acreditada y probes readonly `-I -B`, también en headless; `-I` por sí solo no
-  respeta PYTHONDONTWRITEBYTECODE. Digest y modos inmutables siguen siendo gates.
-- OCR TSV v4 exige las doce columnas únicas, permite reordenación/extensiones
-  y TSV válido sin palabras, y rechaza formato plano inválido. Las firmas Image
-  y Video incorporan el contrato sin migrar el schema Text ni los originales.
+El cierre por nodeid acredita **8.840 casos únicos: 8.767 aprobados, 73 omitidos,
+0 fallidos y 0 pendientes**. La colección final reproduce los mismos 8.840
+identificadores, con todas las capacidades seleccionadas y tres módulos Windows
+excluidos antes de importación. Las omisiones y subpruebas se registran por
+separado. La identidad de importación pasó 5/5, sin omisiones; los metadatos se
+generaron desde la misma fuente privada con CPython 3.14.7/SQLite 3.53.1.
 
-## Evidencia histórica y fixtures
+No fue una única corrida completa verde. La pasada integral histórica terminó
+por interrupción controlada con 8.273 aprobados, 73 omitidos, 103 fallidos y
+391 pendientes. Sus logs y resultados permanecen intactos. Faltaba espacio en
+el laboratorio y algunas fixtures reflejaban contratos anteriores o reservas
+inadecuadas para sus entradas pequeñas. Tras retirar sólo temporales de corridas
+terminadas, la fuente final repitió 53 módulos completos: **639 aprobados y
+1 omitido en 219,98 s**. Cubren todos los fallos, pendientes y fixtures cambiadas.
+SHA256 demuestra que el único delta respecto de la fuente integral son siete
+fixtures revisadas independientemente; no cambió producción ni configuración.
+Se conservan aserciones, baselines exactos, gobernador y planner propietario.
 
-La revisión independiente de recuperación cerró nueve defectos. R4 ejecutó
-8.642 casos: 8.559 pass, 73 skip, 10 fail; R5 ejecutó 8.644: 8.569 pass,
-73 skip, 2 fail; R6 ejecutó 8.644: 8.570 pass, 73 skip, 1 fail. Cada corrida
-terminó sin casos pendientes y con 49 subpruebas aprobadas; sus fallos y
-diagnósticos se conservan como historia, sin reetiquetarlos como verdes.
+Ruff pasó en 124 archivos Python modificados. Mypy comparó 69 fuentes comunes
+de base y 81 actuales siguiendo imports: 55 diagnósticos previos, 54 actuales,
+cero nuevos y uno retirado. Las 54 incidencias restantes son deuda previa.
 
-Las correcciones de fixture mantuvieron los presupuestos y contratos del
-producto: cierre explícito de conexiones SQLite de prueba mediante
-contextlib.closing; un intérprete/fork con PID real para AgentActivity; y
-`-I -S -B` más `os._exit(0)` después del ACK en retained pipes. Esta última
-conserva 0,25 s, cota total menor de 0,5 s y cleanup incomplete; pasó 19 casos
-focales (3 skips Windows) y 15 procesos fríos antes de R7. La reproducción GC
-demostró la carrera SHM de la fixture SQLite; las demoras particulares de
-readiness/ACK de los otros casos no tienen una causa productiva demostrada.
+La evidencia externa de esta ronda conserva `acceptance-integrated-01/`,
+`acceptance-final-delta-04/`, matriz de 17 contratos, revisiones, probes,
+mediciones, manifests y `publication/closure.json`. El cierre exige lectura
+fresca de GitHub, `HEAD == main == origin/main` y árbol limpio. El SHA final
+se obtiene de Git y del informe de entrega, sin autorreferencia circular aquí.
+El delta posterior a la fuente aceptada sólo actualiza este handoff y archiva
+el anterior.
 
-H11 observó un millón de archivos físicos vacíos con cero duplicados/omisiones,
-cancelación y reanudación en otro proceso: 71,098 s y 42,45 MiB de RSS. Es una
-medición de namespace/checkpoints; no de un millón de documentos voluminosos.
-El intento posterior de retirar esa fixture no acreditó postcondición estable,
-aunque un millón de unlinks devolvieron éxito; se conserva como incidente de
-laboratorio sin atribución causal al producto.
+## Compatibilidad y límites
 
-## Distribución e instalación de la misma implementación
+Framework migra 23→24; Code 7→8; Inventory 14→15. Sus consumidores y validadores
+legacy mantienen contratos exactos. El sidecar Semantic es opcional, derivado,
+acotado a 2 MiB/64 entradas; corrupción o drift fuerzan revalidación.
 
-El cierre operativo se acredita con los recibos externos del paquete:
-`release/final-closure-01/RESULTADO.json`,
-`installed_validation/acceptance-05/RESULTADO.json`,
-`release/FINAL_REMOTE_STATE.json` y `CIERRE_ESTADO.json`. La secuencia exige
-R7 aprobada, delta exclusivamente documental, instalación canónica, verify,
-once etapas instaladas bajo denegación física IPv4/IPv6 y verificación posterior
-en un proceso nuevo; después integra main mediante fast-forward y comprueba
-HEAD/main/origin-main y árbol limpio. La presencia de este handoff no sustituye
-esos recibos. El SHA de esta actualización se obtiene de Git y de la entrega,
-sin una referencia circular en el propio commit.
+Las mediciones sintéticas prueban trabajo evitado, no una aceleración global:
+5→3 lecturas completas de hash en tres archivos de 9 MiB; 1.000→0 escrituras
+files en replay portable idéntico; 2→1 descompresiones Text; 8→1 validaciones por
+owner en Knowledge. Las publicaciones modificadas de Code/Inventory mantienen
+copias completas y Catalog conserva verificaciones O(N) bajo BEGIN IMMEDIATE.
 
-El paquete incluye CPython 3.14.7/SQLite 3.53.1, 68 wheels de producto/build,
-diez wheels adicionales de calidad, cinco modelos locales con hashes y
-procedencia, herramientas nativas y fixtures pequeñas. Es una distribución para
-un host Linux compatible; no una imagen completa del sistema operativo.
+Queda una limitación preexistente observada fuera de los 17 hallazgos: Image
+puede esperar dos timeouts de admisión consecutivos al limpiar dos trabajos
+encolados con un worker y memoria insuficiente. El probe reproduce el mismo
+comportamiento en la base y en la fuente actual. Su futura corrección debe
+cancelar la cola de forma cooperativa preservando excepción y cleanup.
 
-La aceptación instalada anterior 04 acreditó la fuente f3b01845 y sus once
-etapas. Observaciones posteriores mostraron current apuntando otra vez a 60ea
-y staging reaparecido con inodos nuevos. No se estableció la causa; el cierre
-final exige una lectura fresca del enlace, recibo y digest y no recicla aquella
-aceptación como prueba de la instalación final.
+No se modificaron corpus, modelos, estado ni instalación personal. Las pruebas
+Linux de este laboratorio no certifican sesión Kubuntu/Plasma/KIO real, Windows
+ni los escenarios nativos que las fixtures declaran omitidos.
 
-## Límites que permanecen explícitos
-
-El Corpus, releases, estado y sesión Kubuntu/Plasma/KIO del usuario no se han
-abierto ni modificado. Qt offscreen no acredita una sesión gráfica personal.
-Este contenedor no permite un UID ordinario representativo, montajes/bind reales,
-cgroups delegados ni crear AF_UNIX; sus contratos se prueban hasta el alcance
-que detallan las fixtures, sin afirmar acreditación nativa de esos escenarios.
-
-La evaluación léxica sintética de 48 casos terminó en abstención completa,
-cobertura cero y diez omisiones de positivos. Es evidencia de límites de esas
-reglas; no demuestra calidad semántica del Corpus real. El backend vectorial y
-las inferencias offline tienen sus pruebas funcionales separadas.
-
-El plan de entrega mantiene 34 hallazgos y 63 requisitos transversales con causa,
-receta, archivos/símbolos y evidencia. Son contratos de distinto alcance;
-8.644 tests compartidos no se convierten en 97 certificaciones independientes.
-El handoff anterior permanece en
-[NEOCORTEX_STATE_RESET_2026-09-17.md](NEOCORTEX_STATE_RESET_2026-09-17.md), como
-historia y sin atribuir su instalación personal al laboratorio de esta ronda.
+El handoff anterior se conserva íntegro en
+[NEOCORTEX_UNIFIED_AUDIT_2026-09-18.md](NEOCORTEX_UNIFIED_AUDIT_2026-09-18.md).

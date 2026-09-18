@@ -1,4 +1,4 @@
-"""Every current owner is classified and additive reader fences preserve data."""
+"""Current owners are classified and additive migrations preserve prior evidence."""
 from __future__ import annotations
 
 import importlib
@@ -29,6 +29,26 @@ _INITIALIZERS = {
 }
 
 
+_ADDITIVE_SCHEMA_OBJECTS = {
+    "framework": {"route_candidates_identity_idx"},
+    "inventory": {"inventory_file_change_versions"},
+    "catalog": set(),
+}
+
+
+def _prepare_previous_schema(connection: sqlite3.Connection, owner: str, version: int) -> None:
+    # These are explicit historical shapes, not a current schema relabelled as
+    # old. Framework v24 and Inventory v15 add physical objects after their
+    # earlier metadata-only reader-fence migrations.
+    if owner == "framework":
+        connection.execute("DROP INDEX route_candidates_identity_idx")
+    elif owner == "inventory":
+        connection.execute("DROP TABLE inventory_file_change_versions")
+    connection.execute(
+        "UPDATE metadata SET value=? WHERE key='schema_version'", (str(version),)
+    )
+
+
 def _initialize(owner: str, database: Path) -> None:
     if owner == "framework":
         with FrameworkState(database):
@@ -56,7 +76,9 @@ def test_lifecycle_policy_covers_every_current_owner_table(tmp_path: Path, owner
 
 @pytest.mark.parametrize("owner,version,version_module,version_symbol", [
     ("framework", 22, "neocortex.persistence.framework_schema", "SCHEMA_VERSION"),
+    ("framework", 23, "neocortex.persistence.framework_schema", "SCHEMA_VERSION"),
     ("inventory", 13, "neocortex.deduplication.persistence.lifecycle", "SCHEMA_VERSION"),
+    ("inventory", 14, "neocortex.deduplication.persistence.lifecycle", "SCHEMA_VERSION"),
     ("catalog", 10, "neocortex.documents.document_catalog", "CATALOG_SCHEMA_VERSION"),
 ])
 def test_additive_reader_fence_preserves_prior_schema_and_rejects_older_reader(
@@ -66,17 +88,20 @@ def test_additive_reader_fence_preserves_prior_schema_and_rejects_older_reader(
     contract = STATE_STORE_REGISTRY.by_owner(owner)
     database = tmp_path / contract.database_name
     _initialize(owner, database)
-    # These immediate predecessor versions have the exact same physical DDL.
-    # The migration only raises the supported-reader fence in metadata.
     with closing(sqlite3.connect(database)) as connection, connection:
-        connection.execute("UPDATE metadata SET value=? WHERE key='schema_version'", (str(version),))
+        _prepare_previous_schema(connection, owner, version)
         connection.execute("INSERT INTO metadata(key,value) VALUES('fixture_evidence','retained')")
         schema = connection.execute("SELECT type,name,sql FROM sqlite_master ORDER BY name").fetchall()
     _initialize(owner, database)
     with closing(sqlite3.connect(database)) as connection:
-        assert connection.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone() == (str(version + 1),)
+        assert connection.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone() == (str(contract.expected_schema_version),)
         assert connection.execute("SELECT value FROM metadata WHERE key='fixture_evidence'").fetchone() == ("retained",)
-        assert connection.execute("SELECT type,name,sql FROM sqlite_master ORDER BY name").fetchall() == schema
+        migrated_schema = connection.execute(
+            "SELECT type,name,sql FROM sqlite_master ORDER BY name"
+        ).fetchall()
+        additions = _ADDITIVE_SCHEMA_OBJECTS[owner]
+        assert {row[1] for row in migrated_schema} - {row[1] for row in schema} == additions
+        assert [row for row in migrated_schema if row[1] not in additions] == schema
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
     before = database.read_bytes()
     monkeypatch.setattr(importlib.import_module(version_module), version_symbol, version)
@@ -87,7 +112,9 @@ def test_additive_reader_fence_preserves_prior_schema_and_rejects_older_reader(
 
 @pytest.mark.parametrize("owner,previous,missing_table", [
     ("framework", 22, "route_candidates"),
+    ("framework", 23, "route_candidates"),
     ("inventory", 13, "inventory_generation_heads"),
+    ("inventory", 14, "inventory_generation_heads"),
     ("catalog", 10, "catalog_publications"),
 ])
 def test_additive_reader_fence_does_not_repair_malformed_previous_schema(
@@ -96,7 +123,7 @@ def test_additive_reader_fence_does_not_repair_malformed_previous_schema(
     database = tmp_path / STATE_STORE_REGISTRY.by_owner(owner).database_name
     _initialize(owner, database)
     with closing(sqlite3.connect(database)) as connection, connection:
-        connection.execute("UPDATE metadata SET value=? WHERE key='schema_version'", (str(previous),))
+        _prepare_previous_schema(connection, owner, previous)
         connection.execute(f'DROP TABLE "{missing_table}"')
     with pytest.raises((RuntimeError, InventoryError)):
         _initialize(owner, database)

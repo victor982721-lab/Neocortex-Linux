@@ -840,12 +840,20 @@ class CodeRoute:
             **run.counters,
         )
         payload = asdict(summary)
-        state.complete_run(
-            run.require_analysis_run_id(),
-            payload,
-            partial=(self.config.max_documents is not None or self.config.selection.active),
-            graph_current=True,
+        with self._graph_admission() if reusable_projects is None else nullcontext():
+            state.complete_run(
+                run.require_analysis_run_id(),
+                payload,
+                partial=(self.config.max_documents is not None or self.config.selection.active),
+                graph_current=True,
+                cancellation_check=self.cancellation.checkpoint,
+            )
+        summary = replace(
+            summary,
+            publication_milliseconds=state.last_graph_publication_milliseconds,
+            graph_generation_reused=int(state.last_graph_publication_reused),
         )
+        payload = asdict(summary)
         self.framework_state.complete_route_phase(
             self.framework_run_id,
             self.route_name,

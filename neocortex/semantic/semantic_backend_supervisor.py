@@ -140,8 +140,8 @@ class DeadlineEmbeddingBackend(EmbeddingBackend):
         work_budget: SemanticWorkBudget,
         worker_target=_semantic_backend_worker,
     ) -> None:
-        if work_budget.deadline is None:
-            raise ValueError("deadline backend requires a finite invocation deadline")
+        if work_budget.deadline is None and work_budget.cancellation_check is None:
+            raise ValueError("deadline backend requires a finite invocation deadline or cancellation callback")
         self._model = model
         self._work_budget = work_budget
         self._context = multiprocessing.get_context("spawn")
@@ -212,9 +212,8 @@ class DeadlineEmbeddingBackend(EmbeddingBackend):
         assert self._process is not None
         while True:
             remaining = self._work_budget.remaining_seconds()
-            assert remaining is not None
             try:
-                return self._result_channel.get(timeout=min(0.1, remaining))
+                return self._result_channel.get(timeout=0.1 if remaining is None else min(0.1, remaining))
             except queue.Empty:
                 if not self._process.is_alive():
                     raise RuntimeError(
@@ -230,10 +229,9 @@ class DeadlineEmbeddingBackend(EmbeddingBackend):
         assert self._task_channel is not None
         try:
             remaining = self._work_budget.remaining_seconds()
-            assert remaining is not None
             self._task_channel.put(
                 (operation, request_id, payload),
-                timeout=min(1.0, remaining),
+                timeout=1.0 if remaining is None else min(1.0, remaining),
             )
             message = self._receive()
         except SemanticIndexDeadlineExceeded:
@@ -242,11 +240,14 @@ class DeadlineEmbeddingBackend(EmbeddingBackend):
         except queue.Full as exc:
             try:
                 self._work_budget.remaining_seconds()
-            except SemanticIndexDeadlineExceeded:
+            except BaseException:
                 self._discard(terminate=True)
                 raise
             self._discard(terminate=True)
             raise RuntimeError("semantic backend task queue did not drain") from exc
+        except BaseException:
+            self._discard(terminate=True)
+            raise
         if len(message) == 3 and message[0] == "ok" and message[1] == request_id:
             return message[2]
         if len(message) == 4 and message[0] == "error" and message[1] == request_id:

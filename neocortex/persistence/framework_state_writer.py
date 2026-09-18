@@ -41,7 +41,10 @@ from neocortex.persistence.sqlite_immutable import (
     ImmutableSQLiteUnavailable,
     SQLiteSnapshotBudget,
 )
-from neocortex.persistence.sqlite_writer_snapshot import writer_coordinated_sqlite_snapshot
+from neocortex.persistence.sqlite_writer_snapshot import (
+    SQLiteProgressConnection,
+    writer_coordinated_sqlite_snapshot,
+)
 from neocortex.persistence.framework_state_common import (
     CACHE_PRUNE_BATCH_SIZE,
     FileActionSpec,
@@ -165,6 +168,7 @@ def _copy_route_projection_rows(
 ) -> None:
     """Copy one projection stream without materializing its complete result."""
 
+    budget.checkpoint()
     with closing(source.execute(select_sql, select_parameters)) as rows:
         while True:
             budget.checkpoint()
@@ -484,7 +488,7 @@ def _acquire_framework_writer(
     """Bind SQLite acquisition to an existing or exclusively created inode."""
 
     if str(path) == ":memory:" and not existing_only:
-        return sqlite3.connect(path, timeout=60), None
+        return sqlite3.connect(path, timeout=60, factory=SQLiteProgressConnection), None
     flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
     try:
         try:
@@ -505,7 +509,9 @@ def _acquire_framework_writer(
         if not stat.S_ISREG(owner.st_mode):
             raise ImmutableSQLiteUnavailable("framework SQLite owner is not a regular file")
         target = existing_sqlite_uri(path) if existing_only else path
-        connection = sqlite3.connect(target, uri=existing_only, timeout=60)
+        connection = sqlite3.connect(
+            target, uri=existing_only, timeout=60, factory=SQLiteProgressConnection
+        )
         current = path.lstat()
         # No initialization writes have occurred yet. Compare the full file
         # metadata (except atime) against the descriptor held across connect.
@@ -972,6 +978,7 @@ class FrameworkState:
                 or route_capabilities.get(str(name), "safe_replay") == "not_resumable"
             )
         )
+        pending_stages = self._pending_organization_stages(run_id)
         return {
             "run_id": run_id,
             "status": str(row[0]),
@@ -979,10 +986,11 @@ class FrameworkState:
             "source_run_id": None if row[2] is None else int(row[2]),
             "resumed": str(row[1]) == "resume",
             "recoverable": str(row[0]) == "interrupted"
-            or bool(pending),
+            or bool(pending or pending_stages),
             "replayed": bool(skipped),
             "skipped": list(skipped),
             "pending": list(pending),
+            "pending_stages": list(pending_stages),
             "non_replayable": list(non_replayable),
             "route_input_sources": route_input_sources,
             "route_capabilities": route_capabilities,
@@ -2558,6 +2566,28 @@ class FrameworkState:
             latest[str(event["stage"])] = dict(event)
         return latest
 
+    def _pending_organization_stages(self, run_id: int) -> tuple[str, ...]:
+        latest = self.read_run_stage_state(run_id)
+        return tuple(
+            stage for stage in ("organization_plan", "organization_apply")
+            if stage in latest and latest[stage].get("status") not in {"completed", "skipped"}
+        )
+
+    def _check_organization_completion_locked(self, run_id: int) -> None:
+        """Keep durable organization obligations inside the terminal frontier."""
+
+        row = self._connection.execute(
+            "SELECT status FROM initial_runs WHERE run_id=?", (run_id,),
+        ).fetchone()
+        if row is None or str(row[0]) != "running":
+            return
+        pending = self._pending_organization_stages(run_id)
+        if pending:
+            raise RuntimeError(
+                f"run {run_id} cannot complete with pending organization stages: "
+                + ", ".join(pending)
+            )
+
     def require_operational_run(self, run_id: int) -> None:
         require_operational_identity(self._connection, "framework", run_id)
 
@@ -3019,6 +3049,7 @@ class FrameworkState:
             raise ValueError("portable inventory must publish one unreconciled full scan")
         with self._connection:
             self._check_run_completion_budget_locked(run_id)
+            self._check_organization_completion_locked(run_id)
             result = self._connection.execute(
                 "UPDATE initial_runs SET completed_ns=?, status='completed', "
                 "current_phase='completed',heartbeat_ns=?,end_usn=? "
@@ -3060,6 +3091,7 @@ class FrameworkState:
     def complete_operational_run(self, run_id: int) -> bool:
         with self._connection:
             self._check_run_completion_budget_locked(run_id)
+            self._check_organization_completion_locked(run_id)
             result = self._connection.execute(
                 """UPDATE initial_runs SET completed_ns=?,status='completed',
                 current_phase='completed',heartbeat_ns=?

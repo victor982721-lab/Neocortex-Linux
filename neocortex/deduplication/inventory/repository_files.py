@@ -8,6 +8,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from pathlib import Path
 
 from ..domain.models import FileSnapshot
+from ..domain.fingerprint_observation import FingerprintObservation, FingerprintReadFailure
 from ..fingerprinting import FULL_ALGORITHM, snapshot_path
 from .scan import id_blob as _id_blob
 from .repository_scans import resolve_scan_id
@@ -145,6 +146,30 @@ class FileRepositoryMixin:
     ) -> bytes | None:
         """Use a cache hit only when its stored full-content digest still matches."""
 
+        from ..domain.errors import FileChangedError
+
+        try:
+            observation = self.observe_fingerprint(snapshot, algorithm, cached_only=True)
+        except (OSError, FileChangedError):
+            return None
+        return observation.digest if observation is not None and observation.cache_hit else None
+
+    def observe_fingerprint(
+        self,
+        snapshot: FileSnapshot,
+        algorithm: str,
+        *,
+        cached_only: bool = False,
+    ) -> FingerprintObservation | None:
+        """Validate once and retain the observed full digest even on a cache miss."""
+
+        from ..fingerprinting import (
+            PARTIAL_ALGORITHM, fingerprint_change_version,
+            full_fingerprint, partial_fingerprint, require_fingerprint_change_version,
+        )
+
+        if algorithm not in {FULL_ALGORITHM, PARTIAL_ALGORITHM}:
+            raise ValueError("unsupported planning fingerprint algorithm")
         row = self._connection.execute(
             "SELECT f.digest,e.content_digest FROM fingerprints f "
             "JOIN fingerprint_content_evidence e ON "
@@ -161,18 +186,52 @@ class FileRepositoryMixin:
                 algorithm,
             ),
         ).fetchone()
-        if row is None:
+        if row is None and cached_only:
             return None
         from ..domain.errors import FileChangedError
-        from ..fingerprinting import full_fingerprint
+
+        full_reads = 0
+        partial_reads = 0
+        full_bytes = 0
+        partial_bytes = 0
+
+        def observe_full(count: int) -> None:
+            nonlocal full_bytes
+            full_bytes += count
+
+        def observe_partial(count: int) -> None:
+            nonlocal partial_bytes
+            partial_bytes += count
 
         try:
-            current_content_digest = full_fingerprint(snapshot)
-        except (OSError, FileChangedError):
-            return None
-        if current_content_digest != bytes(row[1]):
-            return None
-        return bytes(row[0])
+            ctime_ns = fingerprint_change_version(snapshot)
+            full_reads = 1
+            observed_full = full_fingerprint(snapshot, read_observer=observe_full)
+            cache_hit = row is not None and observed_full == bytes(row[1])
+            if algorithm == FULL_ALGORITHM:
+                digest = observed_full
+                cache_hit = row is not None and cache_hit and bytes(row[0]) == digest
+            elif cache_hit and row is not None:
+                digest = bytes(row[0])
+            else:
+                partial_reads = 1
+                digest = partial_fingerprint(snapshot, read_observer=observe_partial)
+            require_fingerprint_change_version(snapshot, ctime_ns)
+        except (OSError, FileChangedError) as exc:
+            raise FingerprintReadFailure(
+                str(exc), full_reads=full_reads, partial_reads=partial_reads,
+                full_read_bytes=full_bytes, partial_read_bytes=partial_bytes,
+                validation_read_bytes=full_bytes if row is not None else 0,
+            ) from exc
+        return FingerprintObservation(
+            snapshot=snapshot, algorithm=algorithm, digest=digest, full_digest=observed_full,
+            # A full digest is freshly computed even when it confirms a cache
+            # entry. Cache validity controls persistence, not proof provenance.
+            ctime_ns=ctime_ns, computed=algorithm == FULL_ALGORITHM or not cache_hit, cache_hit=cache_hit,
+            full_reads=full_reads, partial_reads=partial_reads, full_read_bytes=full_bytes,
+            partial_read_bytes=partial_bytes,
+            validation_read_bytes=full_bytes if row is not None else 0,
+        )
 
     def store_fingerprint(self, snapshot: FileSnapshot, algorithm: str, digest: bytes) -> None:
         with self._connection:

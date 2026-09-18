@@ -317,7 +317,7 @@ def test_populated_framework_v21_migrates_exactly_without_reviewtask_changes(
         assert {row[0] for row in migrated_review_sql if row[0] in changed} == changed
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         assert connection.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
-        framework_schema.validate_framework_schema_v22(connection)
+        framework_schema.validate_framework_schema(connection)
 
 
 def test_framework_v21_migration_failure_rolls_back_schema_version_and_rows(
@@ -445,7 +445,7 @@ def test_current_owner_validation_is_read_only_and_sidecar_free(tmp_path: Path) 
         pass
     framework_before = framework_path.read_bytes()
     with immutable_sqlite_database(framework_path) as connection:
-        framework_schema.validate_framework_schema_v22(connection)
+        framework_schema.validate_framework_schema(connection)
     assert framework_path.read_bytes() == framework_before
     assert not Path(f"{framework_path}-wal").exists()
     assert not Path(f"{framework_path}-shm").exists()

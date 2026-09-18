@@ -279,7 +279,7 @@ _VALIDATOR_SPECS: dict[str, _ValidatorSpec] = {
         "neocortex.deduplication.persistence.validation", "validate_inventory_schema"
     ),
     "framework": _ValidatorSpec(
-        "neocortex.persistence.framework_schema", "validate_framework_schema_v22"
+        "neocortex.persistence.framework_schema", "validate_framework_schema"
     ),
     "catalog": _ValidatorSpec(
         "neocortex.documents.document_catalog_schema",

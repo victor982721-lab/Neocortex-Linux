@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 import unittest
+from contextlib import ExitStack
 from unittest.mock import patch
 
 from neocortex.runtime.control.cpu_runtime import CpuLoadSampler, CpuTimes
@@ -112,6 +113,80 @@ class GlobalResourceCoordinatorTests(unittest.TestCase):
         self.assertEqual(summary.min_free_memory_bytes, (16 * gib) // 6)
         self.assertEqual(summary.min_free_commit_bytes, (16 * gib) // 6)
         self.assertEqual(summary.cpu_slots, 15)
+
+    def test_default_cpu_sample_does_not_count_admitted_work_twice(self):
+        snapshot = MemorySnapshot(10_000, 10_000, 20_000, 20_000)
+        current_load = [0.0]
+        with (
+            patch(
+                "neocortex.runtime.control.global_resources.memory_snapshot",
+                return_value=snapshot,
+            ),
+            patch(
+                "neocortex.runtime.control.global_resources.CpuLoadSampler.sample",
+                side_effect=lambda: current_load[0],
+            ),
+        ):
+            coordinator = GlobalResourceCoordinator(
+                ("pdf",),
+                GlobalResourceLimits(
+                    memory_budget_bytes=100,
+                    min_free_memory_bytes=0,
+                    min_free_commit_bytes=0,
+                    cpu_slots=4,
+                ),
+            )
+            # A broken admission policy would wait behind its own live jobs.
+            # Fail immediately instead of relying on a wall-clock timeout.
+            with patch.object(
+                coordinator._condition, "wait", side_effect=AssertionError("self-throttled")
+            ), ExitStack() as active:
+                active.enter_context(coordinator.admit("pdf", 10))
+                current_load[0] = 95.0
+                for _ in range(3):
+                    coordinator._last_cpu_sample_at = None
+                    active.enter_context(coordinator.admit("pdf", 10))
+                self.assertEqual(coordinator.route_active_request_count("pdf"), 4)
+                self.assertEqual(coordinator.summary().min_effective_cpu_slots, 4)
+                self.assertEqual(coordinator.summary().max_observed_cpu_load_percent, 95.0)
+            self.assertEqual(coordinator.route_active_request_count("pdf"), 0)
+
+    def test_default_cpu_sample_still_obeys_a_reduced_live_quota(self):
+        snapshot = MemorySnapshot(10_000, 10_000, 20_000, 20_000)
+        effective_cpus = [5]
+        with (
+            patch(
+                "neocortex.runtime.control.global_resources.memory_snapshot",
+                return_value=snapshot,
+            ),
+            patch(
+                "neocortex.runtime.control.global_resources.effective_cpu_count",
+                side_effect=lambda: effective_cpus[0],
+            ),
+            patch(
+                "neocortex.runtime.control.global_resources.CpuLoadSampler.sample",
+                return_value=95.0,
+            ),
+        ):
+            coordinator = GlobalResourceCoordinator(
+                ("pdf",),
+                GlobalResourceLimits(
+                    memory_budget_bytes=100,
+                    min_free_memory_bytes=0,
+                    min_free_commit_bytes=0,
+                ),
+            )
+            with coordinator.admit("pdf", 10):
+                effective_cpus[0] = 2
+                with patch.object(
+                    coordinator._condition, "wait", side_effect=RuntimeError("quota wait")
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "quota wait"):
+                        with coordinator.admit("pdf", 10):
+                            self.fail("the reduced cgroup quota was ignored")
+                self.assertEqual(coordinator.route_active_request_count("pdf"), 1)
+                self.assertEqual(coordinator.summary().min_effective_cpu_slots, 1)
+            self.assertEqual(coordinator.route_active_request_count("pdf"), 0)
 
     def test_live_scale_budget_can_admit_four_bounded_pdf_workers(self):
         gib = 1024 * 1024 * 1024

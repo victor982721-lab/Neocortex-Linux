@@ -475,6 +475,8 @@ class CodeRouteSummary:
     graph_milliseconds: int = 0
     fts_rows_repaired: int = 0
     # Appended keyword-only fields keep older positional consumers compatible.
+    publication_milliseconds: int = field(default=0, kw_only=True)
+    graph_generation_reused: int = field(default=0, kw_only=True)
     catalog_candidates: int = field(default=0, kw_only=True)
     catalog_classified: int = field(default=0, kw_only=True)
     catalog_cache_hits: int = field(default=0, kw_only=True)

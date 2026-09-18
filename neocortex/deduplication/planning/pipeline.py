@@ -26,10 +26,12 @@ from ..domain.models import (
     PlanStatistics,
     VerificationMode,
 )
+from ..domain.fingerprint_observation import ExactComparisonObservation, FingerprintObservation, FingerprintReadFailure
 from ..fingerprinting import (
     FULL_ALGORITHM,
     PARTIAL_ALGORITHM,
     full_fingerprint,
+    fingerprint_change_version,
     stat_matches_snapshot,
 )
 from ..inventory.index import DedupIndex
@@ -45,13 +47,13 @@ FINGERPRINT_WRITE_BATCH_SIZE = 512
 MAX_REDUNDANT_MEMBERS_PER_GROUP = 1024
 MAX_EXACT_HASH_COLLISION_SETS = 128
 
-type FingerprintRow = tuple[FileSnapshot, bytes, bool, bytes | None]
+type FingerprintRow = tuple[FileSnapshot, bytes, bool, bytes | None, bool]
 type SnapshotCapture = Callable[[str], FileSnapshot]
-type ExactMatcher = Callable[[FileSnapshot, FileSnapshot], bool]
+type ExactMatcher = Callable[[FileSnapshot, FileSnapshot], bool | ExactComparisonObservation]
 
 
 class FingerprintProvider(Protocol):
-    def __call__(self, snapshot: FileSnapshot, *, partial: bool) -> tuple[bytes, bool]: ...
+    def __call__(self, snapshot: FileSnapshot, *, partial: bool) -> FingerprintObservation | tuple[bytes, bool]: ...
 
 
 @dataclass(slots=True)
@@ -61,6 +63,22 @@ class _PlanCounters:
     full_count: int = 0
     comparisons: int = 0
     failures: int = 0
+    hash_read_bytes: int = 0
+    cache_validation_reads: int = 0
+    cache_validation_bytes: int = 0
+    cache_hits: int = 0
+    full_digest_reuses: int = 0
+    exact_comparison_bytes: int = 0
+
+
+def _record_failed_reads(counters: _PlanCounters, exc: BaseException) -> None:
+    if isinstance(exc, FingerprintReadFailure):
+        counters.full_count += exc.full_reads
+        counters.partial_count += exc.partial_reads
+        counters.hash_read_bytes += exc.full_read_bytes + exc.partial_read_bytes
+        counters.cache_validation_reads += int(exc.validation_read_bytes > 0)
+        counters.cache_validation_bytes += exc.validation_read_bytes
+        counters.exact_comparison_bytes += exc.exact_comparison_bytes
 
 
 class _PlanningProgress:
@@ -230,28 +248,28 @@ def _store_fingerprints(index: DedupIndex, stage: str, batch: list[FingerprintRo
         return
     index.store_planning_fingerprints(
         stage,
-        ((snapshot, digest) for snapshot, digest, _computed, _content in batch),
+        ((snapshot, digest) for snapshot, digest, _computed, _content, _cache_hit in batch),
         computed_identities=frozenset(
             snapshot.identity
-            for snapshot, _digest, computed, _content in batch
+            for snapshot, _digest, computed, _content, _cache_hit in batch
             if computed
         ),
     )
-    computed_rows = [
+    cache_updates = [
         (snapshot, digest)
-        for snapshot, digest, computed, _content in batch
-        if computed
+        for snapshot, digest, computed, _content, cache_hit in batch
+        if computed and not cache_hit
     ]
-    if computed_rows:
+    if cache_updates:
         algorithm = PARTIAL_ALGORITHM if stage == "partial" else FULL_ALGORITHM
         content_digests = {
             snapshot.identity: content
-            for snapshot, _digest, computed, content in batch
-            if computed and content is not None
+            for snapshot, _digest, computed, content, cache_hit in batch
+            if computed and not cache_hit and content is not None
         }
         index.store_fingerprints(
             algorithm,
-            computed_rows,
+            cache_updates,
             content_digests=content_digests,
         )
     batch.clear()
@@ -309,10 +327,17 @@ class _CollisionGroupBuilder:
             self._work.report("Comparando contenido exacto", force=True)
             try:
                 self._counters.comparisons += 1
-                if self._exact_matcher(representative, snapshot):
+                comparison = self._exact_matcher(representative, snapshot)
+                if isinstance(comparison, ExactComparisonObservation):
+                    self._counters.exact_comparison_bytes += comparison.read_bytes
+                    equal = comparison.equal
+                else:
+                    equal = comparison
+                if equal:
                     self._redundant_chunks[position].append(snapshot)
                     return True
-            except FileChangedError:
+            except FileChangedError as exc:
+                _record_failed_reads(self._counters, exc)
                 self._counters.failures += 1
                 return None
             finally:
@@ -433,6 +458,7 @@ class PlanningSession:
         stage = "partial" if partial else "full"
         batch: list[FingerprintRow] = []
         observations: list[tuple[FileSnapshot, KeeperRank, int]] = []
+        full_observations: list[FingerprintObservation] = []
         for recorded in self._index.snapshots_by_size(self._scan_id, size):
             try:
                 snapshot = self._capture_snapshot(recorded.path)
@@ -448,7 +474,8 @@ class PlanningSession:
                 if len(observations) >= FINGERPRINT_WRITE_BATCH_SIZE:
                     self._index.store_planning_observations(observations)
                     observations.clear()
-            except (OSError, FileChangedError):
+            except (OSError, FileChangedError) as exc:
+                _record_failed_reads(self._counters, exc)
                 self._counters.failures += 1
             finally:
                 self._work.complete("Validando identidades y alias físicos")
@@ -457,20 +484,22 @@ class PlanningSession:
             self._work.extend(1)
             try:
                 self._counters.size_candidates += 1
-                digest, computed = self._fingerprint(snapshot, partial=partial)
-                self._count_fingerprint(partial=partial, computed=computed)
-                content_digest = (
-                    full_fingerprint(snapshot) if partial and computed else digest
-                )
-                batch.append((snapshot, digest, computed, content_digest))
+                observation = self._observe_fingerprint(snapshot, partial=partial)
+                batch.append((snapshot, observation.digest, observation.computed, observation.full_digest, observation.cache_hit))
+                if partial:
+                    full_observations.append(observation)
                 if len(batch) >= FINGERPRINT_WRITE_BATCH_SIZE:
                     _store_fingerprints(self._index, stage, batch)
-            except (OSError, FileChangedError):
+                    self._index.store_planning_full_observations(full_observations)
+                    full_observations.clear()
+            except (OSError, FileChangedError) as exc:
+                _record_failed_reads(self._counters, exc)
                 self._counters.failures += 1
             self._work.complete(
                 "Calculando firmas parciales" if partial else "Calculando hashes completos"
             )
         _store_fingerprints(self._index, stage, batch)
+        self._index.store_planning_full_observations(full_observations)
 
     @staticmethod
     def _matches_recorded(snapshot: FileSnapshot, recorded: FileSnapshot) -> bool:
@@ -481,13 +510,30 @@ class PlanningSession:
             and snapshot.birthtime_ns == recorded.birthtime_ns
         )
 
-    def _count_fingerprint(self, *, partial: bool, computed: bool) -> None:
-        if not computed:
-            return
-        if partial:
-            self._counters.partial_count += 1
-        else:
-            self._counters.full_count += 1
+    def _observe_fingerprint(self, snapshot: FileSnapshot, *, partial: bool) -> FingerprintObservation:
+        result = self._fingerprint(snapshot, partial=partial)
+        if not isinstance(result, FingerprintObservation):
+            # Preserve the established injected-provider seam used for
+            # adversarial hash-collision tests. Production returns evidence.
+            digest, computed = result
+            full = full_fingerprint(snapshot) if partial else digest
+            result = FingerprintObservation(
+                snapshot=snapshot, algorithm=PARTIAL_ALGORITHM if partial else FULL_ALGORITHM,
+                digest=digest, full_digest=full, ctime_ns=fingerprint_change_version(snapshot),
+                computed=computed, cache_hit=not computed, full_reads=int(partial or computed),
+                partial_reads=int(partial and computed), full_read_bytes=snapshot.size if partial or computed else 0,
+            )
+        self._count_observation(result)
+        return result
+
+    def _count_observation(self, result: FingerprintObservation) -> None:
+        self._counters.partial_count += result.partial_reads
+        self._counters.full_count += result.full_reads
+        self._counters.hash_read_bytes += result.full_read_bytes + result.partial_read_bytes
+        self._counters.cache_validation_reads += int(result.validation_read_bytes > 0)
+        self._counters.cache_validation_bytes += result.validation_read_bytes
+        self._counters.cache_hits += result.cache_hit
+        self._counters.full_digest_reuses += result.reused_full_digest
 
     def _fingerprint_partial_collisions(self) -> None:
         full_candidates = self._index.planning_collision_member_count("partial")
@@ -496,12 +542,16 @@ class PlanningSession:
         batch: list[FingerprintRow] = []
         for _partial_digest, snapshot in self._index.iter_planning_collision_members("partial"):
             try:
-                digest, computed = self._fingerprint(snapshot, partial=False)
-                self._counters.full_count += computed
-                batch.append((snapshot, digest, computed, digest if computed else None))
+                observation = self._index.planning_full_observation(snapshot)
+                if observation is None:
+                    observation = self._observe_fingerprint(snapshot, partial=False)
+                else:
+                    self._count_observation(observation)
+                batch.append((snapshot, observation.digest, observation.computed, observation.full_digest, observation.cache_hit))
                 if len(batch) >= FINGERPRINT_WRITE_BATCH_SIZE:
                     _store_fingerprints(self._index, "full", batch)
-            except FileChangedError:
+            except FileChangedError as exc:
+                _record_failed_reads(self._counters, exc)
                 self._counters.failures += 1
             self._work.complete("Calculando hashes completos")
         _store_fingerprints(self._index, "full", batch)
@@ -537,6 +587,12 @@ class PlanningSession:
                 full_hash_files=self._counters.full_count,
                 exact_compare_files=self._counters.comparisons,
                 changed_or_unreadable_files=self._counters.failures,
+                hash_read_bytes=self._counters.hash_read_bytes,
+                cache_validation_reads=self._counters.cache_validation_reads,
+                cache_validation_bytes=self._counters.cache_validation_bytes,
+                fingerprint_cache_hits=self._counters.cache_hits,
+                full_digest_reuses=self._counters.full_digest_reuses,
+                exact_comparison_bytes=self._counters.exact_comparison_bytes,
             ),
             total_groups=self._groups.group_count,
             total_redundant_files=self._groups.redundant_files,

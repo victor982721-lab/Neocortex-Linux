@@ -49,6 +49,9 @@ def _run(root: Path, state: Path, *, route: str = "none"):
                 route=route,
                 code_candidate_scope="broad",
                 document_catalog_enabled=False,
+                global_memory_budget_bytes=256 * 1024**2,
+                global_min_free_memory_bytes=128 * 1024**2,
+                global_min_free_commit_bytes=128 * 1024**2,
             )
         ).run_initial()
 
@@ -84,6 +87,7 @@ def test_portable_normal_run_is_published_and_code_remains_incremental(
 
     assert first.inventory_mode == second.inventory_mode == "full"
     assert first.inventory_attempts == second.inventory_attempts == 1
+    assert first.scan.scan_id == second.scan.scan_id
     assert first.reconciliation_records == second.reconciliation_records == 0
     assert first.journal_before is first.journal_after is None
     assert second.journal_before is second.journal_after is None
@@ -102,6 +106,8 @@ def test_portable_normal_run_is_published_and_code_remains_incremental(
 
     assert changed.code is not None and replay.code is not None
     assert changed.scan.files_seen == replay.scan.files_seen == 20
+    assert changed.scan.scan_id != first.scan.scan_id
+    assert changed.scan.scan_id == replay.scan.scan_id
     assert (changed.code.processed, changed.code.cache_hits) == (3, 17)
     assert (replay.code.processed, replay.code.cache_hits) == (0, 20)
     assert _snapshot(state, root, changed.scan.scan_id) == _snapshot(
@@ -153,6 +159,9 @@ def test_portable_snapshot_matches_the_usn_inventory_for_the_same_tree(
                 root=root,
                 state_directory=usn_state,
                 document_catalog_enabled=False,
+                global_memory_budget_bytes=256 * 1024**2,
+                global_min_free_memory_bytes=128 * 1024**2,
+                global_min_free_commit_bytes=128 * 1024**2,
             )
         )
         usn = usn_orchestrator.run_initial()
@@ -200,6 +209,9 @@ def test_portable_run_recovers_after_an_interruption(tmp_path: Path) -> None:
                 root=root,
                 state_directory=state,
                 document_catalog_enabled=False,
+                global_memory_budget_bytes=256 * 1024**2,
+                global_min_free_memory_bytes=128 * 1024**2,
+                global_min_free_commit_bytes=128 * 1024**2,
             )
         ).run_initial()
 
