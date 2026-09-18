@@ -180,12 +180,14 @@ else:
     os.close(ready_write)
     assert os.read(ready_read, 1) == b"1"
     os.close(ready_read)
+    os._exit(0)
 """
     started = time.monotonic()
     try:
         with pytest.raises(RuntimeError, match="cleanup incomplete"):
             run_bounded_capture(
-                (*_python(parent_code), str(pid_path), retained_stream),
+                (sys.executable, "-I", "-S", "-B", "-c", parent_code,
+                 str(pid_path), retained_stream),
                 timeout_seconds=0.25,
                 stdout_limit_bytes=1024,
                 stderr_limit_bytes=1024,

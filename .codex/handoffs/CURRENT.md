@@ -1,7 +1,7 @@
 # Handoff operativo vigente — NeoCortex
 
 **Ronda:** NEO-AUDIT-UNIFIED-20260918.
-**Actualización:** 2026-09-18T10:05:06.715953+00:00.
+**Actualización:** 2026-09-18T10:39:55.586479+00:00.
 **Objetivo autorizado:** corregir las auditorías de limpieza, EndToEnd y Text,
 publicar e integrar el código remoto, construir e instalar la suite offline y
 validarla en un laboratorio aislado. La autorización incluye preparación local
@@ -11,9 +11,9 @@ de modelos y herramientas; no requiere nuevas confirmaciones de esta ronda.
 
 El remoto verificado al iniciar es `victor982721-lab/Neocortex-Linux`,
 `main=f3bbf439d7c5b192f1509b1675bc64a139602320`. La candidata
-`127ab8df69ebfb21bbfd05eb1b5255400f25caa8` está publicada en
+`0f14ac994dfccc554ba58c26f8b579a56a6903c4` está publicada en
 `fix/unified-audit-20260918`; la integración de esta ronda a `main` permanece
-pendiente de la aceptación final. Este commit estabiliza las dos fixtures identificadas en R5; su SHA se obtendrá de Git después de publicarlo. No se reescribe historia. El cierre exige
+pendiente de la aceptación final. Este commit aísla el arranque y cierre del auxiliar de pipes identificado en R6; su SHA se obtendrá de Git después de publicarlo. No se reescribe historia. El cierre exige
 consultar otra vez el remoto y verificar `HEAD == main == origin/main` y árbol
 limpio; la referencia inicial no acredita ese cierre.
 
@@ -179,9 +179,32 @@ estado, sesión Plasma/KIO y entorno personal no se han abierto ni modificado.
 El resultado offscreen no certifica una sesión gráfica real. Las evidencias,
 activos y herramientas del laboratorio permanecen fuera del árbol productivo.
 
+## Resultado integral R6 y última fixture de pipes
+
+R6 sobre `0f14ac994dfccc554ba58c26f8b579a56a6903c4` terminó con 8.644 casos:
+8.570 aprobados, 73 omitidos y uno fallido, sin casos pendientes. Las 49
+subpruebas aprobaron por separado. Los dos fallos R5 ya pasaron y los 1.476
+archivos congelados permanecieron idénticos. R6 no es una aceptación aprobada.
+
+El único fallo fue la variante both de retained pipes. El runtime devolvió
+TimeoutExpired en 0,3029 s para un deadline de 0,25 s y tolerancia de reap
+0,05 s; no se observó a tiempo la salida normal del líder necesaria para la
+rama cleanup incomplete. El descendiente publicó su PID, pero el registro no
+identifica si la demora fue del arranque, ACK, ejecución o cierre del líder.
+No se atribuye una causa productiva que la evidencia no demuestra.
+
+La fixture conserva fork, ACK, setsid, los pipes retenidos, el deadline de
+0,25 s, la cota total menor de 0,5 s y RuntimeError(cleanup incomplete).
+El auxiliar ahora usa -I -S -B y el líder termina con os._exit(0) después del
+ACK; se excluyen site/.pth y la finalización del intérprete de un caso que sólo
+requiere os/sys/time. El runtime productivo y sus presupuestos no cambiaron.
+El módulo completo pasó 19 pruebas y omitió tres exclusivas de Windows en
+5,18 s; quince procesos nuevos, cinco por cada variante stdout/stderr/both,
+pasaron entre 0,2509 y 0,2597 s. La nueva R7 verificará la fuente congelada.
+
 ## Siguiente gate
 
-1. Ejecutar R6 completa sobre la candidata con las fixtures estabilizadas de R5.
+1. Ejecutar R7 completa sobre la candidata con el auxiliar de pipes aislado.
 2. Publicar la candidata corregida; instalar y verificar bajo red denegada,
    conservando receipts y rollback, y validar la interfaz pública instalada.
 3. Integrar a main, comprobar el remoto vivo y actualizar este handoff con los
