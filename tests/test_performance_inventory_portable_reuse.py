@@ -76,7 +76,7 @@ def test_same_stat_rewrite_creates_successor_without_corrupting_history(tmp_path
         changed = _prepare(index, root)
         assert changed.scan.scan_id != first.scan.scan_id
         assert changed.changed_files == 1
-        assert changed.persistent_file_rows_written == 3  # Two COW rows plus one upsert.
+        assert changed.persistent_file_rows_written == 2  # Materialize the two current observations once.
         assert index._connection.execute(
             "SELECT status FROM duplicate_plan_heads WHERE scan_id=?", (first.scan.scan_id,),
         ).fetchone()[0] == "superseded"
@@ -190,7 +190,7 @@ def test_sql_cancellation_rolls_back_and_clears_handler(tmp_path: Path, phase: s
                 reached = True
             elif phase == "copy" and sql.startswith("INSERT INTO files("):
                 reached = True
-            elif phase == "digest" and sql.startswith("SELECT path,volume_id,file_id,size,mtime_ns,birthtime_ns FROM files WHERE scan_id="):
+            elif phase == "digest" and sql.startswith("SELECT path,volume_id,file_id,size,mtime_ns,birthtime_ns FROM temp.portable_observed_files"):
                 reached = True
 
         index._connection.set_trace_callback(trace)

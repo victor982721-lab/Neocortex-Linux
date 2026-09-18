@@ -32,7 +32,11 @@ from neocortex.capabilities.formats.archive import state as archive_state
 from neocortex.capabilities.formats.docx.schema import validate_docx_schema
 from neocortex.capabilities.formats.office import state as office_state
 from neocortex.capabilities.formats.video import state as video_state
-from neocortex.code.code_schema import validate_code_schema, validate_code_schema_v7
+from neocortex.code.code_schema import (
+    validate_code_schema,
+    validate_code_schema_v7,
+    validate_code_schema_v8,
+)
 from neocortex.persistence.framework_schema import (
     validate_framework_schema_v19,
     validate_framework_schema_v20,
@@ -360,7 +364,10 @@ _OWNER_VALIDATORS: dict[
             (9, _validate_semantic_legacy_v9),
         ),
     ),
-    "code": (validate_code_schema, ((7, validate_code_schema_v7),)),
+    "code": (
+        validate_code_schema,
+        ((7, validate_code_schema_v7), (8, validate_code_schema_v8)),
+    ),
     "archive": (_validate_archive, ()),
     "text": (_validate_text, ()),
 }

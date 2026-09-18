@@ -5,8 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import stat
+import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, is_dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -14,6 +17,94 @@ if TYPE_CHECKING:
 
 RECEIPT_SCHEMA = "neocortex.catalog-observation/v1"
 RECEIPT_KEY = "publication_observation"
+
+
+def _catalog_database_stamp(connection: sqlite3.Connection) -> tuple[str, tuple[int, ...] | None]:
+    for row in connection.execute("PRAGMA database_list"):
+        if row[1] != "main":
+            continue
+        path = str(row[2])
+        if not path:
+            return path, None
+        metadata = Path(path).stat(follow_symlinks=False)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("catalog observation requires a regular database owner")
+        return path, (
+            metadata.st_dev, metadata.st_ino, metadata.st_size,
+            metadata.st_mtime_ns, metadata.st_ctime_ns,
+        )
+    raise ValueError("catalog observation has no main database owner")
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogReadFence:
+    """Bind completed reads to the same connection's next writer transaction.
+
+    Capture before BEGIN DEFERRED, then close that snapshot before comparing
+    under BEGIN IMMEDIATE. data_version detects other connections' commits;
+    total_changes also rejects local writes, including rolled-back writes.
+    The physical stamp rejects replacement of the file behind this connection.
+    This is short-lived evidence, never a durable substitute for validation.
+    """
+
+    data_version: int
+    total_changes: int
+    database_stamp: tuple[str, tuple[int, ...] | None]
+
+    @classmethod
+    def capture(cls, connection: sqlite3.Connection) -> CatalogReadFence:
+        if connection.in_transaction:
+            raise ValueError("catalog observation requires a fresh read transaction")
+        return cls(
+            data_version=int(connection.execute("PRAGMA main.data_version").fetchone()[0]),
+            total_changes=connection.total_changes,
+            database_stamp=_catalog_database_stamp(connection),
+        )
+
+    def matches(self, connection: sqlite3.Connection) -> bool:
+        try:
+            return (
+                connection.total_changes == self.total_changes
+                and int(connection.execute("PRAGMA main.data_version").fetchone()[0]) == self.data_version
+                and _catalog_database_stamp(connection) == self.database_stamp
+            )
+        except (OSError, ValueError):
+            return False
+
+
+def begin_catalog_write(connection: sqlite3.Connection, cancellation: CancellationToken | None) -> None:
+    """Admit cancellation between bounded SQLite busy waits.
+
+    The caller has closed its read snapshot and removed its SQL progress
+    callback. SQLite does not call that callback while its busy handler waits.
+    Keep the original total wait allowance and restore it on every exit.
+    """
+
+    if cancellation is None:
+        connection.execute("BEGIN IMMEDIATE")
+        return
+    original_timeout = int(connection.execute("PRAGMA busy_timeout").fetchone()[0])
+    started = time.monotonic()
+    try:
+        while True:
+            cancellation.checkpoint()
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            remaining_ms = max(0, original_timeout - elapsed_ms)
+            connection.execute(f"PRAGMA busy_timeout={min(100, remaining_ms)}")
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                return
+            except sqlite3.OperationalError as exc:
+                cancellation.checkpoint()
+                error_code = getattr(exc, "sqlite_errorcode", None)
+                if (
+                    error_code is None
+                    or error_code & 0xFF != sqlite3.SQLITE_BUSY
+                    or (time.monotonic() - started) * 1000 >= original_timeout
+                ):
+                    raise
+    finally:
+        connection.execute(f"PRAGMA busy_timeout={original_timeout}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,4 +272,3 @@ def current_projection_matches(connection: sqlite3.Connection, generation_id: in
         connection.execute(f"SELECT 1 FROM ({current} EXCEPT {published}) LIMIT 1", (source_kind, generation_id)).fetchone() is None
         and connection.execute(f"SELECT 1 FROM ({published} EXCEPT {current}) LIMIT 1", (generation_id, source_kind)).fetchone() is None
     )
-

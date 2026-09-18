@@ -1198,6 +1198,7 @@ class GlobalResourceCoordinator:
         native_threads: int = 0,
         phase: str | None = None,
         resident_key: str | None = None,
+        cancellation: CancellationToken | None = None,
     ):
         """Wait for and hold one bounded route admission.
 
@@ -1209,6 +1210,8 @@ class GlobalResourceCoordinator:
         """
 
         self.cancellation.checkpoint()
+        if cancellation is not None:
+            cancellation.checkpoint()
         if route_name not in self._queues:
             raise ValueError(f"route is not coordinated: {route_name}")
         try:
@@ -1311,7 +1314,9 @@ class GlobalResourceCoordinator:
                 request.queued = True
                 self._condition.notify_all()
                 while True:
-                    if self.cancellation.is_cancelled:
+                    if self.cancellation.is_cancelled or (
+                        cancellation is not None and cancellation.is_cancelled
+                    ):
                         raise CancellationRequested(
                             f"{route_name} cancelled while waiting for global resources"
                         )
@@ -1322,6 +1327,9 @@ class GlobalResourceCoordinator:
                         and self._queues[route_name]
                         and self._queues[route_name][0] is request
                     ):
+                        self.cancellation.checkpoint()
+                        if cancellation is not None:
+                            cancellation.checkpoint()
                         self._grant_request_locked(request, route_index)
                         self._condition.notify_all()
                         break
@@ -1364,6 +1372,8 @@ class GlobalResourceCoordinator:
                     else:
                         headroom_blocked_since = None
                     wait_seconds = self.limits.poll_interval_seconds
+                    if cancellation is not None:
+                        wait_seconds = min(wait_seconds, 0.1)
                     if remaining is not None:
                         wait_seconds = min(wait_seconds, remaining)
                     self._condition.wait(wait_seconds)
@@ -1524,9 +1534,16 @@ class GlobalResourceCoordinator:
 
 
 class CoordinatedMemoryGate:
-    def __init__(self, coordinator: GlobalResourceCoordinator, route_name: str):
+    def __init__(
+        self,
+        coordinator: GlobalResourceCoordinator,
+        route_name: str,
+        *,
+        cancellation: CancellationToken | None = None,
+    ):
         self.coordinator = coordinator
         self.route_name = route_name
+        self.cancellation = cancellation
 
     @property
     def peak_reserved_bytes(self) -> int:
@@ -1542,6 +1559,13 @@ class CoordinatedMemoryGate:
 
     @contextmanager
     def admit(self, estimated_bytes: int):
-        with self.coordinator.admit(self.route_name, estimated_bytes, 1):
+        admission = (
+            self.coordinator.admit(self.route_name, estimated_bytes, 1)
+            if self.cancellation is None
+            else self.coordinator.admit(
+                self.route_name, estimated_bytes, 1, cancellation=self.cancellation
+            )
+        )
+        with admission:
             yield
 # endregion [03]

@@ -18,9 +18,15 @@ from dataclasses import dataclass, field
 from typing import Iterator
 
 from .code_graph_revision import graph_revision
+from .code_graph_blocks import (
+    GRAPH_BLOCK_TABLES,
+    INPUT_ROWS_SQL,
+    MEMBER_ROWS_SQL,
+    partition_keys,
+)
 
 
-GENERATION_SCHEMA_VERSION = 1
+GENERATION_SCHEMA_VERSION = 2
 DEFAULT_HEAD_NAME = "default"
 _MAX_TEXT = 256
 _MAX_JSON_BYTES = 256 * 1024
@@ -342,13 +348,13 @@ class CodeGraphGenerationStore:
         if not isinstance(connection, sqlite3.Connection):
             raise TypeError("graph generation store requires a sqlite3 connection")
         self._connection = connection
-        self._validate_schema()
+        self._shared_blocks = self._validate_schema() == 2
 
     @property
     def connection(self) -> sqlite3.Connection:
         return self._connection
 
-    def _validate_schema(self) -> None:
+    def _validate_schema(self) -> int:
         observed = {
             str(row[0])
             for row in self._connection.execute(
@@ -363,16 +369,37 @@ class CodeGraphGenerationStore:
         row = self._connection.execute(
             "SELECT value FROM graph_generation_metadata WHERE key='schema_version'"
         ).fetchone()
-        if row is None or str(row[0]) != str(GENERATION_SCHEMA_VERSION):
+        if row is None or str(row[0]) not in {"1", str(GENERATION_SCHEMA_VERSION)}:
             raise GenerationSchemaError("Code graph generation schema version is unsupported")
+        version = int(row[0])
+        block_tables = observed.intersection(GRAPH_BLOCK_TABLES)
+        if (version == 1 and block_tables) or (version == 2 and block_tables != set(GRAPH_BLOCK_TABLES)):
+            raise GenerationSchemaError("Code graph block schema is incompatible")
         versions = tuple(
             int(item[0])
             for item in self._connection.execute(
                 "SELECT version FROM graph_generation_migrations ORDER BY version"
             )
         )
-        if versions != (GENERATION_SCHEMA_VERSION,):
+        if versions != tuple(range(1, version + 1)):
             raise GenerationSchemaError("Code graph generation migration history is incomplete")
+        return version
+
+    def _input_query(self, snapshot_id: str) -> tuple[str, tuple[str, ...]]:
+        if self._shared_blocks:
+            return INPUT_ROWS_SQL, (snapshot_id, snapshot_id)
+        return (
+            "SELECT input_key,content_digest,source_version_id,observed_path,metadata_json "
+            "FROM graph_snapshot_inputs WHERE snapshot_id=?", (snapshot_id,),
+        )
+
+    def _member_query(self, generation_id: str) -> tuple[str, tuple[str, ...]]:
+        if self._shared_blocks:
+            return MEMBER_ROWS_SQL, (generation_id, generation_id)
+        return (
+            "SELECT batch_index,item_key,item_digest,source_version_id,metadata_json "
+            "FROM graph_memberships WHERE generation_id=?", (generation_id,),
+        )
 
     def validate_source_run_id(
         self,
@@ -799,11 +826,19 @@ class CodeGraphGenerationStore:
         metadata: Mapping[str, object] | None = None,
         created_ns: int | None = None,
         cancellation_check: Callable[[], None] | None = None,
+        shared_blocks: bool = False,
+        block_size: int = 256,
     ) -> InputSnapshot:
         snapshot_id = _text(snapshot_id, "snapshot_id")
         source_run_id = _index(source_run_id, "source_run_id")
         metadata_json = _json(dict(metadata or {}), "snapshot metadata")
         created = _now(created_ns, "created_ns")
+        if type(shared_blocks) is not bool:
+            raise TypeError("shared_blocks must be a boolean")
+        if shared_blocks and not self._shared_blocks:
+            raise GenerationSchemaError("shared input blocks require graph schema v2")
+        if type(block_size) is not int or not 1 <= block_size <= 4096:
+            raise ValueError("block_size must be between 1 and 4096")
         with self._transaction() as connection:
             # Sort in SQLite instead of holding the inputs, their payload
             # copies and a complete JSON byte string in memory simultaneously.
@@ -837,7 +872,9 @@ class CodeGraphGenerationStore:
                     cancellation_check,
                 )
                 return self._store_input_snapshot(
-                    snapshot_id, source_run_id, input_digest, input_count, metadata_json, created
+                    snapshot_id, source_run_id, input_digest, input_count, metadata_json, created,
+                    shared_blocks=shared_blocks, block_size=block_size,
+                    cancellation_check=cancellation_check,
                 )
             except sqlite3.IntegrityError as exc:
                 if "_code_snapshot_inputs.input_key" in str(exc):
@@ -849,6 +886,8 @@ class CodeGraphGenerationStore:
     def _store_input_snapshot(
         self, snapshot_id: str, source_run_id: int, input_digest: str,
         input_count: int, metadata_json: str, created: int,
+        *, shared_blocks: bool = False, block_size: int = 256,
+        cancellation_check: Callable[[], None] | None = None,
     ) -> InputSnapshot:
         """Publish the sorted staging rows inside create_input_snapshot's transaction."""
 
@@ -873,12 +912,15 @@ class CodeGraphGenerationStore:
                 "VALUES(?,?,?,?,'sealed',?,?)",
                 (snapshot_id, source_run_id, input_digest, input_count, created, metadata_json),
             )
-            connection.execute(
-                "INSERT INTO graph_snapshot_inputs(snapshot_id,input_key,content_digest,source_version_id,observed_path,metadata_json) "
-                "SELECT ?,input_key,content_digest,source_version_id,observed_path,metadata_json "
-                "FROM temp._code_snapshot_inputs ORDER BY input_key",
-                (snapshot_id,),
-            )
+            if shared_blocks:
+                self._store_input_blocks(snapshot_id, block_size, cancellation_check)
+            else:
+                connection.execute(
+                    "INSERT INTO graph_snapshot_inputs(snapshot_id,input_key,content_digest,source_version_id,observed_path,metadata_json) "
+                    "SELECT ?,input_key,content_digest,source_version_id,observed_path,metadata_json "
+                    "FROM temp._code_snapshot_inputs ORDER BY input_key",
+                    (snapshot_id,),
+                )
             return InputSnapshot(
                 snapshot_id,
                 source_run_id,
@@ -887,6 +929,61 @@ class CodeGraphGenerationStore:
                 "sealed",
                 created,
                 json.loads(metadata_json),
+            )
+
+    def _store_input_blocks(
+        self, snapshot_id: str, block_size: int,
+        cancellation_check: Callable[[], None] | None,
+    ) -> None:
+        """Persist complete input manifests, copying only changed leaf payloads."""
+
+        connection = self._connection
+        keys = (str(row[0]) for row in connection.execute(
+            "SELECT input_key FROM temp._code_snapshot_inputs"
+        ))
+        for block_index, group in enumerate(partition_keys(keys, block_size, cancellation_check)):
+            if cancellation_check is not None:
+                cancellation_check()
+            placeholders = ",".join("?" for _ in group)
+            rows = connection.execute(
+                "SELECT input_key,content_digest,source_version_id,observed_path,metadata_json "
+                f"FROM temp._code_snapshot_inputs WHERE input_key IN ({placeholders}) ORDER BY input_key",
+                group,
+            ).fetchall()
+            digest = _hash_input_rows(rows, cancellation_check)
+            expected = tuple(tuple(row) for row in rows)
+            block_id: str | None = None
+            # A corrupt candidate never becomes authority and is never edited
+            # under an older publication. Rebuild a fresh object if necessary.
+            for candidate in connection.execute(
+                "SELECT block_id,source_snapshot_id FROM graph_input_blocks WHERE block_digest=? AND item_count=? "
+                "ORDER BY block_id LIMIT 16", (digest, len(rows)),
+            ):
+                if cancellation_check is not None:
+                    cancellation_check()
+                if str(candidate[0]) != _hash({"snapshot_id": str(candidate[1]), "block_digest": digest}, "input block"):
+                    continue
+                observed = tuple(tuple(row) for row in connection.execute(
+                    "SELECT input_key,content_digest,source_version_id,observed_path,metadata_json "
+                    "FROM graph_input_block_items WHERE block_id=? ORDER BY input_key LIMIT ?",
+                    (str(candidate[0]), len(rows) + 1),
+                ))
+                if observed == expected:
+                    block_id = str(candidate[0])
+                    break
+            if block_id is None:
+                block_id = _hash({"snapshot_id": snapshot_id, "block_digest": digest}, "input block")
+                connection.execute(
+                    "INSERT INTO graph_input_blocks VALUES(?,?,?,?)",
+                    (block_id, digest, len(rows), snapshot_id),
+                )
+                connection.executemany(
+                    "INSERT INTO graph_input_block_items VALUES(?,?,?,?,?,?)",
+                    ((block_id, *row) for row in expected),
+                )
+            connection.execute(
+                "INSERT INTO graph_snapshot_blocks VALUES(?,?,?)",
+                (snapshot_id, block_index, block_id),
             )
 
     def get_input_snapshot(self, snapshot_id: str) -> InputSnapshot | None:
@@ -899,10 +996,13 @@ class CodeGraphGenerationStore:
 
     def get_input_items(self, snapshot_id: str) -> tuple[CodeInput, ...]:
         snapshot_id = _text(snapshot_id, "snapshot_id")
+        snapshot = self.get_input_snapshot(snapshot_id)
+        if snapshot is not None and snapshot.status == "sealed":
+            self._validate_snapshot_items(snapshot_id, None)
         result: list[CodeInput] = []
+        sql, parameters = self._input_query(snapshot_id)
         for row in self._connection.execute(
-            "SELECT input_key,content_digest,source_version_id,observed_path,metadata_json FROM graph_snapshot_inputs WHERE snapshot_id=? ORDER BY input_key",
-            (snapshot_id,),
+            sql + " ORDER BY input_key", parameters,
         ):
             try:
                 metadata = json.loads(str(row[4]))
@@ -1011,10 +1111,11 @@ class CodeGraphGenerationStore:
                 raise GenerationStateError(
                     f"batch index must be contiguous; expected {expected}, got {batch_index}"
                 )
+            sql, parameters = self._member_query(generation_id)
             existing_keys = {
                 str(item[0])
                 for item in connection.execute(
-                    "SELECT item_key FROM graph_memberships WHERE generation_id=?", (generation_id,)
+                    "SELECT item_key FROM (" + sql + ")", parameters,
                 )
             }
             duplicates = existing_keys.intersection(item.item_key for item in items)
@@ -1051,6 +1152,97 @@ class CodeGraphGenerationStore:
                 created,
                 committed,
             )
+
+    def _append_shared_batch(
+        self, generation_id: str, batch_index: int,
+        items: tuple[GraphMembership, ...], *, cursor: str,
+        cancellation_check: Callable[[], None] | None = None,
+    ) -> None:
+        """Append one disjoint bridge partition; completion verifies the manifest."""
+
+        connection = self._connection
+        if not self._shared_blocks:
+            raise GenerationSchemaError("shared membership blocks require graph schema v2")
+        if cancellation_check is not None:
+            cancellation_check()
+        batch_digest = _hash(_member_payload(items), "graph batch")
+        expected = tuple(
+            (item.item_key, item.item_digest, item.source_version_id,
+             _json(dict(item.metadata), "membership metadata"))
+            for item in items
+        )
+        prior = connection.execute(
+            "SELECT batch_digest,item_count,cursor,status FROM graph_batches "
+            "WHERE generation_id=? AND batch_index=?", (generation_id, batch_index),
+        ).fetchone()
+        if prior is not None:
+            if tuple(prior) != (batch_digest, len(items), cursor, "committed"):
+                raise GenerationConflict(f"batch differs: {generation_id}/{batch_index}")
+            return
+        generation = self.get_generation(generation_id)
+        if generation is None or generation.status != "building":
+            raise GenerationStateError(f"generation is not building: {generation_id}")
+        latest = connection.execute(
+            "SELECT MAX(batch_index) FROM graph_batches WHERE generation_id=?", (generation_id,),
+        ).fetchone()[0]
+        if batch_index != (0 if latest is None else int(latest) + 1):
+            raise GenerationStateError("shared generation batch indices must be contiguous")
+        block_id: str | None = None
+        for candidate in connection.execute(
+            "SELECT block_id,source_generation_id FROM graph_member_blocks WHERE block_digest=? AND item_count=? "
+            "ORDER BY block_id LIMIT 16", (batch_digest, len(items)),
+        ):
+            if cancellation_check is not None:
+                cancellation_check()
+            if str(candidate[0]) != _hash({"generation_id": str(candidate[1]), "block_digest": batch_digest}, "member block"):
+                continue
+            observed = tuple(tuple(row) for row in connection.execute(
+                "SELECT item_key,item_digest,source_version_id,metadata_json "
+                "FROM graph_member_block_items WHERE block_id=? ORDER BY item_key LIMIT ?",
+                (str(candidate[0]), len(items) + 1),
+            ))
+            if observed == expected:
+                block_id = str(candidate[0])
+                break
+        if block_id is None:
+            if cancellation_check is not None:
+                cancellation_check()
+            block_id = _hash({"generation_id": generation_id, "block_digest": batch_digest}, "member block")
+            connection.execute(
+                "INSERT INTO graph_member_blocks VALUES(?,?,?,?)",
+                (block_id, batch_digest, len(items), generation_id),
+            )
+            connection.executemany(
+                "INSERT INTO graph_member_block_items VALUES(?,?,?,?,?)",
+                ((block_id, *row) for row in expected),
+            )
+        now = time.time_ns()
+        connection.execute(
+            "INSERT INTO graph_batches VALUES(?,?,?,?,?,'committed',?,?)",
+            (generation_id, batch_index, batch_digest, len(items), cursor, now, now),
+        )
+        connection.execute(
+            "INSERT INTO graph_batch_blocks VALUES(?,?,?)", (generation_id, batch_index, block_id),
+        )
+
+    def membership_materialization(self, generation_id: str, *, limit: int) -> tuple[int, int]:
+        """Bound a reader's complete logical graph before Python materialization.
+
+        Count and byte size include shared blocks and v1 membership rows. The
+        SQL LIMIT intentionally remains inside the aggregate, matching callers'
+        existing overflow-sentinel policy and SQLite cancellation checkpoints.
+        """
+
+        generation_id = _text(generation_id, "generation_id")
+        limit = _index(limit, "limit")
+        sql, parameters = self._member_query(generation_id)
+        row = self._connection.execute(
+            "SELECT COUNT(*),COALESCE(SUM(length(CAST(item_key AS BLOB))+"
+            "length(CAST(item_digest AS BLOB))+length(CAST(metadata_json AS BLOB))),0) "
+            "FROM (SELECT item_key,item_digest,metadata_json FROM (" + sql + ") LIMIT ?)",
+            (*parameters, limit),
+        ).fetchone()
+        return int(row[0]), int(row[1])
 
     def checkpoint(
         self,
@@ -1131,7 +1323,8 @@ class CodeGraphGenerationStore:
             )
 
     def complete_generation(
-        self, generation_id: str, *, completed_ns: int | None = None
+        self, generation_id: str, *, completed_ns: int | None = None,
+        cancellation_check: Callable[[], None] | None = None,
     ) -> GraphGeneration:
         generation_id = _text(generation_id, "generation_id")
         completed = _now(completed_ns, "completed_ns")
@@ -1161,63 +1354,10 @@ class CodeGraphGenerationStore:
                     raise GenerationStateError(
                         "generation requires a checkpoint for its final batch"
                     )
-            # Validate the materialized members against every committed batch
-            # before publishing a generation digest.  A deleted or modified
-            # membership must never be silently accepted as a complete graph.
-            for batch_index, batch_digest, item_count in batches:
-                member_rows = connection.execute(
-                    "SELECT item_key,item_digest,source_version_id,metadata_json "
-                    "FROM graph_memberships WHERE generation_id=? AND batch_index=? "
-                    "ORDER BY item_key",
-                    (generation_id, int(batch_index)),
-                ).fetchall()
-                if len(member_rows) != int(item_count):
-                    raise GenerationSchemaError(
-                        f"generation batch membership count differs: {generation_id}/{batch_index}"
-                    )
-                members: list[GraphMembership] = []
-                for member_row in member_rows:
-                    try:
-                        metadata = json.loads(str(member_row[3]))
-                    except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                        raise GenerationSchemaError(
-                            f"malformed membership metadata: {generation_id}/{batch_index}"
-                        ) from exc
-                    if not isinstance(metadata, dict):
-                        raise GenerationSchemaError(
-                            f"membership metadata is not an object: {generation_id}/{batch_index}"
-                        )
-                    members.append(
-                        GraphMembership(
-                            str(member_row[0]),
-                            str(member_row[1]),
-                            None if member_row[2] is None else int(member_row[2]),
-                            metadata,
-                        )
-                    )
-                if _hash(_member_payload(tuple(members)), "graph batch") != str(batch_digest):
-                    raise GenerationSchemaError(
-                        f"generation batch digest differs: {generation_id}/{batch_index}"
-                    )
-            snapshot = connection.execute(
-                "SELECT input_digest FROM graph_input_snapshots WHERE snapshot_id=?", (str(row[0]),)
-            ).fetchone()
-            if snapshot is None:
-                raise GenerationSchemaError("generation references a missing snapshot")
-            digest = _hash(
-                {
-                    "snapshot_digest": str(snapshot[0]),
-                    "batches": [
-                        {
-                            "batch_index": int(item[0]),
-                            "batch_digest": str(item[1]),
-                            "item_count": int(item[2]),
-                        }
-                        for item in batches
-                    ],
-                },
-                "generation",
+            digest, _ = self._validated_generation_memberships(
+                generation_id, str(row[0]), cancellation_check=cancellation_check,
             )
+            self._validate_snapshot_items(str(row[0]), cancellation_check)
             connection.execute(
                 "UPDATE graph_generations SET generation_digest=?,status='completed',completed_ns=? WHERE generation_id=? AND status='building'",
                 (digest, completed, generation_id),
@@ -1228,6 +1368,123 @@ class CodeGraphGenerationStore:
             ).fetchone()
             assert row is not None
             return self._generation(row, generation_id)
+
+    def _validate_snapshot_items(
+        self, snapshot_id: str, cancellation_check: Callable[[], None] | None,
+    ) -> None:
+        snapshot = self.get_input_snapshot(snapshot_id)
+        if snapshot is None or snapshot.status != "sealed":
+            raise GenerationSchemaError("generation references an unsealed snapshot")
+        if self._shared_blocks:
+            for expected_index, block in enumerate(self._connection.execute(
+                "SELECT r.block_index,o.block_id,o.block_digest,o.source_snapshot_id,o.item_count,"
+                "(SELECT COUNT(*) FROM graph_input_block_items i WHERE i.block_id=r.block_id),origin.snapshot_id "
+                "FROM graph_snapshot_blocks r LEFT JOIN graph_input_blocks o ON o.block_id=r.block_id "
+                "LEFT JOIN graph_input_snapshots origin ON origin.snapshot_id=o.source_snapshot_id "
+                "WHERE r.snapshot_id=? ORDER BY r.block_index", (snapshot_id,),
+            )):
+                if cancellation_check is not None:
+                    cancellation_check()
+                if (
+                    block[0] != expected_index or block[1] is None or block[6] is None
+                    or block[4] != block[5]
+                    or str(block[1]) != _hash({"snapshot_id": str(block[3]), "block_digest": str(block[2])}, "input block")
+                ):
+                    raise GenerationSchemaError("input block manifest or original producer differs")
+        sql, parameters = self._input_query(snapshot_id)
+        count, unique = self._connection.execute(
+            "SELECT COUNT(*),COUNT(DISTINCT input_key) FROM (" + sql + ")", parameters,
+        ).fetchone()
+        if count != snapshot.input_count or count != unique:
+            raise GenerationSchemaError("input snapshot membership count differs")
+        digest = _hash_input_rows(
+            self._connection.execute(sql + " ORDER BY input_key", parameters),
+            cancellation_check,
+        )
+        if digest != snapshot.input_digest:
+            raise GenerationSchemaError("input snapshot digest differs")
+
+    def _validated_generation_memberships(
+        self, generation_id: str, snapshot_id: str, *, materialize: bool = False,
+        cancellation_check: Callable[[], None] | None = None,
+    ) -> tuple[str, tuple[GraphMembership, ...]]:
+        """Verify each logical batch, including borrowed payloads, against its digest."""
+
+        connection = self._connection
+        batches = connection.execute(
+            "SELECT batch_index,batch_digest,item_count,status FROM graph_batches "
+            "WHERE generation_id=? ORDER BY batch_index", (generation_id,),
+        ).fetchall()
+        invalid_block = connection.execute(
+            "SELECT 1 FROM graph_batch_blocks r "
+            "LEFT JOIN graph_member_blocks o ON o.block_id=r.block_id "
+            "LEFT JOIN graph_batches b ON b.generation_id=r.generation_id AND b.batch_index=r.batch_index "
+            "WHERE r.generation_id=? AND (o.block_id IS NULL OR o.block_digest IS NOT b.batch_digest "
+            "OR o.item_count IS NOT b.item_count) LIMIT 1", (generation_id,),
+        ).fetchone() if self._shared_blocks else None
+        if invalid_block is not None:
+            raise GenerationSchemaError("generation block manifest differs from its batch")
+        if self._shared_blocks:
+            for block in connection.execute(
+                "SELECT o.block_id,o.block_digest,o.source_generation_id,origin.generation_id "
+                "FROM graph_batch_blocks r JOIN graph_member_blocks o ON o.block_id=r.block_id "
+                "LEFT JOIN graph_generations origin ON origin.generation_id=o.source_generation_id "
+                "WHERE r.generation_id=?", (generation_id,),
+            ):
+                if cancellation_check is not None:
+                    cancellation_check()
+                if block[3] is None or str(block[0]) != _hash(
+                    {"generation_id": str(block[2]), "block_digest": str(block[1])}, "member block"
+                ):
+                    raise GenerationSchemaError("membership block original producer differs")
+        keys: set[str] = set()
+        result: list[GraphMembership] = []
+        sql, parameters = self._member_query(generation_id)
+        for expected_index, batch in enumerate(batches):
+            if cancellation_check is not None:
+                cancellation_check()
+            batch_index, batch_digest, item_count, status = batch
+            if batch_index != expected_index or status != "committed":
+                raise GenerationSchemaError("generation batches are not complete and contiguous")
+            rows = connection.execute(
+                "SELECT item_key,item_digest,source_version_id,metadata_json FROM (" + sql + ") "
+                "WHERE batch_index=? ORDER BY item_key", (*parameters, batch_index),
+            ).fetchall()
+            if len(rows) != item_count:
+                raise GenerationSchemaError(
+                    f"generation batch membership count differs: {generation_id}/{batch_index}"
+                )
+            members: list[GraphMembership] = []
+            for member_row in rows:
+                if cancellation_check is not None:
+                    cancellation_check()
+                key = str(member_row[0])
+                if key in keys:
+                    raise GenerationSchemaError("generation contains duplicate membership keys")
+                keys.add(key)
+                try:
+                    metadata = json.loads(str(member_row[3]))
+                except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                    raise GenerationSchemaError("malformed membership metadata") from exc
+                if not isinstance(metadata, dict):
+                    raise GenerationSchemaError("membership metadata is not an object")
+                members.append(GraphMembership(key, str(member_row[1]), member_row[2], metadata))
+            if _hash(_member_payload(members), "graph batch") != batch_digest:
+                raise GenerationSchemaError(
+                    f"generation batch digest differs: {generation_id}/{batch_index}"
+                )
+            if materialize:
+                result.extend(members)
+        snapshot = self.get_input_snapshot(snapshot_id)
+        if snapshot is None or snapshot.status != "sealed":
+            raise GenerationSchemaError("generation references an unsealed snapshot")
+        digest = _hash(
+            {"snapshot_digest": snapshot.input_digest, "batches": [
+                {"batch_index": int(row[0]), "batch_digest": str(row[1]), "item_count": int(row[2])}
+                for row in batches
+            ]}, "generation",
+        )
+        return digest, tuple(result)
 
     def abort_generation(self, generation_id: str) -> GraphGeneration:
         generation_id = _text(generation_id, "generation_id")
@@ -1359,6 +1616,8 @@ class CodeGraphGenerationStore:
                 inputs,
                 metadata=snapshot_metadata,
                 cancellation_check=cancellation_check,
+                shared_blocks=self._shared_blocks,
+                block_size=batch_size,
             )
             generation = self.start_generation(
                 snapshot.snapshot_id,
@@ -1367,19 +1626,27 @@ class CodeGraphGenerationStore:
             )
             if generation.status == "building":
                 members = self._legacy_graph_memberships(cancellation_check=cancellation_check)
-                for batch_index, start in enumerate(range(0, len(members), batch_size)):
+                by_key = {item.item_key: item for item in members}
+                if len(by_key) != len(members):
+                    raise GenerationSchemaError("legacy graph projection contains duplicate membership keys")
+                groups = partition_keys(by_key, batch_size, cancellation_check) if self._shared_blocks else (
+                    tuple(item.item_key for item in members[start:start + batch_size])
+                    for start in range(0, len(members), batch_size)
+                )
+                for batch_index, keys in enumerate(groups):
                     check_cancelled()
-                    batch = members[start : start + batch_size]
-                    cursor = batch[-1].item_key if batch else None
-                    self.append_batch(
-                        generation_id,
-                        batch_index,
-                        batch,
-                        cursor=cursor,
-                    )
+                    batch = tuple(by_key[key] for key in keys)
+                    cursor = batch[-1].item_key
+                    if self._shared_blocks:
+                        self._append_shared_batch(
+                            generation_id, batch_index, batch, cursor=cursor,
+                            cancellation_check=cancellation_check,
+                        )
+                    else:
+                        self.append_batch(generation_id, batch_index, batch, cursor=cursor)
                     self.checkpoint(generation_id, batch_index, cursor or "empty")
                 check_cancelled()
-                generation = self.complete_generation(generation_id)
+                generation = self.complete_generation(generation_id, cancellation_check=cancellation_check)
             elif generation.status in {"completed", "published"}:
                 # ``start_generation`` is idempotent; an already-complete
                 # generation can be resumed directly at the CAS boundary.
@@ -1425,7 +1692,7 @@ class CodeGraphGenerationStore:
             # head or an in-progress generation.
             self.prune_generations(keep=2)
             item_count = int(self._connection.execute(
-                "SELECT COUNT(*) FROM graph_memberships WHERE generation_id=?", (generation_id,)
+                "SELECT COALESCE(SUM(item_count),0) FROM graph_batches WHERE generation_id=?", (generation_id,)
             ).fetchone()[0])
             return GraphPublicationResult(
                 source_id,
@@ -1513,16 +1780,32 @@ class CodeGraphGenerationStore:
                 if changed != 1:
                     continue
                 connection.execute("DELETE FROM graph_checkpoints WHERE generation_id=?", (generation_id,))
+                if self._shared_blocks:
+                    connection.execute("DELETE FROM graph_batch_blocks WHERE generation_id=?", (generation_id,))
                 connection.execute("DELETE FROM graph_memberships WHERE generation_id=?", (generation_id,))
                 connection.execute("DELETE FROM graph_batches WHERE generation_id=?", (generation_id,))
-                connection.execute(
-                    "DELETE FROM graph_snapshot_inputs WHERE snapshot_id=?", (snapshot_id,)
-                )
-                connection.execute(
-                    "UPDATE graph_input_snapshots SET status='pruned' WHERE snapshot_id=? AND status='sealed'",
+                snapshot_in_use = connection.execute(
+                    "SELECT 1 FROM graph_generations WHERE snapshot_id=? AND status<>'pruned' LIMIT 1",
                     (snapshot_id,),
-                )
+                ).fetchone()
+                if snapshot_in_use is None:
+                    if self._shared_blocks:
+                        connection.execute("DELETE FROM graph_snapshot_blocks WHERE snapshot_id=?", (snapshot_id,))
+                    connection.execute("DELETE FROM graph_snapshot_inputs WHERE snapshot_id=?", (snapshot_id,))
+                    connection.execute(
+                        "UPDATE graph_input_snapshots SET status='pruned' WHERE snapshot_id=? AND status='sealed'",
+                        (snapshot_id,),
+                    )
                 pruned.append(generation_id)
+            if self._shared_blocks:
+                connection.execute(
+                    "DELETE FROM graph_member_blocks WHERE NOT EXISTS("
+                    "SELECT 1 FROM graph_batch_blocks r WHERE r.block_id=graph_member_blocks.block_id)"
+                )
+                connection.execute(
+                    "DELETE FROM graph_input_blocks WHERE NOT EXISTS("
+                    "SELECT 1 FROM graph_snapshot_blocks r WHERE r.block_id=graph_input_blocks.block_id)"
+                )
             return tuple(pruned)
 
     def get_head(self, head_name: str = DEFAULT_HEAD_NAME) -> GenerationHead | None:
@@ -1538,6 +1821,7 @@ class CodeGraphGenerationStore:
     def read_published_generation(
         self,
         head_name: str = DEFAULT_HEAD_NAME,
+        *, cancellation_check: Callable[[], None] | None = None,
     ) -> PublishedGraph | None:
         """Read one head without exposing building, aborted or pruned data."""
 
@@ -1562,7 +1846,14 @@ class CodeGraphGenerationStore:
             raise GenerationSchemaError(f"published generation source_run_id is invalid: {head.generation_id}")
         if metadata_source is not None:
             self.validate_source_run_id(metadata_source)
-        return PublishedGraph(head, generation, self.list_memberships(generation.generation_id))
+        self._validate_snapshot_items(generation.snapshot_id, cancellation_check)
+        digest, memberships = self._validated_generation_memberships(
+            generation.generation_id, generation.snapshot_id, materialize=True,
+            cancellation_check=cancellation_check,
+        )
+        if digest != generation.generation_digest:
+            raise GenerationSchemaError(f"published generation content differs: {head.generation_id}")
+        return PublishedGraph(head, generation, memberships)
 
     # A short alias keeps callers independent of the storage-oriented name.
     read_published = read_published_generation
@@ -1570,9 +1861,10 @@ class CodeGraphGenerationStore:
     def list_memberships(self, generation_id: str) -> tuple[GraphMembership, ...]:
         generation_id = _text(generation_id, "generation_id")
         result: list[GraphMembership] = []
+        sql, parameters = self._member_query(generation_id)
         for row in self._connection.execute(
-            "SELECT item_key,item_digest,source_version_id,metadata_json FROM graph_memberships WHERE generation_id=? ORDER BY batch_index,item_key",
-            (generation_id,),
+            "SELECT item_key,item_digest,source_version_id,metadata_json FROM (" + sql + ") "
+            "ORDER BY batch_index,item_key", parameters,
         ):
             try:
                 metadata = json.loads(str(row[3]))

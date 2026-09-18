@@ -445,7 +445,7 @@ _V2_EXPECTED_SCHEMAS = {
     "audio": 2,
     "video": 2,
     "image": 6,
-    "code": 8,
+    "code": 9,
 }
 
 _V2_REQUIRED_TABLES = {

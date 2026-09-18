@@ -149,7 +149,7 @@ def test_snapshot_stream_cancellation_rolls_back_staging(tmp_path: Path) -> None
 
 
 @pytest.mark.parametrize("table,assignment", (
-    ("graph_memberships", "item_digest='corrupt'"),
+    ("graph_member_block_items", "item_digest='corrupt'"),
     ("symbols", "signature='changed'"),
 ))
 def test_changed_graph_rows_invalidate_replay(tmp_path: Path, table: str, assignment: str) -> None:
@@ -173,7 +173,7 @@ def test_graph_change_after_reuse_proof_cannot_advance_fence(tmp_path: Path) -> 
         head = state.graph_generation_store.get_head()
         run_id = state.begin_run(2, 2, summary.processing_signature)
         assert state.reusable_graph_project_count(run_id, summary.processing_signature) is not None
-        state.connection.execute("DELETE FROM graph_memberships WHERE item_key=(SELECT MIN(item_key) FROM graph_memberships)")
+        state.connection.execute("DELETE FROM graph_member_block_items WHERE item_key=(SELECT MIN(item_key) FROM graph_member_block_items)")
         state.connection.commit()
         with pytest.raises(GenerationConflict, match="changed after its reuse proof"):
             state.complete_run(run_id, {"candidates": 1, "cache_hits": 1, "graph_milliseconds": 0}, partial=False, graph_current=True)
@@ -183,8 +183,8 @@ def test_graph_change_after_reuse_proof_cannot_advance_fence(tmp_path: Path) -> 
 
 
 @pytest.mark.parametrize("mutation", (
-    "INSERT INTO graph_memberships SELECT generation_id,batch_index,item_key||':copy',item_digest,source_version_id,metadata_json FROM graph_memberships LIMIT 1",
-    "DELETE FROM graph_memberships WHERE item_key=(SELECT MIN(item_key) FROM graph_memberships)",
+    "INSERT INTO graph_member_block_items SELECT block_id,item_key||':copy',item_digest,source_version_id,metadata_json FROM graph_member_block_items LIMIT 1",
+    "DELETE FROM graph_member_block_items WHERE item_key=(SELECT MIN(item_key) FROM graph_member_block_items)",
     "UPDATE graph_heads SET revision=revision+1",
 ))
 def test_graph_revision_and_projection_roll_back_together(tmp_path: Path, mutation: str) -> None:
@@ -276,7 +276,7 @@ def test_code_v7_migration_preserves_rows_and_rejects_missing_v8_guard(tmp_path:
         connection.execute("INSERT INTO metadata VALUES('fixture','preserved')")
     code_schema.initialize_code_state(database)
     with CodeState(database) as state:
-        assert state.connection.execute("PRAGMA user_version").fetchone()[0] == 8
+        assert state.connection.execute("PRAGMA user_version").fetchone()[0] == code_schema.CODE_SCHEMA_VERSION
         assert state.connection.execute("SELECT value FROM metadata WHERE key='fixture'").fetchone()[0] == "preserved"
         state.connection.execute("DROP TRIGGER code_graph_revision_graph_memberships_update")
         state.connection.commit()

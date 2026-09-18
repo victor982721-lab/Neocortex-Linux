@@ -65,6 +65,26 @@ def inventory_content_digest(
     )
 
 
+def portable_observation_content_digest(
+    connection: sqlite3.Connection, *, work_check: Callable[[], None] | None = None,
+) -> bytes:
+    """Identify the complete private observation before its writer transaction.
+
+    The portable owner alone populates this TEMP table. Its six published
+    fields, binary path order and framing match ``inventory_content_digest``;
+    ctime remains a replay observation, never part of content authority.
+    """
+
+    return _hash_rows(
+        connection,
+        """SELECT path,volume_id,file_id,size,mtime_ns,birthtime_ns
+        FROM temp.portable_observed_files ORDER BY path""",
+        (),
+        domain=b"NEOCORTEX_INVENTORY_CONTENT_V1\0",
+        work_check=work_check,
+    )
+
+
 def duplicate_plan_digest(connection: sqlite3.Connection, scan_id: int) -> bytes:
     """Return the canonical identity of all persisted plan proof rows."""
 

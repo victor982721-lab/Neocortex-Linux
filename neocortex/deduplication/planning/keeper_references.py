@@ -382,14 +382,12 @@ def resolve_keeper_references(
             if head is None:
                 return _unavailable("unavailable", "code_published_graph_absent")
             member_limit = max_relations * 16 + 64
-            materialization = connection.execute(
-                "SELECT COUNT(*),COALESCE(SUM(length(CAST(item_key AS BLOB))+length(CAST(item_digest AS BLOB))+length(CAST(metadata_json AS BLOB))),0) "
-                "FROM (SELECT item_key,item_digest,metadata_json FROM graph_memberships WHERE generation_id=? LIMIT ?)",
-                (head.generation_id, member_limit + 1),
-            ).fetchone()
+            materialization = store.membership_materialization(
+                head.generation_id, limit=member_limit + 1,
+            )
             if materialization[0] > member_limit or materialization[1] > _GRAPH_PAYLOAD_BYTES:
                 return _unavailable("truncated", "published_graph_materialization_budget_exceeded")
-            published = store.read_published_generation()
+            published = store.read_published_generation(cancellation_check=check)
             if published is None or published.head != head:
                 raise _StaleReference("code_graph_head_changed")
             if (

@@ -9,7 +9,8 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
-from .code_graph_revision import install_graph_revision_guards
+from .code_graph_blocks import GRAPH_BLOCK_DDL
+from .code_graph_revision import install_graph_block_revision_guards, install_graph_revision_guards
 
 from neocortex.persistence.sqlite_connection import (
     READONLY_EXISTING,
@@ -30,7 +31,7 @@ from neocortex.persistence.sqlite_schema_contract import (
 # region [01] Versioned DDL
 
 
-CODE_SCHEMA_VERSION = 8
+CODE_SCHEMA_VERSION = 9
 _PATH_COLLATION = sqlite_path_collation()
 
 
@@ -956,6 +957,12 @@ def _execute(connection: sqlite3.Connection, statements: tuple[str, ...]) -> Non
 
 
 def _build_current_schema(connection: sqlite3.Connection) -> None:
+    _build_v8_schema(connection)
+    _execute(connection, GRAPH_BLOCK_DDL)
+    install_graph_block_revision_guards(connection)
+
+
+def _build_v8_schema(connection: sqlite3.Connection) -> None:
     _execute(connection, _CURRENT_V1_DDL)
     _execute(connection, _PRODUCT_V2_DDL)
     _execute(connection, _GRAPH_GENERATION_DDL)
@@ -976,6 +983,8 @@ def _build_retained_legacy_current_schema(connection: sqlite3.Connection) -> Non
     _build_legacy_current_schema(connection)
     _execute(connection, _GRAPH_GENERATION_DDL)
     install_graph_revision_guards(connection)
+    _execute(connection, GRAPH_BLOCK_DDL)
+    install_graph_block_revision_guards(connection)
 
 
 def _build_legacy_schema(
@@ -1039,6 +1048,31 @@ def validate_code_schema_v7(connection: sqlite3.Connection) -> None:
     )
 
 
+@lru_cache(maxsize=2)
+def _code_v8_schema_contract(legacy_objects: bool) -> SQLiteSchemaContract:
+    def build(connection: sqlite3.Connection) -> None:
+        if legacy_objects:
+            _build_legacy_current_schema(connection)
+            _execute(connection, _GRAPH_GENERATION_DDL)
+            install_graph_revision_guards(connection)
+        else:
+            _build_v8_schema(connection)
+    return schema_contract_from_builder(build)
+
+
+def validate_code_schema_v8(connection: sqlite3.Connection) -> None:
+    """Read the exact historical v8 shape without migrating its graph v1 data."""
+
+    if _read_version(connection) != 8:
+        raise RuntimeError("legacy Code read requires schema v8")
+    legacy = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='external_tool_runs'"
+    ).fetchone() is not None
+    validate_sqlite_schema_contract(
+        connection, _code_v8_schema_contract(legacy), label="code v8", exact=True
+    )
+
+
 def validate_code_schema(connection: sqlite3.Connection) -> None:
     legacy_objects = {
         str(row[0])
@@ -1061,6 +1095,9 @@ def _validate_legacy_code_schema(
 ) -> None:
     if version == 7:
         validate_code_schema_v7(connection)
+        return
+    if version == 8:
+        validate_code_schema_v8(connection)
         return
     validate_sqlite_schema_contract(
         connection,
@@ -1265,6 +1302,7 @@ def _create_fresh(connection: sqlite3.Connection, applied_ns: int) -> None:
     )
     _ensure_graph_generation_schema(connection, applied_ns=applied_ns + 7)
     _migrate_seven_to_eight(connection, applied_ns + 8)
+    _migrate_eight_to_nine(connection, applied_ns + 9)
 
 
 def _migrate_seven_to_eight(connection: sqlite3.Connection, applied_ns: int) -> None:
@@ -1272,6 +1310,23 @@ def _migrate_seven_to_eight(connection: sqlite3.Connection, applied_ns: int) -> 
     _ensure_graph_generation_schema(connection, applied_ns=applied_ns)
     install_graph_revision_guards(connection)
     _record_migration(connection, 8, "transactional Code graph revision and reusable publication observations", applied_ns)
+
+
+def _migrate_eight_to_nine(connection: sqlite3.Connection, applied_ns: int) -> None:
+    """Add shared blocks without rewriting any v1 snapshot, batch or digest."""
+
+    validate_code_schema_v8(connection)
+    _execute(connection, GRAPH_BLOCK_DDL)
+    install_graph_block_revision_guards(connection)
+    connection.execute(
+        "UPDATE graph_generation_metadata SET value='2' WHERE key='schema_version'"
+    )
+    connection.execute(
+        "INSERT INTO graph_generation_migrations(version,description,applied_ns) "
+        "VALUES(2,'complete manifests with shared immutable Code graph blocks',?)",
+        (applied_ns,),
+    )
+    _record_migration(connection, 9, "shared immutable Code graph input and membership blocks", applied_ns)
 
 
 def _migrate_one_to_two(connection: sqlite3.Connection, applied_ns: int) -> None:
@@ -1514,10 +1569,14 @@ def initialize_code_state(path: Path) -> None:
                 _migrate_six_to_seven(connection, applied_ns)
             elif current == 7:
                 _migrate_seven_to_eight(connection, applied_ns)
+            elif current == 8:
+                pass  # The common v8-to-v9 tail also covers every earlier migration.
             else:
                 raise RuntimeError(f"unsupported code migration start: {current}")
             if current is not None and current < 7:
                 _migrate_seven_to_eight(connection, applied_ns + 8)
+            if current is not None:
+                _migrate_eight_to_nine(connection, applied_ns + 9)
             validate_code_schema(connection)
             _validate_migration_history(connection)
             _validate_code_storage_integrity(connection, label="code migrated state")
@@ -1596,5 +1655,6 @@ __all__ = [
     "remove_checkpointed_code_sidecars",
     "validate_code_schema",
     "validate_code_schema_v7",
+    "validate_code_schema_v8",
     "verify_code_storage_integrity",
 ]

@@ -292,8 +292,15 @@ class ScanCheckpointRepositoryMixin:
             raise InventoryError(f"cannot publish inventory content identity for scan {current}")
         return bytes(row[0])
 
-    def _create_inventory_successor(self, scan_id: int, *, reason: str) -> int:
-        """Copy one complete generation before applying an incremental change."""
+    def _create_inventory_successor(
+        self, scan_id: int, *, reason: str, copy_files: bool = True,
+    ) -> int:
+        """Create a successor within the caller's publication transaction.
+
+        Incremental reconciliation copies its source by default. A portable
+        caller with a complete observation may populate all successor rows
+        itself before committing, avoiding copies of removed/replaced rows.
+        """
 
         source_id = resolve_scan_id(self._connection, scan_id)
         require_operational_identity(self._connection, "inventory", source_id)
@@ -345,18 +352,19 @@ class ScanCheckpointRepositoryMixin:
         if cursor.lastrowid is None:
             raise InventoryError("SQLite did not return an inventory successor identifier")
         successor_id = int(cursor.lastrowid)
-        self._connection.execute(
-            """INSERT INTO files(
-            scan_id,path,volume_id,file_id,size,mtime_ns,birthtime_ns)
-            SELECT ?,path,volume_id,file_id,size,mtime_ns,birthtime_ns
-            FROM files WHERE scan_id=?""",
-            (successor_id, source_id),
-        )
-        self._connection.execute(
-            "INSERT INTO inventory_file_change_versions(scan_id,path,ctime_ns) "
-            "SELECT ?,path,ctime_ns FROM inventory_file_change_versions WHERE scan_id=?",
-            (successor_id, source_id),
-        )
+        if copy_files:
+            self._connection.execute(
+                """INSERT INTO files(
+                scan_id,path,volume_id,file_id,size,mtime_ns,birthtime_ns)
+                SELECT ?,path,volume_id,file_id,size,mtime_ns,birthtime_ns
+                FROM files WHERE scan_id=?""",
+                (successor_id, source_id),
+            )
+            self._connection.execute(
+                "INSERT INTO inventory_file_change_versions(scan_id,path,ctime_ns) "
+                "SELECT ?,path,ctime_ns FROM inventory_file_change_versions WHERE scan_id=?",
+                (successor_id, source_id),
+            )
         self._connection.execute(
             "INSERT INTO inventory_generation_heads(scan_id,content_digest,created_ns) "
             "VALUES(?,?,?)",

@@ -9,6 +9,8 @@ import sqlite3
 import zlib
 import json
 import os
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -612,6 +614,336 @@ def test_published_catalog_generation_rows_are_immutable(tmp_path: Path) -> None
                 "UPDATE catalog_generation_documents SET path=? WHERE generation_id=?",
                 (str(tmp_path / "tampered.docx"), generation_id),
             )
+
+
+def _catalog_replay_fixture(tmp_path: Path):
+    root = tmp_path / "corpus"
+    root.mkdir()
+    source = root / "a-ieee.docx"
+    source.write_bytes(b"first")
+    source_database = tmp_path / "docx.sqlite3"
+    _upsert_docx_source(
+        source_database, source, title="IEEE C37.20.2",
+        text="IEEE switchgear standard", signature="v1",
+    )
+    catalog = tmp_path / "catalog.sqlite3"
+    first = update_document_catalog_source(
+        catalog, source_database, "docx", source_root=root,
+    )
+    return catalog, source_database, source, root, first
+
+
+def _try_fixture_catalog_replay(connection, source_database, root, *, cancellation=None):
+    return catalog_module.try_reuse_catalog(
+        connection, source_database, "docx", source_root=root,
+        root_identity=catalog_module._catalog_input_root(root)[1],
+        taxonomy=catalog_module.load_taxonomy(),
+        max_text_chars=catalog_module.MAX_CLASSIFICATION_TEXT_CHARS,
+        framework_run_id=None, verify_source_paths=True,
+        cancellation=cancellation,
+    )
+
+
+def test_replay_and_publication_validate_without_catalog_writer_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog, source_database, source, root, first = _catalog_replay_fixture(tmp_path)
+    original_digest = catalog_module.catalog_generation_digest
+    original_projection = catalog_module.current_projection_matches
+    observations: list[str] = []
+
+    def require_available_writer(label: str) -> None:
+        with sqlite3.connect(catalog, timeout=0) as other:
+            other.execute("BEGIN IMMEDIATE")
+            other.rollback()
+        observations.append(label)
+
+    def digest_without_writer(*args, **kwargs):
+        require_available_writer("generation_digest")
+        return original_digest(*args, **kwargs)
+
+    def projection_without_writer(*args, **kwargs):
+        require_available_writer("projection_comparison")
+        return original_projection(*args, **kwargs)
+
+    monkeypatch.setattr(catalog_module, "catalog_generation_digest", digest_without_writer)
+    monkeypatch.setattr(catalog_module, "current_projection_matches", projection_without_writer)
+    replay = update_document_catalog_source(catalog, source_database, "docx", source_root=root)
+    assert replay.publication_state == "unchanged"
+    assert replay.generation_id == first.generation_id
+    assert replay.reused_from_catalog_run_id == first.catalog_run_id
+    assert observations == ["generation_digest", "projection_comparison"]
+    _upsert_docx_source(
+        source_database, source, title="Factura proveedor",
+        text="Factura compra", signature="v2",
+    )
+    changed = update_document_catalog_source(catalog, source_database, "docx", source_root=root)
+    assert changed.classified == 1
+    assert changed.generation_id != first.generation_id
+    assert observations.count("generation_digest") == 3
+
+
+@pytest.mark.parametrize("target", ["projection", "correction", "receipt", "head"])
+def test_replay_rejects_catalog_commit_during_read_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str,
+) -> None:
+    catalog, source_database, _source, root, first = _catalog_replay_fixture(tmp_path)
+    original = catalog_module._iter_source_documents
+
+    def commit_during_source_read(*args, **kwargs):
+        yield from original(*args, **kwargs)
+        with sqlite3.connect(catalog, timeout=0) as other:
+            if target == "projection":
+                other.execute("UPDATE documents SET primary_kind='external-change'")
+            elif target == "correction":
+                other.execute(
+                    "INSERT INTO classification_corrections("
+                    "root,logical_identity,dimension,value_json,observed_fingerprint,created_ns) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (str(root), "docx:fixture", "primary_kind", '"factura"', "fixture", 1),
+                )
+            elif target == "receipt":
+                other.execute("UPDATE catalog_runs SET summary_json='{}'")
+            else:
+                other.execute("UPDATE catalog_publications SET published_ns=published_ns+1")
+            other.commit()
+
+    monkeypatch.setattr(catalog_module, "_iter_source_documents", commit_during_source_read)
+    with document_catalog_database(catalog) as connection:
+        replay = _try_fixture_catalog_replay(connection, source_database, root)
+        assert replay is None
+        assert not connection.in_transaction
+        assert connection.execute("SELECT COUNT(*) FROM catalog_runs").fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT generation_id FROM catalog_publications WHERE source_kind='docx'"
+        ).fetchone()[0] == first.generation_id
+
+
+@pytest.mark.parametrize("target", ["source", "root"])
+def test_replay_revalidates_filesystem_after_preparation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str,
+) -> None:
+    catalog, source_database, _source, root, first = _catalog_replay_fixture(tmp_path)
+    original = catalog_module.CatalogReadFence.matches
+
+    def change_after_catalog_check(fence, connection):
+        matched = original(fence, connection)
+        assert matched
+        if target == "source":
+            with sqlite3.connect(source_database) as source:
+                source.execute("UPDATE documents SET title='external change'")
+        else:
+            root.rename(root.with_name("previous-corpus"))
+            root.mkdir()
+        return matched
+
+    monkeypatch.setattr(catalog_module.CatalogReadFence, "matches", change_after_catalog_check)
+    with pytest.raises(CatalogSourceDrift):
+        update_document_catalog_source(catalog, source_database, "docx", source_root=root)
+    with document_catalog_database(catalog, readonly=True) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM catalog_runs").fetchone()[0] == 1
+        assert read_catalog_publication_manifest(connection, "docx").generation_id == first.generation_id
+
+
+def test_replay_cancellation_during_read_leaves_no_observer_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog, source_database, _source, root, first = _catalog_replay_fixture(tmp_path)
+    token = CancellationToken()
+    original = catalog_module._iter_source_documents
+
+    def cancel_read(*args, **kwargs):
+        for document in original(*args, **kwargs):
+            token.cancel()
+            yield document
+
+    monkeypatch.setattr(catalog_module, "_iter_source_documents", cancel_read)
+    with pytest.raises(CancellationRequested):
+        update_document_catalog_source(
+            catalog, source_database, "docx", source_root=root, cancellation=token,
+        )
+    with document_catalog_database(catalog) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        assert connection.execute("SELECT COUNT(*) FROM catalog_runs").fetchone()[0] == 1
+        assert read_catalog_publication_manifest(connection, "docx").generation_id == first.generation_id
+        connection.rollback()
+
+
+def test_publication_rejects_catalog_commit_during_digest_preparation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog, source_database, source, root, first = _catalog_replay_fixture(tmp_path)
+    _upsert_docx_source(
+        source_database, source, title="Factura proveedor",
+        text="Factura compra", signature="v2",
+    )
+    original = catalog_module.catalog_generation_digest
+
+    def change_prepared_generation(connection, generation_id):
+        result = original(connection, generation_id)
+        if generation_id != first.generation_id:
+            with sqlite3.connect(catalog, timeout=0) as other:
+                other.execute(
+                    "UPDATE catalog_generation_documents SET primary_kind='changed-after-digest' "
+                    "WHERE generation_id=?", (generation_id,),
+                )
+                other.commit()
+        return result
+
+    monkeypatch.setattr(catalog_module, "catalog_generation_digest", change_prepared_generation)
+    with pytest.raises(catalog_module.CatalogPublicationConflict, match="publication preparation"):
+        update_document_catalog_source(catalog, source_database, "docx", source_root=root)
+    with document_catalog_database(catalog, readonly=True) as connection:
+        assert read_catalog_publication_manifest(connection, "docx").generation_id == first.generation_id
+        assert connection.execute(
+            "SELECT status FROM catalog_runs ORDER BY catalog_run_id DESC LIMIT 1"
+        ).fetchone()[0] == "failed"
+
+
+def test_publication_cancellation_after_projection_rolls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog, source_database, source, root, first = _catalog_replay_fixture(tmp_path)
+    _upsert_docx_source(
+        source_database, source, title="Factura proveedor",
+        text="Factura compra", signature="v2",
+    )
+    before = _published_kinds(catalog)
+    token = CancellationToken()
+    original = catalog_module._replace_catalog_projection
+
+    def cancel_after_projection(*args, **kwargs):
+        original(*args, **kwargs)
+        token.cancel()
+
+    monkeypatch.setattr(catalog_module, "_replace_catalog_projection", cancel_after_projection)
+    with pytest.raises(CancellationRequested):
+        update_document_catalog_source(
+            catalog, source_database, "docx", source_root=root, cancellation=token,
+        )
+    assert _published_kinds(catalog) == before
+    with document_catalog_database(catalog, readonly=True) as connection:
+        assert read_catalog_publication_manifest(connection, "docx").generation_id == first.generation_id
+        assert connection.execute(
+            "SELECT status FROM catalog_runs ORDER BY catalog_run_id DESC LIMIT 1"
+        ).fetchone()[0] == "cancelled"
+
+
+def test_catalog_read_fence_rejects_local_rolled_back_write(tmp_path: Path) -> None:
+    with sqlite3.connect(tmp_path / "fixture.sqlite3") as connection:
+        connection.execute("CREATE TABLE observations(value INTEGER)")
+        connection.commit()
+        fence = catalog_module.CatalogReadFence.capture(connection)
+        connection.execute("BEGIN DEFERRED")
+        connection.execute("INSERT INTO observations VALUES(1)")
+        connection.rollback()
+        connection.execute("BEGIN IMMEDIATE")
+        assert not fence.matches(connection)
+        connection.rollback()
+
+
+def test_replay_cancels_while_waiting_for_writer_and_restores_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog, source_database, _source, root, _first = _catalog_replay_fixture(tmp_path)
+    token = CancellationToken()
+    original = catalog_module._prepare_catalog_replay
+    timer = threading.Timer(0.05, token.cancel)
+    with sqlite3.connect(catalog, timeout=0) as blocker:
+        def hold_writer_after_read(*args, **kwargs):
+            prepared = original(*args, **kwargs)
+            assert prepared is not None
+            blocker.execute("BEGIN IMMEDIATE")
+            timer.start()
+            return prepared
+
+        monkeypatch.setattr(catalog_module, "_prepare_catalog_replay", hold_writer_after_read)
+        with document_catalog_database(catalog) as connection:
+            connection.execute("PRAGMA busy_timeout=5000")
+            started = time.monotonic()
+            try:
+                with pytest.raises(CancellationRequested):
+                    _try_fixture_catalog_replay(
+                        connection, source_database, root, cancellation=token,
+                    )
+            finally:
+                timer.cancel()
+                timer.join(timeout=1)
+                blocker.rollback()
+            assert time.monotonic() - started < 1.0
+            assert not connection.in_transaction
+            assert connection.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+            assert connection.execute("SELECT COUNT(*) FROM catalog_runs").fetchone()[0] == 1
+
+
+def test_catalog_writer_wait_preserves_original_timeout(tmp_path: Path) -> None:
+    database = tmp_path / "writer.sqlite3"
+    with sqlite3.connect(database) as blocker, sqlite3.connect(database, timeout=0.12) as connection:
+        blocker.execute("CREATE TABLE observations(value INTEGER)")
+        blocker.commit()
+        blocker.execute("BEGIN IMMEDIATE")
+        started = time.monotonic()
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            catalog_module.begin_catalog_write(connection, CancellationToken())
+        assert time.monotonic() - started < 1.0
+        assert not connection.in_transaction
+        assert connection.execute("PRAGMA busy_timeout").fetchone()[0] == 120
+        blocker.rollback()
+
+
+def test_publication_cancellation_does_not_wait_again_to_record_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog, source_database, source, root, first = _catalog_replay_fixture(tmp_path)
+    _upsert_docx_source(
+        source_database, source, title="Factura proveedor",
+        text="Factura compra", signature="v2",
+    )
+    original_prepare = catalog_module._prepare_catalog_publication
+    original_fail = catalog_module._fail_catalog_build
+    token = CancellationToken()
+    timer = threading.Timer(0.05, token.cancel)
+    cleanup: list[tuple[bool, int]] = []
+    with sqlite3.connect(catalog, timeout=0) as blocker:
+        def hold_writer_after_preparation(*args, **kwargs):
+            prepared = original_prepare(*args, **kwargs)
+            blocker.execute("BEGIN IMMEDIATE")
+            timer.start()
+            return prepared
+
+        def observe_failed_status(connection, *args, **kwargs):
+            original_fail(connection, *args, **kwargs)
+            cleanup.append((
+                connection.in_transaction,
+                int(connection.execute("PRAGMA busy_timeout").fetchone()[0]),
+            ))
+
+        monkeypatch.setattr(catalog_module, "_prepare_catalog_publication", hold_writer_after_preparation)
+        monkeypatch.setattr(catalog_module, "_fail_catalog_build", observe_failed_status)
+        started = time.monotonic()
+        try:
+            with pytest.raises(CancellationRequested) as raised:
+                update_document_catalog_source(
+                    catalog, source_database, "docx", source_root=root, cancellation=token,
+                )
+        finally:
+            timer.cancel()
+            if timer.ident is not None:
+                timer.join(timeout=1)
+            blocker.rollback()
+        assert time.monotonic() - started < 1.0
+        assert cleanup == [(False, 60_000)]
+        assert any("could not be persisted" in note for note in raised.value.__notes__)
+    with document_catalog_database(catalog, readonly=True) as connection:
+        assert read_catalog_publication_manifest(connection, "docx").generation_id == first.generation_id
+        assert connection.execute(
+            "SELECT COUNT(*) FROM catalog_runs WHERE status='completed'"
+        ).fetchone()[0] == 1
+        assert tuple(connection.execute(
+            "SELECT r.status,g.status FROM catalog_runs AS r "
+            "JOIN catalog_generations AS g USING(catalog_run_id) "
+            "ORDER BY r.catalog_run_id DESC LIMIT 1"
+        ).fetchone()) == ("running", "building")
 
 
 # endregion [02]

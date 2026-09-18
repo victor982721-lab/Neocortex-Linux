@@ -416,15 +416,21 @@ def image_route_config_from_framework(
 def _run_image(context: RouteExecutionContext) -> object:
     from neocortex.deduplication import DedupIndex
 
+    from neocortex.runtime.control.cancellation import CancellationToken
     from neocortex.runtime.control.global_resources import CoordinatedMemoryGate
 
     from neocortex.capabilities.formats.image.route import ImageRoute
 
     config = context.config
+    # A fatal Image admission stops only its own executor. Framework retains
+    # the original route error and decides how sibling routes should proceed.
+    cancellation = CancellationToken(parent=context.cancellation)
     gate = (
         None
         if context.resource_coordinator is None
-        else CoordinatedMemoryGate(context.resource_coordinator, "image")
+        else CoordinatedMemoryGate(
+            context.resource_coordinator, "image", cancellation=cancellation
+        )
     )
     with DedupIndex(config.dedup_database) as dedup_index:
         summary = ImageRoute(
@@ -433,7 +439,7 @@ def _run_image(context: RouteExecutionContext) -> object:
             context.run_id,
             progress=context.progress,
             memory_gate=gate,
-            cancellation=context.cancellation,
+            cancellation=cancellation,
             dedup_index=dedup_index,
         ).run()
     catalog = _update_document_catalog_after_route(context, "image")

@@ -4,6 +4,25 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-18 — Bloques compartidos y publicación con esperas acotadas
+
+- Code v9 reutiliza bloques de entradas y membresías entre generaciones mediante
+  manifiestos completos. Conserva lectura y evidencia v1, valida las filas antes
+  de compartirlas y retira sólo bloques sin referencias retenidas. Knowledge
+  mantiene lectura exacta de v7/v8 y Dedup aplica sus presupuestos sobre ambas
+  representaciones antes de materializarlas.
+- Inventory portable construye las generaciones modificadas desde la observación
+  actual validada, evitando copiar primero las filas anteriores para borrarlas
+  o reemplazarlas. Mueve el digest fuera del writer y conserva revalidación,
+  rollback, cancelación y deadline mientras espera el lock.
+- Catalog saca del writer la validación completa de replay, digests y recuentos;
+  comprueba los fences nuevamente al publicar. La cancelación también limita
+  las esperas durante adquisición y registro de un fallo de publicación.
+- Image cancela su cola antes de esperar la salida del executor ante un fallo
+  fatal de admisión. Conserva el error original y los resultados ya consumidos,
+  y cierra los decoders aunque otra limpieza falle. Su token hijo hereda la
+  cancelación de Framework y permite detener Image sin cancelar otras rutas.
+
 ## 2026-09-18 — Reutilización de caché y continuidad de ejecución
 
 - Code calcula los digests agregados por bloques, conservando su representación

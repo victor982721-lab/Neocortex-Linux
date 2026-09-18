@@ -671,6 +671,16 @@ versiones y permite búsqueda/reconstrucción. No ejecuta el código observado n
 importa herramientas de desarrollo. Pytest, Ruff, Mypy/Pyright y Semgrep se
 ejecutan fuera del runtime.
 
+El ledger de Code usa el esquema v9 y generaciones v2. Cada snapshot y generación
+conserva un manifiesto completo de bloques compartidos: una lectura no recorre
+una cadena de generaciones anteriores. El digest localiza candidatos de caché;
+la publicación compara sus filas antes de reutilizarlos. Las generaciones v1
+conservan sus entradas, membresías y digests originales, y el lector integra
+ambas representaciones. La retención retira bloques sólo cuando ningún manifiesto
+conservado los referencia, manteniendo los localizadores del productor original.
+Esto reduce las escrituras de payload ante cambios pequeños; el recorrido,
+ordenación y validación de la fuente siguen dependiendo del tamaño total.
+
 ## Persistencia
 
 `STATE_STORE_REGISTRY` es el inventario contractual de owners:

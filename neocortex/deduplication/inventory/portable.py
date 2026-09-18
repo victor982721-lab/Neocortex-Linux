@@ -13,7 +13,7 @@ from neocortex.persistence.sqlite_cancellation import SQLiteCancellationBridge, 
 
 from ..domain.errors import InventoryError
 from ..domain.models import InventoryCheckpoint, ScanSummary
-from .generation import inventory_content_digest
+from .generation import portable_observation_content_digest
 from .policy import InventoryExclusionPolicy
 from .scanner import DEFAULT_BATCH_SIZE, InventoryWorkBudget, _InventoryWorkState, id_blob
 from .traversal import FileObservation, InventoryTraversal, RootIdentity
@@ -76,6 +76,39 @@ def _compatible_checkpoint(
     return checkpoint if missing is None else None
 
 
+def _begin_publication(connection: sqlite3.Connection, work: _InventoryWorkState) -> None:
+    """Acquire the writer lock without hiding cancellation in SQLite's wait.
+
+    SQLite's busy handler does not invoke the SQL progress handler. Short
+    attempts retain the owner's original total wait limit while admitting
+    cancellation/deadline checks between attempts; the connection's setting
+    is restored even if acquisition or admission fails.
+    """
+
+    original_timeout = int(connection.execute("PRAGMA busy_timeout").fetchone()[0])
+    started = time.monotonic()
+    try:
+        while True:
+            work.check()
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            remaining_ms = max(0, original_timeout - elapsed_ms)
+            connection.execute(f"PRAGMA busy_timeout={min(100, remaining_ms)}")
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                return
+            except sqlite3.OperationalError as exc:
+                work.check()
+                error_code = getattr(exc, "sqlite_errorcode", None)
+                if (
+                    error_code is None
+                    or error_code & 0xFF != sqlite3.SQLITE_BUSY
+                    or (time.monotonic() - started) * 1000 >= original_timeout
+                ):
+                    raise
+    finally:
+        connection.execute(f"PRAGMA busy_timeout={original_timeout}")
+
+
 def prepare_portable_inventory(
     index: DedupIndex,
     root: Path,
@@ -88,14 +121,20 @@ def prepare_portable_inventory(
 
     Change times reject metadata replay after a same-stat rewrite; they do
     not authorize content-cache hits. Content owners retain their own checks.
-    Changed generations use the existing copy-on-write publication contract,
-    so their physical row writes include the complete snapshot copy.
+    Changed generations retain a complete immutable snapshot. They materialize
+    the current observation once, without copying obsolete rows first; their
+    physical file-row writes are still proportional to the current inventory.
     """
 
     budget = InventoryWorkBudget() if work_budget is None else work_budget
     if not isinstance(budget, InventoryWorkBudget):
         raise TypeError("work_budget must be an InventoryWorkBudget")
     work = _InventoryWorkState(budget, files=0, bytes_seen=0)
+    connection = index._connection
+    if connection.in_transaction:
+        raise InventoryError("portable inventory requires its own transaction")
+    work.check()
+    source_data_version = int(connection.execute("PRAGMA data_version").fetchone()[0])
     identity = RootIdentity.capture(root)
     if exclusion_policy.excludes_directory(identity.path):
         raise InventoryError("inventory root is excluded by its inventory policy")
@@ -104,7 +143,6 @@ def prepare_portable_inventory(
         scan = index.scan(root, exclusion_policy=exclusion_policy, progress=progress, work_budget=work_budget)
         return PortableInventoryResult(scan, scan.files_seen, scan.files_seen, scan.files_seen, False)
 
-    connection = index._connection
     connection.execute("DROP TABLE IF EXISTS temp.portable_observed_files")
     connection.execute("DROP TABLE IF EXISTS temp.portable_file_delta")
     connection.execute("CREATE TEMP TABLE portable_observed_files("
@@ -112,6 +150,7 @@ def prepare_portable_inventory(
                        "size INTEGER NOT NULL,mtime_ns INTEGER NOT NULL,birthtime_ns INTEGER NOT NULL,ctime_ns INTEGER"
                        ") WITHOUT ROWID")
     previous = index.scan_summary(checkpoint.scan_id)
+    previous_digest = index.scan_content_digest(checkpoint.scan_id)
     try:
         emit_progress(progress, ProgressEvent("dedup", "inventory", "Observando cambios del inventario", 0, unit="archivos"))
         traversal = InventoryTraversal(
@@ -146,30 +185,39 @@ def prepare_portable_inventory(
             ).fetchone()[0])
             observed = counters.summary(checkpoint.scan_id, identity.path)
             unchanged = upserts == removals == 0 and observed == previous
+            prepared_digest = (
+                previous_digest if unchanged
+                else portable_observation_content_digest(connection, work_check=work.check)
+            )
             with connection:
+                _begin_publication(connection, work)
                 work.check()
                 identity.verify_unchanged()
                 current = index.inventory_checkpoint(identity.path)
-                if current != checkpoint:
+                current_data_version = int(connection.execute("PRAGMA data_version").fetchone()[0])
+                if (
+                    current_data_version != source_data_version
+                    or current != checkpoint
+                    or index.scan_summary(checkpoint.scan_id) != previous
+                    or index.scan_content_digest(checkpoint.scan_id) != previous_digest
+                ):
                     raise InventoryError("portable inventory publication changed during observation")
                 if unchanged:
                     result = PortableInventoryResult(previous, counters.files_seen, 0, 0, True)
                 else:
-                    successor = index._create_inventory_successor(checkpoint.scan_id, reason="portable-metadata-delta")
-                    connection.execute(
-                        "DELETE FROM files WHERE scan_id=? AND NOT EXISTS("
-                        "SELECT 1 FROM portable_observed_files o WHERE o.path=files.path)", (successor,),
+                    successor = index._create_inventory_successor(
+                        checkpoint.scan_id, reason="portable-metadata-delta", copy_files=False,
                     )
-                    connection.execute(
+                    written = connection.execute(
                         "INSERT INTO files(scan_id,path,volume_id,file_id,size,mtime_ns,birthtime_ns) "
-                        "SELECT ?,path,volume_id,file_id,size,mtime_ns,birthtime_ns FROM portable_file_delta WHERE 1 "
-                        "ON CONFLICT(scan_id,path) DO UPDATE SET volume_id=excluded.volume_id,file_id=excluded.file_id,"
-                        "size=excluded.size,mtime_ns=excluded.mtime_ns,birthtime_ns=excluded.birthtime_ns", (successor,),
-                    )
+                        "SELECT ?,path,volume_id,file_id,size,mtime_ns,birthtime_ns "
+                        "FROM portable_observed_files ORDER BY path", (successor,),
+                    ).rowcount
+                    if written != counters.files_seen:
+                        raise InventoryError("portable inventory materialization count changed")
                     connection.execute(
                         "INSERT INTO inventory_file_change_versions(scan_id,path,ctime_ns) "
-                        "SELECT ?,path,ctime_ns FROM portable_file_delta WHERE 1 "
-                        "ON CONFLICT(scan_id,path) DO UPDATE SET ctime_ns=excluded.ctime_ns", (successor,),
+                        "SELECT ?,path,ctime_ns FROM portable_observed_files ORDER BY path", (successor,),
                     )
                     connection.execute(
                         "UPDATE scans SET completed_ns=?,files_seen=?,directories_seen=?,bytes_seen=?,"
@@ -179,12 +227,12 @@ def prepare_portable_inventory(
                     )
                     connection.execute(
                         "UPDATE inventory_generation_heads SET content_digest=? WHERE scan_id=?",
-                        (inventory_content_digest(connection, successor, work_check=work.check), successor),
+                        (prepared_digest, successor),
                     )
                     index._write_inventory_checkpoint(replace(checkpoint, scan_id=successor))
                     work.check()
                     result = PortableInventoryResult(counters.summary(successor, identity.path),
-                        counters.files_seen, upserts + removals, previous.files_seen + upserts, False)
+                        counters.files_seen, upserts + removals, written, False)
         emit_progress(progress, ProgressEvent("dedup", "inventory", "Inventario observado y publicado",
                                               counters.files_seen, counters.files_seen, "archivos", True))
         return result

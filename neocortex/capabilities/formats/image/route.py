@@ -527,7 +527,8 @@ class ImageRoute:
         flush_results: Callable[[], None],
         report: Callable[[], None],
     ) -> None:
-        with ThreadPoolExecutor(max_workers=self.config.workers) as executor:
+        executor = ThreadPoolExecutor(max_workers=self.config.workers)
+        try:
             exhausted = False
             while work.pending or not exhausted:
                 self.cancellation.checkpoint()
@@ -563,6 +564,18 @@ class ImageRoute:
                     flush_results,
                     report,
                 )
+        except BaseException as failure:
+            # Signal running admissions/decoders before shutdown waits for them.
+            # The executor also cancels tasks that have not started; a task
+            # already dequeued observes the same cooperative cancellation token.
+            self.cancellation.cancel()
+            try:
+                executor.shutdown(wait=True, cancel_futures=True)
+            except BaseException as cleanup_error:
+                failure.add_note(f"image executor shutdown failed: {cleanup_error!r}")
+            raise
+        else:
+            executor.shutdown(wait=True)
 
     def _fill_work_queue(
         self,
@@ -662,13 +675,7 @@ class ImageRoute:
         report: Callable[[], None],
     ) -> None:
         for future in completed:
-            try:
-                result = future.result()
-            except CancellationRequested:
-                raise
-            except MemoryError:
-                flush_results()
-                raise
+            result = future.result()
             apply_delta(
                 self._analysis_result_delta(
                     result,
@@ -839,19 +846,22 @@ class ImageRoute:
                 flush_results,
                 report,
             )
-        except (CancellationRequested, KeyboardInterrupt):
-            for future in work.pending:
-                future.cancel()
-            flush_results()
+        except BaseException as failure:
+            # Keep consumed results resumable without replacing the first
+            # failure if persistence or worker cleanup fails as well.
+            for label, cleanup in (
+                ("result flush", flush_results),
+                ("candidate cursor close", lambda: self._close_candidate_rows(rows)),
+                ("worker close", self._close_image_workers),
+            ):
+                try:
+                    cleanup()
+                except BaseException as cleanup_error:
+                    failure.add_note(f"image {label} failed: {cleanup_error!r}")
             raise
-        finally:
+        else:
             try:
-                # ``iter_candidates`` owns a thread-affine SQLite connection.
-                # Close it in the route thread even when a worker fails so GC
-                # cannot finalize it later from an unrelated worker thread.
-                close_rows = getattr(rows, "close", None)
-                if close_rows is not None:
-                    close_rows()
+                self._close_candidate_rows(rows)
             finally:
                 self._close_image_workers()
 
@@ -897,6 +907,14 @@ class ImageRoute:
             full_fingerprint_cache_hits=self._full_fingerprint_cache_hits,
             full_fingerprints_computed=self._full_fingerprints_computed,
         )
+
+    @staticmethod
+    def _close_candidate_rows(rows: Iterator[Any]) -> None:
+        # ``iter_candidates`` owns a thread-affine SQLite connection. Close it
+        # in the route thread so GC cannot finalize it in an unrelated worker.
+        close_rows = getattr(rows, "close", None)
+        if close_rows is not None:
+            close_rows()
 
     def _stage_inventory(self) -> None:
         pending: list[tuple[str, FileSnapshot]] = []
@@ -1023,8 +1041,17 @@ class ImageRoute:
         with self._supervisor_lock:
             supervisors = tuple(self._supervisors)
             self._supervisors.clear()
+        failure: BaseException | None = None
         for supervisor in supervisors:
-            supervisor.close()
+            try:
+                supervisor.close()
+            except BaseException as cleanup_error:
+                if failure is None:
+                    failure = cleanup_error
+                else:
+                    failure.add_note(f"another image worker close failed: {cleanup_error!r}")
+        if failure is not None:
+            raise failure
 
 
 def _same_snapshot(expected: FileSnapshot, actual: FileSnapshot) -> bool:

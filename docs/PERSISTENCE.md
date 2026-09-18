@@ -92,6 +92,22 @@ manifests de generación con source fence, raíz, política y digests, con trigg
 que bloquean UPDATE/DELETE sobre generaciones publicadas. Las migraciones son
 aditivas y conservan lectura de v12/v8.
 
+La publicación portable de Inventory materializa una vez la observación TEMP
+completa y validada cuando hay cambios. Calcula su digest antes de tomar el lock
+de escritura y revalida checkpoint, generación y revisión al adquirirlo. Catalog
+valida replay, digests y recuentos en una transacción de lectura; antes de publicar
+comprueba de nuevo la conexión, identidad física, fuente y raíz bajo transacción
+de escritura. La adquisición de ambos writers consulta cancelación entre intentos
+acotados, sin ampliar el busy timeout configurado. Inventory conserva el coste
+de materializar la generación actual; Catalog conserva el cambio atómico de su
+proyección y su lock de coordinación dentro del proceso.
+
+Code v9 añade bloques derivados compartidos y manifiestos completos para sus
+generaciones v2. La migración preserva el ledger v1 y los lectores de Knowledge
+aceptan las formas exactas v7/v8 sin migrarlas. Reset clasifica las seis tablas
+nuevas como derivadas; los heads y localizadores históricos conservan su política
+operacional y de retención.
+
 ## Frontera durable de acciones físicas
 
 Framework configura WAL con `synchronous=FULL`: conserva intentos y recibos de

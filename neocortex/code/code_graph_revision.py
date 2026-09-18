@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sqlite3
 
+from .code_graph_blocks import GRAPH_BLOCK_TABLES
+
 
 GRAPH_REVISION_KEY = "code_graph_revision_v1"
 _TABLES = (
@@ -24,13 +26,23 @@ def install_graph_revision_guards(connection: sqlite3.Connection) -> None:
     """Install v8's guards under the owner's schema-migration transaction."""
 
     connection.execute("INSERT INTO metadata(key,value) VALUES(?,'0')", (GRAPH_REVISION_KEY,))
+    _install_revision_guards(connection, _TABLES)
+
+
+def install_graph_block_revision_guards(connection: sqlite3.Connection) -> None:
+    """Extend the existing revision in v9 without resetting its history."""
+
+    _install_revision_guards(connection, GRAPH_BLOCK_TABLES)
+
+
+def _install_revision_guards(connection: sqlite3.Connection, tables: tuple[str, ...]) -> None:
     body = (
         "UPDATE metadata SET value=CAST(value AS INTEGER)+1 "
         f"WHERE key='{GRAPH_REVISION_KEY}' AND length(value) BETWEEN 1 AND 18 "
         "AND value NOT GLOB '*[^0-9]*'; "
         "SELECT CASE WHEN changes()<>1 THEN RAISE(ABORT,'Code graph revision is invalid') END;"
     )
-    for table in _TABLES:
+    for table in tables:
         ignored = _OBSERVATION_COLUMNS.get(table, frozenset())
         columns = tuple(
             str(row[1]) for row in connection.execute(f'PRAGMA table_info("{table}")')

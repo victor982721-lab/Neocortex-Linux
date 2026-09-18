@@ -70,8 +70,10 @@ from .document_catalog_replay import (
     RECEIPT_KEY,
     CatalogClassificationEvidence,
     CatalogInputDigest,
+    CatalogReadFence,
     CatalogReplayReceipt,
     catalog_sql_cancellation,
+    begin_catalog_write,
     corrections_digest,
     document_input_marker,
     current_projection_matches,
@@ -1274,6 +1276,73 @@ def observed_source_fence(connection: sqlite3.Connection, manifest: CatalogPubli
     return receipt.source_fence_json
 
 
+def _prepare_catalog_replay(
+    connection: sqlite3.Connection,
+    source_path: Path,
+    source_kind: SourceKind,
+    *,
+    source_root: Path | None,
+    root_identity: tuple[int, int, int] | None,
+    taxonomy: TechnicalTaxonomy,
+    max_text_chars: int,
+    verify_source_paths: bool,
+    cancellation: CancellationToken | None,
+) -> tuple[CatalogReplayReceipt, CatalogReadFence, str] | None:
+    """Validate the complete publication and ordered input outside the writer."""
+
+    if not source_path.is_file():
+        return None
+    catalog_fence = CatalogReadFence.capture(connection)
+    connection.execute("BEGIN DEFERRED")
+    try:
+        with catalog_sql_cancellation(connection, cancellation):
+            previous = latest_receipt(connection, source_kind)
+            if previous is None:
+                return None
+            manifest = read_catalog_publication_manifest(connection, source_kind)
+            root_json = _root_identity_json(root_identity)
+            signature = document_classifier_signature(taxonomy)
+            if (
+                previous.generation_id != manifest.generation_id
+                or previous.source_path != str(Path(os.path.abspath(source_path)))
+                or previous.source_root != (None if source_root is None else str(source_root))
+                or previous.source_root_identity_json != root_json
+                or previous.input_policy_signature != (CATALOG_INPUT_POLICY if source_root is not None else None)
+                or previous.classifier_signature != signature
+                or previous.max_text_chars != max_text_chars
+                or previous.corrections_digest != corrections_digest(connection)
+                or previous.generation_digest != manifest.generation_digest
+                or previous.input_manifest_digest != manifest.input_manifest_digest
+                or not current_projection_matches(connection, manifest.generation_id, source_kind)
+            ):
+                return None
+            # Reconcile the immutable producer as well as the observed head before
+            # writing another receipt; a valid checksum cannot substitute its owner.
+            observed_source_fence(connection, manifest)
+            fence = _source_fence_json(source_path)
+            old_fence, new_fence = json.loads(previous.source_fence_json), json.loads(fence)
+            if any(old_fence.get(key) != new_fence.get(key) for key in ("path", "volume_id", "file_id", "birthtime_ns")):
+                return None
+            inputs = CatalogInputDigest()
+            with _readonly_source(source_path, cancellation=cancellation) as source:
+                for document in _iter_source_documents(source, source_kind, verify_source_paths=verify_source_paths, source_root=source_root):
+                    if cancellation is not None:
+                        cancellation.checkpoint()
+                    if source_root is not None and not _source_document_is_in_scope(document, source_root):
+                        continue
+                    if verify_source_paths and not _catalog_source_is_virtual(document) and not _source_snapshot_is_current(document):
+                        return None
+                    document = _attach_resource_binding(document)
+                    inputs.add(document)
+            if inputs.count != previous.input_count or inputs.digest != previous.input_digest:
+                return None
+            return previous, catalog_fence, fence
+    finally:
+        # The cancellation scope has removed its callback before cleanup.
+        if connection.in_transaction:
+            connection.rollback()
+
+
 def try_reuse_catalog(
     connection: sqlite3.Connection,
     source_path: Path,
@@ -1287,82 +1356,54 @@ def try_reuse_catalog(
     verify_source_paths: bool,
     cancellation: CancellationToken | None,
 ) -> CatalogUpdateSummary | None:
-    """Return an exact observation or a conservative rebuild requirement.
+    """Reuse validated input only if its catalog snapshot remains current.
 
-    Changed inputs return to the owner's per-document input markers, so one
-    changed file does not discard compatible classifications of its peers.
-    No generation, staging row or current projection is written on replay.
+    Changed inputs or a concurrent catalog commit require a conservative
+    rebuild. Only the observer receipt is written; its original producer and
+    immutable publication remain unchanged.
     """
 
-    previous = latest_receipt(connection, source_kind)
-    if previous is None or not source_path.is_file():
+    prepared = _prepare_catalog_replay(
+        connection, source_path, source_kind, source_root=source_root,
+        root_identity=root_identity, taxonomy=taxonomy,
+        max_text_chars=max_text_chars, verify_source_paths=verify_source_paths,
+        cancellation=cancellation,
+    )
+    if prepared is None:
         return None
-    connection.execute("BEGIN IMMEDIATE")
+    previous, catalog_fence, fence = prepared
     try:
-        manifest = read_catalog_publication_manifest(connection, source_kind)
-        root_json = _root_identity_json(root_identity)
-        signature = document_classifier_signature(taxonomy)
-        if (
-            previous.generation_id != manifest.generation_id
-            or previous.source_path != str(Path(os.path.abspath(source_path)))
-            or previous.source_root != (None if source_root is None else str(source_root))
-            or previous.source_root_identity_json != root_json
-            or previous.input_policy_signature != (CATALOG_INPUT_POLICY if source_root is not None else None)
-            or previous.classifier_signature != signature
-            or previous.max_text_chars != max_text_chars
-            or previous.corrections_digest != corrections_digest(connection)
-            or previous.generation_digest != manifest.generation_digest
-            or previous.input_manifest_digest != manifest.input_manifest_digest
-            or not current_projection_matches(connection, manifest.generation_id, source_kind)
-        ):
-            return None
-        # Reconcile the immutable producer as well as the observed head before
-        # writing another receipt; a valid checksum cannot substitute its owner.
-        observed_source_fence(connection, manifest)
-        fence = _source_fence_json(source_path)
-        old_fence, new_fence = json.loads(previous.source_fence_json), json.loads(fence)
-        if any(old_fence.get(key) != new_fence.get(key) for key in ("path", "volume_id", "file_id", "birthtime_ns")):
-            return None
-        inputs = CatalogInputDigest()
-        with _readonly_source(source_path, cancellation=cancellation) as source:
-            for document in _iter_source_documents(source, source_kind, verify_source_paths=verify_source_paths, source_root=source_root):
-                if cancellation is not None:
-                    cancellation.checkpoint()
-                if source_root is not None and not _source_document_is_in_scope(document, source_root):
-                    continue
-                if verify_source_paths and not _catalog_source_is_virtual(document) and not _source_snapshot_is_current(document):
-                    return None
-                document = _attach_resource_binding(document)
-                inputs.add(document)
-        if inputs.count != previous.input_count or inputs.digest != previous.input_digest:
-            return None
-        if not _source_fence_matches(source_path, fence):
-            raise CatalogSourceDrift("catalog source changed during replay observation")
-        if source_root is not None and _catalog_input_root(source_root)[1] != root_identity:
-            raise CatalogSourceDrift("catalog replay root identity changed")
-        if cancellation is not None:
-            cancellation.checkpoint()
-        run_id = next_operational_identity(connection, "catalog", "catalog_runs", "catalog_run_id")
-        summary = CatalogUpdateSummary(
-            catalog_run_id=run_id, source_kind=source_kind, candidates=inputs.count,
-            cache_hits=inputs.count, publication_state="unchanged",
-            generation_id=manifest.generation_id,
-            reused_from_catalog_run_id=previous.producer_catalog_run_id,
-        )
-        receipt = replace(previous, observation_catalog_run_id=run_id, source_fence_json=fence)
-        now = time.time_ns()
-        connection.execute(
-            "INSERT INTO catalog_runs(catalog_run_id,framework_run_id,source_kind,mode,status,started_ns,completed_ns,summary_json) "
-            "VALUES(?,?,?,'classify','completed',?,?,?)",
-            (run_id, framework_run_id, source_kind, now, now,
-             json.dumps({**asdict(summary), RECEIPT_KEY: receipt.payload()}, sort_keys=True, separators=(",", ":"))),
-        )
-        connection.commit()
-        return summary
+        begin_catalog_write(connection, cancellation)
+        with catalog_sql_cancellation(connection, cancellation):
+            if not catalog_fence.matches(connection):
+                return None
+            if not _source_fence_matches(source_path, fence):
+                raise CatalogSourceDrift("catalog source changed during replay observation")
+            if source_root is not None and _catalog_input_root(source_root)[1] != root_identity:
+                raise CatalogSourceDrift("catalog replay root identity changed")
+            if cancellation is not None:
+                cancellation.checkpoint()
+            run_id = next_operational_identity(connection, "catalog", "catalog_runs", "catalog_run_id")
+            summary = CatalogUpdateSummary(
+                catalog_run_id=run_id, source_kind=source_kind, candidates=previous.input_count,
+                cache_hits=previous.input_count, publication_state="unchanged",
+                generation_id=previous.generation_id,
+                reused_from_catalog_run_id=previous.producer_catalog_run_id,
+            )
+            receipt = replace(previous, observation_catalog_run_id=run_id, source_fence_json=fence)
+            now = time.time_ns()
+            connection.execute(
+                "INSERT INTO catalog_runs(catalog_run_id,framework_run_id,source_kind,mode,status,started_ns,completed_ns,summary_json) "
+                "VALUES(?,?,?,'classify','completed',?,?,?)",
+                (run_id, framework_run_id, source_kind, now, now,
+                 json.dumps({**asdict(summary), RECEIPT_KEY: receipt.payload()}, sort_keys=True, separators=(",", ":"))),
+            )
+            if cancellation is not None:
+                cancellation.checkpoint()
+            connection.commit()
+            return summary
     finally:
         if connection.in_transaction:
-            # Cleanup must not itself be interrupted by the cancelled query.
-            connection.set_progress_handler(None, 0)
             connection.rollback()
 
 
@@ -1394,14 +1435,13 @@ def update_document_catalog_source(
     initialize_document_catalog(catalog_path)
     with _CATALOG_WRITE_LOCK, document_catalog_database(catalog_path) as catalog:
         try:
-            with catalog_sql_cancellation(catalog, cancellation):
-                reused = try_reuse_catalog(
-                    catalog, source_path, source_kind,
-                    source_root=scoped_root, root_identity=root_identity,
-                    taxonomy=taxonomy, max_text_chars=max_text_chars,
-                    framework_run_id=framework_run_id,
-                    verify_source_paths=verify_source_paths, cancellation=cancellation,
-                )
+            reused = try_reuse_catalog(
+                catalog, source_path, source_kind,
+                source_root=scoped_root, root_identity=root_identity,
+                taxonomy=taxonomy, max_text_chars=max_text_chars,
+                framework_run_id=framework_run_id,
+                verify_source_paths=verify_source_paths, cancellation=cancellation,
+            )
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise CatalogPublicationConflict("catalog replay observation is invalid") from exc
         if reused is not None:
@@ -1579,7 +1619,10 @@ def update_document_catalog_source(
                 classifier_signature=document_classifier_signature(taxonomy),
                 max_text_chars=max_text_chars, corrections_digest=correction_fence,
             )
-            summary = _publish_catalog_build(catalog, build, summary, classification_evidence=evidence)
+            summary = _publish_catalog_build(
+                catalog, build, summary, classification_evidence=evidence,
+                cancellation=cancellation,
+            )
             _emit_catalog_progress(
                 progress,
                 operation=progress_operation or source_kind,
@@ -1856,23 +1899,88 @@ def _fail_catalog_build(
     cancelled = isinstance(error, CancellationRequested)
     generation_status = "cancelled" if cancelled else "failed"
     run_status = "cancelled" if cancelled else "failed"
-    connection.execute(
-        """UPDATE catalog_runs SET status=?,completed_ns=?,error_type=?,error_message=?
-        WHERE catalog_run_id=? AND status='running'""",
-        (run_status, now, type(error).__name__, str(error), build.catalog_run_id),
-    )
-    connection.execute(
-        """UPDATE catalog_generations SET status=?,completed_ns=?,error_type=?,
-        error_message=? WHERE generation_id=? AND status='building'""",
-        (
-            generation_status,
-            now,
-            type(error).__name__,
-            str(error),
-            build.generation_id,
-        ),
-    )
+    original_timeout = int(connection.execute("PRAGMA busy_timeout").fetchone()[0])
+    if cancelled:
+        # Cancellation already ended the operation. Its best-effort status
+        # update must not start another full writer wait or replace that signal.
+        connection.execute(f"PRAGMA busy_timeout={min(100, original_timeout)}")
+    try:
+        connection.execute(
+            """UPDATE catalog_runs SET status=?,completed_ns=?,error_type=?,error_message=?
+            WHERE catalog_run_id=? AND status='running'""",
+            (run_status, now, type(error).__name__, str(error), build.catalog_run_id),
+        )
+        connection.execute(
+            """UPDATE catalog_generations SET status=?,completed_ns=?,error_type=?,
+            error_message=? WHERE generation_id=? AND status='building'""",
+            (
+                generation_status,
+                now,
+                type(error).__name__,
+                str(error),
+                build.generation_id,
+            ),
+        )
+        connection.commit()
+    except sqlite3.Error as persistence_error:
+        connection.rollback()
+        if not cancelled:
+            raise
+        error.add_note(
+            "Catalog cancellation failure status could not be persisted; "
+            "the unpublished build remains incomplete: "
+            f"{type(persistence_error).__name__}: {persistence_error}"
+        )
+    finally:
+        if cancelled:
+            connection.execute(f"PRAGMA busy_timeout={original_timeout}")
+
+
+def _prepare_catalog_publication(
+    connection: sqlite3.Connection,
+    build: CatalogBuild,
+    classification_evidence: CatalogClassificationEvidence | None,
+    cancellation: CancellationToken | None,
+) -> tuple[CatalogReadFence, str, str, int]:
+    """Read the staged digest and stale count before taking the writer lock."""
+
     connection.commit()
+    catalog_fence = CatalogReadFence.capture(connection)
+    connection.execute("BEGIN DEFERRED")
+    try:
+        with catalog_sql_cancellation(connection, cancellation):
+            generation_digest = catalog_generation_digest(connection, build.generation_id)
+            input_manifest_digest = catalog_input_manifest_digest(
+                source_kind=build.source_kind,
+                source_path=build.source_path,
+                source_fence_json=build.source_fence_json,
+                source_root=build.source_root,
+                source_root_identity_json=build.source_root_identity_json,
+                input_policy_signature=build.input_policy_signature,
+                generation_digest=generation_digest,
+            )
+            stale = int(
+                connection.execute(
+                    """SELECT COUNT(*) FROM documents AS published_document
+                    WHERE published_document.source_kind=?
+                    AND published_document.active=1 AND NOT EXISTS(
+                        SELECT 1 FROM catalog_generation_documents AS staged
+                        WHERE staged.generation_id=? AND staged.active=1
+                        AND staged.source_kind=published_document.source_kind
+                        AND staged.file_key=published_document.file_key
+                    )""",
+                    (build.source_kind, build.generation_id),
+                ).fetchone()[0]
+            )
+            if (
+                classification_evidence is not None
+                and corrections_digest(connection) != classification_evidence.corrections_digest
+            ):
+                raise CatalogSourceDrift("catalog corrections changed during publication preparation")
+            return catalog_fence, generation_digest, input_manifest_digest, stale
+    finally:
+        if connection.in_transaction:
+            connection.rollback()
 
 
 def _publish_catalog_build(
@@ -1881,140 +1989,133 @@ def _publish_catalog_build(
     summary: CatalogUpdateSummary,
     *,
     classification_evidence: CatalogClassificationEvidence | None = None,
+    cancellation: CancellationToken | None = None,
 ) -> CatalogUpdateSummary:
     """Atomically project a complete generation if its base pointer is current."""
 
-    connection.commit()
-    connection.execute("BEGIN IMMEDIATE")
+    catalog_fence, generation_digest, input_manifest_digest, stale = _prepare_catalog_publication(
+        connection, build, classification_evidence, cancellation,
+    )
     try:
-        published = connection.execute(
-            """SELECT p.generation_id,m.generation_digest
-            FROM catalog_publications p
-            LEFT JOIN catalog_generation_manifests m ON m.generation_id=p.generation_id
-            WHERE p.source_kind=?""",
-            (build.source_kind,),
-        ).fetchone()
-        current_generation_id = None if published is None else int(published[0])
-        current_generation_digest = (
-            None if published is None or published[1] is None else str(published[1])
-        )
-        if (
-            current_generation_id != build.base_generation_id
-            or current_generation_digest != build.base_generation_digest
-        ):
+        begin_catalog_write(connection, cancellation)
+        with catalog_sql_cancellation(connection, cancellation):
+            published = connection.execute(
+                """SELECT p.generation_id,m.generation_digest
+                FROM catalog_publications p
+                LEFT JOIN catalog_generation_manifests m ON m.generation_id=p.generation_id
+                WHERE p.source_kind=?""",
+                (build.source_kind,),
+            ).fetchone()
+            current_generation_id = None if published is None else int(published[0])
+            current_generation_digest = (
+                None if published is None or published[1] is None else str(published[1])
+            )
+            if (
+                current_generation_id != build.base_generation_id
+                or current_generation_digest != build.base_generation_digest
+            ):
+                now = time.time_ns()
+                connection.execute(
+                    """UPDATE catalog_generations SET status='superseded',completed_ns=?,
+                    error_type='CatalogPublicationConflict',
+                    error_message='published generation changed while this build ran'
+                    WHERE generation_id=? AND status='building'""",
+                    (now, build.generation_id),
+                )
+                connection.execute(
+                    """UPDATE catalog_runs SET status='superseded',completed_ns=?,
+                    error_type='CatalogPublicationConflict',
+                    error_message='published generation changed while this build ran'
+                    WHERE catalog_run_id=? AND status='running'""",
+                    (now, build.catalog_run_id),
+                )
+                connection.commit()
+                raise CatalogPublicationConflict(
+                    f"catalog {build.source_kind} publication advanced from "
+                    f"{build.base_generation_id!r}/{build.base_generation_digest!r} to "
+                    f"{current_generation_id!r}/{current_generation_digest!r}"
+                )
+            if not catalog_fence.matches(connection):
+                raise CatalogPublicationConflict("catalog changed during publication preparation")
+            if build.source_path is not None and not _source_fence_matches(
+                Path(build.source_path), build.source_fence_json
+            ):
+                raise CatalogSourceDrift("catalog source changed before publication effect")
+            if build.source_root is not None and _root_identity_json(
+                _catalog_input_root(Path(build.source_root))[1]
+            ) != build.source_root_identity_json:
+                raise CatalogSourceDrift("catalog root identity changed before publication effect")
+            manifest_update = connection.execute(
+                """UPDATE catalog_generation_manifests
+                SET input_manifest_digest=?,generation_digest=?
+                WHERE generation_id=?""",
+                (input_manifest_digest, generation_digest, build.generation_id),
+            )
+            if manifest_update.rowcount != 1:
+                raise CatalogPublicationConflict("catalog generation manifest is missing")
+            published_summary = replace(summary, stale_marked=stale, generation_id=build.generation_id)
             now = time.time_ns()
+            _replace_catalog_projection(connection, build, now=now)
+            if build.base_generation_id is None:
+                cursor = connection.execute(
+                    """INSERT INTO catalog_publications(
+                    source_kind,generation_id,published_ns) VALUES(?,?,?)
+                    ON CONFLICT(source_kind) DO NOTHING""",
+                    (build.source_kind, build.generation_id, now),
+                )
+            else:
+                cursor = connection.execute(
+                    """UPDATE catalog_publications SET generation_id=?,published_ns=?
+                    WHERE source_kind=? AND generation_id=?""",
+                    (
+                        build.generation_id,
+                        now,
+                        build.source_kind,
+                        build.base_generation_id,
+                    ),
+                )
+            if cursor.rowcount != 1:
+                raise CatalogPublicationConflict(
+                    f"catalog {build.source_kind} publication compare-and-swap failed"
+                )
             connection.execute(
-                """UPDATE catalog_generations SET status='superseded',completed_ns=?,
-                error_type='CatalogPublicationConflict',
-                error_message='published generation changed while this build ran'
-                WHERE generation_id=? AND status='building'""",
-                (now, build.generation_id),
+                """UPDATE catalog_generations SET status='published',completed_ns=?,
+                published_ns=? WHERE generation_id=? AND status='building'""",
+                (now, now, build.generation_id),
             )
+            summary_payload: dict[str, object] = asdict(published_summary)
+            if classification_evidence is not None and build.source_path is not None:
+                receipt = CatalogReplayReceipt(
+                    observation_catalog_run_id=build.catalog_run_id,
+                    generation_id=build.generation_id,
+                    producer_catalog_run_id=build.catalog_run_id,
+                    source_kind=build.source_kind, source_path=build.source_path,
+                    source_fence_json=build.source_fence_json,
+                    source_root=build.source_root,
+                    source_root_identity_json=build.source_root_identity_json,
+                    input_policy_signature=build.input_policy_signature,
+                    classifier_signature=classification_evidence.classifier_signature,
+                    max_text_chars=classification_evidence.max_text_chars,
+                    corrections_digest=classification_evidence.corrections_digest,
+                    input_digest=classification_evidence.input_digest,
+                    input_count=classification_evidence.input_count,
+                    generation_digest=generation_digest,
+                    input_manifest_digest=input_manifest_digest,
+                )
+                summary_payload[RECEIPT_KEY] = receipt.payload()
             connection.execute(
-                """UPDATE catalog_runs SET status='superseded',completed_ns=?,
-                error_type='CatalogPublicationConflict',
-                error_message='published generation changed while this build ran'
+                """UPDATE catalog_runs SET status='completed',completed_ns=?,summary_json=?
                 WHERE catalog_run_id=? AND status='running'""",
-                (now, build.catalog_run_id),
-            )
-            connection.commit()
-            raise CatalogPublicationConflict(
-                f"catalog {build.source_kind} publication advanced from "
-                f"{build.base_generation_id!r}/{build.base_generation_digest!r} to "
-                f"{current_generation_id!r}/{current_generation_digest!r}"
-            )
-        generation_digest = catalog_generation_digest(connection, build.generation_id)
-        input_manifest_digest = catalog_input_manifest_digest(
-            source_kind=build.source_kind,
-            source_path=build.source_path,
-            source_fence_json=build.source_fence_json,
-            source_root=build.source_root,
-            source_root_identity_json=build.source_root_identity_json,
-            input_policy_signature=build.input_policy_signature,
-            generation_digest=generation_digest,
-        )
-        manifest_update = connection.execute(
-            """UPDATE catalog_generation_manifests
-            SET input_manifest_digest=?,generation_digest=?
-            WHERE generation_id=?""",
-            (input_manifest_digest, generation_digest, build.generation_id),
-        )
-        if manifest_update.rowcount != 1:
-            raise CatalogPublicationConflict("catalog generation manifest is missing")
-        stale = int(
-            connection.execute(
-                """SELECT COUNT(*) FROM documents AS published_document
-                WHERE published_document.source_kind=?
-                AND published_document.active=1 AND NOT EXISTS(
-                    SELECT 1 FROM catalog_generation_documents AS staged
-                    WHERE staged.generation_id=? AND staged.active=1
-                    AND staged.source_kind=published_document.source_kind
-                    AND staged.file_key=published_document.file_key
-                )""",
-                (build.source_kind, build.generation_id),
-            ).fetchone()[0]
-        )
-        published_summary = replace(summary, stale_marked=stale, generation_id=build.generation_id)
-        now = time.time_ns()
-        _replace_catalog_projection(connection, build, now=now)
-        if build.base_generation_id is None:
-            cursor = connection.execute(
-                """INSERT INTO catalog_publications(
-                source_kind,generation_id,published_ns) VALUES(?,?,?)
-                ON CONFLICT(source_kind) DO NOTHING""",
-                (build.source_kind, build.generation_id, now),
-            )
-        else:
-            cursor = connection.execute(
-                """UPDATE catalog_publications SET generation_id=?,published_ns=?
-                WHERE source_kind=? AND generation_id=?""",
                 (
-                    build.generation_id,
                     now,
-                    build.source_kind,
-                    build.base_generation_id,
+                    json.dumps(summary_payload, sort_keys=True, separators=(",", ":")),
+                    build.catalog_run_id,
                 ),
             )
-        if cursor.rowcount != 1:
-            raise CatalogPublicationConflict(
-                f"catalog {build.source_kind} publication compare-and-swap failed"
-            )
-        connection.execute(
-            """UPDATE catalog_generations SET status='published',completed_ns=?,
-            published_ns=? WHERE generation_id=? AND status='building'""",
-            (now, now, build.generation_id),
-        )
-        summary_payload: dict[str, object] = asdict(published_summary)
-        if classification_evidence is not None and build.source_path is not None:
-            receipt = CatalogReplayReceipt(
-                observation_catalog_run_id=build.catalog_run_id,
-                generation_id=build.generation_id,
-                producer_catalog_run_id=build.catalog_run_id,
-                source_kind=build.source_kind, source_path=build.source_path,
-                source_fence_json=build.source_fence_json,
-                source_root=build.source_root,
-                source_root_identity_json=build.source_root_identity_json,
-                input_policy_signature=build.input_policy_signature,
-                classifier_signature=classification_evidence.classifier_signature,
-                max_text_chars=classification_evidence.max_text_chars,
-                corrections_digest=classification_evidence.corrections_digest,
-                input_digest=classification_evidence.input_digest,
-                input_count=classification_evidence.input_count,
-                generation_digest=generation_digest,
-                input_manifest_digest=input_manifest_digest,
-            )
-            summary_payload[RECEIPT_KEY] = receipt.payload()
-        connection.execute(
-            """UPDATE catalog_runs SET status='completed',completed_ns=?,summary_json=?
-            WHERE catalog_run_id=? AND status='running'""",
-            (
-                now,
-                json.dumps(summary_payload, sort_keys=True, separators=(",", ":")),
-                build.catalog_run_id,
-            ),
-        )
-        connection.commit()
-        return published_summary
+            if cancellation is not None:
+                cancellation.checkpoint()
+            connection.commit()
+            return published_summary
     except BaseException:
         if connection.in_transaction:
             connection.rollback()
