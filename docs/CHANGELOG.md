@@ -38,6 +38,10 @@ fuera de `docs/`.
   comprueba cierre de dependencias offline, promoción, verificación y rollback.
   El venv copia los ejecutables acreditados cuando el proveedor Python vive
   fuera de los directorios del sistema; mantiene la validación de sus enlaces.
+- Las sondas aisladas de dependencias, pip y SQLite desactivan explícitamente
+  la escritura de bytecode. Verificar una release conserva su árbol incluso
+  cuando el directorio permite escritura; no depende de variables Python que
+  el modo aislado ignora.
 
 ## 2026-09-17 — Lectura SQLite quiescente para reset y retención
 

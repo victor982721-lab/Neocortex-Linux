@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import time
+import venv
 import zipfile
 from dataclasses import replace
 from pathlib import Path
@@ -739,6 +740,42 @@ def test_runtime_dependency_verifier_rejects_inventory_drift(tmp_path: Path) -> 
             runner=runner,
             environment={},
         )
+
+
+@pytest.mark.parametrize("probe", ["dependencies", "sqlite"])
+def test_isolated_release_probes_preserve_the_runtime_tree(tmp_path: Path, probe: str) -> None:
+    """A writable venv exposes writes hidden by readonly release permissions."""
+    root = tmp_path / "release"
+    venv.EnvBuilder(with_pip=False, symlinks=False).create(root)
+    python = root / "bin" / "python"
+    site = root / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+    (site / "bytecode_probe.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (site / "bytecode_probe.pth").write_text("import bytecode_probe\n", encoding="utf-8")
+    distribution = site / "pip-26.2.1.dist-info"
+    distribution.mkdir()
+    (distribution / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: pip\nVersion: 26.2.1\n", encoding="utf-8"
+    )
+    lock = tmp_path / release_linux.RUNTIME_DEPENDENCY_LOCK_NAME
+    lock.write_text("pip==26.2.1\n", encoding="utf-8")
+    before = release_linux._release_tree_digest(root)
+
+    def runner(arguments, *, timeout, environment):
+        return subprocess.run(
+            arguments, cwd=tmp_path, env=environment, timeout=timeout,
+            text=True, capture_output=True, check=True,
+        )
+
+    if probe == "dependencies":
+        release_linux._verify_runtime_dependency_lock(
+            python, lock, runner=runner,
+            environment={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+    else:
+        observed = sqlite_native.collect_release_sqlite_attestation(root)
+        assert observed["schema"] == sqlite_native.ATTESTATION_SCHEMA
+    assert release_linux._release_tree_digest(root) == before
+    assert not tuple(site.rglob("*.pyc"))
 
 
 def test_product_release_manifest_excludes_development_tool_metadata(tmp_path: Path) -> None:

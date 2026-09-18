@@ -66,6 +66,15 @@ revisión independiente está conservada en la evidencia de la ronda. La
 preparación previa de R4 sobre 8b5e3b7 quedó superada sin ejecutar tests.
 R4 y la instalación final deben acreditar la fuente con este arreglo.
 
+La comprobación previa a instalar esa candidata detectó cachés Python añadidas
+en la release 60ea. Al excluir sólo esas entradas, el digest coincidió exactamente
+con el manifest; se retiraron las cachés y se restauraron los modos. Las sondas
+aisladas de inventario, pip y SQLite ahora pasan `-B` porque `-I` ignora
+`PYTHONDONTWRITEBYTECODE`. Dos regresiones reales con venv escribible y carga
+desde `.pth` fallaron antes del arreglo por cambio del árbol. La aceptación
+headless y el guion externo también usan `-I -B`. Este incidente tiene causa
+separada de la reaparición de staging y no justifica relajar el digest.
+
 ## Instalación y entorno
 
 El laboratorio usa CPython 3.14.7, SQLite 3.53.1, dependencias del lock cp314 y

@@ -77,7 +77,7 @@ class _ProductLab:
         if console:
             command = [str(self.python.parent / "Neocortex"), *arguments]
         else:
-            command = [str(self.python), "-I", *arguments]
+            command = [str(self.python), "-I", "-B", *arguments]
         result = subprocess.run(
             command,
             cwd=self.directory / "work",

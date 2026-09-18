@@ -790,7 +790,7 @@ def _verify_runtime_dependency_lock(
 ) -> None:
     expected = _runtime_dependency_lock(lock)
     completed = runner(
-        (python, "-I", "-c", _RUNTIME_INVENTORY_SCRIPT),
+        (python, "-I", "-B", "-c", _RUNTIME_INVENTORY_SCRIPT),
         timeout=120,
         environment=environment,
     )
@@ -1703,7 +1703,7 @@ def _verify_python_release(
         _validate_release_interpreter(release_root, expected=interpreter)
     runner((python, "-m", "pip", "check"), timeout=300, environment=environment)
     pip_version = runner(
-        (python, "-I", "-c", "import pip; print(pip.__version__)"),
+        (python, "-I", "-B", "-c", "import pip; print(pip.__version__)"),
         timeout=60,
         environment=environment,
     ).stdout.strip()

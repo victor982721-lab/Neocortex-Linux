@@ -243,6 +243,7 @@ def collect_release_sqlite_attestation(release_root: Path, *, timeout: float = 6
 
     Existing release-tree/symlink validation remains the release owner's job.
     Isolated Python ignores ambient PYTHONPATH; no state/corpus path is accepted.
+    Explicit -B prevents cache writes because -I also ignores PYTHON environment flags.
     """
     root = Path(release_root).absolute()
     python = root / "bin" / "python"
@@ -262,7 +263,7 @@ def collect_release_sqlite_attestation(release_root: Path, *, timeout: float = 6
         }
         try:
             result = subprocess.run(
-                (str(python), "-I", "-c", _PROBE_SOURCE, directory),
+                (str(python), "-I", "-B", "-c", _PROBE_SOURCE, directory),
                 cwd=directory, env=environment, text=True, capture_output=True,
                 timeout=timeout, check=False,
             )

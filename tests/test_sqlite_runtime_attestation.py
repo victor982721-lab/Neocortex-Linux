@@ -72,7 +72,7 @@ def test_real_probe_uses_candidate_python_owned_temporary_and_no_user_state(
     result = native.collect_release_sqlite_attestation(release_root)
     assert len(calls) == 1
     args, kwargs = calls[0]
-    assert args[0][0:3] == (str(release_root / "bin" / "python"), "-I", "-c")
+    assert args[0][0:4] == (str(release_root / "bin" / "python"), "-I", "-B", "-c")
     assert result["python"]["invoked_executable"] == str(release_root / "bin" / "python")
     assert kwargs["env"]["HOME"] == kwargs["cwd"] == kwargs["env"]["TMPDIR"]
     assert "PYTHONPATH" not in kwargs["env"]
