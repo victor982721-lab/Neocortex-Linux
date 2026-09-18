@@ -55,15 +55,25 @@ def test_invalid_output_bytes_are_losslessly_represented(tmp_path):
     assert activity.path.exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group cleanup behavior")
 def test_activity_timeout_kills_pipe_holding_process_group(tmp_path):
     activity = AgentActivity.prepare(tmp_path / "state", "group-timeout")
-    child = ("from pathlib import Path; import time,os; "
-             "Path('child.ready').write_text(str(os.getpid())); "
-             "time.sleep(5); Path('child.finished').write_text('bad')")
-    leader = (f"import subprocess,sys,time; from pathlib import Path; "
-              f"subprocess.Popen([sys.executable,'-c',{child!r}]); "
-              "\nwhile not Path('child.ready').exists(): time.sleep(.005)"
-              "\ntime.sleep(30)")
+    # Fork establishes a real pipe-holding child without charging a second
+    # Python startup to the same deadline. The parent records the kernel PID.
+    leader = """
+import os
+import time
+
+child_pid = os.fork()
+if child_pid == 0:
+    time.sleep(5)
+    with open("child.finished", "w", encoding="utf-8") as stream:
+        stream.write("bad")
+else:
+    with open("child.ready", "w", encoding="utf-8") as stream:
+        stream.write(str(child_pid))
+    time.sleep(30)
+"""
     started = time.monotonic()
     with pytest.raises(AgentActivityProcessError, match="timed out"):
         activity.run([sys.executable, "-c", leader], timeout=0.4)

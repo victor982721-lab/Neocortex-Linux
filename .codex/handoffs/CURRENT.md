@@ -1,7 +1,7 @@
 # Handoff operativo vigente — NeoCortex
 
 **Ronda:** NEO-AUDIT-UNIFIED-20260918.
-**Actualización:** 2026-09-18T09:30:00+00:00.
+**Actualización:** 2026-09-18T10:05:06.715953+00:00.
 **Objetivo autorizado:** corregir las auditorías de limpieza, EndToEnd y Text,
 publicar e integrar el código remoto, construir e instalar la suite offline y
 validarla en un laboratorio aislado. La autorización incluye preparación local
@@ -11,10 +11,9 @@ de modelos y herramientas; no requiere nuevas confirmaciones de esta ronda.
 
 El remoto verificado al iniciar es `victor982721-lab/Neocortex-Linux`,
 `main=f3bbf439d7c5b192f1509b1675bc64a139602320`. La candidata
-`f3b01845dec901c7927ef4185a59096c3d01f271` está publicada en
+`127ab8df69ebfb21bbfd05eb1b5255400f25caa8` está publicada en
 `fix/unified-audit-20260918`; la integración de esta ronda a `main` permanece
-pendiente de la aceptación final. Este commit integra las correcciones derivadas
-de R4; su SHA se obtendrá de Git después de publicarlo. No se reescribe historia. El cierre exige
+pendiente de la aceptación final. Este commit estabiliza las dos fixtures identificadas en R5; su SHA se obtendrá de Git después de publicarlo. No se reescribe historia. El cierre exige
 consultar otra vez el remoto y verificar `HEAD == main == origin/main` y árbol
 limpio; la referencia inicial no acredita ese cierre.
 
@@ -109,6 +108,33 @@ opt-in, en 35,79 segundos. Ruff aprobó los trece archivos Python modificados.
 La siguiente corrida integral R5 debe acreditar esta fuente exacta; no se
 solapará con instalaciones o empaquetado pesado.
 
+## Resultado integral R5 y fixtures estabilizadas
+
+R5 sobre `127ab8df69ebfb21bbfd05eb1b5255400f25caa8` ejecutó sus 8.644 casos:
+8.569 aprobados, 73 omitidos y dos fallidos; no quedó ninguno sin ejecutar.
+Las 49 subpruebas aprobaron y se cuentan aparte. Los diez fallos de R4 ya no
+aparecieron y los 1.476 archivos de la copia de fuente permanecieron intactos.
+R5 conserva su resultado no aprobado; sus dos fallos no se borran de la evidencia.
+
+La fixture de AgentActivity lanzaba dos intérpretes dentro del plazo de 0,4 s;
+la nueva usa un único intérprete con fork y publica el PID real del descendiente
+desde el padre. Conserva el plazo, el límite total de dos segundos, el estado
+failed-retained y las comprobaciones del descendiente y de los pipes. En R5 ya
+habían pasado las tres primeras aserciones; faltó child.ready para comprobar el
+PID. No se demostró un fallo de la terminación productiva ni la causa exacta de
+la demora de esa ejecución.
+
+Los helpers de metadata y schema de las pruebas SQLite usaban el contexto de
+transacción de Connection sin cerrarla. Una reproducción controlada sobre la
+fuente R5 fuerza GC entre la captura del fence y la apertura del guard: retira
+SHM y reproduce exactamente FileNotFoundError/OperationalError. Con
+contextlib.closing, el mismo probe pasa y no desaparece SHM entre comprobaciones.
+El cierre productivo, las fences, el DDL v0, la metadata y WAL/DELETE se conservan.
+
+Los tres módulos afectados pasan 80 pruebas y omiten tres exclusivas de Windows;
+Ruff pasa ambos archivos modificados. Estas correcciones cambian sólo fixtures,
+no código productivo. R6 debe acreditar la nueva fuente congelada antes del cierre.
+
 ## Instalación y entorno
 
 El laboratorio usa CPython 3.14.7, SQLite 3.53.1, dependencias del lock cp314 y
@@ -155,7 +181,7 @@ activos y herramientas del laboratorio permanecen fuera del árbol productivo.
 
 ## Siguiente gate
 
-1. Ejecutar R5 completa sobre la candidata con las correcciones de R4.
+1. Ejecutar R6 completa sobre la candidata con las fixtures estabilizadas de R5.
 2. Publicar la candidata corregida; instalar y verificar bajo red denegada,
    conservando receipts y rollback, y validar la interfaz pública instalada.
 3. Integrar a main, comprobar el remoto vivo y actualizar este handoff con los

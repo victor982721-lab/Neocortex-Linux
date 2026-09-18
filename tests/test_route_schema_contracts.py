@@ -9,6 +9,7 @@ import hashlib
 import sqlite3
 import zlib
 from collections.abc import Callable
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -79,12 +80,12 @@ def route_schema(
 
 
 def _metadata(path: Path) -> dict[str, str]:
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection:
         return dict(connection.execute("SELECT key,value FROM metadata"))
 
 
 def _schema_objects(path: Path) -> list[tuple[str, str, str | None]]:
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection:
         return connection.execute(
             """SELECT type,name,sql FROM sqlite_master
             WHERE name NOT LIKE 'sqlite_%'
