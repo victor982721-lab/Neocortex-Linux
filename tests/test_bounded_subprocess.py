@@ -157,27 +157,35 @@ def test_bounded_capture_does_not_wait_for_descendant_retained_pipes(
     """A setsid descendant cannot turn pipe cleanup into an unbounded join."""
 
     pid_path = tmp_path / f"retained-{retained_stream}.pid"
-    descendant_code = (
-        "import os,pathlib,sys,time; "
-        "os.setsid(); "
-        "stream=sys.argv[2]; "
-        "(os.close(1) if stream == 'stderr' else "
-        "os.close(2) if stream == 'stdout' else None); "
-        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()),encoding='ascii'); "
-        "time.sleep(30)"
-    )
-    parent_code = (
-        "import os,pathlib,sys,time; "
-        "pid=os.fork(); "
-        "(os.execl(sys.executable,sys.executable,'-c',sys.argv[2],sys.argv[1],sys.argv[3])"
-        " if pid == 0 else None); "
-        "time.sleep(.1)"
-    )
+    # The leader must exit only after the descendant has escaped its group and
+    # retained the selected pipes. A sleep races both setsid and interpreter
+    # startup, especially when the test environment has a cold bytecode cache.
+    parent_code = """
+import os, sys, time
+ready_read, ready_write = os.pipe()
+if os.fork() == 0:
+    os.close(ready_read)
+    os.setsid()
+    stream = sys.argv[2]
+    if stream == "stderr":
+        os.close(1)
+    elif stream == "stdout":
+        os.close(2)
+    with open(sys.argv[1], "w", encoding="ascii") as pid_file:
+        pid_file.write(str(os.getpid()))
+    os.write(ready_write, b"1")
+    os.close(ready_write)
+    time.sleep(30)
+else:
+    os.close(ready_write)
+    assert os.read(ready_read, 1) == b"1"
+    os.close(ready_read)
+"""
     started = time.monotonic()
     try:
         with pytest.raises(RuntimeError, match="cleanup incomplete"):
             run_bounded_capture(
-                (*_python(parent_code), str(pid_path), descendant_code, retained_stream),
+                (*_python(parent_code), str(pid_path), retained_stream),
                 timeout_seconds=0.25,
                 stdout_limit_bytes=1024,
                 stderr_limit_bytes=1024,
