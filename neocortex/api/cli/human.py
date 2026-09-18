@@ -588,6 +588,14 @@ def build_human_parser() -> argparse.ArgumentParser:
         help="digest de la vista previa; obligatorio junto con --apply",
     )
     state_reset.add_argument("--json", action="store_true", help="emite el contrato JSON")
+    state_reset.add_argument(
+        "--reconcile-operation", metavar="OPERATION_ID",
+        help="reconcilia una operación de reset previa usando su recibo privado",
+    )
+    state_reset.add_argument(
+        "--receipt-digest", metavar="SHA256",
+        help="digest exacto del recibo de la operación que se va a reconciliar",
+    )
 
     databases = commands.add_parser(
         "databases",

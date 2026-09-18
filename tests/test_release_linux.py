@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from neocortex.platform.policy import PlatformPolicy
+from neocortex.platform import sqlite_runtime_attestation as sqlite_native
 from tools import release_linux
 from tools.release_linux import LinuxReleaseLayout
 
@@ -55,16 +56,59 @@ def _policy(tmp_path: Path) -> PlatformPolicy:
     )
 
 
-def _release(layout: LinuxReleaseLayout, name: str) -> Path:
+def _native_fixture() -> tuple[release_linux.ReleaseVerification, dict]:
+    """Synthetic exact-build evidence; it never accredits a production binary."""
+    attestation = {
+        "schema": sqlite_native.ATTESTATION_SCHEMA,
+        "python": {"implementation": "cpython", "version": "3.14.0", "cache_tag": "cpython-314",
+                   "executable": {"sha256": "a" * 64}},
+        "sqlite": {"version": "fixture", "source_id": "TEST FIXTURE ONLY",
+                   "compile_options": ["ENABLE_FTS5"], "module": {"sha256": "b" * 64},
+                   "native_libraries": {"mode": "process_maps", "files": [{"sha256": "c" * 64}]}},
+        "capabilities": dict.fromkeys(sqlite_native.CAPABILITIES, True),
+        "probe_sha256": "d" * 64,
+    }
+    attestation["identity_sha256"] = sqlite_native.canonical_sha256(sqlite_native.runtime_identity(attestation))
+    policy = {
+        "schema": sqlite_native.POLICY_SCHEMA, "policy_id": "TEST FIXTURE ONLY",
+        "required_capabilities": list(sqlite_native.CAPABILITIES),
+        "approved_builds": [{"identity_sha256": attestation["identity_sha256"], "evidence": {
+            "basis": "upstream", "provider": "TEST FIXTURE", "build_reference": "fixture",
+            "reviewed_on": "2026-09-18", "source_url": "https://vendor.example/test-only",
+        }}],
+    }
+    interpreter = {"implementation": "cpython", "version": "3.14.0", "cache_tag": "cpython-314",
+                   "executable": "bin/python"}
+    record = sqlite_native.native_runtime_record(
+        attestation, policy, expected_policy_sha256=sqlite_native.canonical_sha256(policy),
+    )
+    return release_linux.ReleaseVerification(release_linux.PIP_BOOTSTRAP_VERSION, interpreter, record), policy
+
+
+def _fixture_policy_options(source: Path) -> dict:
+    return {"sqlite_policy": source / sqlite_native.POLICY_FILENAME,
+            "sqlite_policy_sha256": sqlite_native.canonical_sha256(_native_fixture()[1])}
+
+
+def _fake_interpreter(root: Path) -> None:
+    (root / "bin").mkdir(exist_ok=True)
+    python = root / "bin" / "python"
+    if not python.exists():
+        python.write_text("#!/bin/sh\nexit 97\n", encoding="utf-8")
+        python.chmod(0o755)
+
+
+def _release(layout: LinuxReleaseLayout, name: str, *, native: bool = False) -> Path:
     root = layout.releases / name
     (root / "bin").mkdir(parents=True)
+    _fake_interpreter(root)
     command = root / "bin" / "Neocortex"
     command.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     command.chmod(0o755)
     if release_linux.parse_release_id(name) is not None:
         source_sha = release_linux.parse_release_id(name)[1].ljust(40, "0")
         manifest = {
-            "schema_version": release_linux.RECEIPT_SCHEMA_VERSION,
+            "schema_version": 1,
             "kind": "linux_release_manifest",
             "release_id": name,
             "source_sha": source_sha,
@@ -77,6 +121,23 @@ def _release(layout: LinuxReleaseLayout, name: str) -> Path:
             "pip_bootstrap_wheel_sha256": release_linux.PIP_BOOTSTRAP_SHA256,
             "pip": release_linux.PIP_BOOTSTRAP_VERSION,
         }
+        if native:
+            verification, _ = _native_fixture()
+            lock = _write_runtime_lock(root)
+            wheelhouse_parent = layout.releases.parent / "fixture-artifacts"
+            wheelhouse_parent.mkdir(exist_ok=True)
+            wheelhouse = wheelhouse_parent / "wheelhouse"
+            if not wheelhouse.exists():
+                _wheelhouse_fixture(wheelhouse_parent, ("pip", release_linux.PIP_BOOTSTRAP_VERSION))
+            manifest = release_linux._release_manifest(
+                release_name=name, source_sha=source_sha,
+                wheel=Path(manifest["wheel_filename"]), wheel_sha="a" * 64,
+                runtime_dependency_lock=lock, verification=verification,
+                wheelhouse_provenance=release_linux._wheelhouse_provenance(
+                    wheelhouse, release_linux._validate_wheelhouse(wheelhouse),
+                ),
+            )
+            manifest["release_tree_sha256"] = release_linux._release_tree_digest(root)
         (root / release_linux.RELEASE_MANIFEST_NAME).write_text(
             json.dumps(manifest) + "\n", encoding="utf-8"
         )
@@ -89,6 +150,7 @@ def _activate(layout: LinuxReleaseLayout, release: Path) -> None:
 
 
 def _write_runtime_lock(source: Path) -> Path:
+    (source / sqlite_native.POLICY_FILENAME).write_text(json.dumps(_native_fixture()[1]), encoding="utf-8")
     lock = source / release_linux.RUNTIME_DEPENDENCY_LOCK_NAME
     lock.write_text(
         f"pip=={release_linux.PIP_BOOTSTRAP_VERSION}\n",
@@ -257,6 +319,7 @@ def test_install_requires_an_explicit_local_wheelhouse_before_preparing_corpus(
     with pytest.raises(release_linux.LinuxReleaseError, match="offline wheelhouse is required"):
         release_linux.install_release(
             layout,
+        **_fixture_policy_options(source),
             corpus_root=corpus,
             prepare_models=False,
             desktop=False,
@@ -447,7 +510,7 @@ def test_reap_staging_commits_gc_tombstone_when_receipt_is_durable(tmp_path: Pat
     release_linux._write_receipt(
         layout,
         {
-            "schema_version": release_linux.RECEIPT_SCHEMA_VERSION,
+            "schema_version": 1,
             "kind": "linux_release_receipt",
             "operation": "install",
             "release_id": current.name,
@@ -680,6 +743,7 @@ def test_runtime_dependency_verifier_rejects_inventory_drift(tmp_path: Path) -> 
 
 def test_product_release_manifest_excludes_development_tool_metadata(tmp_path: Path) -> None:
     lock = _write_runtime_lock(tmp_path)
+    _fake_interpreter(tmp_path)
     wheel = tmp_path / f"neocortex_framework-{release_linux.__version__}-py3-none-any.whl"
     wheel.write_bytes(b"wheel")
 
@@ -689,7 +753,7 @@ def test_product_release_manifest_excludes_development_tool_metadata(tmp_path: P
         wheel=wheel,
         wheel_sha="b" * 64,
         runtime_dependency_lock=lock,
-        versions={"pip": release_linux.PIP_BOOTSTRAP_VERSION},
+        verification=_native_fixture()[0],
     )
 
     assert manifest["runtime_profile"] == release_linux.RUNTIME_PROFILE
@@ -814,6 +878,8 @@ def test_new_virtual_environment_is_created_in_staging_then_published(
     explicit_corpus: bool,
     corrupt_candidate: bool,
 ) -> None:
+    monkeypatch.setattr(sqlite_native, "collect_release_sqlite_attestation",
+                        lambda *_a, **_k: _native_fixture()[0].native_runtime["attestation"])
     source = tmp_path / "source"
     source.mkdir()
     _write_runtime_lock(source)
@@ -861,7 +927,12 @@ def test_new_virtual_environment_is_created_in_staging_then_published(
         assert runtime_lock.read_text(encoding="utf-8") == f"pip=={release_linux.PIP_BOOTSTRAP_VERSION}\n"
         installed_at.append(release_root)
         (release_root / "bin").mkdir(parents=True)
-        (release_root / "bin" / "python3.14").symlink_to("/usr/bin/python3.14")
+        # This fixture tests staging/publication; runtime execution is replaced
+        # by verify_candidate below. Keep the executable and symlink structural
+        # contract local, without requiring a host-wide CPython installation.
+        interpreter = release_root / "bin" / "python3.14"
+        interpreter.write_text("#!/bin/sh\nexit 97\n", encoding="utf-8")
+        interpreter.chmod(0o755)
         (release_root / "bin" / "python").symlink_to("python3.14")
         command = release_root / "bin" / "Neocortex"
         command.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
@@ -870,11 +941,11 @@ def test_new_virtual_environment_is_created_in_staging_then_published(
     monkeypatch.setattr(release_linux, "_build_wheel", build_wheel)
     monkeypatch.setattr(release_linux, "_install_wheel", install_wheel)
     def verify_candidate(release_root, _layout, smoke_root, **_kwargs):
-        assert release_root.parent.name.startswith(f"{release_linux.__version__}-")
+        assert release_root == final_release or release_root.parent.name.startswith(f"{release_linux.__version__}-")
         assert smoke_root != corpus_root
         assert smoke_root.is_dir() and not tuple(smoke_root.iterdir())
         smoke_roots.append(smoke_root)
-        return {"pip": release_linux.PIP_BOOTSTRAP_VERSION}
+        return _native_fixture()[0]
 
     monkeypatch.setattr(release_linux, "_verify_python_release", verify_candidate)
     def validate_wheel(path: Path, **_kwargs: object) -> None:
@@ -892,6 +963,7 @@ def test_new_virtual_environment_is_created_in_staging_then_published(
     wheelhouse = _minimal_release_wheelhouse(tmp_path, monkeypatch)
     report = release_linux.install_release(
         layout,
+        **_fixture_policy_options(source),
         corpus_root=corpus_root if explicit_corpus else None,
         prepare_models=False,
         desktop=False,
@@ -908,7 +980,7 @@ def test_new_virtual_environment_is_created_in_staging_then_published(
         "explicit_install" if explicit_corpus else "platform_default"
     )
     assert operational_roots == [corpus_root]
-    assert len(smoke_roots) == 1 and not smoke_roots[0].exists()
+    assert len(smoke_roots) == 2 and not smoke_roots[0].exists()
     assert str(smoke_roots[0]) not in json.dumps(report)
     assert report["corpus_root_created"] is True
     assert corpus_root.is_dir()
@@ -1193,7 +1265,7 @@ def verification_layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Linu
     release_linux._write_receipt(
         layout,
         {
-            "schema_version": release_linux.RECEIPT_SCHEMA_VERSION,
+            "schema_version": 1,
             "kind": "linux_release_receipt",
             "operation": "install",
             "release_id": current.name,
@@ -1245,7 +1317,8 @@ def test_verification_keeps_probe_corpus_ephemeral_and_public_configuration_unch
         report = release_linux.verify_release(
             layout, expected_corpus_root=layout.policy.corpus_root, runner=runner,
         )
-        assert report["verified"] is True
+        assert report["verified"] is False
+        assert report["native_runtime"]["status"] == "legacy_unaccredited"
         assert report["corpus_root"] == str(layout.policy.corpus_root)
         assert report["verification_corpus_policy"] == "ephemeral_empty_v1"
         assert report["verification_effective_corpus_checked"] is effective_path_report
@@ -1303,7 +1376,7 @@ def test_verification_rejects_an_effective_corpus_outside_the_smoke_fixture(
     monkeypatch.setattr(
         release_linux,
         "_verify_python_release",
-        lambda *_args, **_kwargs: {"pip": release_linux.PIP_BOOTSTRAP_VERSION},
+        lambda *_args, **_kwargs: _native_fixture()[0],
     )
 
     def runner(command, **_kwargs):
@@ -1342,12 +1415,15 @@ def test_failed_rollback_receipt_restores_the_prior_activation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(sqlite_native, "collect_release_sqlite_attestation",
+                        lambda *_a, **_k: _native_fixture()[0].native_runtime["attestation"])
     source = tmp_path / "source"
     source.mkdir()
     layout = LinuxReleaseLayout(source, _policy(tmp_path))
-    old = _release(layout, release_linux.release_id("a" * 40))
-    new = _release(layout, release_linux.release_id("b" * 40))
+    old = _release(layout, release_linux.release_id("a" * 40), native=True)
+    new = _release(layout, release_linux.release_id("b" * 40), native=True)
     _activate(layout, new)
+    monkeypatch.setattr(release_linux, "_verify_python_release", lambda *_a, **_k: _native_fixture()[0])
     release_linux._make_immutable(old)
     release_linux._make_immutable(new)
     monkeypatch.setattr(
@@ -1367,14 +1443,17 @@ def test_failed_install_receipt_restores_current_launcher_and_alias(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(sqlite_native, "collect_release_sqlite_attestation",
+                        lambda *_a, **_k: _native_fixture()[0].native_runtime["attestation"])
     source = tmp_path / "source"
     (source / "neocortex" / "interface" / "presentation" / "assets").mkdir(parents=True)
     _write_runtime_lock(source)
     (source / "constraints.txt").write_text("pip==26.2.1\n", encoding="utf-8")
     layout = LinuxReleaseLayout(source, _policy(tmp_path))
-    old = _release(layout, release_linux.release_id("a" * 40))
-    sha = "b" * 40
-    new = _release(layout, release_linux.release_id(sha))
+    wheelhouse = _minimal_release_wheelhouse(tmp_path, monkeypatch)
+    old = _release(layout, release_linux.release_id("a" * 40), native=True)
+    sha = ("b" * 12).ljust(40, "0")
+    new = _release(layout, release_linux.release_id(sha), native=True)
     _activate(layout, old)
     layout.launcher.parent.mkdir(parents=True)
     layout.launcher.write_bytes(b"old launcher\n")
@@ -1387,33 +1466,20 @@ def test_failed_install_receipt_restores_current_launcher_and_alias(
     monkeypatch.setattr(
         release_linux,
         "_verify_python_release",
-        lambda *_args, **_kwargs: {"pip": release_linux.PIP_BOOTSTRAP_VERSION},
+        lambda *_args, **_kwargs: _native_fixture()[0],
     )
-    monkeypatch.setattr(
-        release_linux,
-        "_read_release_manifest",
-        lambda *_args, **_kwargs: {
-            "schema_version": 1,
-            "kind": "linux_release_manifest",
-            "release_id": new.name,
-            "source_sha": sha,
-            "wheel_filename": "neocortex.whl",
-            "wheel_sha256": "1" * 64,
-            "pip": release_linux.PIP_BOOTSTRAP_VERSION,
-        },
-    )
-    manifest = new / release_linux.RELEASE_MANIFEST_NAME
-    manifest.write_text("{}\n", encoding="utf-8")
     monkeypatch.setattr(
         release_linux,
         "_write_receipt",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("synthetic receipt failure")),
     )
 
-    wheelhouse = _minimal_release_wheelhouse(tmp_path, monkeypatch)
+    for fixture_release in layout.releases.iterdir():
+        release_linux._make_immutable(fixture_release)
     with pytest.raises(OSError, match="synthetic receipt failure"):
         release_linux.install_release(
             layout,
+        **_fixture_policy_options(source),
             corpus_root=tmp_path / "corpus",
             prepare_models=False,
             desktop=False,
@@ -1460,6 +1526,7 @@ def test_install_preserves_active_release_when_its_manifest_is_unusable(
     with pytest.raises(release_linux.LinuxReleaseError, match=r"manifest|identity"):
         release_linux.install_release(
             layout,
+        **_fixture_policy_options(source),
             prepare_models=False,
             desktop=False,
             wheelhouse=wheelhouse,
@@ -1496,56 +1563,54 @@ def test_install_preserves_noncurrent_manifestless_release_used_by_a_process(
     with pytest.raises(release_linux.LinuxReleaseError, match="in use by host processes"):
         release_linux.install_release(
             layout, prepare_models=False, desktop=False, wheelhouse=wheelhouse,
+        **_fixture_policy_options(source),
         )
 
     assert candidate.is_dir() and (candidate / "bin" / "Neocortex").is_file()
     assert release_linux._current_target(layout) == current.resolve()
 
 
-def test_failed_model_preparation_never_promotes_or_publishes_access(
+def test_missing_offline_models_never_promote_or_trigger_acquisition(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(sqlite_native, "collect_release_sqlite_attestation",
+                        lambda *_a, **_k: _native_fixture()[0].native_runtime["attestation"])
     source = tmp_path / "source"
     source.mkdir()
     _write_runtime_lock(source)
     (source / "constraints.txt").write_text("pip==26.2.1\n", encoding="utf-8")
     layout = LinuxReleaseLayout(source, _policy(tmp_path))
-    old = _release(layout, release_linux.release_id("a" * 40))
-    sha = "c" * 40
-    candidate = _release(layout, release_linux.release_id(sha))
+    wheelhouse = _minimal_release_wheelhouse(tmp_path, monkeypatch)
+    old = _release(layout, release_linux.release_id("a" * 40), native=True)
+    sha = ("c" * 12).ljust(40, "0")
+    _release(layout, release_linux.release_id(sha), native=True)
     _activate(layout, old)
-    (candidate / release_linux.RELEASE_MANIFEST_NAME).write_text("{}\n", encoding="utf-8")
 
     monkeypatch.setattr(release_linux, "_source_sha", lambda *_args, **_kwargs: sha)
     monkeypatch.setattr(release_linux, "_require_reference_platform", lambda: None)
     monkeypatch.setattr(
         release_linux,
         "_verify_python_release",
-        lambda *_args, **_kwargs: {"pip": release_linux.PIP_BOOTSTRAP_VERSION},
-    )
-    monkeypatch.setattr(
-        release_linux,
-        "_read_release_manifest",
-        lambda *_args, **_kwargs: {
-            "pip": release_linux.PIP_BOOTSTRAP_VERSION,
-        },
+        lambda *_args, **_kwargs: _native_fixture()[0],
     )
 
     smoke_roots: list[Path] = []
 
     def fail_prepare(arguments, **_kwargs):
-        assert tuple(map(str, arguments))[-3:] == ("models", "prepare", "--json")
+        assert tuple(map(str, arguments))[-3:] == ("models", "status", "--json")
         smoke_root = Path(_kwargs["environment"]["NEOCORTEX_CORPUS_ROOT"])
         assert smoke_root != tmp_path / "corpus"
         assert smoke_root.is_dir() and not tuple(smoke_root.iterdir())
         smoke_roots.append(smoke_root)
         raise release_linux.LinuxReleaseError("synthetic incomplete model cache")
 
-    wheelhouse = _minimal_release_wheelhouse(tmp_path, monkeypatch)
+    for fixture_release in layout.releases.iterdir():
+        release_linux._make_immutable(fixture_release)
     with pytest.raises(release_linux.LinuxReleaseError, match="incomplete model cache"):
         release_linux.install_release(
             layout,
+        **_fixture_policy_options(source),
             corpus_root=tmp_path / "corpus",
             prepare_models=True,
             desktop=True,
@@ -1564,34 +1629,32 @@ def test_repromote_recovers_recorded_rollback_and_prunes_stale_releases(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(sqlite_native, "collect_release_sqlite_attestation",
+                        lambda *_a, **_k: _native_fixture()[0].native_runtime["attestation"])
     source = tmp_path / "source"
     source.mkdir()
     _write_runtime_lock(source)
     (source / "constraints.txt").write_text("pip==26.2.1\n", encoding="utf-8")
     layout = LinuxReleaseLayout(source, _policy(tmp_path))
-    rollback = _release(layout, release_linux.release_id("a" * 40))
-    current = _release(layout, release_linux.release_id("b" * 40))
-    stale = _release(layout, release_linux.release_id("c" * 40))
+    wheelhouse = _minimal_release_wheelhouse(tmp_path, monkeypatch)
+    rollback = _release(layout, release_linux.release_id("a" * 40), native=True)
+    current = _release(layout, release_linux.release_id("b" * 40), native=True)
+    stale = _release(layout, release_linux.release_id("c" * 40), native=True)
     _activate(layout, current)
-    release_sha = "b" * 40
+    release_sha = ("b" * 12).ljust(40, "0")
 
     monkeypatch.setattr(release_linux, "_require_reference_platform", lambda: None)
     monkeypatch.setattr(release_linux, "_source_sha", lambda *_args, **_kwargs: release_sha)
     monkeypatch.setattr(
         release_linux,
-        "_read_release_manifest",
-        lambda *_args, **_kwargs: {"pip": release_linux.PIP_BOOTSTRAP_VERSION},
-    )
-    monkeypatch.setattr(
-        release_linux,
         "_verify_python_release",
-        lambda *_args, **_kwargs: {"pip": release_linux.PIP_BOOTSTRAP_VERSION},
+        lambda *_args, **_kwargs: _native_fixture()[0],
     )
     monkeypatch.setattr(release_linux, "_publish_public_access", lambda *_args, **_kwargs: ({}, {}))
     release_linux._write_receipt(
         layout,
         {
-            "schema_version": release_linux.RECEIPT_SCHEMA_VERSION,
+            "schema_version": 1,
             "kind": "linux_release_receipt",
             "operation": "install",
             "release_id": current.name,
@@ -1604,9 +1667,11 @@ def test_repromote_recovers_recorded_rollback_and_prunes_stale_releases(
         },
     )
 
-    wheelhouse = _minimal_release_wheelhouse(tmp_path, monkeypatch)
+    for fixture_release in layout.releases.iterdir():
+        release_linux._make_immutable(fixture_release)
     report = release_linux.install_release(
         layout,
+        **_fixture_policy_options(source),
         corpus_root=tmp_path / "corpus",
         prepare_models=False,
         desktop=False,
@@ -1620,13 +1685,16 @@ def test_repromote_recovers_recorded_rollback_and_prunes_stale_releases(
     assert not stale.exists()
 
 
-def test_successful_rollback_records_evidence_and_retains_both_releases(tmp_path: Path) -> None:
+def test_successful_rollback_records_evidence_and_retains_both_releases(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sqlite_native, "collect_release_sqlite_attestation",
+                        lambda *_a, **_k: _native_fixture()[0].native_runtime["attestation"])
     source = tmp_path / "source"
     source.mkdir()
     layout = LinuxReleaseLayout(source, _policy(tmp_path))
-    old = _release(layout, release_linux.release_id("a" * 40))
-    new = _release(layout, release_linux.release_id("b" * 40))
+    old = _release(layout, release_linux.release_id("a" * 40), native=True)
+    new = _release(layout, release_linux.release_id("b" * 40), native=True)
     _activate(layout, new)
+    monkeypatch.setattr(release_linux, "_verify_python_release", lambda *_a, **_k: _native_fixture()[0])
     release_linux._make_immutable(old)
     release_linux._make_immutable(new)
 
@@ -1639,14 +1707,17 @@ def test_successful_rollback_records_evidence_and_retains_both_releases(tmp_path
     assert old.is_dir() and new.is_dir()
 
 
-def test_rollback_prunes_stale_releases_and_repairs_launcher(tmp_path: Path) -> None:
+def test_rollback_prunes_stale_releases_and_repairs_launcher(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sqlite_native, "collect_release_sqlite_attestation",
+                        lambda *_a, **_k: _native_fixture()[0].native_runtime["attestation"])
     source = tmp_path / "source"
     source.mkdir()
     layout = LinuxReleaseLayout(source, _policy(tmp_path))
-    old = _release(layout, release_linux.release_id("a" * 40))
-    new = _release(layout, release_linux.release_id("b" * 40))
-    stale = _release(layout, release_linux.release_id("c" * 40))
+    old = _release(layout, release_linux.release_id("a" * 40), native=True)
+    new = _release(layout, release_linux.release_id("b" * 40), native=True)
+    stale = _release(layout, release_linux.release_id("c" * 40), native=True)
     _activate(layout, new)
+    monkeypatch.setattr(release_linux, "_verify_python_release", lambda *_a, **_k: _native_fixture()[0])
     release_linux._make_immutable(old)
     release_linux._make_immutable(new)
 
@@ -1659,13 +1730,16 @@ def test_rollback_prunes_stale_releases_and_repairs_launcher(tmp_path: Path) -> 
 
 
 def test_rollback_receipt_failure_restores_gc_tombstones(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sqlite_native, "collect_release_sqlite_attestation",
+                        lambda *_a, **_k: _native_fixture()[0].native_runtime["attestation"])
     source = tmp_path / "source"
     source.mkdir()
     layout = LinuxReleaseLayout(source, _policy(tmp_path))
-    old = _release(layout, release_linux.release_id("a" * 40))
-    new = _release(layout, release_linux.release_id("b" * 40))
-    stale = _release(layout, release_linux.release_id("c" * 40))
+    old = _release(layout, release_linux.release_id("a" * 40), native=True)
+    new = _release(layout, release_linux.release_id("b" * 40), native=True)
+    stale = _release(layout, release_linux.release_id("c" * 40), native=True)
     _activate(layout, new)
+    monkeypatch.setattr(release_linux, "_verify_python_release", lambda *_a, **_k: _native_fixture()[0])
     release_linux._make_immutable(old)
     release_linux._make_immutable(new)
     monkeypatch.setattr(
@@ -1680,3 +1754,191 @@ def test_rollback_receipt_failure_restores_gc_tombstones(tmp_path: Path, monkeyp
     assert release_linux._current_target(layout) == new.resolve()
     assert stale.is_dir()
     assert not tuple(layout.staging.glob(".gc-*"))
+
+
+@pytest.mark.parametrize("fault", ["missing", "changed", "wrong_digest"])
+def test_v2_manifest_rejects_native_tampering_before_execution(tmp_path: Path, fault: str) -> None:
+    layout = LinuxReleaseLayout(tmp_path / "source", _policy(tmp_path))
+    root = _release(layout, release_linux.release_id("a" * 40), native=True)
+    path = root / release_linux.RELEASE_MANIFEST_NAME
+    manifest = json.loads(path.read_text())
+    if fault == "missing":
+        manifest.pop("native_runtime")
+    elif fault == "changed":
+        manifest["native_runtime"]["attestation"]["sqlite"]["source_id"] = "changed library"
+        manifest["native_runtime_sha256"] = sqlite_native.canonical_sha256(manifest["native_runtime"])
+    else:
+        manifest["native_runtime_sha256"] = "0" * 64
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    release_linux._make_immutable(root)
+    with pytest.raises(release_linux.LinuxReleaseError, match=r"native runtime|SQLite runtime"):
+        release_linux._read_release_manifest(root, release_name=root.name, source_sha=manifest["source_sha"])
+
+
+@pytest.mark.parametrize("contents", ['{"schema_version":2}', '{broken', '{"schema_version":99}'])
+def test_latest_receipt_never_falls_back_over_a_damaged_newer_receipt(tmp_path: Path, contents: str) -> None:
+    layout = LinuxReleaseLayout(tmp_path / "source", _policy(tmp_path))
+    layout.receipts.mkdir(parents=True)
+    (layout.receipts / "001.json").write_text('{"schema_version":1}', encoding="utf-8")
+    (layout.receipts / "002.json").write_text(contents, encoding="utf-8")
+    with pytest.raises(release_linux.LinuxReleaseError, match="latest"):
+        release_linux._latest_receipt(layout)
+
+
+def test_legacy_rollback_is_readable_but_never_promoted(tmp_path: Path) -> None:
+    layout = LinuxReleaseLayout(tmp_path / "source", _policy(tmp_path))
+    old = _release(layout, release_linux.release_id("a" * 40))
+    current = _release(layout, release_linux.release_id("b" * 40))
+    _activate(layout, current)
+    before = (old / release_linux.RELEASE_MANIFEST_NAME).read_bytes()
+    release_linux._make_immutable(old)
+    release_linux._make_immutable(current)
+    with pytest.raises(release_linux.LinuxReleaseError, match="legacy_unaccredited"):
+        release_linux.rollback_release(layout, target_release=old.name)
+    assert release_linux._current_target(layout) == current.resolve()
+    assert (old / release_linux.RELEASE_MANIFEST_NAME).read_bytes() == before
+
+
+@pytest.mark.parametrize("fault", ["absent_pin", "changed_between_preflights"])
+def test_sqlite_policy_preflight_fails_before_corpus_or_activation(tmp_path: Path, monkeypatch, fault: str) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    _write_runtime_lock(source)
+    (source / "constraints.txt").write_text("pip==26.2.1\n", encoding="utf-8")
+    layout = LinuxReleaseLayout(source, _policy(tmp_path))
+    wheelhouse = _minimal_release_wheelhouse(tmp_path, monkeypatch)
+    monkeypatch.setattr(release_linux, "_require_reference_platform", lambda: None)
+    monkeypatch.setattr(release_linux, "_source_sha", lambda *_a: "a" * 40)
+    options = _fixture_policy_options(source)
+    if fault == "absent_pin":
+        options = {}
+    else:
+        real_preflight = release_linux._preflight_install
+        calls = []
+
+        def preflight(*args, **kwargs):
+            result = real_preflight(*args, **kwargs)
+            calls.append(result)
+            altered = dict(_native_fixture()[1])
+            altered["approved_builds"] = []
+            (source / sqlite_native.POLICY_FILENAME).write_text(json.dumps(altered), encoding="utf-8")
+            return result
+
+        monkeypatch.setattr(release_linux, "_preflight_install", preflight)
+    with pytest.raises(release_linux.LinuxReleaseError, match=r"policy|trusted binding"):
+        release_linux.install_release(layout, prepare_models=False, desktop=False, wheelhouse=wheelhouse, **options)
+    assert not layout.policy.corpus_root.exists()
+    assert not layout.current.exists()
+    assert not layout.launcher.exists()
+
+
+def test_native_replacement_at_activation_keeps_current_and_rollback(tmp_path: Path, monkeypatch) -> None:
+    import copy
+
+    layout = LinuxReleaseLayout(tmp_path / "source", _policy(tmp_path))
+    target = _release(layout, release_linux.release_id("a" * 40), native=True)
+    current = _release(layout, release_linux.release_id("b" * 40), native=True)
+    _activate(layout, current)
+    release_linux._make_immutable(target)
+    release_linux._make_immutable(current)
+    monkeypatch.setattr(release_linux, "_verify_python_release", lambda *_a, **_k: _native_fixture()[0])
+    changed = copy.deepcopy(_native_fixture()[0].native_runtime["attestation"])
+    changed["sqlite"]["native_libraries"]["files"][0]["sha256"] = "f" * 64
+    changed["identity_sha256"] = sqlite_native.canonical_sha256(sqlite_native.runtime_identity(changed))
+    monkeypatch.setattr(sqlite_native, "collect_release_sqlite_attestation", lambda *_a: changed)
+    with pytest.raises(release_linux.LinuxReleaseError, match="not approved"):
+        release_linux.rollback_release(layout, target_release=target.name)
+    assert release_linux._current_target(layout) == current.resolve()
+    assert current.is_dir() and target.is_dir()
+    assert not layout.launcher.exists()
+    assert not tuple(layout.receipts.glob("*.json"))
+
+
+def test_loader_overrides_are_stripped_by_environment_and_real_wrapper(tmp_path: Path) -> None:
+    names = ("LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT")
+    environment = release_linux._offline_environment(dict.fromkeys(names, "/invalid/fixture"))
+    assert not set(names) & environment.keys()
+    assert environment["HF_HUB_OFFLINE"] == "1"
+    root = tmp_path / "release"
+    (root / "bin").mkdir(parents=True)
+    program = root / "bin" / "Neocortex"
+    program.write_text('#!/bin/sh\n[ -z "${LD_PRELOAD+x}${LD_LIBRARY_PATH+x}${LD_AUDIT+x}" ]\n', encoding="utf-8")
+    program.chmod(0o755)
+    launcher = tmp_path / "launcher"
+    launcher.write_bytes(release_linux._launcher_payload(tmp_path / "corpus", root))
+    launcher.chmod(0o755)
+    # Empty loader values avoid loading any library before the shell can unset
+    # them, while ${VAR+x} proves that the wrapper removes the variables.
+    result = subprocess.run([launcher], env={**os.environ, **dict.fromkeys(names, "")}, timeout=10)
+    assert result.returncode == 0
+
+
+@pytest.mark.parametrize("fault", [None, "receipt", "policy", "live_library"])
+def test_v2_public_verify_binds_receipt_policy_and_current_measurement(tmp_path: Path, monkeypatch, fault: str | None) -> None:
+    import copy
+
+    layout = LinuxReleaseLayout(tmp_path / "source", _policy(tmp_path))
+    current = _release(layout, release_linux.release_id("a" * 40), native=True)
+    _activate(layout, current)
+    layout.policy.corpus_root.mkdir(parents=True)
+    _, public = release_linux._publish_public_access(layout, layout.policy.corpus_root, desktop=False)
+    manifest = json.loads((current / release_linux.RELEASE_MANIFEST_NAME).read_text())
+    receipt = {
+        "schema_version": 2, "kind": "linux_release_receipt", "operation": "install",
+        "release_id": current.name, "release_path": str(current), "source_sha": manifest["source_sha"],
+        "current_link": str(layout.current), "corpus_root": str(layout.policy.corpus_root),
+        "interpreter": manifest["interpreter"], "wheelhouse_provenance": manifest["wheelhouse_provenance"],
+        "native_runtime": manifest["native_runtime"], "native_runtime_sha256": manifest["native_runtime_sha256"],
+        "artifacts": {**manifest, **public,
+                      "release_manifest_sha256": release_linux._sha256_file(current / release_linux.RELEASE_MANIFEST_NAME)},
+        "result": "success",
+    }
+    if fault == "receipt":
+        receipt["native_runtime_sha256"] = "0" * 64
+    receipt_path = release_linux._write_receipt(layout, receipt)
+    if fault == "policy":
+        policy_path = current / sqlite_native.POLICY_FILENAME
+        policy = json.loads(policy_path.read_text())
+        policy["approved_builds"] = []
+        policy_path.write_text(json.dumps(policy), encoding="utf-8")
+    release_linux._make_immutable(current)
+    observed = copy.deepcopy(_native_fixture()[0].native_runtime["attestation"])
+    if fault == "live_library":
+        observed["sqlite"]["native_libraries"]["files"][0]["sha256"] = "e" * 64
+        observed["identity_sha256"] = sqlite_native.canonical_sha256(sqlite_native.runtime_identity(observed))
+    monkeypatch.setattr(sqlite_native, "collect_release_sqlite_attestation", lambda *_a: observed)
+    monkeypatch.setattr(release_linux, "_require_reference_platform", lambda: None)
+    monkeypatch.setattr(release_linux, "_require_executable", lambda name: name)
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        parts = tuple(map(str, command))
+        output = "{}"
+        if parts[-1] == "import pip; print(pip.__version__)":
+            output = release_linux.PIP_BOOTSTRAP_VERSION
+        elif parts[-1] == release_linux._RUNTIME_INVENTORY_SCRIPT:
+            output = json.dumps({"pip": release_linux.PIP_BOOTSTRAP_VERSION})
+        elif Path(parts[0]).name == "Neocortex" and parts[1:] == ("--version",):
+            output = f"Neocortex {release_linux.__version__}"
+        elif parts[1:] == ("doctor", "platform", "--json"):
+            output = json.dumps({"effective_paths": {"corpus": kwargs["environment"]["NEOCORTEX_CORPUS_ROOT"]}})
+        elif parts[0] in {"qpdf", "ffprobe"}:
+            output = "fixture version\n"
+        elif parts[0] == "tesseract":
+            output = "Available languages:\neng\nspa\n"
+        return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+
+    if fault is None:
+        report = release_linux.verify_release(layout, runner=runner)
+        assert report["schema_version"] == 2
+        assert report["verified"] is True
+        assert report["native_runtime"]["status"] == "approved"
+        assert report["native_runtime"]["observed"]["identity_sha256"] == observed["identity_sha256"]
+    else:
+        with pytest.raises(release_linux.LinuxReleaseError):
+            release_linux.verify_release(layout, runner=runner)
+        if fault in {"receipt", "policy"}:
+            assert calls == [], "stored evidence is checked before any runtime command"
+    assert release_linux._current_target(layout) == current.resolve()
+    assert receipt_path.is_file()

@@ -7,19 +7,22 @@ import sqlite3
 import sys
 import threading
 from collections.abc import Callable
-from neocortex.api.status_codes import KnowledgeExitCode
+from neocortex.api.status_codes import (
+    KnowledgeExitCode,
+    knowledge_context_exit_code as knowledge_context_exit_code,
+    knowledge_search_exit_code as knowledge_search_exit_code,
+)
 from typing import TYPE_CHECKING, TextIO, TypeVar
 from uuid import uuid4
 
 from neocortex.runtime.control.console_cancellation import ConsoleCancellationBridge
 from neocortex.knowledge.knowledge_contracts import (
-    KnowledgeCompleteness,
     OwnerAvailability,
     SnapshotConsistency,
 )
 
 if TYPE_CHECKING:
-    from neocortex.knowledge.knowledge_contracts import ContextBundle, KnowledgeSnapshot
+    from neocortex.knowledge.knowledge_contracts import KnowledgeSnapshot
     from neocortex.knowledge.knowledge_planner import KnowledgeQuery
     from neocortex.knowledge.knowledge_search import KnowledgeSearchResult
     from neocortex.knowledge.knowledge_service import KnowledgeSearchService
@@ -106,52 +109,6 @@ def _snapshot_exit_code(snapshot: KnowledgeSnapshot) -> KnowledgeExitCode:
         return KnowledgeExitCode.SCHEMA_INCOMPATIBLE
     if snapshot.consistency is SnapshotConsistency.SNAPSHOT_CHANGED:
         return KnowledgeExitCode.SNAPSHOT_CHANGED
-    return KnowledgeExitCode.SUCCESS
-
-
-def _blocking_snapshot_exit_code(
-    snapshot: KnowledgeSnapshot,
-    blocking_owners: tuple[str, ...],
-) -> KnowledgeExitCode:
-    required = set(blocking_owners)
-    states = {owner.state for owner in snapshot.owners if owner.owner in required}
-    if OwnerAvailability.CORRUPT in states:
-        return KnowledgeExitCode.CORRUPT
-    if states.intersection({OwnerAvailability.FUTURE, OwnerAvailability.INCOMPATIBLE}):
-        return KnowledgeExitCode.SCHEMA_INCOMPATIBLE
-    if snapshot.consistency is SnapshotConsistency.SNAPSHOT_CHANGED:
-        return KnowledgeExitCode.SNAPSHOT_CHANGED
-    return KnowledgeExitCode.SUCCESS
-
-
-def knowledge_search_exit_code(result: KnowledgeSearchResult) -> KnowledgeExitCode:
-    snapshot_code = _blocking_snapshot_exit_code(
-        result.snapshot,
-        result.blocking_owners,
-    )
-    if snapshot_code is not KnowledgeExitCode.SUCCESS:
-        return snapshot_code
-    if not result.complete:
-        return KnowledgeExitCode.PARTIAL
-    if not result.hits:
-        return KnowledgeExitCode.NO_RESULTS
-    return KnowledgeExitCode.SUCCESS
-
-
-def knowledge_context_exit_code(bundle: ContextBundle) -> KnowledgeExitCode:
-    snapshot_code = _blocking_snapshot_exit_code(
-        bundle.snapshot,
-        bundle.blocking_owners,
-    )
-    if snapshot_code is not KnowledgeExitCode.SUCCESS:
-        return snapshot_code
-    if bundle.completeness in {
-        KnowledgeCompleteness.PARTIAL,
-        KnowledgeCompleteness.UNSUPPORTED,
-    }:
-        return KnowledgeExitCode.PARTIAL
-    if bundle.completeness is KnowledgeCompleteness.NO_EVIDENCE:
-        return KnowledgeExitCode.NO_RESULTS
     return KnowledgeExitCode.SUCCESS
 
 

@@ -23,7 +23,7 @@ from neocortex.runtime.scratch import ScratchManager
 from neocortex.workflow.retention.planner import TerminalRetentionPolicy
 
 
-def test_public_activity_survives_external_process_and_replays_from_new_process(
+def test_public_activity_publication_replays_from_new_process_and_preserves_seal(
     tmp_path: Path,
 ) -> None:
     state = tmp_path / "state"
@@ -34,15 +34,8 @@ def test_public_activity_survives_external_process_and_replays_from_new_process(
     os.chmod(existing, 0o600)
 
     activity = AgentActivity.prepare(state, "agent-run-1")
-    result = activity.run(
-        [
-            sys.executable,
-            "-c",
-            "from pathlib import Path; Path('deliverable.txt').write_bytes(b'agent output')",
-        ]
-    )
-    assert result.returncode == 0
     source = activity.path / "deliverable.txt"
+    source.write_bytes(b"agent output")
     published_result = activity.publish(source, published / "deliverable.txt")
     assert published_result.status == "published"
     source.write_bytes(b"changed before close")

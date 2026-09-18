@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from neocortex.persistence.operational_freshness import require_operational_identity, next_operational_identity
+
 import math
 import os
 import sqlite3
@@ -610,6 +612,10 @@ class InventoryScanner:
         root: RootIdentity,
         policy_signature: str,
     ) -> tuple[int, bool]:
+        try:
+            require_operational_identity(self._connection, "inventory", checkpoint.scan_id)
+        except RuntimeError as exc:
+            raise InventoryResumeConflictError(str(exc)) from exc
         if (
             checkpoint.root_path != root.path
             or checkpoint.root_dev != root.volume_id
@@ -961,10 +967,11 @@ class InventoryScanner:
     ) -> int:
         cursor = self._connection.execute(
             """INSERT INTO scans(
-            root,root_volume_id,root_file_id,root_birthtime_ns,started_ns,
+            scan_id,root,root_volume_id,root_file_id,root_birthtime_ns,started_ns,
             inventory_policy_signature)
-            VALUES(?,?,?,?,?,?)""",
+            VALUES(?,?,?,?,?,?,?)""",
             (
+                next_operational_identity(self._connection, "inventory", "scans", "scan_id"),
                 root.path,
                 id_blob(root.volume_id),
                 id_blob(root.file_id),

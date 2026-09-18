@@ -38,6 +38,7 @@ from .semantic_models import (
     ContentFingerprint,
     SemanticItem,
     TextSection,
+    TextSourceRecord as TextSourceRecord,
     fingerprint_bytes,
     fingerprint_chunks,
     fingerprint_text,
@@ -146,12 +147,6 @@ _TEXT_PUBLICATION_VALIDATION_BATCH = 250
 _PATH_COLLATION = sqlite_path_collation()
 
 
-@dataclass(frozen=True, slots=True)
-class TextSourceRecord:
-    """One natural text section; adjacent rows with the same item are grouped."""
-
-    item: SemanticItem
-    section: TextSection
 
 
 @dataclass(frozen=True, slots=True)

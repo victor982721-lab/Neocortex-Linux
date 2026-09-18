@@ -15,12 +15,10 @@ import ctypes
 import hashlib
 import json
 import os
-import shutil
 import stat
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal, Protocol, cast
@@ -46,27 +44,14 @@ from neocortex.persistence.framework_state_common import _action_idempotency_key
 from neocortex.runtime.control.locking import FrameworkRunLock
 from neocortex.workflow.actions.action_policy import validate_mutation_path
 from neocortex.safety.kio_trash import (
-    KioTrashStatus,
-    KioTrashBatchItem,
-    KioTrashBatchResult,
-    KioTrashResult,
-    MAX_KIO_BATCH_ITEMS,
-    KioTrashVerification,
-    KioTrashUnavailable,
-    _claim_recovery_detail,
-    _claim_source,
-    _default_kio_verifier,
-    _curation_trash_paths,
-    _fsync_directory,
-    _read_regular_bounded,
-    _restore_claim,
-    _rewrite_trash_info_path,
-    _trash_info_path_value,
-    _verify_curation_trash_evidence,
     KioRunner,
-    move_many_to_trash,
-    move_to_trash,
-    private_kio_context,
+    KioTrashBatchItem,
+    KioTrashResult,
+    KioTrashService,
+    KioTrashStatus,
+    KioTrashVerification,
+    trash_receipt_paths,
+    verify_trash_receipt_evidence,
 )
 from neocortex.workflow.actions.file_action_reconciliation_store import (
     RecordedFileActionReconciliation,
@@ -654,7 +639,7 @@ def _validate_receipt(
             raise CurationApplicationError("rename receipt target identity differs")
     if effect.action == "trash":
         try:
-            _curation_trash_paths(payload.get("trash"), effect.source, effect.source_digest)
+            trash_receipt_paths(payload.get("trash"), effect.source, effect.source_digest)
         except ValueError as exc:
             raise CurationApplicationError(str(exc)) from exc
     return _canonical_json(payload)
@@ -691,7 +676,7 @@ def _validate_applied_effect(
             raise CurationApplicationError("stored rename target digest changed")
         return
     try:
-        _verify_curation_trash_evidence(receipt.get("trash"), effect.source, effect.source_digest)
+        verify_trash_receipt_evidence(receipt.get("trash"), effect.source, effect.source_digest)
     except (OSError, RuntimeError, ValueError, FileChangedError) as exc:
         raise CurationApplicationError(f"stored trash destination is not verified: {exc}") from exc
 
@@ -880,21 +865,18 @@ class KioTrashBackend:
         private_config: bool = True,
         private_bus: bool = True,
     ) -> None:
-        if not isinstance(private_claim, bool):
-            raise TypeError("private_claim must be boolean")
-        if not isinstance(private_config, bool):
-            raise TypeError("private_config must be boolean")
-        if not isinstance(private_bus, bool):
-            raise TypeError("private_bus must be boolean")
-        self._verifier = verifier
-        self._runner = runner
-        self._which = which
-        self._environment = environment
-        self._home_directory = home_directory
-        self._timeout_seconds = timeout_seconds
-        self._private_claim = private_claim
-        self._private_config = private_config
-        self._private_bus = private_bus
+        self._service = KioTrashService(
+            verifier=verifier,
+            runner=cast(KioRunner | None, runner),
+            which=which,
+            environment=environment,
+            home_directory=home_directory,
+            timeout_seconds=timeout_seconds,
+            private_claim=private_claim,
+            private_config=private_config,
+            private_bus=private_bus,
+        )
+        self._revalidate_native = runner is None and private_claim
 
     def apply(self, candidate: ApplyCandidate) -> BackendOutcome:
         effect = candidate.effect
@@ -905,194 +887,50 @@ class KioTrashBackend:
         if not hasattr(effect, "source") or not hasattr(candidate, "root"):
             return BackendOutcome("blocked", "kio_runner_not_injected")
 
-        native = self._runner is None
-        claim = None
-        operation_environment: Mapping[str, str] | None = self._environment
-        operation_home = self._home_directory
+        if self._revalidate_native:
+            try:
+                _validate_effect_physical(effect, candidate.root)
+            except (CurationApplicationError, OSError, RuntimeError, ValueError) as exc:
+                return BackendOutcome("blocked", "kio_preflight_failed", str(exc))
+        result = self._service.move(effect.source, source_digest=effect.source_digest)
+        return self._backend_outcome(effect, result)
 
-        @contextmanager
-        def operation_context() -> Iterator[tuple[Mapping[str, str] | None, Path | None]]:
-            if native and self._private_config:
-                with private_kio_context(
-                    self._environment,
-                    home_directory=self._home_directory,
-                ) as prepared:
-                    yield prepared
-            else:
-                yield operation_environment, operation_home
+    def _backend_outcome(
+        self,
+        effect: AuthorizationEffect,
+        result: KioTrashResult,
+    ) -> BackendOutcome:
+        """Bind safety-owned physical evidence to the caller's action receipt."""
 
-        try:
-            with operation_context() as prepared:
-                operation_environment, operation_home = prepared
-                source = Path(effect.source.path)
-                if native and self._private_claim:
-                    _validate_effect_physical(effect, candidate.root)
-                    claim = _claim_source(source, effect.source)
-                    kio_source = claim.claim_path
-                    kio_expected = replace(effect.source, path=os.fspath(kio_source))
-                else:
-                    kio_source = source
-                    kio_expected = effect.source
-
-                configured_verifier = self._verifier
-                if configured_verifier is None:
-                    def default_verifier(
-                        verified_source: Path,
-                        verified_snapshot: FileSnapshot,
-                        client: Path,
-                    ) -> KioTrashVerification:
-                        return _default_kio_verifier(
-                            verified_source,
-                            verified_snapshot,
-                            client,
-                            environment=(
-                                dict(os.environ)
-                                | dict(operation_environment or {})
-                            ),
-                            home_directory=operation_home,
-                            source_digest=effect.source_digest,
-                        )
-                    effective_verifier = default_verifier
-                else:
-                    effective_verifier = configured_verifier
-                result = move_to_trash(
-                    kio_source,
-                    kio_expected,
-                    verifier=effective_verifier,
-                    runner=cast(KioRunner | None, self._runner),
-                    which=shutil.which if self._which is None else self._which,
-                    environment=operation_environment,
-                    home_directory=operation_home,
-                    timeout_seconds=self._timeout_seconds,
-                    private_bus=native and self._private_bus,
-                )
-        except KioTrashUnavailable as exc:
-            if claim is not None:
-                try:
-                    _restore_claim(claim)
-                except KioTrashUnavailable as restore_error:
-                    return BackendOutcome(
-                        "recovery_required",
-                        "kio_claim_restore_failed",
-                        _claim_recovery_detail(claim, reason=restore_error.reason, detail=restore_error.detail),
-                    )
-            return BackendOutcome("blocked", exc.reason, exc.detail)
-        except (CurationApplicationError, OSError, RuntimeError, ValueError) as exc:
-            if claim is not None:
-                try:
-                    _restore_claim(claim)
-                except KioTrashUnavailable as restore_error:
-                    return BackendOutcome(
-                        "recovery_required",
-                        "kio_claim_restore_failed",
-                        _claim_recovery_detail(claim, reason=restore_error.reason, detail=restore_error.detail),
-                    )
-            return BackendOutcome("blocked", "kio_preflight_failed", str(exc))
-
-        if result.status is KioTrashStatus.RECOVERY_REQUIRED:
-            detail = result.detail
-            if claim is not None:
-                detail = _claim_recovery_detail(claim, reason=result.reason, detail=detail)
-            return BackendOutcome("recovery_required", result.reason, detail)
         if result.status is KioTrashStatus.BLOCKED:
-            if claim is not None:
-                try:
-                    _restore_claim(claim)
-                except KioTrashUnavailable as restore_error:
-                    return BackendOutcome(
-                        "recovery_required",
-                        "kio_claim_restore_failed",
-                        _claim_recovery_detail(claim, reason=restore_error.reason, detail=restore_error.detail),
-                    )
             return BackendOutcome("blocked", result.reason, result.detail)
+        if result.status is KioTrashStatus.RECOVERY_REQUIRED:
+            return BackendOutcome("recovery_required", result.reason, result.detail)
         if result.receipt is None:
-            detail = "KIO reported an applied effect without a receipt"
-            if claim is not None:
-                detail = _claim_recovery_detail(claim, reason="kio_receipt_missing", detail=detail)
-            return BackendOutcome("recovery_required", "kio_receipt_missing", detail)
+            return BackendOutcome(
+                "recovery_required", "kio_receipt_missing",
+                "KIO reported an applied item without a receipt",
+            )
         try:
             evidence = json.loads(result.receipt.trash_evidence)
-        except (TypeError, ValueError):
-            detail = "KIO trash evidence is not JSON"
-            if claim is not None:
-                detail = _claim_recovery_detail(
-                    claim,
-                    reason="kio_trash_evidence_unstructured",
-                    detail=detail,
-                )
-            return BackendOutcome("recovery_required", "kio_trash_evidence_unstructured", detail)
-        if not isinstance(evidence, dict):
-            detail = "KIO trash evidence is not an object"
-            if claim is not None:
-                detail = _claim_recovery_detail(
-                    claim,
-                    reason="kio_trash_evidence_unstructured",
-                    detail=detail,
-                )
-            return BackendOutcome("recovery_required", "kio_trash_evidence_unstructured", detail)
-        try:
-            if claim is not None:
-                _root, _trash_path, info_path = _curation_trash_paths(
-                    evidence,
-                    effect.source,
-                    effect.source_digest,
-                )
-                path_value = _trash_info_path_value(
-                    _read_regular_bounded(info_path, limit=8_192)
-                )
-                if path_value == os.fspath(claim.claim_path):
-                    _rewrite_trash_info_path(
-                        info_path,
-                        old_source=claim.claim_path,
-                        new_source=source,
-                    )
-                elif path_value != effect.source.path:
-                    raise ValueError("trash info source path differs from the grant effect")
-            _verify_curation_trash_evidence(evidence, effect.source, effect.source_digest)
-        except BaseException as exc:
-            detail = str(exc)
-            if claim is not None:
-                detail = _claim_recovery_detail(claim, reason="kio_trash_evidence_mismatch", detail=detail)
-            return BackendOutcome("recovery_required", "kio_trash_evidence_mismatch", detail)
-        try:
-            _fsync_directory(Path(effect.source.path).parent)
-            _root, trash_path, info_path = _curation_trash_paths(
-                evidence, effect.source, effect.source_digest
+            trash_receipt_paths(evidence, effect.source, effect.source_digest)
+            receipt = effect_receipt_json(
+                operation="trash", source_path=effect.source.path, target_path=None
             )
-            _fsync_directory(_root)
-            _fsync_directory(trash_path.parent)
-            if info_path.parent != trash_path.parent:
-                _fsync_directory(info_path.parent)
-        except (OSError, ValueError) as exc:
-            detail = str(exc)
-            if claim is not None:
-                detail = _claim_recovery_detail(claim, reason="kio_directory_fsync_failed", detail=detail)
-            return BackendOutcome("recovery_required", "kio_directory_fsync_failed", detail)
-        if claim is not None:
-            try:
-                os.rmdir(claim.claim_directory)
-            except OSError as exc:
-                return BackendOutcome(
-                    "recovery_required",
-                    "kio_claim_cleanup_failed",
-                    _claim_recovery_detail(claim, reason="kio_claim_cleanup_failed", detail=exc),
-                )
-        receipt = effect_receipt_json(
-            operation="trash",
-            source_path=effect.source.path,
-            target_path=None,
-        )
-        payload = json.loads(receipt)
-        payload.update(
-            {
-                "backend": self.name,
-                "source_digest": effect.source_digest,
-                "trash": evidence,
-            }
-        )
-        return BackendOutcome(
-            "applied", "kio_trash_verified", receipt_json=_canonical_json(payload)
-        )
+            payload = json.loads(receipt)
+            payload.update(
+                {
+                    "backend": self.name,
+                    "source_digest": effect.source_digest,
+                    "trash": evidence,
+                }
+            )
+            return BackendOutcome(
+                "applied", "kio_trash_verified", result.detail,
+                receipt_json=_canonical_json(payload),
+            )
+        except (TypeError, ValueError) as exc:
+            return BackendOutcome("recovery_required", "kio_receipt_invalid", str(exc))
 
     def apply_snapshot(
         self,
@@ -1185,177 +1023,11 @@ class KioTrashBackend:
         if not valid_items:
             return tuple(cast(BackendOutcome, item) for item in outcomes)
 
-        native = self._runner is None
-        operation_environment: Mapping[str, str] | None = self._environment
-        operation_home = self._home_directory
-
-        @contextmanager
-        def operation_context() -> Iterator[tuple[Mapping[str, str] | None, Path | None]]:
-            if native and self._private_config:
-                with private_kio_context(
-                    self._environment,
-                    home_directory=self._home_directory,
-                ) as prepared:
-                    yield prepared
-            else:
-                yield operation_environment, operation_home
-
-        def invoke_batches(
-            batch_items: Sequence[KioTrashBatchItem],
-            *,
-            environment: Mapping[str, str] | None,
-            home_directory: Path | None,
-        ) -> tuple[KioTrashResult, ...]:
-            """Run bounded KIO batches, splitting only before any effect."""
-
-            if len(batch_items) > MAX_KIO_BATCH_ITEMS:
-                midpoint = len(batch_items) // 2
-                return invoke_batches(
-                    batch_items[:midpoint],
-                    environment=environment,
-                    home_directory=home_directory,
-                ) + invoke_batches(
-                    batch_items[midpoint:],
-                    environment=environment,
-                    home_directory=home_directory,
-                )
-            try:
-                result = move_many_to_trash(
-                    batch_items,
-                    verifier=self._verifier,
-                    runner=cast(KioRunner | None, self._runner),
-                    which=shutil.which if self._which is None else self._which,
-                    environment=environment,
-                    home_directory=home_directory,
-                    timeout_seconds=self._timeout_seconds,
-                    private_bus=native and self._private_bus,
-                    private_claim=native and self._private_claim,
-                )
-            except (OSError, RuntimeError, ValueError, TypeError) as exc:
-                # Preserve outcomes from earlier chunks.  A typed recovery
-                # vector for this chunk avoids losing receipts if a later
-                # bounded invocation fails after an earlier one crossed its
-                # physical frontier.
-                detail = f"{type(exc).__name__}: {exc}"
-                return tuple(
-                    KioTrashResult(
-                        status=KioTrashStatus.RECOVERY_REQUIRED,
-                        reason="kio_batch_operation_failed",
-                        source_path=item.expected.path,
-                        detail=detail,
-                    )
-                    for item in batch_items
-                )
-            if not isinstance(result, KioTrashBatchResult) or len(result.outcomes) != len(
-                batch_items
-            ):
-                detail = "KIO batch returned an unexpected outcome vector"
-                return tuple(
-                    KioTrashResult(
-                        status=KioTrashStatus.RECOVERY_REQUIRED,
-                        reason="kio_batch_result_invalid",
-                        source_path=item.expected.path,
-                        detail=detail,
-                    )
-                    for item in batch_items
-                )
-            # ``move_many_to_trash`` restores all claims when argv is too
-            # large, so this is the sole safe condition for a pre-effect
-            # retry with a smaller bounded batch.  Never split a mixed or
-            # post-frontier result.
-            if len(batch_items) > 1 and result.outcomes and all(
-                item.status is KioTrashStatus.BLOCKED
-                and item.reason == "kio_batch_arguments_too_large"
-                for item in result.outcomes
-            ):
-                midpoint = len(batch_items) // 2
-                return invoke_batches(
-                    batch_items[:midpoint],
-                    environment=environment,
-                    home_directory=home_directory,
-                ) + invoke_batches(
-                    batch_items[midpoint:],
-                    environment=environment,
-                    home_directory=home_directory,
-                )
-            return tuple(result.outcomes)
-
-        try:
-            with operation_context() as prepared:
-                operation_environment, operation_home = prepared
-                batch_outcomes = invoke_batches(
-                    valid_items,
-                    environment=operation_environment,
-                    home_directory=operation_home,
-                )
-        except (KioTrashUnavailable, CurationApplicationError, OSError, RuntimeError, ValueError) as exc:
-            # ``move_many_to_trash`` classifies process/effect ambiguity per
-            # item.  Reaching this handler means no typed result was returned;
-            # conservatively expose a blocked preflight for each item.
-            for index in valid_indexes:
-                outcomes[index] = BackendOutcome("blocked", "kio_preflight_failed", str(exc))
-            return tuple(cast(BackendOutcome, item) for item in outcomes)
-
-        if len(batch_outcomes) != len(valid_items):
-            for index in valid_indexes:
-                outcomes[index] = BackendOutcome(
-                    "recovery_required",
-                    "kio_batch_result_invalid",
-                    "KIO batch returned an unexpected outcome vector",
-                )
-            return tuple(cast(BackendOutcome, item) for item in outcomes)
-
+        batch_outcomes = self._service.move_many(valid_items)
         for index, effect, result in zip(
-            valid_indexes,
-            valid_effects,
-            batch_outcomes,
-            strict=True,
+            valid_indexes, valid_effects, batch_outcomes, strict=True
         ):
-            if result.status is KioTrashStatus.BLOCKED:
-                outcomes[index] = BackendOutcome("blocked", result.reason, result.detail)
-                continue
-            if result.status is KioTrashStatus.RECOVERY_REQUIRED:
-                outcomes[index] = BackendOutcome(
-                    "recovery_required",
-                    result.reason,
-                    result.detail,
-                )
-                continue
-            if result.receipt is None:
-                outcomes[index] = BackendOutcome(
-                    "recovery_required",
-                    "kio_receipt_missing",
-                    "KIO batch reported an applied item without a receipt",
-                )
-                continue
-            try:
-                evidence = json.loads(result.receipt.trash_evidence)
-                if not isinstance(evidence, dict):
-                    raise ValueError("KIO batch Trash evidence is not an object")
-                receipt = effect_receipt_json(
-                    operation="trash",
-                    source_path=cast(AuthorizationEffect, effect).source.path,
-                    target_path=None,
-                )
-                payload = json.loads(receipt)
-                payload.update(
-                    {
-                        "backend": self.name,
-                        "source_digest": cast(AuthorizationEffect, effect).source_digest,
-                        "trash": evidence,
-                    }
-                )
-                outcomes[index] = BackendOutcome(
-                    "applied",
-                    "kio_trash_verified",
-                    receipt_json=_canonical_json(payload),
-                )
-            except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                outcomes[index] = BackendOutcome(
-                    "recovery_required",
-                    "kio_receipt_invalid",
-                    str(exc),
-                )
+            outcomes[index] = self._backend_outcome(cast(AuthorizationEffect, effect), result)
         return tuple(cast(BackendOutcome, item) for item in outcomes)
 
     # Explicit aliases keep the backend seam discoverable to action owners

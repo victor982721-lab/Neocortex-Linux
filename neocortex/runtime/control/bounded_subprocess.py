@@ -43,6 +43,13 @@ class _WindowsJob(Protocol):
     def terminate(self) -> None: ...
 
 
+class _ProcessScope(Protocol):
+    def prepare_command(self, command: Sequence[str]) -> tuple[str, ...]: ...
+    def attach(self, pid: int, start_ticks: int | None, *, deadline: float) -> None: ...
+    def terminate(self, deadline: float | None = None) -> None: ...
+    def verify_quiescent(self, *, deadline: float) -> None: ...
+
+
 class SubprocessOutputLimitError(RuntimeError):
     """Raised after terminating a child whose captured stream exceeded its limit."""
 
@@ -90,6 +97,7 @@ class _TerminationController:
     termination_errors: list[BaseException] = field(default_factory=list)
     termination_lock: threading.Lock = field(default_factory=threading.Lock)
     terminated: bool = False
+    process_scope: _ProcessScope | None = None
 
     def _terminate_posix_group(self, deadline: float | None) -> None:
         process_group_id = self.process.pid
@@ -143,6 +151,11 @@ class _TerminationController:
             if self.terminated:
                 return
             self.terminated = True
+            if self.process_scope is not None:
+                try:
+                    self.process_scope.terminate(deadline)
+                except (OSError, RuntimeError) as error:
+                    self.termination_errors.append(error)
             if self.job is not None:
                 try:
                     self.job.terminate()
@@ -331,14 +344,20 @@ def _cleanup_note(error: BaseException) -> str:
 def _validate_capture_bounds(
     arguments: Sequence[str | os.PathLike[str]],
     *,
-    timeout_seconds: float,
+    timeout_seconds: float | None,
     stdout_limit_bytes: int,
     stderr_limit_bytes: int,
     memory_limit_bytes: int | None,
 ) -> None:
     if not arguments:
         raise ValueError("subprocess arguments cannot be empty")
-    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+    if timeout_seconds is None and os.name == "nt":
+        raise ValueError("an unbounded execution deadline is supported only on POSIX")
+    if timeout_seconds is not None and (
+        isinstance(timeout_seconds, bool)
+        or not math.isfinite(timeout_seconds)
+        or timeout_seconds <= 0
+    ):
         raise ValueError("subprocess timeout must be a finite positive value")
     if stdout_limit_bytes < 0 or stderr_limit_bytes < 0:
         raise ValueError("subprocess output limits cannot be negative")
@@ -499,6 +518,7 @@ def _wait_for_capture_posix(
             controller.terminate(deadline)
         if returncode is not None:
             normal_exit = True
+            deadline = min(deadline, time.monotonic() + _PROCESS_REAP_SECONDS)
             controller.terminate(deadline)
 
         while True:
@@ -519,6 +539,7 @@ def _wait_for_capture_posix(
                 if observed_returncode is not None:
                     returncode = observed_returncode
                     normal_exit = True
+                    deadline = min(deadline, time.monotonic() + _PROCESS_REAP_SECONDS)
                     # A normal direct-child exit does not imply that a
                     # descendant closed inherited pipes. Terminate only the
                     # dedicated group, never a setsid descendant outside it.
@@ -771,19 +792,21 @@ def _execute_bounded_capture(
     command: tuple[str, ...],
     *,
     stdin: int | IO[bytes],
-    timeout_seconds: float,
+    timeout_seconds: float | None,
     stdout_limit_bytes: int,
     stderr_limit_bytes: int,
     creationflags: int,
     cwd: str | None,
     environment: Mapping[str, str] | None,
     memory_limit_bytes: int | None,
+    on_started: Callable[[int, int | None], None] | None = None,
+    process_scope: _ProcessScope | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     # The deadline starts before process creation so start/wait/termination,
     # reaping and descriptor cleanup share one finite budget.
-    deadline = time.monotonic() + timeout_seconds
+    deadline = math.inf if timeout_seconds is None else time.monotonic() + timeout_seconds
     process, job = _start_bounded_process(
-        command,
+        command if process_scope is None else process_scope.prepare_command(command),
         stdin=stdin,
         creationflags=creationflags,
         cwd=cwd,
@@ -799,7 +822,25 @@ def _execute_bounded_capture(
             if os.name != "nt" and process.pid
             else None
         ),
+        process_scope=process_scope,
     )
+    if on_started is not None or process_scope is not None:
+        try:
+            if on_started is not None:
+                on_started(process.pid, controller.process_start_ticks)
+            if process_scope is not None:
+                process_scope.attach(process.pid, controller.process_start_ticks, deadline=deadline)
+        except BaseException as error:
+            # The callback owns durable registration. A failed write must not
+            # leave a producer running without its lifecycle claim.
+            cleanup_deadline = min(deadline, time.monotonic() + _PROCESS_REAP_SECONDS)
+            controller.terminate(cleanup_deadline)
+            _returncode, cleanup_errors = _finalize_capture(
+                process, job, (), None, deadline=cleanup_deadline
+            )
+            for diagnostic in controller.termination_errors + cleanup_errors:
+                error.add_note(_cleanup_note(diagnostic))
+            raise
     readers = (
         _capture_readers(
             process,
@@ -817,7 +858,7 @@ def _execute_bounded_capture(
         readers,
         buffers,
         controller,
-        timeout_seconds=timeout_seconds,
+        timeout_seconds=math.inf if timeout_seconds is None else timeout_seconds,
         stdout_limit_bytes=stdout_limit_bytes,
         stderr_limit_bytes=stderr_limit_bytes,
         deadline=deadline,
@@ -827,11 +868,17 @@ def _execute_bounded_capture(
         job,
         wait.started_readers,
         wait.returncode,
-        deadline=deadline,
+        deadline=min(deadline, time.monotonic() + _PROCESS_REAP_SECONDS),
     )
+    if process_scope is not None:
+        try:
+            process_scope.verify_quiescent(deadline=min(deadline + _CLEANUP_TOLERANCE_SECONDS,
+                                                       time.monotonic() + _PROCESS_REAP_SECONDS))
+        except (OSError, RuntimeError) as exc:
+            cleanup_errors.append(exc)
     return _resolve_capture_result(
         command,
-        timeout_seconds=timeout_seconds,
+        timeout_seconds=math.inf if timeout_seconds is None else timeout_seconds,
         buffers=buffers,
         controller=controller,
         wait=wait,
@@ -844,13 +891,15 @@ def run_bounded_capture(
     arguments: Sequence[str | os.PathLike[str]],
     *,
     input_bytes: bytes | None = None,
-    timeout_seconds: float,
+    timeout_seconds: float | None,
     stdout_limit_bytes: int,
     stderr_limit_bytes: int,
     creationflags: int = 0,
     cwd: str | os.PathLike[str] | None = None,
     environment: Mapping[str, str] | None = None,
     memory_limit_bytes: int | None = None,
+    on_started: Callable[[int, int | None], None] | None = None,
+    process_scope: _ProcessScope | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     """Run a child with bounded capture and deterministic descendant cleanup.
 
@@ -860,6 +909,10 @@ def run_bounded_capture(
     pipe therefore cannot block the caller indefinitely; normal completion reports
     an explicit cleanup-incomplete error if EOF is not observed.
     Windows retains the optional Job Object and daemon-reader fallback.
+    On POSIX, ``None`` preserves an unlimited producer execution time while
+    capture size remains bounded; closure after the leader exits is limited
+    to five seconds. ``on_started`` registers PID/start ticks before capture;
+    callback failure terminates and reaps the producer before propagating.
     """
 
     _validate_capture_bounds(
@@ -883,6 +936,8 @@ def run_bounded_capture(
             cwd=working_directory,
             environment=environment,
             memory_limit_bytes=memory_limit_bytes,
+            on_started=on_started,
+            process_scope=process_scope,
         )
 
 

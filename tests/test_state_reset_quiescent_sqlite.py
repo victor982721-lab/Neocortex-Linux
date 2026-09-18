@@ -30,7 +30,6 @@ from neocortex.persistence.sqlite_immutable import (
 )
 from neocortex.persistence.state_reset import (
     STATE_RESET_CONFIRMATION,
-    StateResetChangedError,
     StateResetResult,
     StateResetError,
     execute_state_reset,
@@ -358,7 +357,7 @@ def test_catalog_stage_reset_keeps_published_rows_under_immutability_triggers(
         ).fetchall() == [(1,)]
 
 
-def test_catalog_unknown_nonempty_table_is_preserved_by_staged_reset(
+def test_catalog_unknown_nonempty_table_blocks_before_staged_reset(
     tmp_path: Path,
 ) -> None:
     """A schema extension cannot silently turn a Catalog owner into a delete target."""
@@ -380,14 +379,9 @@ def test_catalog_unknown_nonempty_table_is_preserved_by_staged_reset(
         "future_payload",
         "future_fts_payload",
     }.issubset(dict(plan.protected_tables)["catalog"])
-    result = execute_state_reset(
-        state,
-        scope="all",
-        apply=True,
-        plan_digest=plan.plan_digest,
-        confirmation=STATE_RESET_CONFIRMATION,
-    )
-    assert isinstance(result, StateResetResult)
+    with pytest.raises(StateResetError, match="unknown-table"):
+        execute_state_reset(state, scope="all", apply=True, plan_digest=plan.plan_digest,
+                            confirmation=STATE_RESET_CONFIRMATION)
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT value FROM future_payload").fetchall() == [
             ("preserve-me",)
@@ -687,7 +681,7 @@ def test_inventory_promotion_rejects_changed_planned_sidecar(
 
     monkeypatch.setattr(state_reset_module.os, "replace", replace_then_mutate)
     try:
-        with pytest.raises(StateResetChangedError, match="sidecar changed"):
+        with pytest.raises(state_reset_module.StateResetRecoveryRequiredError, match="recovery refuses overwrite") as failure:
             execute_state_reset(
                 state,
                 scope="all",
@@ -695,6 +689,8 @@ def test_inventory_promotion_rejects_changed_planned_sidecar(
                 plan_digest=plan.plan_digest,
                 confirmation=STATE_RESET_CONFIRMATION,
             )
+        assert Path(f"{database}-wal").read_bytes() == b"new-writer-content"
+        assert failure.value.operation_manifest.exists()
     finally:
         Path(f"{database}-wal").unlink(missing_ok=True)
         Path(f"{database}-shm").unlink(missing_ok=True)

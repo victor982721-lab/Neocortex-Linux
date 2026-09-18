@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal, TypeAlias
 
 from neocortex.foundation.processing_provenance import (
     ROUTE_SUMMARY_SCHEMA,
     ProcessingProvenance,
+    processing_provenance_cache,
     build_processing_provenance,
     distribution_component,
     python_runtime_component,
@@ -64,7 +64,7 @@ class DocxRouteConfig:
         return _docx_processing_provenance(self.max_text_chars)
 
 
-@lru_cache(maxsize=64)
+@processing_provenance_cache(maxsize=64)
 def _docx_processing_provenance(max_text_chars: int) -> ProcessingProvenance:
     return build_processing_provenance(
         "docx-route",

@@ -2,9 +2,40 @@
 
 ## Alcance
 
-NeoCortex conserva estado derivado en owners SQLite independientes. Los archivos
-originales son la verdad primaria; las bases son proyecciones reconstruibles con
-identidad, revisiones y publicaciones.
+NeoCortex conserva proyecciones y evidencia autoritativa en owners SQLite
+independientes. Los archivos originales son la fuente primaria del contenido,
+pero no reconstruyen decisiones, autorizaciones, acciones, correcciones ni toda
+la evidencia de recuperación. La reconstruibilidad se determina por tabla,
+referencias y procedencia; no por la extensión SQLite o por llamar caché al owner.
+
+El resultado de reset distingue owners seleccionados, transformados y bases
+retiradas o preservadas. `verified` conserva su alcance histórico de targets,
+indicado por `verification_scope=selected_targets`. El contrato adicional
+`owner_verifications` demuestra por owner la conservación de autoridad,
+referencias válidas y ausencia de selección operacional anterior. Sólo un
+`all` con observación completa, sin bloqueos y todas esas postcondiciones
+satisfechas anuncia `operational_freshness=fresh`; los scopes parciales usan
+`not_assessed`. `database_count` y `cache_count` siguen contando selección.
+
+`STATE_STORE_REGISTRY` expone `lifecycle_policy_version` y `lifecycle_rules`.
+Cada tabla admitida declara su rol, fuente de reconstrucción, retención,
+selector de dependencias, frontera de durabilidad y acción de reset. El mapa
+versionado es único; reset deriva de él sus políticas protectoras. Una tabla
+sin regla bloquea `all`, aunque esté vacía. Los trece SQLite conservan su
+distribución física y Knowledge sigue componiendo snapshots de esos owners.
+
+Un reset sin `backup_directory` utiliza una copia transitoria de rollback. Antes
+de adquirir esa área escribe un intento inmutable en `state-reset-operations`
+y lo registra en `artifacts` con owner `state-reset`. Su identidad, fases,
+digest del recibo y promociones se enlazan de forma durable. La CLI puede
+conciliar ese intento desde otro proceso, sin explorar directorios temporales.
+Un fallo de limpieza posterior a efectos verificados conserva
+`applied-cleanup-pending`; un cambio ajeno durante rollback conserva sus bytes,
+el raw y `recovery_required`. Antes de retirar un claim, reset registra su
+compensación con el productor. Tras un rollback, esa API valida el intento,
+el sello original y las promociones exactas antes de restituir estado, metadata,
+dependencias y binding del claim. Un claim legado sin enrolamiento, una copia
+incompleta o una identidad ajena mantiene `recovery_required`.
 
 La raíz predeterminada es:
 
@@ -60,6 +91,29 @@ copy-on-write, digests de contenido y heads de plan. Catalog schema v9 añade
 manifests de generación con source fence, raíz, política y digests, con triggers
 que bloquean UPDATE/DELETE sobre generaciones publicadas. Las migraciones son
 aditivas y conservan lectura de v12/v8.
+
+## Frontera durable de acciones físicas
+
+Framework configura WAL con `synchronous=FULL`: conserva intentos y recibos de
+acciones sobre archivos. Antes de `BEGIN IMMEDIATE`,
+`mark_file_actions_applying` comprueba y, si hace falta, eleva `main.synchronous`
+a FULL; verifica el valor efectivo y lo conserva para los recibos posteriores.
+Un valor inferior, una transacción ajena o un fallo de COMMIT no autorizan el
+siguiente efecto físico. La política es por conexión y no cambia el schema.
+
+La escritura de `applying`, su identidad esperada y su evento se confirman en
+una única transacción. COMMIT queda dentro del manejo de errores: si falla y
+la transacción sigue abierta, se revierte; si falla la reversión, se cierra la
+conexión y se conserva la excepción inicial con detalles secundarios. Una
+confirmación incierta exige conciliación del estado persistido y del archivo;
+no se convierte en un reintento automático de la mutación. FULL solicita la
+sincronización al sistema: la resistencia final a pérdida de energía también
+depende de que filesystem y dispositivo respeten esa solicitud.
+
+Los owner heads de una publicación se comparan después de
+`canonical_owner_heads`: valida tipos, límite y unicidad de owners, y ordena por
+owner. El orden de observación no constituye drift. Cualquier cambio de owner,
+revision, digest o versión de schema conserva el bloqueo de recuperación.
 
 ## Lectura segura
 
@@ -187,7 +241,7 @@ water mark/tombstone o un mecanismo equivalente de asignación futura y reporta
 las referencias cruzadas que impidan retirar una fila. Ningún reset convierte
 una referencia histórica en autoridad nueva.
 
-`runs-and-caches` elimina de forma coordinada owners y metadata de publicación;
+`runs-and-caches` transforma o retira coordinadamente owners y metadata de publicación;
 no abre una transacción SQLite distribuida ni simula que varios archivos son una
 sola base. El motor toma los locks de writers/publicación, registra baseline y
 postcondición, y sólo declara `complete` después de verificar el conjunto. WAL,
@@ -203,18 +257,51 @@ staged y se informa como `preserved_recovery_action_ids`; no autoriza reintentar
 ni descartar la evidencia. Runs, fases y acciones `started`/`applying` continúan
 siendo una frontera activa que bloquea la aplicación.
 
-Si Inventory conserva resúmenes/grupos/miembros de planes de duplicados o
-evidencia de huellas, y si Catalog conserva generaciones publicadas o historial
-de clasificación, el reset transforma esos owners en staging, conserva esas
-filas y sus padres verificables y compacta el resultado antes de promoverlo.
+Framework, Inventory y Catalog se transforman en staging aun cuando sólo sea
+necesario conservar el suelo de identidades. Inventory preserva planes,
+evidencia y scans padres, y retira checkpoints y heads vigentes. Catalog
+preserva generaciones publicadas, documentos, manifests, ancestros,
+correcciones e historia, y vacía `catalog_publications`. Framework conserva
+Review, autorizaciones y acciones, incluidos sus padres de recuperación.
+
+La barrera `neocortex.operational-reset-barrier/v1`, ligada al `plan_digest`,
+impide seleccionar o reanudar identidades anteriores. Los nuevos scans, runs y
+generaciones se asignan por encima del mayor ID retirado; una consulta histórica
+explícita conserva su significado. Las versiones Framework 23, Inventory 14 y
+Catalog 11 introducen el contrato de lector mediante migraciones de metadata
+que validan el schema previo y conservan su DDL. Un lector anterior rechaza el
+nuevo fence. Un segundo reset sin trabajo nuevo verifica `no_changes` sin
+volver a promover estos archivos.
+
+Los owners Semantic, Text y Code que contengan evidencia, outbox o receipts
+autoritativos bloquean antes del primer efecto: no hay transformador de frescura
+para esos casos. Los owners exclusivamente derivados pueden retirarse una vez
+validados. No se descarta autoridad para desbloquear un reset.
 Una referencia de evidencia huérfana, una generación con ancestry no conciliable
 o un sidecar nuevo durante la promoción bloquea el efecto; no se convierte en
 un target implícito ni se borra para hacer pasar el reset.
 
-`all` usa un inventario explícito de artefactos no-SQLite gestionados (por ejemplo
-manifests, checkpoints o journals administrados) y conserva archivos desconocidos
-o externos salvo que una política futura los registre expresamente. Los backups
-se escriben fuera de la raíz y nunca forman parte del target del reset.
+`all` recorre de forma acotada la raíz de estado y compone los contratos SQLite,
+las rutas canónicas y los claims reales de `ArtifactRegistry`. El digest incluye
+observaciones de archivos, identidades, reglas de owner, manifests, pruebas de
+reconstrucción, dependencias y la reserva calculada para metadata de recuperación.
+Si las promociones de todas las rutas y un temporal no caben en los 65.536 bytes
+del registro, el preview muestra la cantidad, el límite y
+`reset-recovery-metadata-budget-exceeded` antes de iniciar efectos. La cobertura parcial, los objetos desconocidos,
+los claims inválidos o solapados, un ciclo y un consumidor retenido bloquean el
+plan antes del primer efecto. Apply vuelve a observar el mismo grafo bajo los
+locks de writers y registro y verifica después el inventario resultante.
+
+Archive persiste manifests de procedencia fuera de su SQLite derivado. Cada
+salida enlaza el contenedor original, la identidad del miembro, su destino y sus
+hashes. Reset sólo retira una materialización cuando reproduce y compara todos
+los outputs desde originales supervivientes autorizados; ni la extensión ni el
+nombre de carpeta aportan permiso. Los límites de profundidad, miembros, bytes,
+ratio y tiempo se aplican a esa prueba. Los contenedores anidados pequeños usan
+un spool de memoria de hasta 8 MiB; si se necesita un spool mayor y no hay scratch
+registrado autorizado, la prueba se abstiene. Preview no crea scratch en disco.
+
+Los backups se escriben fuera de la raíz y nunca forman parte del target.
 
 La única excepción interna documentada son los backups canónicos de migración del
 catálogo: `document_catalog.sqlite3.pre-vN-to-vN+1-<timestamp>.sqlite3` y su
@@ -238,8 +325,8 @@ Durante `apply` se conserva además una guardia SQLite de control para cada
 owner target desde la revalidación hasta el efecto y la promoción. Un WAL o
 journal cerrado puede retirarse como parte del reset, pero un writer que ya
 exista o aparezca después del preview no puede competir con el reemplazo: la
-guardia aborta antes de borrar o promover. Las tablas no reconocidas con filas
-se tratan como evidencia protegida, no como caché regenerable.
+guardia aborta antes de borrar o promover. Las tablas no reconocidas, incluso vacías, bloquean la aplicación hasta que
+su owner declare una política válida.
 
 La operación no migra ni abre el corpus, no modifica bytes originales y no toca
 los directorios de releases/modelos. Una nueva corrida debe volver a crear sólo

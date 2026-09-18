@@ -21,7 +21,9 @@ import shutil
 import stat
 import subprocess
 import sys
+import sysconfig
 import tempfile
+import tomllib
 import uuid
 import venv
 import zipfile
@@ -29,14 +31,22 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from email.message import Message
+from email.parser import BytesParser
 from pathlib import Path, PurePosixPath
 from typing import cast
+
+from packaging.markers import default_environment
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.tags import sys_tags
+from packaging.utils import InvalidWheelFilename, parse_wheel_filename
 
 if __package__ in {None, ""}:
     sys.path.insert(0, os.fspath(Path(__file__).resolve().parents[1]))
 
 from neocortex import __version__
 from tools import pip_bootstrap
+from neocortex.platform import sqlite_runtime_attestation as sqlite_native
 from tools.pip_bootstrap import (
     PIP_BOOTSTRAP_FILENAME,
     PIP_BOOTSTRAP_SHA256,
@@ -55,7 +65,10 @@ from tools.release_artifacts import (
     validate_release_artifact,
 )
 
-RECEIPT_SCHEMA_VERSION = 1
+RELEASE_MANIFEST_SCHEMA_VERSION = 2
+RECEIPT_SCHEMA_VERSION = 2
+RELEASE_VERIFICATION_SCHEMA_VERSION = 2
+READABLE_RELEASE_SCHEMA_VERSIONS = frozenset({1, 2})
 RELEASE_PLATFORM_TAG = "linux-x86_64"
 RELEASE_MANIFEST_NAME = "neocortex-release.json"
 RUNTIME_DEPENDENCY_LOCK_NAME = "constraints-linux-cp314.lock"
@@ -125,6 +138,17 @@ class _InstallPreflight:
     wheelhouse_artifacts: dict[str, _WheelhouseArtifact]
     wheelhouse_provenance: dict[str, object]
     source_manifest: dict[str, object] | None
+    sqlite_policy: dict[str, object]
+    sqlite_policy_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseVerification:
+    """Candidate measurements; no identity is borrowed from the build process."""
+
+    pip_version: str
+    interpreter: dict[str, str] | None
+    native_runtime: dict[str, object] | None
 
 
 class LinuxReleaseError(RuntimeError):
@@ -230,6 +254,9 @@ def _offline_environment(base: dict[str, str] | None = None) -> dict[str, str]:
             "PYTHONHOME",
             "PYTHONPATH",
             "PYTHONUSERBASE",
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+            "LD_AUDIT",
         }:
             environment.pop(name, None)
     environment.update(
@@ -238,6 +265,9 @@ def _offline_environment(base: dict[str, str] | None = None) -> dict[str, str]:
             "PIP_NO_INDEX": "1",
             "PIP_DISABLE_PIP_VERSION_CHECK": "1",
             "PYTHONNOUSERSITE": "1",
+            "HF_HUB_OFFLINE": "1",
+            "TRANSFORMERS_OFFLINE": "1",
+            "HF_DATASETS_OFFLINE": "1",
         }
     )
     return environment
@@ -353,6 +383,7 @@ def _validate_wheelhouse(
         raise LinuxReleaseError("wheelhouse manifest identity is unsupported")
 
     artifacts: dict[str, _WheelhouseArtifact] = {}
+    compatible_tags = frozenset(sys_tags())
     listed_filenames: set[str] = set()
     for entry in payload["artifacts"]:
         if not isinstance(entry, dict):
@@ -388,10 +419,18 @@ def _validate_wheelhouse(
         if observed_digest != digest:
             raise LinuxReleaseError(f"wheelhouse artifact hash mismatch: {filename}")
         observed_name, observed_version = _wheel_metadata(artifact_path)
+        try:
+            wheel_name, wheel_version, _build, wheel_tags = parse_wheel_filename(filename)
+        except InvalidWheelFilename as exc:
+            raise LinuxReleaseError(f"wheelhouse filename is malformed: {filename}") from exc
+        if not wheel_tags & compatible_tags:
+            raise LinuxReleaseError(f"wheelhouse artifact has no compatible runtime tag: {filename}")
         normalized_name = _normalized_distribution_name(declared_name)
         if (
             observed_name != normalized_name
             or observed_version != declared_version
+            or str(wheel_name) != normalized_name
+            or str(wheel_version) != observed_version
             or normalized_name in artifacts
         ):
             raise LinuxReleaseError(f"wheelhouse artifact metadata mismatch: {filename}")
@@ -427,6 +466,13 @@ def _validate_wheelhouse(
         ).strip(", ")
         raise LinuxReleaseError(f"wheelhouse artifact inventory differs ({detail})")
     if required:
+        missing = [
+            f"{_normalized_distribution_name(name)}=={version or '*'}"
+            for name, version in sorted(required.items())
+            if _normalized_distribution_name(name) not in artifacts
+        ]
+        if missing:
+            raise LinuxReleaseError("wheelhouse is missing required artifacts: " + ", ".join(missing))
         for raw_name, expected_version in required.items():
             name = _normalized_distribution_name(raw_name)
             artifact = artifacts.get(name)
@@ -437,6 +483,62 @@ def _validate_wheelhouse(
                     f"wheelhouse artifact version differs for {name}: {artifact.version}"
                 )
     return artifacts
+
+
+def _validate_runtime_dependency_closure(
+    artifacts: Mapping[str, _WheelhouseArtifact], locked: Mapping[str, str],
+    *, project_requirements: Sequence[str] = (),
+) -> None:
+    """Check metadata, markers and requested extras entirely from local wheels."""
+    metadata: dict[str, Message] = {}
+    environment = {key: str(value) for key, value in default_environment().items()}
+    for name in locked:
+        artifact = artifacts[name]
+        with zipfile.ZipFile(artifact.path) as archive:
+            member = next(item for item in archive.infolist()
+                          if item.filename.endswith(".dist-info/METADATA")
+                          and item.filename.count("/") == 1)
+            metadata[name] = BytesParser().parsebytes(archive.read(member))
+    pending = [(name, "") for name in locked]
+    visited: set[tuple[str, str]] = set()
+
+    def require(text: str, *, parent: str, extra: str = "") -> None:
+        try:
+            requirement = Requirement(text)
+        except InvalidRequirement as exc:
+            raise LinuxReleaseError(f"invalid offline dependency metadata for {parent}") from exc
+        if requirement.marker is not None and not requirement.marker.evaluate(
+            {**environment, "extra": extra},
+        ):
+            return
+        name = _normalized_distribution_name(requirement.name)
+        if requirement.url is not None:
+            raise LinuxReleaseError(f"offline runtime dependency uses a direct URL: {parent}: {text}")
+        version = locked.get(name)
+        if version is None or not requirement.specifier.contains(version, prereleases=True):
+            raise LinuxReleaseError(f"offline runtime closure is incomplete: {parent} requires {text}")
+        pending.extend((name, value) for value in requirement.extras)
+
+    for value in project_requirements:
+        require(value, parent="neocortex[full]", extra="full")
+    while pending:
+        name, extra = pending.pop()
+        if (name, extra) in visited:
+            continue
+        visited.add((name, extra))
+        message = metadata[name]
+        requires_python = message.get("Requires-Python")
+        if requires_python:
+            from packaging.specifiers import InvalidSpecifier, SpecifierSet
+
+            try:
+                compatible = SpecifierSet(str(requires_python)).contains(platform.python_version())
+            except InvalidSpecifier as exc:
+                raise LinuxReleaseError(f"invalid Requires-Python for {name}") from exc
+            if not compatible:
+                raise LinuxReleaseError(f"offline runtime Python is incompatible with {name}")
+        for value in message.get_all("Requires-Dist", []):
+            require(str(value), parent=name, extra=extra)
 
 
 def _wheelhouse_artifact_set_sha256(artifacts: Mapping[str, _WheelhouseArtifact]) -> str:
@@ -728,6 +830,7 @@ def _source_manifest(
     *,
     runtime_dependency_lock_sha256: str,
     constraints_sha256: str,
+    sqlite_policy_sha256: str | None = None,
 ) -> dict[str, object]:
     """Build the durable Git-tree/source-input manifest for one release."""
 
@@ -753,6 +856,10 @@ def _source_manifest(
         "constraints_sha256": constraints_sha256,
         "files": rows,
     }
+    if sqlite_policy_sha256 is not None:
+        if not _SHA256.fullmatch(sqlite_policy_sha256):
+            raise LinuxReleaseError("source manifest SQLite policy hash is malformed")
+        body["sqlite_policy_sha256"] = sqlite_policy_sha256
     body["manifest_sha256"] = hashlib.sha256(_canonical_json(body)).hexdigest()
     return body
 
@@ -821,6 +928,11 @@ def _validate_source_manifest(
         "constraints_sha256": constraints_sha,
         "files": canonical_rows,
     }
+    if "sqlite_policy_sha256" in payload:
+        pin = payload["sqlite_policy_sha256"]
+        if not isinstance(pin, str) or not _SHA256.fullmatch(pin):
+            raise LinuxReleaseError("source manifest SQLite policy hash is malformed")
+        body["sqlite_policy_sha256"] = pin
     if hashlib.sha256(_canonical_json(body)).hexdigest() != manifest_sha:
         raise LinuxReleaseError("source manifest digest differs from its contents")
     return dict(payload)
@@ -1056,6 +1168,8 @@ def _require_reference_platform() -> None:
         raise LinuxReleaseError("Linux release tooling is available only on Linux")
     if platform.machine() not in {"x86_64", "AMD64"}:
         raise LinuxReleaseError("Linux releases require x86_64")
+    if sysconfig.get_config_var("Py_GIL_DISABLED"):
+        raise LinuxReleaseError("Linux releases require the CPython 3.14 GIL ABI")
     if sys.implementation.name != "cpython" or sys.version_info[:2] != (3, 14):
         raise LinuxReleaseError("Linux releases require CPython 3.14")
 
@@ -1222,6 +1336,7 @@ def _build_wheel_once(
                 staged_source / RUNTIME_DEPENDENCY_LOCK_NAME
             ),
             constraints_sha256=_sha256_file(staged_source / "constraints.txt"),
+            sqlite_policy_sha256=cast(str | None, expected_source_manifest.get("sqlite_policy_sha256")),
         )
         if observed_source_manifest != expected_source_manifest:
             raise LinuxReleaseError("staged source manifest differs from preflight")
@@ -1558,10 +1673,32 @@ def _verify_python_release(
     corpus_root: Path,
     *,
     runtime_lock: Path | None = None,
+    sqlite_policy: Mapping[str, object] | None = None,
+    sqlite_policy_sha256: str | None = None,
     runner: CommandRunner = _run,
-) -> dict[str, str]:
+) -> ReleaseVerification:
     environment = _candidate_environment(layout, corpus_root)
     python = _venv_python(release_root)
+    _validate_release_interpreter(release_root)
+    interpreter: dict[str, str] | None = None
+    native_runtime: dict[str, object] | None = None
+    if sqlite_policy is not None:
+        if sqlite_policy_sha256 is None:
+            raise LinuxReleaseError("SQLite runtime policy has no trusted digest")
+        try:
+            observed = sqlite_native.collect_release_sqlite_attestation(release_root)
+            native_runtime = sqlite_native.native_runtime_record(
+                observed, sqlite_policy, expected_policy_sha256=sqlite_policy_sha256,
+            )
+        except sqlite_native.SQLiteAttestationError as exc:
+            raise LinuxReleaseError(str(exc)) from exc
+        interpreter = {
+            "implementation": observed["python"]["implementation"],
+            "version": observed["python"]["version"],
+            "cache_tag": observed["python"]["cache_tag"],
+            "executable": "bin/python",
+        }
+        _validate_release_interpreter(release_root, expected=interpreter)
     runner((python, "-m", "pip", "check"), timeout=300, environment=environment)
     pip_version = runner(
         (python, "-I", "-c", "import pip; print(pip.__version__)"),
@@ -1606,7 +1743,7 @@ def _verify_python_release(
         timeout=120,
         environment={**environment, "QT_QPA_PLATFORM": "offscreen"},
     )
-    return {"pip": pip_version}
+    return ReleaseVerification(pip_version, interpreter, native_runtime)
 
 
 def _make_immutable(root: Path) -> None:
@@ -2338,6 +2475,7 @@ def _launcher_payload(
     config_home: Path | None = None,
     state_home: Path | None = None,
     data_home: Path | None = None,
+    native_environment: bool = True,
 ) -> bytes:
     exports = ""
     for name, value in (
@@ -2353,7 +2491,8 @@ def _launcher_payload(
         # The stable launcher must not inherit import paths or pip index
         # configuration from an interactive/development shell.
         "unset PYTHONPATH PYTHONHOME PYTHONUSERBASE PIP_CONFIG_FILE "
-        "PIP_INDEX_URL PIP_EXTRA_INDEX_URL PIP_FIND_LINKS PIP_NO_INDEX\n"
+        "PIP_INDEX_URL PIP_EXTRA_INDEX_URL PIP_FIND_LINKS PIP_NO_INDEX"
+        + (" LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT" if native_environment else "") + "\n"
         "export PYTHONDONTWRITEBYTECODE=1\n"
         # Persist the operational default, not a verification fixture.  A
         # process-local override is intentional and must survive this wrapper
@@ -2499,14 +2638,26 @@ def _latest_receipt(layout: LinuxReleaseLayout) -> dict[str, object] | None:
     if not layout.receipts.is_dir():
         return None
     candidates = sorted(layout.receipts.glob("*.json"), reverse=True)
-    for path in candidates:
+    for path in candidates[:1]:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            continue
-        if isinstance(payload, dict) and payload.get("schema_version") == RECEIPT_SCHEMA_VERSION:
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise LinuxReleaseError("latest installation receipt is unavailable or malformed") from exc
+        if (isinstance(payload, dict) and type(payload.get("schema_version")) is int
+                and payload["schema_version"] in READABLE_RELEASE_SCHEMA_VERSIONS):
+            if payload["schema_version"] == 2:
+                record = payload.get("native_runtime")
+                artifacts = payload.get("artifacts")
+                if (
+                    not isinstance(record, dict) or not isinstance(artifacts, dict)
+                    or payload.get("native_runtime_sha256") != sqlite_native.canonical_sha256(record)
+                    or artifacts.get("native_runtime") != record
+                    or artifacts.get("native_runtime_sha256") != payload["native_runtime_sha256"]
+                ):
+                    raise LinuxReleaseError("latest v2 installation receipt native evidence is incomplete")
             payload["_path"] = str(path)
             return payload
+        raise LinuxReleaseError("latest installation receipt schema is unsupported")
     return None
 
 
@@ -2572,20 +2723,6 @@ def _repromotion_rollback(
     return None
 
 
-def _interpreter_attestation() -> dict[str, str]:
-    """Return the reference interpreter identity embedded in a release."""
-
-    cache_tag = sys.implementation.cache_tag
-    if not isinstance(cache_tag, str) or not cache_tag:
-        raise LinuxReleaseError("release interpreter cache tag is unavailable")
-    return {
-        "implementation": sys.implementation.name,
-        "version": platform.python_version(),
-        "cache_tag": cache_tag,
-        "executable": "bin/python",
-    }
-
-
 def _validate_release_interpreter(
     release_root: Path,
     *,
@@ -2624,6 +2761,79 @@ def _validate_release_interpreter(
     }
 
 
+def _require_approved_native_runtime(record: object) -> dict[str, object]:
+    if not isinstance(record, dict) or not isinstance(record.get("decision"), dict):
+        raise LinuxReleaseError("an accredited v2 native runtime is required for promotion")
+    if record["decision"].get("status") != "approved":
+        raise LinuxReleaseError(
+            "SQLite native runtime is not approved: " + str(record["decision"].get("status"))
+        )
+    return record
+
+
+def _manifest_native_runtime(
+    release_root: Path, manifest: Mapping[str, object],
+) -> tuple[dict[str, object], dict[str, object]] | None:
+    """Validate immutable evidence and copied policy without running Python."""
+    if manifest.get("schema_version") == 1:
+        return None
+    record = manifest.get("native_runtime")
+    digest = manifest.get("native_runtime_sha256")
+    if not isinstance(record, dict) or digest != sqlite_native.canonical_sha256(record):
+        raise LinuxReleaseError("release native runtime evidence is incomplete or changed")
+    pin = record.get("policy_sha256")
+    if not isinstance(pin, str):
+        raise LinuxReleaseError("release native runtime policy digest is missing")
+    try:
+        policy = sqlite_native.read_sqlite_policy(
+            release_root / sqlite_native.POLICY_FILENAME, expected_policy_sha256=pin,
+        )
+        sqlite_native.validate_native_runtime_record(
+            record, policy, expected_policy_sha256=pin,
+        )
+    except sqlite_native.SQLiteAttestationError as exc:
+        raise LinuxReleaseError(str(exc)) from exc
+    _require_approved_native_runtime(record)
+    attested = record["attestation"]["python"]
+    if manifest.get("interpreter") != {
+        "implementation": attested["implementation"], "version": attested["version"],
+        "cache_tag": attested["cache_tag"], "executable": "bin/python",
+    }:
+        raise LinuxReleaseError("release interpreter differs from its native runtime evidence")
+    return record, policy
+
+
+def _compare_native_verification(
+    verification: ReleaseVerification, manifest: Mapping[str, object],
+) -> None:
+    if verification.pip_version != manifest.get("pip"):
+        raise LinuxReleaseError("release pip version differs from its manifest")
+    expected = manifest.get("native_runtime")
+    observed = _require_approved_native_runtime(verification.native_runtime)
+    if not isinstance(expected, dict) or any(
+        observed.get(key) != expected.get(key)
+        for key in ("identity_sha256", "policy_id", "policy_sha256", "decision")
+    ):
+        raise LinuxReleaseError("release native runtime changed since its attestation")
+    if verification.interpreter != manifest.get("interpreter"):
+        raise LinuxReleaseError("release interpreter changed since its attestation")
+
+
+def _recheck_native_before_activation(
+    root: Path, manifest: Mapping[str, object], policy: Mapping[str, object], pin: str,
+) -> None:
+    """Repeat the bounded native check adjacent to a change of current."""
+    try:
+        observed = sqlite_native.collect_release_sqlite_attestation(root)
+        native = sqlite_native.native_runtime_record(observed, policy, expected_policy_sha256=pin)
+    except sqlite_native.SQLiteAttestationError as exc:
+        raise LinuxReleaseError(str(exc)) from exc
+    _compare_native_verification(
+        ReleaseVerification(str(manifest["pip"]), cast(dict[str, str], manifest["interpreter"]), native),
+        manifest,
+    )
+
+
 def _release_manifest(
     *,
     release_name: str,
@@ -2631,28 +2841,28 @@ def _release_manifest(
     wheel: Path,
     wheel_sha: str,
     runtime_dependency_lock: Path,
-    versions: dict[str, str],
+    verification: ReleaseVerification,
     wheelhouse_provenance: Mapping[str, object] | None = None,
     source_manifest: Mapping[str, object] | None = None,
     reproducibility: Mapping[str, object] | None = None,
-    interpreter: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     locked_dependencies = _runtime_dependency_lock(runtime_dependency_lock)
-    attestation = _interpreter_attestation() if interpreter is None else dict(interpreter)
-    interpreter_path = _venv_python(runtime_dependency_lock.parent)
-    has_interpreter = interpreter is not None or os.path.lexists(interpreter_path)
-    if has_interpreter:
-        _validate_release_interpreter(
-            runtime_dependency_lock.parent,
-            expected=attestation,
-        )
+    native_runtime = _require_approved_native_runtime(verification.native_runtime)
+    if verification.interpreter is None:
+        raise LinuxReleaseError("release interpreter measurement is missing")
+    _validate_release_interpreter(
+        runtime_dependency_lock.parent, expected=verification.interpreter,
+    )
     manifest: dict[str, object] = {
-        "schema_version": RECEIPT_SCHEMA_VERSION,
+        "schema_version": RELEASE_MANIFEST_SCHEMA_VERSION,
         "kind": "linux_release_manifest",
         "runtime_profile": RUNTIME_PROFILE,
         "release_id": release_name,
         "source_sha": source_sha,
-        "python": platform.python_version(),
+        "python": verification.interpreter["version"],
+        "interpreter": verification.interpreter,
+        "native_runtime": native_runtime,
+        "native_runtime_sha256": sqlite_native.canonical_sha256(native_runtime),
         "wheel_filename": wheel.name,
         "wheel_sha256": wheel_sha,
         "pip_bootstrap_wheel_filename": PIP_BOOTSTRAP_FILENAME,
@@ -2660,10 +2870,8 @@ def _release_manifest(
         "runtime_dependency_lock_filename": runtime_dependency_lock.name,
         "runtime_dependency_lock_sha256": _sha256_file(runtime_dependency_lock),
         "runtime_dependency_count": len(locked_dependencies),
-        **versions,
+        "pip": verification.pip_version,
     }
-    if has_interpreter:
-        manifest["interpreter"] = attestation
     if wheelhouse_provenance is not None:
         manifest["wheelhouse_provenance"] = _validate_wheelhouse_provenance(
             dict(wheelhouse_provenance),
@@ -2676,6 +2884,8 @@ def _release_manifest(
         )
         manifest["source_manifest"] = validated_source
         manifest["source_manifest_sha256"] = validated_source["manifest_sha256"]
+        if validated_source.get("sqlite_policy_sha256") != native_runtime["policy_sha256"]:
+            raise LinuxReleaseError("source manifest differs from the reviewed SQLite policy")
     if reproducibility is not None:
         source_digest = manifest.get("source_manifest_sha256")
         manifest["reproducibility"] = _validate_reproducibility_metadata(
@@ -2707,7 +2917,20 @@ def _read_release_manifest(
         raise LinuxReleaseError("existing release manifest is unavailable") from exc
     if not isinstance(payload, dict):
         raise LinuxReleaseError("existing release manifest is malformed")
+    schema_version = payload.get("schema_version")
+    if type(schema_version) is not int or schema_version not in READABLE_RELEASE_SCHEMA_VERSIONS:
+        raise LinuxReleaseError("existing release manifest schema is unsupported")
+    if schema_version == RELEASE_MANIFEST_SCHEMA_VERSION:
+        _manifest_native_runtime(release_root, payload)
+        if any(key not in payload for key in (
+            "interpreter", "runtime_profile", "release_tree_sha256",
+            "runtime_dependency_lock_filename", "runtime_dependency_lock_sha256",
+            "runtime_dependency_count",
+        )):
+            raise LinuxReleaseError("v2 release manifest is incomplete")
     runtime_profile = payload.get("runtime_profile")
+    if schema_version == 2 and runtime_profile != RUNTIME_PROFILE:
+        raise LinuxReleaseError("v2 release runtime profile is invalid")
     if runtime_profile not in {None, RUNTIME_PROFILE}:
         raise LinuxReleaseError("existing release runtime profile is unsupported")
     if runtime_profile == RUNTIME_PROFILE and any(
@@ -2734,6 +2957,10 @@ def _read_release_manifest(
         )
         if validated_source.get("manifest_sha256") != source_manifest_sha:
             raise LinuxReleaseError("existing release source manifest digest differs")
+        if schema_version == 2 and validated_source.get("sqlite_policy_sha256") != (
+            payload["native_runtime"]["policy_sha256"]
+        ):
+            raise LinuxReleaseError("existing release source manifest SQLite policy differs")
         source_lock_sha = validated_source["runtime_dependency_lock_sha256"]
         if not isinstance(source_lock_sha, str):
             raise LinuxReleaseError("existing release source lock identity is invalid")
@@ -2764,8 +2991,7 @@ def _read_release_manifest(
     if wheel_filename != expected_wheel:
         raise LinuxReleaseError("existing release wheel identity is inconsistent")
     if (
-        payload.get("schema_version") != RECEIPT_SCHEMA_VERSION
-        or payload.get("kind") != "linux_release_manifest"
+        payload.get("kind") != "linux_release_manifest"
         or payload.get("release_id") != release_name
         or payload.get("source_sha") != source_sha
         or not isinstance(wheel_filename, str)
@@ -2873,6 +3099,8 @@ def _preflight_install(
     *,
     corpus_root: Path,
     wheelhouse: Path | None,
+    sqlite_policy: Path | None = None,
+    sqlite_policy_sha256: str | None = None,
     runner: CommandRunner,
 ) -> _InstallPreflight:
     """Capture and authenticate all install inputs before product effects."""
@@ -2892,6 +3120,21 @@ def _preflight_install(
         raise LinuxReleaseError("release constraints must be a regular file")
     required = {**locked_dependencies, **_BUILD_DEPENDENCIES}
     wheelhouse_artifacts = _validate_wheelhouse(resolved_wheelhouse, required=required)
+    project_requirements: list[str] = []
+    if os.path.lexists(layout.source_root / ".git"):
+        try:
+            project = tomllib.loads((layout.source_root / "pyproject.toml").read_text())["project"]
+            project_requirements = [*project["dependencies"], *project["optional-dependencies"]["full"]]
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise LinuxReleaseError("offline full profile requirements are unavailable") from exc
+    _validate_runtime_dependency_closure(
+        wheelhouse_artifacts, locked_dependencies, project_requirements=project_requirements,
+    )
+    # The build environment consumes the authenticated wheelhouse as well.
+    # Check build hooks and their transitives before creating product paths.
+    _validate_runtime_dependency_closure(
+        wheelhouse_artifacts, {name: artifact.version for name, artifact in wheelhouse_artifacts.items()},
+    )
     pip_artifact = wheelhouse_artifacts["pip"]
     if pip_artifact.sha256 != PIP_BOOTSTRAP_SHA256:
         raise LinuxReleaseError("wheelhouse pip artifact differs from the pinned bootstrap hash")
@@ -2901,6 +3144,21 @@ def _preflight_install(
         observed = wheelhouse_artifacts[name].sha256
         if observed != expected_hash:
             raise LinuxReleaseError(f"runtime lock hash differs for wheelhouse artifact: {name}")
+    if sqlite_policy_sha256 is None:
+        raise LinuxReleaseError(
+            "a reviewed SQLite runtime policy and its independent --sqlite-policy-sha256 pin "
+            "are required before installation"
+        )
+    policy_path = (
+        layout.source_root / "dev-resources" / "offline" / sqlite_native.POLICY_FILENAME
+        if sqlite_policy is None else sqlite_policy.expanduser()
+    )
+    try:
+        sqlite_policy_payload = sqlite_native.read_sqlite_policy(
+            policy_path, expected_policy_sha256=sqlite_policy_sha256,
+        )
+    except sqlite_native.SQLiteAttestationError as exc:
+        raise LinuxReleaseError(str(exc)) from exc
     source_manifest: dict[str, object] | None = None
     # Production source roots are Git worktrees.  The optional fallback keeps
     # the private fixture-oriented install tests focused on publication logic;
@@ -2912,6 +3170,7 @@ def _preflight_install(
             source_blobs,
             runtime_dependency_lock_sha256=_sha256_file(source_runtime_lock),
             constraints_sha256=_sha256_file(constraints),
+            sqlite_policy_sha256=sqlite_policy_sha256,
         )
     return _InstallPreflight(
         corpus_root=corpus_root,
@@ -2924,6 +3183,8 @@ def _preflight_install(
             wheelhouse_artifacts,
         ),
         source_manifest=source_manifest,
+        sqlite_policy=sqlite_policy_payload,
+        sqlite_policy_sha256=sqlite_policy_sha256,
     )
 
 
@@ -2986,6 +3247,8 @@ def install_release(
     prepare_models: bool,
     desktop: bool,
     wheelhouse: Path | None = None,
+    sqlite_policy: Path | None = None,
+    sqlite_policy_sha256: str | None = None,
     runner: CommandRunner = _run,
 ) -> dict[str, object]:
     _require_reference_platform()
@@ -2996,6 +3259,8 @@ def install_release(
         layout,
         corpus_root=corpus_root,
         wheelhouse=wheelhouse,
+        sqlite_policy=sqlite_policy,
+        sqlite_policy_sha256=sqlite_policy_sha256,
         runner=runner,
     )
     with (
@@ -3007,12 +3272,16 @@ def install_release(
             layout,
             corpus_root=corpus_root,
             wheelhouse=wheelhouse,
+            sqlite_policy=sqlite_policy,
+            sqlite_policy_sha256=sqlite_policy_sha256,
             runner=runner,
         )
         if (
             locked_preflight.source_sha != preflight.source_sha
             or locked_preflight.wheelhouse_provenance != preflight.wheelhouse_provenance
             or locked_preflight.source_manifest != preflight.source_manifest
+            or locked_preflight.sqlite_policy != preflight.sqlite_policy
+            or locked_preflight.sqlite_policy_sha256 != preflight.sqlite_policy_sha256
         ):
             raise LinuxReleaseError("release inputs changed between preflight and activation lock")
         preflight = locked_preflight
@@ -3046,23 +3315,38 @@ def install_release(
                     release_name=name,
                     source_sha=source_sha,
                 )
+                stored_native = _manifest_native_runtime(final_release, release_artifacts)
+                if stored_native is None:
+                    raise LinuxReleaseError(
+                        "legacy_unaccredited release cannot be repromoted; build a new v2 release"
+                    )
+                if stored_native[0]["policy_sha256"] != preflight.sqlite_policy_sha256:
+                    raise LinuxReleaseError("existing release policy changed; a new release is required")
                 runtime_lock = _manifest_runtime_dependency_lock(final_release, release_artifacts)
                 candidate_versions = _verify_python_release(
                     final_release,
                     layout,
                     smoke_corpus_root,
                     runtime_lock=runtime_lock,
+                    sqlite_policy=preflight.sqlite_policy,
+                    sqlite_policy_sha256=preflight.sqlite_policy_sha256,
                     runner=runner,
                 )
-                if any(
-                    release_artifacts.get(key) != value for key, value in candidate_versions.items()
-                ):
-                    raise LinuxReleaseError("existing release versions differ from its manifest")
+                _compare_native_verification(candidate_versions, release_artifacts)
             except (LinuxReleaseError, OSError, subprocess.SubprocessError):
                 # A prior SIGKILL can leave this exact generated slot with a
                 # manifest but an incomplete runtime.  Rebuild only when it is
                 # not the active release, after the in-use fence has passed.
                 if previous is not None and final_release.resolve(strict=False) == previous:
+                    raise
+                # An explicitly versioned manifest is durable evidence. A v1
+                # migration, policy change or broken v2 must never be silently
+                # rebuilt into the same immutable release identifier.
+                try:
+                    existing_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+                except (OSError, UnicodeError, ValueError):
+                    raise
+                if isinstance(existing_payload, dict) and "schema_version" in existing_payload:
                     raise
                 _remove_incomplete_release(final_release)
                 release_exists = False
@@ -3109,14 +3393,21 @@ def install_release(
                 )
                 runtime_lock = candidate_root / RUNTIME_DEPENDENCY_LOCK_NAME
                 shutil.copyfile(staged_runtime_lock, runtime_lock)
+                _atomic_write(
+                    candidate_root / sqlite_native.POLICY_FILENAME,
+                    _canonical_json(preflight.sqlite_policy),
+                )
                 _remove_bytecode(candidate_root)
                 candidate_versions = _verify_python_release(
                     candidate_root,
                     layout,
                     smoke_corpus_root,
                     runtime_lock=runtime_lock,
+                    sqlite_policy=preflight.sqlite_policy,
+                    sqlite_policy_sha256=preflight.sqlite_policy_sha256,
                     runner=runner,
                 )
+                _require_approved_native_runtime(candidate_versions.native_runtime)
                 _remove_bytecode(candidate_root)
                 _rewrite_virtualenv_paths(candidate_root, final_release)
                 tree_digest = _validate_release_tree(candidate_root, expected_tree_sha256=None)
@@ -3126,7 +3417,7 @@ def install_release(
                     wheel=wheel,
                     wheel_sha=wheel_sha,
                     runtime_dependency_lock=runtime_lock,
-                    versions=candidate_versions,
+                    verification=candidate_versions,
                     wheelhouse_provenance=final_wheelhouse_provenance,
                     source_manifest=preflight.source_manifest,
                     reproducibility=(
@@ -3159,6 +3450,21 @@ def install_release(
                 _require_immutable(final_release)
                 _fsync_directory(layout.releases)
 
+        # Re-measure after the rename and immediately before promotion. Native
+        # libraries may live outside the venv; its tree digest cannot catch a
+        # host library replacement or a staging-only loader configuration.
+        final_manifest = _read_release_manifest(
+            final_release, release_name=name, source_sha=source_sha,
+        )
+        final_verification = _verify_python_release(
+            final_release, layout, smoke_corpus_root,
+            runtime_lock=_manifest_runtime_dependency_lock(final_release, final_manifest),
+            sqlite_policy=preflight.sqlite_policy,
+            sqlite_policy_sha256=preflight.sqlite_policy_sha256,
+            runner=runner,
+        )
+        _compare_native_verification(final_verification, final_manifest)
+
         release_artifacts = {
             **release_artifacts,
             "release_manifest_sha256": _sha256_file(final_release / RELEASE_MANIFEST_NAME),
@@ -3181,12 +3487,6 @@ def install_release(
             )
 
         environment = _candidate_environment(layout, smoke_corpus_root)
-        if prepare_models:
-            runner(
-                (_venv_command(final_release), "models", "prepare", "--json"),
-                timeout=14_400,
-                environment=environment,
-            )
         model_status: dict[str, object] | None = None
         if prepare_models or desktop:
             model_status = _decode_json_object(
@@ -3198,7 +3498,10 @@ def install_release(
                 label="model status",
             )
             if prepare_models and model_status.get("all_prepared") is not True:
-                raise LinuxReleaseError("model preparation did not produce a complete status")
+                raise LinuxReleaseError(
+                    "offline release requires complete pre-provisioned models; "
+                    "acquisition must be performed separately"
+                )
 
         if previous == final_release.resolve(strict=True):
             operation = "repromote"
@@ -3214,6 +3517,9 @@ def install_release(
         if rollback is not None:
             retained_releases = (final_release.name, rollback.name)
         public_snapshots: dict[Path, _PathSnapshot] = {}
+        _recheck_native_before_activation(
+            final_release, release_artifacts, preflight.sqlite_policy, preflight.sqlite_policy_sha256,
+        )
         _replace_current(layout, final_release)
         gc_transaction: Path | None = None
         try:
@@ -3243,9 +3549,12 @@ def install_release(
                     "artifact_set_sha256"
                 ],
                 "models_prepared": prepare_models,
+                "model_inventory": model_status,
                 "desktop_published": desktop,
                 "retention_policy": "current_and_immediate_rollback_v1",
                 "retained_releases": retained_releases,
+                "native_runtime": release_artifacts["native_runtime"],
+                "native_runtime_sha256": release_artifacts["native_runtime_sha256"],
                 **({"interpreter": receipt_interpreter} if receipt_interpreter is not None else {}),
                 **(
                     {
@@ -3341,9 +3650,31 @@ def _validate_receipt_binding(
 ) -> None:
     """Validate optional hardening attestations before any runtime probe."""
 
-    if receipt.get("schema_version") != RECEIPT_SCHEMA_VERSION:
+    version = receipt.get("schema_version")
+    if type(version) is not int or version not in READABLE_RELEASE_SCHEMA_VERSIONS:
         raise LinuxReleaseError("installation receipt schema is unsupported")
+    if version != manifest.get("schema_version"):
+        raise LinuxReleaseError("installation receipt and release manifest schemas differ")
+    if version == 2:
+        _manifest_native_runtime(current, manifest)
+        artifacts = receipt.get("artifacts")
+        for key in ("native_runtime", "native_runtime_sha256"):
+            if receipt.get(key) != manifest.get(key) or (
+                not isinstance(artifacts, dict) or artifacts.get(key) != manifest.get(key)
+            ):
+                raise LinuxReleaseError("installation receipt native runtime differs from its manifest")
+        if not isinstance(artifacts, dict) or not isinstance(
+            artifacts.get("release_manifest_sha256"), str,
+        ):
+            raise LinuxReleaseError("v2 installation receipt manifest hash is missing")
     result = receipt.get("result")
+    if version == 2 and (
+        result != "success"
+        or receipt.get("operation") not in {"install", "repromote", "rollback"}
+        or receipt.get("current_link") != str(layout.current)
+        or receipt.get("source_sha") != manifest.get("source_sha")
+    ):
+        raise LinuxReleaseError("v2 installation receipt identity is incomplete")
     if receipt.get("kind") != "linux_release_receipt" or (
         result is not None and result != "success"
     ):
@@ -3488,7 +3819,16 @@ def _verify_release_unlocked(
         state_home=layout.policy.state_directory.parents[1],
         data_home=layout.policy.data_directory.parent,
     )
-    if launcher_payload != expected_launcher:
+    accepted_launchers = {expected_launcher}
+    if manifest.get("schema_version") == 1:
+        accepted_launchers.add(_launcher_payload(
+            corpus_root, current,
+            config_home=layout.policy.config_directory.parent,
+            state_home=layout.policy.state_directory.parents[1],
+            data_home=layout.policy.data_directory.parent,
+            native_environment=False,
+        ))
+    if launcher_payload not in accepted_launchers:
         raise LinuxReleaseError("stable launcher differs from its corpus/runtime configuration")
     expected_launcher_hash = _receipt_artifact_hash(receipt, "launcher_sha256")
     if (
@@ -3497,13 +3837,19 @@ def _verify_release_unlocked(
     ):
         raise LinuxReleaseError("stable launcher differs from its installation receipt")
     runtime_lock = _manifest_runtime_dependency_lock(current, manifest)
+    native_evidence = _manifest_native_runtime(current, manifest)
     versions = _verify_python_release(
         current,
         layout,
         smoke_corpus_root,
         runtime_lock=runtime_lock,
+        sqlite_policy=None if native_evidence is None else native_evidence[1],
+        sqlite_policy_sha256=(None if native_evidence is None else
+                              str(native_evidence[0]["policy_sha256"])),
         runner=runner,
     )
+    if native_evidence is not None:
+        _compare_native_verification(versions, manifest)
     environment = _candidate_environment(layout, smoke_corpus_root)
     capability = runner(
         (layout.launcher, "doctor", "capabilities", "--json"),
@@ -3561,9 +3907,14 @@ def _verify_release_unlocked(
     if bool(receipt.get("desktop_published")):
         runner(("desktop-file-validate", layout.desktop), timeout=60)
     return {
-        "schema_version": RECEIPT_SCHEMA_VERSION,
+        "schema_version": RELEASE_VERIFICATION_SCHEMA_VERSION,
         "kind": "linux_release_verification",
-        "verified": True,
+        "verified": native_evidence is not None,
+        "native_runtime": (
+            {"status": "legacy_unaccredited"} if native_evidence is None else
+            {"status": "approved", "observed": versions.native_runtime,
+             "stored": native_evidence[0]}
+        ),
         "release_id": current.name,
         "release_path": str(current),
         "receipt_path": receipt.get("_path"),
@@ -3572,7 +3923,7 @@ def _verify_release_unlocked(
         "verification_corpus_policy": "ephemeral_empty_v1",
         "verification_effective_corpus_checked": effective_paths is not None,
         "runtime_profile": manifest.get("runtime_profile", "legacy-qa-bundle"),
-        "pip": versions["pip"],
+        "pip": versions.pip_version,
         "qpdf": qpdf,
         "ffprobe": ffprobe,
         "tesseract_languages": sorted(languages),
@@ -3657,18 +4008,23 @@ def rollback_release(
             raise LinuxReleaseError("rollback target manifest is unavailable") from exc
         if not isinstance(manifest, dict) or not isinstance(manifest.get("source_sha"), str):
             raise LinuxReleaseError("rollback target manifest is malformed")
-        _read_release_manifest(
+        manifest = _read_release_manifest(
             target,
             release_name=target.name,
             source_sha=str(manifest["source_sha"]),
         )
+        target_native = _manifest_native_runtime(target, manifest)
+        if target_native is None:
+            raise LinuxReleaseError(
+                "legacy_unaccredited rollback target requires a separately prepared v2 release"
+            )
         target_tree_digest = manifest.get("release_tree_sha256")
         if target_tree_digest is not None and not isinstance(target_tree_digest, str):
             raise LinuxReleaseError("rollback target tree identity is invalid")
         _validate_release_tree(target, expected_tree_sha256=target_tree_digest)
         target_source_sha = str(manifest["source_sha"])
         target_runtime_lock = _manifest_runtime_dependency_lock(target, manifest)
-        target_versions: dict[str, str] = {}
+        target_versions: ReleaseVerification | None = None
         if target_runtime_lock is not None:
             target_provenance = manifest.get("wheelhouse_provenance")
             if not isinstance(target_provenance, dict):
@@ -3687,8 +4043,13 @@ def rollback_release(
                     layout,
                     Path(smoke_directory),
                     runtime_lock=target_runtime_lock,
+                    sqlite_policy=target_native[1],
+                    sqlite_policy_sha256=str(target_native[0]["policy_sha256"]),
                     runner=runner,
                 )
+                _compare_native_verification(target_versions, manifest)
+        if target_versions is None:
+            raise LinuxReleaseError("v2 rollback target runtime dependency lock is missing")
         latest = _latest_receipt(layout)
         corpus_root = (
             Path(str(latest["corpus_root"]))
@@ -3699,6 +4060,9 @@ def rollback_release(
             _require_corpus_root(corpus_root)
         desktop_published = bool(latest and latest.get("desktop_published"))
         public_snapshots: dict[Path, _PathSnapshot] = {}
+        _recheck_native_before_activation(
+            target, manifest, target_native[1], str(target_native[0]["policy_sha256"]),
+        )
         _replace_current(layout, target)
         try:
             public_snapshots, public_hashes = _publish_public_access(
@@ -3733,9 +4097,11 @@ def rollback_release(
                 "retention_policy": "current_and_immediate_rollback_v1",
                 "retained_releases": (target.name, current.name),
                 "pruned_releases": pruned_releases,
+                "native_runtime": manifest["native_runtime"],
+                "native_runtime_sha256": manifest["native_runtime_sha256"],
                 "artifacts": {
                     **manifest,
-                    **target_versions,
+                    "pip": target_versions.pip_version,
                     "release_manifest_sha256": _sha256_file(target / RELEASE_MANIFEST_NAME),
                     **public_hashes,
                 },
@@ -3766,6 +4132,8 @@ def rollback_release(
                 receipt["reproducibility"] = manifest["reproducibility"]
             target_interpreter = manifest.get("interpreter")
             if target_interpreter is not None:
+                if not isinstance(target_interpreter, dict):
+                    raise LinuxReleaseError("rollback target interpreter is malformed")
                 _validate_release_interpreter(target, expected=target_interpreter)
                 receipt["interpreter"] = target_interpreter
             try:
@@ -3812,8 +4180,19 @@ def build_parser() -> argparse.ArgumentParser:
             f"${WHEELHOUSE_ENVIRONMENT} (network indexes are never used)"
         ),
     )
-    install.add_argument("--prepare-models", action="store_true")
+    install.add_argument(
+        "--require-models", "--prepare-models", dest="prepare_models", action="store_true",
+        help="require pre-provisioned local models; the legacy prepare-models alias never downloads",
+    )
     install.add_argument("--desktop", action="store_true")
+    install.add_argument(
+        "--sqlite-policy", type=Path,
+        help="reviewed offline SQLite build policy (defaults to the source offline directory)",
+    )
+    install.add_argument(
+        "--sqlite-policy-sha256",
+        help="independently reviewed canonical JSON SHA-256 of the SQLite policy",
+    )
     verify = subcommands.add_parser("verify")
     verify.add_argument(
         "--corpus-root",
@@ -3837,6 +4216,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 prepare_models=args.prepare_models,
                 desktop=args.desktop,
                 wheelhouse=args.wheelhouse,
+                sqlite_policy=args.sqlite_policy,
+                sqlite_policy_sha256=args.sqlite_policy_sha256,
             )
         elif args.command == "verify":
             report = verify_release(layout, expected_corpus_root=args.expected_corpus_root)

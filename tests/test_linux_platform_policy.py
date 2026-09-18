@@ -263,8 +263,11 @@ def test_platform_doctor_is_canonical_versioned_and_read_only(
     ):
         assert entrypoint(("doctor", "platform", "--json")) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["kind"] == "platform_report"
+    assert payload["native_runtime"]["status"] in {
+        "approved", "legacy_unaccredited", "unaccredited", "incompatible",
+    }
     assert payload["compatible"] is True
     assert payload["identity"]["birthtime_unavailable_sentinel"] == -1
     assert payload["mutation"]["reason"] in {None, LINUX_MUTATION_REASON}

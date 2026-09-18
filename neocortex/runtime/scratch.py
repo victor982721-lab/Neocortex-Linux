@@ -21,17 +21,29 @@ import json
 import os
 import stat
 import time
+import threading
 import uuid
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from enum import Enum
+from functools import wraps
 from pathlib import Path
 from typing import Any, Self, cast
+
+from .scratch_tree import (
+    ScratchTreeError, read_private_manifest, remove_claimed_tree, PayloadProfile,
+    policy_revision, observe_claimed_tree, opened_claimed_tree,
+    prepared_fixture_tree, _checked_child, _mount_id,
+    directory_batch,
+)
+from .path_identity import PathIdentity
+from .control.process_scope import verified_process_quiescence
 
 SCRATCH_SCHEMA = "neocortex.scratch/v1"
 MANIFEST_NAME = "manifest.json"
 _MAX_MANIFEST_BYTES = 512 * 1024
+_MAX_CHECKPOINT_BYTES = 4 * 1024 * 1024
 _MAX_REASON_BYTES = 8 * 1024
 _MAX_METADATA_BYTES = 64 * 1024
 _MAX_RECORDS = 100_000
@@ -47,13 +59,14 @@ _ARTIFACT_REGISTRY_MODULES = (
 _ARTIFACT_PRODUCER = "scratch"
 _ARTIFACT_KIND = "temporary"
 
-# Bounded inspection is optional for the legacy direct owner API.  The
-# hygiene federator supplies these values explicitly; ``None`` preserves the
-# historical unbounded owner-local plan used by lifecycle producers.
+# Explicit federation limits may narrow the hard owner defaults. ``None``
+# keeps those defaults and never starts an unbounded member/byte observation.
 ENTRY_LIMIT = "entry_limit"
 DEPTH_LIMIT = "depth_limit"
 BYTE_LIMIT = "byte_limit"
 _SEAL_SCHEMA = "neocortex.scratch-seal/v1"
+_CONTROL_DIRECTORY = ".scratch-control"
+_FIXTURE_GRANT_SCHEMA = "neocortex.scratch-fixture-grant/v1"
 
 
 def _validate_scan_limit(
@@ -120,14 +133,14 @@ def _canonical_json(value: object) -> str:
         allow_nan=False,
         sort_keys=True,
         separators=(",", ":"),
-    )
+    ).encode("utf-8", errors="backslashreplace").decode("utf-8")
 
 
 def _bounded_text(value: object, *, label: str, limit: int = _MAX_REASON_BYTES) -> str:
     text = str(value)
     if not text.strip():
         raise ValueError(f"{label} must not be blank")
-    if len(text.encode("utf-8")) > limit:
+    if len(text.encode("utf-8", errors="backslashreplace")) > limit:
         raise ValueError(f"{label} exceeds {limit} UTF-8 bytes")
     return text
 
@@ -144,11 +157,14 @@ def _identity(metadata: os.stat_result) -> tuple[int, int, int]:
 
 
 def _same_identity(path: Path, expected: Sequence[int]) -> bool:
+    if (not isinstance(expected, (list, tuple)) or len(expected) != 3
+            or any(type(value) is not int for value in expected)):
+        return False
     try:
         current = path.lstat()
     except OSError:
         return False
-    if stat.S_ISLNK(current.st_mode) or len(expected) != 3:
+    if stat.S_ISLNK(current.st_mode):
         return False
     return _identity(current) == tuple(int(value) for value in expected)
 
@@ -167,25 +183,25 @@ def _path_is_within(path: Path, parent: Path) -> bool:
     return True
 
 
-def _directory_size(path: Path) -> int:
-    """Count apparent bytes in one private workspace without following links."""
+def _is_control_manifest(directory: Path, root: Path, name: str) -> bool:
+    # Only the exact root manifest is control metadata. Publication leftovers
+    # and same-named nested files remain payload until their owner accounts them.
+    return directory == root and name == MANIFEST_NAME
 
-    total = 0
+
+def _read_manifest_bytes(path: Path, *, limit: int = _MAX_MANIFEST_BYTES) -> bytes:
     try:
-        for entry in os.scandir(path):
-            if entry.name == MANIFEST_NAME or entry.name.startswith(f".{MANIFEST_NAME}."):
-                continue
-            try:
-                metadata = entry.stat(follow_symlinks=False)
-            except OSError:
-                continue
-            if stat.S_ISREG(metadata.st_mode):
-                total += max(0, int(metadata.st_size))
-            elif stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
-                total += _directory_size(Path(entry.path))
-    except OSError:
-        return total
-    return total
+        return read_private_manifest(path, limit=limit)
+    except ScratchTreeError as exc:
+        raise ScratchManifestError(str(exc)) from exc
+
+
+def _directory_size(path: Path, *, profile: PayloadProfile | str = PayloadProfile.STRICT) -> int:
+    """Bounded descriptor accounting; incomplete coverage is never zero success."""
+    observed = observe_claimed_tree(path, profile=profile)
+    if not observed.complete:
+        raise ScratchSecurityError(f"scratch size observation is incomplete: {observed.issue}")
+    return observed.apparent_bytes
 
 
 def _seal_mapping(value: object) -> dict[str, Any] | None:
@@ -243,149 +259,194 @@ def _seal_from_lifecycle_reason(reason: object) -> dict[str, Any] | None:
         return None
 
 
-def _sealed_workspace_digest(path: Path) -> tuple[str, int, int]:
-    """Hash every private workspace member without following links.
-
-    The representation intentionally mirrors the public activity seal: member
-    names, physical identity, size, mtime and file content are all claims.
-    Thus an equal-size replacement or edit cannot pass a completed-workspace
-    retirement check.  The traversal has hard record/byte bounds so sealing
-    cannot become an unbounded cleanup side effect.
-    """
-
-    digest = hashlib.sha256()
-    members = 0
-    apparent = 0
-    stack: list[tuple[Path, str]] = [(path, "")]
-    while stack:
-        directory, relative = stack.pop()
+def _activity_process_scope_issue(metadata: Mapping[str, Any], reason: object) -> str | None:
+    """Keep completed legacy activities behind the producer's quiescence gate."""
+    if "agent_activity" not in metadata:
+        return None
+    activity = metadata["agent_activity"]
+    if not isinstance(activity, Mapping):
+        return "process_scope_incomplete"
+    activity_id = activity.get("activity_id")
+    if not isinstance(activity_id, str) or not activity_id:
+        return "process_scope_incomplete"
+    note: Mapping[str, Any] = {}
+    if reason is not None:
+        if not isinstance(reason, str) or not reason.startswith("agent-activity-note:"):
+            return "process_scope_incomplete"
         try:
-            with os.scandir(directory) as iterator:
-                entries = sorted(iterator, key=lambda item: item.name)
-        except OSError as exc:
-            raise ScratchSecurityError("workspace could not be sealed") from exc
-        for entry in entries:
-            if entry.name == MANIFEST_NAME or entry.name.startswith(f".{MANIFEST_NAME}."):
-                continue
-            members += 1
-            if members > _MAX_RECORDS:
-                raise ScratchSecurityError("workspace seal exceeds the entry limit")
-            child_relative = f"{relative}/{entry.name}" if relative else entry.name
-            try:
-                metadata = entry.stat(follow_symlinks=False)
-            except OSError as exc:
-                raise ScratchSecurityError("workspace seal identity is unavailable") from exc
-            if stat.S_ISLNK(metadata.st_mode) or metadata.st_uid != os.geteuid():
-                raise ScratchSecurityError("workspace seal contains an unauthorized link/owner")
-            if stat.S_ISDIR(metadata.st_mode):
-                digest.update(f"D:{child_relative}:{_identity(metadata)}\n".encode())
-                stack.append((Path(entry.path), child_relative))
-                continue
-            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-                raise ScratchSecurityError("workspace seal contains an unauthorized payload")
-            if metadata.st_size > _MAX_SCAN_BYTES - apparent:
-                raise ScratchSecurityError("workspace seal exceeds the byte limit")
-            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-            try:
-                fd = os.open(entry.path, flags)
-            except OSError as exc:
-                raise ScratchSecurityError("workspace seal payload is unavailable") from exc
-            file_digest = hashlib.sha256()
-            total = 0
-            try:
-                opened = os.fstat(fd)
-                if _identity(opened) != _identity(metadata) or opened.st_size != metadata.st_size:
-                    raise ScratchSecurityError("workspace seal identity changed")
-                with os.fdopen(fd, "rb", closefd=True) as stream:
-                    fd = -1
-                    while True:
-                        chunk = stream.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        total += len(chunk)
-                        if total > _MAX_SCAN_BYTES - apparent:
-                            raise ScratchSecurityError("workspace seal exceeds the byte limit")
-                        file_digest.update(chunk)
-                final = Path(entry.path).lstat()
-            except ScratchSecurityError:
-                raise
-            except OSError as exc:
-                raise ScratchSecurityError("workspace seal payload could not be read") from exc
-            finally:
-                if fd >= 0:
-                    os.close(fd)
-            if _identity(final) != _identity(metadata) or final.st_size != total:
-                raise ScratchSecurityError("workspace seal payload changed")
-            file_digest_value = "sha256:" + file_digest.hexdigest()
-            digest.update(
-                f"F:{child_relative}:{_identity(metadata)}:{total}:{int(metadata.st_mtime_ns)}:{file_digest_value}\n".encode()
-            )
-            apparent += total
+            parsed = json.loads(reason[len("agent-activity-note:"):])
+        except (ValueError, TypeError):
+            return "process_scope_incomplete"
+        if (not isinstance(parsed, Mapping)
+                or parsed.get("schema") != "neocortex.agent-activity-note/v1"):
+            return "process_scope_incomplete"
+        note = parsed
+    if not verified_process_quiescence(note, activity_id=activity_id,
+                                       process_pid=activity.get("process_pid")):
+        return "process_scope_incomplete"
+    return None
+
+
+def _sealed_workspace_digest(
+    path: Path, *, max_file_bytes: int = _MAX_SCAN_BYTES,
+    profile: PayloadProfile | str = PayloadProfile.STRICT,
+    include_control_manifest: bool = False,
+    max_entries: int = _MAX_RECORDS, max_bytes: int = _MAX_SCAN_BYTES,
+    max_depth: int = 2048, max_fds: int = 2048,
+) -> tuple[str, int, int]:
+    """Canonical byte-preserving seal over descriptor-validated members.
+
+    Valid ordinary v1 seals retain their byte representation. Fixture links
+    hash their exact readlink bytes; FIFO hashes its type and physical identity,
+    without opening a FIFO for I/O or claiming ownership of a link's target.
+    """
+    digest = hashlib.sha256()
+    members = apparent = 0
+    inode_hashes: dict[tuple[int, int], tuple[tuple[Any, ...], str, int]] = {}
+    stack: list[tuple[tuple[str, ...], str]] = [((), "")]
+    try:
+        with opened_claimed_tree(path, profile=profile) as (root_fd, mount_id):
+            while stack:
+                components, relative = stack.pop()
+                if len(components) > max_depth or max_fds < 5:
+                    raise ScratchSecurityError("workspace seal exceeds depth/fd limit")
+                directory_fd = os.dup(root_fd)
+                try:
+                    for component in components:
+                        following, _ = _checked_child(directory_fd, component, mount_id, profile=profile)
+                        os.close(directory_fd)
+                        directory_fd = following
+                    entries: list[str] = []
+                    with os.scandir(directory_fd) as iterator:
+                        for entry in iterator:
+                            if not components and entry.name == MANIFEST_NAME and not include_control_manifest:
+                                continue
+                            if len(entries) >= max_entries - members:
+                                raise ScratchSecurityError("workspace seal exceeds the entry limit")
+                            entries.append(entry.name)
+                    entries.sort(key=os.fsencode)
+                    for name in entries:
+                        members += 1
+                        child_relative = f"{relative}/{name}" if relative else name
+                        child_fd, metadata = _checked_child(directory_fd, name, mount_id, profile=profile)
+                        try:
+                            if stat.S_ISDIR(metadata.st_mode):
+                                digest.update(os.fsencode(f"D:{child_relative}:{_identity(metadata)}\n"))
+                                stack.append(((*components, name), child_relative))
+                                continue
+                            if stat.S_ISLNK(metadata.st_mode):
+                                target = os.fsencode(os.readlink(name, dir_fd=directory_fd))
+                                digest.update(os.fsencode(f"L:{child_relative}:{_identity(metadata)}:")
+                                              + len(target).to_bytes(8, "big") + target + b"\n")
+                                final = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                                if (_identity(final), final.st_ctime_ns) != (_identity(metadata), metadata.st_ctime_ns):
+                                    raise ScratchSecurityError("workspace seal link changed")
+                                continue
+                            if stat.S_ISFIFO(metadata.st_mode):
+                                digest.update(os.fsencode(f"P:{child_relative}:{_identity(metadata)}\n"))
+                                continue
+                            inode_key = (metadata.st_dev, metadata.st_ino)
+                            inode_claim = (_identity(metadata), metadata.st_mode, metadata.st_uid,
+                                           metadata.st_nlink, metadata.st_size, metadata.st_mtime_ns,
+                                           metadata.st_ctime_ns)
+                            cached = inode_hashes.get(inode_key)
+                            if cached is not None:
+                                if cached[0] != inode_claim:
+                                    raise ScratchSecurityError("workspace shared inode changed during seal")
+                                file_digest_value, total = cached[1], cached[2]
+                                digest.update(os.fsencode(f"F:{child_relative}:{_identity(metadata)}:{total}:{int(metadata.st_mtime_ns)}:{file_digest_value}\n"))
+                                continue
+                            if metadata.st_size > max_file_bytes:
+                                raise ScratchSecurityError("workspace seal exceeds the per-file byte limit")
+                            if metadata.st_size > max_bytes - apparent:
+                                raise ScratchSecurityError("workspace seal exceeds the byte limit")
+                            fd = os.open(f"/proc/self/fd/{child_fd}", os.O_RDONLY | os.O_NONBLOCK)
+                            file_digest = hashlib.sha256()
+                            total = 0
+                            def claims(value: os.stat_result) -> tuple[Any, ...]:
+                                return (_identity(value), value.st_mode, value.st_uid,
+                                        value.st_nlink, value.st_size, value.st_mtime_ns,
+                                        value.st_ctime_ns)
+                            with os.fdopen(fd, "rb") as stream:
+                                if claims(os.fstat(stream.fileno())) != claims(metadata):
+                                    raise ScratchSecurityError("workspace seal identity changed")
+                                while chunk := stream.read(min(1024 * 1024, max_file_bytes - total + 1)):
+                                    total += len(chunk)
+                                    if total > max_file_bytes or total > max_bytes - apparent:
+                                        raise ScratchSecurityError("workspace seal exceeds the byte limit")
+                                    file_digest.update(chunk)
+                                after = os.fstat(stream.fileno())
+                            final = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                            if claims(final) != claims(metadata) or claims(after) != claims(metadata) or total != metadata.st_size:
+                                raise ScratchSecurityError("workspace seal payload changed")
+                            file_digest_value = "sha256:" + file_digest.hexdigest()
+                            digest.update(os.fsencode(f"F:{child_relative}:{_identity(metadata)}:{total}:{int(metadata.st_mtime_ns)}:{file_digest_value}\n"))
+                            apparent += total
+                            inode_hashes[inode_key] = (inode_claim, file_digest_value, total)
+                        finally:
+                            os.close(child_fd)
+                finally:
+                    os.close(directory_fd)
+    except (OSError, ScratchTreeError) as exc:
+        raise ScratchSecurityError(f"workspace could not be sealed: {exc}") from exc
     return "sha256:" + digest.hexdigest(), members, apparent
+
+
+# Public adapter over the one canonical seal; callers do not copy its protocol.
+workspace_payload_digest = _sealed_workspace_digest
+
+
+def verified_workspace_payload_profile(
+    path: Path, *, owner: str, expected_policy: Mapping[str, Any] | None = None,
+) -> PayloadProfile:
+    """Read an owner-issued policy without trusting a registry metadata label.
+
+    This is read-only and does not import the registry or inspect the payload.
+    Consumers still enforce their lifecycle, mount, dependency and intent guards.
+    """
+    path = _validate_absolute_path(Path(path), label="scratch workspace")
+    manager = ScratchManager(path.parent, owner=owner)
+    manager._ensure_root(create=False)
+    root_metadata = path.parent.lstat()
+    if root_metadata.st_uid != os.geteuid():
+        raise ScratchSecurityError("scratch policy root owner changed")
+    payload = json.loads(_read_manifest_bytes(path / MANIFEST_NAME))
+    if (not isinstance(payload, dict) or payload.get("schema") != SCRATCH_SCHEMA
+            or payload.get("owner") != owner or payload.get("path") != str(path)
+            or payload.get("manifest_digest") != _manifest_digest(payload)
+            or not _same_identity(path, payload.get("path_identity", []))
+            or not _same_identity(path.parent, payload.get("root_identity", []))):
+        raise ScratchSecurityError("scratch payload policy has no verified owner claim")
+    profile = manager._payload_profile(path, payload)
+    policy = {"schema": "neocortex.scratch-payload-policy/v1", "payload_profile": profile.value,
+              "policy_revision": policy_revision(profile), "fixture_grant": payload.get("fixture_grant")}
+    if expected_policy is not None and policy != dict(expected_policy):
+        raise ScratchSecurityError("scratch payload policy projection changed")
+    return profile
 
 
 def _bounded_payload_observation(
     path: Path,
     budget: _ScratchScanBudget,
+    *,
+    profile: PayloadProfile | str = PayloadProfile.STRICT,
 ) -> _PayloadObservation:
-    """Observe one workspace without exceeding the shared scan budget."""
-
-    total = 0
-    issue: str | None = None
-    truncated = False
-
-    def walk(directory: Path, depth: int) -> None:
-        nonlocal total, issue, truncated
-        try:
-            iterator = os.scandir(directory)
-        except OSError:
-            issue = issue or "payload_identity_unavailable"
-            return
-        try:
-            for entry in iterator:
-                if entry.name == MANIFEST_NAME or entry.name.startswith(f".{MANIFEST_NAME}."):
-                    continue
-                try:
-                    metadata = entry.stat(follow_symlinks=False)
-                except OSError:
-                    issue = issue or "payload_identity_unavailable"
-                    continue
-                if stat.S_ISLNK(metadata.st_mode):
-                    issue = issue or "symlink_payload"
-                    continue
-                if metadata.st_uid != os.geteuid():
-                    issue = issue or "payload_owner_drift"
-                if stat.S_ISREG(metadata.st_mode):
-                    if metadata.st_nlink > 1:
-                        issue = issue or "hardlink_payload"
-                    credited, bounded = budget.account_bytes(int(metadata.st_size))
-                    total += credited
-                    if bounded:
-                        truncated = True
-                        issue = issue or BYTE_LIMIT
-                        return
-                    continue
-                if stat.S_ISDIR(metadata.st_mode):
-                    if budget.max_depth is not None and depth >= budget.max_depth:
-                        budget.note(DEPTH_LIMIT)
-                        truncated = True
-                        issue = issue or DEPTH_LIMIT
-                        continue
-                    walk(Path(entry.path), depth + 1)
-                    if truncated and budget.max_bytes is not None and budget.observed_bytes >= budget.max_bytes:
-                        return
-                else:
-                    issue = issue or "payload_type_drift"
-        finally:
-            iterator.close()
-
-    walk(path, 0)
+    """One descriptor/mount/type policy with shared record and member budgets."""
+    remaining_entries = max(0, (_MAX_RECORDS if budget.max_entries is None else budget.max_entries)
+                            - budget.payload_entries)
+    remaining_bytes = max(0, (_MAX_SCAN_BYTES if budget.max_bytes is None else budget.max_bytes)
+                          - budget.observed_bytes)
+    observed = observe_claimed_tree(
+        path, limit=remaining_entries, max_depth=budget.max_depth if budget.max_depth is not None else 2048,
+        max_bytes=remaining_bytes, max_fds=budget.max_fds, profile=profile,
+    )
+    budget.payload_entries += observed.members
+    budget.observed_bytes += observed.apparent_bytes
+    if observed.issue in {ENTRY_LIMIT, DEPTH_LIMIT, BYTE_LIMIT, "fd_limit"}:
+        budget.note(observed.issue)
     return _PayloadObservation(
-        size_bytes=total,
-        observed_bytes=total,
-        issue=issue,
-        truncated=truncated or issue in {DEPTH_LIMIT, BYTE_LIMIT},
-        size_complete=not (truncated or issue in {DEPTH_LIMIT, BYTE_LIMIT}),
+        size_bytes=observed.apparent_bytes, observed_bytes=observed.apparent_bytes,
+        issue=observed.issue, truncated=budget.truncated, size_complete=observed.complete,
     )
 
 
@@ -396,8 +457,12 @@ class _ScratchScanBudget:
     max_entries: int | None
     max_depth: int | None
     max_bytes: int | None
+    max_fds: int = 2048
     entries: int = 0
+    payload_entries: int = 0
     observed_bytes: int = 0
+    hashed_entries: int = 0
+    hashed_bytes: int = 0
     truncated: bool = False
     truncation_reasons: list[str] = field(default_factory=list)
 
@@ -407,10 +472,12 @@ class _ScratchScanBudget:
             self.truncation_reasons.append(reason)
 
     def reserve_entry(self) -> bool:
-        if self.max_entries is not None and self.entries >= self.max_entries:
+        # max_entries bounds top-level records and the aggregate payload
+        # members independently. Root slots do not consume the member budget.
+        if self.max_entries is not None and self.payload_entries >= self.max_entries:
             self.note(ENTRY_LIMIT)
             return False
-        self.entries += 1
+        self.payload_entries += 1
         return True
 
     def account_bytes(self, apparent_bytes: int) -> tuple[int, bool]:
@@ -438,89 +505,30 @@ class _PayloadObservation:
     size_complete: bool = True
 
 
-def _workspace_payload_issue(path: Path) -> str | None:
-    """Return a conservative issue for links or non-private payload files."""
+def _workspace_payload_issue(path: Path, *, profile: PayloadProfile | str = PayloadProfile.STRICT) -> str | None:
+    """The same strict type/owner policy is used by every observation route."""
+
+    observed = _bounded_payload_observation(path, _ScratchScanBudget(None, None, None), profile=profile)
+    return observed.issue
+
+
+def _remove_tree_no_follow(path: Path, *, expected_identity: Sequence[int] | None = None,
+                           profile: PayloadProfile | str = PayloadProfile.STRICT,
+                           effect_callback: Any | None = None) -> None:
+    """Delegate effect primitives; existing lifecycle/dependency guards remain."""
 
     try:
-        entries = tuple(os.scandir(path))
-    except OSError as exc:
-        return f"workspace payload could not be inspected: {exc}"
-    for entry in entries:
-        if entry.name == MANIFEST_NAME or entry.name.startswith(f".{MANIFEST_NAME}."):
-            continue
-        try:
-            metadata = entry.stat(follow_symlinks=False)
-        except OSError:
-            return "payload_identity_unavailable"
-        if stat.S_ISLNK(metadata.st_mode):
-            return "symlink_payload"
-        if metadata.st_uid != os.geteuid():
-            return "payload_owner_drift"
-        if stat.S_ISREG(metadata.st_mode) and metadata.st_nlink > 1:
-            return "hardlink_payload"
-        if stat.S_ISDIR(metadata.st_mode):
-            nested = _workspace_payload_issue(Path(entry.path))
-            if nested is not None:
-                return nested
-    return None
-
-
-def _remove_directory_fd(directory_fd: int) -> None:
-    """Remove children through a directory descriptor, never following links."""
-
-    for name in os.listdir(directory_fd):
-        child_stat = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-        if stat.S_ISDIR(child_stat.st_mode) and not stat.S_ISLNK(child_stat.st_mode):
-            child_fd = os.open(
-                name,
-                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                dir_fd=directory_fd,
-            )
-            try:
-                opened = os.fstat(child_fd)
-                if (opened.st_dev, opened.st_ino) != (child_stat.st_dev, child_stat.st_ino):
-                    raise ScratchSecurityError("scratch child identity changed during retirement")
-                _remove_directory_fd(child_fd)
-            finally:
-                os.close(child_fd)
-            os.rmdir(name, dir_fd=directory_fd)
-        else:
-            # Unlinking a symlink or a regular hardlink removes only that name;
-            # it cannot remove the target or an outside inode.
-            os.unlink(name, dir_fd=directory_fd)
-
-
-def _remove_tree_no_follow(path: Path, *, expected_identity: Sequence[int] | None = None) -> None:
-    """Remove one claimed workspace through descriptor-relative operations."""
-
-    parent_fd = os.open(
-        path.parent,
-        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-    )
-    try:
-        metadata = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
-        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-            raise ScratchSecurityError("scratch workspace is not a directory")
-        if expected_identity is not None and (
-            len(expected_identity) != 3
-            or _identity(metadata) != tuple(int(value) for value in expected_identity)
-        ):
-            raise ScratchSecurityError("scratch workspace identity changed before retirement")
-        directory_fd = os.open(
-            path.name,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-            dir_fd=parent_fd,
+        identity = None if expected_identity is None else tuple(expected_identity)
+        if identity is not None and len(identity) != 3:
+            raise ScratchSecurityError("scratch workspace identity is invalid")
+        # The seal excludes the one root control manifest; physical retirement
+        # also visits that regular file in addition to bounded payload members.
+        remove_claimed_tree(
+            path, expected_identity=identity,
+            limit=_MAX_RECORDS + 1, profile=profile, effect_callback=effect_callback,
         )
-        try:
-            opened = os.fstat(directory_fd)
-            if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
-                raise ScratchSecurityError("scratch workspace identity changed during retirement")
-            _remove_directory_fd(directory_fd)
-        finally:
-            os.close(directory_fd)
-        os.rmdir(path.name, dir_fd=parent_fd)
-    finally:
-        os.close(parent_fd)
+    except ScratchTreeError as exc:
+        raise ScratchSecurityError(str(exc)) from exc
 
 
 def _manifest_digest(payload: Mapping[str, Any]) -> str:
@@ -529,9 +537,9 @@ def _manifest_digest(payload: Mapping[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(_canonical_json(unsigned).encode("utf-8")).hexdigest()
 
 
-def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
+def _write_json_atomic(path: Path, payload: Mapping[str, Any], *, limit: int = _MAX_MANIFEST_BYTES) -> None:
     encoded = _canonical_json(payload).encode("utf-8")
-    if len(encoded) > _MAX_MANIFEST_BYTES:
+    if len(encoded) > limit:
         raise ValueError("scratch manifest exceeds the durable size limit")
     parent = path.parent
     temporary = parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
@@ -676,6 +684,26 @@ def _invoke_artifact_callable(
     return method(*positional_args, **keyword_args)
 
 
+def _scratch_write_locked(method: Any) -> Any:
+    @wraps(method)
+    def wrapped(self: ScratchManager, *args: Any, **kwargs: Any) -> Any:
+        if not self._ensure_root(create=False):
+            return method(self, *args, **kwargs)
+        with self._scratch_lock():
+            return method(self, *args, **kwargs)
+    return wrapped
+
+
+@dataclass(frozen=True, slots=True)
+class FixturePayloadGrant:
+    """Reference to an explicit, durable owner grant; metadata is not a grant."""
+
+    grant_id: str
+    owner: str
+    activity_id: str
+    creation_grant_id: str
+
+
 @dataclass(frozen=True, slots=True)
 class ScratchRecord:
     """One bounded inspection result for a registered workspace."""
@@ -702,6 +730,14 @@ class ScratchRecord:
     artifact_id: str | None = None
     payload_size_bytes: int | None = None
     seal: Mapping[str, Any] | None = None
+    size_complete: bool = True
+    payload_profile: str = PayloadProfile.STRICT.value
+    policy_revision: str = "strict/v1"
+    fixture_grant: Mapping[str, Any] | None = None
+
+    @property
+    def posix_path_identity(self) -> Mapping[str, str]:
+        return PathIdentity.from_path(self.path).as_dict()
 
     @property
     def status(self) -> str:
@@ -744,12 +780,22 @@ class ScratchPlan:
     max_entries: int | None = None
     max_depth: int | None = None
     max_bytes: int | None = None
+    max_fds: int = 2048
+    observed_members: int = 0
+    observed_bytes: int = 0
+
+    @property
+    def coverage(self) -> str:
+        if self.complete:
+            return "complete"
+        return "partial" if self.observed_members or any(record.size_complete for record in self.records) else "not_measured"
 
     @property
     def complete(self) -> bool:
         """Whether the bounded observation covered its requested scope."""
 
-        return not self.truncated and self.root_blocked is None
+        return (not self.truncated and self.root_blocked is None
+                and all(record.size_complete for record in self.records))
 
     @property
     def limits(self) -> dict[str, int]:
@@ -966,6 +1012,8 @@ class ScratchManager:
             else _bounded_text(owner, label="scratch owner", limit=128)
         )
         self.create_root = bool(create_root)
+        self._scratch_thread_lock = threading.RLock()
+        self._scratch_lock_depth = 0
         if artifact_registry is not None and artifact_registry_root is not None:
             raise ValueError(
                 "scratch artifact_registry and artifact_registry_root are mutually exclusive"
@@ -997,25 +1045,467 @@ class ScratchManager:
             raise ScratchSecurityError("scratch root must be private (mode 0700 or stricter)")
         return True
 
-    @contextmanager
-    def _scratch_lock(self) -> Iterable[None]:
-        """Serialize lifecycle/reconciliation writers for this scratch root."""
+    def _control_directory(self, *, create: bool = False) -> Path:
+        path = self.root / _CONTROL_DIRECTORY
+        if create:
+            self._mkdir_private(path)
+        metadata = path.lstat()
+        if (not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid()
+                or metadata.st_mode & 0o077):
+            raise ScratchSecurityError("scratch control journal protection drifted")
+        return path
 
-        self._ensure_root(create=False)
+    def _retirement_replayed(self, record: ScratchRecord) -> bool:
         try:
-            import fcntl
+            path = self._control_directory() / f"retired-{record.record_id}.json"
+            receipt = json.loads(_read_manifest_bytes(path))
+            return (receipt.get("schema") == "neocortex.scratch-retirement/v1"
+                    and receipt.get("manifest_digest") == _manifest_digest(receipt)
+                    and receipt.get("status") == "retired"
+                    and receipt.get("owner") == record.owner
+                    and receipt.get("path_identity") == list(record.path_identity or ())
+                    and receipt.get("source_manifest_digest") == record.manifest_digest
+                    and receipt.get("posix_path_identity") == record.posix_path_identity)
+        except (OSError, ValueError, ScratchError):
+            return False
 
-            fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        except OSError as exc:
-            raise ScratchRootError("scratch root could not be locked") from exc
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
-            yield
-        finally:
+    def observe_workspace_batch(
+        self, record_id: str, *, operation_id: str, batch_entries: int = 1000,
+        batch_bytes: int = 64 << 20, max_entries: int = 10_000_000,
+        max_bytes: int = _MAX_SCAN_BYTES, max_depth: int = 2048, max_fds: int = 8,
+        hash_files: bool = False, cancelled: Any | None = None,
+        deadline_ns: int | None = None,
+    ) -> dict[str, Any]:
+        """Advance one owner-journal observation without restarting its prefix.
+
+        A generation is observation evidence, never a deletion authorization.
+        Its cursor uses Linux directory cookies plus exact byte names and
+        revalidated directory identities. Each completed batch is atomically
+        persisted before the caller can export its presentation. Changed
+        frontier segments rewind to their saved accounting/hash prefix.
+        """
+        if self.owner is None:
+            raise ScratchSecurityError("observation checkpoints require an exact owner")
+        for value, label, maximum in ((batch_entries, "batch_entries", 10_000),
+                                      (batch_bytes, "batch_bytes", 1 << 40),
+                                      (max_entries, "max_entries", 100_000_000),
+                                      (max_bytes, "max_bytes", _MAX_SCAN_BYTES),
+                                      (max_depth, "max_depth", 2048), (max_fds, "max_fds", 2048)):
+            if type(value) is not int or not 1 <= value <= maximum:
+                raise ValueError(f"invalid observation {label}")
+        if max_fds < 5:
+            raise ValueError("observation max_fds must be at least 5")
+        if type(hash_files) is not bool:
+            raise ValueError("hash_files must be a boolean")
+        if (not isinstance(record_id, str) or len(record_id) != 32
+                or any(ch not in "0123456789abcdef" for ch in record_id)):
+            raise ScratchSecurityError("observation record identifier is invalid")
+        operation_id = _bounded_text(operation_id, label="observation operation", limit=256)
+        operation_name = hashlib.sha256(operation_id.encode("utf-8")).hexdigest()
+        path = self.root / f"workspace-{record_id}"
+        with self._scratch_lock():
+            payload = json.loads(_read_manifest_bytes(path / MANIFEST_NAME))
+            if (payload.get("schema") != SCRATCH_SCHEMA or payload.get("owner") != self.owner
+                    or payload.get("record_id") != record_id
+                    or payload.get("manifest_digest") != _manifest_digest(payload)
+                    or payload.get("path") != str(path)
+                    or not _same_identity(path, payload.get("path_identity", []))
+                    or not _same_identity(self.root, payload.get("root_identity", []))):
+                raise ScratchSecurityError("observation workspace claim is not verified")
+            profile = self._payload_profile(path, payload)
+            policy = {"profile": profile.value, "revision": policy_revision(profile),
+                      "max_entries": max_entries, "max_bytes": max_bytes,
+                      "max_depth": max_depth, "hash_files": hash_files,
+                      "fixture_grant": payload.get("fixture_grant")}
+            policy_digest = hashlib.sha256(_canonical_json(policy).encode()).hexdigest()
+            journal = self._control_directory(create=True)
+            checkpoint_path = journal / f"observation-{operation_name}.json"
             try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
+                checkpoint = json.loads(_read_manifest_bytes(checkpoint_path, limit=_MAX_CHECKPOINT_BYTES))
+            except FileNotFoundError:
+                checkpoint = None
+            def directory_claim(fd: int) -> list[int]:
+                metadata = os.fstat(fd)
+                return [metadata.st_dev, metadata.st_ino, metadata.st_size,
+                        metadata.st_mtime_ns, metadata.st_ctime_ns, _mount_id(fd)]
+            with opened_claimed_tree(path, profile=profile) as (root_fd, mount_id):
+                if checkpoint is None:
+                    checkpoint = {"schema": "neocortex.scratch-observation/v1",
+                                  "operation_id": operation_id, "generation_id": uuid.uuid4().hex,
+                                  "record_id": record_id, "owner": self.owner,
+                                  "root_identity": payload["path_identity"],
+                                  "posix_path_identity": PathIdentity.from_path(path).as_dict(),
+                                  "mount_id": mount_id, "policy_digest": policy_digest,
+                                  "members": 0, "apparent_bytes": 0, "hashed_bytes": 0,
+                                  "content_chain": "0" * 64, "batches": 0,
+                                  "coverage": "not_measured", "observation_only": True, "byte_semantics": "entry_lengths",
+                                  "frontier": [{"name": None, "depth": 0, "claim": directory_claim(root_fd),
+                                      "cookie": 0, "last_name": None, "start_members": 0,
+                                      "start_bytes": 0, "start_hashed_bytes": 0,
+                                      "start_chain": "0" * 64}], "errors": []}
+                elif (checkpoint.get("schema") != "neocortex.scratch-observation/v1"
+                      or checkpoint.get("manifest_digest") != _manifest_digest(checkpoint)
+                      or checkpoint.get("owner") != self.owner
+                      or checkpoint.get("record_id") != record_id
+                      or checkpoint.get("root_identity") != payload["path_identity"]
+                      or checkpoint.get("mount_id") != mount_id
+                      or checkpoint.get("policy_digest") != policy_digest
+                      or checkpoint.get("operation_id") != operation_id):
+                    raise ScratchSecurityError("observation generation or policy changed")
+                frontier = checkpoint.get("frontier")
+                if (not isinstance(frontier, list) or len(frontier) > max_depth + 1
+                        or any(type(checkpoint.get(key)) is not int or checkpoint[key] < 0
+                               for key in ("members", "apparent_bytes", "hashed_bytes", "batches"))
+                        or checkpoint["members"] > max_entries
+                        or checkpoint["apparent_bytes"] > max_bytes
+                        or checkpoint["hashed_bytes"] > checkpoint["apparent_bytes"]
+                        or checkpoint.get("coverage") not in {"complete", "partial", "not_measured"}
+                        or not isinstance(checkpoint.get("content_chain"), str)
+                        or len(checkpoint["content_chain"]) != 64
+                        or any(ch not in "0123456789abcdef" for ch in checkpoint["content_chain"])
+                        or not isinstance(checkpoint.get("errors"), list) or len(checkpoint["errors"]) > 32):
+                    raise ScratchSecurityError("observation checkpoint structure is invalid")
+                for depth, boundary in enumerate(frontier):
+                    if (not isinstance(boundary, dict) or boundary.get("depth") != depth
+                            or not isinstance(boundary.get("claim"), list) or len(boundary["claim"]) != 6
+                            or any(type(value) is not int for value in boundary["claim"])
+                            or any(type(boundary.get(key)) is not int or boundary[key] < 0
+                                   for key in ("cookie", "start_members", "start_bytes", "start_hashed_bytes"))):
+                        raise ScratchSecurityError("observation frontier is invalid")
+                    if depth:
+                        try:
+                            raw_component = PathIdentity.from_dict(boundary["name"]).to_bytes()
+                        except (TypeError, ValueError, KeyError, AttributeError) as exc:
+                            raise ScratchSecurityError("observation frontier name is invalid") from exc
+                        if raw_component in {b"", b".", b".."} or b"/" in raw_component:
+                            raise ScratchSecurityError("observation frontier name is not a POSIX component")
+                if checkpoint["coverage"] == "complete":
+                    return dict(checkpoint)
+                consumed = read_bytes = 0
+                hash_records: list[dict[str, Any]] = []
+                hash_receipt_bytes = 0
+                issue = None
+                rewound = 0
+                rewound_prefixes: list[int] = []
+                while checkpoint["frontier"]:
+                    if cancelled is not None and cancelled():
+                        issue = "cancelled"
+                        break
+                    if deadline_ns is not None and time.monotonic_ns() >= deadline_ns:
+                        issue = "deadline"
+                        break
+                    if consumed >= batch_entries:
+                        issue = "batch_limit"
+                        break
+                    frame = checkpoint["frontier"][-1]
+                    fd = os.dup(root_fd)
+                    try:
+                        reset = False
+                        # Reopen every ancestor by FD and validate its exact
+                        # generation before trusting any persistent cookie.
+                        for index, boundary in enumerate(checkpoint["frontier"]):
+                            if index:
+                                component = PathIdentity.from_dict(boundary["name"]).to_bytes()
+                                following, _ = _checked_child(fd, component, mount_id, profile=profile)
+                                os.close(fd)
+                                fd = following
+                            current_claim = directory_claim(fd)
+                            if current_claim != boundary["claim"]:
+                                if current_claim[:2] != boundary["claim"][:2] or current_claim[-1] != boundary["claim"][-1]:
+                                    raise ScratchSecurityError("observation directory identity changed")
+                                checkpoint["members"] = boundary["start_members"]
+                                checkpoint["apparent_bytes"] = boundary["start_bytes"]
+                                checkpoint["hashed_bytes"] = boundary["start_hashed_bytes"]
+                                checkpoint["content_chain"] = boundary["start_chain"]
+                                rewound_prefixes.append(checkpoint["members"])
+                                hash_records[:] = [item for item in hash_records
+                                                   if item["member_index"] <= checkpoint["members"]]
+                                hash_receipt_bytes = sum(len(_canonical_json(item).encode("utf-8"))
+                                                         for item in hash_records)
+                                boundary.update(claim=current_claim, cookie=0, last_name=None)
+                                del checkpoint["frontier"][index + 1:]
+                                rewound += 1
+                                reset = True
+                                break
+                        if reset:
+                            if rewound > batch_entries:
+                                issue = "generation_unstable"
+                                break
+                            continue
+                        names, exhausted = directory_batch(fd, cookie=frame["cookie"],
+                                                           limit=batch_entries - consumed)
+                        descended = False
+                        for raw_name, cookie in names:
+                            if cancelled is not None and cancelled():
+                                issue = "cancelled"
+                                break
+                            if deadline_ns is not None and time.monotonic_ns() >= deadline_ns:
+                                issue = "deadline"
+                                break
+                            if frame["depth"] == 0 and raw_name == os.fsencode(MANIFEST_NAME):
+                                frame["cookie"] = cookie
+                                continue
+                            if checkpoint["members"] >= max_entries:
+                                issue = ENTRY_LIMIT
+                                break
+                            child, metadata = _checked_child(fd, raw_name, mount_id, profile=profile)
+                            try:
+                                if stat.S_ISDIR(metadata.st_mode) and frame["depth"] >= max_depth:
+                                    issue = DEPTH_LIMIT
+                                    break
+                                size = metadata.st_size if stat.S_ISREG(metadata.st_mode) else 0
+                                if size > max_bytes - checkpoint["apparent_bytes"]:
+                                    issue = BYTE_LIMIT
+                                    break
+                                if hash_files and size > batch_bytes - read_bytes:
+                                    issue = "batch_byte_limit"
+                                    break
+                                member = {"name": PathIdentity.from_path(raw_name).as_dict(),
+                                          "parent": [boundary["name"] for boundary in checkpoint["frontier"][1:]], "identity": list(_identity(metadata)),
+                                          "member_index": checkpoint["members"] + 1,
+                                          "mode": metadata.st_mode, "size": size,
+                                          "mtime_ns": metadata.st_mtime_ns, "ctime_ns": metadata.st_ctime_ns}
+                                if hash_files and stat.S_ISREG(metadata.st_mode):
+                                    hasher = hashlib.sha256()
+                                    read_fd = os.open(f"/proc/self/fd/{child}", os.O_RDONLY | os.O_NONBLOCK)
+                                    with os.fdopen(read_fd, "rb") as stream:
+                                        total = 0
+                                        while chunk := stream.read(min(1 << 20, size - total + 1)):
+                                            total += len(chunk)
+                                            read_bytes += len(chunk)
+                                            if total > size:
+                                                raise ScratchSecurityError("observation payload changed")
+                                            stop_requested = cancelled is not None and cancelled()
+                                            expired = deadline_ns is not None and time.monotonic_ns() >= deadline_ns
+                                            if stop_requested or expired:
+                                                issue = "cancelled" if stop_requested else "deadline"
+                                                break
+                                            hasher.update(chunk)
+                                        after = os.fstat(stream.fileno())
+                                    if issue:
+                                        break
+                                    if (total != size or after.st_mtime_ns != metadata.st_mtime_ns
+                                            or after.st_ctime_ns != metadata.st_ctime_ns
+                                            or _identity(after) != _identity(metadata)):
+                                        raise ScratchSecurityError("observation payload changed")
+                                    member["sha256"] = hasher.hexdigest()
+                                    member_bytes = len(_canonical_json(member).encode("utf-8"))
+                                    if member_bytes > _MAX_CHECKPOINT_BYTES - 4096 - hash_receipt_bytes:
+                                        issue = "checkpoint_byte_limit"
+                                        break
+                                    hash_records.append(dict(member))
+                                    hash_receipt_bytes += member_bytes
+                                    checkpoint["hashed_bytes"] += total
+                                elif stat.S_ISLNK(metadata.st_mode):
+                                    member["target"] = PathIdentity.from_path(os.fsencode(os.readlink(raw_name, dir_fd=fd))).as_dict()
+                                checkpoint["content_chain"] = hashlib.sha256(
+                                    bytes.fromhex(checkpoint["content_chain"]) + _canonical_json(member).encode()).hexdigest()
+                                checkpoint["members"] += 1
+                                checkpoint["apparent_bytes"] += size
+                                consumed += 1
+                                frame["cookie"] = cookie
+                                frame["last_name"] = PathIdentity.from_path(raw_name).as_dict()
+                                if stat.S_ISDIR(metadata.st_mode):
+                                    checkpoint["frontier"].append({
+                                        "name": PathIdentity.from_path(raw_name).as_dict(), "depth": frame["depth"] + 1,
+                                        "claim": directory_claim(child), "cookie": 0, "last_name": None,
+                                        "start_members": checkpoint["members"], "start_bytes": checkpoint["apparent_bytes"],
+                                        "start_hashed_bytes": checkpoint["hashed_bytes"], "start_chain": checkpoint["content_chain"]})
+                                    descended = True
+                                    break
+                            finally:
+                                os.close(child)
+                        if issue:
+                            break
+                        if exhausted and not descended:
+                            checkpoint["frontier"].pop()
+                    except (OSError, ScratchTreeError) as exc:
+                        issue = exc.issue if isinstance(exc, ScratchTreeError) else "payload_identity_unavailable"
+                        break
+                    finally:
+                        os.close(fd)
+                checkpoint["coverage"] = "complete" if not checkpoint["frontier"] and issue is None else (
+                    "partial" if checkpoint["members"] else "not_measured")
+                checkpoint["issue"] = issue
+                checkpoint["batch_members"] = consumed
+                checkpoint["batch_read_bytes"] = read_bytes
+                checkpoint["rewound_segments"] = rewound
+                checkpoint["rewound_member_prefixes"] = rewound_prefixes
+                checkpoint["batches"] += 1
+                checkpoint["updated_ns"] = time.time_ns()
+                if issue and issue not in {"batch_limit", "batch_byte_limit"}:
+                    checkpoint["errors"] = [*checkpoint["errors"][-31:], issue]
+                if hash_records:
+                    receipt_name = f"observation-{operation_name}-batch-{checkpoint['batches']}.json"
+                    hash_receipt = {
+                        "schema": "neocortex.scratch-observation-hashes/v1",
+                        "generation_id": checkpoint["generation_id"], "policy_digest": policy_digest,
+                        "root_identity": checkpoint["root_identity"],
+                        "posix_path_identity": checkpoint["posix_path_identity"],
+                        "batch": checkpoint["batches"], "content_chain": checkpoint["content_chain"],
+                        "hashes": hash_records, "rewound_member_prefixes": rewound_prefixes,
+                    }
+                    hash_receipt["manifest_digest"] = _manifest_digest(hash_receipt)
+                    _write_json_atomic(journal / receipt_name, hash_receipt, limit=_MAX_CHECKPOINT_BYTES)
+                    checkpoint["last_hash_receipt"] = receipt_name
+                checkpoint["manifest_digest"] = _manifest_digest(checkpoint)
+                _write_json_atomic(checkpoint_path, checkpoint, limit=_MAX_CHECKPOINT_BYTES)
+                return dict(checkpoint)
+
+    def _perform_retirement(self, record: ScratchRecord) -> None:
+        journal = self._control_directory(create=True)
+        receipt_path = journal / f"retired-{record.record_id}.json"
+        receipt: dict[str, Any] = {"schema": "neocortex.scratch-retirement/v1", "record_id": record.record_id,
+                   "owner": record.owner, "source_manifest_digest": record.manifest_digest,
+                   "path_identity": list(record.path_identity or ()),
+                   "posix_path_identity": record.posix_path_identity,
+                   "payload_profile": record.payload_profile, "policy_revision": record.policy_revision,
+                   "status": "prepared", "effects": 0}
+        def publish() -> None:
+            receipt["manifest_digest"] = _manifest_digest(receipt)
+            _write_json_atomic(receipt_path, receipt)
+        publish()
+        def account(count: int) -> None:
+            receipt["effects"] += count
+        try:
+            _remove_tree_no_follow(record.path, expected_identity=record.path_identity,
+                                   profile=record.payload_profile, effect_callback=account)
+        except BaseException as exc:
+            receipt["status"] = "recovery_required" if receipt["effects"] else "blocked"
+            receipt["issue"] = f"{type(exc).__name__}: {exc}"
+            publish()
+            raise
+        receipt["status"] = "retired"
+        publish()
+
+    def issue_fixture_grant(self, *, activity_id: str, creation_grant_id: str,
+                            authorized: bool) -> FixturePayloadGrant:
+        """Issue a single-use fixture policy from an explicit owner action.
+
+        A name, same UID, age, content digest or free-form metadata never issues
+        this grant. Existing workspaces cannot be relabelled through this API.
+        """
+        if self.owner is None or authorized is not True:
+            raise ScratchSecurityError("fixture profile requires explicit owner authorization")
+        activity_id = _bounded_text(activity_id, label="fixture activity id", limit=256)
+        creation_grant_id = _bounded_text(creation_grant_id, label="fixture creation grant", limit=256)
+        if not self._ensure_root(create=self.create_root):
+            raise ScratchRootError("scratch root is absent")
+        with self._scratch_lock():
+            journal = self._control_directory(create=True)
+            grant_id = uuid.uuid4().hex
+            payload = {"schema": _FIXTURE_GRANT_SCHEMA, "grant_id": grant_id,
+                       "owner": self.owner, "activity_id": activity_id,
+                       "creation_grant_id": creation_grant_id,
+                       "payload_profile": PayloadProfile.FIXTURE_POSIX_V1.value,
+                       "policy_revision": policy_revision(PayloadProfile.FIXTURE_POSIX_V1),
+                       "root_identity": list(_identity(self.root.lstat())),
+                       "state": "issued", "created_ns": time.time_ns()}
+            payload["manifest_digest"] = _manifest_digest(payload)
+            _write_json_atomic(journal / f"grant-{grant_id}.json", payload)
+            return FixturePayloadGrant(grant_id, self.owner, activity_id, creation_grant_id)
+
+    def _read_fixture_grant(self, grant_id: str) -> dict[str, Any]:
+        if (not isinstance(grant_id, str) or len(grant_id) != 32
+                or any(character not in "0123456789abcdef" for character in grant_id)):
+            raise ScratchSecurityError("fixture grant identifier is invalid")
+        value = json.loads(_read_manifest_bytes(self._control_directory() / f"grant-{grant_id}.json"))
+        if (not isinstance(value, dict) or value.get("schema") != _FIXTURE_GRANT_SCHEMA
+                or value.get("manifest_digest") != _manifest_digest(value)
+                or value.get("root_identity") != list(_identity(self.root.lstat()))):
+            raise ScratchSecurityError("fixture grant does not match its owner journal")
+        return value
+
+    def _payload_profile(self, path: Path, payload: Mapping[str, Any]) -> PayloadProfile:
+        try:
+            profile = PayloadProfile(payload.get("payload_profile", PayloadProfile.STRICT.value))
+        except ValueError as exc:
+            raise ScratchSecurityError("unsupported scratch payload profile") from exc
+        legacy_revision = policy_revision(profile) if profile is PayloadProfile.STRICT else None
+        if payload.get("policy_revision", legacy_revision) != policy_revision(profile):
+            raise ScratchSecurityError("scratch payload policy revision changed")
+        if profile is PayloadProfile.STRICT:
+            if payload.get("fixture_grant") is not None:
+                raise ScratchSecurityError("strict workspace cannot carry a fixture grant")
+            return profile
+        claim = payload.get("fixture_grant")
+        if not isinstance(claim, Mapping):
+            raise ScratchSecurityError("fixture profile has no creation grant")
+        grant_id = claim.get("grant_id")
+        if not isinstance(grant_id, str):
+            raise ScratchSecurityError("fixture creation grant identifier is invalid")
+        grant = self._read_fixture_grant(grant_id)
+        if (grant.get("state") != "bound" or grant.get("owner") != payload.get("owner")
+                or grant.get("record_id") != payload.get("record_id")
+                or grant.get("path_identity") != payload.get("path_identity")
+                or grant.get("posix_path_identity") != PathIdentity.from_path(path).as_dict()
+                or any(claim.get(key) != grant.get(key) for key in
+                       ("grant_id", "owner", "activity_id", "creation_grant_id", "policy_revision"))):
+            raise ScratchSecurityError("fixture creation grant does not match workspace")
+        return profile
+
+    @contextmanager
+    def fixture_permissions(self, record_id: str, *, authorized: bool):
+        """Prepare granted fixture directories and restore surviving modes.
+
+        This explicit owner context lets a 0000 fixture be sealed, completed,
+        planned and retired under one durable permission receipt. Read-only
+        planning alone never changes permissions or claims full coverage.
+        """
+        if authorized is not True or self.owner is None:
+            raise ScratchSecurityError("fixture permission preparation requires owner authorization")
+        if len(record_id) != 32 or any(ch not in "0123456789abcdef" for ch in record_id):
+            raise ScratchSecurityError("fixture record identifier is invalid")
+        with self._scratch_lock():
+            path = self.root / f"workspace-{record_id}"
+            payload = json.loads(_read_manifest_bytes(path / MANIFEST_NAME))
+            if (payload.get("manifest_digest") != _manifest_digest(payload)
+                    or payload.get("owner") != self.owner
+                    or payload.get("record_id") != record_id
+                    or not _same_identity(path, payload.get("path_identity", []))
+                    or self._payload_profile(path, payload) is not PayloadProfile.FIXTURE_POSIX_V1):
+                raise ScratchSecurityError("fixture permission claim is not authorized")
+            journal = self._control_directory()
+            receipt_path = journal / f"permissions-{record_id}-{uuid.uuid4().hex}.json"
+            def publish(receipt: Mapping[str, Any]) -> None:
+                value = {**dict(receipt), "record_id": record_id, "owner": self.owner,
+                         "fixture_grant": payload["fixture_grant"],
+                         "posix_path_identity": PathIdentity.from_path(path).as_dict()}
+                value["manifest_digest"] = _manifest_digest(value)
+                _write_json_atomic(receipt_path, value)
+            try:
+                with prepared_fixture_tree(path, receipt_writer=publish) as repairs:
+                    yield repairs
+            except ScratchTreeError as exc:
+                raise ScratchSecurityError(str(exc)) from exc
+
+    @contextmanager
+    def _scratch_lock(self) -> Iterator[None]:
+        """Serialize owner writers, including nested permission/lifecycle scopes."""
+        with self._scratch_thread_lock:
+            if self._scratch_lock_depth:
+                self._scratch_lock_depth += 1
+                try:
+                    yield
+                finally:
+                    self._scratch_lock_depth -= 1
+                return
+            self._ensure_root(create=False)
+            try:
+                import fcntl
+                fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            except OSError as exc:
+                raise ScratchRootError("scratch root could not be locked") from exc
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                self._scratch_lock_depth = 1
+                yield
             finally:
-                os.close(fd)
+                self._scratch_lock_depth = 0
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(fd)
 
     @staticmethod
     def _mkdir_private(path: Path) -> None:
@@ -1244,6 +1734,13 @@ class ScratchManager:
         )
         seal = _seal_mapping(payload.get("seal"))
         registry_metadata = dict(metadata)
+        registry_metadata["scratch_payload_policy"] = {
+            "schema": "neocortex.scratch-payload-policy/v1",
+            "payload_profile": payload.get("payload_profile", "strict"),
+            "policy_revision": payload.get("policy_revision", "strict/v1"),
+            "fixture_grant": payload.get("fixture_grant"),
+        }
+        registry_metadata["posix_path_identity"] = PathIdentity.from_path(path).as_dict()
         if seal is not None:
             # Keep the seal in the canonical registry projection as well as
             # the scratch manifest so a later tombstone/recovery reader does
@@ -1418,11 +1915,26 @@ class ScratchManager:
             self._raise_artifact_failure("update", exc)
 
     def create(
+        self, *, run_id: int | str | None = None, retain_on_success: bool = False,
+        metadata: Mapping[str, Any] | None = None,
+        payload_profile: PayloadProfile | str = PayloadProfile.STRICT,
+        fixture_grant: FixturePayloadGrant | None = None,
+    ) -> ScratchWorkspace:
+        if not self._ensure_root(create=self.create_root):
+            raise ScratchRootError("scratch root is absent")
+        with self._scratch_lock():
+            return self._create(run_id=run_id, retain_on_success=retain_on_success,
+                                metadata=metadata, payload_profile=payload_profile,
+                                fixture_grant=fixture_grant)
+
+    def _create(
         self,
         *,
         run_id: int | str | None = None,
         retain_on_success: bool = False,
         metadata: Mapping[str, Any] | None = None,
+        payload_profile: PayloadProfile | str = PayloadProfile.STRICT,
+        fixture_grant: FixturePayloadGrant | None = None,
     ) -> ScratchWorkspace:
         """Create one private registered workspace after an explicit claim."""
 
@@ -1443,6 +1955,18 @@ class ScratchManager:
             raise ValueError("scratch run_id must be a positive integer, string or null")
         if isinstance(run_id, str) and len(run_id.encode("utf-8")) > 256:
             raise ValueError("scratch run_id exceeds 256 UTF-8 bytes")
+        profile = PayloadProfile(payload_profile)
+        grant_payload = None
+        if profile is PayloadProfile.FIXTURE_POSIX_V1:
+            if not isinstance(fixture_grant, FixturePayloadGrant):
+                raise ScratchSecurityError("fixture profile requires an issued creation grant")
+            grant_payload = self._read_fixture_grant(fixture_grant.grant_id)
+            if (grant_payload.get("state") != "issued" or fixture_grant.owner != self.owner
+                    or any(grant_payload.get(key) != getattr(fixture_grant, key) for key in
+                           ("grant_id", "owner", "activity_id", "creation_grant_id"))):
+                raise ScratchSecurityError("fixture creation grant is unavailable or consumed")
+        elif fixture_grant is not None:
+            raise ScratchSecurityError("strict profile cannot consume a fixture grant")
         safe_metadata: dict[str, Any] = {} if metadata is None else dict(metadata)
         if len(_canonical_json(safe_metadata).encode("utf-8")) > _MAX_METADATA_BYTES:
             raise ValueError("scratch metadata exceeds the durable size limit")
@@ -1478,6 +2002,18 @@ class ScratchManager:
                 "metadata": safe_metadata,
                 "reason": None,
             }
+            payload["payload_profile"] = profile.value
+            payload["policy_revision"] = policy_revision(profile)
+            payload["posix_path_identity"] = PathIdentity.from_path(path).as_dict()
+            if grant_payload is not None:
+                grant_payload.update(state="bound", record_id=record_id,
+                                     path_identity=list(identity),
+                                     posix_path_identity=PathIdentity.from_path(path).as_dict())
+                grant_payload["manifest_digest"] = _manifest_digest(grant_payload)
+                _write_json_atomic(self._control_directory() / f"grant-{grant_payload['grant_id']}.json",
+                                   grant_payload)
+                payload["fixture_grant"] = {key: grant_payload[key] for key in
+                    ("grant_id", "owner", "activity_id", "creation_grant_id", "policy_revision")}
             if self._artifact_registry_configured:
                 # The manifest is the scratch owner's durable claim.  Write
                 # it before invoking the secondary registry so a failed hook
@@ -1518,6 +2054,7 @@ class ScratchManager:
         max_entries: int | None = None,
         max_depth: int | None = None,
         max_bytes: int | None = None,
+        max_fds: int = 2048,
         scan_max_entries: int | None = None,
         scan_max_depth: int | None = None,
         scan_max_bytes: int | None = None,
@@ -1533,6 +2070,8 @@ class ScratchManager:
             max_depth=max_depth,
             max_bytes=max_bytes,
         )
+        if type(max_fds) is not int or not 5 <= max_fds <= 2048:
+            raise ValueError("scratch max_fds must be between 5 and 2048")
         now = time.time_ns() if now_ns is None else now_ns
         if type(now) is not int or now < 0:
             raise ValueError("scratch now_ns must be a non-negative integer")
@@ -1545,10 +2084,10 @@ class ScratchManager:
                 max_depth=max_depth,
                 max_bytes=max_bytes,
             )
-        budget = _ScratchScanBudget(max_entries, max_depth, max_bytes)
+        budget = _ScratchScanBudget(max_entries, max_depth, max_bytes, max_fds=max_fds)
         records = tuple(self._scan_records(now_ns=now, budget=budget))
         if not budget.truncated:
-            records = self._complete_seal_observations(records)
+            records = self._complete_seal_observations(records, budget)
         if budget.truncated:
             records = tuple(
                 replace(
@@ -1568,8 +2107,39 @@ class ScratchManager:
             max_entries=max_entries,
             max_depth=max_depth,
             max_bytes=max_bytes,
+            max_fds=max_fds, observed_members=budget.payload_entries, observed_bytes=budget.observed_bytes,
         )
 
+    @staticmethod
+    def _selection_claim(record: ScratchRecord) -> tuple[Any, ...]:
+        return (record.record_id, os.fsencode(record.path), record.owner,
+                record.path_identity, record.root_identity, record.manifest_digest,
+                record.status, record.size_bytes, record.size_complete,
+                record.payload_profile, record.policy_revision,
+                _canonical_json(record.seal), _canonical_json(record.fixture_grant))
+
+    def verify(self, plan: ScratchPlan) -> ScratchPlan:
+        """Verify exactly the supplied selection, without adding new candidates."""
+        if not isinstance(plan, ScratchPlan) or plan.root != self.root:
+            raise ScratchSecurityError("scratch plan belongs to a different root")
+        current = self.plan(max_entries=plan.max_entries, max_depth=plan.max_depth,
+                            max_bytes=plan.max_bytes, max_fds=plan.max_fds)
+        by_id = {record.record_id: record for record in current.records}
+        selected = []
+        for prior in plan.records:
+            fresh = by_id.get(prior.record_id)
+            if (not plan.complete or not current.complete or fresh is None
+                    or self._selection_claim(prior) != self._selection_claim(fresh)):
+                selected.append(replace(prior, eligible=False, issue="selection_changed",
+                                        reason="scratch selection changed after planning"))
+            else:
+                selected.append(replace(fresh, eligible=prior.eligible and fresh.eligible))
+        return self._summarize(tuple(selected), read_only=True,
+                               truncated=current.truncated, truncation_reasons=current.truncation_reasons,
+                               max_entries=plan.max_entries, max_depth=plan.max_depth,
+                               max_bytes=plan.max_bytes, max_fds=plan.max_fds)
+
+    @_scratch_write_locked
     def apply(
         self,
         plan: ScratchPlan | None = None,
@@ -1578,24 +2148,42 @@ class ScratchManager:
         max_entries: int | None = None,
         max_depth: int | None = None,
         max_bytes: int | None = None,
+        max_fds: int = 2048,
         scan_max_entries: int | None = None,
         scan_max_depth: int | None = None,
         scan_max_bytes: int | None = None,
     ) -> ScratchPlan:
         """Re-scan and retire only completed, still-eligible records."""
 
-        del plan  # stale plans are never trusted as an effect authorization
+        if plan is not None:
+            if not isinstance(plan, ScratchPlan) or plan.root != self.root:
+                raise ScratchSecurityError("scratch plan belongs to a different root")
+            # Supplied limits may narrow a selection but cannot broaden the
+            # original observation or introduce records created afterward.
+            max_entries = plan.max_entries if max_entries is None else max_entries
+            max_depth = plan.max_depth if max_depth is None else max_depth
+            max_bytes = plan.max_bytes if max_bytes is None else max_bytes
         if scan_max_entries is not None:
             max_entries = scan_max_entries
         if scan_max_depth is not None:
             max_depth = scan_max_depth
         if scan_max_bytes is not None:
             max_bytes = scan_max_bytes
+        if plan is not None:
+            if max_entries is not None and plan.max_entries is not None:
+                max_entries = min(max_entries, plan.max_entries)
+            if max_depth is not None and plan.max_depth is not None:
+                max_depth = min(max_depth, plan.max_depth)
+            if max_bytes is not None and plan.max_bytes is not None:
+                max_bytes = min(max_bytes, plan.max_bytes)
+            max_fds = min(max_fds, plan.max_fds)
         max_entries, max_depth, max_bytes = _validate_scan_limits(
             max_entries=max_entries,
             max_depth=max_depth,
             max_bytes=max_bytes,
         )
+        if type(max_fds) is not int or not 5 <= max_fds <= 2048:
+            raise ValueError("scratch max_fds must be between 5 and 2048")
         now = time.time_ns() if now_ns is None else now_ns
         if type(now) is not int or now < 0:
             raise ValueError("scratch now_ns must be a non-negative integer")
@@ -1629,10 +2217,10 @@ class ScratchManager:
                     # below will preserve the candidate and expose the
                     # recovery boundary.
                     pass
-        budget = _ScratchScanBudget(max_entries, max_depth, max_bytes)
+        budget = _ScratchScanBudget(max_entries, max_depth, max_bytes, max_fds=max_fds)
         observed = tuple(self._scan_records(now_ns=now, budget=budget))
         if not budget.truncated:
-            observed = self._complete_seal_observations(observed)
+            observed = self._complete_seal_observations(observed, budget)
         if budget.truncated:
             observed = tuple(
                 replace(
@@ -1643,6 +2231,25 @@ class ScratchManager:
                 )
                 for record in observed
             )
+        if plan is not None:
+            planned_records = {record.record_id: record for record in plan.records}
+            selected = []
+            for record in observed:
+                prior = planned_records.get(record.record_id)
+                if prior is None or not prior.eligible:
+                    selected.append(replace(record, eligible=False))
+                elif (not plan.complete or not all(item.size_complete for item in observed)
+                      or self._selection_claim(prior) != self._selection_claim(record)):
+                    selected.append(replace(record, eligible=False, issue="selection_changed",
+                                            reason="scratch selection changed after planning"))
+                else:
+                    selected.append(record)
+            observed_ids = {record.record_id for record in observed}
+            selected.extend(replace(record, eligible=False, issue="selection_changed",
+                                    reason="scratch selection is absent after planning")
+                            for record in plan.records if record.record_id not in observed_ids
+                            and not self._retirement_replayed(record))
+            observed = tuple(selected)
         candidates = [record for record in observed if record.eligible]
         applied_records: list[ScratchRecord] = []
         remaining: list[ScratchRecord] = []
@@ -1718,6 +2325,7 @@ class ScratchManager:
             max_entries=max_entries,
             max_depth=max_depth,
             max_bytes=max_bytes,
+            max_fds=max_fds, observed_members=budget.payload_entries, observed_bytes=budget.observed_bytes,
         )
 
     def _unmanaged_entries(self, *, limit: int | None = None) -> tuple[Path, ...]:
@@ -1742,18 +2350,42 @@ class ScratchManager:
         return tuple(values)
 
     def _complete_seal_observations(
-        self,
-        records: Sequence[ScratchRecord],
+        self, records: Sequence[ScratchRecord], budget: _ScratchScanBudget,
     ) -> tuple[ScratchRecord, ...]:
-        """Re-read seals only after the bounded root scan proves complete."""
-
+        """Verify seals within a shared hashing budget across all workspaces."""
         resolved: list[ScratchRecord] = []
         for record in records:
             if record.issue != "seal_observation_incomplete":
                 resolved.append(record)
                 continue
-            complete = self._record_for_path(record.path)
-            resolved.append(complete if complete is not None else record)
+            remaining_entries = _MAX_RECORDS - budget.hashed_entries if budget.max_entries is None else max(
+                0, budget.max_entries - budget.hashed_entries)
+            remaining_bytes = _MAX_SCAN_BYTES - budget.hashed_bytes if budget.max_bytes is None else max(
+                0, budget.max_bytes - budget.hashed_bytes)
+            try:
+                digest, members, apparent = _sealed_workspace_digest(
+                    record.path, profile=record.payload_profile,
+                    max_entries=remaining_entries, max_bytes=remaining_bytes,
+                    max_depth=budget.max_depth if budget.max_depth is not None else 2048,
+                    max_fds=budget.max_fds,
+                )
+            except ScratchSecurityError as exc:
+                issue = "workspace_seal_unavailable"
+                if "entry limit" in str(exc):
+                    budget.note(ENTRY_LIMIT)
+                elif "byte limit" in str(exc):
+                    budget.note(BYTE_LIMIT)
+                resolved.append(replace(record, eligible=False, issue=issue, reason=issue))
+                continue
+            budget.hashed_entries += members
+            budget.hashed_bytes += apparent
+            matches = record.seal is not None and (digest, members, apparent) == (
+                record.seal["digest"], record.seal["members"], record.seal["apparent_bytes"])
+            eligible = (matches and record.owner == self.owner and record.state == ScratchState.COMPLETED
+                        and (record.retire_after_ns is None or record.retire_after_ns <= time.time_ns()))
+            resolved.append(replace(record, eligible=eligible,
+                                    issue=None if matches else "workspace_seal_drift",
+                                    reason=None if matches else "workspace_seal_drift"))
         return tuple(resolved)
 
     def _scan_records(
@@ -1762,6 +2394,7 @@ class ScratchManager:
         now_ns: int,
         budget: _ScratchScanBudget | None = None,
     ) -> Iterable[ScratchRecord]:
+        effective_budget = budget if budget is not None else _ScratchScanBudget(_MAX_RECORDS, 2048, _MAX_SCAN_BYTES)
         try:
             iterator = os.scandir(self.root)
         except OSError as exc:
@@ -1769,16 +2402,24 @@ class ScratchManager:
         entries: list[os.DirEntry[str]] = []
         try:
             if budget is not None and budget.max_entries is not None:
-                for _ in range(budget.max_entries + 1):
+                while len(entries) <= budget.max_entries:
                     try:
-                        entries.append(next(iterator))
+                        candidate = next(iterator)
+                        if candidate.name == _CONTROL_DIRECTORY:
+                            continue
+                        entries.append(candidate)
                     except StopIteration:
                         break
                 if len(entries) > budget.max_entries:
                     budget.note(ENTRY_LIMIT)
                     entries = entries[: budget.max_entries]
             else:
-                entries.extend(iterator)
+                for entry in iterator:
+                    if entry.name == _CONTROL_DIRECTORY:
+                        continue
+                    entries.append(entry)
+                    if len(entries) > _MAX_RECORDS:
+                        raise ScratchSecurityError("scratch root exceeds the registered-record limit")
         finally:
             iterator.close()
         if len(entries) > _MAX_RECORDS:
@@ -1821,16 +2462,18 @@ class ScratchManager:
                     or manifest_exists.st_nlink != 1
                 ):
                     raise ScratchManifestError("scratch manifest protection drifted")
-                raw = manifest_path.read_bytes()
+                raw = _read_manifest_bytes(manifest_path)
                 if len(raw) > _MAX_MANIFEST_BYTES:
                     raise ScratchSecurityError("scratch manifest is too large")
                 payload = json.loads(raw.decode("utf-8"))
                 if not isinstance(payload, Mapping):
                     raise ScratchSecurityError("scratch manifest is not an object")
-                observation = (
-                    _bounded_payload_observation(path, budget)
-                    if budget is not None
-                    else _PayloadObservation(size_bytes=_directory_size(path), observed_bytes=0)
+                if payload.get("manifest_digest") != _manifest_digest(payload):
+                    raise ScratchManifestError("scratch manifest digest mismatch")
+                profile = self._payload_profile(path, payload)
+                observation = _bounded_payload_observation(
+                    path, effective_budget,
+                    profile=profile,
                 )
                 record = self._record_from_payload(
                     path,
@@ -1838,11 +2481,8 @@ class ScratchManager:
                     size_bytes=observation.size_bytes,
                     now_ns=now_ns,
                     observation_issue=observation.issue,
-                    bounded_observation=budget is not None
-                    and any(
-                        value is not None
-                        for value in (budget.max_entries, budget.max_depth, budget.max_bytes)
-                    ),
+                    size_complete=observation.size_complete,
+                    bounded_observation=budget is not None, payload_observed=True,
                 )
             except (OSError, UnicodeError, json.JSONDecodeError, ScratchError, TypeError, ValueError) as exc:
                 yield self._invalid_record(
@@ -1864,11 +2504,6 @@ class ScratchManager:
         *,
         issue: str = "manifest_invalid",
     ) -> ScratchRecord:
-        try:
-            metadata = path.lstat()
-        except OSError:
-            metadata = None
-        is_directory = metadata is not None and stat.S_ISDIR(metadata.st_mode)
         return ScratchRecord(
             record_id=f"invalid:{path.name}",
             owner="",
@@ -1878,7 +2513,9 @@ class ScratchManager:
             created_ns=0,
             updated_ns=0,
             path_identity=None,
-            size_bytes=_directory_size(path) if is_directory else 0,
+            # Invalid manifests do not authorize an unbounded payload walk.
+            size_bytes=0,
+            size_complete=False,
             retain_on_success=True,
             retire_after_ns=None,
             reason=_bounded_text(reason, label="scratch reason"),
@@ -1897,6 +2534,8 @@ class ScratchManager:
         now_ns: int | None = None,
         observation_issue: str | None = None,
         bounded_observation: bool = False,
+        payload_observed: bool = False,
+        size_complete: bool = True,
     ) -> ScratchRecord:
         if payload.get("schema") != SCRATCH_SCHEMA:
             raise ScratchSecurityError("unsupported scratch manifest schema")
@@ -1964,7 +2603,10 @@ class ScratchManager:
         if not isinstance(metadata, Mapping) or len(_canonical_json(metadata).encode("utf-8")) > _MAX_METADATA_BYTES:
             raise ScratchSecurityError("scratch metadata is invalid")
         reason = payload.get("reason")
-        if reason is not None and (not isinstance(reason, str) or len(reason.encode("utf-8")) > _MAX_REASON_BYTES):
+        if reason is not None and (
+            not isinstance(reason, str)
+            or len(reason.encode("utf-8", errors="backslashreplace")) > _MAX_REASON_BYTES
+        ):
             raise ScratchSecurityError("scratch reason is invalid")
         payload_size_bytes = payload.get("payload_size_bytes")
         if payload_size_bytes is not None and (
@@ -1972,12 +2614,20 @@ class ScratchManager:
         ):
             raise ScratchSecurityError("scratch payload size observation is invalid")
         seal = _seal_mapping(payload.get("seal"))
+        profile = self._payload_profile(path, payload)
+        binary_path = payload.get("posix_path_identity")
+        if binary_path is not None and binary_path != PathIdentity.from_path(path).as_dict():
+            raise ScratchSecurityError("scratch POSIX path identity changed")
         workspace_metadata = path.lstat()
         issue: str | None = None
         if workspace_metadata.st_uid != os.geteuid() or workspace_metadata.st_mode & 0o077:
             issue = "workspace_mode_drift"
         else:
-            issue = observation_issue if bounded_observation else _workspace_payload_issue(path)
+            issue = observation_issue if bounded_observation or payload_observed else _workspace_payload_issue(path, profile=profile)
+        if not size_complete:
+            issue = issue or "payload_observation_incomplete"
+        if state == ScratchState.COMPLETED.value:
+            issue = issue or _activity_process_scope_issue(metadata, reason)
         if (
             issue is None
             and state == ScratchState.COMPLETED.value
@@ -1993,7 +2643,7 @@ class ScratchManager:
                 issue = "seal_observation_incomplete"
             else:
                 try:
-                    observed_digest, observed_members, observed_bytes = _sealed_workspace_digest(path)
+                    observed_digest, observed_members, observed_bytes = _sealed_workspace_digest(path, profile=profile)
                 except ScratchSecurityError:
                     issue = "workspace_seal_unavailable"
                 else:
@@ -2025,6 +2675,7 @@ class ScratchManager:
             path_identity=tuple(identity),
             root_identity=tuple(root_identity),
             size_bytes=max(0, int(size_bytes)),
+            size_complete=size_complete,
             retain_on_success=retain,
             retire_after_ns=retire_after,
             result_paths=tuple(Path(value) for value in results),
@@ -2034,6 +2685,9 @@ class ScratchManager:
             artifact_id=artifact_id,
             payload_size_bytes=payload_size_bytes,
             seal=seal,
+            payload_profile=profile.value,
+            policy_revision=policy_revision(profile),
+            fixture_grant=payload.get("fixture_grant"),
             eligible=eligible,
             issue=issue,
         )
@@ -2049,6 +2703,7 @@ class ScratchManager:
         max_entries: int | None = None,
         max_depth: int | None = None,
         max_bytes: int | None = None,
+        max_fds: int = 2048, observed_members: int = 0, observed_bytes: int = 0,
     ) -> ScratchPlan:
         planned = tuple(record for record in records if record.eligible)
         blocked = tuple(
@@ -2117,6 +2772,7 @@ class ScratchManager:
             max_entries=max_entries,
             max_depth=max_depth,
             max_bytes=max_bytes,
+            max_fds=max_fds, observed_members=observed_members, observed_bytes=observed_bytes,
         )
 
     def _record_for_path(self, path: Path) -> ScratchRecord | None:
@@ -2143,17 +2799,23 @@ class ScratchManager:
                 or metadata.st_nlink != 1
             ):
                 return None
-            raw = manifest_path.read_bytes()
+            raw = _read_manifest_bytes(manifest_path)
             if len(raw) > _MAX_MANIFEST_BYTES:
                 return None
             payload = json.loads(raw.decode("utf-8"))
             if not isinstance(payload, Mapping):
                 return None
-            size = _directory_size(path)
+            if payload.get("manifest_digest") != _manifest_digest(payload):
+                raise ScratchManifestError("scratch manifest digest mismatch")
+            profile = self._payload_profile(path, payload)
+            observation = _bounded_payload_observation(path, _ScratchScanBudget(None, None, None), profile=profile)
+            size = observation.size_bytes
             return self._record_from_payload(
                 path,
                 payload,
                 size_bytes=size,
+                size_complete=observation.size_complete,
+                observation_issue=observation.issue, payload_observed=True,
                 now_ns=time.time_ns(),
             )
         except (OSError, UnicodeError, json.JSONDecodeError, ScratchError, TypeError, ValueError) as exc:
@@ -2295,7 +2957,7 @@ class ScratchManager:
                 ScratchState.RECOVERY_REQUIRED,
             }:
                 raise ScratchError("workspace is not sealable in its current state")
-            observed_digest, observed_members, observed_bytes = _sealed_workspace_digest(record.path)
+            observed_digest, observed_members, observed_bytes = _sealed_workspace_digest(record.path, profile=record.payload_profile)
             observed = _seal_mapping(
                 {
                     "schema": _SEAL_SCHEMA,
@@ -2318,6 +2980,55 @@ class ScratchManager:
     # Short producer-facing alias; it is intentionally the same implementation
     # and does not introduce a second lifecycle protocol.
     seal = seal_workspace
+
+    def reconcile_workspace_seal(
+        self, record_id: str, *, prior_digest: str, release_authorized: bool,
+        evidence: Mapping[str, Any],
+    ) -> ScratchRecord:
+        """Explicitly reconcile an inactive legacy/mismatched seal, preserving it.
+
+        A mismatch never triggers this operation automatically. Publication
+        remnants continue to participate in the payload; no basename-based
+        exclusion or grant is invented during reconciliation.
+        """
+        if (self.owner is None or release_authorized is not True
+                or not isinstance(evidence, Mapping)
+                or evidence.get("quiescence_confirmed") is not True
+                or evidence.get("deliverables_confirmed") is not True):
+            raise ScratchSecurityError("seal reconciliation requires owner release and quiescence/deliverable evidence")
+        with self._scratch_lock():
+            records = tuple(self._scan_records(now_ns=time.time_ns()))
+            record = next((item for item in records if item.record_id == record_id), None)
+            if (record is None or not record.valid or record.owner != self.owner
+                    or record.state not in {ScratchState.COMPLETED, ScratchState.FAILED_RETAINED,
+                                            ScratchState.RECOVERY_REQUIRED}
+                    or record.seal is None or record.seal["digest"] != prior_digest):
+                raise ScratchSecurityError("prior inactive workspace seal is not verified")
+            if (not self._workspace_dependency_observation_complete(records)
+                    or self._live_workspace_dependents(record, records)):
+                raise ScratchSecurityError("seal reconciliation dependency observation is incomplete or live")
+            registry = self._artifact_registry_instance() if self._artifact_registry_configured else None
+            registry_lock = getattr(registry, "_registry_lock", None) if registry is not None else None
+            with registry_lock() if callable(registry_lock) else nullcontext():
+                if registry is not None:
+                    snapshot = tuple(registry.records())
+                    if (any(not getattr(item, "valid", False) for item in snapshot)
+                            or self._live_workspace_dependents(record, records, registry_records=snapshot)):
+                        raise ScratchSecurityError("seal reconciliation registry dependencies are uncertain or live")
+                digest, members, apparent = _sealed_workspace_digest(record.path, profile=record.payload_profile)
+                next_seal = {"schema": _SEAL_SCHEMA, "digest": digest,
+                             "members": members, "apparent_bytes": apparent}
+                metadata = dict(record.metadata)
+                prior = metadata.get("seal_reconciliation", [])
+                if not isinstance(prior, list) or len(prior) >= 16:
+                    raise ScratchSecurityError("seal reconciliation history requires owner archival")
+                metadata["seal_reconciliation"] = [*prior, {
+                    "schema": "neocortex.scratch-seal-reconciliation/v1",
+                    "prior_seal": dict(record.seal), "next_seal": next_seal,
+                    "authorized_ns": time.time_ns(), "evidence": dict(evidence),
+                }]
+                return self._update_state(record.path, record_id, ScratchState(record.state),
+                                          retain_on_success=True, metadata=metadata, seal=next_seal)
 
     def reconcile_terminal(
         self,
@@ -2438,6 +3149,7 @@ class ScratchManager:
 
     reconcile_failed = reconcile_terminal
 
+    @_scratch_write_locked
     def _update_state(
         self,
         path: Path,
@@ -2466,7 +3178,7 @@ class ScratchManager:
             raise ScratchManifestError("scratch manifest is not a regular file")
         if manifest_metadata.st_uid != os.geteuid() or manifest_metadata.st_mode & 0o077:
             raise ScratchManifestError("scratch manifest protection drifted")
-        raw = manifest_path.read_bytes()
+        raw = _read_manifest_bytes(manifest_path)
         payload = json.loads(raw.decode("utf-8"))
         if not isinstance(payload, Mapping) or payload.get("manifest_digest") != record.manifest_digest:
             raise ScratchSecurityError("scratch manifest changed during update")
@@ -2488,7 +3200,7 @@ class ScratchManager:
             # Persist one bounded lifecycle observation in the workspace
             # manifest.  A later payload change is then a recovery boundary,
             # not silently disposable material.
-            updated["payload_size_bytes"] = _directory_size(path)
+            updated["payload_size_bytes"] = _directory_size(path, profile=record.payload_profile)
         if reason is not None:
             updated["reason"] = _bounded_text(reason, label="scratch reason")
         promoted_seal = _seal_mapping(seal) if seal is not None else _seal_from_lifecycle_reason(updated.get("reason"))
@@ -2511,8 +3223,9 @@ class ScratchManager:
         _write_json_atomic(manifest_path, updated)
         if preserved_observation is not None:
             self._restore_workspace_observation(path, preserved_observation)
-        return self._record_from_payload(path, updated, size_bytes=_directory_size(path))
+        return self._record_from_payload(path, updated, size_bytes=_directory_size(path, profile=record.payload_profile))
 
+    @_scratch_write_locked
     def _retire_record(
         self,
         record: ScratchRecord,
@@ -2586,6 +3299,9 @@ class ScratchManager:
                 "retain_on_success": current.retain_on_success,
                 "retire_after_ns": current.retire_after_ns,
                 "metadata": dict(current.metadata),
+                "payload_profile": current.payload_profile,
+                "policy_revision": current.policy_revision,
+                "fixture_grant": current.fixture_grant,
                 "manifest_digest": current.manifest_digest,
                 "path_size_bytes": current.size_bytes,
                 "path_mtime_ns": 0,
@@ -2608,7 +3324,7 @@ class ScratchManager:
                             guarded_metadata = getattr(guarded, "metadata", None)
                             if isinstance(guarded_metadata, Mapping):
                                 current_payload["metadata"] = dict(guarded_metadata)
-                        _remove_tree_no_follow(record.path, expected_identity=current.path_identity)
+                        self._perform_retirement(current)
                         self._update_artifact(
                             current.path,
                             current_payload,
@@ -2627,19 +3343,21 @@ class ScratchManager:
                 # adapter, so preserve rather than unlink without its policy
                 # guard.
                 raise ScratchSecurityError("artifact retirement batch guard unavailable")
-            _remove_tree_no_follow(record.path, expected_identity=current.path_identity)
+            self._perform_retirement(current)
             self._update_artifact(
                 current.path,
                 current_payload,
                 state=ScratchState.RETIRED.value,
             )
             return
-        _remove_tree_no_follow(record.path, expected_identity=current.path_identity)
+        self._perform_retirement(current)
 
 
 __all__ = [
     "MANIFEST_NAME",
     "SCRATCH_SCHEMA",
+    "FixturePayloadGrant",
+    "PayloadProfile",
     "ScratchError",
     "ScratchManager",
     "ScratchManifestError",
@@ -2649,4 +3367,6 @@ __all__ = [
     "ScratchSecurityError",
     "ScratchState",
     "ScratchWorkspace",
+    "verified_workspace_payload_profile",
+    "workspace_payload_digest",
 ]

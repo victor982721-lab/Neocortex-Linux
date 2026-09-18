@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 import ctypes
 import errno
+import hashlib
 import json
 import os
 import re
@@ -45,6 +46,7 @@ DEFAULT_KIO_TIMEOUT_SECONDS = 120.0
 MIN_KIO_TIMEOUT_SECONDS = 1.0
 MAX_KIO_TIMEOUT_SECONDS = 300.0
 MAX_DIAGNOSTIC_CHARS = 1_000
+MAX_KIO_CLAIM_RECOVERY_BYTES = 4_096
 MAX_TRASH_INFO_BYTES = 8_192
 MAX_TRASH_ENTRIES = 4_096
 # Keep one KIO argv bounded.  Callers with larger plans must submit several
@@ -185,6 +187,7 @@ class KioTrashBatchResult:
     outcomes: tuple[KioTrashResult, ...]
     command: tuple[str, ...] = ()
     returncode: int | None = None
+    cancelled: bool = False
 
     @property
     def applied(self) -> int:
@@ -492,6 +495,38 @@ def _verify_curation_trash_evidence(
     if os.path.lexists(expected.path):
         raise ValueError("trash source is present")
     return observed
+
+
+def trash_receipt_paths(
+    evidence: object,
+    expected: FileSnapshot,
+    source_digest: str,
+) -> tuple[Path, Path, Path]:
+    """Validate a v1 Trash receipt binding without reading the filesystem.
+
+    Return ``(trash_root, trash_path, info_path)`` only when the declared
+    layout, source identity and digest agree.  This is a structural check;
+    callers honoring a stored effect must also use
+    :func:`verify_trash_receipt_evidence` to reobserve its physical evidence.
+    """
+
+    return _curation_trash_paths(evidence, expected, source_digest)
+
+
+def verify_trash_receipt_evidence(
+    evidence: object,
+    expected: FileSnapshot,
+    source_digest: str,
+) -> FileSnapshot:
+    """Read-only verification of the exact object and its restoration data.
+
+    Validate the receipt binding, unique regular Trash object, complete
+    snapshot and digest, original source absence, and source-bound Trash
+    metadata.  Raise on ambiguous or changed evidence; never restore, repair
+    metadata, create a claim, invoke KIO, or update a caller's action ledger.
+    """
+
+    return _verify_curation_trash_evidence(evidence, expected, source_digest)
 
 
 def _sanitize_diagnostic(value: object) -> str | None:
@@ -861,6 +896,13 @@ def _restore_claim(claim: KioTrashClaim) -> None:
         raise KioTrashUnavailable(
             "kio_claim_cleanup_failed",
             "private KIO claim directory could not be removed",
+        ) from exc
+    try:
+        _fsync_directory(claim.claim_directory.parent)
+    except OSError as exc:
+        raise KioTrashUnavailable(
+            "kio_claim_cleanup_failed",
+            "private KIO claim directory removal could not be flushed",
         ) from exc
 
 
@@ -1259,18 +1301,121 @@ def _rewrite_trash_info_path(path: Path, *, old_source: Path, new_source: Path) 
 
 
 def _claim_recovery_detail(claim: KioTrashClaim, *, reason: str, detail: object) -> str:
-    """Serialize bounded, non-sensitive recovery evidence for the ledger."""
+    """Keep a complete claim locator within the caller's detail-byte bound."""
 
-    return json.dumps(
-        {
-            "claim": claim.as_dict(),
-            "detail": _sanitize_diagnostic(detail),
-            "reason": reason,
-            "schema": "neocortex.kio-claim-recovery/v1",
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
+    def serialize(payload: dict[str, object]) -> str:
+        return json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+    payload: dict[str, object] = {
+        "claim": claim.as_dict(),
+        "detail": _sanitize_diagnostic(detail),
+        "reason": reason,
+        "schema": "neocortex.kio-claim-recovery/v1",
+    }
+    serialized = serialize(payload)
+    if len(serialized.encode("utf-8")) <= MAX_KIO_CLAIM_RECOVERY_BYTES:
+        return serialized
+    # The producer always creates one private sibling directory and keeps the
+    # original basename.  The action/result already stores the absolute source
+    # path, so a bound reference avoids repeating it three times in the error
+    # column.  The digest rejects an attempt to resolve this locator against
+    # a different action's source.  No path string is ever truncated.
+    if (
+        claim.claim_directory.parent != claim.source_path.parent
+        or claim.claim_path != claim.claim_directory / claim.source_path.name
+    ):
+        raise ValueError("KIO recovery claim does not have the private sibling layout")
+    compact = claim.as_dict()
+    for key in ("source_path", "claim_path", "claim_directory"):
+        del compact[key]
+    compact.update({
+        "schema": "neocortex.kio-claim-relative/v1",
+        "source_path_ref": "action_source_path",
+        "source_path_sha256": hashlib.sha256(os.fsencode(claim.source_path)).hexdigest(),
+        "claim_directory_name": claim.claim_directory.name,
+    })
+    payload.update({"schema": "neocortex.kio-claim-recovery/v2", "claim": compact})
+    serialized = serialize(payload)
+    while len(serialized.encode("utf-8")) > MAX_KIO_CLAIM_RECOVERY_BYTES:
+        diagnostic = payload["detail"]
+        if not isinstance(diagnostic, str) or not diagnostic:
+            raise ValueError("KIO recovery identity exceeds the detail byte bound")
+        # Only the optional human diagnostic may shrink, before JSON encoding.
+        # Re-encoding each bounded reduction also handles escaped characters.
+        payload["detail"] = diagnostic[:len(diagnostic) // 2]
+        serialized = serialize(payload)
+    return serialized
+
+
+def read_claim_recovery_detail(
+    detail: str,
+    *,
+    source_path: str | os.PathLike[str],
+) -> KioTrashClaim:
+    """Resolve a v1/v2 claim locator against its owning action, without I/O.
+
+    The source argument is the exact ``KioTrashResult.source_path`` or durable
+    ``file_actions.source_path``.  It is mandatory even for v1 and must match
+    the stored path or its v2 binding.  This function never restores a claim
+    or authorizes a retry; callers must separately reobserve physical identity.
+    """
+
+    source = _absolute_path(source_path, label="recovery source")
+    if not isinstance(detail, str) or len(detail.encode("utf-8")) > 65_536:
+        raise ValueError("KIO claim recovery detail is not bounded JSON")
+    payload = json.loads(detail)
+    if not isinstance(payload, dict) or not isinstance(payload.get("claim"), dict):
+        raise ValueError("KIO claim recovery detail lacks a claim")
+    claim = payload["claim"]
+    schema = payload.get("schema")
+    if schema == "neocortex.kio-claim-recovery/v1":
+        if claim.get("schema") != KIO_CLAIM_SCHEMA or claim.get("source_path") != str(source):
+            raise ValueError("KIO claim recovery source differs from its action")
+        directory = claim.get("claim_directory")
+        claimed = claim.get("claim_path")
+        if not isinstance(directory, str) or not isinstance(claimed, str):
+            raise ValueError("KIO claim recovery paths are invalid")
+        claim_directory, claim_path = Path(directory), Path(claimed)
+    elif schema == "neocortex.kio-claim-recovery/v2":
+        if (
+            claim.get("schema") != "neocortex.kio-claim-relative/v1"
+            or claim.get("source_path_ref") != "action_source_path"
+            or claim.get("source_path_sha256")
+            != hashlib.sha256(os.fsencode(source)).hexdigest()
+        ):
+            raise ValueError("KIO claim recovery source differs from its action")
+        name = claim.get("claim_directory_name")
+        if not isinstance(name, str) or Path(name).name != name or "\x00" in name:
+            raise ValueError("KIO claim recovery directory name is invalid")
+        claim_directory = source.parent / name
+        claim_path = claim_directory / source.name
+    else:
+        raise ValueError("KIO claim recovery schema is unsupported")
+    if (
+        not claim_directory.name.startswith(".neocortex-kio-claim-")
+        or claim_directory.parent != source.parent
+        or claim_path != claim_directory / source.name
+    ):
+        raise ValueError("KIO claim recovery paths do not match the private sibling layout")
+    identities: list[int] = []
+    for field in ("volume_id", "file_id"):
+        value = claim.get(field)
+        if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]+", value) is None:
+            raise ValueError("KIO claim recovery identity is invalid")
+        identities.append(int(value, 16))
+    metadata: list[int] = []
+    for field in ("size", "mtime_ns", "birthtime_ns"):
+        value = claim.get(field)
+        if type(value) is not int:
+            raise ValueError("KIO claim recovery metadata is invalid")
+        metadata.append(value)
+    if metadata[0] < 0:
+        raise ValueError("KIO claim recovery size is invalid")
+    return KioTrashClaim(
+        source, claim_path, claim_directory,
+        FileSnapshot(
+            str(source), identities[0], identities[1], metadata[0], metadata[1], metadata[2]
+        ),
     )
 
 
@@ -1733,6 +1878,8 @@ def _batch_result(
     outcomes: Sequence[KioTrashResult | None],
     command: Sequence[str] = (),
     returncode: int | None = None,
+    *,
+    cancelled: bool = False,
 ) -> KioTrashBatchResult:
     """Build an ordered batch result after all slots have been classified."""
 
@@ -1742,6 +1889,10 @@ def _batch_result(
         tuple(cast(KioTrashResult, item) for item in outcomes),
         tuple(command),
         returncode,
+        cancelled=cancelled or any(
+            item is not None and item.reason in {"kio_process_interrupted", "kio_claim_restore_interrupted"}
+            for item in outcomes
+        ),
     )
 
 
@@ -1770,14 +1921,19 @@ def _batch_recovery(
 ) -> KioTrashResult:
     """Build an ambiguous item outcome and retain a native claim for recovery."""
 
-    safe_detail = detail
-    if work.claim is not None:
-        safe_detail = _claim_recovery_detail(work.claim, reason=reason, detail=detail)
+    # The diagnostic inside a claim envelope is already sanitized.  Trimming
+    # or whitespace-normalizing the whole JSON envelope would corrupt its
+    # structure and source/claim paths, losing the recovery locator.
+    safe_detail = (
+        _sanitize_diagnostic(detail)
+        if work.claim is None
+        else _claim_recovery_detail(work.claim, reason=reason, detail=detail)
+    )
     return KioTrashResult(
         status=KioTrashStatus.RECOVERY_REQUIRED,
         reason=reason,
         source_path=os.fspath(work.source),
-        detail=_sanitize_diagnostic(safe_detail),
+        detail=safe_detail,
         client_path=os.fspath(client),
         command=tuple(command),
         returncode=returncode,
@@ -1848,8 +2004,14 @@ def _batch_restore_claims(
             continue
         try:
             _restore_claim(work.claim)
-        except KioTrashUnavailable as exc:
-            failures[position] = exc
+        except BaseException as exc:
+            failures[position] = (
+                exc if isinstance(exc, KioTrashUnavailable) else KioTrashUnavailable(
+                    "kio_claim_restore_interrupted"
+                    if isinstance(exc, KeyboardInterrupt) else "kio_claim_restore_failed",
+                    f"{type(exc).__name__}: {exc}",
+                )
+            )
     return failures
 
 
@@ -1871,7 +2033,11 @@ def _batch_restore_and_block(
         if restore_error is not None:
             outcomes[index] = _batch_recovery(
                 work,
-                reason="kio_claim_restore_failed",
+                reason=(
+                    "kio_claim_restore_interrupted"
+                    if restore_error.reason == "kio_claim_restore_interrupted"
+                    else "kio_claim_restore_failed"
+                ),
                 detail=restore_error.detail,
                 client=client,
                 command=command,
@@ -2120,6 +2286,8 @@ def _batch_verified_result(
         else:
             verification = verifier(kio_source, kio_expected, client)
     except BaseException as exc:
+        if isinstance(exc, KeyboardInterrupt):
+            raise
         return _batch_recovery(
             work,
             reason="kio_verification_failed",
@@ -2173,6 +2341,8 @@ def _batch_verified_result(
             # has been flushed; no temporary claim survives a verified item.
             _fsync_directory(work.claim.claim_directory.parent)
     except BaseException as exc:
+        if isinstance(exc, KeyboardInterrupt):
+            raise
         return _batch_recovery(
             work,
             reason="kio_effect_unverified",
@@ -2324,229 +2494,478 @@ def move_many_to_trash(
                 outcomes[index] = _batch_blocked(work.item, reason=exc.reason, detail=exc.detail)
             return _batch_result(outcomes)
 
-    use_claims = runner is None and private_claim
+    process_started = False
+    command: list[str] = []
+    returncode: int | None = None
     try:
-        for work in works:
-            if use_claims:
-                try:
-                    work.claim = _claim_source(work.source, work.item.expected)
-                except KioTrashClaimUnavailable as exc:
-                    work.claim = exc.claim
-                    work.kio_source = exc.claim.claim_path
-                    raise
-                work.kio_source = work.claim.claim_path
-            else:
-                work.kio_source = work.source
-    except KioTrashUnavailable as exc:
-        _batch_restore_and_block(
-            works,
-            indexes,
-            outcomes,
-            reason=exc.reason,
-            detail=exc.detail,
-            client=preflight.client,
-        )
-        return _batch_result(outcomes)
-
-    kio_sources = [os.fspath(work.kio_source) for work in works if work.kio_source is not None]
-    if len(kio_sources) != len(works):
-        raise RuntimeError("KIO batch source preparation is incomplete")
-    command = [os.fspath(preflight.client)]
-    if bus_launcher is not None:
-        command = [os.fspath(bus_launcher), "--", os.fspath(preflight.client)]
-    command.extend(("--noninteractive", "move", *kio_sources, KIO_TRASH_URL))
-    if sum(len(argument.encode("utf-8")) + 1 for argument in command) > MAX_KIO_BATCH_ARGUMENT_BYTES:
-        _batch_restore_and_block(
-            works,
-            indexes,
-            outcomes,
-            reason="kio_batch_arguments_too_large",
-            detail="KIO batch command arguments exceed the bounded limit",
-            client=preflight.client,
-            command=command,
-        )
-        return _batch_result(outcomes, command)
-
-    client_descriptor: int | None = None
-    try:
+        use_claims = runner is None and private_claim
         try:
-            client_descriptor = _open_kio_client(preflight.client, client_snapshot)
+            for work in works:
+                if use_claims:
+                    try:
+                        work.claim = _claim_source(work.source, work.item.expected)
+                    except KioTrashClaimUnavailable as exc:
+                        work.claim = exc.claim
+                        work.kio_source = exc.claim.claim_path
+                        raise
+                    work.kio_source = work.claim.claim_path
+                else:
+                    work.kio_source = work.source
         except KioTrashUnavailable as exc:
+            cancelled = isinstance(exc.__cause__, KeyboardInterrupt)
             _batch_restore_and_block(
                 works,
                 indexes,
                 outcomes,
-                reason=exc.reason,
+                reason="kio_cancelled_before_effect" if cancelled else exc.reason,
                 detail=exc.detail,
                 client=preflight.client,
-                command=command,
             )
-            return _batch_result(outcomes, command)
-        runner_kwargs: dict[str, object] = {
-            "check": False,
-            "shell": False,
-            "capture_output": True,
-            "text": True,
-            "timeout": timeout,
-            "env": effective_environment,
-        }
-        if runner is None and bus_launcher is None:
-            runner_kwargs.update(
-                {
-                    "executable": f"/proc/self/fd/{client_descriptor}",
-                    "pass_fds": (client_descriptor,),
-                }
-            )
-        try:
-            completed = cast(KioRunner, subprocess.run if runner is None else runner)(
-                command,
-                **runner_kwargs,
-            )
-        except subprocess.TimeoutExpired as exc:
-            diagnostic = exc.stderr if exc.stderr is not None else exc.stdout
-            _batch_set_recovery(
-                works,
-                indexes,
-                outcomes,
-                reason="kio_timeout_effect_ambiguous",
-                detail=diagnostic or "KIO batch command timed out after it was started",
-                client=preflight.client,
-                command=command,
-                returncode=None,
-            )
-            return _batch_result(outcomes, command)
-        except OSError as exc:
+            return _batch_result(outcomes, cancelled=cancelled)
+
+        kio_sources = [os.fspath(work.kio_source) for work in works if work.kio_source is not None]
+        if len(kio_sources) != len(works):
+            raise RuntimeError("KIO batch source preparation is incomplete")
+        command = [os.fspath(preflight.client)]
+        if bus_launcher is not None:
+            command = [os.fspath(bus_launcher), "--", os.fspath(preflight.client)]
+        command.extend(("--noninteractive", "move", *kio_sources, KIO_TRASH_URL))
+        if sum(len(argument.encode("utf-8")) + 1 for argument in command) > MAX_KIO_BATCH_ARGUMENT_BYTES:
             _batch_restore_and_block(
                 works,
                 indexes,
                 outcomes,
-                reason="kio_process_start_failed",
-                detail=exc,
+                reason="kio_batch_arguments_too_large",
+                detail="KIO batch command arguments exceed the bounded limit",
                 client=preflight.client,
                 command=command,
             )
             return _batch_result(outcomes, command)
-        except subprocess.SubprocessError as exc:
-            _batch_set_recovery(
-                works,
-                indexes,
-                outcomes,
-                reason="kio_process_effect_ambiguous",
-                detail=f"{type(exc).__name__}: {exc}",
-                client=preflight.client,
-                command=command,
-                returncode=None,
-            )
-            return _batch_result(outcomes, command)
-        except BaseException as exc:
-            _batch_set_recovery(
-                works,
-                indexes,
-                outcomes,
-                reason="kio_process_interrupted",
-                detail=f"{type(exc).__name__}: KIO process outcome is unknown",
-                client=preflight.client,
-                command=command,
-                returncode=None,
-            )
-            return _batch_result(outcomes, command)
-    finally:
-        if client_descriptor is not None:
-            try:
-                os.close(client_descriptor)
-            except OSError:
-                pass
 
-    try:
-        returncode = completed.returncode
-        process_stderr = completed.stderr
-        process_stdout = completed.stdout
-    except BaseException as exc:
-        _batch_set_recovery(
-            works,
-            indexes,
-            outcomes,
-            reason="kio_process_result_invalid",
-            detail=f"{type(exc).__name__}: KIO runner returned an unsupported result",
-            client=preflight.client,
-            command=command,
-            returncode=None,
-        )
-        return _batch_result(outcomes, command)
-    if isinstance(returncode, bool) or not isinstance(returncode, int):
-        _batch_set_recovery(
-            works,
-            indexes,
-            outcomes,
-            reason="kio_process_result_invalid",
-            detail="KIO runner returned no valid integer exit status",
-            client=preflight.client,
-            command=command,
-            returncode=None,
-        )
-        return _batch_result(outcomes, command)
-    if returncode != 0:
-        diagnostic = process_stderr if process_stderr is not None else process_stdout
-        _batch_set_recovery(
-            works,
-            indexes,
-            outcomes,
-            reason="kio_nonzero_effect_ambiguous",
-            detail=diagnostic or f"KIO batch command returned {returncode}",
-            client=preflight.client,
-            command=command,
-            returncode=returncode,
-        )
-        return _batch_result(outcomes, command, returncode)
-
-    preverified: dict[str, KioTrashVerification] | None = None
-    if verifier is None:
+        client_descriptor: int | None = None
         try:
-            preverified = _default_kio_verifier_batch(
-                works,
-                environment=effective_environment,
-                home_directory=home_directory,
-            )
+            try:
+                client_descriptor = _open_kio_client(preflight.client, client_snapshot)
+            except KioTrashUnavailable as exc:
+                _batch_restore_and_block(
+                    works,
+                    indexes,
+                    outcomes,
+                    reason=exc.reason,
+                    detail=exc.detail,
+                    client=preflight.client,
+                    command=command,
+                )
+                return _batch_result(outcomes, command)
+            runner_kwargs: dict[str, object] = {
+                "check": False,
+                "shell": False,
+                "capture_output": True,
+                "text": True,
+                "timeout": timeout,
+                "env": effective_environment,
+            }
+            if runner is None and bus_launcher is None:
+                runner_kwargs.update(
+                    {
+                        "executable": f"/proc/self/fd/{client_descriptor}",
+                        "pass_fds": (client_descriptor,),
+                    }
+                )
+            try:
+                process_started = True
+                completed = cast(KioRunner, subprocess.run if runner is None else runner)(
+                    command,
+                    **runner_kwargs,
+                )
+            except subprocess.TimeoutExpired as exc:
+                diagnostic = exc.stderr if exc.stderr is not None else exc.stdout
+                _batch_set_recovery(
+                    works,
+                    indexes,
+                    outcomes,
+                    reason="kio_timeout_effect_ambiguous",
+                    detail=diagnostic or "KIO batch command timed out after it was started",
+                    client=preflight.client,
+                    command=command,
+                    returncode=None,
+                )
+                return _batch_result(outcomes, command)
+            except OSError as exc:
+                _batch_restore_and_block(
+                    works,
+                    indexes,
+                    outcomes,
+                    reason="kio_process_start_failed",
+                    detail=exc,
+                    client=preflight.client,
+                    command=command,
+                )
+                return _batch_result(outcomes, command)
+            except subprocess.SubprocessError as exc:
+                _batch_set_recovery(
+                    works,
+                    indexes,
+                    outcomes,
+                    reason="kio_process_effect_ambiguous",
+                    detail=f"{type(exc).__name__}: {exc}",
+                    client=preflight.client,
+                    command=command,
+                    returncode=None,
+                )
+                return _batch_result(outcomes, command)
+            except BaseException as exc:
+                _batch_set_recovery(
+                    works,
+                    indexes,
+                    outcomes,
+                    reason="kio_process_interrupted",
+                    detail=f"{type(exc).__name__}: KIO process outcome is unknown",
+                    client=preflight.client,
+                    command=command,
+                    returncode=None,
+                )
+                return _batch_result(outcomes, command)
+        finally:
+            if client_descriptor is not None:
+                try:
+                    os.close(client_descriptor)
+                except OSError:
+                    pass
+
+        try:
+            returncode = completed.returncode
+            process_stderr = completed.stderr
+            process_stdout = completed.stdout
         except BaseException as exc:
+            if isinstance(exc, KeyboardInterrupt):
+                raise
             _batch_set_recovery(
                 works,
                 indexes,
                 outcomes,
-                reason="kio_verification_failed",
-                detail=f"{type(exc).__name__}: {exc}",
+                reason="kio_process_result_invalid",
+                detail=f"{type(exc).__name__}: KIO runner returned an unsupported result",
+                client=preflight.client,
+                command=command,
+                returncode=None,
+            )
+            return _batch_result(outcomes, command)
+        if isinstance(returncode, bool) or not isinstance(returncode, int):
+            _batch_set_recovery(
+                works,
+                indexes,
+                outcomes,
+                reason="kio_process_result_invalid",
+                detail="KIO runner returned no valid integer exit status",
+                client=preflight.client,
+                command=command,
+                returncode=None,
+            )
+            return _batch_result(outcomes, command)
+        if returncode != 0:
+            diagnostic = process_stderr if process_stderr is not None else process_stdout
+            _batch_set_recovery(
+                works,
+                indexes,
+                outcomes,
+                reason="kio_nonzero_effect_ambiguous",
+                detail=diagnostic or f"KIO batch command returned {returncode}",
                 client=preflight.client,
                 command=command,
                 returncode=returncode,
             )
             return _batch_result(outcomes, command, returncode)
 
-    for work, index in zip(works, indexes, strict=True):
-        preverified_item = (
-            None
-            if preverified is None or work.kio_source is None
-            else preverified.get(os.fspath(work.kio_source))
-        )
-        if preverified is not None and preverified_item is None:
-            outcomes[index] = _batch_recovery(
+        preverified: dict[str, KioTrashVerification] | None = None
+        if verifier is None:
+            try:
+                preverified = _default_kio_verifier_batch(
+                    works,
+                    environment=effective_environment,
+                    home_directory=home_directory,
+                )
+            except BaseException as exc:
+                if isinstance(exc, KeyboardInterrupt):
+                    raise
+                _batch_set_recovery(
+                    works,
+                    indexes,
+                    outcomes,
+                    reason="kio_verification_failed",
+                    detail=f"{type(exc).__name__}: {exc}",
+                    client=preflight.client,
+                    command=command,
+                    returncode=returncode,
+                )
+                return _batch_result(outcomes, command, returncode)
+
+        for work, index in zip(works, indexes, strict=True):
+            preverified_item = (
+                None
+                if preverified is None or work.kio_source is None
+                else preverified.get(os.fspath(work.kio_source))
+            )
+            if preverified is not None and preverified_item is None:
+                outcomes[index] = _batch_recovery(
+                    work,
+                    reason="kio_verification_failed",
+                    detail="KIO batch verifier omitted a source outcome",
+                    client=preflight.client,
+                    command=command,
+                    returncode=returncode,
+                )
+                continue
+            outcomes[index] = _batch_verified_result(
                 work,
-                reason="kio_verification_failed",
-                detail="KIO batch verifier omitted a source outcome",
+                verifier=verifier,
+                preverified=preverified_item,
                 client=preflight.client,
                 command=command,
                 returncode=returncode,
+                environment=effective_environment,
+                home_directory=home_directory,
             )
-            continue
-        outcomes[index] = _batch_verified_result(
-            work,
-            verifier=verifier,
-            preverified=preverified_item,
-            client=preflight.client,
-            command=command,
-            returncode=returncode,
-            environment=effective_environment,
-            home_directory=home_directory,
+        return _batch_result(outcomes, command, returncode)
+    except BaseException as exc:
+        cancelled = isinstance(exc, KeyboardInterrupt) or isinstance(exc.__cause__, KeyboardInterrupt)
+        reason = "kio_process_interrupted" if cancelled else "kio_batch_operation_failed"
+        detail = f"{type(exc).__name__}: {exc}"
+        if not process_started:
+            # Claims may already exist even though KIO never started.  This
+            # owner still has every locator and can safely restore all of
+            # them, or return structured recovery evidence for any failure.
+            _batch_restore_and_block(
+                works, indexes, outcomes,
+                reason="kio_cancelled_before_effect" if cancelled else reason,
+                detail=detail, client=preflight.client, command=command,
+            )
+        else:
+            # Keep receipts finalized earlier in this batch.  Only untyped
+            # slots require recovery after an interruption between members.
+            pending = [(work, index) for work, index in zip(works, indexes, strict=True)
+                       if outcomes[index] is None]
+            _batch_set_recovery(
+                [work for work, _index in pending],
+                [index for _work, index in pending], outcomes,
+                reason=reason, detail=detail, client=preflight.client,
+                command=command, returncode=returncode,
+            )
+        return _batch_result(outcomes, command, returncode, cancelled=cancelled)
+
+
+class KioTrashService:
+    """Own the complete physical KIO lifecycle for single and batch effects.
+
+    Authorization, root/keeper admission, durable intents and action ledgers
+    remain caller-owned.  Once admitted, every item uses the same safety
+    primitive: private configuration and bus, no-replace claim, execution,
+    verified Trash pair, directory flushes, and durable claim cleanup.
+
+    Supplying a runner preserves the fixture seam: no native claim, private
+    configuration or private bus is introduced.  The low-level public
+    ``move_to_trash`` and ``move_many_to_trash`` APIs remain available.
+    """
+
+    def __init__(
+        self,
+        *,
+        verifier: KioVerifier | None = None,
+        runner: KioRunner | None = None,
+        which: ClientResolver | None = None,
+        environment: Mapping[str, str] | None = None,
+        home_directory: Path | None = None,
+        timeout_seconds: float = DEFAULT_KIO_TIMEOUT_SECONDS,
+        private_claim: bool = True,
+        private_config: bool = True,
+        private_bus: bool = True,
+    ) -> None:
+        for name, value in (
+            ("private_claim", private_claim),
+            ("private_config", private_config),
+            ("private_bus", private_bus),
+        ):
+            if not isinstance(value, bool):
+                raise TypeError(f"{name} must be boolean")
+        self._verifier = verifier
+        self._runner = runner
+        self._which = shutil.which if which is None else which
+        self._environment = environment
+        self._home_directory = home_directory
+        self._timeout_seconds = timeout_seconds
+        self._private_claim = private_claim
+        self._private_config = private_config
+        self._private_bus = private_bus
+
+    @contextmanager
+    def _operation_context(self) -> Iterator[tuple[Mapping[str, str] | None, Path | None]]:
+        if self._runner is None and self._private_config:
+            with private_kio_context(
+                self._environment, home_directory=self._home_directory
+            ) as prepared:
+                yield prepared
+        else:
+            yield self._environment, self._home_directory
+
+    def move(self, snapshot: FileSnapshot, *, source_digest: str) -> KioTrashResult:
+        """Run one admitted source through the same lifecycle as a batch."""
+
+        return self.move_many((KioTrashBatchItem(snapshot.path, snapshot, source_digest),))[0]
+
+    def move_many(self, items: Sequence[KioTrashBatchItem]) -> tuple[KioTrashResult, ...]:
+        """Return one typed outcome per input, preserving order and receipts.
+
+        Split at the item bound before invoking KIO.  Split at the argv bound
+        only if every result explicitly proves pre-effect blocking and claim
+        restoration.  Never retry an ambiguous or mixed physical outcome.
+        A later chunk or private-context cleanup failure cannot erase the
+        already returned evidence from an earlier chunk.
+        """
+
+        if not isinstance(items, Sequence):
+            raise TypeError("KIO batch items must be a finite sequence")
+        normalized = tuple(_coerce_batch_item(item) for item in items)
+        if not normalized:
+            return ()
+        try:
+            _validated_timeout(self._timeout_seconds)
+        except (TypeError, ValueError) as exc:
+            return tuple(
+                _batch_blocked(item, reason="kio_preflight_failed", detail=exc)
+                for item in normalized
+            )
+        outcomes: list[KioTrashResult] = []
+        started = False
+        try:
+            with self._operation_context() as (environment, home_directory):
+                started = True
+                self._move_batches(
+                    normalized, outcomes, environment=environment, home_directory=home_directory
+                )
+        except (OSError, RuntimeError, ValueError, TypeError, KeyboardInterrupt) as exc:
+            if len(outcomes) == len(normalized):
+                # All physical frontiers have typed, durable results.  Failure
+                # removing derivative configuration cannot invalidate them or
+                # turn an applied receipt into a blocked action.
+                reason = (
+                    "kio_operation_interrupted_after_results"
+                    if isinstance(exc, KeyboardInterrupt)
+                    else "kio_private_context_cleanup_failed"
+                )
+                detail = _sanitize_diagnostic(f"{reason}: {exc}")
+                return tuple(
+                    replace(outcome, detail=outcome.detail or detail) for outcome in outcomes
+                )
+            status = KioTrashStatus.RECOVERY_REQUIRED if started else KioTrashStatus.BLOCKED
+            reason = "kio_batch_operation_failed" if started else "kio_preflight_failed"
+            detail = _sanitize_diagnostic(f"{type(exc).__name__}: {exc}")
+            if not started and isinstance(exc, KioTrashUnavailable):
+                reason, detail = exc.reason, _sanitize_diagnostic(exc.detail)
+            if isinstance(exc, KeyboardInterrupt):
+                reason = "kio_process_interrupted" if started else "kio_cancelled_before_effect"
+            outcomes.extend(
+                KioTrashResult(status, reason, item.expected.path, detail=detail)
+                for item in normalized[len(outcomes):]
+            )
+        return tuple(outcomes)
+
+    def _move_batches(
+        self,
+        items: Sequence[KioTrashBatchItem],
+        outcomes: list[KioTrashResult],
+        *,
+        environment: Mapping[str, str] | None,
+        home_directory: Path | None,
+    ) -> bool:
+        if len(items) > MAX_KIO_BATCH_ITEMS:
+            midpoint = len(items) // 2
+            interrupted = self._move_batches(
+                items[:midpoint], outcomes, environment=environment, home_directory=home_directory
+            )
+            if interrupted:
+                outcomes.extend(
+                    _batch_blocked(item, reason="kio_cancelled_before_effect", detail=None)
+                    for item in items[midpoint:]
+                )
+                return True
+            return self._move_batches(
+                items[midpoint:], outcomes, environment=environment, home_directory=home_directory
+            )
+        try:
+            batch = move_many_to_trash(
+                items,
+                verifier=self._verifier,
+                runner=self._runner,
+                which=self._which,
+                environment=environment,
+                home_directory=home_directory,
+                timeout_seconds=self._timeout_seconds,
+                private_bus=self._runner is None and self._private_bus,
+                private_claim=self._runner is None and self._private_claim,
+            )
+        except (OSError, RuntimeError, ValueError, TypeError, KeyboardInterrupt) as exc:
+            interrupted = isinstance(exc, KeyboardInterrupt)
+            outcomes.extend(
+                KioTrashResult(
+                    KioTrashStatus.RECOVERY_REQUIRED,
+                    "kio_process_interrupted" if interrupted else "kio_batch_operation_failed",
+                    item.expected.path,
+                    detail=_sanitize_diagnostic(f"{type(exc).__name__}: {exc}"),
+                )
+                for item in items
+            )
+            return interrupted
+        if (
+            not isinstance(batch, KioTrashBatchResult)
+            or not isinstance(batch.outcomes, tuple)
+            or len(batch.outcomes) != len(items)
+        ):
+            outcomes.extend(
+                KioTrashResult(
+                    KioTrashStatus.RECOVERY_REQUIRED,
+                    "kio_batch_result_invalid",
+                    item.expected.path,
+                    detail="KIO batch returned an unexpected outcome vector",
+                )
+                for item in items
+            )
+            return False
+        checked = tuple(
+            outcome
+            if isinstance(outcome, KioTrashResult)
+            and isinstance(outcome.status, KioTrashStatus)
+            and outcome.source_path == item.expected.path
+            else KioTrashResult(
+                KioTrashStatus.RECOVERY_REQUIRED,
+                "kio_batch_result_invalid",
+                item.expected.path,
+                detail="KIO batch outcome does not identify its input source",
+            )
+            for item, outcome in zip(items, batch.outcomes, strict=True)
         )
-    return _batch_result(outcomes, command, returncode)
+        if len(items) > 1 and all(
+            outcome.status is KioTrashStatus.BLOCKED
+            and outcome.reason == "kio_batch_arguments_too_large"
+            for outcome in checked
+        ):
+            midpoint = len(items) // 2
+            interrupted = self._move_batches(
+                items[:midpoint], outcomes, environment=environment, home_directory=home_directory
+            )
+            if interrupted:
+                outcomes.extend(
+                    _batch_blocked(item, reason="kio_cancelled_before_effect", detail=None)
+                    for item in items[midpoint:]
+                )
+                return True
+            return self._move_batches(
+                items[midpoint:], outcomes, environment=environment, home_directory=home_directory
+            )
+        outcomes.extend(checked)
+        return batch.cancelled or any(
+            outcome.reason == "kio_process_interrupted" for outcome in checked
+        )
+
 
 __all__ = [
     "DEFAULT_KIO_TIMEOUT_SECONDS",
@@ -2555,14 +2974,17 @@ __all__ = [
     "KIO_TRASH_URL",
     "MAX_KIO_BATCH_ARGUMENT_BYTES",
     "MAX_KIO_BATCH_ITEMS",
+    "MAX_KIO_CLAIM_RECOVERY_BYTES",
     "MAX_KIO_TIMEOUT_SECONDS",
     "MIN_KIO_TIMEOUT_SECONDS",
     "KioRunner",
     "KioTrashBatchItem",
     "KioTrashBatchResult",
+    "KioTrashClaim",
     "KioTrashPreflight",
     "KioTrashReceipt",
     "KioTrashResult",
+    "KioTrashService",
     "KioTrashStatus",
     "KioTrashUnavailable",
     "KioTrashVerification",
@@ -2571,5 +2993,8 @@ __all__ = [
     "move_many_to_trash",
     "move_to_trash",
     "preflight_kio_trash",
+    "read_claim_recovery_detail",
     "restore_trash_receipt",
+    "trash_receipt_paths",
+    "verify_trash_receipt_evidence",
 ]

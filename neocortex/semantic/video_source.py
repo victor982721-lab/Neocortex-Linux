@@ -21,8 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from .semantic_models import SemanticItem, TextSection, fingerprint_text
-from .semantic_sources import TextSourceRecord
+from .semantic_models import SemanticItem, TextSection, TextSourceRecord, fingerprint_text
 from neocortex.platform.content_capability_manifest import content_capability_for_source
 from neocortex.persistence.sqlite_immutable import (
     ImmutableSQLiteUnavailable,

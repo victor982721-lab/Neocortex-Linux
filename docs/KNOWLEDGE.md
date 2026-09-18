@@ -63,6 +63,47 @@ scores independientes. Semantic sólo aporta evidencia cuando existe un head,
 modelo y espacio vectorial compatibles. Discovery puede proponer candidatos,
 pero un título o ruta no crea evidencia corporal.
 
+La búsqueda exacta usa un único orden total en el escaneo SQLite, el índice
+persistido escalar y el camino NumPy: score descendente, `item_id`, `entity_id`
+y firma de modelo ascendentes, y `ref_id` descendente sólo cuando la identidad
+semántica completa empata. Ese orden selecciona el representante de cada grupo,
+retiene el top K, ordena la salida y calcula `raw_rank`. Para un mismo snapshot
+y presupuesto de escaneo, K es prefijo de una ventana mayor. Discovery agrupa
+por item; la búsqueda de evidencia agrupa por item y entidad. Los diagnósticos
+no convierten un escaneo incompleto en un rango global ni alteran sus límites.
+El cambio es de consulta: no requiere reconstruir índices ni migrar vectores.
+
+`SemanticVectorSearch` es la frontera sustituible de ranking. El request
+envuelve `ExactSearchQuery` completo: vector, firma y espacio del modelo,
+dimensiones, modalidad y selección de modelos, junto con snapshot del owner,
+scope, granularidad de evidencia, cursor y diagnósticos solicitados. El
+presupuesto conserva K, máximo de vectores y tamaño de lote. La página
+transporta candidatos ordenados, filas inspeccionadas, cursor, cobertura,
+backend y motivo de fallback; no concede autoridad a citas ni a inferencias.
+`NativeExactVectorSearch` conserva el escaneo exacto como oráculo y
+`PersistedExactVectorSearch` usa un handle preparado y verificado explícitamente.
+Las funciones `search_exact_page` y `search_exact_evidence_page` aceptan
+`vector_backend=`; el parámetro existente `exact_index=` usa el mismo adapter.
+`backend_diagnostics=` permite observar esa decisión sin cambiar la página
+pública ni los diagnósticos de ranking existentes.
+
+Un backend sólo puede declinar antes de escanear. Una incompatibilidad de scope
+o diagnósticos puede volver al exacto directo con el mismo presupuesto y
+snapshot; un cambio de fuente, cambio del artefacto durante el escaneo o
+respuesta mal formada produce abstención sin reintento implícito. La hidratación
+y la comprobación de revisiones siguen en el owner semántico. Una consulta nueva
+captura su propia vista; una vista derivada no se reconstruye desde una lectura.
+
+Las normas NumPy persistidas conservan el binding v1 del binario, versión,
+features de CPU, byteorder y runtime Python. El adapter privado de NumPy 2
+resuelve una sola extensión, `numpy._core._multiarray_umath`, y valida su
+estructura y ELF antes de reutilizar el binding. `_core` no es una API pública
+estable. El nombre lógico histórico `numpy.core._multiarray_umath` se conserva
+porque el alias y la extensión son idénticos en las wheels comprobadas por la
+prueba de equivalencia; cada wheel del perfil offline debe pasar esa prueba.
+Cambiar el runtime o sus features invalida exclusivamente la vista vinculada;
+no autoriza borrar índices, reconstruirlos ni tocar originales.
+
 La fusión preserva:
 
 - recurso y revisión;
@@ -133,6 +174,37 @@ evidencia relevante con localizadores verificables, latencia comprensible y una
 explicación precisa de la cobertura faltante. Fixtures y pruebas de contrato son
 regresiones necesarias, pero no sustituyen esa demostración sobre un estado
 autorizado.
+
+La evaluación independiente de reglas usa JSONL con textos y etiquetas
+sintéticos, rangos emitidos, actores y localizadores. Las etiquetas se fijan
+antes de observar predicciones y los escenarios y paráfrasis permanecen en un
+único split. `tools/knowledge_evidence_evaluation.py` verifica su hash, ejecuta
+la proyección pública de contexto y compara el fragmento finalmente emitido,
+incluyendo `query_role_counterevidence`, scope y offsets. Reporta resultados por
+dominio, familia, sujeto y split, junto con abstenciones, cobertura y matriz de
+soporte sobre las etiquetas evaluables. Las abstenciones no cuentan como
+negativos correctos; un denominador vacío no permite estimar precisión.
+
+La aceptación sintética exige cero soportes espurios y mantiene
+`answer_sufficiency=not_assessed` y `document_completeness=not_asserted`.
+Coincidencias en filename o locator, scores altos y verificación de una cita no
+sustituyen testigos del fragmento. El panel de preguntas generales puede revelar
+cobertura muy baja: las reglas sólo reconocen familias léxicas explícitas y no
+realizan entailment general. Los estados individuales de los markers se
+reportan, pero no reciben métricas de precisión sin etiquetas independientes
+por marker. Los fixtures de desarrollo y estos paneles no acreditan relevancia
+en el corpus personal; esa evaluación requiere un conjunto local autorizado y
+etiquetado.
+
+`benchmarks/semantic_vector_backend_benchmark.py` mide vectores sintéticos a
+través de la misma frontera usada por las consultas. Separa latencia de
+ranking, construcción y reapertura del artefacto, filas escaneadas, igualdad con
+el oráculo y costes de snapshots nuevos o reutilizados. Registra la abstención
+por drift y la recuperación explícita después de una publicación interrumpida.
+Su decisión inicial conserva exacto mientras no haya evidencia que justifique
+ANN. Un benchmark sintético no mide calidad de embeddings, corpus personal ni
+requisitos universales de rendimiento; las mediciones y decisiones de cada
+ensayo se conservan fuera del árbol productivo.
 
 Las brechas de localización, publicación y curación se priorizan en
 [ROADMAP_90_DAYS.md](ROADMAP_90_DAYS.md).

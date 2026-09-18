@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import os
 import re
 import unicodedata
 from collections.abc import Iterator
@@ -12,66 +13,26 @@ from urllib.parse import unquote, urlsplit
 
 import pytest
 
+from tools.export_profile import (
+    MANIFEST_NAME, documentation_paths, validate_export_directory,
+)
+
 from neocortex.api.cli.cli_parser import build_parser
 from neocortex.api.cli.human import build_human_parser
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
-_ACTIVE_DOCUMENTS = frozenset(
-    {
-        "README.md",
-        "docs/ARCHITECTURE.md",
-        "docs/CHANGELOG.md",
-        "docs/CLI.md",
-        "docs/AGENT_ACTIVITY.md",
-        "docs/FILE_INTELLIGENCE_AND_CURATION.md",
-        "docs/KNOWLEDGE.md",
-        "docs/KNOWLEDGE_OPERATIONAL_QUERY.md",
-        "docs/LINUX_KUBUNTU.md",
-        "docs/OPERATIONS.md",
-        "docs/PERSISTENCE.md",
-        "docs/RECOVERY.md",
-        "docs/ROADMAP_90_DAYS.md",
-        "docs/SECURITY.md",
-        "docs/SUBPROJECTS.md",
-        "docs/subprojects/code-content.md",
-        "docs/subprojects/curation-effects.md",
-        "docs/subprojects/development-release.md",
-        "docs/subprojects/formats.md",
-        "docs/subprojects/interfaces.md",
-        "docs/subprojects/inventory-catalog.md",
-        "docs/subprojects/platform-state.md",
-        "docs/subprojects/retrieval-context.md",
-    }
-)
-_SOURCE_ONLY_DOCUMENTS = frozenset(
-    {
-        ".codex/handoffs/NEOCORTEX_0.12.0_BUGFIX_2026-09-05.md",
-        ".codex/handoffs/NEOCORTEX_0.12.0_SCALE_2026-09-04.md",
-        ".codex/handoffs/NEOCORTEX_0.12.1_LIFECYCLE_2026-09-05.md",
-        ".codex/handoffs/NEOCORTEX_0.13.0_BUDGETS_2026-09-05.md",
-        ".codex/handoffs/NEOCORTEX_FUNCTIONAL_2026-09-06.md",
-        ".codex/handoffs/CURRENT.md",
-        ".codex/handoffs/NEOCORTEX_0.11.1_RECOVERY_2026-09-04.md",
-        ".codex/handoffs/NEOCORTEX_0.11.0_APPLY_2026-09-04.md",
-        ".codex/handoffs/NEOCORTEX_0.10.0_CURATION_2026-09-04.md",
-        ".codex/handoffs/NEOCORTEX_0.9.0_CURATION_2026-09-04.md",
-        ".codex/handoffs/NEOCORTEX_0.7.2_PAUSE_2026-07-30.md",
-        "AGENTS.md",
-        "neocortex/api/AGENTS.md",
-        "neocortex/capabilities/AGENTS.md",
-        "neocortex/code/AGENTS.md",
-        "neocortex/curation/AGENTS.md",
-        "neocortex/deduplication/AGENTS.md",
-        "neocortex/documents/AGENTS.md",
-        "neocortex/interface/AGENTS.md",
-        "neocortex/knowledge/AGENTS.md",
-        "neocortex/persistence/AGENTS.md",
-        "neocortex/runtime/AGENTS.md",
-        "neocortex/semantic/AGENTS.md",
-        "neocortex/workflow/AGENTS.md",
-    }
-)
+# The default is an explicit development-checkout contract. Sanitized exports
+# opt in by name and must verify their immutable manifest before collection.
+_DECLARED_PROFILE = os.environ.get("NEOCORTEX_DOCUMENTATION_PROFILE", "checkout")
+_DOCUMENTS = documentation_paths(_DECLARED_PROFILE)
+if _DECLARED_PROFILE == "sanitized":
+    validate_export_directory(
+        _PROJECT_ROOT, _PROJECT_ROOT / MANIFEST_NAME, expected_profile="sanitized",
+        expected_commit=os.environ.get("NEOCORTEX_EXPORT_SOURCE_COMMIT"),
+    )
+
+
 _RETIRED_DOCUMENTS = frozenset(
     {
         "NeoCortex_AGENTS.md",
@@ -264,8 +225,8 @@ def _parser_options_and_help(parser: argparse.ArgumentParser) -> tuple[frozenset
 
 
 def test_documentation_inventory_is_exactly_the_canonical_set() -> None:
-    assert _repository_markdown() == _ACTIVE_DOCUMENTS | _SOURCE_ONLY_DOCUMENTS
-    for relative in _ACTIVE_DOCUMENTS | _SOURCE_ONLY_DOCUMENTS:
+    assert _repository_markdown() == _DOCUMENTS
+    for relative in _DOCUMENTS:
         path = _PROJECT_ROOT / relative
         assert path.is_file() and not path.is_symlink(), relative
     for relative in _RETIRED_DOCUMENTS:
@@ -277,7 +238,7 @@ def test_canonical_documents_do_not_reference_retired_documents() -> None:
         Path(relative).name for relative in _RETIRED_DOCUMENTS if Path(relative).name != "README.md"
     }
     tokens = _RETIRED_DOCUMENTS | unique_basenames
-    for relative in _ACTIVE_DOCUMENTS | _SOURCE_ONLY_DOCUMENTS:
+    for relative in _DOCUMENTS:
         text = (_PROJECT_ROOT / relative).read_text(encoding="utf-8").casefold()
         stale = sorted(token for token in tokens if token.casefold() in text)
         assert stale == [], f"{relative} references retired documentation: {stale}"
@@ -320,7 +281,7 @@ def test_documented_cli_examples_match_installed_parser_help() -> None:
     )
 
 
-@pytest.mark.parametrize("relative", sorted(_ACTIVE_DOCUMENTS | _SOURCE_ONLY_DOCUMENTS))
+@pytest.mark.parametrize("relative", sorted(_DOCUMENTS))
 def test_local_documentation_links_and_anchors_resolve(relative: str) -> None:
     source = _PROJECT_ROOT / relative
     for line_number, raw_target in _local_links(source):

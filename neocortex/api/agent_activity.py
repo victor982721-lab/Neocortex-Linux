@@ -27,7 +27,7 @@ import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Self, cast
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 from neocortex.runtime.artifact_registry import (
     ArtifactConflictError,
@@ -36,6 +36,15 @@ from neocortex.runtime.artifact_registry import (
     ArtifactRegistry,
 )
 from neocortex.runtime.scratch import ScratchManager, ScratchRecord, ScratchState, ScratchWorkspace
+from neocortex.runtime.scratch import (
+    ScratchSecurityError,
+    workspace_payload_digest as _scratch_workspace_digest,
+)
+from neocortex.runtime.control.bounded_subprocess import (
+    SubprocessOutputLimitError,
+    run_bounded_capture,
+)
+from neocortex.runtime.control.process_scope import verified_process_quiescence
 
 if TYPE_CHECKING:
     from neocortex.workflow.retention.planner import (
@@ -171,7 +180,7 @@ def _private_root(path: Path, *, create: bool) -> Path:
 def _safe_metadata(value: Mapping[str, Any] | None) -> dict[str, Any]:
     metadata = {} if value is None else dict(value)
     try:
-        encoded = json.dumps(metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        encoded = json.dumps(metadata, ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(",", ":"))
     except (TypeError, ValueError) as exc:
         raise ValueError("activity metadata must contain finite JSON values") from exc
     if len(encoded.encode("utf-8")) > 64 * 1024:
@@ -191,7 +200,7 @@ def _read_note(reason: str | None) -> dict[str, Any]:
 
 def _encode_note(note: Mapping[str, Any]) -> str:
     payload = {"schema": _NOTE_SCHEMA, **dict(note)}
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    encoded = json.dumps(payload, ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(",", ":"))
     value = _NOTE_PREFIX + encoded
     if len(value.encode("utf-8")) > 8 * 1024:
         raise ValueError("activity lifecycle note exceeds the durable limit")
@@ -241,41 +250,13 @@ def _sha256_file(path: Path, *, max_bytes: int = _MAX_FILE_BYTES) -> tuple[str, 
     return "sha256:" + digest.hexdigest(), total, _identity(initial), int(initial.st_mtime_ns)
 
 
-def _sealed_workspace_digest(path: Path) -> tuple[str, int, int]:
-    """Digest every private workspace member (names, identity, content)."""
+def _sealed_workspace_digest(path: Path, *, profile: str = "strict") -> tuple[str, int, int]:
+    """Use the scratch owner's canonical member/identity/content seal."""
 
-    digest = hashlib.sha256()
-    members = 0
-    apparent = 0
-    stack: list[tuple[Path, str]] = [(path, "")]
-    while stack:
-        directory, relative = stack.pop()
-        try:
-            with os.scandir(directory) as iterator:
-                entries = sorted(iterator, key=lambda item: item.name)
-        except OSError as exc:
-            raise AgentActivityChanged("workspace could not be sealed") from exc
-        for entry in entries:
-            if entry.name == "manifest.json" or entry.name.startswith(".manifest.json."):
-                continue
-            child_relative = f"{relative}/{entry.name}" if relative else entry.name
-            metadata = entry.stat(follow_symlinks=False)
-            if stat.S_ISLNK(metadata.st_mode) or metadata.st_uid != os.geteuid():
-                raise AgentActivityChanged("workspace contains an unauthorized link/owner")
-            if stat.S_ISDIR(metadata.st_mode):
-                stack.append((Path(entry.path), child_relative))
-                digest.update(f"D:{child_relative}:{_identity(metadata)}\n".encode())
-                members += 1
-                continue
-            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-                raise AgentActivityChanged("workspace contains an unauthorized payload")
-            file_digest, size, identity, mtime = _sha256_file(Path(entry.path))
-            digest.update(
-                f"F:{child_relative}:{identity}:{size}:{mtime}:{file_digest}\n".encode()
-            )
-            members += 1
-            apparent += size
-    return "sha256:" + digest.hexdigest(), members, apparent
+    try:
+        return _scratch_workspace_digest(path, max_file_bytes=_MAX_FILE_BYTES, profile=profile)
+    except (ScratchSecurityError, OSError, UnicodeError) as exc:
+        raise AgentActivityChanged("workspace could not be sealed") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,6 +291,8 @@ class ProcessResult:
     stderr: str
     started_ns: int
     finished_ns: int
+    tool_temp_coverage: str = "incomplete"
+    process_scope_coverage: str = "posix-process-group"
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -319,6 +302,8 @@ class ProcessResult:
             "stderr": self.stderr,
             "started_ns": self.started_ns,
             "finished_ns": self.finished_ns,
+            "tool_temp_coverage": self.tool_temp_coverage,
+            "process_scope_coverage": self.process_scope_coverage,
         }
 
 
@@ -443,6 +428,10 @@ class AgentActivity:
         run_id: int | str | None = None,
         metadata: Mapping[str, Any] | None = None,
         process_pid: int | None = None,
+        workspace_root: Path | str | None = None,
+        payload_profile: str = "strict",
+        fixture_creation_grant_id: str | None = None,
+        fixture_authorized: bool = False,
     ) -> Self:
         """Create and register one private activity workspace."""
 
@@ -453,7 +442,10 @@ class AgentActivity:
             type(process_pid) is not int or process_pid < 1
         ):
             raise ValueError("process_pid must be a positive integer or null")
-        scratch_root = state / "scratch" / _SCRATCH_SCOPE
+        scratch_root = (state / "scratch" / _SCRATCH_SCOPE if workspace_root is None
+                        else _private_root(_absolute_path(workspace_root, label="workspace root"), create=True))
+        if state.is_relative_to(scratch_root) and state != scratch_root:
+            raise AgentActivityConflict("activity workspace root cannot contain its durable state")
         registry_root = state / "artifacts"
         registry = ArtifactRegistry(registry_root, owner=normalized_owner, create_root=True)
         manager = ScratchManager(
@@ -469,18 +461,27 @@ class AgentActivity:
             "schema": AGENT_ACTIVITY_SCHEMA,
             "activity_id": normalized_id,
             "owner": normalized_owner,
+            "workspace_root": str(scratch_root),
         }
         if process_pid is not None:
             activity_meta["process_pid"] = process_pid
         user_metadata = _safe_metadata(metadata)
-        reserved = {"schema", "activity_id", "owner", "process_pid"}
+        reserved = {"schema", "activity_id", "owner", "process_pid", "workspace_root"}
         if reserved.intersection(user_metadata):
             raise ValueError("activity metadata contains reserved lifecycle keys")
         activity_meta.update(user_metadata)
+        fixture_grant = None
+        if payload_profile != "strict":
+            if payload_profile != "fixture_posix_v1" or fixture_creation_grant_id is None:
+                raise AgentActivityConflict("fixture profile requires its explicit creation grant")
+            fixture_grant = manager.issue_fixture_grant(activity_id=normalized_id,
+                                creation_grant_id=fixture_creation_grant_id, authorized=fixture_authorized)
         workspace = manager.create(
             run_id=run_id,
             retain_on_success=True,
             metadata={_ACTIVITY_META_KEY: activity_meta},
+            payload_profile=payload_profile,
+            fixture_grant=fixture_grant,
         )
         return cls(
             state_directory=state,
@@ -504,8 +505,22 @@ class AgentActivity:
         normalized_id = _bounded_text(activity_id, label="activity_id", limit=_MAX_ACTIVITY_ID_BYTES)
         normalized_owner = _canonical_activity_owner(owner)
         registry = ArtifactRegistry(state / "artifacts", owner=normalized_owner, create_root=False)
+        workspace_root = state / "scratch" / _SCRATCH_SCOPE
+        registered = [item for item in _registry_records(registry)
+                      if item.owner == normalized_owner and item.artifact_id.startswith("scratch:")
+                      and isinstance(item.metadata.get(_ACTIVITY_META_KEY), Mapping)
+                      and item.metadata[_ACTIVITY_META_KEY].get("activity_id") == normalized_id]
+        if len(registered) > 1:
+            raise AgentActivityConflict(f"activity id has multiple durable claims: {normalized_id}")
+        if registered:
+            root_value = registered[0].metadata[_ACTIVITY_META_KEY].get("workspace_root")
+            if root_value is not None:
+                claimed_root = _absolute_path(root_value, label="activity workspace root")
+                if registered[0].path.parent != claimed_root:
+                    raise AgentActivityConflict("activity workspace root does not match producer claim")
+                workspace_root = claimed_root
         manager = ScratchManager(
-            state / "scratch" / _SCRATCH_SCOPE,
+            workspace_root,
             owner=normalized_owner,
             create_root=False,
             artifact_registry=registry,
@@ -588,12 +603,11 @@ class AgentActivity:
     def snapshot(self) -> ActivitySnapshot:
         record = self._refresh_record()
         activity = _record_activity_meta(record)
-        process_pid = activity.get("process_pid")
-        if not isinstance(process_pid, int):
-            note = _read_note(record.reason)
-            process_pid = note.get("process_pid") if isinstance(note.get("process_pid"), int) else None
-        publications: list[PublishedDeliverable] = []
         note = _read_note(record.reason)
+        process_pid = note.get("process_pid", activity.get("process_pid"))
+        if not isinstance(process_pid, int):
+            process_pid = None
+        publications: list[PublishedDeliverable] = []
         publication = note.get("publication")
         if isinstance(publication, Mapping):
             candidate = self._publication_from_intent(publication)
@@ -651,16 +665,26 @@ class AgentActivity:
             publications=tuple(publications),
         )
 
-    def associate_process(self, pid: int) -> ActivitySnapshot:
+    def associate_process(
+        self, pid: int, *, start_ticks: int | None = None
+    ) -> ActivitySnapshot:
         """Persist a bounded process claim in the existing scratch manifest."""
 
         if type(pid) is not int or pid < 1:
             raise ValueError("process pid must be a positive integer")
+        if start_ticks is not None and (type(start_ticks) is not int or start_ticks < 0):
+            raise ValueError("process start ticks must be a non-negative integer or null")
         record = self._refresh_record()
         if record.state not in {ScratchState.ACTIVE, ScratchState.COMMITTING}:
             raise AgentActivityError("process can only be associated with an open activity")
         note = _read_note(record.reason)
         note["process_pid"] = pid
+        note["process_start_ticks"] = start_ticks
+        note["process_status"] = "running"
+        # A new producer cannot inherit a previous producer's completion proof.
+        note.pop("process_scope_receipt", None)
+        note.pop("process_scope_coverage", None)
+        note.pop("process_scope", None)
         updated = self._manager._update_state(  # owner lifecycle write; no new storage is introduced
             record.path,
             record.record_id,
@@ -678,6 +702,8 @@ class AgentActivity:
         env: Mapping[str, str] | None = None,
         timeout: float | None = None,
         check: bool = True,
+        temporary_directory_contract: Literal["environment", "explicit-dir", "unknown"] = "unknown",
+        delegated_cgroup_root: Path | str | None = None,
     ) -> ProcessResult:
         """Run one argv-only external producer inside the private workspace."""
 
@@ -687,7 +713,16 @@ class AgentActivity:
             raise ValueError("command must be a non-empty argv sequence")
         if timeout is not None and (isinstance(timeout, bool) or timeout <= 0):
             raise ValueError("timeout must be positive or null")
+        if temporary_directory_contract not in {"environment", "explicit-dir", "unknown"}:
+            raise ValueError("unsupported temporary directory contract")
         self._require_open()
+        # Persist the launch obligation before Popen: a failed PID publication
+        # must not make a possibly running producer look like a manual activity.
+        launch_note = _read_note(self._refresh_record().reason)
+        launch_note["process_status"] = "starting"
+        launch_note["process_scope_coverage"] = "pending"
+        launch_note.pop("process_scope_receipt", None)
+        self._set_note(launch_note)
         started = time.time_ns()
         child_env = os.environ.copy()
         child_env.update(
@@ -701,45 +736,90 @@ class AgentActivity:
                 if not isinstance(key, str) or not isinstance(value, str):
                     raise ValueError("process environment keys and values must be strings")
             child_env.update(env)
+        # Activity-owned temporary storage cannot be redirected by ambient
+        # desktop variables or a caller override. Tools with explicit dir=
+        # parameters use NEOCORTEX_ACTIVITY_WORKSPACE as their same context.
+        child_env.update({key: str(self.path) for key in ("TMPDIR", "TMP", "TEMP")})
+        process_pid: int | None = None
+
+        def register_started(pid: int, start_ticks: int | None) -> None:
+            nonlocal process_pid
+            process_pid = pid
+            self.associate_process(pid, start_ticks=start_ticks)
+
+        process_scope = None
+        def persist_scope(receipt: Mapping[str, Any]) -> None:
+            note = _read_note(self._refresh_record().reason)
+            note["process_scope_receipt"] = dict(receipt)
+            self._set_note(note)
+
         try:
-            process = subprocess.Popen(
-                list(command),
+            if delegated_cgroup_root is not None:
+                from neocortex.runtime.control.process_scope import DelegatedProcessScope
+                process_scope = DelegatedProcessScope(Path(delegated_cgroup_root), self.activity_id,
+                                                       receipt_writer=persist_scope)
+            captured = run_bounded_capture(
+                command,
                 cwd=self.path,
-                env=child_env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                start_new_session=True,
+                environment=child_env,
+                timeout_seconds=timeout,
+                stdout_limit_bytes=_MAX_OUTPUT_BYTES,
+                stderr_limit_bytes=_MAX_OUTPUT_BYTES,
+                on_started=register_started,
+                process_scope=process_scope,
             )
-        except OSError as exc:
-            self._mark_failed(f"external process could not start: {type(exc).__name__}")
-            raise AgentActivityProcessError("external process could not start") from exc
-        try:
-            self.associate_process(process.pid)
-            stdout, stderr = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired as exc:
-            process.kill()
-            stdout, stderr = process.communicate()
             self._mark_failed("external process timed out")
             raise AgentActivityProcessError("external process timed out") from exc
-        except BaseException:
-            process.kill()
-            process.communicate()
+        except OSError as exc:
+            self._mark_failed(f"external process failed: {type(exc).__name__}")
+            raise AgentActivityProcessError("external process could not start or complete safely") from exc
+        except SubprocessOutputLimitError as exc:
+            self._mark_failed("external process output limit exceeded")
+            raise AgentActivityProcessError("external process output limit exceeded") from exc
+        except BaseException as exc:
+            # Capture has already attempted bounded group cleanup. Preserve
+            # an uncertain activity; never reinterpret a failed claim write
+            # or cancellation as successful process completion.
+            try:
+                self._mark_failed(f"external process failed: {type(exc).__name__}")
+            except BaseException as lifecycle_error:
+                exc.add_note(f"activity failure could not be persisted: {type(lifecycle_error).__name__}")
             raise
+        finally:
+            if process_scope is not None:
+                try:
+                    process_scope.close()
+                except BaseException:
+                    self._mark_failed("process scope cleanup could not be verified")
+                    raise
+        if process_pid is None:
+            self._mark_failed("external process has no durable process identity")
+            raise AgentActivityRecoveryRequired("external process identity is unavailable")
         finished = time.time_ns()
         result = ProcessResult(
-            pid=process.pid,
-            returncode=int(process.returncode),
-            stdout=stdout[-_MAX_OUTPUT_BYTES:],
-            stderr=stderr[-_MAX_OUTPUT_BYTES:],
+            pid=process_pid,
+            returncode=int(captured.returncode),
+            stdout=captured.stdout.decode("utf-8", errors="surrogateescape"),
+            stderr=captured.stderr.decode("utf-8", errors="surrogateescape"),
             started_ns=started,
             finished_ns=finished,
+            tool_temp_coverage=("incomplete" if temporary_directory_contract == "unknown"
+                                else "declared_" + temporary_directory_contract),
+            process_scope_coverage=("cgroup-v2" if process_scope is not None and process_scope.quiescent
+                                    else "incomplete_for_detached_descendants"),
         )
-        if check and result.returncode != 0:
+        note = _read_note(self._refresh_record().reason)
+        note["process_status"] = ("exited" if result.process_scope_coverage == "cgroup-v2"
+                                  else "cleanup_unverified")
+        note["process_scope"] = "cgroup-v2" if process_scope is not None else "posix-process-group"
+        note["process_scope_coverage"] = result.process_scope_coverage
+        note["tool_temp_coverage"] = result.tool_temp_coverage
+        self._set_note(note)
+        if result.returncode != 0:
             self._mark_failed(f"external process returned {result.returncode}")
-            raise AgentActivityProcessError(
-                f"external process returned {result.returncode}"
-            )
+            if check:
+                raise AgentActivityProcessError(f"external process returned {result.returncode}")
         return result
 
     def _require_open(self) -> ScratchRecord:
@@ -753,7 +833,11 @@ class AgentActivity:
     def _mark_failed(self, reason: str) -> None:
         record = self._refresh_record()
         if record.state in {ScratchState.ACTIVE, ScratchState.COMMITTING}:
-            self._workspace.fail(reason)
+            note = _read_note(record.reason)
+            note["failure"] = reason
+            if note.get("process_status") == "running":
+                note["process_status"] = "cleanup_unverified"
+            self._workspace.fail(_encode_note(note))
             self._refresh_record()
 
     def _set_note(self, note: Mapping[str, Any]) -> ScratchRecord:
@@ -839,6 +923,9 @@ class AgentActivity:
             observed_digest, observed_size, _identity_value, _mtime = _sha256_file(destination_path)
             if observed_digest != digest or observed_size != size:
                 raise AgentActivityChanged("published deliverable changed before replay")
+            if self.artifact_id in existing.dependencies:
+                self._registry.update(existing, dependencies=tuple(d for d in existing.dependencies
+                                                                  if d != self.artifact_id))
             return PublishedDeliverable(normalized_id, destination_path, digest, size, "already_published", artifact_id)
         effect_already_present = False
         if destination_exists:
@@ -913,6 +1000,16 @@ class AgentActivity:
                 raise AgentActivityConflict("deliverable registry claim conflicts with publication") from None
         except Exception as exc:
             raise AgentActivityRecoveryRequired("publication was written but registry confirmation failed") from exc
+        # The final copy is durable and verified before its temporary input is
+        # released. Canonical deliverables never become disposable work.
+        observed_digest, observed_size, _identity_value, _mtime = _sha256_file(destination_path)
+        if observed_digest != digest or observed_size != size:
+            raise AgentActivityChanged("published deliverable changed before dependency release")
+        published_record = self._registry.verify(artifact_id)
+        if not isinstance(published_record, ArtifactRecord) or not published_record.verified:
+            raise AgentActivityRecoveryRequired("publication claim must be verified before dependency release")
+        self._registry.update(published_record, dependencies=tuple(d for d in published_record.dependencies
+                                                                  if d != self.artifact_id))
         return PublishedDeliverable(normalized_id, destination_path, digest, size, "published", artifact_id)
 
     def _publication_from_intent(self, publication: Mapping[str, Any]) -> PublishedDeliverable | None:
@@ -942,7 +1039,21 @@ class AgentActivity:
     def close(self, result_paths: Iterable[Path | str] = ()) -> ActivitySnapshot:
         """Seal and complete the activity while retaining scratch for maintenance."""
 
+        if self._record.payload_profile == "fixture_posix_v1":
+            with self._manager.fixture_permissions(self.workspace_id, authorized=True):
+                return self._close_with_access(result_paths)
+        return self._close_with_access(result_paths)
+
+    def _close_with_access(self, result_paths: Iterable[Path | str]) -> ActivitySnapshot:
+
         record = self._require_open()
+        process_note = _read_note(record.reason)
+        process_pid = process_note.get("process_pid", _record_activity_meta(record).get("process_pid"))
+        if not verified_process_quiescence(process_note, activity_id=self.activity_id,
+                                           process_pid=process_pid):
+            raise AgentActivityRecoveryRequired(
+                "activity process claim requires verified producer quiescence; "
+                "run with an explicitly delegated cgroup v2 scope before sealing")
         pending_publication = _read_note(record.reason).get("publication")
         if isinstance(pending_publication, Mapping):
             source_value = pending_publication.get("source")
@@ -961,7 +1072,7 @@ class AgentActivity:
             confirmed = self._publication_from_intent(pending_publication)
             if confirmed is None:
                 raise AgentActivityRecoveryRequired("publication requires registry reconciliation before close")
-        seal_digest, members, apparent = _sealed_workspace_digest(record.path)
+        seal_digest, members, apparent = _sealed_workspace_digest(record.path, profile=record.payload_profile)
         note = _read_note(record.reason)
         note["seal"] = {
             "digest": seal_digest,
@@ -984,14 +1095,24 @@ class AgentActivity:
     def retire(self) -> ActivitySnapshot:
         """Retire only a sealed, completed workspace through its owner."""
 
+        if self._record.payload_profile == "fixture_posix_v1":
+            with self._manager.fixture_permissions(self.workspace_id, authorized=True):
+                return self._retire_with_access()
+        return self._retire_with_access()
+
+    def _retire_with_access(self) -> ActivitySnapshot:
+
         record = self._refresh_record()
         if record.state != ScratchState.COMPLETED:
             raise AgentActivityError("only a completed activity can be retired")
         note = _read_note(record.reason)
+        if not verified_process_quiescence(note, activity_id=self.activity_id,
+                process_pid=_record_activity_meta(record).get("process_pid")):
+            raise AgentActivityRecoveryRequired("retirement requires verified producer quiescence")
         seal = record.seal if isinstance(record.seal, Mapping) else note.get("seal")
         if not isinstance(seal, Mapping):
             raise AgentActivityChanged("completed activity has no durable seal")
-        digest, members, apparent = _sealed_workspace_digest(record.path)
+        digest, members, apparent = _sealed_workspace_digest(record.path, profile=record.payload_profile)
         if digest != seal.get("digest") or members != seal.get("members") or apparent != seal.get("apparent_bytes"):
             raise AgentActivityChanged("workspace changed after close; retirement is blocked")
         self._workspace.retire()
@@ -1083,7 +1204,7 @@ class AgentActivity:
 
         if type(release_authorized) is not bool or not release_authorized:
             raise AgentActivityConflict("terminal retention requires explicit release authorization")
-        plan = cast("TerminalRetentionPlan", self.terminal_retention_plan(policy=policy, now_ns=now_ns))
+        plan = self.terminal_retention_plan(policy=policy, now_ns=now_ns)
         if getattr(plan, "status", None) != "ready" or getattr(plan, "truncated", False):
             raise AgentActivityRecoveryRequired("terminal retention plan is incomplete")
         eligible_ids = tuple(
@@ -1158,13 +1279,18 @@ class AgentActivity:
                 raise AgentActivityError(
                     f"activity is not awaiting terminal reconciliation: {record.state}"
                 )
+            process_note = _read_note(record.reason)
+            process_pid = process_note.get("process_pid", _record_activity_meta(record).get("process_pid"))
+            if not verified_process_quiescence(process_note, activity_id=self.activity_id,
+                                               process_pid=process_pid):
+                raise AgentActivityRecoveryRequired("terminal release requires verified producer quiescence")
             claims = dict(evidence or {})
             claims.setdefault("activity_id", self.activity_id)
             claims.setdefault("workspace_id", record.record_id)
             # Seal the failed payload before changing its state.  The owner
             # revalidates identity/content again during reconcile and during
             # the later retirement effect.
-            seal_digest, members, apparent = _sealed_workspace_digest(record.path)
+            seal_digest, members, apparent = _sealed_workspace_digest(record.path, profile=record.payload_profile)
             self._manager.seal_workspace(
                 record.record_id,
                 seal={

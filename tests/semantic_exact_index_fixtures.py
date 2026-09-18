@@ -55,7 +55,7 @@ class PublishedTextFixture:
 def _vector_for(index: int, *, duplicate: bool) -> tuple[float, ...]:
     # Distinct scores exercise top-K retention.  The duplicate item's two
     # concrete chunks intentionally tie so discovery/evidence grouping and the
-    # max-ref tie rule remain observable.
+    # canonical entity tie rule remain observable.
     score = 0.82 if duplicate else 0.20 + 0.025 * (index % 20)
     return (score, math.sqrt(1.0 - score * score), 0.0, 0.0)
 

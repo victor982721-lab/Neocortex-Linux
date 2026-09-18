@@ -41,6 +41,20 @@ Neocortex status --scope all
 Neocortex --state-health --state-health-json
 ```
 
+Cada ejecución inicial o reanudada compone `neocortex.run-preparation/v1`
+antes de abrir writers: reutiliza la frontera de raíces y observa sólo las
+dependencias seleccionadas. El evento separa `ready`, `unavailable`, `blocked`
+y `not_checked`, conserva selección y presupuesto, y declara contenido, CRC e
+inferencia como no ejecutados hasta sus owners. Un modelo ausente permanece
+visible y la ruta conserva su resultado parcial. KIO se comprueba sólo cuando
+se solicitan efectos. La preparación no ingiere ni hashea todo el corpus.
+
+`doctor platform` schema 2 mide el intérprete de la release y distingue evidencia
+almacenada de observación actual. SQLite sólo queda acreditada con identidad
+nativa, política revisada fijada por digest y recibo de instalación separado.
+Una release v1 o un entorno de desarrollo sin recibo se informa como no
+acreditado; el resultado no concede autoridad de mutación del corpus.
+
 No inspecciones SQLite viva con clientes ordinarios. Durante una corrida larga
 observa el stream, transcript, proceso y cgroup; espera el estado terminal antes
 de abrir owners salvo que una superficie pública garantice una lectura compatible.
@@ -691,64 +705,43 @@ La prueba no equivale a una sesión nativa de Codex y no autoriza limpiar HOME,
 
 ### Auditoría histórica explícita
 
-`historical-temp` es una auditoría separada del scratch registrado. La raíz no
-se descubre desde configuración: debe pasarse como un `PATH` absoluto con
-`--maintenance-audit-root`. No uses `--root` para este flujo y no asumas
-`/tmp`; esa ruta sólo puede observarse si se selecciona explícitamente. El
-owner no crea una raíz ausente.
+Selecciona una raíz histórica absoluta y un directorio de estado privado. El
+preview legacy permite descubrir candidatos; la retirada exige procedencia
+registrada y selección exacta. Para un artefacto sin manifest vigente incluye
+la referencia a una copia durable protegida. Ejemplo de `selection.json`:
 
-Primero captura un plan bounded y revisa su salida JSON:
-
-```bash
-HistoricalRoot="/ruta/raiz-historica"
-Neocortex maintenance --scope historical-temp \
---maintenance-audit-root "$HistoricalRoot" --maintenance-json
+```json
+[{"path":"/ruta/auditoria/work","provenance_artifact_id":"audit:work:001","preserved_artifact_id":"audit:deliverable:001"}]
 ```
 
-Si la raíz es grande, amplía sólo de forma consciente los límites del mismo
-comando, por ejemplo `--maintenance-max-entries 100000
---maintenance-max-depth 8`. La respuesta incluye `limits`, `status_counts`,
-`reason_summary` y `largest_records`: permite ver cuánto quedó en
-`no_manifest`, permisos inseguros, actividad incierta, recovery o cobertura
-truncada, sin leer cuerpos ni convertir el tamaño observado en permiso.
-
-El plan es read-only. Sólo enumera hijos directos cuyo nombre empieza por
-`neocortex-`, intenta manifests de nombres permitidos y conserva vecinos no
-gestionados fuera del alcance. Revisa `status`, `root_exists`,
-`historical_counts`, `historical_bytes` y `records`; `unknown`, `blocked`,
-actividad incierta, drift, enlaces, hardlinks, permisos inseguros o un manifest
-ambiguo no son candidatos. Los contadores de bytes son observaciones bounded,
-no una medición de espacio libre del filesystem.
-
-Para aplicar, la nueva invocación debe volver a satisfacer todos los claims;
-el plan mostrado no es una autorización reutilizable:
+Ejecuta estas fases conservando el digest emitido por la preparación:
 
 ```bash
+HistoricalRoot="/ruta/auditoria"
+State="$HOME/.local/state/Neocortex/state"
 Neocortex maintenance --scope historical-temp \
-  --maintenance-audit-root "$HistoricalRoot" \
-  --apply --maintenance-json
+  --maintenance-audit-root "$HistoricalRoot" --state-directory "$State" \
+  --selection-file selection.json --prepare-adoption --maintenance-json
+Neocortex maintenance --scope historical-temp \
+  --maintenance-audit-root "$HistoricalRoot" --state-directory "$State" \
+  --approve-adoption DIGEST --maintenance-json
+Neocortex maintenance --scope historical-temp \
+  --maintenance-audit-root "$HistoricalRoot" --state-directory "$State" \
+  --apply-adoption DIGEST --apply --maintenance-json
 ```
 
-El owner sólo retira una entrada cuando puede verificar en ese momento la
-identidad de raíz/ruta/manifest, la topología de montaje, permisos y una
-adopción explícita (`adoption_id` y digest ligados, aprobada, actividad no
-incierta, `state=completed` y `disposable=true`). La retirada es relativa a un
-descriptor y no sigue enlaces. No se usa `rm`, `shutil`, KIO ni un cleaner
-externo; tampoco se abre SQLite ni se modifica el corpus. Una raíz compartida
-como `/tmp` puede servir para una observación explícita, pero conserva el gate
-más estricto de propiedad/permisos para aplicar y no permite presentar el
-resultado como limpieza exitosa.
+Revisa todas las rutas e IDs antes de aprobar. `--selected-id` permite acotar la
+aprobación; `--selection-partial` debe haberse declarado al preparar para
+conservar los elementos bloqueados. El recibo se autentica con la clave privada
+del estado y permanece fuera del artefacto. Un manifest autocertificado no
+reemplaza esa autorización. La aplicación vuelve a comprobar actividad,
+identidad, mounts, contenido y dependencia de la copia conservada. Un fallo deja
+`partial`/`recovery_required`; repetir el mismo digest reconcilia el efecto
+anterior sin volver a retirar un elemento confirmado.
 
-La aplicación deja un receipt bounded fuera de cada entrada: primero queda
-`prepared`, y sólo tras comprobar que el target está ausente pasa a `applied`.
-Si hay drift, crecimiento fuera de límites o una falla después de retirar algún
-hijo, se conserva el receipt y el resultado exige `recovery_required`.
-
-El plan puede terminar con observaciones bloqueadas sin cruzar una frontera;
-un apply con `blocked`, `failed` o `recovery_required` devuelve salida 2 y deja
-los elementos para recuperación/decisión posterior. No borres manualmente los
-vecinos no gestionados ni conviertas una entrada desconocida en adopción por
-su nombre, edad, tamaño o contenido.
+El descubrimiento y los contadores de bytes siguen acotados; no miden espacio
+libre exclusivo ni convierten nombres, edad, tamaño o `/tmp` en autorización.
+Los límites explícitos se describen en [CLI](CLI.md#auditoría-histórica-explícita).
 
 ### Retención por owner y contabilidad física
 

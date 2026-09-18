@@ -321,7 +321,9 @@ def _optional_sha256(value: str | None) -> str | None:
     return _required_sha256(value, label="manifest_sha256")
 
 
-def _owner_heads(values: Sequence[StateOwnerHead]) -> tuple[StateOwnerHead, ...]:
+def canonical_owner_heads(values: Sequence[StateOwnerHead]) -> tuple[StateOwnerHead, ...]:
+    """Validate unique owner heads and return their canonical owner order."""
+
     if len(values) > MAX_OWNER_HEADS:
         raise ValueError("owner heads exceed their bound")
     result: list[StateOwnerHead] = []
@@ -332,6 +334,10 @@ def _owner_heads(values: Sequence[StateOwnerHead]) -> tuple[StateOwnerHead, ...]
     if len({item.owner for item in result}) != len(result):
         raise ValueError("owner heads cannot repeat")
     return tuple(sorted(result, key=lambda item: item.owner))
+
+
+def _owner_heads(values: Sequence[StateOwnerHead]) -> tuple[StateOwnerHead, ...]:
+    return canonical_owner_heads(values)
 
 
 def _parse_owner_heads(raw: object, *, label: str) -> tuple[StateOwnerHead, ...]:
@@ -1685,6 +1691,7 @@ __all__ = [
     "abort_state_publication",
     "abort_unbound_state_publication",
     "begin_state_publication",
+    "canonical_owner_heads",
     "publication_idempotency_key",
     "read_state_epoch",
     "read_state_publication_state",

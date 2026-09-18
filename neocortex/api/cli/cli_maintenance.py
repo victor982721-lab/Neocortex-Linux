@@ -15,12 +15,14 @@ adapter never falls back to ``rm``, KIO, or the registered-scratch owner.
 from __future__ import annotations
 
 import argparse
+import base64
 import heapq
 import hashlib
 import json
 import os
 import stat
 import sys
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, is_dataclass
 from enum import Enum
@@ -1099,6 +1101,9 @@ def _emit(payload: Mapping[str, object], *, json_output: bool) -> None:
             f" recovery_required={payload.get('recovery_required', 0)}"
         )
     print(line)
+    digest = payload.get("digest", payload.get("plan_digest"))
+    if isinstance(digest, str):
+        print("MAINTENANCE_PROPOSAL digest=" + sanitize_untrusted_text(digest, limit=128))
     error = payload.get("error")
     if isinstance(error, Mapping):
         print(
@@ -1107,6 +1112,145 @@ def _emit(payload: Mapping[str, object], *, json_output: bool) -> None:
             + sanitize_untrusted_text(error.get("message", "unknown error"), limit=_MAX_TEXT),
             file=sys.stderr,
         )
+
+
+def _exact_selection_requested(args: argparse.Namespace) -> bool:
+    return any(getattr(args, name, None) for name in (
+        "maintenance_select", "maintenance_selection_file", "maintenance_prepare_adoption",
+        "maintenance_approve_adoption", "maintenance_apply_adoption",
+    ))
+
+
+def _read_exact_selections(args: argparse.Namespace) -> tuple[Any, ...]:
+    """Read data only; producer and approval authority stay with the runtime owner."""
+    from neocortex.runtime.historical_adoption import HistoricalSelection
+
+    selection_file = getattr(args, "maintenance_selection_file", None)
+    if selection_file is None:
+        paths = getattr(args, "maintenance_select", None) or []
+        claims = getattr(args, "maintenance_provenance_artifact", None) or []
+        if not paths or len(paths) != len(claims):
+            raise ValueError("exact selections require paired paths and producer claims")
+        return tuple(HistoricalSelection(path, claim) for path, claim in zip(paths, claims, strict=True))
+
+    maximum = 4 * 1024 * 1024
+    descriptor = os.open(selection_file, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as source:
+        metadata = os.fstat(source.fileno())
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > maximum:
+            raise ValueError("selection file must be a regular JSON file of at most 4 MiB")
+        raw = source.read(maximum + 1)
+    if len(raw) > maximum:
+        raise ValueError("selection file exceeds 4 MiB")
+    records = json.loads(raw)
+    if not isinstance(records, list) or not records or len(records) > 10_000:
+        raise ValueError("selection file must contain between 1 and 10000 exact records")
+    selections = []
+    allowed = {"path", "path_bytes_base64", "provenance_artifact_id", "preserved_artifact_id"}
+    for record in records:
+        if not isinstance(record, dict) or set(record) - allowed:
+            raise ValueError("selection record contains unsupported fields")
+        if ("path" in record) == ("path_bytes_base64" in record):
+            raise ValueError("selection requires exactly one path representation")
+        if "path" in record:
+            if not isinstance(record["path"], str):
+                raise ValueError("selection path must be text")
+            path = Path(record["path"])
+        else:
+            path = Path(os.fsdecode(base64.b64decode(record["path_bytes_base64"], validate=True)))
+        provenance = record.get("provenance_artifact_id")
+        preserved = record.get("preserved_artifact_id")
+        if not isinstance(provenance, str) or not provenance:
+            raise ValueError("selection requires a non-empty producer claim")
+        if preserved is not None and (not isinstance(preserved, str) or not preserved):
+            raise ValueError("preserved copy reference must be a non-empty claim")
+        selections.append(HistoricalSelection(path, provenance, preserved))
+    return tuple(selections)
+
+
+def _run_exact_selection(manager: Any, args: argparse.Namespace, *, json_output: bool) -> int:
+    approve = getattr(args, "maintenance_approve_adoption", None)
+    apply_digest = getattr(args, "maintenance_apply_adoption", None)
+    selected_ids = getattr(args, "maintenance_selected_id", None)
+    if apply_digest:
+        if not getattr(args, "apply", False):
+            raise ValueError("--apply-adoption requires --apply")
+        result = manager.apply_selected(apply_digest, selected_ids)
+        mode = "apply-adoption"
+    elif approve:
+        result = manager.approve_adoption(approve, selected_ids)
+        mode = "approve-adoption"
+    else:
+        plan = manager.plan_selected(
+            _read_exact_selections(args), partial=bool(getattr(args, "maintenance_selection_partial", False)),
+        )
+        mode = "selection-plan"
+        if getattr(args, "maintenance_prepare_adoption", False):
+            plan = manager.prepare_adoption(plan)
+            mode = "prepare-adoption"
+        result = plan.to_dict()
+    payload = dict(result)
+    status = payload.get("operation_status", payload.get("status", payload.get("state", "failed")))
+    exit_code = 2 if apply_digest and status != "complete" else 0
+    records = payload.get("records", [])
+    payload.update({
+        "operation": "maintenance", "scope": HISTORICAL_AUDIT_SCOPE, "mode": mode,
+        "read_only": mode == "selection-plan", "status": status, "exit_code": exit_code,
+        "planned": len(records),
+        "applied": sum(record.get("state") == "retired" and not record.get("replayed", False)
+                       for record in records),
+        "replayed": sum(bool(record.get("replayed", False)) for record in records),
+    })
+    _emit(payload, json_output=json_output)
+    return exit_code
+
+
+def _run_registered_maintenance(
+    args: argparse.Namespace, *, root: Path, scope: str, json_output: bool,
+) -> int:
+    """Use the same coordinator as Framework; effects stay with Scratch."""
+    from neocortex.runtime.orchestration.maintenance import (
+        MaintenanceRequest, ScopeAuthority, configured_scratch_maintenance,
+    )
+
+    apply = bool(getattr(args, "apply", False))
+    max_entries = getattr(args, "run_max_items", None)
+    max_bytes = getattr(args, "run_max_bytes", None)
+    duration = getattr(args, "run_time_budget_seconds", None)
+    request = MaintenanceRequest(
+        scopes=(scope,), apply_requested=apply,
+        authorities=(ScopeAuthority(scope, "explicit-maintenance-apply"),) if apply else (),
+        max_entries=100_000 if max_entries is None else min(100_000, max_entries),
+        max_bytes=1 << 40 if max_bytes is None else min(1 << 40, max_bytes),
+        deadline_ns=None if duration is None else time.monotonic_ns() + int(duration * 1_000_000_000),
+    )
+    coordinator = configured_scratch_maintenance(
+        Path(args.state_directory), owner="neocortex-framework", scopes=(scope,),
+    )
+    plan = coordinator.plan(request)
+    outcome = coordinator.execute(plan)
+    payload = _plan_payload(plan.component_plans.get(scope, {}), root=root, scope=scope, apply=apply)
+    payload["maintenance"] = outcome
+    payload["operation_status"] = outcome["operation_status"]
+    if apply:
+        owner_result = outcome.get("scopes", {}).get(scope, {})
+        payload.update(
+            applied=owner_result.get("retired", 0),
+            applied_bytes=owner_result.get("deleted_apparent_bytes", 0),
+            status="applied" if outcome["maintenance_status"] == "complete" else "blocked",
+        )
+        counts = payload.get("counts")
+        if isinstance(counts, dict):
+            counts["applied"] = payload["applied"]
+        byte_counts = payload.get("bytes")
+        if isinstance(byte_counts, dict):
+            byte_counts["applied"] = payload["applied_bytes"]
+    elif plan.blocked:
+        payload["status"] = "blocked"
+    exit_code = 2 if apply and outcome["operation_status"] != "complete" else 0
+    payload["exit_code"] = exit_code
+    _emit(payload, json_output=json_output)
+    return exit_code
 
 
 def run_maintenance(args: argparse.Namespace) -> int:
@@ -1135,15 +1279,10 @@ def run_maintenance(args: argparse.Namespace) -> int:
         # KIO, or a shell/file-removal fallback.
         if _historical_scope(scope):
             manager = _historical_manager(root, args, apply=apply)
+            if _exact_selection_requested(args):
+                return _run_exact_selection(manager, args, json_output=json_output)
         else:
-            from neocortex.runtime.scratch import ScratchManager
-
-            manager = ScratchManager(
-                root,
-                owner="neocortex-framework",
-                create_root=False,
-                artifact_registry_root=_registered_artifact_registry_root(root),
-            )
+            return _run_registered_maintenance(args, root=root, scope=scope, json_output=json_output)
         try:
             plan = (
                 _call_historical_plan(manager)

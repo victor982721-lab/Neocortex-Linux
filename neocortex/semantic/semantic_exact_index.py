@@ -38,6 +38,13 @@ from .semantic_models import (
     ExactSearchQuery,
     SearchHit,
     canonical_json,
+    normalize_vector,
+)
+from .semantic_vector_search import (
+    VectorSearchBudget,
+    VectorSearchPage,
+    VectorSearchRequest,
+    VectorSearchUnavailable,
 )
 from .semantic_repository_common import _load_model
 from .semantic_schema import (
@@ -736,7 +743,50 @@ def _try_exact_index_page(
         return result
 
 
+class PersistedExactVectorSearch:
+    """Protocol adapter over an explicitly prepared, verified exact handle.
+
+    Creation never opens/rebuilds an artifact. By default closing the adapter
+    closes its handle; the compatibility dispatcher borrows a caller's handle.
+    """
+
+    def __init__(self, handle: ExactIndexHandle, *, owns_handle: bool = True) -> None:
+        if not isinstance(handle, ExactIndexHandle):
+            raise TypeError("handle must be a verified ExactIndexHandle")
+        self.handle = handle
+        self._owns_handle = owns_handle
+        self._closed = False
+
+    def search_page(
+        self, request: VectorSearchRequest, budget: VectorSearchBudget,
+        cancelled: Callable[[], None] | None = None,
+    ) -> VectorSearchPage | VectorSearchUnavailable:
+        if self._closed:
+            return VectorSearchUnavailable("persisted_exact", "adapter_closed")
+        normalized, _ = normalize_vector(request.query.vector, request.query.dimensions)
+        page = _try_exact_index_page(
+            request.owner_path, request.query, normalized,
+            exact_index=self.handle, limit=budget.limit, max_vectors=budget.max_vectors,
+            after_ref_id=request.after_ref_id, batch_size=budget.batch_size,
+            text_scope=request.text_scope, evidence_mode=request.evidence_mode,
+            diagnostic_item_ids=request.diagnostic_item_ids, cancellation_check=cancelled,
+        )
+        if page is None:
+            reason = self.handle.usage_summary()["last_fallback_reason"]
+            return VectorSearchUnavailable("persisted_exact", str(reason))
+        return VectorSearchPage(
+            page, "persisted_exact", request.snapshot_id,
+            "complete" if page.complete else "partial",
+        )
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            if self._owns_handle:
+                self.handle.close()
+
+
 __all__ = [
     "MAX_EXACT_INDEX_BYTES", "MAX_EXACT_INDEX_ROWS", "ExactIndexHandle",
-    "ExactIndexUnavailable", "open_exact_index", "prepare_exact_index",
+    "ExactIndexUnavailable", "PersistedExactVectorSearch", "open_exact_index", "prepare_exact_index",
 ]

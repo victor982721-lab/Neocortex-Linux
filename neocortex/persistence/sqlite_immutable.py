@@ -859,7 +859,11 @@ def _acquire_sqlite_writer_lock_guard(
         raise ImmutableSQLiteUnavailable(
             "SQLite owner writer-lock state cannot be verified outside Linux"
         )
-    setlk = getattr(fcntl, "F_OFD_SETLK", None)
+    # Some CPython standalone builds omit this constant even though the Linux
+    # kernel exposes OFD locks.  37 is the Linux UAPI command (asm-generic/
+    # fcntl.h), not a substitute locking strategy. The actual fcntl below must
+    # succeed on every control byte; EINVAL/ENOSYS/EOPNOTSUPP still abstain.
+    setlk = getattr(fcntl, "F_OFD_SETLK", 37)
     if setlk is None:
         raise ImmutableSQLiteUnavailable(
             "SQLite writer lock guard cannot verify same-process locks"

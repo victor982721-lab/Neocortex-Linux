@@ -996,22 +996,6 @@ def _empty_file_summary(connection: sqlite3.Connection, scan_id: int) -> int:
     )
 
 
-def _iter_empty_file_items(
-    connection: sqlite3.Connection,
-    scan_id: int,
-    digest: Any,
-) -> Iterator[tuple[_SortKey, CurationItem]]:
-    rows = connection.execute(
-        """SELECT path,volume_id,file_id,size,mtime_ns,birthtime_ns
-        FROM files WHERE scan_id=? AND size=0 ORDER BY path COLLATE BINARY""",
-        (scan_id,),
-    )
-    for row in rows:
-        item = _empty_file_item(scan_id, row)
-        _digest_record(digest, "empty_file", item.to_dict())
-        yield (2, 0, str(row[0]), 0), item
-
-
 def _empty_file_item(scan_id: int, row: Any) -> CurationItem:
     """Materialize one selected empty-file proposal."""
 
@@ -1309,23 +1293,6 @@ def _source_heads(
             )
         )
     return tuple(heads)
-
-
-def _iter_organization_items(
-    connection: sqlite3.Connection,
-    digest: Any,
-    *,
-    inventory_root: str,
-    scope: _OrganizationPlanScope | None,
-) -> Iterator[tuple[_SortKey, CurationItem]]:
-    for row in _iter_organization_rows(
-        connection,
-        inventory_root=inventory_root,
-        scope=scope,
-    ):
-        item = _organization_item_from_row(row)
-        _digest_record(digest, "organization_plan", item.to_dict())
-        yield (1, -int(row[0]), "", 0), item
 
 
 def _organization_item_from_row(row: Any) -> CurationItem:

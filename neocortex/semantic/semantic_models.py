@@ -788,3 +788,15 @@ def cosine_similarity(
 
 
 # endregion [05]
+
+
+@dataclass(frozen=True, slots=True)
+class TextSourceRecord:
+    """One natural text section; adjacent rows with the same item are grouped."""
+
+    item: SemanticItem
+    section: TextSection
+
+
+# Preserve existing pickles and external references to the reexported DTO.
+TextSourceRecord.__module__ = "neocortex.semantic.semantic_sources"

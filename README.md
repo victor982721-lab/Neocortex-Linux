@@ -209,22 +209,19 @@ registrado bajo `state_directory/scratch`; no crea la raíz ausente ni escanea
 documenta separadamente, sin tocar corpus, cachés externas, releases ni SQLite
 productiva.
 
-`maintenance --scope historical-temp` es una frontera distinta: exige
-`--maintenance-audit-root PATH` absoluto y explícito. No reutiliza `--root`, el
-estado ni una ruta predeterminada a `/tmp`, y su plan no crea la raíz ni produce
-efectos. Sólo el owner histórico puede clasificar hijos directos con prefijo
-`neocortex-` y manifests allow-listed; `--apply` vuelve a observar y retira
-únicamente entradas con identidad, actividad, manifest y adopción verificadas.
-Lo desconocido, activo, no adoptado, ambiguo o cambiado se conserva o queda
-bloqueado. El flujo no llama limpiadores externos ni KIO y no abre SQLite ni el
-corpus.
+`maintenance --scope historical-temp` requiere una raíz absoluta explícita.
+La inspección legacy conserva su descubrimiento acotado. Para retirar un
+artefacto se selecciona su ruta exacta con `--select` y su claim de productor
+con `--provenance-artifact`, o se aporta un `--selection-file` JSON. La ruta
+puede tener cualquier nombre y estar bajo una raíz compartida sticky, pero su
+procedencia, permisos, identidad y copia conservada se verifican por separado.
 
-Para una raíz grande puedes elevar explícitamente sus límites bounded:
-`--maintenance-max-entries`, `--maintenance-max-depth` y
-`--maintenance-max-bytes`. La salida incluye `status_counts`, `reason_summary`
-con explicación humana y muestras acotadas, además de `largest_records`; así
-se distingue falta de manifest, permisos inseguros, actividad, recovery y
-cobertura truncada sin convertir ninguna categoría en permiso de borrado.
+La secuencia es `--prepare-adoption`, `--approve-adoption DIGEST` y
+`--apply-adoption DIGEST --apply`. Cada paso consume el mismo plan; la
+aprobación se conserva en un recibo privado autenticado fuera del payload.
+Un campo `approved` dentro del artefacto, su edad o su prefijo no conceden
+permiso. Los elementos desconocidos, activos, únicos sin copia protegida o
+cambiados se conservan. Consulta el [procedimiento completo](docs/OPERATIONS.md#auditoría-histórica-explícita).
 
 `external-maintenance` es únicamente diagnóstico: exige root y categoría
 explícitos, no admite `--apply`, no descubre rutas desde HOME y no usa red,

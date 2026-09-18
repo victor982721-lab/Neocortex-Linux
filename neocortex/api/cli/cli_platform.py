@@ -14,7 +14,7 @@ from neocortex.platform.policy import (
 )
 from neocortex.runtime.config.app_paths import default_state_directory
 
-PLATFORM_REPORT_SCHEMA_VERSION = 1
+PLATFORM_REPORT_SCHEMA_VERSION = 2
 
 
 def platform_report(
@@ -22,9 +22,15 @@ def platform_report(
 ) -> dict[str, object]:
     """Distinguish canonical locations from the paths this invocation will use."""
     policy = current_platform_policy()
+    from neocortex.platform.sqlite_runtime_attestation import observe_platform_native_runtime
+
+    native_runtime = observe_platform_native_runtime(
+        receipts_directory=policy.state_directory / "installation-receipts",
+    )
     return {
         "schema_version": PLATFORM_REPORT_SCHEMA_VERSION,
         "kind": "platform_report",
+        "native_runtime": native_runtime,
         "compatible": policy.compatible,
         "system": {
             "family": policy.system,
@@ -79,6 +85,9 @@ def _print_human(report: dict[str, object]) -> None:
     )
     print(f"PLATFORM_INVENTORY backend={inventory['backend']}")
     print(f"PLATFORM_CONTAINMENT backend={containment['backend']}")
+    native_runtime = report["native_runtime"]
+    assert isinstance(native_runtime, dict)
+    print(f"PLATFORM_SQLITE status={native_runtime.get('status', 'unaccredited')}")
     print(
         f"PLATFORM_MUTATION available={int(bool(mutation['available']))} "
         f"backend={mutation['backend']} reason={mutation['reason'] or '-'}"

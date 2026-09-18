@@ -209,9 +209,7 @@ def test_lifecycle_states_are_not_treated_as_unknown_or_adoptable(
     assert entry.exists()
 
 
-def test_adoptable_fixture_apply_is_descriptor_relative_and_replay_is_noop(
-    tmp_path: Path,
-) -> None:
+def test_legacy_self_approved_manifest_cannot_retire_or_emit_authority(tmp_path: Path) -> None:
     root = _root(tmp_path)
     entry = root / "neocortex-adoptable"
     entry.mkdir(mode=0o700)
@@ -219,36 +217,19 @@ def test_adoptable_fixture_apply_is_descriptor_relative_and_replay_is_noop(
     data.write_bytes(b"payload")
     os.chmod(data, 0o600)
     _write_manifest(entry, _manifest(root, entry))
-
     manager = HistoricalAuditManager(root)
     plan = manager.plan()
     assert plan.to_dict()["schema"] == HISTORICAL_AUDIT_SCHEMA
-    assert plan.status == "planned"
-    assert plan.adoptable == plan.planned == 1
-    assert plan.proposed_bytes > 0
-    assert plan.records[0].adoption_id == "adopt-fixture-1"
-
-    applied = manager.apply(plan)
-    assert applied.status == "applied"
-    assert applied.planned == applied.applied == 1
-    assert applied.applied_bytes == plan.proposed_bytes
-    assert not entry.exists()
-
-    receipts = root / ".neocortex-historical-audit"
-    receipt_files = tuple(receipts.glob("*.json"))
-    assert len(receipt_files) == 1
-    receipt = json.loads(receipt_files[0].read_text(encoding="utf-8"))
-    assert receipt["schema"] == "neocortex.historical-audit-receipt/v1"
-    assert receipt["state"] == "applied"
-    assert receipt["postcondition"] == "entry_absent"
-    assert receipt["path"] == str(entry)
-    assert plan.records[0].path_identity is not None
-    assert receipt["path_identity"] == list(plan.records[0].path_identity)
-
-    replay = manager.apply(plan)
-    assert replay.planned == replay.applied == 0
-    assert replay.scanned == 0
-    assert replay.recovery_required == replay.failed == 0
+    assert plan.status == "kept"
+    assert plan.adoptable == plan.planned == 0
+    assert plan.records[0].valid_manifest
+    assert "private_adoption_required" in plan.records[0].reason
+    for _ in range(2):
+        applied = manager.apply(plan)
+        assert applied.status == "blocked"
+        assert applied.applied == applied.applied_bytes == 0
+        assert data.read_bytes() == b"payload"
+    assert not (root / ".neocortex-historical-audit").exists()
 
 
 def test_symlink_and_hardlink_entries_are_never_candidates(tmp_path: Path) -> None:
@@ -282,7 +263,8 @@ def test_identity_drift_between_plan_and_apply_is_not_deleted(tmp_path: Path) ->
     _write_manifest(entry, _manifest(root, entry))
     manager = HistoricalAuditManager(root)
     plan = manager.plan()
-    assert plan.adoptable == 1
+    assert plan.adoptable == 0
+    assert plan.records[0].valid_manifest
 
     replacement = tmp_path / "replacement"
     replacement.mkdir(mode=0o700)

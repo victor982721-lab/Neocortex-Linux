@@ -504,6 +504,10 @@ def print_reports(result, args: argparse.Namespace) -> None:
 def _print_catalog_reports(result) -> None:
     """Expose observed catalog consumers independently of extraction counters."""
 
+    maintenance = getattr(result, "maintenance", {})
+    if maintenance:
+        print("MAINTENANCE_OUTCOME " + json.dumps(maintenance, ensure_ascii=True, sort_keys=True))
+
     for route, summary in getattr(result, "route_results", {}).items():
         candidates, cache_hits, new_work, replay_evidence = _route_replay_view(route, summary)
         print(f"ROUTE_REPLAY route={sanitize_untrusted_text(route, limit=32)} "
@@ -532,25 +536,6 @@ def _print_catalog_reports(result) -> None:
 
 def _human_count(value: int | float) -> str:
     return f"{int(value):,}".replace(",", " ")
-
-
-def _route_metric_count(metrics: Mapping[str, object], key: str) -> int:
-    value = metrics.get(key)
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        try:
-            return int(value)
-        except (OverflowError, ValueError):
-            return 0
-    if isinstance(value, str):
-        try:
-            return int(value)
-        except (ValueError, OverflowError):
-            return 0
-    return 0
 
 
 def _human_bytes(value: int) -> str:
@@ -1003,6 +988,7 @@ def print_professional_summary(
         or action_errors
         or semantic_issues
         or has_organization_errors(result)
+        or getattr(result, "maintenance", {}).get("operation_status", "complete") not in {"complete", "planned"}
     )
     status = Text(
         "COMPLETADA CON INCIDENCIAS" if has_attention else "COMPLETADA",

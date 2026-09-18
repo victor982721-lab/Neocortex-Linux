@@ -312,6 +312,7 @@ class InitialRunResult:
     organization_plan: OrganizationPlanSummary | None = None
     organization_apply: OrganizationApplySummary | None = None
     route_failures: dict[str, str] = field(default_factory=dict, kw_only=True)
+    maintenance: dict[str, object] = field(default_factory=dict, kw_only=True)
 
     @property
     def journal_usn_span(self) -> int | None:

@@ -558,59 +558,35 @@ habilitan mantenimiento sobre el corpus.
 
 ### Auditoría histórica explícita
 
-`historical-temp` no es un alias del scratch registrado ni un limpiador global.
-Requiere una raíz de auditoría absoluta y explícita mediante
-`--maintenance-audit-root`; el selector `--root` sigue siendo el corpus y se
-rechaza en esta operación. No hay valor predeterminado para la raíz y nunca se
-escanea `/tmp` por omisión.
+`maintenance --scope historical-temp` exige `--maintenance-audit-root PATH`
+absoluto. La consulta no crea raíces ni abre SQLite o el corpus. El descubrimiento
+legacy por prefijo conserva vecinos desconocidos; sus manifests son evidencia
+de observación. La retirada requiere la selección exacta y el recibo privado
+del flujo siguiente.
 
-```bash
-Neocortex maintenance --scope historical-temp \
-  --maintenance-audit-root "/ruta/raiz-historica" --maintenance-json
-Neocortex maintenance --scope historical-temp \
-  --maintenance-audit-root /tmp \
-  --maintenance-max-entries 100000 --maintenance-max-depth 8 \
-  --maintenance-json
-Neocortex maintenance --scope historical-temp \
-  --maintenance-audit-root "/ruta/raiz-historica" \
-  --apply --maintenance-json
-```
+| Opción | Contrato |
+|---|---|
+| `--select PATH --provenance-artifact ID` | Ruta absoluta exacta y claim de productor existente; repetir ambos en el mismo orden |
+| `--selection-file JSON` | Array de 1 a 10000 registros, máximo 4 MiB; campos `path` o `path_bytes_base64`, `provenance_artifact_id` y `preserved_artifact_id` opcional |
+| `--selection-partial` | Autoriza preparar una selección parcial explícita; conserva todos los bloqueados |
+| `--prepare-adoption` | Persiste una propuesta exacta sin retirar elementos ni aprobarla |
+| `--approve-adoption DIGEST` | Emite aprobación privada autenticada para una propuesta preparada que sigue intacta |
+| `--apply-adoption DIGEST --apply` | Consume esa aprobación, revalida y retira sólo los IDs autorizados |
+| `--selected-id ID` | Subconjunto exacto a aprobar o aplicar; nunca amplía el grant previo |
 
-La primera forma es un plan bounded y read-only: no crea la raíz ausente y
-observa sólo hijos directos con prefijo `neocortex-` y manifests de nombres
-permitidos. Los vecinos sin evidencia quedan fuera del alcance. El plan
-publica el envelope `neocortex.maintenance/v1` con `audit=historical-audit`,
-`historical_counts`, `historical_bytes` y registros limitados; los bytes son
-observaciones aparentes/asignadas del owner, no espacio de disco que se prometa
-liberar.
+Las opciones de aprobación/aplicación consumen el plan guardado y rechazan una
+selección nueva simultánea. `--selection-file` excluye las parejas `--select`.
+Los límites `--maintenance-max-entries`, `--maintenance-max-depth` y
+`--maintenance-max-bytes` siguen siendo obligatorios en el owner. Un padre
+compartido sticky es contexto; la ruta seleccionada necesita identidad,
+procedencia, protección y cierre comprobados. Una copia única se conserva
+hasta que exista una segunda copia durable acreditada.
 
-`--apply` no convierte el plan anterior en autorización: el owner vuelve a
-escanear y revalida la raíz, el punto de montaje, la identidad de la entrada y
-del manifest, permisos, ausencia de enlaces/hardlinks peligrosos y la
-atestación de adopción. Una entrada sólo es elegible cuando el manifest de una
-aplicación NeoCortex contiene claims exactos de raíz/ruta/identidad, actividad
-explícitamente no incierta, estado `completed`, `disposable=true` y una
-adopción aprobada con `adoption_id` y digest ligados. La retirada es
-descriptor-relative y no-follow; lo desconocido, activo, conservado, ambiguo o
-con drift queda intacto y el resultado es `blocked` o `recovery_required`.
-Cada efecto escribe primero un receipt bounded fuera de la entrada y sólo lo
-marca `applied` después de verificar la ausencia del target; un cierre incierto
-queda en recuperación y se reporta en `receipts`.
-
-Para raíces históricas grandes, `--maintenance-max-entries`,
-`--maintenance-max-depth` y `--maintenance-max-bytes` permiten una observación
-acotada más amplia sin quitar el límite. `status_counts` y `reason_summary`
-explican cada bloqueo (`no_manifest`, `permissions_unsafe`,
-`activity_uncertain`, `recovery_required`, `bounds_exceeded`, etc.) y
-`largest_records` muestra sólo los mayores registros de forma limitada. Si la
-cobertura sigue truncada, el resultado no autoriza ningún efecto.
-
-Esta frontera no usa `rm`, `shutil`, KIO ni otro cleaner externo, no abre
-SQLite y no recorre ni modifica el corpus. Un plan puede reportar una raíz
-explícita no disponible sin crearla; aplicar sobre una raíz compartida como
-`/tmp` conserva el gate de propiedad/permisos y no se presenta como éxito.
-En modo plan un bloqueo es una observación segura; un apply con elementos
-bloqueados, fallidos o en recuperación devuelve salida 2.
+La respuesta de selección usa `neocortex.historical-selection/v1`, incluye
+digest, IDs y cobertura. El plan es read-only; preparar y aprobar escriben
+sólo recibos privados. La aplicación parcial/fallida retorna 2. El replay
+reconcilia el recibo previo y no repite un retiro confirmado. Ninguna variante
+acepta `approved: true` dentro de un JSON como autorización.
 
 ### Diagnóstico externo explícito
 
@@ -644,7 +620,7 @@ adoptados) nunca son candidatas ni se modifican.
 | Aplicación grant-bound | `curate apply` | Requiere confirmación exacta y conserva su autoridad independiente |
 | Conciliación | `curate reconcile` | Registra evidencia bounded; no reintenta ni modifica corpus |
 | Mantenimiento de scratch registrado | `maintenance --scope owned-temp|audit-work` | Plan limitado a `state_directory/scratch`; `--apply` sólo retira scratch propio `completed`, sin KIO |
-| Auditoría histórica | `maintenance --scope historical-temp --maintenance-audit-root PATH` | Plan read-only sobre una raíz absoluta explícita; `--apply` sólo retira adopciones verificadas, sin `/tmp` por defecto, cleaner externo, corpus ni SQLite |
+| Auditoría histórica | `maintenance --scope historical-temp --maintenance-audit-root PATH` | Plan read-only sobre una raíz absoluta explícita; selección exacta y prepare/approve/apply con recibo privado; sin `/tmp` por defecto, corpus ni SQLite |
 | Diagnóstico externo | `external-maintenance --external-root PATH --external-category CATEGORY` | Observación metadata-only bounded; siempre read-only, sin owner implícito, `--apply`, red, SQLite, KIO o sudo |
 | Preparación de higiene | `hygiene` | Registry/manifest federado y preview bounded; read-only/preview-only, zero deletion y sin `file_actions` |
 | Dedupe/corpus Linux | `--dedupe`, `--all --apply` | Backend KIO receipt-bound, igualdad exacta, no-replace y raíz delimitada |
@@ -961,6 +937,24 @@ En una tubería o sesión no-TTY, `--apply` sin `--yes` se rechaza con una
 instrucción concreta. El digest se liga a la raíz, alcance, fingerprints, epoch,
 referencias y límites efectivos; si cualquier dato cambia desde el preview hay
 que generar otro plan.
+
+El resultado añade `operation_status`, `operationally_fresh`, assessments y
+postcondiciones por owner. La política de tablas diferencia autoridad,
+proyecciones, trabajo operacional y schema. La frescura se acredita con una
+barrera operacional monotónica que impide reutilizar IDs históricos; conservar
+historial protegido no lo convierte en una ejecución nueva. Los backups completos
+incluyen versión de política y tablas de autoridad; restore valida esa declaración.
+
+Si una operación se interrumpe, utiliza su ID y el digest exacto del recibo:
+
+```bash
+Neocortex state reset --state-directory "$State" --scope all \
+  --reconcile-operation OPERATION_ID --receipt-digest RECEIPT_SHA256 --json
+```
+
+La reconciliación consume la intención registrada antes del primer staging,
+conserva copias únicas y se abstiene ante un estado ambiguo. No reconstruyas
+recibos manualmente ni presentes una limpieza de staging como recuperación.
 
 La salida JSON usa `neocortex.state-reset/v1` y distingue `preview` de
 `applied`, `read_only`, `scope`, `plan_digest`, backup/manifest, conteos y errores.

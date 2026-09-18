@@ -62,7 +62,7 @@ def _bounded_path(value: object) -> str:
 
 
 def _canonical_json(value: object) -> str:
-    return json.dumps(
+    rendered = json.dumps(
         value,
         ensure_ascii=False,
         allow_nan=False,
@@ -70,6 +70,10 @@ def _canonical_json(value: object) -> str:
         separators=(",", ":"),
         default=str,
     )
+    if any(0xD800 <= ord(character) <= 0xDFFF for character in rendered):
+        return json.dumps(value, ensure_ascii=True, allow_nan=False, sort_keys=True,
+                          separators=(",", ":"), default=str)
+    return rendered
 
 
 def _stable_digest(value: object) -> str:
@@ -686,11 +690,11 @@ def _selection_scalar(value: object) -> object:
         normalized = [_selection_scalar(item) for item in value]
         return sorted(normalized, key=_canonical_json)
     if isinstance(value, Mapping):
-        normalized = {
+        normalized_mapping = {
             str(key): _selection_scalar(item)
             for key, item in value.items()
         }
-        return {key: normalized[key] for key in sorted(normalized)}
+        return {key: normalized_mapping[key] for key in sorted(normalized_mapping)}
     # Owner records are typed dataclasses.  This fallback is only for a
     # lightweight embedding's scalar value and remains deterministic.
     return str(value)
@@ -838,6 +842,7 @@ def _add_unique_eligible_claim(
     identity = value("path_identity") or value("identity")
     path = value("path")
     artifact_id = value("artifact_id") or value("record_id")
+    key: tuple[str, object]
     if identity is not None:
         if isinstance(identity, (list, tuple)):
             key = ("identity", tuple(identity))

@@ -875,15 +875,65 @@ manifest y owner heads antes de publicar, y se abstiene fail-closed ante drift.
 
 ## Brechas vigentes
 
-- varias fuentes todavía tienen publicación no generacional;
-- la cobertura de localizadores sigue variando cuando un productor no publica la
-  estructura requerida, y esos casos se mantienen como reference-only;
-- falta resolver y conectar un principal autenticado con una sesión MCP confiable;
-- la ruta física, restore de escritorio y KIO real siguen habilitados sólo mediante
-  backends inyectados y fixtures;
-- la sincronización de caches para `trash` y la promoción de efectos reales siguen
-  fuera de esta cohorte;
+- Knowledge conserva observaciones `best_effort_non_generational` para Code,
+  Framework y los agregados de documentos/imágenes; no equivalen a una publicación
+  generacional de todos esos owners;
+- la proyección de evidencia mantiene `reference_only` si faltan snippet o
+  localizador verificado; no inventa estructura ni suficiencia de respuesta;
+- existe el contrato `authenticated-principal/v1`, pero falta conectarlo con una
+  sesión MCP confiable; MCP no expone `authorize`, `apply` ni `restore`;
+- Framework construye `KioTrashBackend` en Linux al solicitar efectos. La ruta
+  exige política de plataforma, revalidación física y recibo. El coordinador
+  `curate apply` conserva su backend explícito; las fixtures del adapter no
+  certifican disponibilidad KDE/KIO ni restore de escritorio en el equipo instalado;
+- `document_cache_sync` distingue `trash` de move/rename y exige una política de
+  invalidación del owner; ese contrato no certifica por sí solo la sincronización
+  de todos los consumidores después de un efecto real;
 
 La prioridad y los criterios de aceptación están en
 [ROADMAP_90_DAYS.md](ROADMAP_90_DAYS.md); seguridad y owners se detallan en
 [SECURITY.md](SECURITY.md) y [PERSISTENCE.md](PERSISTENCE.md).
+
+## Contratos consolidados de estado, mantenimiento y preparación
+
+El registro de owners expone una política versionada de tablas. Cada regla declara
+rol, fuente de reconstrucción, retención, dependencias y frontera durable. Reset,
+backup y restore consumen ese mismo mapa; las tablas desconocidas, incluso vacías,
+no se convierten en proyecciones descartables. Framework, Inventory y Catalog
+conservan una barrera operacional monotónica para distinguir historial protegido
+de trabajo reutilizable. Los assessments y las postcondiciones verifican frescura,
+autoridad y referencias por owner antes de declarar completo un reset.
+
+El inventario de estado relaciona SQLite, artefactos, referencias y pruebas de
+reconstrucción Archive. La retirada sigue el orden de consumidores antes de sus
+fuentes de evidencia. Cada operación registra intención antes del primer staging
+y mantiene recibos que permiten reconciliar una sesión interrumpida. Las copias
+canónicas y cualquier copia única siguen protegidas.
+
+El coordinador de mantenimiento usa planes y verificadores de los owners
+existentes. La autoridad de cada scope viaja separada de su fingerprint. Framework
+registra las fases prepared y confirmed y conserva por separado el resultado del
+trabajo principal y el mantenimiento. Un fallo de publicación del recibo impide
+presentar el efecto como completado. La selección histórica añade aprobación
+privada autenticada; ni el JSON del payload ni su prefijo pueden concederla.
+
+Los recorridos POSIX de scratch comparten observación relativa a descriptores,
+identidad y mounts, con iteración en profundidad, presupuesto de miembros,
+lectura limitada de manifests y cobertura explícita. Las rutas en bytes se
+conservan independientemente de sus representaciones de presentación. El cierre
+de procesos distingue grupo observado de cgroup delegado; un grupo aislado no
+demuestra ausencia de descendientes que se hayan separado de él.
+
+Cada ejecución inicial o de rutas compone una preparación acotada sobre la misma
+frontera del inventario. Las comprobaciones previas declaran estado, alcance,
+evidencia y momento; las validaciones de contenido, CRC e inferencia permanecen
+marcadas como no ejecutadas hasta el owner correspondiente. La selección, las
+opciones y los presupuestos se conservan en el evento de preparación sin alterar
+el fingerprint estable de procesamiento.
+
+La distribución Linux v2 acredita SQLite en el intérprete que ejecutará el
+producto. La identidad incluye ejecutable, módulo, bibliotecas cargadas, source_id,
+opciones y pruebas funcionales. Una política revisada fijada por digest y un
+recibo externo ligan la evidencia a la release; verify y rollback vuelven a medirla.
+Los manifests v1 permanecen legibles con acreditación pendiente. La instalación
+consume wheels y modelos locales; la adquisición es una operación separada.

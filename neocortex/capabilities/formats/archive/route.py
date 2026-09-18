@@ -2100,6 +2100,7 @@ class ArchiveRoute:
             "reused": counters.materialization_reused,
             "collisions": counters.materialization_collisions,
             "source_preserved": True,
+            "manifest_path": getattr(manifest, "manifest_path", None),
         }
         _record_issue(
             connection,
@@ -2148,6 +2149,15 @@ class ArchiveRoute:
                     / "scratch"
                     / "archive-materialization"
                 )
+            for name, value in {
+                "manifest_directory": self.config.state_path.parent / "archive-manifests",
+                "artifact_registry_root": self.config.state_path.parent / "artifacts",
+            }.items():
+                if name in materialize_parameters or any(
+                    parameter.kind is inspect.Parameter.VAR_KEYWORD
+                    for parameter in materialize_parameters.values()
+                ):
+                    materialize_kwargs[name] = value
             materialize_callable: Any = materialize_archive
             manifest = materialize_callable(snapshot.path, destination, **materialize_kwargs)
         except Exception as exc:

@@ -581,17 +581,17 @@ def search_text_state(path: Path, query: str, limit: int = 20) -> tuple[TextSear
             SELECT f.rowid AS fts_rowid,f.file_key,f.path,
             bm25(document_fts) AS raw_bm25
             FROM document_fts AS f JOIN documents AS d ON d.file_key=f.file_key
-            WHERE document_fts MATCH ?1 AND d.status='complete'
-            ORDER BY raw_bm25,f.path COLLATE NOCASE LIMIT ?2
+            WHERE document_fts MATCH :query AND d.status='complete'
+            ORDER BY raw_bm25,f.path COLLATE NOCASE LIMIT :limit
             )
             SELECT d.file_key,d.path,d.content_kind,d.media_type,d.status,
             d.title,d.author,d.size,
             snippet(document_fts,5,'[',']',' ... ',24) AS snippet
             FROM ranked JOIN document_fts ON document_fts.rowid=ranked.fts_rowid
             JOIN documents AS d ON d.file_key=ranked.file_key
-            WHERE document_fts MATCH ?1
+            WHERE document_fts MATCH :query
             ORDER BY ranked.raw_bm25,ranked.path COLLATE NOCASE""",
-            (normalized, limit),
+            {"query": normalized, "limit": limit},
         ).fetchall()
     return tuple(
         TextSearchHit(

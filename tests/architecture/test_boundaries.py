@@ -24,18 +24,62 @@ def _modules() -> tuple[tuple[str, Path], ...]:
     return tuple(sorted(rows))
 
 
-def _imports(module: str, path: Path) -> tuple[str, ...]:
+def _import_edges(module: str, path: Path) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
+    """Return explicit targets plus eager/deferred/type-checking context.
+
+    ImportFrom is relative to __package__, not the source module. Candidate
+    submodules remain in the result and are intersected with _modules by graph
+    consumers; symbols do not become fictional module nodes.
+    """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    values: set[str] = set()
+    package = module if path.name == "__init__.py" else module.rpartition(".")[0]
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    typing_modules = {alias.asname or alias.name for node in ast.walk(tree)
+                      if isinstance(node, ast.Import) for alias in node.names if alias.name == "typing"}
+    typing_checks = {alias.asname or alias.name for node in ast.walk(tree)
+                     if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module == "typing"
+                     for alias in node.names if alias.name == "TYPE_CHECKING"}
+    values: set[tuple[str, str, tuple[str, ...]]] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            values.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module is not None:
-            try:
-                values.add(importlib.util.resolve_name("." * node.level + node.module, module))
-            except ImportError:
-                continue
+            targets = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                try:
+                    base = importlib.util.resolve_name("." * node.level + (node.module or ""), package)
+                except ImportError as exc:
+                    raise AssertionError(f"invalid relative import: {module}:{node.lineno}") from exc
+            else:
+                base = node.module or ""
+            targets = [base] if base else []
+            targets.extend(f"{base}.{alias.name}" for alias in node.names if alias.name != "*")
+        else:
+            continue
+        functions: list[str] = []
+        type_checking = False
+        child = node
+        while child in parents:
+            ancestor = parents[child]
+            if isinstance(ancestor, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                functions.append(ancestor.name)
+            if isinstance(ancestor, ast.If):
+                condition = ancestor.test
+                inverted = isinstance(condition, ast.UnaryOp) and isinstance(condition.op, ast.Not)
+                tested = condition.operand if inverted else condition
+                named = (isinstance(tested, ast.Name) and tested.id in typing_checks) or (
+                    isinstance(tested, ast.Attribute) and tested.attr == "TYPE_CHECKING"
+                    and isinstance(tested.value, ast.Name) and tested.value.id in typing_modules
+                )
+                if named and child in (ancestor.orelse if inverted else ancestor.body):
+                    type_checking = True
+            child = ancestor
+        kind = "type_checking" if type_checking else "deferred" if functions else "eager"
+        values.update((target, kind, tuple(functions)) for target in targets)
     return tuple(sorted(values))
+
+
+def _imports(module: str, path: Path) -> tuple[str, ...]:
+    return tuple(sorted({target for target, _kind, _context in _import_edges(module, path)}))
 
 
 def test_product_modules_do_not_import_development_namespaces() -> None:
@@ -150,16 +194,7 @@ def test_api_core_does_not_import_interface_ui() -> None:
         assert all(not imported.startswith("neocortex.interface") for imported in _imports(module, path)), module
 
 
-def test_production_import_graph_has_no_cycles() -> None:
-    modules = dict(_modules())
-    graph = {
-        module: {
-            imported
-            for imported in _imports(module, path)
-            if imported in modules
-        }
-        for module, path in modules.items()
-    }
+def _cyclic_components(graph: dict[str, set[str]]) -> tuple[tuple[str, ...], ...]:
     index = 0
     stack: list[str] = []
     on_stack: set[str] = set()
@@ -194,4 +229,63 @@ def test_production_import_graph_has_no_cycles() -> None:
     for module in sorted(graph):
         if module not in indices:
             visit(module)
-    assert components == []
+    return tuple(sorted(components))
+
+def test_production_import_graph_has_no_cycles() -> None:
+    """Reject every eager cycle; deferred cycles have a separate exact contract."""
+    modules = dict(_modules())
+    graph = {
+        module: {target for target, kind, _context in _import_edges(module, path)
+                 if target in modules and target != module and kind == "eager"}
+        for module, path in modules.items()
+    }
+    assert _cyclic_components(graph) == ()
+
+
+def test_shared_read_contract_does_not_import_cli() -> None:
+    for module in ("neocortex.api.read_api_port", "neocortex.api.status_codes"):
+        path = ROOT / (module.replace(".", "/") + ".py")
+        assert not any(target.startswith("neocortex.api.cli") for target in _imports(module, path))
+
+
+# Exact, reviewable contracts for retained domain-level cycles. These are not
+# import failures and not a generic permission for new cycles. Every edge and
+# its calling function/type-checking context must still match this set.
+_RETAINED_DOMAIN_CYCLES = {
+    frozenset({"neocortex.capabilities.formats.audio.models", "neocortex.capabilities.formats.audio.whisper"}): {
+        ("neocortex.capabilities.formats.audio.models", "neocortex.capabilities.formats.audio.whisper", "deferred", ("processing_provenance",)),
+        ("neocortex.capabilities.formats.audio.whisper", "neocortex.capabilities.formats.audio.models", "eager", ()),
+    },  # Config asks the local model resolver for its bytes; backend consumes config contracts.
+    frozenset({"neocortex.knowledge.knowledge_asset_diagnosis", "neocortex.knowledge.knowledge_asset_health_contracts"}): {
+        ("neocortex.knowledge.knowledge_asset_diagnosis", "neocortex.knowledge.knowledge_asset_health_contracts", "eager", ()),
+        ("neocortex.knowledge.knowledge_asset_health_contracts", "neocortex.knowledge.knowledge_asset_diagnosis", "deferred", ("to_dict",)),
+    },  # Report serialization projects diagnosis through a pure builder; builder does not serialize reports.
+    frozenset({"neocortex.semantic.image_retrieval_calibration", "neocortex.semantic.semantic_search_service"}): {
+        ("neocortex.semantic.image_retrieval_calibration", "neocortex.semantic.semantic_search_service", "deferred", ("measure_image_retrieval_calibration",)),
+        ("neocortex.semantic.semantic_search_service", "neocortex.semantic.image_retrieval_calibration", "deferred", ("image_search_ranking",)),
+    },  # Measurement reuses search; normal query reads persisted calibration, never measurement.
+    frozenset({"neocortex.semantic.semantic_exact_index", "neocortex.semantic.semantic_search_repository"}): {
+        ("neocortex.semantic.semantic_exact_index", "neocortex.semantic.semantic_search_repository", "deferred", ("_native_rows",)),
+        ("neocortex.semantic.semantic_search_repository", "neocortex.semantic.semantic_exact_index", "type_checking", ()),
+        ("neocortex.semantic.semantic_search_repository", "neocortex.semantic.semantic_exact_index", "deferred", ("_search_exact_page",)),
+    },  # Verified index preparation reads native rows; optional query dispatch never prepares an index.
+    frozenset({"neocortex.workflow.review.archive_review_tasks", "neocortex.workflow.review.value_review_tasks"}): {
+        ("neocortex.workflow.review.archive_review_tasks", "neocortex.workflow.review.value_review_tasks", "deferred", ("_refresh_archive_review_tasks",)),
+        ("neocortex.workflow.review.value_review_tasks", "neocortex.workflow.review.archive_review_tasks", "type_checking", ()),
+        ("neocortex.workflow.review.value_review_tasks", "neocortex.workflow.review.archive_review_tasks", "deferred", ("refresh_value_review_tasks",)),
+    },  # Public refresh delegates to a shared review writer; archive reuses digest/invalidators, not refresh.
+}
+
+
+def test_deferred_dependency_cycles_match_explicit_contract() -> None:
+    modules = dict(_modules())
+    edges = { (module, target, kind, context)
+              for module, path in modules.items()
+              for target, kind, context in _import_edges(module, path)
+              if target in modules and target != module }
+    graph = {module: {target for source, target, _kind, _context in edges if source == module}
+             for module in modules}
+    components = {frozenset(component) for component in _cyclic_components(graph)}
+    assert components == set(_RETAINED_DOMAIN_CYCLES)
+    for component in components:
+        assert {edge for edge in edges if edge[0] in component and edge[1] in component} == _RETAINED_DOMAIN_CYCLES[component]

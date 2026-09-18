@@ -1,0 +1,28 @@
+{
+  "author": "root; etiquetas fijadas sin leer reglas léxicas del candidato",
+  "scope": "Corpus sintético de contrato y limitaciones; no representatividad del Corpus personal ni ajuste del oráculo",
+  "count": 48,
+  "sha256": "4478571dbfa0e236614e24e69fa296ad6738945c57d2bd617a154aca59978bde",
+  "labels_are_semantic_expectations_not_current_engine_predictions": true,
+  "adaptation_rule": "Conservar etiquetas. Si API no evalúa un atributo, registrar not_assessed y cobertura parcial; no reetiquetar para verde. Separar requisito futuro de error implementable ya permitido por el contrato.",
+  "group_split": "sha256(scenario/document group), all contrast and paraphrase cases remain together",
+  "fields": [
+    "case_id",
+    "domain",
+    "family",
+    "paraphrase_group",
+    "split",
+    "query",
+    "source_text",
+    "emitted_start",
+    "emitted_end",
+    "filename",
+    "locator",
+    "expected_requirement",
+    "expected_subject",
+    "rationale"
+  ],
+  "frozen_before_engine_output": true,
+  "previous_sha256": "12e8380942b1d3bef41461d5fd6327d455a70debc3e02bebef99750b36436bda",
+  "amendment": "Se amplían dominios requeridos por PRE04, corrige límites de fragmento a longitud del texto y se cierra fuga de escenarios entre splits; ninguna etiqueta depende de salida del motor."
+}

@@ -10,16 +10,19 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import stat
+import threading
 import platform
 import re
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
-from functools import lru_cache
+from functools import lru_cache, wraps
 from importlib import metadata
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from neocortex.foundation.hash_compat import (
     HASH_ALGORITHM_64,
@@ -42,6 +45,66 @@ _ARTIFACT_READ_BYTES = 1024 * 1024
 _VERSION_OUTPUT_MAX_BYTES = 256 * 1024
 _LANGUAGE_OUTPUT_MAX_BYTES = 1024 * 1024
 _SAFE_SEGMENT = re.compile(r"[^a-zA-Z0-9_.-]+")
+
+
+_PROVENANCE_REVISION = 0
+_PROVENANCE_REVISION_LOCK = threading.RLock()
+
+
+def processing_provenance_cache(*, maxsize: int) -> Callable[[Callable[..., Any]], Any]:
+    """Bound a cache to the public environment revision, including in-flight calls.
+
+    Consumers keep their own cache and imports. Revision is a cache key, never
+    part of the public processing signature or persisted manifest. Existing
+    cache_clear/cache_info test seams remain available on the wrapper.
+    """
+    def decorate(function: Callable[..., Any]) -> Any:
+        @lru_cache(maxsize=maxsize)
+        def cached(revision: int, *args: Any, **kwargs: Any) -> Any:
+            return function(*args, **kwargs)
+
+        @wraps(function)
+        def call(*args: Any, **kwargs: Any) -> Any:
+            for _attempt in range(3):
+                with _PROVENANCE_REVISION_LOCK:
+                    revision = _PROVENANCE_REVISION
+                result = cached(revision, *args, **kwargs)
+                with _PROVENANCE_REVISION_LOCK:
+                    if revision == _PROVENANCE_REVISION:
+                        return result
+            raise RuntimeError("processing provenance changed repeatedly during observation")
+
+        call.cache_clear = cached.cache_clear  # type: ignore[attr-defined]
+        call.cache_info = cached.cache_info  # type: ignore[attr-defined]
+        return call
+    return decorate
+
+
+class ProcessingArtifactChangedError(RuntimeError):
+    """A behavior-affecting file changed during a bounded observation."""
+
+
+# dev/ino distinguish replacements; ctime also catches in-place rewrites that
+# restore mtime/size. Mode prevents cached results bypassing non-regular checks.
+_ArtifactIdentity = tuple[int, int, int, int, int, int]
+
+
+def _artifact_identity(value: os.stat_result) -> _ArtifactIdentity:
+    if not stat.S_ISREG(value.st_mode):
+        raise FileNotFoundError("processing artifact must be a regular file")
+    return (value.st_dev, value.st_ino, value.st_mode, value.st_size,
+            value.st_mtime_ns, value.st_ctime_ns)
+
+
+def _observe_artifact(path: Path) -> tuple[Path, _ArtifactIdentity]:
+    resolved = path.expanduser().resolve(strict=True)
+    return resolved, _artifact_identity(resolved.stat())
+
+
+def _require_same_artifact(path: Path, resolved: Path, expected: _ArtifactIdentity) -> None:
+    current, identity = _observe_artifact(path)
+    if current != resolved or identity != expected:
+        raise ProcessingArtifactChangedError("processing artifact changed during observation")
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,37 +234,40 @@ def python_runtime_component() -> dict[str, Any]:
     }
 
 
-@lru_cache(maxsize=64)
-def _fingerprint_file_cached(path: str, size: int, mtime_ns: int) -> str:
-    del size, mtime_ns
+@processing_provenance_cache(maxsize=64)
+def _fingerprint_file_cached(path: str, identity: _ArtifactIdentity) -> str:
     digest = xxhash.xxh3_128()
-    with Path(path).open("rb") as stream:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    descriptor = os.open(path, flags)
+    with os.fdopen(descriptor, "rb") as stream:
+        if _artifact_identity(os.fstat(stream.fileno())) != identity:
+            raise ProcessingArtifactChangedError("processing artifact changed before hashing")
         while chunk := stream.read(_ARTIFACT_READ_BYTES):
             digest.update(chunk)
+        if _artifact_identity(os.fstat(stream.fileno())) != identity:
+            raise ProcessingArtifactChangedError("processing artifact changed while hashing")
+    _require_same_artifact(Path(path), Path(path), identity)
     return digest.hexdigest()
 
 
 def fingerprint_file_xxh3_128(path: Path) -> str:
-    """Fingerprint an artifact incrementally using the project identity algorithm."""
-
-    resolved = path.expanduser().resolve(strict=True)
-    stat = resolved.stat()
-    if not resolved.is_file():
-        raise FileNotFoundError(f"processing artifact is not a file: {resolved}")
-    return _fingerprint_file_cached(str(resolved), stat.st_size, stat.st_mtime_ns)
+    """Return a cached hash only for the same coherently observed file revision."""
+    resolved, identity = _observe_artifact(path)
+    digest = _fingerprint_file_cached(str(resolved), identity)
+    _require_same_artifact(path, resolved, identity)
+    return digest
 
 
 def file_artifact(path: Path, *, label: str | None = None) -> dict[str, Any]:
-    """Return bounded metadata for one behavior-affecting runtime artifact."""
-
-    resolved = path.expanduser().resolve(strict=True)
-    stat = resolved.stat()
-    if not resolved.is_file():
-        raise FileNotFoundError(f"processing artifact is not a file: {resolved}")
+    """Return metadata and digest from the same verified regular-file revision."""
+    resolved, identity = _observe_artifact(path)
+    digest = _fingerprint_file_cached(str(resolved), identity)
+    _require_same_artifact(path, resolved, identity)
     return {
         "name": label or resolved.name,
-        "size_bytes": stat.st_size,
-        "xxh3_128": fingerprint_file_xxh3_128(resolved),
+        "size_bytes": identity[3],
+        "xxh3_128": digest,
         "hash_backend": HASH_BACKEND,
         "hash_algorithm_128": HASH_ALGORITHM_128,
         "hash_algorithm_64": HASH_ALGORITHM_64,
@@ -275,16 +341,17 @@ def _completed_output_lines(result: subprocess.CompletedProcess[bytes]) -> list[
     return combined.decode("utf-8", "replace").splitlines()
 
 
-@lru_cache(maxsize=32)
+@processing_provenance_cache(maxsize=32)
 def _executable_component_json(
     name: str,
-    explicit: str | None,
-    default_name: str,
+    command_path: str,
+    identity: _ArtifactIdentity,
     version_arguments: tuple[str, ...],
     timeout_seconds: float,
 ) -> str:
     try:
-        command = _resolved_executable(explicit, default_name)
+        command = Path(command_path)
+        _require_same_artifact(command, command, identity)
         result = run_bounded_capture(
             [str(command), *version_arguments],
             timeout_seconds=timeout_seconds,
@@ -294,7 +361,7 @@ def _executable_component_json(
         )
         output = _completed_output_lines(result)
         if result.returncode != 0 or not output:
-            raise RuntimeError(f"{default_name} version probe exited {result.returncode}")
+            raise RuntimeError(f"{command.name} version probe exited {result.returncode}")
         component = {
             "name": name,
             "kind": "native-executable",
@@ -302,6 +369,7 @@ def _executable_component_json(
             "version": output[0].strip()[:300],
             "binary": file_artifact(command, label=command.name),
         }
+        _require_same_artifact(command, command, identity)
     except Exception as exc:
         component = {
             "name": name,
@@ -320,17 +388,17 @@ def executable_component(
     explicit: str | None = None,
     timeout_seconds: float = 10.0,
 ) -> dict[str, Any]:
-    """Probe a native executable once and retain only version/artifact metadata."""
-
-    return json.loads(
-        _executable_component_json(
-            name,
-            explicit,
-            default_name,
-            version_arguments,
-            timeout_seconds,
-        )
-    )
+    """Reuse a version probe only while the resolved executable is unchanged."""
+    try:
+        command, identity = _observe_artifact(_resolved_executable(explicit, default_name))
+        value = json.loads(_executable_component_json(
+            name, str(command), identity, version_arguments, timeout_seconds,
+        ))
+        _require_same_artifact(_resolved_executable(explicit, default_name), command, identity)
+        return value
+    except Exception as exc:
+        return {"name": name, "kind": "native-executable", "status": "unavailable",
+                "error_type": type(exc).__name__}
 
 
 @dataclass(frozen=True, slots=True)
@@ -394,7 +462,7 @@ def _tessdata_path_from_listing(output: str) -> Path | None:
         return None
 
 
-@lru_cache(maxsize=32)
+@processing_provenance_cache(maxsize=32)
 def _resolve_tesseract_runtime_cached(
     explicit: str | None,
     tessdata_dir: str | None,
@@ -541,11 +609,18 @@ def resolve_tesseract_runtime(
 
 
 def clear_processing_provenance_caches() -> None:
-    """Clear runtime probe caches for tests or explicit in-process upgrades."""
+    """Start a new public provenance revision without importing route owners.
 
-    _fingerprint_file_cached.cache_clear()
-    _executable_component_json.cache_clear()
-    _resolve_tesseract_runtime_cached.cache_clear()
+    Old in-flight observations cannot populate a cache key for the new revision.
+    Route snapshots already retained by a running extractor remain immutable;
+    callers refresh between runs, before constructing route configurations.
+    """
+    global _PROVENANCE_REVISION
+    with _PROVENANCE_REVISION_LOCK:
+        _PROVENANCE_REVISION += 1
+        _fingerprint_file_cached.cache_clear()
+        _executable_component_json.cache_clear()
+        _resolve_tesseract_runtime_cached.cache_clear()
 
 
 # endregion [03]

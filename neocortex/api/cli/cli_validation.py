@@ -208,10 +208,19 @@ def apply_all_preset(args: argparse.Namespace) -> None:
 # endregion [01]
 
 
+_HISTORICAL_SELECTION_OPTIONS = frozenset({
+    "maintenance_select", "maintenance_provenance_artifact", "maintenance_selection_file",
+    "maintenance_selection_partial", "maintenance_prepare_adoption",
+    "maintenance_approve_adoption", "maintenance_apply_adoption", "maintenance_selected_id",
+})
+
+
 def _maintenance_requested(args: argparse.Namespace) -> bool:
     """Identify the maintenance leaf before validating unrelated flat flags."""
 
     explicit = set(getattr(args, "_explicit_options", ()))
+    if explicit.intersection(_HISTORICAL_SELECTION_OPTIONS):
+        return True
     if getattr(args, "command", None) == "maintenance":
         return True
     if "maintenance_json" in explicit:
@@ -563,6 +572,34 @@ def _validate_maintenance_operation(args: argparse.Namespace) -> bool:
         raise SystemExit(
             "historical maintenance options require --scope historical-temp"
         )
+
+    selection_options = explicit.intersection(_HISTORICAL_SELECTION_OPTIONS)
+    if selection_options:
+        if scope != _HISTORICAL_MAINTENANCE_SCOPE:
+            raise SystemExit("historical selection options require --scope historical-temp")
+        paths = getattr(args, "maintenance_select", None) or []
+        claims = getattr(args, "maintenance_provenance_artifact", None) or []
+        selection_file = getattr(args, "maintenance_selection_file", None)
+        approve = getattr(args, "maintenance_approve_adoption", None)
+        apply_adoption = getattr(args, "maintenance_apply_adoption", None)
+        prepare = getattr(args, "maintenance_prepare_adoption", False)
+        partial = getattr(args, "maintenance_selection_partial", False)
+        selected_ids = getattr(args, "maintenance_selected_id", None)
+        if selection_file is not None and (paths or claims):
+            raise SystemExit("--selection-file cannot be combined with --select/--provenance-artifact")
+        if len(paths) != len(claims):
+            raise SystemExit("each --select requires one --provenance-artifact, in the same order")
+        if any(not path.is_absolute() or ".." in path.parts for path in paths):
+            raise SystemExit("--select requires exact absolute paths without parent traversal")
+        if approve or apply_adoption:
+            if paths or claims or selection_file is not None or prepare or partial:
+                raise SystemExit("approval/application consumes the prepared proposal, not a new selection")
+        elif not paths and selection_file is None:
+            raise SystemExit("a selection requires --select or --selection-file")
+        if selected_ids and not (approve or apply_adoption):
+            raise SystemExit("--selected-id requires --approve-adoption or --apply-adoption")
+        if bool(getattr(args, "apply", False)) != bool(apply_adoption):
+            raise SystemExit("historical selection effects require both --apply and --apply-adoption")
 
     if getattr(args, "all", False):
         raise SystemExit("maintenance cannot be combined with --all")

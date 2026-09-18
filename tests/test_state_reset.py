@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -79,7 +80,9 @@ def _seed_runs(database: Path) -> None:
 def _create_image_database(state: Path) -> Path:
     database = state / "image.sqlite3"
     initialize_image_state(database)
-    with sqlite3.connect(database) as connection:
+    # A Connection context commits/rolls back; it does not close. Leaving it
+    # for cyclic GC can checkpoint this source while the reset backs it up.
+    with closing(sqlite3.connect(database)) as connection, connection:
         connection.execute("INSERT INTO metadata VALUES('fixture_payload','preserve')")
     return database
 
@@ -190,7 +193,7 @@ def test_runs_uses_staged_framework_reset_and_keeps_recovery_parent_and_floor(
     assert json.loads(result.manifest.read_text(encoding="utf-8"))["status"] == "applied"
 
 
-def test_runs_and_caches_removes_all_registered_sqlite_and_publication_metadata(
+def test_runs_and_caches_preserves_framework_identity_floor_and_retires_cache_metadata(
     tmp_path: Path,
 ) -> None:
     state = tmp_path / "state"
@@ -223,14 +226,16 @@ def test_runs_and_caches_removes_all_registered_sqlite_and_publication_metadata(
     )
 
     assert isinstance(result, StateResetResult)
-    assert not framework.exists() and not image.exists()
+    assert framework.exists() and not image.exists()
+    with closing(sqlite3.connect(framework)) as connection:
+        assert connection.execute("SELECT value FROM metadata WHERE key='operational_reset_barrier'").fetchone() is not None
     assert not (state / "state-epoch.json").exists()
     assert result.backup_manifest is not None and result.backup_manifest.is_file()
     assert result.backup_directory is not None
     assert (result.backup_directory / "reset-files" / "framework.sqlite3").is_file()
 
 
-def test_all_adds_only_managed_non_sqlite_trees_and_preserves_unknown_and_receipts(
+def test_all_blocks_unknown_then_retires_managed_trees_and_preserves_receipts(
     tmp_path: Path,
 ) -> None:
     state = tmp_path / "state"
@@ -257,6 +262,15 @@ def test_all_adds_only_managed_non_sqlite_trees_and_preserves_unknown_and_receip
     assert managed_manifest in planned_paths
     assert planned_paths.isdisjoint(preview.unmanaged_state_entries)
     assert route_lock not in preview.unmanaged_state_entries
+    with pytest.raises(StateResetError, match="unclaimed"):
+        execute_state_reset(state, scope="all", apply=True, plan_digest=preview.plan_digest,
+                            confirmation=STATE_RESET_CONFIRMATION)
+    assert image.exists() and unknown.read_text() == "future"
+    # Explicit fixture custody outside state resolves the unknown object; reset
+    # itself never adopts or removes it.
+    preserved_unknown = tmp_path / "preserved-future.json"
+    unknown.rename(preserved_unknown)
+    preview = plan_state_reset(state, scope="all")
     result = execute_state_reset(
         state,
         scope="all",
@@ -273,7 +287,7 @@ def test_all_adds_only_managed_non_sqlite_trees_and_preserves_unknown_and_receip
     assert not managed_manifest.exists()
     assert route_lock.read_text(encoding="utf-8") == "lock"
     assert receipt.read_text(encoding="utf-8") == "keep"
-    assert unknown.read_text(encoding="utf-8") == "future"
+    assert preserved_unknown.read_text(encoding="utf-8") == "future"
 
 
 def test_all_preserves_verified_catalog_migration_backup_pair(

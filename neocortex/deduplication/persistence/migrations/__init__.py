@@ -20,6 +20,7 @@ from . import (
     v10_to_v11,
     v11_to_v12,
     v12_to_v13,
+    v13_to_v14,
 )
 from .common import advance_version
 
@@ -39,6 +40,8 @@ MIGRATIONS: dict[int, Migration] = {
     10: v10_to_v11.migrate,
     11: v11_to_v12.migrate,
     12: v12_to_v13.migrate,
+    # The metadata barrier changes reader eligibility, not physical tables.
+    13: v13_to_v14.migrate,
 }
 
 

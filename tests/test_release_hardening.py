@@ -279,3 +279,64 @@ pathlib.Path(os.environ["NEO_BOOTSTRAP_OBSERVATION"]).write_text(
     assert payload["index"] is None
     assert payload["extra_index"] is None
     assert payload["config"] == os.devnull
+
+
+def test_wheelhouse_rejects_incompatible_binary_before_install(tmp_path: Path) -> None:
+    root = _wheelhouse(tmp_path)
+    path = root / release_linux.WHEELHOUSE_MANIFEST_NAME
+    manifest = json.loads(path.read_text())
+    artifact = manifest["artifacts"][0]
+    original = root / artifact["filename"]
+    artifact["filename"] = artifact["filename"].replace("py3-none-any", "cp312-cp312-win_amd64")
+    original.rename(root / artifact["filename"])
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(release_linux.LinuxReleaseError, match="compatible runtime tag"):
+        release_linux._validate_wheelhouse(root)
+
+
+def test_missing_wheel_report_lists_the_complete_required_set(tmp_path: Path) -> None:
+    root = _wheelhouse(tmp_path)
+    with pytest.raises(release_linux.LinuxReleaseError) as raised:
+        release_linux._validate_wheelhouse(root, required={"numpy": "2.5.3", "ctranslate2": "4.8.1"})
+    assert "numpy==2.5.3" in str(raised.value)
+    assert "ctranslate2==4.8.1" in str(raised.value)
+
+
+@pytest.mark.parametrize("fault", [None, "missing_extra", "wrong_version", "python", "remote_url"])
+def test_full_offline_closure_evaluates_transitive_extras_and_markers(tmp_path: Path, fault: str | None) -> None:
+    root = tmp_path / "closure"
+    root.mkdir()
+    rows = []
+    requirements = {
+        "rootpkg": ['child[needed]>=2.0; sys_platform == "linux"', 'not_for_linux; sys_platform == "win32"'],
+        "child": ['leaf==3.0; extra == "needed"'],
+        "leaf": [],
+    }
+    if fault == "remote_url":
+        requirements["rootpkg"] = ["child @ https://vendor.example/child.whl"]
+    versions = {"rootpkg": "1.0", "child": "2.0", "leaf": "3.0"}
+    if fault == "wrong_version":
+        versions["child"] = "1.0"
+    if fault == "missing_extra":
+        versions.pop("leaf")
+    for name, version in versions.items():
+        filename = f"{name}-{version}-py3-none-any.whl"
+        wheel = root / filename
+        metadata = f"Metadata-Version: 2.4\nName: {name}\nVersion: {version}\n"
+        metadata += "".join(f"Requires-Dist: {value}\n" for value in requirements[name])
+        if fault == "python" and name == "leaf":
+            metadata += "Requires-Python: <3\n"
+        with zipfile.ZipFile(wheel, "w") as archive:
+            archive.writestr(f"{name}-{version}.dist-info/METADATA", metadata)
+        rows.append({"filename": filename, "name": name, "version": version,
+                     "sha256": release_linux._sha256_file(wheel)})
+    (root / release_linux.WHEELHOUSE_MANIFEST_NAME).write_text(json.dumps({
+        "schema_version": 1, "kind": "neocortex_wheelhouse", "python": "cp314",
+        "platform": "linux_x86_64", "artifacts": rows,
+    }), encoding="utf-8")
+    artifacts = release_linux._validate_wheelhouse(root)
+    if fault is None:
+        release_linux._validate_runtime_dependency_closure(artifacts, versions, project_requirements=["rootpkg==1.0"])
+    else:
+        with pytest.raises(release_linux.LinuxReleaseError, match="offline runtime"):
+            release_linux._validate_runtime_dependency_closure(artifacts, versions, project_requirements=["rootpkg==1.0"])

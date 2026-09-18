@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, fields
 from typing import Literal, Mapping, Sequence
 
+from neocortex.safety.state_lifecycle_contracts import TableLifecycleRule
+
 from neocortex.deduplication.persistence.ddl import SCHEMA_VERSION as INVENTORY_SCHEMA_VERSION
 
 from neocortex.capabilities.formats.archive.state import ARCHIVE_SCHEMA_VERSION
@@ -73,6 +75,20 @@ class StateStoreContract:
     knowledge_read_kind: str
     knowledge_capture_mode: KnowledgeCaptureMode
     storage_engine: Literal["sqlite"] = "sqlite"
+
+    @property
+    def lifecycle_policy_version(self) -> int:
+        from neocortex.persistence.state_reset_policy import LIFECYCLE_POLICY_VERSION
+        return LIFECYCLE_POLICY_VERSION
+
+    @property
+    def lifecycle_rules(self) -> tuple[TableLifecycleRule, ...]:
+        from neocortex.persistence.state_reset_policy import owner_lifecycle_rules
+        return owner_lifecycle_rules(self.state_owner_id)
+
+    def lifecycle_rule(self, table: str) -> TableLifecycleRule | None:
+        """Unknown names confer no disposal authority, even for an empty table."""
+        return next((rule for rule in self.lifecycle_rules if rule.table == table), None)
 
     def __post_init__(self) -> None:
         for label, value in (

@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 from neocortex.platform.policy import stat_birthtime_ns
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from neocortex.enumeration.errors import NtfsUsnError
 from neocortex.enumeration.models import JournalCursor
@@ -134,6 +134,7 @@ class _InitialWork:
     organization_plan: OrganizationPlanSummary | None
     organization_apply: OrganizationApplySummary | None
     route_failures: dict[str, str] = field(default_factory=dict)
+    maintenance: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -534,7 +535,7 @@ class FrameworkOrchestrator:
             self.config.document_catalog_database,
             root,
         )
-        organization_arguments = {
+        organization_arguments: dict[str, Any] = {
             "source_scope": source_scope,
             "min_confidence": self.config.organization_min_confidence,
             "progress": self.progress,
@@ -556,6 +557,7 @@ class FrameworkOrchestrator:
         signature_target = getattr(plan_document_organization, "side_effect", None)
         if not callable(signature_target):
             signature_target = plan_document_organization
+        parameters: Mapping[str, inspect.Parameter]
         try:
             parameters = inspect.signature(signature_target).parameters
         except (TypeError, ValueError):
@@ -1057,7 +1059,27 @@ class FrameworkOrchestrator:
         )
         boundary.verify()
         with FrameworkRunLock(self.config.state_directory / "framework.lock"):
+            from neocortex.foundation.processing_provenance import (
+                clear_processing_provenance_caches,
+            )
+
+            clear_processing_provenance_caches()
+            self._prepare_run_contract(boundary)
             return self._run_initial_locked(boundary)
+
+    def _prepare_run_contract(self, boundary: NormalInventoryBoundary) -> None:
+        from neocortex.runtime.orchestration.preparation import prepare_framework_run
+
+        self._run_preparation = prepare_framework_run(
+            self.config, boundary, self.selected_routes,
+            semantic_requested=self._lifecycle_stage_runner is not None,
+            cancelled=lambda: self._cancellation.is_cancelled,
+        )
+
+    def _record_run_preparation(self, state: FrameworkState, run_id: int) -> None:
+        report = getattr(self, "_run_preparation", None)
+        if report is not None:
+            state.record_event(run_id, "info", "preparation", "Preparación de la ejecución", report.to_dict())
 
     def _prepare_initial_run(
         self,
@@ -1273,6 +1295,7 @@ class FrameworkOrchestrator:
         excluded_paths: tuple[Path, ...],
     ) -> None:
         configuration = self._initial_configuration_payload(boundary, excluded_paths)
+        self._record_run_preparation(state, run_id)
         state.record_event(
             run_id,
             "info",
@@ -1647,7 +1670,7 @@ class FrameworkOrchestrator:
                 dedup_index,
                 inventory.scan.scan_id,
             )
-            third_party_project_roots = ()
+            third_party_project_roots: tuple[Path, ...] = ()
             third_party_policy = getattr(self.config, "code_third_party_policy", None)
             if third_party_policy is not None and third_party_policy.mutation_requested:
                 third_party_project_roots = self._code_project_roots_for_actions(
@@ -1876,7 +1899,7 @@ class FrameworkOrchestrator:
         """Publish optional scratch evidence through existing Framework APIs."""
 
         status = str(details.get("status", "failed"))
-        attention = status in {"blocked", "failed", "recovery_required", "unavailable"}
+        attention = status in {"blocked", "failed", "recovery_required", "unavailable", "partial"}
         publish_stage = getattr(state, "publish_run_stage", None)
         if callable(publish_stage):
             try:
@@ -1912,6 +1935,8 @@ class FrameworkOrchestrator:
         self,
         state: FrameworkState,
         run_id: int,
+        *,
+        primary_work_status: str = "complete",
     ) -> dict[str, object]:
         """Plan/apply only registered Framework-owned scratch workspaces.
 
@@ -1929,48 +1954,106 @@ class FrameworkOrchestrator:
         )
         apply_requested = bool(getattr(self.config, "apply_actions", False))
         try:
-            from neocortex.runtime.scratch import ScratchManager
+            from neocortex.runtime.orchestration.maintenance import (
+                MaintenanceBlocked, MaintenanceRequest, ScopeAuthority, configured_scratch_maintenance,
+            )
 
-            # Every integrated scratch owner shares the state-local artifact
-            # registry.  Construction remains lazy inside ScratchManager, so
-            # this read-only maintenance plan does not create the registry
-            # root.  Keep strict legacy test/embedding constructors working by
-            # inspecting their concrete signature before passing the optional
-            # integration seam.
-            artifact_registry_root = (
-                Path(os.path.abspath(os.fspath(self.config.state_directory)))
-                / "artifacts"
-            )
-            manager_kwargs: dict[str, Path] = {}
-            try:
-                manager_signature = inspect.signature(ScratchManager)
-            except (TypeError, ValueError):
-                manager_signature = None
-            if manager_signature is None or (
-                "artifact_registry_root" in manager_signature.parameters
-                or any(
-                    parameter.kind is inspect.Parameter.VAR_KEYWORD
-                    for parameter in manager_signature.parameters.values()
-                )
+            read_budget = getattr(state, "read_run_budget", None)
+            live_budget = read_budget(run_id) if callable(read_budget) else None
+            if live_budget is not None and not isinstance(live_budget, Mapping):
+                raise MaintenanceBlocked("run_budget_invalid")
+            limits = {"max_entries": 100_000, "max_bytes": 1 << 40}
+            for ceiling, remaining_key, config_key in (
+                ("max_entries", "remaining_items", "run_max_items"),
+                ("max_bytes", "remaining_bytes", "run_max_bytes"),
             ):
-                manager_kwargs["artifact_registry_root"] = artifact_registry_root
-            manager = ScratchManager(
-                scratch_root,
-                owner=self._SCRATCH_OWNER,
-                create_root=False,
-                **manager_kwargs,
+                configured = getattr(self.config, config_key, None)
+                remaining = None if live_budget is None else live_budget.get(remaining_key)
+                for value in (configured, remaining):
+                    if value is None:
+                        continue
+                    if type(value) is not int or value <= 0:
+                        raise MaintenanceBlocked("run_budget_exhausted_or_invalid:" + remaining_key)
+                    limits[ceiling] = min(limits[ceiling], value)
+            configured_limits = any(getattr(self.config, key, None) is not None for key in (
+                "run_max_items", "run_max_bytes", "run_time_budget_seconds",
+            ))
+            if live_budget is None and configured_limits:
+                raise MaintenanceBlocked("configured_run_budget_not_observable")
+            deadline_ns = None
+            if live_budget is not None:
+                if live_budget.get("cancel_requested") or live_budget.get("expired"):
+                    raise MaintenanceBlocked("run_budget_cancelled_or_expired")
+                deadline = live_budget.get("deadline_ns")
+                if deadline is not None:
+                    if type(deadline) is not int or deadline <= time.time_ns():
+                        raise MaintenanceBlocked("run_budget_deadline_expired")
+                    deadline_ns = time.monotonic_ns() + (deadline - time.time_ns())
+
+            reserved_entries = 0
+            reserved_bytes = 0
+
+            def record_outcome(payload: Mapping[str, object]) -> None:
+                nonlocal reserved_entries, reserved_bytes
+                if live_budget is not None and payload.get("phase") == "prepared":
+                    entries, byte_count = payload.get("budget_entries"), payload.get("budget_bytes")
+                    if (type(entries) is not int or type(byte_count) is not int
+                            or entries < reserved_entries or byte_count < reserved_bytes):
+                        raise MaintenanceBlocked("maintenance_verification_budget_unavailable")
+                    # Verification spends the same run budget as planning.
+                    # Admission of its delta occurs before the owner's effect.
+                    state.reserve_run_budget(
+                        run_id, "maintenance-verification:" + self._SCRATCH_SCOPE + ":"
+                        + str(payload["fingerprint"]),
+                        items=entries - reserved_entries, bytes=byte_count - reserved_bytes,
+                        worker="maintenance", stage="maintenance",
+                    )
+                    reserved_entries, reserved_bytes = entries, byte_count
+                # Unlike the optional display event below, this durable receipt
+                # is required before/after the owner's effect.
+                state.record_event(run_id, "info", "maintenance-receipt",
+                                   "Recibo de mantenimiento", dict(payload))
+
+            coordinator = configured_scratch_maintenance(
+                Path(self.config.state_directory), owner=self._SCRATCH_OWNER,
+                scopes=(self._SCRATCH_SCOPE,), record_outcome=record_outcome,
             )
-            planned = manager.plan()
-            result = planned
-            if apply_requested:
-                # Do not filter or synthesize records here.  ``apply`` owns
-                # the completed/eligible check and its revalidation frontier.
-                result = manager.apply()
+            request = MaintenanceRequest(
+                scopes=(self._SCRATCH_SCOPE,), apply_requested=apply_requested,
+                authorities=(ScopeAuthority(self._SCRATCH_SCOPE, "configured-run-apply"),)
+                if apply_requested else (),
+                max_entries=limits["max_entries"], max_bytes=limits["max_bytes"],
+                deadline_ns=deadline_ns,
+                cancelled=lambda: self._cancellation.is_cancelled,
+            )
+            planned = coordinator.plan(request)
+            if live_budget is not None:
+                reserve = getattr(state, "reserve_run_budget", None)
+                if not callable(reserve):
+                    raise MaintenanceBlocked("run_budget_reservation_owner_unavailable")
+                fingerprint = planned.component_fingerprints.get(self._SCRATCH_SCOPE, "empty")
+                reserve(run_id, "maintenance:" + self._SCRATCH_SCOPE + ":" + fingerprint,
+                        items=planned.observed_entries, bytes=planned.observed_bytes,
+                        worker="maintenance", stage="maintenance")
+                reserved_entries, reserved_bytes = planned.observed_entries, planned.observed_bytes
+            outcome = coordinator.execute(
+                planned, primary_work_status=primary_work_status,
+            )
+            owner_plan = planned.component_plans.get(self._SCRATCH_SCOPE, {})
             details = self._scratch_maintenance_details(
-                result,
-                apply_requested=apply_requested,
-                root=scratch_root,
+                owner_plan, apply_requested=False, root=scratch_root,
             )
+            details["mode"] = "apply" if apply_requested else "plan"
+            if apply_requested:
+                owner_outcome = outcome.get("scopes", {}).get(self._SCRATCH_SCOPE, {})
+                details.update(
+                    applied=owner_outcome.get("retired", 0),
+                    applied_bytes=owner_outcome.get("deleted_apparent_bytes", 0),
+                    status="applied" if outcome["maintenance_status"] == "complete" else "blocked",
+                )
+            elif planned.blocked:
+                details["status"] = "blocked"
+            details["maintenance"] = outcome
         except Exception as exc:
             details = {
                 "schema": "neocortex.scratch-maintenance/v1",
@@ -1998,6 +2081,12 @@ class FrameworkOrchestrator:
                 "recovery_required_bytes": 0,
                 "error_type": type(exc).__name__,
                 "error": str(exc)[:8192],
+                "maintenance": {
+                    "operation_status": "partial", "primary_work_status": primary_work_status,
+                    "maintenance_status": "partial", "requested_scopes": [self._SCRATCH_SCOPE],
+                    "blocked_scopes": {self._SCRATCH_SCOPE: type(exc).__name__ + ":" + str(exc)[:512]},
+                    "receipt_refs": [],
+                },
             }
         self._record_scratch_maintenance(state, run_id, details)
         return details
@@ -2014,6 +2103,12 @@ class FrameworkOrchestrator:
         state.set_run_phase(run_id, "finalize")
         transient_rows_pruned = state.prune_route_candidates((run_id,))
         inventory = work.inventory
+        scratch_maintenance = self._run_initial_scratch_maintenance(
+            state, run_id, primary_work_status="partial" if work.route_failures else "complete",
+        )
+        outcome = scratch_maintenance.get("maintenance")
+        if isinstance(outcome, dict):
+            work.maintenance.update(outcome)
         state.complete_initial_run(
             run_id,
             inventory.scan.scan_id,
@@ -2022,7 +2117,6 @@ class FrameworkOrchestrator:
             inventory.inventory_attempts,
             inventory.inventory_mode,
         )
-        scratch_maintenance = self._run_initial_scratch_maintenance(state, run_id)
         state.record_event(
             run_id,
             "warning" if work.route_failures else "info",
@@ -2257,6 +2351,7 @@ class FrameworkOrchestrator:
             organization_plan=work.organization_plan,
             organization_apply=work.organization_apply,
             route_failures=work.route_failures,
+            maintenance=dict(work.maintenance),
         )
 
     def _require_publication_ready(self) -> None:
@@ -2346,6 +2441,12 @@ class FrameworkOrchestrator:
         )
         boundary.verify()
         with FrameworkRunLock(self.config.state_directory / "framework.lock"):
+            from neocortex.foundation.processing_provenance import (
+                clear_processing_provenance_caches,
+            )
+
+            clear_processing_provenance_caches()
+            self._prepare_run_contract(boundary)
             return self._run_route_only_locked(boundary)
 
     @staticmethod
@@ -2681,6 +2782,7 @@ class FrameworkOrchestrator:
                 if source.candidate_backed_routes
                 else 0
             )
+            self._record_run_preparation(state, run_id)
             heartbeat = RunHeartbeat(
                 self.config.framework_database,
                 run_id,

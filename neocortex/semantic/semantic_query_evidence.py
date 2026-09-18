@@ -479,6 +479,11 @@ _COMPLETED_ACTION = re.compile(
     r"comparo|compararon|comparad[oa]s?|cotejo|cotejaron|cotejad[oa]s?|"
     r"verifico|verificaron|verificad[oa]s?|restored|replaced|compared|verified)\b"
 )
+_UNCONFIRMED_ACTION = re.compile(
+    r"\b(?:no (?:se )?(?:(?:ha|han|pudo|pudieron|puede|pueden|podido)\s+){0,2}"
+    r"(?:comprobado|confirmado|determinado|verificado|comprobar|confirmar|determinar|verificar)|"
+    r"no (?:se )?(?:sabe|conoce|consta)|se desconoce)\b"
+)
 _EVENT_DATE = re.compile(
     r"\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{4}|"
     r"\d{1,2}\s+(?:de\s+)?(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|"
@@ -569,6 +574,15 @@ def _scoped_units(text: str, subjects: tuple[str, ...]) -> list[dict[str, object
         # A leading hypothetical "Si"/"If" scopes every coordinated action in
         # this sentence.  Affirmative "Sí" is distinct: do not fold accents.
         conditional = re.match(r"(?:si|if)\b", sentence, re.IGNORECASE) is not None
+        folded_sentence = _fold(sentence)
+        unconfirmed = _UNCONFIRMED_ACTION.search(folded_sentence)
+        # An unconfirmed evaluation can scope coordinated questions ("cuándo
+        # restauraron ... ni si compararon ..."). Its negation concerns our
+        # knowledge of the event, not the event's occurrence. A completed
+        # action preceding that marker retains its own clause's scope.
+        unconfirmed_sentence = bool(
+            unconfirmed and not _COMPLETED_ACTION.search(folded_sentence[:unconfirmed.start()])
+        )
         start = 0
         connector = ""
         boundaries = list(_SCOPED_BOUNDARY.finditer(sentence))
@@ -596,6 +610,7 @@ def _scoped_units(text: str, subjects: tuple[str, ...]) -> list[dict[str, object
                         "sentence": sentence_id,
                         "connector": connector,
                         "conditional": conditional,
+                        "unconfirmed": unconfirmed_sentence or bool(_UNCONFIRMED_ACTION.search(_fold(stripped))),
                     }
                 )
             if boundary is None:
@@ -664,7 +679,7 @@ def _action_matches(unit: dict[str, object], action: str, object_term: str | Non
 
 def _action_state(unit: dict[str, object], action: str) -> str:
     value = str(unit["folded"])
-    if unit["conditional"]:
+    if unit["conditional"] or unit.get("unconfirmed"):
         return "unknown"  # Neither execution nor its negation was asserted.
     if _ACTION_NEGATION.search(value):
         return "negated"
@@ -869,6 +884,11 @@ def requested_evidence_checks(query: str, text: str) -> dict[str, object]:
                     ),
                     None,
                 )
+                if dated is not None:
+                    # The witness for the second action must include its
+                    # coordinated clause as well as the earlier timestamp;
+                    # citing only the first action loses the relationship.
+                    dated = {**dated, "end": _unit_int(unit, "end")}
             if dated is None:
                 missing.append(requirement)
             observe(requirement, "necessary_marker_present" if dated else "unknown", dated)

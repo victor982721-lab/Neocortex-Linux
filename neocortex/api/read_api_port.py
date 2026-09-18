@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from neocortex.runtime.config.app_paths import default_state_directory
-from neocortex.api.status_codes import KnowledgeExitCode
-from neocortex.api.cli.cli_knowledge import (
+from neocortex.api.status_codes import (
+    KnowledgeExitCode,
     knowledge_context_exit_code,
     knowledge_search_exit_code,
 )

@@ -4,6 +4,27 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-18 — Correcciones integradas de auditoría y Text
+
+- Text centraliza la consulta FTS y revalida publicación/procedencia en replay;
+  los cambios de configuración y de engine invalidan caches en la frontera de
+  la corrida. La paginación semántica mantiene orden determinista.
+- El backend vectorial exacto dispone de un contrato de búsqueda intercambiable
+  que conserva filtros, ámbito, orden y evidencia. El binding de NumPy identifica
+  el artefacto nativo y sus opciones sin usar APIs privadas obsoletas.
+- La proyección Knowledge conserva offsets del fragmento emitido y distingue
+  negación del hecho de incertidumbre sobre su comprobación.
+- Reset incorpora política única por tabla, barreras operacionales, evaluaciones
+  por owner, orden de dependencias Archive y reconciliación de intención/recibos.
+  Backup y restore conservan y validan la versión de política de autoridad.
+- Scratch y registro de artefactos unifican identidad, límites, actividad, cobertura
+  y protección de dependencias. La adopción histórica requiere selección exacta
+  y aprobación privada; los manifests autocertificados dejan de autorizar retiros.
+- Framework compone preparación por selección y mantenimiento con recibos; los
+  fallos parciales no se convierten en una ejecución completa.
+- La release Linux v2 fija identidad nativa de SQLite a una política revisada y
+  comprueba cierre de dependencias offline, promoción, verificación y rollback.
+
 ## 2026-09-17 — Lectura SQLite quiescente para reset y retención
 
 - Se restaura de forma central el layout residual exacto `-wal=0` y

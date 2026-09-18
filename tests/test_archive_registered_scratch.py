@@ -46,7 +46,8 @@ def test_archive_materialization_retires_registered_workspace_on_success(
     assert result.manifest_digest
     assert (destination / "evidence.txt").read_bytes() == b"archive evidence"
     assert manager.records() == ()
-    assert tuple(scratch.iterdir()) == ()
+    # Scratch keeps its durable retirement control after all workspaces retire.
+    assert {path.name for path in scratch.iterdir()} == {".scratch-control"}
 
 
 def test_archive_materialization_replay_reuses_outputs_and_retire_scratch(
@@ -77,7 +78,8 @@ def test_archive_materialization_replay_reuses_outputs_and_retire_scratch(
     assert (destination / "replay.txt").read_bytes() == before
     assert {output.status for output in second.outputs} == {"reused"}
     assert manager.records() == ()
-    assert tuple(scratch.iterdir()) == ()
+    # Scratch keeps its durable retirement control after all workspaces retire.
+    assert {path.name for path in scratch.iterdir()} == {".scratch-control"}
 
 
 def test_archive_materialization_retains_registered_workspace_after_failure(

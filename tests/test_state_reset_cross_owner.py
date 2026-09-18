@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from neocortex.capabilities.formats.image.state import initialize_image_state
@@ -20,7 +21,7 @@ def test_runs_scope_keeps_framework_parent_named_by_image_cache(tmp_path: Path) 
     framework = state / "framework.sqlite3"
     with FrameworkState(framework):
         pass
-    with sqlite3.connect(framework) as connection:
+    with closing(sqlite3.connect(framework)) as connection, connection:
         for run_id in (10, 20):
             connection.execute(
                 "INSERT INTO initial_runs(run_id,root,started_ns,status) "
@@ -30,7 +31,7 @@ def test_runs_scope_keeps_framework_parent_named_by_image_cache(tmp_path: Path) 
 
     image = state / "image.sqlite3"
     initialize_image_state(image)
-    with sqlite3.connect(image) as connection:
+    with closing(sqlite3.connect(image)) as connection, connection:
         connection.execute(
             """INSERT INTO images(
                 file_key,path,mime,size,mtime_ns,birthtime_ns,last_seen_run_id,status

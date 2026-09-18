@@ -29,7 +29,7 @@ from neocortex.persistence.framework_content_admission import (
 )
 
 
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 _PATH_COLLATION = sqlite_path_collation()
 
 
@@ -2302,6 +2302,11 @@ def _migrate_21_to_22(connection: sqlite3.Connection) -> None:
     connection.execute(f"DROP TABLE {_quoted_identifier(legacy_table)}")
 
 
+def _migrate_22_to_23(connection: sqlite3.Connection) -> None:
+    """Version 23 adds the operational-reset reader contract in metadata."""
+    connection.execute("SELECT key,value FROM metadata LIMIT 0")
+
+
 _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     1: _migrate_1_to_2,
     2: _migrate_2_to_3,
@@ -2324,6 +2329,7 @@ _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     19: _migrate_19_to_20,
     20: _migrate_20_to_21,
     21: _migrate_21_to_22,
+    22: _migrate_22_to_23,
 }
 
 
@@ -2755,7 +2761,8 @@ def _validate_framework_storage_integrity(connection: sqlite3.Connection, *, lab
 
 def _configure_connection(connection: sqlite3.Connection) -> None:
     connection.execute("PRAGMA journal_mode=WAL")
-    connection.execute("PRAGMA synchronous=NORMAL")
+    # Framework records the durable intent and receipts for filesystem effects.
+    connection.execute("PRAGMA synchronous=FULL")
     connection.execute("PRAGMA cache_size=-32768")
     connection.execute("PRAGMA wal_autocheckpoint=4096")
     connection.execute("PRAGMA journal_size_limit=268435456")
@@ -2799,10 +2806,10 @@ def initialize_framework_schema(
 
     initial_version = _read_schema_version(connection)
     _require_supported_version(initial_version)
-    if initial_version == SCHEMA_VERSION:
+    if initial_version in {22, SCHEMA_VERSION}:
         # Reject a falsely current database without repairing or otherwise mutating it.
         _validate_schema(connection)
-        _validate_framework_storage_integrity(connection, label="framework v22")
+        _validate_framework_storage_integrity(connection, label=f"framework v{initial_version}")
     elif initial_version == 21:
         # The path-policy migration must start from the exact prior contract.
         validate_framework_schema_v21(connection)
@@ -2824,7 +2831,10 @@ def initialize_framework_schema(
                 (str(SCHEMA_VERSION),),
             )
         elif version < SCHEMA_VERSION:
-            if version == 21:
+            if version == 22:
+                _validate_schema(connection)
+                _validate_framework_storage_integrity(connection, label="framework v22 locked preflight")
+            elif version == 21:
                 validate_framework_schema_v21(connection)
                 _validate_framework_storage_integrity(
                     connection,
@@ -2844,8 +2854,8 @@ def initialize_framework_schema(
         _validate_schema(connection)
         post_migration()
         _validate_schema(connection)
-        if initial_version in {20, 21}:
-            _validate_framework_storage_integrity(connection, label="framework v22 migration")
+        if initial_version in {20, 21, 22}:
+            _validate_framework_storage_integrity(connection, label="framework v23 migration")
         connection.commit()
     except _FrameworkSchemaMigrationError as exc:
         connection.rollback()

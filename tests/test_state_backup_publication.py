@@ -183,6 +183,27 @@ def test_backup_rejects_orphan_sidecar_as_incomplete_source(tmp_path: Path) -> N
         restore_state_owners(state, result.backup_directory, stores=("image",))
 
 
+@pytest.mark.parametrize("mutation", ["future_policy", "authority_change"])
+def test_restore_rejects_incompatible_lifecycle_declaration_before_effect(tmp_path: Path, mutation: str):
+    state = tmp_path / "state"
+    database = state / "image.sqlite3"
+    _create_database(database, "preserved")
+    backup = backup_state_owners(state, tmp_path / "backup", stores=("image",))
+    before = database.read_bytes()
+    payload = json.loads(backup.manifest.read_text())
+    entry = payload["entries"][0]
+    assert entry["lifecycle_policy_version"] == 1
+    assert isinstance(entry["authority_tables"], list)
+    if mutation == "future_policy":
+        entry["lifecycle_policy_version"] = 2
+    else:
+        entry["authority_tables"].append("forged_authority")
+    backup.manifest.write_text(json.dumps(payload))
+    with pytest.raises(DatabaseRestoreError, match=r"lifecycle|authority"):
+        restore_state_owners(state, backup.backup_directory, stores=("image",))
+    assert database.read_bytes() == before
+
+
 def test_restore_validates_then_publishes_selected_owners(tmp_path: Path) -> None:
     state = tmp_path / "state"
     state.mkdir()

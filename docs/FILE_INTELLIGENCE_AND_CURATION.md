@@ -332,3 +332,68 @@ resolver los casos soportados.
 
 Las entregas y fechas se controlan en [ROADMAP_90_DAYS.md](ROADMAP_90_DAYS.md);
 la arquitectura implementada se documenta en [ARCHITECTURE.md](ARCHITECTURE.md).
+
+
+## Contrato público de KIO
+
+**IMPLEMENTED:** `neocortex.safety.kio_trash.KioTrashService` es responsable del
+ciclo físico común a la curación individual y los lotes de deduplicación exacta.
+La curación conserva validación del root y keeper, autorización, intents,
+transiciones del ledger y vinculación de recibos al grant. El servicio no abre
+SQLite, selecciona políticas de autorización ni añade mutaciones MCP.
+
+- `move(snapshot, *, source_digest)` devuelve un `KioTrashResult`.
+- `move_many(items: Sequence[KioTrashBatchItem])` devuelve un resultado por
+  entrada y en el mismo orden. Ambos usan `move_many_to_trash`, también para
+  un lote de un elemento, y comparten claims, verificación y durabilidad.
+- `trash_receipt_paths(evidence, expected, source_digest)` valida estructura,
+  identidad, digest y layout declarado sin leer el filesystem.
+- `verify_trash_receipt_evidence(evidence, expected, source_digest)` reobserva
+  identidad completa, objeto regular único, digest, ausencia del original y
+  metadatos de restauración vinculados al source. Es read-only y rechaza cambios.
+- `read_claim_recovery_detail(detail, *, source_path)` resuelve localizadores
+  v1/v2 contra el source exacto del resultado o acción, sin I/O ni restauración.
+
+El constructor mantiene los parámetros explícitos de verifier, runner, which,
+environment, home_directory, timeout y los tres controles privados. Se conservan
+`move_to_trash`, `move_many_to_trash`, `restore_trash_receipt`, los tipos públicos,
+los imports y firmas de `KioTrashBackend`, sus aliases de aplicación y el nombre
+`kio-trash-path-bound-v1`. Los recibos de éxito y el esquema SQLite siguen en v1.
+
+El modo nativo conserva configuración KDE privada, D-Bus privado y claim vecino
+mediante `renameat2(RENAME_NOREPLACE)` en el mismo filesystem. Fuente y ejecutable
+se revalidan junto a sus fronteras físicas. No hay fallback de copia, reemplazo,
+GIO ni unlink del original. Un runner inyectado conserva el seam de fixtures:
+recibe las rutas originales y no activa claims ni configuración de escritorio.
+
+`applied` exige retorno satisfactorio, ausencia del original, evidencia exacta
+Trash, flush de directorios y eliminación del claim seguida de fsync de su
+padre. `blocked` sólo representa rechazo previo al efecto, con claims creados
+restaurados. Timeout, interrupción, verificación incierta o fallo de restauración
+requieren recovery; nunca un reintento automático de una operación ambigua.
+
+El JSON de recuperación no se recorta como texto. Si el envelope v1 excedería
+los 4096 bytes admitidos por `BackendOutcome`, v2 conserva basename del directorio de
+claim, identidad física completa y SHA-256 de la ruta source. Esa ruta absoluta
+ya está en el resultado o acción. El lector público reconstruye el claim exacto
+y rechaza un source distinto; sólo el diagnóstico opcional puede reducirse.
+Los envelopes históricos v1 íntegros de hasta 65.536 bytes continúan siendo
+legibles. Esta preservación de metadatos no declara soporte KIO completo para
+todos los nombres POSIX; esa compatibilidad conserva su validación específica.
+
+Los lotes se separan por cantidad antes de invocar KIO. Se permite dividir por
+argv sólo cuando todos los miembros devolvieron `blocked` con
+`kio_batch_arguments_too_large`, después de restaurar todos sus claims. Los
+resultados ya verificados se conservan si falla un lote posterior. Si todos los
+resultados físicos ya están resueltos y falla retirar configuración temporal,
+se conserva cada recibo y se registra el diagnóstico correspondiente.
+Una interrupción del operador conserva recovery para el lote que ya cruzó la
+frontera y marca `kio_cancelled_before_effect` en los sublotes aún no invocados;
+no inicia efectos nuevos después de Ctrl+C.
+
+`curation.application` traduce evidencia del servicio a `BackendOutcome`; su
+replay, `curation.recovery` y `workflow.actions.file_action_recovery` consumen
+validadores públicos, sin helpers privados de safety. `FrameworkActions`
+conserva una fila y un recibo por source. Consultar un recibo o claim no autoriza
+restaurar, reintentar ni ampliar la ejecución nativa. No se requieren migración,
+reset del estado ni reclasificación de acciones históricas.

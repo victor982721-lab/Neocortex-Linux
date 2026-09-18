@@ -7,7 +7,7 @@ import sqlite3
 from neocortex.platform.policy import sqlite_path_collation
 
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 SCHEMA_LABEL = "dedup inventory"
 PATH_COLLATION = sqlite_path_collation()
 METADATA_DDL = """

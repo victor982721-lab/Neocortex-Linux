@@ -162,7 +162,9 @@ local con `wheelhouse-manifest.json`, wheels compatibles y hashes válidos.
 ~~~bash
 python3.14 tools/release_linux.py install \
   --corpus-root "$HOME/Documentos/NeoCortex/Corpus" \
-  --wheelhouse "$Wheelhouse" --prepare-models --desktop
+  --wheelhouse "$Wheelhouse" \
+  --sqlite-policy "$SQLitePolicy" \
+  --sqlite-policy-sha256 "$SQLitePolicySHA256" --require-models --desktop
 python3.14 tools/release_linux.py verify
 ~~~
 
@@ -177,13 +179,67 @@ override por proceso, sin reconfigurar la instalación. `verify --corpus-root`
 no cambia ese default: comprueba que coincida con el receipt. Rollback conserva
 la raíz operativa del último receipt, no la de un smoke histórico.
 
-Si falta una rueda o no coincide su hash, la instalación falla cerrada. No
-modifiques constraints ni uses paquetes globales para completar el entorno.
+`SQLitePolicySHA256` es el SHA-256 canónico de una política de builds SQLite
+revisada por separado. Debe recibirse de esa revisión, no aceptarse desde el
+mismo archivo que valida. `--sqlite-policy` admite una política externa; si se
+omite, usa `dev-resources/offline/sqlite-runtime-policy.json` en la fuente. No
+se incluye una aprobación automática del SQLite del host. El hash acredita
+integridad del archivo; la revisión del proveedor acredita el build concreto.
 
-`--prepare-models` es una adquisición explícita que puede descargar pesos;
-no está cubierta por el cierre offline de paquetes Python. Omítela si no está
-autorizada esa adquisición. Los modelos compartidos se conservan fuera de las
-releases y se verifican antes de promover el launcher.
+Antes de crear el corpus o activar una release se verifican todos los hashes,
+tags Python/ABI/plataforma de los wheels, `Requires-Python`, dependencias
+transitivas, markers y extras solicitados por `full`. Los requisitos ausentes
+se enumeran con sus versiones. No modifiques constraints ni uses paquetes
+globales para completar el entorno. Un wheelhouse parcial no acredita `full`.
+
+`--require-models` exige modelos locales completos antes de promover el launcher.
+El nombre anterior `--prepare-models` se conserva como alias de esta exigencia;
+el instalador offline ya no invoca adquisición de pesos. La preparación se
+realiza por separado, de forma explícita y con su autorización propia. Los
+modelos compartidos se conservan fuera de las releases. La presencia de pesos
+y `pip check` no sustituyen el smoke de inferencia de las capacidades solicitadas.
+
+El paquete offline incluido para CPython 3.13 continúa limitado a los perfiles
+de la tabla anterior. La aceptación `full` necesita además inventariar el
+intérprete, bibliotecas nativas, ejecutables e idiomas de OCR, y los modelos y
+tokenizers originales con hashes y licencias. Esa aceptación se ejecuta desde
+el wheel instalado, con red denegada, HOME/XDG/TMP privados, sin `PYTHONPATH` ni
+cachés del checkout. Incluye primer procesamiento y replay de fixtures por
+capacidad, inventario instalado y SHA de fuente; un perfil base correcto no
+puede sustituirla. La prueba `test_semantic_numpy_binding.py` comprueba la ruta
+NumPy instalada concreta, sin acreditar de forma implícita toda versión `<3`.
+
+## Evidencia nativa SQLite
+
+Los manifests, receipts y verificaciones nuevos usan schema 2. El bloque
+`native_runtime` contiene la medición completa y sus hashes, identidad de
+Python, SQLite `source_id` y opciones de compilación, `_sqlite3` y las bibliotecas
+`libsqlite3` realmente mapeadas. Un `_sqlite3` builtin se identifica expresamente
+mediante los bytes del ejecutable y sus contenedores `libpython` si existen;
+la ausencia de biblioteca separada permanece
+visible como `static_or_unobserved`. La identidad excluye rutas absolutas para
+conservarse después del rename de staging.
+
+El probe ejecuta el `bin/python` de la release en un temporal propio y verifica
+FTS5, JSON, claves foráneas, rollback y un commit WAL con `synchronous=FULL`.
+Nunca abre bases de datos del corpus o del estado. WAL/FULL comprueba configuración
+y un commit local; no demuestra durabilidad frente a un corte de energía.
+
+La política fija identidades completas y evidencia revisada `upstream` o
+`vendor_backport`. Una versión nominal o capacidades correctas sin ese registro
+producen `unaccredited`; una capacidad ausente produce `incompatible`. Sólo
+`approved` puede activar una nueva release o un rollback v2. El instalador
+repite la medición tras el rename y junto a la activación; `verify` y
+`doctor platform` vuelven a medir y distinguen evidencia almacenada de observación
+actual. El entorno candidato y el launcher eliminan `LD_PRELOAD`,
+`LD_LIBRARY_PATH` y `LD_AUDIT` para mantener el mismo contrato de carga nativa.
+
+Schema 1 sigue siendo legible sin reescritura: su verificación informa
+`verified=false` y `native_runtime.status=legacy_unaccredited`. Esto indica falta
+de acreditación, no corrupción. Un v2 incompleto o alterado falla cerrado y no
+permite retroceder silenciosamente a otro receipt. Una política distinta o la
+migración desde v1 requieren una release nueva; no se modifica el manifest
+inmutable existente ni se cambia `current` cuando esa preparación falla.
 
 ## Verificación
 

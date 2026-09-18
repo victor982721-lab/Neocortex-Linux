@@ -23,7 +23,7 @@ from neocortex.deduplication import (
 )
 from neocortex.persistence.framework_connection import connect_existing_framework
 from neocortex.persistence.framework_schema import SCHEMA_VERSION as FRAMEWORK_SCHEMA_VERSION
-from neocortex.safety.kio_trash import _verify_curation_trash_evidence
+from neocortex.safety.kio_trash import verify_trash_receipt_evidence
 # endregion [01]
 
 # region [02] Implementación
@@ -521,7 +521,7 @@ def _valid_success_receipt(
         if expected.source_digest is None or receipt.get("source_digest") != expected.source_digest:
             return False
         try:
-            _verify_curation_trash_evidence(
+            verify_trash_receipt_evidence(
                 receipt.get("trash"),
                 FileSnapshot(
                     action.source_path, expected.volume_id, expected.file_id,

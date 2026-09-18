@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from neocortex.persistence.operational_freshness import require_operational_identity
+
 import sqlite3
 import time
 from collections.abc import Iterable, Iterator
@@ -410,6 +412,7 @@ class PlanRepositoryMixin:
             )
 
     def _inventory_content_digest_for_plan(self, scan_id: int) -> bytes:
+        require_operational_identity(self._connection, "inventory", scan_id)
         row = self._connection.execute(
             "SELECT content_digest FROM inventory_generation_heads WHERE scan_id=?",
             (scan_id,),

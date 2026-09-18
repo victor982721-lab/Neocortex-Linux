@@ -41,6 +41,7 @@ from neocortex.foundation.file_identity import FileIdentityEncoding, decode_file
 from neocortex.foundation.hash_compat import HASH_ALGORITHM_128
 from neocortex.semantic.semantic_models import canonical_json, fingerprint_text
 from .text_state import TEXT_SCHEMA_VERSION, _validate_reader, text_database
+from .text_fts_lookup import text_fts_file_key_predicate, text_route_lookups_available
 
 
 _TEXT_OWNER = "text"
@@ -410,6 +411,8 @@ def _validate_text_publication_rows(
 def validate_text_publications_from_connection(
     connection: sqlite3.Connection,
     publications: tuple[tuple[str, str], ...],
+    *,
+    lookup_available: bool | None = None,
 ) -> None:
     """Validate a bounded Text publication window with set-based owner queries."""
 
@@ -432,6 +435,8 @@ def validate_text_publications_from_connection(
             normalized.append((file_key, revision_id))
             seen_pairs.add((file_key, revision_id))
 
+    if lookup_available is None:
+        lookup_available = bool(normalized) and text_route_lookups_available(connection)
     for offset in range(0, len(normalized), _TEXT_PUBLICATION_VALIDATION_BATCH):
         batch = normalized[offset : offset + _TEXT_PUBLICATION_VALIDATION_BATCH]
         file_keys = tuple(file_key for file_key, _revision_id in batch)
@@ -443,11 +448,14 @@ def validate_text_publications_from_connection(
             file_keys,
         ).fetchall()
         documents_by_key = {str(row["file_key"]): row for row in documents}
+        fts_predicate, fts_parameters = text_fts_file_key_predicate(
+            connection, file_keys, lookup_available=lookup_available
+        )
         fts_rows = connection.execute(
             f"""SELECT file_key,path,content_kind,title,author,body
-            FROM document_fts WHERE file_key IN ({file_placeholders})
+            FROM document_fts WHERE {fts_predicate}
             ORDER BY file_key""",
-            file_keys,
+            fts_parameters,
         ).fetchall()
         fts_by_key: dict[str, list[sqlite3.Row]] = {}
         for row in fts_rows:
@@ -506,17 +514,23 @@ def validate_text_publications_from_connection(
                     publication_heads,
                 )
             )
-        _validated_terminal_receipts(connection, tuple(receipt_ids))
+        _validated_terminal_receipts(
+            connection, tuple(receipt_ids), lookup_available=lookup_available
+        )
 
 
 def validate_text_publication_from_connection(
     connection: sqlite3.Connection,
     file_key: str,
     revision_id: str,
+    *,
+    lookup_available: bool | None = None,
 ) -> None:
     """Validate one current Text publication through the bounded batch contract."""
 
-    validate_text_publications_from_connection(connection, ((file_key, revision_id),))
+    validate_text_publications_from_connection(
+        connection, ((file_key, revision_id),), lookup_available=lookup_available
+    )
 
 
 def validate_text_failure_from_connection(
@@ -561,10 +575,11 @@ def validate_text_failure_from_connection(
         raise TextDerivationIntegrityError(
             f"current Text failure contradicts its source identity: {file_key}"
         )
+    fts_predicate, fts_parameters = text_fts_file_key_predicate(connection, (file_key,))
     if (
         connection.execute(
-            "SELECT 1 FROM document_fts WHERE file_key=? LIMIT 1",
-            (file_key,),
+            f"SELECT 1 FROM document_fts WHERE {fts_predicate} LIMIT 1",
+            fts_parameters,
         ).fetchone()
         is not None
     ):
@@ -1161,10 +1176,18 @@ def _validate_terminal_receipt_rows(
 def _validated_terminal_receipts(
     connection: sqlite3.Connection,
     receipt_ids: tuple[str, ...],
+    *,
+    lookup_available: bool | None = False,
 ) -> dict[str, WorkReceipt]:
     """Validate up to one lineage window in fixed-size, set-based SQL batches."""
 
     unique_ids = tuple(dict.fromkeys(receipt_ids))
+    if lookup_available is None:
+        lookup_available = bool(unique_ids) and text_route_lookups_available(connection)
+    head_table = (
+        "temp._text_materialization_heads_lookup"
+        if lookup_available else "text_materialization_heads"
+    )
     validated: dict[str, WorkReceipt] = {}
     for offset in range(0, len(unique_ids), 250):
         batch = unique_ids[offset : offset + 250]
@@ -1224,7 +1247,7 @@ def _validated_terminal_receipts(
             JOIN text_materializations m
               ON m.owner=b.materialization_owner
              AND m.materialization_id=b.materialization_id
-            LEFT JOIN text_materialization_heads h
+            LEFT JOIN {head_table} h
               ON h.materialization_owner=m.owner
              AND h.materialization_id=m.materialization_id
             WHERE b.attempt_id IN ({attempt_placeholders})
@@ -1267,8 +1290,12 @@ def _validated_terminal_receipts(
 def _validated_terminal_receipt(
     connection: sqlite3.Connection,
     receipt_id: str,
+    *,
+    lookup_available: bool | None = False,
 ) -> WorkReceipt:
-    return _validated_terminal_receipts(connection, (receipt_id,))[receipt_id]
+    return _validated_terminal_receipts(
+        connection, (receipt_id,), lookup_available=lookup_available
+    )[receipt_id]
 
 
 def _load_running_attempt(connection: sqlite3.Connection, attempt_id: str) -> sqlite3.Row:
@@ -2013,29 +2040,58 @@ def read_reusable_text_derivation_from_connection(
     if document is None or document["revision_id"] is None:
         return None
     revision_id = str(document["revision_id"])
-    validate_text_publication_from_connection(connection, file_key, revision_id)
+    lookup_available = text_route_lookups_available(connection)
+    validate_text_publication_from_connection(
+        connection, file_key, revision_id, lookup_available=lookup_available
+    )
     revision_row = connection.execute(
         "SELECT * FROM text_input_revisions WHERE revision_id=?", (revision_id,)
     ).fetchone()
     if revision_row is None:
         return None
-    rows = connection.execute(
-        _MATERIALIZATION_LINEAGE_SELECT
-        + """ JOIN text_derivation_attempts a ON a.receipt_id=m.producer_receipt_id
-        WHERE m.revision_id=? AND a.stage_id=? AND a.processing_signature=?
-        AND a.status='succeeded' AND EXISTS(
-            SELECT 1 FROM text_materialization_heads h
-            WHERE h.materialization_owner=m.owner
-            AND h.materialization_id=m.materialization_id)
-        ORDER BY ob.binding_name""",
-        (revision_id, stage_id, processing_signature),
-    ).fetchall()
+    if lookup_available:
+        # Start at the exact revision lookup and retain the original table
+        # predicates.  Every following join uses an existing primary/unique key.
+        rows = connection.execute(
+            """SELECT ob.binding_name,m.materialization_json,
+            ob.fingerprint_algorithm,ob.fingerprint,m.producer_receipt_id,
+            1 AS current_head
+            FROM temp._text_materializations_lookup AS l
+            CROSS JOIN text_materializations m
+              ON m.owner=l.owner AND m.materialization_id=l.materialization_id
+            CROSS JOIN text_work_receipts wr ON wr.receipt_id=m.producer_receipt_id
+            CROSS JOIN text_derivation_output_bindings ob
+              ON ob.attempt_id=wr.attempt_id AND ob.materialization_owner=m.owner
+             AND ob.materialization_id=m.materialization_id
+            CROSS JOIN text_derivation_attempts a ON a.receipt_id=m.producer_receipt_id
+            WHERE l.revision_id=? AND m.revision_id=?
+              AND a.stage_id=? AND a.processing_signature=? AND a.status='succeeded'
+              AND EXISTS(SELECT 1 FROM temp._text_materialization_heads_lookup h
+                WHERE h.materialization_owner=m.owner
+                  AND h.materialization_id=m.materialization_id)
+            ORDER BY ob.binding_name""",
+            (revision_id, revision_id, stage_id, processing_signature),
+        ).fetchall()
+    else:
+        rows = connection.execute(
+            _MATERIALIZATION_LINEAGE_SELECT
+            + """ JOIN text_derivation_attempts a ON a.receipt_id=m.producer_receipt_id
+            WHERE m.revision_id=? AND a.stage_id=? AND a.processing_signature=?
+            AND a.status='succeeded' AND EXISTS(
+                SELECT 1 FROM text_materialization_heads h
+                WHERE h.materialization_owner=m.owner
+                AND h.materialization_id=m.materialization_id)
+            ORDER BY ob.binding_name""",
+            (revision_id, stage_id, processing_signature),
+        ).fetchall()
     if not rows:
         return None
     producer_receipts = {str(row["producer_receipt_id"]) for row in rows}
     if len(producer_receipts) != 1:
         return None
-    _validated_terminal_receipt(connection, next(iter(producer_receipts)))
+    _validated_terminal_receipt(
+        connection, next(iter(producer_receipts)), lookup_available=lookup_available
+    )
     outputs = tuple(
         OutputBinding(
             name=str(row["binding_name"]),

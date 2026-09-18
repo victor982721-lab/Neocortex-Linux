@@ -44,7 +44,7 @@ from neocortex.workflow.authorization.repository import (
 )
 from neocortex.workflow.actions.file_action_recovery import expected_identity_json
 from neocortex.persistence.sqlite_immutable import SQLiteReadSession, preferred_sqlite_read_mode
-from neocortex.safety.kio_trash import _curation_trash_paths, _verify_curation_trash_evidence
+from neocortex.safety.kio_trash import trash_receipt_paths, verify_trash_receipt_evidence
 
 
 CURATION_RESTORE_SCHEMA = "neocortex.curation-restore/v1"
@@ -327,7 +327,7 @@ def _original_receipt_parts(
         if not isinstance(receipt, dict):
             raise ValueError("original trash receipt is not an object")
         trash = receipt["trash"]
-        trash_root, trash_path, info_path = _curation_trash_paths(
+        trash_root, trash_path, info_path = trash_receipt_paths(
             trash, effect.source, effect.source_digest
         )
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -360,7 +360,7 @@ def _original_receipt_parts(
 
 def _verify_trash_candidate(candidate: RestoreCandidate) -> FileSnapshot:
     effect = candidate.effect
-    return _verify_curation_trash_evidence(
+    return verify_trash_receipt_evidence(
         {
             "trash_root": str(candidate.trash_root),
             "trash_path": str(candidate.trash_path),

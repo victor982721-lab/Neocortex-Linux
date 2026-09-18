@@ -1187,6 +1187,39 @@ def build_parser() -> argparse.ArgumentParser:
         help="explicit absolute root for an external metadata diagnostic",
     )
     maintenance.add_argument(
+        "--select", dest="maintenance_select", type=Path, action="append",
+        metavar="PATH", help="exact historical descendant; pair each with --provenance-artifact",
+    )
+    maintenance.add_argument(
+        "--provenance-artifact", dest="maintenance_provenance_artifact", action="append",
+        metavar="ID", help="existing producer claim for the corresponding --select",
+    )
+    maintenance.add_argument(
+        "--selection-file", dest="maintenance_selection_file", type=Path,
+        metavar="JSON", help="bounded JSON array of path, provenance_artifact_id and optional preserved_artifact_id",
+    )
+    maintenance.add_argument(
+        "--selection-partial", dest="maintenance_selection_partial", action="store_true",
+        help="explicitly allow approval of eligible selected entries while retaining blocked ones",
+    )
+    adoption = maintenance.add_mutually_exclusive_group()
+    adoption.add_argument(
+        "--prepare-adoption", dest="maintenance_prepare_adoption", action="store_true",
+        help="persist the exact selection proposal without authorizing retirement",
+    )
+    adoption.add_argument(
+        "--approve-adoption", dest="maintenance_approve_adoption", metavar="DIGEST",
+        help="record local approval for a previously prepared exact proposal",
+    )
+    adoption.add_argument(
+        "--apply-adoption", dest="maintenance_apply_adoption", metavar="DIGEST",
+        help="consume existing exact approval; requires --apply",
+    )
+    maintenance.add_argument(
+        "--selected-id", dest="maintenance_selected_id", action="append", metavar="ID",
+        help="exact proposal member to approve or apply; may be repeated",
+    )
+    maintenance.add_argument(
         "--external-category",
         default=None,
         metavar="CATEGORY",

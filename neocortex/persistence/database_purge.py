@@ -247,6 +247,7 @@ class DatabaseBackupEntry:
     reason: str | None = None
 
     def as_payload(self, *, backup_directory: Path | None = None) -> dict[str, object]:
+        lifecycle = STATE_STORE_REGISTRY.by_owner(self.owner)
         backup_value = self.backup
         if backup_directory is not None and backup_value is not None:
             try:
@@ -265,6 +266,9 @@ class DatabaseBackupEntry:
             "backup_size": self.backup_size,
             "user_version": self.user_version,
             "schema_version": self.schema_version,
+            "lifecycle_policy_version": lifecycle.lifecycle_policy_version,
+            "authority_tables": sorted(rule.table for rule in lifecycle.lifecycle_rules
+                                       if rule.role == "authoritative"),
             "integrity": None if self.integrity is None else self.integrity.as_payload(),
             "reason": self.reason,
         }
@@ -1081,6 +1085,19 @@ def _manifest_entries(
         if owner in by_owner:
             raise DatabaseRestoreError("state backup repeats an owner")
         expected_name = registry_by_owner[owner].database_name
+        lifecycle = registry_by_owner[owner]
+        policy_version = raw.get("lifecycle_policy_version")
+        if policy_version is not None:
+            if type(policy_version) is not int or policy_version != lifecycle.lifecycle_policy_version:
+                raise DatabaseRestoreError(f"state backup lifecycle policy is incompatible: {owner}")
+            authority_tables = sorted(rule.table for rule in lifecycle.lifecycle_rules
+                                      if rule.role == "authoritative")
+            if raw.get("authority_tables") != authority_tables:
+                raise DatabaseRestoreError(f"state backup authority declaration differs: {owner}")
+        elif "authority_tables" in raw:
+            raise DatabaseRestoreError(f"state backup authority declaration lacks its policy: {owner}")
+        # Older complete-owner backups remain readable under the current
+        # owner's schema checks; absent metadata never supplies new authority.
         if database_name != expected_name:
             raise DatabaseRestoreError(
                 f"state backup owner/database mismatch: {owner}"

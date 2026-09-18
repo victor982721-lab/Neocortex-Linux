@@ -1697,28 +1697,6 @@ def _enqueue_job_batch_bounded(
     )
 
 
-def _enqueue_text_chunk_batch(
-    connection: sqlite3.Connection,
-    generation_id: int,
-    chunk_ids: tuple[str, ...],
-    *,
-    max_attempts: int = 3,
-    now_ns: int,
-) -> int:
-    """Queue one bounded text-chunk batch without opening another connection."""
-
-    return _enqueue_job_batch(
-        connection,
-        generation_id,
-        chunk_ids,
-        entity_kind=SemanticEntityKind.TEXT_CHUNK,
-        expected_modality=EmbeddingModality.TEXT,
-        role=EmbeddingRole.PASSAGE,
-        max_attempts=max_attempts,
-        now_ns=now_ns,
-    )
-
-
 def _enqueue_text_chunk_batch_bounded(
     connection: sqlite3.Connection,
     generation_id: int,

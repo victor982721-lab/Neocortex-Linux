@@ -154,6 +154,17 @@ Neocortex state reset --state-directory "$State" --scope all \
   --confirm-state-reset RESET_STATE --apply --json
 ```
 
+El preview reserva de antemano la capacidad de metadata necesaria para las
+identidades de todas las posibles restauraciones y su temporal. Expone
+`recovery_metadata.required_bytes` y `limit_bytes` (65.536 bytes). Si la reserva
+no cabe, `blocked_by` contiene `reset-recovery-metadata-budget-exceeded` y no
+se inicia ningún efecto. La cantidad depende de los paths y sus identidades,
+no de un número fijo de archivos. Para un estado mayor se pueden usar los scopes
+permitidos `runs` o `runs-and-caches` cuando ése sea el objetivo, y la retención
+propietaria de artefactos para su limpieza; no se omite el límite para hacer
+pasar `all`. La recuperación de 400 archivos en un único reset no está soportada
+por esta política de metadata.
+
 El destino del backup explícito debe ser absoluto, nuevo y externo a `State`; el
 reset no reutiliza ni limpia backups existentes. El motor vuelve a comprobar fingerprints,
 epoch, locks, referencias, límites de archivos/bytes e integridad antes de
@@ -168,6 +179,46 @@ las rutas necesarias para conciliación. No se reintenta a ciegas ni se presenta
 un manifest extendido de `all` como si fuera un backup general de
 `databases restore`.
 
+Cada aplicación publica un `operation_id` antes de crear su staging. Si termina
+con `recovery_required`, conserva ese identificador y el recibo verificable.
+Desde una nueva sesión se puede inspeccionar la acción de conciliación:
+
+```bash
+Neocortex state reset --state-directory "$State" --scope all \
+  --reconcile-operation OPERATION_ID --json
+```
+
+El preview devuelve `receipt_digest`, `phase`, `action` y la ubicación exacta
+registrada. La conciliación requiere ese digest y la confirmación explícita:
+
+```bash
+Neocortex state reset --state-directory "$State" --scope all \
+  --reconcile-operation OPERATION_ID --receipt-digest RECEIPT_SHA256 \
+  --confirm-state-reset RESET_STATE --apply --json
+```
+
+Un intento sin efectos sólo permite limpiar su área transitoria verificada. Un
+reset aplicado y verificado sólo requiere cerrar su limpieza pendiente. Si el
+proceso murió entre efectos, se restaura exclusivamente desde el raw íntegro a
+rutas ausentes, archivos idénticos al original o promociones propias registradas.
+Una ruta nueva o modificada por otra persona conserva sus bytes y mantiene
+`recovery_required`. La restauración usa publicación sin reemplazo y vuelve a
+comprobar la identidad antes de actuar. Repetir una conciliación cerrada devuelve
+`no_changes`; el comando no busca staging por nombre ni recorre `/tmp`.
+
+Si se restauraron bytes después de retirar un claim de `ArtifactRegistry`,
+la conciliación invoca la compensación de su productor. Sólo los claims
+inscritos antes del efecto pueden restituirse mediante el sello original, la
+identidad de la operación y las promociones exactas de archivos y directorios.
+Los claims legados sin ese enrolamiento mantienen `recovery_required`; volver
+a crear una ruta no reactiva un tombstone. Una segunda interrupción durante la
+restauración conserva los nombres e identidades de sus temporales; al reanudar
+se retiran exclusivamente esos temporales registrados.
+
+Los owners Semantic, Text y Code con evidencia autoritativa también se abstienen
+antes del reset por falta de un transformador de frescura. Ninguno de estos
+bloqueos se resuelve borrando receipts o quitando su protección.
+
 Después de un resultado `applied`, verifica el resultado local:
 
 ```bash
@@ -175,7 +226,11 @@ Neocortex databases status --state-directory "$State" --json
 Neocortex --state-health --state-health-json
 ```
 
-La siguiente corrida debe ser nueva y producir sus propios manifests/heads. Un
+Para un `all` verificado, `operational_freshness=fresh` incluye comprobaciones
+por owner y cobertura del inventario; los contadores distinguen transformación,
+retiro físico y preservación. La barrera conserva historia y padres de evidencia,
+pero impide reanudar sus identidades. La siguiente corrida debe ser nueva y
+producir sus propios manifests/heads por encima del suelo de IDs retirados. Un
 reset no reconstruye el corpus, no instala releases ni modelos y no demuestra
 que una ejecución futura haya terminado. Los originales y los backups externos
 permanecen fuera de estos tres alcances.

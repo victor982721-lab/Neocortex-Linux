@@ -16,8 +16,9 @@ import subprocess
 import tempfile
 import unittest
 import zipfile
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -62,6 +63,38 @@ from tests.synthetic_usn import SyntheticUsnJournal
 
 
 TEST_CAPABILITIES = ("base", "documents", "image", "inference")
+
+
+@contextmanager
+def _coordinator_effect_capabilities():
+    """Supply prerequisite owners for ordering tests with no real file effects.
+
+    prepare_framework_run itself still executes; its rejection paths are tested
+    independently. These doubles do not certify the host's SQLite or KDE.
+    """
+    with (
+        patch("neocortex.platform.sqlite_runtime_attestation.observe_platform_native_runtime",
+              return_value={"status": "approved", "observed": {"identity_sha256": "fixture-owner"}}),
+        patch("neocortex.safety.kio_trash.preflight_kio_trash",
+              return_value=SimpleNamespace(client=Path("/fixture/kioclient"))),
+    ):
+        yield
+
+
+@contextmanager
+def _coordinator_available_memory():
+    """A stable owner observation for coordination, independent of other tests.
+
+    Route decoding and extraction remain real; host capacity is not under test.
+    """
+    from neocortex.runtime.control.memory_runtime import MemorySnapshot
+    gib = 1024 ** 3
+    snapshot = MemorySnapshot(8 * gib, 12 * gib, 16 * gib, 24 * gib)
+    with (
+        patch("neocortex.runtime.control.global_resources.memory_snapshot", return_value=snapshot),
+        patch("neocortex.runtime.control.memory_runtime.memory_snapshot", return_value=snapshot),
+    ):
+        yield
 # endregion [01]
 
 # region [02] Implementación
@@ -664,6 +697,7 @@ class OrchestratorTests(unittest.TestCase):
                 state_directory=state_directory,
                 route="all",
                 image_workers=2,
+                image_document_ocr_mode="never",
                 image_min_free_memory_bytes=0,
                 image_min_free_commit_bytes=0,
                 docx_min_free_memory_bytes=0,
@@ -677,7 +711,8 @@ class OrchestratorTests(unittest.TestCase):
                 global_min_free_commit_bytes=0,
                 global_cpu_slots=3,
             )
-            result = FrameworkOrchestrator(config).run_initial()
+            with _coordinator_available_memory():
+                result = FrameworkOrchestrator(config).run_initial()
 
             self.assertEqual(
                 set(result.route_results),
@@ -759,7 +794,7 @@ class OrchestratorTests(unittest.TestCase):
         "bounded FFmpeg video pilot is unavailable",
     )
     def test_all_abstains_benignly_from_audio_for_visual_only_video(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        with _coordinator_available_memory(), tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             corpus = base / "corpus"
             state_directory = base / "state"
@@ -803,6 +838,8 @@ class OrchestratorTests(unittest.TestCase):
                     video_include_scenes=False,
                     video_include_keyframes=False,
                     video_ocr_mode="never",
+                    pdf_ocr_mode="never",
+                    image_document_ocr_mode="never",
                     global_memory_budget_bytes=3 * 1024 * 1024 * 1024,
                     global_min_free_memory_bytes=0,
                     global_min_free_commit_bytes=0,
@@ -1082,7 +1119,8 @@ class OrchestratorTests(unittest.TestCase):
 
     def test_real_empty_pdf_route_has_an_empty_scoped_organization_plan(self) -> None:
         for filename in (None, "unclassified.bin"):
-            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as directory:
+            with (self.subTest(filename=filename), _coordinator_effect_capabilities(),
+                  tempfile.TemporaryDirectory() as directory):
                 base = Path(directory)
                 corpus = base / "corpus"
                 corpus.mkdir()
@@ -1185,6 +1223,7 @@ class OrchestratorTests(unittest.TestCase):
                 route_registry={"pdf": RouteAdapter("pdf", route)},
             )
             with (
+                _coordinator_effect_capabilities(),
                 patch(
                     "neocortex.documents.document_organization.plan_document_organization",
                     side_effect=plan,

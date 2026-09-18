@@ -91,6 +91,13 @@ from .text_derivation_repository import (
     succeed_text_derivation_attempt,
 )
 from .text_state import TEXT_SCHEMA_VERSION, initialize_text_state, text_database
+from .text_fts_lookup import (
+    delete_text_fts_for_file_key,
+    initialize_text_fts_lookup,
+    prune_text_fts_for_run,
+    record_text_fts_row,
+    text_fts_file_key_predicate,
+)
 
 
 TEXT_ROUTE_VERSION = "text-route-v3"
@@ -975,10 +982,11 @@ class TextRoute:
             or row["text_xxh3_128"] is None
         ):
             return None
+        fts_predicate, fts_parameters = text_fts_file_key_predicate(connection, (file_key,))
         fts_rows = connection.execute(
             "SELECT file_key,path,content_kind,title,author,body "
-            "FROM document_fts WHERE file_key=?",
-            (file_key,),
+            f"FROM document_fts WHERE {fts_predicate}",
+            fts_parameters,
         ).fetchall()
         if len(fts_rows) != 1:
             return None
@@ -1090,12 +1098,20 @@ class TextRoute:
         )
         if updated.rowcount != 1:
             raise RuntimeError("cached Text document disappeared before publication")
-        fts = connection.execute(
-            "UPDATE document_fts SET path=? WHERE file_key=?",
-            (snapshot.path, file_key),
-        )
-        if fts.rowcount != 1:
+        fts_predicate, fts_parameters = text_fts_file_key_predicate(connection, (file_key,))
+        fts_rows = connection.execute(
+            f"SELECT rowid,path FROM document_fts WHERE {fts_predicate}",
+            fts_parameters,
+        ).fetchall()
+        if len(fts_rows) != 1:
             raise RuntimeError("cached Text FTS output disappeared before publication")
+        if str(fts_rows[0]["path"]) != snapshot.path:
+            fts = connection.execute(
+                "UPDATE document_fts SET path=? WHERE rowid=? AND file_key=?",
+                (snapshot.path, int(fts_rows[0]["rowid"]), file_key),
+            )
+            if fts.rowcount != 1:
+                raise RuntimeError("cached Text FTS output disappeared before publication")
 
     def _refresh_cached_error(
         self,
@@ -1196,7 +1212,7 @@ class TextRoute:
             "ON r.revision_id=d.revision_id WHERE d.file_key=?)",
             (_TEXT_REPRESENTATION_KIND, _TEXT_FTS_KIND, key),
         )
-        connection.execute("DELETE FROM document_fts WHERE file_key=?", (key,))
+        delete_text_fts_for_file_key(connection, key)
         connection.execute("DELETE FROM documents WHERE file_key=?", (key,))
 
     def _prune_stale_documents(self, connection: sqlite3.Connection) -> int:
@@ -1214,11 +1230,7 @@ class TextRoute:
             "ON r.revision_id=d.revision_id WHERE d.last_seen_run_id<>?)",
             (_TEXT_REPRESENTATION_KIND, _TEXT_FTS_KIND, self.run_id),
         )
-        connection.execute(
-            "DELETE FROM document_fts WHERE file_key IN "
-            "(SELECT file_key FROM documents WHERE last_seen_run_id<>?)",
-            (self.run_id,),
-        )
+        prune_text_fts_for_run(connection, self.run_id)
         connection.execute(
             "DELETE FROM documents WHERE last_seen_run_id<>?",
             (self.run_id,),
@@ -1269,7 +1281,7 @@ class TextRoute:
                 time.time_ns(),
             ),
         )
-        connection.execute(
+        fts = connection.execute(
             "INSERT INTO document_fts(file_key,path,content_kind,title,author,body) "
             "VALUES(?,?,?,?,?,?)",
             (
@@ -1281,6 +1293,9 @@ class TextRoute:
                 extracted.text,
             ),
         )
+        if fts.lastrowid is None:
+            raise RuntimeError("Text FTS insertion did not return its rowid")
+        record_text_fts_row(connection, fts.lastrowid, key)
 
     def _store_error(
         self,
@@ -1615,6 +1630,7 @@ class TextRoute:
         capability_brokers: dict[str, CapabilityBroker] = {}
         self._emit(0, selected, counters)
         with text_database(self.config.state_path, create=False) as connection:
+            initialize_text_fts_lookup(connection)
             for mime, snapshot in self._candidates():
                 capability_request = _text_capability_request(mime, snapshot.size)
                 broker_key = capability_request.execution_contract_fingerprint

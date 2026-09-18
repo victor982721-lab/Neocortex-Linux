@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 from dataclasses import dataclass, field
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
 from neocortex.foundation.processing_provenance import (
     ROUTE_SUMMARY_SCHEMA,
     ProcessingProvenance,
+    processing_provenance_cache,
     TesseractRuntimeProvenance,
     build_processing_provenance,
     distribution_component,
@@ -112,7 +112,7 @@ def resolve_pdf_tesseract_runtime(
     )
 
 
-@lru_cache(maxsize=128)
+@processing_provenance_cache(maxsize=128)
 def _pdf_processing_provenance(config: PdfRouteConfig) -> ProcessingProvenance:
     profile = resolve_ocr_profile(config.ocr_profile, config.ocr_lang)
     components: list[dict[str, Any]] = [

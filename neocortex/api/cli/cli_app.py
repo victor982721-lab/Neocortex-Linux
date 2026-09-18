@@ -942,6 +942,9 @@ def main(arguments: Sequence[str] | None = None) -> int:
     actions = getattr(result, "actions", None)
     if getattr(result, "route_failures", None):
         return 2
+    maintenance = getattr(result, "maintenance", {})
+    if maintenance and maintenance.get("operation_status") not in {"complete", "planned"}:
+        return 2
     if (actions is not None and actions.errors) or has_organization_errors(result):
         return 2
     if semantic_exit_code != 0:

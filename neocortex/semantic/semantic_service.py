@@ -537,27 +537,6 @@ def index_text_embeddings(
         budget.close_registered_resources()
 
 
-def _stage_image_batch(
-    database: Path,
-    records: Sequence[ImageSourceRecord],
-    *,
-    refresh_token: str,
-    image_generation_id: int,
-    ocr_generation_id: int | None,
-    include_ocr_text: bool,
-    chunking: TextChunkingConfig,
-) -> tuple[int, int, int, int]:
-    return _image_index.stage_image_batch(
-        database,
-        records,
-        refresh_token=refresh_token,
-        image_generation_id=image_generation_id,
-        ocr_generation_id=ocr_generation_id,
-        include_ocr_text=include_ocr_text,
-        chunking=chunking,
-    )
-
-
 def index_image_embeddings(
     state_directory: Path,
     *,
@@ -619,33 +598,6 @@ def _query_vector(
     )
 
 
-def _semantic_ranking(
-    database: Path,
-    *,
-    name: str,
-    query_model: EmbeddingModelSpec,
-    target_modality: EmbeddingModality,
-    vector: Sequence[float],
-    indexed_model_signatures: tuple[str, ...],
-    limit: int,
-    max_vectors: int,
-    cancellation_check: Callable[[], None] | None = None,
-    exact_index: ExactIndexHandle | None = None,
-) -> SemanticRanking:
-    return _search.semantic_ranking(
-        database,
-        name=name,
-        query_model=query_model,
-        target_modality=target_modality,
-        vector=vector,
-        indexed_model_signatures=indexed_model_signatures,
-        limit=limit,
-        max_vectors=max_vectors,
-        cancellation_check=cancellation_check,
-        **_optional_exact_index_kwargs(exact_index),
-    )
-
-
 def _registered_model_available(
     database: Path,
     expected: EmbeddingModelSpec,
@@ -666,64 +618,6 @@ def _unavailable_semantic_ranking(name: str, reason: str) -> SemanticRanking:
 
 def _default_lexical_paths(state_directory: Path) -> LexicalStatePaths:
     return _search.default_lexical_paths(state_directory)
-
-
-def _text_search_ranking(
-    database: Path,
-    *,
-    database_exists: bool,
-    selected_model: EmbeddingModelSpec,
-    query: str,
-    cache: Path,
-    local_files_only: bool,
-    threads: int | None,
-    limit: int,
-    max_vectors: int,
-    cancellation_check: Callable[[], None] | None = None,
-    exact_index: ExactIndexHandle | None = None,
-) -> SemanticRanking:
-    return _search.text_search_ranking(
-        database,
-        database_exists=database_exists,
-        selected_model=selected_model,
-        query=query,
-        cache=cache,
-        local_files_only=local_files_only,
-        threads=threads,
-        limit=limit,
-        max_vectors=max_vectors,
-        backend_factory=_backend,
-        cancellation_check=cancellation_check,
-        **_optional_exact_index_kwargs(exact_index),
-    )
-
-
-def _image_search_ranking(
-    database: Path,
-    *,
-    database_exists: bool,
-    query: str,
-    cache: Path,
-    local_files_only: bool,
-    threads: int | None,
-    limit: int,
-    max_vectors: int,
-    cancellation_check: Callable[[], None] | None = None,
-    exact_index: ExactIndexHandle | None = None,
-) -> SemanticRanking:
-    return _search.image_search_ranking(
-        database,
-        database_exists=database_exists,
-        query=query,
-        cache=cache,
-        local_files_only=local_files_only,
-        threads=threads,
-        limit=limit,
-        max_vectors=max_vectors,
-        backend_factory=_backend,
-        cancellation_check=cancellation_check,
-        **_optional_exact_index_kwargs(exact_index),
-    )
 
 
 def search_semantic_index(
@@ -875,26 +769,6 @@ def _selected_prototype_indices(
         prototypes,
         concept_families,
         max_evidence,
-    )
-
-
-def _classify_embedding_model(
-    database: Path,
-    *,
-    indexed_model: EmbeddingModelSpec,
-    query_backend: EmbeddingBackend,
-    max_evidence_per_entity: int,
-    page_size: int,
-) -> SemanticEvidencePassResult:
-    return _classification.classify_embedding_model(
-        database,
-        indexed_model=indexed_model,
-        query_backend=query_backend,
-        max_evidence_per_entity=max_evidence_per_entity,
-        page_size=page_size,
-        concepts_provider=_classification_concepts,
-        prototype_selector=_selected_prototype_indices,
-        evidence_publisher=publish_semantic_evidence_entities,
     )
 
 

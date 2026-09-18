@@ -132,6 +132,7 @@ class ArchiveEntry:
     detail: str | None = None
     output_relative_path: str | None = None
     output_status: str | None = None
+    parent_identity: str | None = None
 
     @property
     def member_chain(self) -> str:
@@ -146,6 +147,7 @@ class ArchiveEntry:
     def to_dict(self) -> dict[str, object]:
         return {
             "identity": self.identity,
+            "parent_identity": self.parent_identity,
             "ordinal": self.ordinal,
             "header_offset": self.header_offset,
             "chain": self.chain,
@@ -203,6 +205,8 @@ class ArchiveManifest:
     outputs: tuple[ArchiveMaterializedOutput, ...] = ()
     errors: tuple[str, ...] = ()
     manifest_digest: str = ""
+    source_identity: tuple[int, ...] | None = None
+    manifest_path: str | None = None
 
     @property
     def virtual(self) -> bool:
@@ -240,7 +244,7 @@ class ArchiveManifest:
             if (
                 output.status == "skipped"
                 and entry.content_kind == "storage_archive"
-                and any(other.chain.startswith(entry.chain + "!/") for other in self.entries)
+                and any(other.parent_identity == entry.identity for other in self.entries)
             ):
                 continue
             return False
@@ -260,11 +264,12 @@ class ArchiveManifest:
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "schema": "neocortex.archive-manifest/v1",
+            "schema": "neocortex.archive-manifest/v2",
             "source_path": self.source_path,
             "source_size": self.source_size,
             "source_sha256": self.source_sha256,
             "source_mtime_ns": self.source_mtime_ns,
+            "source_identity": None if self.source_identity is None else list(self.source_identity),
             "classification": self.classification.to_dict(),
             "entries": [entry.to_dict() for entry in self.entries],
             "status": self.status,
@@ -425,13 +430,14 @@ def _safe_name(name: str) -> tuple[bool, str]:
     return True, "/".join(parts) + ("/" if normalized.endswith("/") else "")
 
 
-def _entry_identity(source_sha256: str | None, chain: str, ordinal: int, header_offset: int) -> str:
+def _entry_identity(source_sha256: str | None, chain: str, ordinal: int, header_offset: int, parent_identity: str | None = None) -> str:
     payload = json.dumps(
         {
             "source_sha256": source_sha256,
             "chain": chain,
             "ordinal": ordinal,
             "header_offset": header_offset,
+            "parent_identity": parent_identity,
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -452,9 +458,11 @@ def _error_entry(
     unit_kind: str | None = None,
     error_code: str | None = None,
     detail: str | None = None,
+    parent_identity: str | None = None,
 ) -> ArchiveEntry:
     return ArchiveEntry(
-        identity=_entry_identity(source_sha256, chain, structure.ordinal, structure.header_offset),
+        identity=_entry_identity(source_sha256, chain, structure.ordinal, structure.header_offset, parent_identity),
+        parent_identity=parent_identity,
         ordinal=structure.ordinal,
         header_offset=structure.header_offset,
         chain=chain,
@@ -524,6 +532,7 @@ def _stream_to_stage(
                 digest.update(chunk)
                 crc = zlib.crc32(chunk, crc)
             output.flush()
+            os.fchmod(output.fileno(), 0o600)
             os.fsync(output.fileno())
     except BaseException:
         try:
@@ -582,6 +591,7 @@ def _scan_zip(
     budget: _ScanBudget,
     limits: ArchiveMaterializationLimits,
     journal_hook: JournalHook | None,
+    parent_identity: str | None = None,
 ) -> None:
     _check_deadline(budget, limits)
     if depth > limits.max_depth:
@@ -605,10 +615,11 @@ def _scan_zip(
             structure_entry = structure.entries[ordinal]
             safe, normalized = _safe_name(info.filename)
             chain = f"{prefix}!/{normalized}" if prefix else normalized
-            identity = _entry_identity(source_sha256, chain, ordinal, structure_entry.header_offset)
+            identity = _entry_identity(source_sha256, chain, ordinal, structure_entry.header_offset, parent_identity)
             if not safe:
                 entry = _error_entry(
                     source_sha256=source_sha256,
+                    parent_identity=parent_identity,
                     structure=structure_entry,
                     chain=chain,
                     name=normalized,
@@ -624,6 +635,7 @@ def _scan_zip(
             if info.is_dir():
                 entry = ArchiveEntry(
                     identity=identity,
+                    parent_identity=parent_identity,
                     ordinal=ordinal,
                     header_offset=structure_entry.header_offset,
                     chain=chain,
@@ -686,6 +698,7 @@ def _scan_zip(
                         content_kind = "storage_archive"
                 entry = ArchiveEntry(
                     identity=identity,
+                    parent_identity=parent_identity,
                     ordinal=ordinal,
                     header_offset=structure_entry.header_offset,
                     chain=chain,
@@ -710,6 +723,7 @@ def _scan_zip(
                         _scan_zip(
                             stage,
                             prefix=chain,
+                            parent_identity=identity,
                             depth=depth + 1,
                             source_sha256=source_sha256,
                             entries=entries,
@@ -749,6 +763,7 @@ def _scan_zip(
                 status, code, detail = _status_for_exception(exc)
                 entry = _error_entry(
                     source_sha256=source_sha256,
+                    parent_identity=parent_identity,
                     structure=structure_entry,
                     chain=chain,
                     name=normalized,
@@ -766,7 +781,9 @@ def _scan_zip(
 def _hash_file(path: Path, *, max_bytes: int) -> tuple[int, str]:
     digest = hashlib.sha256()
     size = 0
-    with path.open("rb", buffering=0) as source:
+    from .rebuild import _open_regular
+
+    with _open_regular(path.absolute()) as source:
         while chunk := source.read(ARCHIVE_STAGE_CHUNK_BYTES):
             size += len(chunk)
             if size > max_bytes:
@@ -779,7 +796,7 @@ def _digest_manifest(manifest: ArchiveManifest) -> str:
     payload = manifest.to_dict()
     payload["manifest_digest"] = ""
     return hashlib.sha256(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
 
 
@@ -825,7 +842,7 @@ def _scan_manifest(
 ) -> tuple[ArchiveManifest, dict[str, Path]]:
     limits.validate()
     try:
-        source_stat = source.stat()
+        source_stat = source.lstat()
     except PermissionError as exc:
         classification = ArchiveUnitClassification("storage_archive", "permission", "storage_archive", detail=str(exc))
         manifest = ArchiveManifest(str(source), 0, None, None, classification, (), "permission", apply=apply, destination=None if destination is None else str(destination))
@@ -892,6 +909,7 @@ def _scan_manifest(
         apply=apply,
         destination=None if destination is None else str(destination),
         errors=tuple(errors),
+        source_identity=(source_stat.st_dev, source_stat.st_ino, source_stat.st_mode, source_stat.st_size, source_stat.st_mtime_ns, source_stat.st_ctime_ns),
     )
     return replace(manifest, manifest_digest=_digest_manifest(manifest)), stage_paths
 
@@ -941,46 +959,44 @@ def _discard_staging_paths(stage_paths: Mapping[str, Path]) -> None:
 
 
 def _publish_no_replace(stage: Path, destination: Path, *, expected_size: int, expected_sha256: str, max_bytes: int) -> tuple[str, str | None]:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.link(stage, destination)
-    except FileExistsError:
+    from .rebuild import _open_directory, _open_regular
+
+    def reuse() -> tuple[str, str | None]:
         try:
             actual_size, actual_digest = _file_digest(destination, max_bytes=max_bytes)
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             return "collision", str(exc)
         if actual_size == expected_size and actual_digest == expected_sha256:
             return "reused", None
         return "collision", "destination exists with different bytes"
-    except OSError as exc:
-        if exc.errno != getattr(os, "EXDEV", 18):
-            if exc.errno == getattr(os, "EEXIST", 17):
-                return "collision", "destination was created concurrently"
-            # Cross-filesystem staging uses an O_EXCL copy, never replace.
-            if exc.errno not in {getattr(os, "EPERM", 1), getattr(os, "EINVAL", 22)}:
-                return "collision", f"cannot publish destination: {exc}"
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+
+    with _open_directory(destination.parent, create=True) as parent:
         try:
-            descriptor = os.open(destination, flags, 0o600)
+            os.link(stage, destination.name, dst_dir_fd=parent, follow_symlinks=False)
         except FileExistsError:
+            return reuse()
+        except OSError as exc:
+            if exc.errno not in {18, 1, 22}:
+                return "collision", f"cannot publish destination: {exc}"
             try:
-                actual_size, actual_digest = _file_digest(destination, max_bytes=max_bytes)
-            except OSError as read_exc:
-                return "collision", str(read_exc)
-            if actual_size == expected_size and actual_digest == expected_sha256:
-                return "reused", None
-            return "collision", "destination was created concurrently"
-        try:
-            with os.fdopen(descriptor, "wb", closefd=True) as output, stage.open("rb") as source:
-                shutil.copyfileobj(source, output, ARCHIVE_STAGE_CHUNK_BYTES)
-                output.flush()
-                os.fsync(output.fileno())
-        except BaseException:
+                descriptor = os.open(destination.name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    0o600, dir_fd=parent)
+            except FileExistsError:
+                return reuse()
+            created = os.fstat(descriptor)
             try:
-                destination.unlink()
-            except OSError:
-                pass
-            raise
+                with os.fdopen(descriptor, "wb") as output, _open_regular(stage) as source:
+                    shutil.copyfileobj(source, output, ARCHIVE_STAGE_CHUNK_BYTES)
+                    output.flush()
+                    os.fsync(output.fileno())
+            except BaseException:
+                # Remove only the private inode created by this attempt.
+                current = os.stat(destination.name, dir_fd=parent, follow_symlinks=False)
+                if (current.st_dev, current.st_ino) == (created.st_dev, created.st_ino):
+                    os.unlink(destination.name, dir_fd=parent)
+                raise
+        os.fsync(parent)
     return "applied", None
 
 
@@ -992,7 +1008,10 @@ def _apply_manifest(
     limits: ArchiveMaterializationLimits,
     journal_hook: JournalHook | None,
 ) -> ArchiveManifest:
-    destination.mkdir(parents=True, exist_ok=True)
+    from .rebuild import _open_directory
+
+    with _open_directory(destination, create=True):
+        pass
     outputs: list[ArchiveMaterializedOutput] = []
     used: set[str] = set()
     updated_entries: list[ArchiveEntry] = []
@@ -1001,7 +1020,7 @@ def _apply_manifest(
     # promoted as independent files.
     if manifest.classification.preserve_as_unit and manifest.classification.status == "validated":
         relative = Path(manifest.source_path).name
-        stage = destination.parent / f".{relative}.archive-stage-{manifest.manifest_digest[:16]}"
+        stage = next(iter(stage_paths.values())).parent / "archive-unit-stage" if stage_paths else destination.parent / f".{relative}.archive-stage-{manifest.manifest_digest[:16]}"
         try:
             with Path(manifest.source_path).open("rb") as source, stage.open("wb") as output:
                 copied = 0
@@ -1014,6 +1033,13 @@ def _apply_manifest(
                     output.write(chunk)
                 output.flush()
                 os.fsync(output.fileno())
+            if copied != manifest.source_size or digest.hexdigest() != manifest.source_sha256:
+                raise ArchiveMaterializationError("source changed before unit publication")
+            os.chmod(stage, 0o600)
+            _record_journal(journal_hook, {"event": "materialization_intent",
+                "entry_identity": "archive-unit:" + manifest.manifest_digest,
+                "relative_path": relative, "absolute_path": str(destination / relative),
+                "sha256": manifest.source_sha256})
             status, detail = _publish_no_replace(
                 stage,
                 destination / relative,
@@ -1023,7 +1049,8 @@ def _apply_manifest(
             )
             output_status: Literal["applied", "reused", "collision", "skipped"] = status  # type: ignore[assignment]
             outputs.append(ArchiveMaterializedOutput("archive-unit:" + manifest.manifest_digest, relative, str(destination / relative), output_status, manifest.source_sha256, detail))
-            _record_journal(journal_hook, {"event": "materialization", "status": status, "relative_path": relative, "manifest_digest": manifest.manifest_digest, "detail": detail})
+            stage.unlink(missing_ok=True)
+            _record_journal(journal_hook, {"event": "materialization", **outputs[-1].to_dict()})
         finally:
             try:
                 stage.unlink()
@@ -1041,7 +1068,7 @@ def _apply_manifest(
         # its descendants.  Omitting it also avoids a file/directory collision
         # for the deterministic ``nested.zip/<member>`` representation.
         if entry.content_kind == "storage_archive" and any(
-            other.chain.startswith(entry.chain + "!/") for other in manifest.entries
+            other.parent_identity == entry.identity for other in manifest.entries
         ):
             updated_entries.append(replace(entry, output_status="skipped", detail="nested storage container traversed"))
             outputs.append(
@@ -1057,9 +1084,13 @@ def _apply_manifest(
             continue
         relative = _relative_output_path(entry, used)
         target = destination / Path(relative)
+        _record_journal(journal_hook, {"event": "materialization_intent",
+            "entry_identity": entry.identity, "relative_path": relative,
+            "absolute_path": str(target), "sha256": entry.sha256})
         if entry.content_kind == "directory":
             try:
-                target.mkdir(parents=True, exist_ok=True)
+                with _open_directory(target, create=True):
+                    pass
                 output = ArchiveMaterializedOutput(entry.identity, relative, str(target), "applied", entry.sha256)
                 outputs.append(output)
                 updated_entries.append(replace(entry, output_relative_path=relative, output_status="applied"))
@@ -1076,7 +1107,10 @@ def _apply_manifest(
             updated_entries.append(replace(entry, output_relative_path=relative, output_status="skipped"))
             continue
         assert entry.actual_size is not None and entry.sha256 is not None
+        with _open_directory(target.parent, create=True):
+            pass
         status, detail = _publish_no_replace(stage, target, expected_size=entry.actual_size, expected_sha256=entry.sha256, max_bytes=limits.max_member_bytes)
+        stage.unlink(missing_ok=True)
         output_status = status  # type: ignore[assignment]
         output = ArchiveMaterializedOutput(entry.identity, relative, str(target), output_status, entry.sha256, detail)
         outputs.append(output)
@@ -1092,7 +1126,7 @@ def _apply_manifest(
                 (entry := entry_by_identity.get(output.entry_identity)) is not None
                 and entry.content_kind == "storage_archive"
                 and any(
-                    other.chain.startswith(entry.chain + "!/")
+                    other.parent_identity == entry.identity
                     for other in manifest.entries
                 )
             )
@@ -1119,7 +1153,7 @@ def scan_archive(
     """Return a bounded virtual manifest; no destination or source is changed."""
 
     effective = limits or ArchiveMaterializationLimits()
-    source_path = Path(source)
+    source_path = Path(source).absolute()
     with tempfile.TemporaryDirectory(prefix="neocortex_archive_scan_") as directory:
         manifest, _stage_paths = _scan_manifest(
             source_path,
@@ -1143,6 +1177,8 @@ def materialize_archive(
     journal_hook: JournalHook | None = None,
     manifest_hook: ManifestHook | None = None,
     scratch_directory: str | os.PathLike[str] | None = None,
+    manifest_directory: str | os.PathLike[str] | None = None,
+    artifact_registry_root: str | os.PathLike[str] | None = None,
 ) -> ArchiveManifest:
     """Scan and optionally materialize a ZIP using no-replace publication.
 
@@ -1156,8 +1192,8 @@ def materialize_archive(
     """
 
     effective = limits or ArchiveMaterializationLimits()
-    source_path = Path(source)
-    destination_path = Path(destination)
+    source_path = Path(source).absolute()
+    destination_path = Path(destination).absolute()
     if not apply:
         return scan_archive(
             source_path,
@@ -1165,7 +1201,14 @@ def materialize_archive(
             journal_hook=journal_hook,
             manifest_hook=manifest_hook,
         )
-    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    from .rebuild import ArchiveManifestStore, _open_directory, _identity
+
+    with _open_directory(destination_path.parent, create=True):
+        pass
+    provenance = ArchiveManifestStore(
+        Path(manifest_directory) if manifest_directory else destination_path.parent / ".neocortex-archive-manifests",
+        artifact_registry_root=None if artifact_registry_root is None else Path(artifact_registry_root),
+    )
     scratch_root = (
         Path(scratch_directory)
         if scratch_directory is not None
@@ -1186,13 +1229,22 @@ def materialize_archive(
             destination=destination_path,
             temp_root=Path(directory),
         )
+        if manifest.source_identity is None or _identity(source_path.lstat()) != manifest.source_identity:
+            raise ArchiveMaterializationError("source changed during Archive scan")
+        provenance.begin(manifest)
+
+        def record_event(event: dict[str, object]) -> None:
+            provenance.journal(event)
+            _record_journal(journal_hook, event)
+
         result = _apply_manifest(
             manifest,
             stage_paths,
             destination=destination_path,
             limits=effective,
-            journal_hook=journal_hook,
+            journal_hook=record_event,
         )
+        result = provenance.finish(result)
         _discard_staging_paths(stage_paths)
     if manifest_hook is not None:
         manifest_hook(result)

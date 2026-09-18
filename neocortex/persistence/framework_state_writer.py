@@ -6,6 +6,8 @@
 
 # region [01] Dependencias del módulo
 from __future__ import annotations
+
+from neocortex.persistence.operational_freshness import operational_identity_floor, require_operational_identity
 import json
 import hashlib
 import os
@@ -444,9 +446,9 @@ def read_latest_durable_inventory_owner(
                 FROM initial_runs
                 WHERE root=? COLLATE {_PATH_COLLATION} AND status='completed'
                 AND scan_id IS NOT NULL
-                AND run_kind='initial'
+                AND run_kind='initial' AND run_id>?
                 ORDER BY run_id DESC LIMIT 1""",
-                (str(Path(os.path.abspath(os.path.realpath(root)))),),
+                (str(Path(os.path.abspath(os.path.realpath(root)))), operational_identity_floor(connection, "framework")),
             ).fetchone()
         except sqlite3.OperationalError as exc:
             detail = str(exc).casefold()
@@ -734,7 +736,7 @@ class FrameworkState:
                 )
 
     def latest_route_candidate_run(self) -> int | None:
-        row = self._connection.execute("SELECT MAX(run_id) FROM route_candidates").fetchone()
+        row = self._connection.execute("SELECT MAX(run_id) FROM route_candidates WHERE run_id>?", (operational_identity_floor(self._connection, "framework"),)).fetchone()
         return None if row is None or row[0] is None else int(row[0])
 
     def route_candidate_run_count(self, run_id: int) -> int:
@@ -1155,6 +1157,7 @@ class FrameworkState:
 
         if run_kind not in {"route_only", "resume"}:
             raise ValueError(f"invalid operational run kind: {run_kind}")
+        require_operational_identity(self._connection, "framework", source_run_id)
         source_status = self._connection.execute(
             "SELECT status FROM initial_runs WHERE run_id=?",
             (source_run_id,),
@@ -1269,9 +1272,9 @@ class FrameworkState:
             FROM initial_runs
             WHERE root=? COLLATE {_PATH_COLLATION} AND status='completed'
             AND scan_id IS NOT NULL
-            AND run_kind='initial'
+            AND run_kind='initial' AND run_id>?
             ORDER BY run_id DESC LIMIT 1""",
-            (str(Path(os.path.abspath(os.path.realpath(root)))),),
+            (str(Path(os.path.abspath(os.path.realpath(root)))), operational_identity_floor(self._connection, "framework")),
         ).fetchone()
         if row is None:
             return None
@@ -2556,13 +2559,16 @@ class FrameworkState:
             latest[str(event["stage"])] = dict(event)
         return latest
 
+    def require_operational_run(self, run_id: int) -> None:
+        require_operational_identity(self._connection, "framework", run_id)
+
     def resumable_route_candidate_run_ids(self) -> tuple[int, ...]:
         """Return runs whose route inputs remain needed for recovery/replay."""
 
         rows = self._connection.execute(
             """SELECT DISTINCT run_id FROM route_runs
-            WHERE status IN ('running','interrupted','failed','cancelled')
-            ORDER BY run_id"""
+            WHERE status IN ('running','interrupted','failed','cancelled') AND run_id>?
+            ORDER BY run_id""", (operational_identity_floor(self._connection, "framework"),)
         ).fetchall()
         return tuple(int(row[0]) for row in rows)
 

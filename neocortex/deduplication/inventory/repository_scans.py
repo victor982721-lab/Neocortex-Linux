@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from neocortex.persistence.operational_freshness import require_operational_identity, next_operational_identity
+
 import os
 import sqlite3
 import time
@@ -261,6 +263,7 @@ class ScanCheckpointRepositoryMixin:
         """Load or derive the content identity for one complete generation."""
 
         current = resolve_scan_id(self._connection, scan_id)
+        require_operational_identity(self._connection, "inventory", current)
         row = self._connection.execute(
             "SELECT content_digest FROM inventory_generation_heads WHERE scan_id=?",
             (current,),
@@ -293,6 +296,7 @@ class ScanCheckpointRepositoryMixin:
         """Copy one complete generation before applying an incremental change."""
 
         source_id = resolve_scan_id(self._connection, scan_id)
+        require_operational_identity(self._connection, "inventory", source_id)
         existing = self._connection.execute(
             "SELECT successor_scan_id FROM inventory_scan_successors "
             "WHERE predecessor_scan_id=?",
@@ -316,11 +320,12 @@ class ScanCheckpointRepositoryMixin:
         now = time.time_ns()
         cursor = self._connection.execute(
             """INSERT INTO scans(
-            root,root_volume_id,root_file_id,root_birthtime_ns,started_ns,
+            scan_id,root,root_volume_id,root_file_id,root_birthtime_ns,started_ns,
             completed_ns,files_seen,directories_seen,bytes_seen,skipped_links,
             excluded_directories,errors,status,inventory_policy_signature)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
+                next_operational_identity(self._connection, "inventory", "scans", "scan_id"),
                 source[0],
                 source[1],
                 source[2],
@@ -436,6 +441,7 @@ class ScanCheckpointRepositoryMixin:
     def bind_inventory_checkpoint(self, checkpoint: InventoryCheckpoint) -> None:
         """Publish a completed inventory and its exact USN boundary atomically."""
 
+        require_operational_identity(self._connection, "inventory", checkpoint.scan_id)
         bound_checkpoint = self._policy_bound_checkpoint(checkpoint)
         with self._connection:
             self._write_inventory_checkpoint(bound_checkpoint)

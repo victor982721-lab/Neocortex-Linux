@@ -285,9 +285,32 @@ def _error_envelope(
             "type": name,
             "message": message,
             "retryable": code in {"busy", "plan_changed", "unavailable"},
+            **({"operation_id": getattr(error, "operation_id", None)} if getattr(error, "operation_id", None) else {}),
         },
         exit_code=exit_code,
     )
+
+
+def state_reset_recovery_payload(
+    state_directory: str | Path, operation_id: str, *, apply: bool = False,
+    receipt_digest: str | None = None, confirmation: str | None = None,
+    request_id: str | None = None,
+) -> dict[str, object]:
+    """Preview or reconcile an exact durable reset operation without retrying it."""
+    request = _request_id(request_id)
+    try:
+        if not isinstance(apply, bool):
+            raise ValueError("apply must be a boolean")
+        if not isinstance(operation_id, str) or not operation_id.startswith("state-reset-") or len(operation_id) > 256:
+            raise ValueError("operation_id is invalid")
+        result = _engine().reconcile_state_reset(
+            _absolute_path(state_directory, label="state_directory"), operation_id,
+            apply=apply, expected_receipt_digest=_digest(receipt_digest), confirmation=confirmation,
+        )
+        return _envelope(request_id=request, scope="recovery", read_only=not apply,
+                         status="complete" if apply else "preview", result=result)
+    except (OSError, RuntimeError, ValueError, TypeError) as error:
+        return _error_envelope(request_id=request, scope="recovery", read_only=not apply, error=error)
 
 
 def state_reset_payload(

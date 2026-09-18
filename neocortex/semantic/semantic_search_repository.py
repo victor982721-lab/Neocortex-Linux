@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 import heapq
+import hashlib
 import json
 import sqlite3
 import unicodedata
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 if TYPE_CHECKING:
     from .semantic_exact_index import ExactIndexHandle
@@ -33,6 +34,16 @@ from .semantic_repository_common import (
     MAX_WRITE_BATCH,
     _fingerprint_from_row,
     _load_model,
+)
+from .semantic_search_order import ExactSearchHeapKey, ExactSearchOrder, exact_search_order
+from .semantic_vector_search import (
+    SemanticVectorSearch,
+    VectorSearchBudget,
+    VectorSearchContractError,
+    VectorSearchPage,
+    VectorSearchRequest,
+    VectorSearchUnavailable,
+    validate_vector_page,
 )
 from .semantic_schema import SemanticStateError, semantic_database
 from .semantic_sources import SEMANTIC_TITLE_POLICY, SEMANTIC_TITLE_SECTION_KIND
@@ -65,7 +76,7 @@ class _TargetedSearchDiagnostics:
 
     item_ids: tuple[str, ...]
     evidence_mode: bool
-    best: dict[tuple[str, str], tuple[float, int, str, str]] = field(default_factory=dict)
+    best: dict[tuple[str, str], ExactSearchOrder] = field(default_factory=dict)
     targets: dict[str, SearchHit] = field(default_factory=dict)
     rank_budget_exhausted: bool = False
     rank_bytes: int = 0
@@ -73,19 +84,13 @@ class _TargetedSearchDiagnostics:
     def observe(self, hit: SearchHit) -> None:
         if hit.item_id in self.item_ids:
             prior_target = self.targets.get(hit.item_id)
-            same_key = prior_target is not None and (
-                not self.evidence_mode or hit.entity_id == prior_target.entity_id
-            )
-            better = prior_target is None or (
-                (hit.score, hit.ref_id) > (prior_target.score, prior_target.ref_id)
-                if same_key else self._order(hit) < self._order(prior_target)
-            )
+            better = prior_target is None or self._order(hit) < self._order(prior_target)
             if better:
                 self.targets[hit.item_id] = hit
         if self.rank_budget_exhausted:
             return
         key = (hit.item_id, hit.entity_id if self.evidence_mode else "")
-        entry = (hit.score, hit.ref_id, hit.entity_id, hit.indexed_model_signature)
+        entry = self._order(hit)
         prior = self.best.get(key)
         if prior is None:
             self.rank_bytes += 256 + 4 * (len(hit.item_id) + len(hit.entity_id) + len(hit.indexed_model_signature))
@@ -93,12 +98,12 @@ class _TargetedSearchDiagnostics:
                 self.best.clear()
                 self.rank_budget_exhausted = True
                 return
-        if prior is None or entry[:2] > prior[:2]:
+        if prior is None or entry < prior:
             self.best[key] = entry
 
     @staticmethod
-    def _order(hit: SearchHit) -> tuple[float, str, str, str]:
-        return -hit.score, hit.item_id, hit.entity_id, hit.indexed_model_signature
+    def _order(hit: SearchHit) -> ExactSearchOrder:
+        return exact_search_order(hit.score, hit.item_id, hit.entity_id, hit.indexed_model_signature, hit.ref_id)
 
     def export(self, page: ExactSearchPage) -> dict[str, object]:
         entries: list[dict[str, object]] = []
@@ -115,8 +120,7 @@ class _TargetedSearchDiagnostics:
             if hit is not None and not self.rank_budget_exhausted:
                 target_order = self._order(hit)
                 observed_rank = 1 + sum(
-                    (-entry[0], key[0], entry[2], entry[3]) < target_order
-                    for key, entry in self.best.items()
+                    entry < target_order for entry in self.best.values()
                 )
             elif candidate_rank is not None:
                 observed_rank = candidate_rank
@@ -440,13 +444,13 @@ def _retain_exact_search_hit(
     hit: SearchHit,
     *,
     limit: int,
-    best_by_item: dict[str, tuple[float, int, SearchHit]],
-    heap: list[tuple[float, int, SearchHit]],
+    best_by_item: dict[str, tuple[ExactSearchHeapKey, int, SearchHit]],
+    heap: list[tuple[ExactSearchHeapKey, int, SearchHit]],
 ) -> None:
-    entry = (hit.score, hit.ref_id, hit)
+    entry = (ExactSearchHeapKey(_TargetedSearchDiagnostics._order(hit)), hit.ref_id, hit)
     prior = best_by_item.get(hit.item_id)
     if prior is not None:
-        if entry[:2] > prior[:2]:
+        if entry[0] > prior[0]:
             best_by_item[hit.item_id] = entry
             heapq.heappush(heap, entry)
     elif len(best_by_item) < limit:
@@ -457,7 +461,7 @@ def _retain_exact_search_hit(
             heapq.heappop(heap)
         if not heap:
             raise SemanticStateError("exact-search item heap became empty")
-        if entry[:2] > heap[0][:2]:
+        if entry[0] > heap[0][0]:
             removed = heapq.heappop(heap)
             del best_by_item[removed[2].item_id]
             best_by_item[hit.item_id] = entry
@@ -471,16 +475,16 @@ def _retain_exact_evidence_hit(
     hit: SearchHit,
     *,
     limit: int,
-    best_by_evidence: dict[tuple[str, str], tuple[float, int, SearchHit]],
-    heap: list[tuple[float, int, SearchHit]],
+    best_by_evidence: dict[tuple[str, str], tuple[ExactSearchHeapKey, int, SearchHit]],
+    heap: list[tuple[ExactSearchHeapKey, int, SearchHit]],
 ) -> None:
     """Retain one best vector per concrete entity, not per resource item."""
 
     key = (hit.item_id, hit.entity_id)
-    entry = (hit.score, hit.ref_id, hit)
+    entry = (ExactSearchHeapKey(_TargetedSearchDiagnostics._order(hit)), hit.ref_id, hit)
     prior = best_by_evidence.get(key)
     if prior is not None:
-        if entry[:2] > prior[:2]:
+        if entry[0] > prior[0]:
             best_by_evidence[key] = entry
             heapq.heappush(heap, entry)
     elif len(best_by_evidence) < limit:
@@ -494,7 +498,7 @@ def _retain_exact_evidence_hit(
             heapq.heappop(heap)
         if not heap:
             raise SemanticStateError("exact-search evidence heap became empty")
-        if entry[:2] > heap[0][:2]:
+        if entry[0] > heap[0][0]:
             removed = heapq.heappop(heap)
             del best_by_evidence[(removed[2].item_id, removed[2].entity_id)]
             best_by_evidence[key] = entry
@@ -504,7 +508,7 @@ def _retain_exact_evidence_hit(
         heapq.heapify(heap)
 
 
-def _search_exact_page(
+def _scan_exact_page(
     path: Path,
     query: ExactSearchQuery,
     *,
@@ -517,7 +521,6 @@ def _search_exact_page(
     cancellation_check: Callable[[], None] | None = None,
     diagnostic_item_ids: tuple[str, ...] = (),
     diagnostics: dict[str, object] | None = None,
-    exact_index: ExactIndexHandle | None = None,
 ) -> ExactSearchPage:
     """Shared bounded scan for discovery and concrete-evidence retrieval."""
 
@@ -538,21 +541,9 @@ def _search_exact_page(
     if cancellation_check is not None:
         cancellation_check()
     query_vector, _ = normalize_vector(query.vector, query.dimensions)
-    if exact_index is not None:
-        from .semantic_exact_index import _try_exact_index_page
-
-        indexed = _try_exact_index_page(
-            path, query, query_vector, exact_index=exact_index,
-            limit=limit, max_vectors=max_vectors, after_ref_id=after_ref_id,
-            batch_size=batch_size, text_scope=text_scope, evidence_mode=evidence_mode,
-            diagnostic_item_ids=selected_diagnostic_ids,
-            cancellation_check=cancellation_check,
-        )
-        if indexed is not None:
-            return indexed
-    heap: list[tuple[float, int, SearchHit]] = []
-    best_by_item: dict[str, tuple[float, int, SearchHit]] = {}
-    best_by_evidence: dict[tuple[str, str], tuple[float, int, SearchHit]] = {}
+    heap: list[tuple[ExactSearchHeapKey, int, SearchHit]] = []
+    best_by_item: dict[str, tuple[ExactSearchHeapKey, int, SearchHit]] = {}
+    best_by_evidence: dict[tuple[str, str], tuple[ExactSearchHeapKey, int, SearchHit]] = {}
     scanned = 0
     last_ref_id = after_ref_id
     has_more = False
@@ -612,12 +603,7 @@ def _search_exact_page(
         entry[2]
         for entry in sorted(
             selected,
-            key=lambda value: (
-                -value[0],
-                value[2].item_id,
-                value[2].entity_id,
-                value[2].indexed_model_signature,
-            ),
+            key=lambda value: value[0].order,
         )
     )
     page = ExactSearchPage(
@@ -629,6 +615,140 @@ def _search_exact_page(
     if target_diagnostics is not None and diagnostics is not None:
         diagnostics.update(target_diagnostics.export(page))
     return page
+
+
+class NativeExactVectorSearch:
+    """The existing SQLite exact scan, retained as the ranking oracle."""
+
+    def __init__(self) -> None:
+        self._closed = False
+
+    def search_page(
+        self, request: VectorSearchRequest, budget: VectorSearchBudget,
+        cancelled: Callable[[], None] | None = None,
+    ) -> VectorSearchPage:
+        if self._closed:
+            raise VectorSearchContractError("native vector backend is closed")
+        diagnostics: dict[str, object] = {}
+        page = _scan_exact_page(
+            request.owner_path, request.query,
+            limit=budget.limit, max_vectors=budget.max_vectors,
+            after_ref_id=request.after_ref_id, batch_size=budget.batch_size,
+            evidence_mode=request.evidence_mode, text_scope=request.text_scope,
+            diagnostic_item_ids=request.diagnostic_item_ids, diagnostics=diagnostics,
+            cancellation_check=cancelled,
+        )
+        return VectorSearchPage(
+            page, "native_exact", request.snapshot_id,
+            "complete" if page.complete else "partial", diagnostics=diagnostics,
+        )
+
+    def close(self) -> None:
+        self._closed = True
+
+
+def _search_exact_page(
+    path: Path,
+    query: ExactSearchQuery,
+    *,
+    limit: int = 20,
+    max_vectors: int = 50_000,
+    after_ref_id: int = 0,
+    batch_size: int = 512,
+    evidence_mode: bool,
+    text_scope: TextEmbeddingScope = "all",
+    cancellation_check: Callable[[], None] | None = None,
+    diagnostic_item_ids: tuple[str, ...] = (),
+    diagnostics: dict[str, object] | None = None,
+    exact_index: ExactIndexHandle | None = None,
+    vector_backend: SemanticVectorSearch | None = None,
+    backend_diagnostics: dict[str, object] | None = None,
+) -> ExactSearchPage:
+    """Dispatch the complete request while the owner retains its source fence.
+
+    Only an explicit pre-scan decline permits the native exact fallback. A
+    failure, changed artifact, wrong snapshot, or malformed response propagates
+    without a retry. Hydration remains in ``resolve_search_hits``.
+    """
+    from neocortex.persistence.sqlite_immutable import capture_sqlite_read_fence
+
+    if exact_index is not None and vector_backend is not None:
+        raise ValueError("select exact_index or vector_backend, not both")
+    _validate_text_scope(query.target_modality, text_scope)
+    selected_diagnostic_ids = validate_diagnostic_item_ids(diagnostic_item_ids)
+    budget = VectorSearchBudget(limit, max_vectors, batch_size)
+    if cancellation_check is not None:
+        cancellation_check()
+    owner_path = Path(path).absolute()
+    fence = capture_sqlite_read_fence(owner_path)
+    # Filesystem identity captures the whole owner/head snapshot without a
+    # database open or copying it for a warm persisted query.
+    snapshot_id = hashlib.sha256(repr((str(owner_path), fence)).encode("utf-8")).hexdigest()
+    request = VectorSearchRequest(
+        query, owner_path, snapshot_id, after_ref_id, evidence_mode,
+        text_scope, selected_diagnostic_ids,
+    )
+    backend = vector_backend
+    owns_backend = backend is None
+    if backend is None and exact_index is not None:
+        from .semantic_exact_index import PersistedExactVectorSearch
+
+        backend = PersistedExactVectorSearch(exact_index, owns_handle=False)
+    if backend is None:
+        backend = NativeExactVectorSearch()
+    fallback_reason: str | None = None
+    try:
+        result = backend.search_page(request, budget, cancellation_check)
+        if isinstance(result, VectorSearchUnavailable):
+            if result.phase != "prescan" or not result.reason or not result.backend_id:
+                raise VectorSearchContractError("backend decline is not a valid pre-scan outcome")
+            if capture_sqlite_read_fence(owner_path) != fence:
+                raise SemanticStateError("semantic owner changed before exact fallback; no implicit retry")
+            fallback_reason = result.reason
+            native = NativeExactVectorSearch()
+            try:
+                result = native.search_page(request, budget, cancellation_check)
+            finally:
+                native.close()
+        validate_vector_page(result, request, budget)
+        if capture_sqlite_read_fence(owner_path) != fence:
+            raise SemanticStateError("semantic owner changed during vector query; no implicit retry")
+        if cancellation_check is not None:
+            cancellation_check()
+        if diagnostics is not None:
+            diagnostics.update(result.diagnostics)
+        if backend_diagnostics is not None:
+            backend_diagnostics.update(
+                backend_id=result.backend_id, snapshot_id=result.snapshot_id,
+                coverage=result.coverage, fallback_reason=fallback_reason or result.fallback_reason,
+                scanned=result.page.scanned, next_cursor=result.page.next_cursor,
+                complete=result.page.complete,
+            )
+        return result.page
+    finally:
+        if owns_backend:
+            backend.close()
+
+
+class _VectorBackendOptions(TypedDict, total=False):
+    exact_index: ExactIndexHandle
+    vector_backend: SemanticVectorSearch
+    backend_diagnostics: dict[str, object]
+
+
+def _vector_backend_options(
+    exact_index: ExactIndexHandle | None,
+    vector_backend: SemanticVectorSearch | None,
+    backend_diagnostics: dict[str, object] | None,
+) -> _VectorBackendOptions:
+    options: _VectorBackendOptions = {}
+    if exact_index is not None:
+        options["exact_index"] = exact_index
+    if vector_backend is not None:
+        options["vector_backend"] = vector_backend
+    if backend_diagnostics is not None:
+        options["backend_diagnostics"] = backend_diagnostics
+    return options
 
 
 def search_exact_page(
@@ -644,6 +764,8 @@ def search_exact_page(
     diagnostic_item_ids: tuple[str, ...] = (),
     diagnostics: dict[str, object] | None = None,
     exact_index: ExactIndexHandle | None = None,
+    vector_backend: SemanticVectorSearch | None = None,
+    backend_diagnostics: dict[str, object] | None = None,
 ) -> ExactSearchPage:
     """Scan discovery hits, retaining the best entity per resource item."""
 
@@ -659,7 +781,7 @@ def search_exact_page(
         cancellation_check=cancellation_check,
         diagnostic_item_ids=diagnostic_item_ids,
         diagnostics=diagnostics,
-        **({"exact_index": exact_index} if exact_index is not None else {}),
+        **_vector_backend_options(exact_index, vector_backend, backend_diagnostics),
     )
 
 
@@ -676,6 +798,8 @@ def search_exact_evidence_page(
     diagnostic_item_ids: tuple[str, ...] = (),
     diagnostics: dict[str, object] | None = None,
     exact_index: ExactIndexHandle | None = None,
+    vector_backend: SemanticVectorSearch | None = None,
+    backend_diagnostics: dict[str, object] | None = None,
 ) -> ExactSearchPage:
     """Scan concrete evidence while retaining several entities per resource."""
 
@@ -691,7 +815,7 @@ def search_exact_evidence_page(
         cancellation_check=cancellation_check,
         diagnostic_item_ids=diagnostic_item_ids,
         diagnostics=diagnostics,
-        **({"exact_index": exact_index} if exact_index is not None else {}),
+        **_vector_backend_options(exact_index, vector_backend, backend_diagnostics),
     )
 
 

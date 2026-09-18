@@ -22,7 +22,7 @@ from neocortex.persistence.sqlite_schema_contract import (
 # region [01] Canonical schema
 
 
-CATALOG_SCHEMA_VERSION = 10
+CATALOG_SCHEMA_VERSION = 11
 _PATH_COLLATION = sqlite_path_collation()
 
 
@@ -1082,6 +1082,11 @@ def _migrate_to_v10(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
+def _migrate_to_v11(connection: sqlite3.Connection) -> None:
+    """Introduce the reader fence without changing the physical table shape."""
+    connection.execute("SELECT key,value FROM metadata LIMIT 0")
+
+
 def migrate_document_catalog_schema(
     connection: sqlite3.Connection,
     prior_version: int,
@@ -1090,6 +1095,11 @@ def migrate_document_catalog_schema(
 ) -> None:
     """Apply every required historical step without committing the transaction."""
 
+    if prior_version == 10:
+        # The reader fence is additive; do not repair an invalid v10 database.
+        validate_sqlite_schema_contract(
+            connection, document_catalog_schema_contract(), label="document catalog v10", exact=True,
+        )
     migrations: dict[int, Callable[[], None]] = {
         1: lambda: _migrate_to_v1(connection),
         2: lambda: _migrate_to_v2(connection),
@@ -1101,6 +1111,8 @@ def migrate_document_catalog_schema(
         8: lambda: _migrate_to_v8(connection),
         9: lambda: _migrate_to_v9(connection),
         10: lambda: _migrate_to_v10(connection),
+        # Version 11 fences readers that may reactivate a reset historical head.
+        11: lambda: _migrate_to_v11(connection),
     }
     for target_version in range(prior_version + 1, CATALOG_SCHEMA_VERSION + 1):
         migrations[target_version]()

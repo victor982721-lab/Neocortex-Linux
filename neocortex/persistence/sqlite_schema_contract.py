@@ -113,7 +113,34 @@ def _normalized_type(value: object) -> str:
 
 
 def _normalized_sql(value: object) -> str:
-    return " ".join(str(value or "").split())
+    """Canonicalize object DDL without merging tokens or changing quoted data.
+
+    Quoted identifiers retain their case here because SQLite's legacy DQS
+    behavior can interpret a double-quoted expression as a string literal.
+    This deliberately prefers rejecting a spelling change over accepting a
+    different view/trigger/index expression as equivalent.
+    """
+    tokens = _tokenize_schema_sql(str(value or ""))
+    if tokens and _word_is(tokens[0], "create"):
+        position = 1
+        if position < len(tokens) and any(
+            _word_is(tokens[position], word) for word in ("temp", "temporary", "unique")
+        ):
+            position += 1
+        if position < len(tokens) and any(
+            _word_is(tokens[position], word) for word in ("index", "view", "trigger")
+        ):
+            position += 1
+            optional = tokens[position:position + 3]
+            if len(optional) == 3 and all(
+                _word_is(token, word) for token, word in zip(optional, ("if", "not", "exists"), strict=True)
+            ):
+                tokens = tokens[:position] + tokens[position + 3:]
+    canonical = (
+        f"quoted:{token.value}" if token.kind == "identifier" else _canonical_token(token)
+        for token in tokens
+    )
+    return "".join(f"{len(token)}:{token}" for token in canonical)
 
 
 def _serialized_canonical_tokens(source: str) -> str:
@@ -125,46 +152,8 @@ def _serialized_canonical_tokens(source: str) -> str:
 
 
 def _normalized_index_sql(value: object) -> str | None:
-    """Normalize insignificant SQL whitespace and unquoted identifier case."""
-
-    if value is None:
-        return None
-    source = str(value)
-    normalized: list[str] = []
-    quote: str | None = None
-    index = 0
-    while index < len(source):
-        character = source[index]
-        if quote is None:
-            if character.isspace():
-                index += 1
-                continue
-            if character in {"'", '"', "`"}:
-                quote = character
-                normalized.append(character)
-            elif character == "[":
-                quote = "]"
-                normalized.append(character)
-            else:
-                normalized.append(character.casefold())
-        else:
-            normalized.append(character)
-            if character == quote:
-                if quote != "]" and index + 1 < len(source):
-                    if source[index + 1] == quote:
-                        normalized.append(source[index + 1])
-                        index += 1
-                    else:
-                        quote = None
-                else:
-                    quote = None
-        index += 1
-    compact = "".join(normalized)
-    for prefix in ("createuniqueindex", "createindex"):
-        optional_prefix = f"{prefix}ifnotexists"
-        if compact.startswith(optional_prefix):
-            return prefix + compact[len(optional_prefix) :]
-    return compact
+    """Use the same bounded token contract for explicit indexes and objects."""
+    return None if value is None else _normalized_sql(value)
 
 
 # region [03] Bounded canonical CREATE TABLE parsing
@@ -990,7 +979,7 @@ def validate_sqlite_schema_contract(
         str(row[0])
         for row in connection.execute(
             """SELECT name FROM sqlite_master
-            WHERE type='table' AND name NOT LIKE 'sqlite_%'"""
+            WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%'"""
         )
     }
     missing_names = sorted(expected_names - observed_names)

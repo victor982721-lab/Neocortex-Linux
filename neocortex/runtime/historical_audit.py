@@ -76,13 +76,17 @@ class _EffectPartial(HistoricalAuditError):
 
 
 def _canonical_json(value: object) -> str:
-    return json.dumps(
+    rendered = json.dumps(
         value,
         ensure_ascii=False,
         allow_nan=False,
         sort_keys=True,
         separators=(",", ":"),
     )
+    if any(0xD800 <= ord(character) <= 0xDFFF for character in rendered):
+        return json.dumps(value, ensure_ascii=True, allow_nan=False, sort_keys=True,
+                          separators=(",", ":"))
+    return rendered
 
 
 def _bounded_reason(value: object) -> str:
@@ -732,8 +736,10 @@ class HistoricalRecord:
         return self.observed_bytes
 
     def to_dict(self) -> dict[str, object]:
+        from neocortex.runtime.path_identity import PathIdentity
         return {
             "path": str(self.path),
+            "posix_path_identity": PathIdentity.from_path(self.path).as_dict(),
             "name": self.name,
             "status": self.status,
             "apparent_bytes": self.apparent_bytes,
@@ -1078,6 +1084,8 @@ class HistoricalAuditManager:
         max_entries: int = 10_000,
         max_depth: int = 2,
         max_bytes: int = 1 << 40,
+        state_directory: Path | None = None,
+        owner: str = _HISTORICAL_OWNER,
     ) -> None:
         try:
             candidate = Path(root)
@@ -1109,6 +1117,41 @@ class HistoricalAuditManager:
         self.max_entries = max_entries
         self.max_depth = max_depth
         self.max_bytes = max_bytes
+        if state_directory is not None and not Path(state_directory).is_absolute():
+            raise HistoricalRootError("adoption state directory must be absolute")
+        self.state_directory = None if state_directory is None else Path(state_directory)
+        if not isinstance(owner, str) or not owner or len(owner.encode("utf-8")) > 256:
+            raise ValueError("historical owner must be bounded non-empty text")
+        self.owner = owner
+
+    def plan_selected(self, selections: Sequence[Any], *, partial: bool = False,
+                      deadline_ns: int | None = None, cancelled: Any = None) -> Any:
+        """Inspect exact descendants using already registered producer evidence."""
+        from neocortex.runtime.historical_adoption import HistoricalAdoption
+        return HistoricalAdoption(self).plan(selections, partial=partial,
+                                             deadline_ns=deadline_ns, cancelled=cancelled)
+
+    def prepare_adoption(self, plan: Any) -> Any:
+        """Persist an immutable proposal; this does not authorize retirement."""
+        from neocortex.runtime.historical_adoption import HistoricalAdoption
+        return HistoricalAdoption(self).prepare(plan)
+
+    def adoption_plan(self, plan_digest: str) -> Any:
+        """Load an authenticated proposal without widening its selection."""
+        from neocortex.runtime.historical_adoption import HistoricalAdoption
+        return HistoricalAdoption(self).load_plan(plan_digest)
+
+    def approve_adoption(self, plan_digest: str, selected_ids: Sequence[str] | None = None) -> dict[str, Any]:
+        """Record the explicit local operator's approval for an exact proposal."""
+        from neocortex.runtime.historical_adoption import HistoricalAdoption
+        return HistoricalAdoption(self).approve(plan_digest, selected_ids)
+
+    def apply_selected(self, plan_digest: str, selected_ids: Sequence[str] | None = None,
+                       *, deadline_ns: int | None = None, cancelled: Any = None) -> dict[str, Any]:
+        """Consume existing exact approval and reconcile prior effects on replay."""
+        from neocortex.runtime.historical_adoption import HistoricalAdoption
+        return HistoricalAdoption(self).apply(plan_digest, selected_ids,
+                                              deadline_ns=deadline_ns, cancelled=cancelled)
 
     def _root_metadata(self, *, allow_shared_read: bool = False) -> os.stat_result:
         _path_components_have_no_symlinks(self.root)
@@ -1200,11 +1243,10 @@ class HistoricalAuditManager:
         )
 
     def apply(self, plan: HistoricalAuditPlan | None = None) -> HistoricalAuditPlan:
-        """Re-scan and remove only currently adoptable historical entries.
+        """Preserve legacy entries and report the native exact-adoption route.
 
-        ``plan`` is deliberately ignored.  A read-only plan is evidence for a
-        human or caller, never an effect authorization; apply captures a fresh
-        observation and revalidates every candidate through a directory fd.
+        A legacy manifest and its ``approved`` field are discovery evidence;
+        authenticated selection authority is required by ``apply_selected``.
         """
 
         del plan
@@ -1250,125 +1292,15 @@ class HistoricalAuditManager:
             )
             reason = "mount topology changed during audit"
             truncated = True
-        candidates = tuple(record for record in records if record.adoptable)
-        applied: list[HistoricalRecord] = []
-        applied_receipts: list[Path] = []
-        remaining: list[HistoricalRecord] = []
-        root_failure: str | None = None
-        for record in records:
-            if not record.adoptable:
-                # Apply has no fallback policy: anything not positively adopted
-                # is reported as blocked.  Preserve an already-observed
-                # recovery/failed state, however; collapsing mount drift or a
-                # prior partial effect into ``blocked`` would hide the
-                # recovery gate from callers.
-                retained_status = (
-                    record.status
-                    if record.status in {"active", "recovery_required", "failed"}
-                    else "blocked"
-                )
-                remaining.append(
-                    replace(
-                        record,
-                        status=retained_status,
-                        proposed_bytes=0,
-                        reason=record.reason or "historical entry is not approved for adoption",
-                    )
-                )
-                continue
-            try:
-                receipt_path = self._retire(
-                    record,
-                    root_identity,
-                    mountpoints,
-                    mount_digest,
-                )
-            except HistoricalRootError as exc:
-                root_failure = _bounded_reason(exc)
-                remaining.append(
-                    replace(record, status="recovery_required", reason=root_failure)
-                )
-            except _IdentityDrift as exc:
-                remaining.append(
-                    replace(record, status="recovery_required", reason=_bounded_reason(exc))
-                )
-            except _EffectPartial as exc:
-                remaining.append(
-                    replace(record, status="recovery_required", reason=_bounded_reason(exc))
-                )
-            except OSError as exc:
-                remaining.append(
-                    replace(record, status="failed", reason=_bounded_reason(exc))
-                )
-            except HistoricalAuditError as exc:
-                remaining.append(
-                    replace(record, status="blocked", reason=_bounded_reason(exc))
-                )
-            else:
-                applied.append(record)
-                applied_receipts.append(receipt_path)
-        if root_failure is not None:
-            # Once the root claim failed, do not continue attempting other
-            # candidates.  Candidates not reached remain conservative.
-            reached = {item.path for item in applied} | {item.path for item in remaining}
-            for record in candidates:
-                if record.path not in reached:
-                    remaining.append(
-                        replace(record, status="recovery_required", reason=root_failure)
-                    )
-        remaining_tuple = tuple(sorted(remaining, key=lambda item: item.name))
-        observed_apparent = sum(item.apparent_bytes for item in applied)
-        observed_allocated = sum(item.allocated_bytes for item in applied)
-        status = (
-            "recovery_required"
-            if any(item.status == "recovery_required" for item in remaining_tuple)
-            else "failed"
-            if any(item.status == "failed" for item in remaining_tuple)
-            else "active"
-            if any(item.status == "active" for item in remaining_tuple)
-            else "blocked"
-            if any(item.status == "blocked" for item in remaining_tuple)
-            else "applied"
-        )
-        apply_reason = root_failure or reason
-        return HistoricalAuditPlan(
-            root=self.root,
-            records=remaining_tuple,
-            unmanaged=unmanaged,
-            scanned=len(records),
-            adoptable=len(candidates),
-            planned=len(candidates),
-            applied=len(applied),
-            kept=0,
-            blocked=sum(item.status == "blocked" for item in remaining_tuple),
-            unknown=0,
-            active=sum(item.status == "active" for item in remaining_tuple),
-            failed=sum(item.status == "failed" for item in remaining_tuple),
-            recovery_required=sum(
-                item.status == "recovery_required" for item in remaining_tuple
-            ),
-            observed_bytes=sum(item.observed_bytes for item in records),
-            proposed_bytes=sum(item.proposed_bytes for item in candidates),
-            applied_bytes=sum(item.observed_bytes for item in applied),
-            active_bytes=sum(
-                item.observed_bytes for item in remaining_tuple if item.status == "active"
-            ),
-            receipts=tuple(applied_receipts),
-            observed_apparent_bytes=sum(item.apparent_bytes for item in records),
-            observed_allocated_bytes=sum(item.allocated_bytes for item in records),
-            proposed_apparent_bytes=sum(item.apparent_bytes for item in candidates),
-            proposed_allocated_bytes=sum(item.allocated_bytes for item in candidates),
-            applied_apparent_bytes=observed_apparent,
-            applied_allocated_bytes=observed_allocated,
-            status=status,
-            reason=apply_reason,
-            read_only=False,
-            root_identity=root_identity,
-            truncated=truncated,
-            max_entries=self.max_entries,
-            max_depth=self.max_depth,
-            max_bytes=self.max_bytes,
-        )
+        # Legacy manifests are discovery evidence only. The former approved
+        # JSON field has no authenticated issuer and cannot supply effect
+        # authority. Exact selections use prepare/approve/apply_selected.
+        remaining = tuple(replace(record, adoptable=False, proposed_bytes=0,
+            status=record.status if record.status in {"active", "failed", "recovery_required"} else "blocked",
+            reason=record.reason or "private_adoption_required: use plan_selected, prepare_adoption, approve_adoption, apply_selected")
+            for record in records)
+        return self._summarize(remaining, unmanaged=unmanaged, root_identity=root_identity,
+                               truncated=truncated, reason=reason, read_only=False)
 
     def _scan_prepared_receipts(
         self,
@@ -2005,10 +1937,10 @@ class HistoricalAuditManager:
                         status = "kept"
                         reason = "historical entry is not approved for adoption"
                     else:
-                        status = "adoptable"
-                        adoptable = True
-                        proposed = tree.observed_bytes
-                        reason = None
+                        status = "kept"
+                        adoptable = False
+                        proposed = 0
+                        reason = "private_adoption_required: use plan_selected, prepare_adoption, approve_adoption, apply_selected"
         return HistoricalRecord(
             path=path,
             name=name,

@@ -71,9 +71,39 @@ def _render(payload: Mapping[str, object], *, json_output: bool) -> None:
             f"STATE_RESET_MANIFEST path={details.get('manifest')} "
             f"sha256={details.get('manifest_sha256', '-')}"
         )
-    for key in ("run_count", "cache_count", "database_count", "file_count"):
+    if details.get("operation_id"):
+        print(
+            f"STATE_RESET_OPERATION id={details['operation_id']} "
+            f"action={details.get('action', '-')} phase={details.get('phase', '-')} "
+            f"receipt_digest={details.get('receipt_digest', '-')}"
+        )
+    counters = (
+        "run_count", "selected_owner_count", "transformed_owner_count",
+        "removed_owner_database_count", "preserved_owner_database_count",
+        "deleted_file_count", "deleted_bytes", "remaining_selected_entry_count",
+        "unassessed_state_root_count",
+    ) if "selected_owner_count" in details else (
+        "run_count", "cache_count", "database_count", "file_count"
+    )
+    for key in counters:
         if key in details:
             print(f"STATE_RESET_{key.upper()} value={details[key]}")
+    if "operational_freshness" in details:
+        print(
+            "STATE_RESET_VERIFICATION "
+            f"scope={details.get('verification_scope', 'selected_targets')} "
+            f"verified={details.get('verified', False)} "
+            f"operational_freshness={details['operational_freshness']}"
+        )
+        protected = details.get("protected_tables")
+        if isinstance(protected, Mapping):
+            for owner, tables in list(protected.items())[:16]:
+                print(
+                    "STATE_RESET_PRESERVED_OWNER "
+                    f"owner={json.dumps(str(owner), ensure_ascii=True)} "
+                    "reason=non_regenerable_tables "
+                    f"tables={json.dumps(tables, ensure_ascii=True)}"
+                )
     error = payload.get("error")
     if isinstance(error, Mapping):
         print(
@@ -100,6 +130,17 @@ def run_state_reset(args: argparse.Namespace) -> int:
         confirmation = getattr(args, "confirm_state_reset", None)
         plan_digest = getattr(args, "plan_digest", None)
         backup_directory = getattr(args, "backup_directory", None)
+
+        operation_id = getattr(args, "reconcile_operation", None)
+        if operation_id is not None:
+            from neocortex.api.state_reset import state_reset_recovery_payload
+            payload = state_reset_recovery_payload(
+                args.state_directory, operation_id, apply=apply_requested,
+                receipt_digest=getattr(args, "receipt_digest", None),
+                confirmation=confirmation,
+            )
+            _render(payload, json_output=bool(getattr(args, "json", False)))
+            return _exit_code(payload)
 
         # The ordinary interface binds confirmation to a fresh, hidden
         # preview.  Legacy callers that already supply RESET_STATE and a

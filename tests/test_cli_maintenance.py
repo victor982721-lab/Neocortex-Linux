@@ -41,10 +41,16 @@ def test_missing_root_is_read_only_and_not_created(tmp_path: Path, capsys) -> No
     assert not state.exists()
 
 
-def test_apply_retires_only_registered_completed_workspace(tmp_path: Path, capsys) -> None:
+@pytest.mark.parametrize("canonical_registry", [True, False])
+def test_apply_retires_only_registered_completed_workspace(
+    tmp_path: Path, capsys, canonical_registry: bool,
+) -> None:
     state = tmp_path / "state"
     root = state / "scratch" / "owned-temp"
-    manager = ScratchManager(root, owner="neocortex-framework", create_root=True)
+    manager = ScratchManager(
+        root, owner="neocortex-framework", create_root=True,
+        artifact_registry_root=state / "artifacts" if canonical_registry else None,
+    )
     workspace = manager.create(retain_on_success=True)
     payload_path = workspace.path / "payload"
     payload_path.write_bytes(b"fixture")
@@ -64,11 +70,20 @@ def test_apply_retires_only_registered_completed_workspace(tmp_path: Path, capsy
         ],
         capsys,
     )
-    assert exit_code == 0
-    assert payload["status"] == "applied"
-    assert payload["planned"] == 1
-    assert payload["applied"] == 1
-    assert not workspace.path.exists()
+    if canonical_registry:
+        assert exit_code == 0
+        assert payload["status"] == "applied"
+        assert payload["planned"] == 1
+        assert payload["applied"] == 1
+        assert not workspace.path.exists()
+    else:
+        # A producer using another registry has not granted the configured
+        # owner authority. A completed workspace alone cannot authorize unlink.
+        assert exit_code == 2
+        assert payload["status"] == "blocked"
+        assert payload["operation_status"] == "partial"
+        assert payload["applied"] == 0
+        assert payload_path.read_bytes() == b"fixture"
 
 
 def test_apply_closes_the_canonical_artifact_registry_claim(

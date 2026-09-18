@@ -1,6 +1,8 @@
 """Incremental cross-format catalog built from durable document text caches."""
 
 from __future__ import annotations
+
+from neocortex.persistence.operational_freshness import next_operational_identity, require_operational_identity
 import codecs
 import hashlib
 import json
@@ -918,6 +920,7 @@ def read_catalog_publication_manifest(
         raise CatalogPublicationConflict("catalog publication head is not published")
     if row[6] is None or row[11] is None:
         raise CatalogPublicationConflict("catalog publication manifest is incomplete")
+    require_operational_identity(connection, "catalog", int(row[1]))
     generation_digest = str(row[11])
     if verify_generation_digest and catalog_generation_digest(connection, int(row[1])) != generation_digest:
         raise CatalogPublicationConflict("catalog publication generation digest changed")
@@ -984,7 +987,7 @@ def _read_catalog_version(path: Path) -> int | None:
                 f"document catalog schema {version} is newer than supported "
                 f"schema {CATALOG_SCHEMA_VERSION}"
             )
-        if version == CATALOG_SCHEMA_VERSION:
+        if version in {10, CATALOG_SCHEMA_VERSION}:
             validate_sqlite_schema_contract(
                 connection,
                 document_catalog_schema_contract(),
@@ -1591,9 +1594,9 @@ def _begin_catalog_run(
     input_policy_signature = CATALOG_INPUT_POLICY if source_root is not None else None
     cursor = connection.execute(
         """INSERT INTO catalog_runs(
-        framework_run_id,source_kind,mode,status,started_ns)
-        VALUES(?,?,'classify','running',?)""",
-        (framework_run_id, source_kind, now),
+        catalog_run_id,framework_run_id,source_kind,mode,status,started_ns)
+        VALUES(?,?,?,'classify','running',?)""",
+        (next_operational_identity(connection, "catalog", "catalog_runs", "catalog_run_id"), framework_run_id, source_kind, now),
     )
     if cursor.lastrowid is None:
         connection.rollback()
@@ -1606,13 +1609,15 @@ def _begin_catalog_run(
         WHERE p.source_kind=?""",
         (source_kind,),
     ).fetchone()
+    if published is not None:
+        require_operational_identity(connection, "catalog", int(published[0]))
     base_generation_id = None if published is None else int(published[0])
     base_generation_digest = None if published is None or published[1] is None else str(published[1])
     generation = connection.execute(
         """INSERT INTO catalog_generations(
-        catalog_run_id,source_kind,base_generation_id,status,started_ns)
-        VALUES(?,?,?,'building',?)""",
-        (catalog_run_id, source_kind, base_generation_id, now),
+        generation_id,catalog_run_id,source_kind,base_generation_id,status,started_ns)
+        VALUES(?,?,?,?,'building',?)""",
+        (next_operational_identity(connection, "catalog", "catalog_generations", "generation_id"), catalog_run_id, source_kind, base_generation_id, now),
     )
     if generation.lastrowid is None:
         connection.rollback()

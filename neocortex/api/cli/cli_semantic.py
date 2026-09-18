@@ -2156,6 +2156,7 @@ def _recover_pending_integrated_publication(state_directory: Path) -> bool:
     from neocortex.persistence.state_publication import (
         abort_state_publication,
         abort_unbound_state_publication,
+        canonical_owner_heads,
         read_state_publication_state,
     )
 
@@ -2170,7 +2171,7 @@ def _recover_pending_integrated_publication(state_directory: Path) -> bool:
         observed = _observe_integrated_heads(
             state_directory, include_code="code" in prepared.owners
         )
-        if observed != prepared.owner_heads:
+        if canonical_owner_heads(observed) != canonical_owner_heads(prepared.owner_heads):
             raise StatePublicationRecoveryRequired("owner-head drift")
         abort_state_publication(
             state_directory,
@@ -2507,7 +2508,10 @@ def _resolve_integrated_publication_after_nonterminal(
 
     if publication is None:
         return True
-    from neocortex.persistence.state_publication import read_state_publication_state
+    from neocortex.persistence.state_publication import (
+        canonical_owner_heads,
+        read_state_publication_state,
+    )
 
     view = read_state_publication_state(state_directory)
     if view.status != "blocked":
@@ -2522,7 +2526,7 @@ def _resolve_integrated_publication_after_nonterminal(
         state_directory, include_code="code" in getattr(prepared, "owners", ())
     )
     if baseline:
-        if observed != baseline:
+        if canonical_owner_heads(observed) != canonical_owner_heads(baseline):
             return False
         abort = getattr(publication, "abort", None)
         if not callable(abort):

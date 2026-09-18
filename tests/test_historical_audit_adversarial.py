@@ -229,7 +229,8 @@ def test_apply_does_not_mutate_or_honor_a_stale_read_only_plan(tmp_path: Path) -
     manager = HistoricalAuditManager(root)
     plan = manager.plan()
     before = plan.to_dict()
-    assert plan.adoptable == 1
+    assert plan.adoptable == 0
+    assert plan.records[0].valid_manifest
 
     # Revoke approval after planning.  A read-only plan is evidence, not an
     # effect authorization, and must remain an unchanged value object.
@@ -244,7 +245,7 @@ def test_apply_does_not_mutate_or_honor_a_stale_read_only_plan(tmp_path: Path) -
     assert plan.to_dict() == before
 
 
-def test_owner_drift_after_plan_is_revalidated_before_retirement(
+def test_stale_manifest_owner_claim_cannot_bypass_private_adoption(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -252,7 +253,8 @@ def test_owner_drift_after_plan_is_revalidated_before_retirement(
     entry = _adoptable_entry(root)
     manager = HistoricalAuditManager(root)
     plan = manager.plan()
-    assert plan.adoptable == 1
+    assert plan.adoptable == 0
+    assert plan.records[0].valid_manifest
 
     manifest_path = entry / "manifest.json"
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -261,9 +263,9 @@ def test_owner_drift_after_plan_is_revalidated_before_retirement(
     _refresh_manifest_digest(payload)
     _write_manifest(entry, payload)
 
-    # Keep the stale positive scan while changing the manifest immediately
-    # before the effect boundary.  A fresh scan would conservatively classify
-    # this as blocked and would not exercise the revalidation gate itself.
+    # Even an injected stale positive manifest claim supplies no authenticated
+    # adoption authority. The explicit public workflow tests revalidation at
+    # its effect boundary separately.
     monkeypatch.setattr(
         manager,
         "_scan",
@@ -273,7 +275,7 @@ def test_owner_drift_after_plan_is_revalidated_before_retirement(
     applied = manager.apply(plan)
 
     assert applied.applied == 0
-    assert applied.recovery_required == 1
+    assert applied.blocked == 1
     assert entry.exists()
 
 
@@ -292,7 +294,8 @@ def test_receipt_directory_mount_boundary_is_fail_closed(
 
     manager = HistoricalAuditManager(root)
     plan = manager.plan()
-    assert plan.adoptable == 1
+    assert plan.adoptable == 0
+    assert any(record.valid_manifest for record in plan.records)
 
     applied = manager.apply(plan)
 

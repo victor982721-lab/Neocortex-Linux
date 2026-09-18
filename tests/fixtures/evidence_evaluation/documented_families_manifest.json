@@ -1,0 +1,10 @@
+{
+  "count": 16,
+  "sha256": "b58954d3245ca47c206d67166b5ccbe4fcafb54185cdfc02331310caa85e8a22",
+  "author": "root; sin leer reglas del motor",
+  "scope": "Panel separado de familias de preguntas documentadas; sint\u00e9tico, no representativo del Corpus",
+  "frozen_before_engine_output": true,
+  "labels_are_semantic_expectations_not_current_engine_predictions": true,
+  "original_48_cases_unchanged": true,
+  "group_split": "escenario completo, sin fuga de variantes"
+}

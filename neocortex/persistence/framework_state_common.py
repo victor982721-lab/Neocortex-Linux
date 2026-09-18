@@ -485,9 +485,15 @@ def mark_file_actions_applying(
         return
     if connection.in_transaction:
         raise RuntimeError("file action mutation frontier requires transaction ownership")
+    # SQLite WAL NORMAL can acknowledge COMMIT without syncing the frontier.
+    # Enforce FULL before BEGIN; keep it for subsequent effect receipts as well.
+    if int(connection.execute("PRAGMA main.synchronous").fetchone()[0]) < 2:
+        connection.execute("PRAGMA main.synchronous=FULL")
+    if int(connection.execute("PRAGMA main.synchronous").fetchone()[0]) < 2:
+        raise RuntimeError("file action mutation frontier requires synchronous FULL")
     applying_ns = time.time_ns()
-    connection.execute("BEGIN IMMEDIATE")
     try:
+        connection.execute("BEGIN IMMEDIATE")
         # All actions in a normal Framework batch share one run.  Rehydrate
         # each run guard at most once, validate the per-row policy snapshot
         # without repeating expensive identity walks, and check all paths in
@@ -557,11 +563,22 @@ def mark_file_actions_applying(
         for action_run_id, guard in guards.items():
             guard.reject_run_mutation()
             guard.require_paths_allowed(*paths_by_run[action_run_id])
-    except BaseException:
-        connection.rollback()
-        raise
-    else:
+        # COMMIT is part of the protected frontier, not an unguarded else.
         connection.commit()
+    except BaseException as exc:
+        try:
+            # sqlite3.rollback() is also a no-op when BEGIN did not succeed.
+            connection.rollback()
+        except BaseException as rollback_error:
+            # A failed rollback must not leave a connection that can later
+            # commit applying rows after this API has denied the effect.
+            exc.add_note(f"mutation-frontier rollback failed: {rollback_error!r}")
+            try:
+                connection.close()
+            except BaseException as close_error:
+                exc.add_note(f"mutation-frontier connection close failed: {close_error!r}")
+        exc.add_note("Mutation frontier was not acknowledged; do not apply or retry filesystem effects without reconciliation.")
+        raise
 
 
 def _transition_file_action(

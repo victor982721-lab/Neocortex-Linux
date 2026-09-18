@@ -4,7 +4,7 @@ import argparse
 import io
 import json
 import sqlite3
-from contextlib import redirect_stdout
+from contextlib import closing, redirect_stdout
 from pathlib import Path
 
 import pytest
@@ -54,7 +54,7 @@ def _build_state(
 
     catalog = state / "document_catalog.sqlite3"
     initialize_document_catalog(catalog)
-    with sqlite3.connect(catalog) as connection:
+    with closing(sqlite3.connect(catalog)) as connection, connection:
         connection.execute(
             """INSERT INTO catalog_runs(
             catalog_run_id,source_kind,mode,status,started_ns,completed_ns,summary_json)

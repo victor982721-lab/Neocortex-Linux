@@ -147,13 +147,19 @@ class ArtifactConflictError(ArtifactRegistryError):
 def _canonical_json(value: object) -> str:
     """Encode JSON deterministically while refusing non-JSON or NaN values."""
 
-    return json.dumps(
+    rendered = json.dumps(
         value,
         ensure_ascii=False,
         allow_nan=False,
         sort_keys=True,
         separators=(",", ":"),
     )
+    # Keep existing UTF-8 manifest digests byte-for-byte. POSIX surrogateescape
+    # names use a reversible JSON escape rather than failing UTF-8 encoding.
+    if any(0xD800 <= ord(character) <= 0xDFFF for character in rendered):
+        return json.dumps(value, ensure_ascii=True, allow_nan=False, sort_keys=True,
+                          separators=(",", ":"))
+    return rendered
 
 
 def _bounded_json(value: Any, *, label: str, limit: int) -> Any:
@@ -342,63 +348,30 @@ def _directory_size_no_follow(
     *,
     max_entries: int,
     max_bytes: int,
+    profile: str = "strict",
 ) -> tuple[int, str | None, bool]:
-    """Observe apparent bytes under a claimed directory without following links."""
-
-    total = 0
-    entries_seen = 0
-    truncated = False
-    issue: str | None = None
-    stack = [path]
-    while stack:
-        directory = stack.pop()
-        try:
-            iterator = os.scandir(directory)
-        except OSError:
-            return total, "artifact_missing", truncated
-        try:
-            for entry in iterator:
-                entries_seen += 1
-                if entries_seen > max_entries:
-                    truncated = True
-                    issue = "size_truncated"
-                    break
-                try:
-                    metadata = entry.stat(follow_symlinks=False)
-                except OSError:
-                    issue = "artifact_identity_drift"
-                    continue
-                if stat.S_ISLNK(metadata.st_mode):
-                    issue = issue or "artifact_symlink"
-                    continue
-                # The claimed artifact root is the private boundary.  Files
-                # nested inside a generated directory may intentionally use
-                # ordinary read permissions; ownership, links, and type are
-                # still fail-closed below.  Enforcing 0600 on every nested
-                # output would reject valid producer output without improving
-                # the registry's no-follow guarantee.
-                if metadata.st_uid != os.geteuid():
-                    issue = issue or "artifact_owner_drift"
-                if stat.S_ISREG(metadata.st_mode):
-                    if metadata.st_nlink != 1:
-                        issue = issue or "artifact_hardlink"
-                    total += max(0, int(metadata.st_size))
-                elif stat.S_ISDIR(metadata.st_mode):
-                    stack.append(Path(entry.path))
-                else:
-                    issue = issue or "artifact_type_drift"
-                if total > max_bytes:
-                    truncated = True
-                    issue = "size_truncated"
-                    break
-        finally:
-            iterator.close()
-        if truncated:
-            break
-    return min(total, max_bytes), issue, truncated
+    """Use the owner's shared descriptor and mount observer for all profiles."""
+    from neocortex.runtime.scratch_tree import observe_claimed_tree
+    observed = observe_claimed_tree(path, limit=max_entries, max_bytes=max_bytes,
+                                    profile=profile, include_control_manifest=True)
+    issue = _artifact_observation_issue(observed.issue)
+    return observed.apparent_bytes, issue, issue == "size_truncated"
 
 
-def _path_size_no_follow(path: Path, *, max_entries: int, max_bytes: int) -> tuple[int, str | None]:
+def _artifact_observation_issue(issue: str | None) -> str | None:
+    if issue is None:
+        return None
+    return {
+        "symlink_payload": "artifact_symlink", "hardlink_payload": "artifact_hardlink",
+        "payload_owner_drift": "artifact_owner_drift", "payload_type_drift": "artifact_type_drift",
+        "socket_payload": "artifact_type_drift", "device_payload": "artifact_type_drift",
+        "entry_limit": "size_truncated", "byte_limit": "size_truncated",
+        "depth_limit": "size_truncated", "fd_limit": "size_truncated",
+    }.get(issue, issue)
+
+
+def _path_size_no_follow(path: Path, *, max_entries: int, max_bytes: int,
+                         profile: str = "strict") -> tuple[int, str | None]:
     try:
         metadata = path.lstat()
     except OSError:
@@ -414,7 +387,7 @@ def _path_size_no_follow(path: Path, *, max_entries: int, max_bytes: int) -> tup
         size, issue, _ = _directory_size_no_follow(
             path,
             max_entries=max_entries,
-            max_bytes=max_bytes,
+            max_bytes=max_bytes, profile=profile,
         )
         return size, issue
     return 0, "artifact_type_drift"
@@ -463,6 +436,8 @@ class ArtifactRecord:
     eligible: bool = False
     manifest_digest: str | None = None
     manifest_path: Path | None = None
+    allocated_bytes: int | None = None
+    observed_payload_entries: int = 0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "path", _validate_absolute_path(self.path, label="artifact path"))
@@ -558,6 +533,8 @@ class ArtifactRecord:
         return None
 
     def to_dict(self) -> dict[str, object]:
+        from neocortex.runtime.path_identity import PathIdentity
+
         return {
             "schema": ARTIFACT_REGISTRY_SCHEMA,
             "artifact_id": self.artifact_id,
@@ -567,6 +544,8 @@ class ArtifactRecord:
             "purpose": self.purpose,
             "path": str(self.path),
             "root": str(self.root),
+            "posix_path_identity": PathIdentity.from_path(self.path).as_dict(),
+            "posix_root_identity": PathIdentity.from_path(self.root).as_dict(),
             "path_identity": None if self.path_identity is None else list(self.path_identity),
             "root_identity": None if self.root_identity is None else list(self.root_identity),
             "identity": None if self.path_identity is None else list(self.path_identity),
@@ -584,6 +563,11 @@ class ArtifactRecord:
             "path_size_bytes": self.path_size_bytes,
             "path_mtime_ns": self.path_mtime_ns,
             "size_bytes": self.size_bytes,
+            "apparent_bytes": self.size_bytes,
+            "allocated_bytes": self.allocated_bytes,
+            "exclusive_reclaimable_bytes": None,
+            "observed_payload_entries": self.observed_payload_entries,
+            "coverage_complete": self.verified,
             "valid": self.valid,
             "verified": self.verified,
             "issue": self.issue,
@@ -712,11 +696,24 @@ class ArtifactPlan:
         return {"max_records": self.max_records, "max_bytes": self.max_bytes}
 
     def to_dict(self) -> dict[str, object]:
+        unique_records = {record.path_identity: record for record in self.records
+                          if record.path_identity is not None}
+        coverage_complete = (not self.truncated and not self.unmanaged
+                             and all(record.verified for record in self.records))
+        allocated = (sum(record.allocated_bytes or 0 for record in unique_records.values())
+                     if coverage_complete and all(record.allocated_bytes is not None
+                                                  for record in unique_records.values()) else None)
         return {
             "schema": ARTIFACT_REGISTRY_SCHEMA,
             "root": str(self.root),
             "root_identity": None if self.root_identity is None else list(self.root_identity),
             "root_blocked": self.root_blocked,
+            "accounting": {"observed_apparent_bytes": sum(record.size_bytes for record in unique_records.values()),
+                           "observed_allocated_bytes": allocated,
+                           "exclusive_reclaimable_bytes": None,
+                           "unknown_bytes": 0 if coverage_complete else None,
+                           "coverage_complete": coverage_complete,
+                           "allocation_semantics": "observed st_blocks; shared and reflink blocks are not exclusive"},
             "status": self.status,
             "reason": self.reason,
             "read_only": self.read_only,
@@ -978,6 +975,11 @@ class ArtifactRegistry:
         )
         return self._manifest_path(artifact_id)
 
+    def tombstone_retention_receipt_path(self, operation_id: str) -> Path:
+        """Locate an owner's existing terminal-retention receipt without IO."""
+        operation = _bounded_text(operation_id, label="tombstone retention operation", limit=128)
+        return self.root / _TOMBSTONE_RETENTION_DIR / _retention_receipt_name(operation)
+
     @staticmethod
     def _normalize_dependencies(value: Iterable[str] | None) -> tuple[str, ...]:
         if value is None:
@@ -1076,7 +1078,33 @@ class ArtifactRegistry:
         not to every filesystem path on the machine.
         """
 
-        return not truncated and not unmanaged and all(record.valid for record in records)
+        return not truncated and not unmanaged and all(
+            record.valid or self.retired_claim_is_historical(record, records)
+            for record in records
+        )
+
+    @staticmethod
+    def retired_claim_is_historical(record: ArtifactRecord,
+                                    records: Sequence[ArtifactRecord]) -> bool:
+        """Recognize a confirmed old tombstone superseded by a verified claim.
+
+        This only completes dependency observation. It cannot authorize an
+        effect against the old identity or the new occupant of the path.
+        """
+        if record.state != ArtifactState.RETIRED.value or record.issue != "artifact_identity_drift":
+            return False
+        try:
+            claim = ArtifactRegistry._retirement_claim(record)
+        except ArtifactSecurityError:
+            return False
+        if (claim is None or claim.get("phase") != _RETIREMENT_CONFIRMED_PHASE
+                or claim.get("observed_path_exists") is not False
+                or claim.get("expected_path_identity") != list(record.path_identity or ())):
+            return False
+        return any(other.artifact_id != record.artifact_id and other.verified
+                   and other.state != ArtifactState.RETIRED.value and other.path == record.path
+                   and other.path_identity is not None and other.path_identity != record.path_identity
+                   for other in records)
 
     def _validate_dependencies_locked(
         self,
@@ -1332,14 +1360,34 @@ class ArtifactRegistry:
                 issue="artifact_identity_drift",
                 reason="artifact_identity_drift",
             )
-        size, size_issue = _path_size_no_follow(
-            record.path,
-            max_entries=self.max_records,
-            max_bytes=self.max_bytes,
-        )
+        profile = "strict"
+        policy = record.metadata.get("scratch_payload_policy")
+        if policy is not None:
+            try:
+                from neocortex.runtime.scratch import verified_workspace_payload_profile
+                if not isinstance(policy, Mapping) or not record.artifact_id.startswith("scratch:"):
+                    raise ArtifactSecurityError("scratch payload policy has no owner binding")
+                profile = verified_workspace_payload_profile(record.path, owner=record.owner,
+                                                              expected_policy=policy).value
+            except (OSError, RuntimeError, ValueError) as exc:
+                return replace(record, valid=False, issue="payload_policy_unverified", reason=str(exc)[:512])
+        if stat.S_ISDIR(path_metadata.st_mode):
+            from neocortex.runtime.scratch_tree import observe_claimed_tree
+            observed = observe_claimed_tree(record.path, limit=self.max_records,
+                         max_bytes=self.max_bytes, profile=profile, include_control_manifest=True)
+            size, size_issue = observed.apparent_bytes, _artifact_observation_issue(observed.issue)
+            allocated = observed.allocated_bytes
+            entries = observed.members
+        else:
+            size, size_issue = _path_size_no_follow(record.path, max_entries=self.max_records,
+                                                   max_bytes=self.max_bytes, profile=profile)
+            allocated = getattr(path_metadata, "st_blocks", 0) * 512
+            entries = 1
         if size_issue is not None:
-            return replace(record, size_bytes=size, valid=False, issue=size_issue, reason=size_issue)
-        return replace(record, size_bytes=size, valid=True, issue=None, reason=None)
+            return replace(record, size_bytes=size, allocated_bytes=allocated,
+                           observed_payload_entries=entries, valid=False, issue=size_issue, reason=size_issue)
+        return replace(record, size_bytes=size, allocated_bytes=allocated,
+                       observed_payload_entries=entries, valid=True, issue=None, reason=None)
 
     def _invalid_record(self, manifest_path: Path, issue: str) -> ArtifactRecord:
         bounded_issue = _bounded_text(issue, label="artifact issue", limit=MAX_REASON_BYTES)
@@ -2096,6 +2144,33 @@ class ArtifactRegistry:
         return isinstance(result, ArtifactRecord) and result.verified
 
     @contextmanager
+    def observation_guard(self) -> Iterator["ArtifactRegistry"]:
+        """Hold the existing registry guard for a coordinated owner snapshot.
+
+        This read-only coordination surface grants no retirement or lifecycle
+        authority. A missing registry remains absent; existing consumers can
+        use the same guarded instance to verify their exact claims.
+        """
+        if not self._ensure_root(create=False):
+            yield self
+            return
+        with self._registry_lock():
+            yield self
+
+    def for_owner(self, owner: str) -> "ArtifactRegistry":
+        """Bind an explicit owner while sharing this instance's nested guard.
+
+        The owning subsystem must supply its own logical owner. This does not
+        rewrite claims or bypass the existing owner and dependency checks.
+        """
+        bound = ArtifactRegistry(self.root, owner=owner, create_root=False,
+                                 max_records=self.max_records, max_bytes=self.max_bytes,
+                                 max_manifest_bytes=self.max_manifest_bytes,
+                                 max_metadata_bytes=self.max_metadata_bytes)
+        bound._lock_local = self._lock_local
+        return bound
+
+    @contextmanager
     def retirement_guard(self, artifact: str | ArtifactRecord) -> Iterator[ArtifactRecord]:
         """Serialize policy/dependency release with the physical effect.
 
@@ -2145,6 +2220,8 @@ class ArtifactRegistry:
         unmanaged: tuple[Path, ...] = (),
         truncated: bool = False,
     ) -> Iterator[ArtifactRecord]:
+        if self.owner is None:
+            raise ArtifactSecurityError("federated artifact registry view is read-only for retirement")
         artifact_id = artifact.artifact_id if isinstance(artifact, ArtifactRecord) else artifact
         artifact_id = _bounded_text(
             artifact_id,
@@ -2294,6 +2371,26 @@ class ArtifactRegistry:
         self._write_existing_registration(manifest_path, self._payload_from_record(updated))
 
     @_registry_write_locked
+    def prepare_retirement_compensation(self, artifact: str | ArtifactRecord, *,
+                                        recovery_artifact_id: str) -> ArtifactRecord:
+        """Enroll exact reset rollback evidence before the owner retirement."""
+        from neocortex.runtime.artifact_compensation import prepare
+        if self.owner is None:
+            raise ArtifactSecurityError("federated artifact registry view is read-only for compensation")
+        return prepare(self, artifact.artifact_id if isinstance(artifact, ArtifactRecord) else artifact,
+                       recovery_artifact_id=recovery_artifact_id)
+
+    @_registry_write_locked
+    def reconcile_restored_retirement(self, artifact: str | ArtifactRecord, *,
+                                      recovery_artifact_id: str,
+                                      expected_retirement_manifest_digest: str) -> ArtifactRecord:
+        """Restore only a privately enrolled claim over verified rollback bytes."""
+        from neocortex.runtime.artifact_compensation import reconcile
+        return reconcile(self, artifact.artifact_id if isinstance(artifact, ArtifactRecord) else artifact,
+                         recovery_artifact_id=recovery_artifact_id,
+                         expected_retirement_manifest_digest=expected_retirement_manifest_digest)
+
+    @_registry_write_locked
     def recover_retirements(self) -> dict[str, object]:
         """Reconcile durable retirement intents without repeating effects.
 
@@ -2332,6 +2429,10 @@ class ArtifactRegistry:
                 )
                 claim = self._retirement_claim(raw)
             except (ArtifactRegistryError, OSError, TypeError, ValueError):
+                continue
+            # A root-wide lock coordinates owners; it does not authorize this
+            # owner to reconcile another producer's durable intent.
+            if raw.owner != self.owner:
                 continue
             if claim is None or claim.get("phase") not in _RETIREMENT_PENDING_PHASES:
                 continue
@@ -2667,7 +2768,7 @@ class ArtifactRegistry:
                 claim = self._retirement_claim(record)
                 if claim is not None and claim.get("phase") in _RETIREMENT_PENDING_PHASES:
                     raise ArtifactSecurityError("tombstone has pending recovery")
-                metadata = record.metadata
+                record_metadata = record.metadata
                 protected_keys = (
                     "pinned",
                     "pin",
@@ -2677,7 +2778,7 @@ class ArtifactRegistry:
                     "recovery_required",
                     "evidence_required",
                 )
-                if any(metadata.get(key) is True for key in protected_keys):
+                if any(record_metadata.get(key) is True for key in protected_keys):
                     raise ArtifactSecurityError("tombstone retains an active obligation")
                 try:
                     record.path.lstat()

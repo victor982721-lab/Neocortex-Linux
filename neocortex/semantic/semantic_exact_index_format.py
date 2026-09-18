@@ -12,6 +12,7 @@ import binascii
 import errno
 import hashlib
 import heapq
+import importlib
 import json
 import math
 import mmap
@@ -25,6 +26,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
+
+from .semantic_search_order import ExactSearchHeapKey, ExactSearchOrder, exact_search_order
 
 if TYPE_CHECKING:
     import numpy as _numpy_types
@@ -146,24 +149,6 @@ def _fd_guard(fd: int, label: str) -> Iterator[int]:
         raise
     finally:
         _relinquished, error = _close_fd_once(fd)
-        if error is not None:
-            errors = [(label, error)]
-            if primary is not None:
-                _add_cleanup_notes(primary, errors)
-            else:
-                _raise_cleanup_errors(errors)
-
-
-@contextmanager
-def _resource_guard(resource: Any, label: str) -> Iterator[Any]:
-    primary: BaseException | None = None
-    try:
-        yield resource
-    except BaseException as exc:
-        primary = exc
-        raise
-    finally:
-        error = _close_resource_once(resource)
         if error is not None:
             errors = [(label, error)]
             if primary is not None:
@@ -447,7 +432,7 @@ class _TargetDiagnostics:
     def __init__(self, item_ids: tuple[str, ...], evidence_mode: bool) -> None:
         self.item_ids = item_ids
         self.evidence_mode = evidence_mode
-        self.best: dict[tuple[str, str], tuple[float, int, str, str]] = {}
+        self.best: dict[tuple[str, str], ExactSearchOrder] = {}
         self.targets: dict[str, tuple[_Candidate, PublishedPair]] = {}
         self.exhausted = False
         self.bytes = 0
@@ -457,11 +442,8 @@ class _TargetDiagnostics:
             prior_entry = self.targets.get(candidate.item_id)
             prior = None if prior_entry is None else prior_entry[0]
             prior_pair = None if prior_entry is None else prior_entry[1]
-            same = prior is not None and (not self.evidence_mode or prior.entity_id == candidate.entity_id)
             if prior is None:
                 better = True
-            elif same:
-                better = (candidate.score, candidate.ref_id) > (prior.score, prior.ref_id)
             else:
                 assert prior_pair is not None
                 better = self._order(candidate, pair) < self._order(prior, prior_pair)
@@ -470,19 +452,19 @@ class _TargetDiagnostics:
         if self.exhausted:
             return
         key = (candidate.item_id, candidate.entity_id if self.evidence_mode else "")
-        entry = (candidate.score, candidate.ref_id, candidate.entity_id, pair.model_signature)
+        entry = self._order(candidate, pair)
         if key not in self.best:
             self.bytes += 256 + 4 * (len(candidate.item_id) + len(candidate.entity_id) + len(pair.model_signature))
             if len(self.best) >= MAX_DIAGNOSTIC_RANK_ENTRIES or self.bytes > MAX_DIAGNOSTIC_RANK_BYTES:
                 self.best.clear()
                 self.exhausted = True
                 return
-        if key not in self.best or entry[:2] > self.best[key][:2]:
+        if key not in self.best or entry < self.best[key]:
             self.best[key] = entry
 
     @staticmethod
-    def _order(candidate: _Candidate, pair: PublishedPair) -> tuple[float, str, str, str]:
-        return (-candidate.score, candidate.item_id, candidate.entity_id, pair.model_signature)
+    def _order(candidate: _Candidate, pair: PublishedPair) -> ExactSearchOrder:
+        return exact_search_order(candidate.score, candidate.item_id, candidate.entity_id, pair.model_signature, candidate.ref_id)
 
     def export(self, page: DerivedSearchPage, target_hits: Sequence[DerivedHit]) -> dict[str, object]:
         by_item = {hit.item_id: hit for hit in target_hits}
@@ -496,7 +478,7 @@ class _TargetDiagnostics:
             if candidate is not None and not self.exhausted:
                 assert target_entry is not None
                 target_order = self._order(candidate, target_entry[1])
-                observed_rank = 1 + sum((-entry[0], key[0], entry[2], entry[3]) < target_order for key, entry in self.best.items())
+                observed_rank = 1 + sum(entry < target_order for entry in self.best.values())
             hit = selected or by_item.get(item_id)
             row: dict[str, object] = {
                 "item_id": item_id,
@@ -1113,6 +1095,8 @@ def _provenance(value: Mapping[str, object] | str | bytes) -> bytes:
 
 
 def _numpy_core_sha256(path: Path, *, cancellation_check: Callable[[], None] | None = None) -> str:
+    if cancellation_check is not None:
+        cancellation_check()
     try:
         fd = os.open(path, _FILE_READ_FLAGS)
     except OSError as exc:
@@ -1125,47 +1109,79 @@ def _numpy_core_sha256(path: Path, *, cancellation_check: Callable[[], None] | N
             raise DerivedViewContractError("NumPy core binary is not ELF")
         digest = _sha256_fd(fd, cancellation_check=cancellation_check)
         after = os.fstat(fd)
-        if _stat_fence(after) != _stat_fence(before):
+        try:
+            current = path.lstat()
+        except OSError as exc:
+            raise DerivedViewContractError("NumPy core binary changed while hashing") from exc
+        if _stat_fence(after) != _stat_fence(before) or _stat_fence(current) != _stat_fence(before):
             raise DerivedViewContractError("NumPy core binary changed while hashing")
         return digest
 
 
-def _numpy_runtime_binding(numpy: Any, *, cancellation_check: Callable[[], None] | None = None) -> dict[str, object]:
+def _numpy_native_runtime(numpy: Any) -> tuple[str, Path, list[str]]:
+    """Validate the one private NumPy 2 extension used by persisted norms.
+
+    ``_core`` is deliberately private, not a stable NumPy API. Compatibility
+    is established per loaded build by its ELF digest and effective CPU flags;
+    unfamiliar layouts fail closed instead of probing alternate namespaces.
+    The v1 persisted module label remains the historical alias. On NumPy 2
+    that alias resolves to this *same* extension (covered by the binding
+    equivalence test), so changing the import does not migrate the format.
+    """
+    version = getattr(numpy, "__version__", None)
     try:
-        from numpy.core import _multiarray_umath
+        major, minor = (int(value) for value in str(version).split(".")[:2])
+    except ValueError as exc:
+        raise DerivedViewContractError("NumPy 2 runtime version is invalid") from exc
+    if not isinstance(version, str) or major != 2 or minor < 1:
+        raise DerivedViewContractError("NumPy 2.1 or newer within major 2 is required")
+    try:
+        native = importlib.import_module("numpy._core._multiarray_umath")
     except (ImportError, AttributeError) as exc:
         raise DerivedViewContractError("NumPy core runtime binding is unavailable") from exc
-    version = getattr(numpy, "__version__", None)
-    core_file_value = getattr(_multiarray_umath, "__file__", None)
-    if not isinstance(version, str) or not version or not isinstance(core_file_value, str) or not core_file_value:
+    if getattr(native, "__name__", None) != "numpy._core._multiarray_umath":
+        raise DerivedViewContractError("NumPy native module identity is unexpected")
+    core_file_value = getattr(native, "__file__", None)
+    if not isinstance(core_file_value, str) or not core_file_value:
         raise DerivedViewContractError("NumPy runtime binding is incomplete")
     core_file = Path(os.path.abspath(core_file_value))
+    feature_map = getattr(native, "__cpu_features__", None)
+    if not isinstance(feature_map, Mapping) or any(
+        not isinstance(name, str) or not name or not isinstance(enabled, bool)
+        for name, enabled in feature_map.items()
+    ):
+        raise DerivedViewContractError("NumPy effective CPU features are unavailable")
+    cpu_features = sorted(name for name, enabled in feature_map.items() if enabled)
+    if not cpu_features:
+        raise DerivedViewContractError("NumPy effective CPU features are empty")
+    return version, core_file, cpu_features
+
+
+def _numpy_runtime_binding(numpy: Any, *, cancellation_check: Callable[[], None] | None = None) -> dict[str, object]:
+    if cancellation_check is not None:
+        cancellation_check()
+    version, core_file, cpu_features = _numpy_native_runtime(numpy)
     try:
-        info = core_file.stat()
+        info = core_file.lstat()
     except OSError as exc:
         raise DerivedViewContractError("NumPy core binary is unavailable") from exc
     if not stat.S_ISREG(info.st_mode):
         raise DerivedViewContractError("NumPy core binary is not regular")
+    byteorder = sys.byteorder
+    cache_tag = getattr(sys.implementation, "cache_tag", None)
+    if byteorder not in {"little", "big"} or not isinstance(cache_tag, str) or not cache_tag:
+        raise DerivedViewContractError("Python runtime binding is incomplete")
     cache_key = (version, str(core_file), info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
     cached = _NUMPY_RUNTIME_CACHE.get(cache_key)
     if cached is not None:
         cached_features = cached.get("cpu_features")
         if not isinstance(cached_features, list):
             raise DerivedViewContractError("cached NumPy CPU feature binding is invalid")
-        return {**cached, "cpu_features": list(cached_features)}
-    feature_map = getattr(_multiarray_umath, "__cpu_features__", None)
-    if not isinstance(feature_map, Mapping):
-        raise DerivedViewContractError("NumPy effective CPU features are unavailable")
-    cpu_features = sorted(
-        name for name, enabled in feature_map.items()
-        if isinstance(name, str) and bool(enabled)
-    )
-    if not cpu_features:
-        raise DerivedViewContractError("NumPy effective CPU features are empty")
-    byteorder = sys.byteorder
-    cache_tag = getattr(sys.implementation, "cache_tag", None)
-    if byteorder not in {"little", "big"} or not isinstance(cache_tag, str) or not cache_tag:
-        raise DerivedViewContractError("Python runtime binding is incomplete")
+        if _stat_fence(core_file.lstat()) != _stat_fence(info):
+            raise DerivedViewContractError("NumPy core binary changed during cache lookup")
+        # The binary hash may be reused; effective process settings must be
+        # observed on every call, including a cache hit.
+        return {**cached, "cpu_features": cpu_features, "byteorder": byteorder, "cache_tag": cache_tag}
     binding: dict[str, object] = {
         "numpy_version": version,
         "numpy_core_module": "numpy.core._multiarray_umath",
@@ -1175,6 +1191,8 @@ def _numpy_runtime_binding(numpy: Any, *, cancellation_check: Callable[[], None]
         "byteorder": byteorder,
         "cache_tag": cache_tag,
     }
+    if _stat_fence(core_file.lstat()) != _stat_fence(info):
+        raise DerivedViewContractError("NumPy core binary changed during runtime binding")
     _NUMPY_RUNTIME_CACHE[cache_key] = binding
     return {**binding, "cpu_features": list(cpu_features)}
 
@@ -1988,11 +2006,11 @@ def _score(candidates: Sequence[_Candidate], *, query_vector: tuple[float, ...],
     return tuple(candidate.scored(score) for candidate, score in zip(candidates, scores, strict=True) if score is not None)
 
 
-def _retain(candidate: _Candidate, *, key: str | tuple[str, str], limit: int, best: dict[object, tuple[float, int, int, object, _Candidate]], heap: list[tuple[float, int, int, object, _Candidate]], serial: int) -> None:
-    entry = (candidate.score, candidate.ref_id, serial, key, candidate)
+def _retain(candidate: _Candidate, *, pair: PublishedPair, key: str | tuple[str, str], limit: int, best: dict[object, tuple[ExactSearchHeapKey, int, int, object, _Candidate]], heap: list[tuple[ExactSearchHeapKey, int, int, object, _Candidate]], serial: int) -> None:
+    entry = (ExactSearchHeapKey(_TargetDiagnostics._order(candidate, pair)), candidate.ref_id, serial, key, candidate)
     prior = best.get(key)
     if prior is not None:
-        if entry[:2] > prior[:2]:
+        if entry[0] > prior[0]:
             best[key] = entry
             heapq.heappush(heap, entry)
     elif len(best) < limit:
@@ -2003,7 +2021,7 @@ def _retain(candidate: _Candidate, *, key: str | tuple[str, str], limit: int, be
             heapq.heappop(heap)
         if not heap:
             raise FallbackExactRequired("retention heap empty", phase="retention")
-        if entry[:2] > heap[0][:2]:
+        if entry[0] > heap[0][0]:
             removed = heapq.heappop(heap)
             del best[removed[3]]
             best[key] = entry
@@ -2287,8 +2305,11 @@ def verify_exact_records(
     view.assert_files_stable()
 
 
-def _numeric_winner_groups(best_score: Any, best_ref: Any, valid: Any, limit: int, numpy: Any) -> Any:
-    """Select the exact (score, ref_id) top K without sorting all groups."""
+def _numeric_winner_groups(
+    best_score: Any, valid: Any, limit: int, numpy: Any,
+    *, tie_order: Callable[[int], ExactSearchOrder],
+) -> Any:
+    """Partition scores, then resolve the boundary with the shared total key."""
     if len(valid) <= limit:
         return valid
     scores = best_score[valid]
@@ -2297,9 +2318,9 @@ def _numeric_winner_groups(best_score: Any, best_ref: Any, valid: Any, limit: in
     ties = valid[scores == threshold]
     needed = limit - len(above)
     if len(ties) > needed:
-        tie_refs = best_ref[ties]
-        positions = numpy.argpartition(tie_refs, len(tie_refs) - needed)[-needed:]
-        ties = ties[positions]
+        ties = numpy.asarray(
+            heapq.nsmallest(needed, ties, key=tie_order), dtype=valid.dtype,
+        )
     return numpy.concatenate((above, ties))
 
 
@@ -2429,7 +2450,6 @@ def _query_numeric(
             group_name = "evidence_code" if evidence_mode else "item_code"
             group_codes_all = codes[group_name]
             best_score = numpy.full(group_count, -numpy.inf, dtype=numpy.float64)
-            best_ref = numpy.zeros(group_count, dtype=numpy.uint64)
             best_row = numpy.full(group_count, -1, dtype=numpy.int64)
             seen = numpy.zeros(group_count, dtype=numpy.bool_)
             scanned = 0
@@ -2437,6 +2457,19 @@ def _query_numeric(
             has_more = False
             start = int(numpy.searchsorted(rows["ref_id"], after_ref_id, side="right"))
             pair_index = next(iter(selected_pairs))
+            pairs_by_index = dict(enumerate(view.pairs))
+
+            def row_order(row_index: int, score: float) -> ExactSearchOrder:
+                # Decode identities only at score ties.  No vector/model reread
+                # or unbounded decoded identity cache is introduced.
+                if cancellation_check is not None:
+                    cancellation_check()
+                candidate = _candidate(
+                    _row(rows_blob, row_index), identity=identity,
+                    metadata_size=len(metadata), pairs=pairs_by_index, row_index=row_index,
+                ).scored(score)
+                return _TargetDiagnostics._order(candidate, pairs_by_index[candidate.pair_index])
+
             while start < view.row_count:
                 stop = min(view.row_count, start + batch_size)
                 raw = rows[start:stop]
@@ -2483,16 +2516,34 @@ def _query_numeric(
                     if len(first) > 1:
                         first[1:] = ordered_groups[1:] != ordered_groups[:-1]
                     local = local_order[first]
+                    if not evidence_mode:
+                        # Only groups whose top two scores tie need identity
+                        # decoding.  The common singleton/no-tie batch stays
+                        # vectorized; do not rescan the batch for every group.
+                        starts = numpy.flatnonzero(first)
+                        positions = numpy.flatnonzero(starts + 1 < len(local_order))
+                        left = starts[positions]
+                        right = left + 1
+                        tied = (ordered_groups[left] == ordered_groups[right]) & (
+                            scores[local_order[left]] == scores[local_order[right]]
+                        )
+                        for position in positions[tied]:
+                            end = int(starts[position + 1]) if position + 1 < len(starts) else len(local_order)
+                            members = local_order[int(starts[position]):end]
+                            ties = members[scores[members] == scores[local[position]]]
+                            def tie_order(index: int, rows: Any = absolute, batch_scores: Any = scores) -> ExactSearchOrder:
+                                return row_order(int(rows[index]), float(batch_scores[index]))
+                            local[position] = min(ties, key=tie_order)
                     local_groups = groups[local]
                     local_scores = scores[local]
-                    local_refs = refs[local]
                     old_scores = best_score[local_groups]
-                    old_refs = best_ref[local_groups]
-                    better = (~seen[local_groups]) | (local_scores > old_scores) | ((local_scores == old_scores) & (local_refs > old_refs))
+                    better = (~seen[local_groups]) | (local_scores > old_scores)
+                    for position in numpy.flatnonzero(seen[local_groups] & (local_scores == old_scores)):
+                        group = int(local_groups[position])
+                        better[position] = row_order(int(absolute[local[position]]), float(local_scores[position])) < row_order(int(best_row[group]), float(old_scores[position]))
                     if bool(numpy.any(better)):
                         changed = local_groups[better]
                         best_score[changed] = local_scores[better]
-                        best_ref[changed] = local_refs[better]
                         best_row[changed] = absolute[local][better]
                         seen[changed] = True
                     scanned += len(absolute)
@@ -2503,7 +2554,10 @@ def _query_numeric(
             valid = numpy.flatnonzero(seen)
             if not len(valid):
                 return DerivedSearchPage((), scanned, last_ref if has_more else None, not has_more)
-            winner_groups = _numeric_winner_groups(best_score, best_ref, valid, limit, numpy)
+            winner_groups = _numeric_winner_groups(
+                best_score, valid, limit, numpy,
+                tie_order=lambda group: row_order(int(best_row[int(group)]), float(best_score[int(group)])),
+            )
             winners: list[_Candidate] = []
             for group in winner_groups:
                 row_index = int(best_row[int(group)])
@@ -2513,7 +2567,7 @@ def _query_numeric(
                     raise _numeric_fallback("numeric group winner binding differs", "numeric_retention")
                 candidate = _candidate(_row(rows_blob, row_index), identity=identity, metadata_size=len(metadata), pairs=dict(enumerate(view.pairs)), row_index=row_index)
                 winners.append(candidate.scored(float(best_score[int(group)])))
-            winners.sort(key=lambda candidate: (-candidate.score, candidate.item_id, candidate.entity_id, _pair_for_candidate(view, candidate).model_signature))
+            winners.sort(key=lambda candidate: _TargetDiagnostics._order(candidate, _pair_for_candidate(view, candidate)))
             page = DerivedSearchPage(tuple(_hit(candidate, _pair_for_candidate(view, candidate), query, metadata, hydrate=hydrate_provenance) for candidate in winners), scanned, last_ref if has_more else None, not has_more)
             return page
 
@@ -2602,8 +2656,8 @@ def query_exact_view(
             numeric_norms=numeric_norms,
         )
     target = _TargetDiagnostics(selected_diagnostics, evidence_mode) if selected_diagnostics else None
-    best: dict[object, tuple[float, int, int, object, _Candidate]] = {}
-    heap: list[tuple[float, int, int, object, _Candidate]] = []
+    best: dict[object, tuple[ExactSearchHeapKey, int, int, object, _Candidate]] = {}
+    heap: list[tuple[ExactSearchHeapKey, int, int, object, _Candidate]] = []
     batch: list[_Candidate] = []
     scored_count = 0
     serial = 0
@@ -2636,7 +2690,7 @@ def query_exact_view(
                     if evidence_mode
                     else candidate.item_id
                 )
-                _retain(candidate, key=key, limit=limit, best=best, heap=heap, serial=serial)
+                _retain(candidate, pair=pair, key=key, limit=limit, best=best, heap=heap, serial=serial)
                 serial += 1
             scored_count += len(scored)
 
@@ -2664,7 +2718,7 @@ def query_exact_view(
             if has_more:
                 break
         score_and_retain(batch)
-        ordered = tuple(entry[4] for entry in sorted(best.values(), key=lambda entry: (-entry[0], entry[4].item_id, entry[4].entity_id, pair_by_index[entry[4].pair_index].model_signature)))
+        ordered = tuple(entry[4] for entry in sorted(best.values(), key=lambda entry: entry[0].order))
         page = DerivedSearchPage(tuple(_hit(candidate, pair_by_index[candidate.pair_index], query, metadata, hydrate=hydrate_provenance) for candidate in ordered), scored_count, last_ref if has_more else None, not has_more)
         if target is not None and diagnostics is not None:
             target_entries = tuple(target.targets.values())
