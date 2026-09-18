@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from PIL import Image
@@ -20,7 +21,9 @@ from neocortex.capabilities.formats.image.document import (
     DOCUMENT_OCR_TEXT_MAX_UTF8_BYTES,
     DOCUMENT_OCR_TSV_MAX_BYTES,
     DocumentTextEvidence,
+    DocumentVerifierConfig,
     DocumentVerifierRuntime,
+    resolve_document_verifier,
     verify_document_text,
 )
 
@@ -307,6 +310,117 @@ class ImageDocumentTextTests(unittest.TestCase):
         self.assertEqual(evidence.provenance, "test-tesseract")
         self.assertEqual(evidence.error_type, "RuntimeError")
         self.assertEqual(evidence.error_message, "diagnostic from tesseract")
+
+    def test_invalid_tsv_header_is_unavailable_even_with_successful_exit(self) -> None:
+        header = _tsv_result([]).stdout.rstrip(b"\n")
+        payloads = {
+            "plain_text": b"NEOCORTEX OCR ORCHID\nLOCAL FIXTURE\n",
+            "empty": b"",
+            "incomplete": b"text\tconf\nNEOCORTEX\t95\n",
+            "duplicate": header + b"\ttext\n",
+            "blank_name": header + b"\t\n",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = _image(Path(temporary))
+            for name, payload in payloads.items():
+                with self.subTest(name=name), patch(
+                    "neocortex.capabilities.formats.image.document.run_bounded_capture",
+                    return_value=subprocess.CompletedProcess(
+                        ["tesseract-test"], 0, payload, b""
+                    ),
+                ):
+                    evidence = verify_document_text(path, RUNTIME)
+
+                self.assertTrue(evidence.attempted)
+                self.assertFalse(evidence.available)
+                self.assertEqual(evidence.error_type, "ValueError")
+                self.assertEqual(evidence.error_message, "Tesseract returned an invalid TSV header")
+                self.assertEqual(evidence.recognized_text, "")
+
+    def test_valid_tsv_without_words_remains_available(self) -> None:
+        header = _tsv_result([]).stdout
+        # Tesseract's real blank-page output retains its header and page row.
+        payloads = (header, header + b"1\t1\t0\t0\t0\t0\t0\t0\t640\t480\t-1\t\n")
+        with tempfile.TemporaryDirectory() as temporary:
+            path = _image(Path(temporary))
+            for payload in payloads:
+                with self.subTest(payload=payload), patch(
+                    "neocortex.capabilities.formats.image.document.run_bounded_capture",
+                    return_value=subprocess.CompletedProcess(
+                        ["tesseract-test"], 0, payload, b""
+                    ),
+                ):
+                    evidence = verify_document_text(path, RUNTIME)
+
+                self.assertTrue(evidence.attempted)
+                self.assertTrue(evidence.available)
+                self.assertIsNone(evidence.error_type)
+                self.assertEqual(evidence.word_count, 0)
+                self.assertEqual(evidence.recognized_text, "")
+
+    def test_tsv_header_accepts_reordered_and_additional_columns(self) -> None:
+        header, row = _tsv_result(["factura"]).stdout.decode().splitlines()
+        payload = (
+            "\t".join([*reversed(header.split("\t")), "extension"])
+            + "\n"
+            + "\t".join([*reversed(row.split("\t")), "ignored"])
+            + "\n"
+        ).encode()
+        with tempfile.TemporaryDirectory() as temporary:
+            path = _image(Path(temporary))
+            with patch(
+                "neocortex.capabilities.formats.image.document.run_bounded_capture",
+                return_value=subprocess.CompletedProcess(["tesseract-test"], 0, payload, b""),
+            ):
+                evidence = verify_document_text(path, RUNTIME)
+
+        self.assertTrue(evidence.available)
+        self.assertEqual(evidence.recognized_text, "factura")
+        self.assertEqual(evidence.word_count, 1)
+
+    def test_tsv_contract_revision_invalidates_image_and_video_ocr_signatures(self) -> None:
+        from neocortex.capabilities.formats.image.contracts import (
+            ImageRouteConfig,
+            _image_processing_provenance,
+        )
+        from neocortex.capabilities.formats.video.route import VideoRouteConfig
+
+        native_runtime = SimpleNamespace(
+            available=True,
+            component={"name": "tesseract", "status": "available", "version": "fixture"},
+            version="fixture",
+            command="tesseract-test",
+            tessdata_dir=None,
+            requested_languages=("eng",),
+            traineddata_hashes=(),
+        )
+        config = DocumentVerifierConfig(lang="eng")
+        with patch(
+            "neocortex.capabilities.formats.image.document.resolve_tesseract_runtime",
+            return_value=native_runtime,
+        ):
+            current = resolve_document_verifier(config)
+            with patch(
+                "neocortex.capabilities.formats.image.document.DOCUMENT_OCR_VERSION",
+                "document-text-tesseract-v3",
+            ):
+                previous = resolve_document_verifier(config)
+
+        self.assertNotEqual(current.signature, previous.signature)
+        image_config = ImageRouteConfig(Path("image.sqlite3"), Path("corpus"))
+        self.assertNotEqual(
+            _image_processing_provenance(image_config, current).signature,
+            _image_processing_provenance(image_config, previous).signature,
+        )
+        video_config = VideoRouteConfig(Path("video.sqlite3"), Path("corpus"))
+        with patch(
+            "neocortex.capabilities.formats.video.route.executable_component",
+            side_effect=lambda name, **_kwargs: {"name": name, "status": "fixture"},
+        ):
+            self.assertNotEqual(
+                video_config.processing_provenance(current).signature,
+                video_config.processing_provenance(previous).signature,
+            )
 
     def test_preserves_unicode_words_exactly(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

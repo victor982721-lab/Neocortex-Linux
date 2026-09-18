@@ -1,7 +1,7 @@
 # Handoff operativo vigente — NeoCortex
 
 **Ronda:** NEO-AUDIT-UNIFIED-20260918.
-**Actualización:** 2026-09-18T05:23:00+00:00.
+**Actualización:** 2026-09-18T05:50:00+00:00.
 **Objetivo autorizado:** corregir las auditorías de limpieza, EndToEnd y Text,
 publicar e integrar el código remoto, construir e instalar la suite offline y
 validarla en un laboratorio aislado. La autorización incluye preparación local
@@ -11,7 +11,7 @@ de modelos y herramientas; no requiere nuevas confirmaciones de esta ronda.
 
 El remoto verificado al iniciar es `victor982721-lab/Neocortex-Linux`,
 `main=f3bbf439d7c5b192f1509b1675bc64a139602320`. La candidata
-`fec710692fb07d01bde23d28b0ee39a7a2dc6ced` está publicada en
+`8b5e3b750b453d6151581f73ccded7256c13e1b7` está publicada en
 `fix/unified-audit-20260918`; la integración de esta ronda a `main` permanece
 pendiente de la aceptación final. No se reescribe historia. El cierre exige
 consultar otra vez el remoto y verificar `HEAD == main == origin/main` y árbol
@@ -54,6 +54,17 @@ casos independientes pasan; el módulo completo pasa 19, con tres omisiones
 exclusivas de Windows. R4 debe ejecutarse sin instalaciones ni empaquetado en
 paralelo. No se modificó la admisión de recursos ni el runner productivo de
 procesos para obtener estos resultados.
+
+La aceptación instalada detectó una salida plana de Tesseract aceptada como
+OCR sin texto. El bundle local ya incluye sus configuraciones oficiales; el
+parser comprueba ahora las doce columnas TSV, rechaza cabeceras inválidas y
+conserva el caso válido sin palabras. El contrato v4 cambia las firmas Image
+y Video, incluido el modo OCR deshabilitado por su composición existente,
+sin alterar Text, schemas ni fingerprints originales. Pasan 38 pruebas y siete
+subpruebas del autor y ocho casos independientes con siete subpruebas; la
+revisión independiente está conservada en la evidencia de la ronda. La
+preparación previa de R4 sobre 8b5e3b7 quedó superada sin ejecutar tests.
+R4 y la instalación final deben acreditar la fuente con este arreglo.
 
 ## Instalación y entorno
 

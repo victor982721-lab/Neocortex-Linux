@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from contextlib import closing
@@ -697,6 +698,44 @@ class ImageRouteTests(unittest.TestCase):
                 recognized,
                 json.dumps(semantic_json, ensure_ascii=False),
             )
+
+    def test_successful_process_with_non_tsv_output_counts_as_ocr_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "factura.png"
+            with Image.new("RGB", (1200, 900), "white") as image:
+                image.save(path)
+            state = _State((("image/png", snapshot_path(path)),))
+            runtime = DocumentVerifierRuntime(
+                enabled=True,
+                lang="eng",
+                timeout_seconds=12.0,
+                tesseract_cmd="tesseract-test",
+                tessdata_dir=None,
+                signature="test-document-verifier",
+                provenance="test-tesseract",
+            )
+            with (
+                patch(
+                    "neocortex.capabilities.formats.image.route.resolve_document_verifier",
+                    return_value=runtime,
+                ),
+                patch(
+                    "neocortex.capabilities.formats.image.document.run_bounded_capture",
+                    return_value=subprocess.CompletedProcess(
+                        ["tesseract-test"], 0, b"NEOCORTEX OCR ORCHID\n", b""
+                    ),
+                ),
+            ):
+                summary = _route(
+                    root, state, 1, document_ocr_mode="auto", isolate_decoders=False
+                ).run()
+
+            self.assertEqual(summary.classified, 1)
+            self.assertEqual(summary.errors, 0)
+            self.assertEqual(summary.document_ocr_attempts, 1)
+            self.assertEqual(summary.document_ocr_failures, 1)
+            self.assertEqual(list(iter_ocr_text_records(root / "state" / "image.sqlite3")), [])
 
 
 # endregion [02]

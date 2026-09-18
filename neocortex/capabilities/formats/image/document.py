@@ -48,7 +48,8 @@ from neocortex.foundation.processing_provenance import (
 if TYPE_CHECKING:
     from PIL import Image
 
-DOCUMENT_OCR_VERSION = "document-text-tesseract-v3"
+# Rejecting invalid TSV must also invalidate cached successful empty OCR.
+DOCUMENT_OCR_VERSION = "document-text-tesseract-v4"
 # Public sampling bound for callers that report OCR evidence dimensions.
 # Recognition now preserves materially more source detail and is capped by both
 # dimensions and total pixels rather than blindly thumbnailing every image to 768px.
@@ -63,6 +64,9 @@ DOCUMENT_OCR_MEMORY_BYTES = 64 * 1024 * 1024
 DOCUMENT_OCR_TSV_MAX_BYTES = 8 * 1024 * 1024
 DOCUMENT_OCR_DIAGNOSTIC_MAX_BYTES = 256 * 1024
 OCR_WORD_CONFIDENCE = 30.0
+_DOCUMENT_OCR_TSV_FIELDS = frozenset(
+    "level page_num block_num par_num line_num word_num left top width height conf text".split()
+)
 TOKEN_RE = re.compile(r"[a-z0-9]+")
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -498,11 +502,20 @@ def _run_document_osd(
 def _parse_document_tsv(payload: bytes) -> _DocumentTextAccumulator:
     accumulator = _DocumentTextAccumulator()
     decoded = payload.decode("utf-8", "replace")
-    for row in csv.DictReader(
+    reader = csv.DictReader(
         io.StringIO(decoded),
         delimiter="\t",
         quoting=csv.QUOTE_NONE,
+    )
+    fields = reader.fieldnames
+    if (
+        fields is None
+        or any(not name.strip() for name in fields)
+        or len(fields) != len(set(fields))
+        or not _DOCUMENT_OCR_TSV_FIELDS.issubset(fields)
     ):
+        raise ValueError("Tesseract returned an invalid TSV header")
+    for row in reader:
         accumulator.observe(row)
     return accumulator
 

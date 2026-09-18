@@ -14,6 +14,12 @@ fuera de `docs/`.
   el artefacto nativo y sus opciones sin usar APIs privadas obsoletas.
 - La proyección Knowledge conserva offsets del fragmento emitido y distingue
   negación del hecho de incertidumbre sobre su comprobación.
+- OCR valida las doce columnas obligatorias y la unicidad de la cabecera TSV
+  de Tesseract. Una salida vacía o de otro formato se registra como fallo,
+  aunque el proceso termine con código cero; un TSV válido sin palabras sigue
+  siendo una imagen procesada sin texto. La versión del contrato pasa a v4 e
+  invalida las firmas de procesamiento de Image y Video para no reutilizar
+  resultados vacíos anteriores; Text y los fingerprints originales no cambian.
 - Reset incorpora política única por tabla, barreras operacionales, evaluaciones
   por owner, orden de dependencias Archive y reconciliación de intención/recibos.
   Backup y restore conservan y validan la versión de política de autoridad.
