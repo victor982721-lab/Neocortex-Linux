@@ -2232,10 +2232,9 @@ class FrameworkState:
     def publish_run_manifest(self, run_id: int, manifest: Mapping[str, Any]) -> bool:
         """Publish one immutable lifecycle manifest idempotently as an event.
 
-        The existing framework schema deliberately remains at v22; the
-        manifest is an append-only, schema-tagged event so older databases can
-        read it without an unsafe migration while the run tables remain the
-        authoritative lifecycle state.
+        The manifest is an append-only, schema-tagged event in the current
+        Framework owner schema. Publishing it adds no separate schema
+        migration; the run tables remain the authoritative lifecycle state.
         """
 
         verified = verify_event_payload(manifest)

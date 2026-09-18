@@ -220,6 +220,12 @@ la ausencia de biblioteca separada permanece
 visible como `static_or_unobserved`. La identidad excluye rutas absolutas para
 conservarse después del rename de staging.
 
+Los ejecutables de Python del venv se materializan como archivos regulares
+dentro de la release, también cuando el proveedor se encuentra fuera de
+`/usr/bin`. Las copias conservan los bytes que acredita la política nativa.
+El venv mantiene su referencia a la biblioteca estándar del proveedor mediante
+`pyvenv.cfg`; ese runtime base debe permanecer disponible.
+
 El probe ejecuta el `bin/python` de la release en un temporal propio y verifica
 FTS5, JSON, claves foráneas, rollback y un commit WAL con `synchronous=FULL`.
 Nunca abre bases de datos del corpus o del estado. WAL/FULL comprueba configuración

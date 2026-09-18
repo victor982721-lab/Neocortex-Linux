@@ -571,9 +571,10 @@ def test_snapshot_sqlite_progress_interrupts_long_owner_query(
     assert not query_completed
     assert observation_calls == cancel_on_observation
     assert progress_calls == 1
-    assert len(opened) == 1
-    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
-        opened[0].execute("SELECT 1")
+    assert len(opened) == cancel_on_observation
+    for opened_connection in opened:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            opened_connection.execute("SELECT 1")
     with closing(sqlite3.connect(code, timeout=1)) as connection, connection:
         assert int(connection.execute("PRAGMA query_only").fetchone()[0]) == 0
         connection.execute("BEGIN IMMEDIATE")
@@ -754,6 +755,30 @@ def test_snapshot_fixture_closes_writers_before_gc_during_capture(tmp_path: Path
     assert snapshot.attempts == 1
 
 
+def test_quiescent_snapshot_does_not_require_temporary_copy_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from neocortex.persistence import sqlite_immutable
+
+    state = tmp_path / "state"
+    state.mkdir()
+    database = state / "code.sqlite3"
+    initialize_code_state(database)
+    before = database.read_bytes()
+    assert len(before) > 1
+    monkeypatch.setattr(sqlite_immutable, "DEFAULT_SQLITE_SNAPSHOT_MAX_TEMPORARY_BYTES", 1)
+
+    snapshot = collect_knowledge_snapshot(
+        KnowledgeStatePaths.from_directory(state),
+        source_version="0.7.0",
+    )
+
+    assert snapshot.consistency is SnapshotConsistency.STABLE
+    assert _owner(snapshot, "code").state is OwnerAvailability.AVAILABLE
+    assert database.read_bytes() == before
+
+
 def test_snapshot_exposes_existing_video_owner_without_creating_absent_state(
     tmp_path: Path,
 ) -> None:
@@ -798,7 +823,10 @@ def test_snapshot_reads_safe_previous_framework_and_abstains_inventory(
     assert inventory_owner.publications == ()
     assert framework_owner.state is OwnerAvailability.AVAILABLE
     assert framework_owner.observed_schema_version == framework_version
-    assert framework_owner.warning == (f"legacy_schema_read_compatible:{framework_version}->22")
+    assert framework_owner.warning == (
+        f"legacy_schema_read_compatible:{framework_version}"
+        f"->{framework_schema_module.SCHEMA_VERSION}"
+    )
     review_watermarks = {
         watermark.name: watermark.value
         for watermark in framework_owner.watermarks
@@ -816,7 +844,7 @@ def test_snapshot_reads_safe_previous_framework_and_abstains_inventory(
     assert framework.read_bytes() == framework_before
 
 
-def test_snapshot_observes_v22_review_task_batches_and_events(tmp_path: Path) -> None:
+def test_snapshot_observes_current_review_task_batches_and_events(tmp_path: Path) -> None:
     state = tmp_path / "state"
     state.mkdir()
     _populate_review_task_watermark(state / "framework.sqlite3")
@@ -829,7 +857,7 @@ def test_snapshot_observes_v22_review_task_batches_and_events(tmp_path: Path) ->
     framework_owner = _owner(snapshot, "framework")
     watermarks = {mark.name: mark.value for mark in framework_owner.watermarks}
     assert framework_owner.state is OwnerAvailability.AVAILABLE
-    assert framework_owner.observed_schema_version == 22
+    assert framework_owner.observed_schema_version == framework_schema_module.SCHEMA_VERSION
     assert framework_owner.warning is None
     assert len(framework_owner.publications) == 1
     review_head = framework_owner.publications[0]
@@ -861,7 +889,9 @@ def test_snapshot_observes_populated_exact_v21_review_task_heads_read_only(
     watermarks = {mark.name: mark.value for mark in framework_owner.watermarks}
     assert framework_owner.state is OwnerAvailability.AVAILABLE
     assert framework_owner.observed_schema_version == 21
-    assert framework_owner.warning == "legacy_schema_read_compatible:21->22"
+    assert framework_owner.warning == (
+        f"legacy_schema_read_compatible:21->{framework_schema_module.SCHEMA_VERSION}"
+    )
     assert len(framework_owner.publications) == 1
     assert watermarks["review_task_batches"] == "1:100"
     assert watermarks["review_task_events"] == "2:104"

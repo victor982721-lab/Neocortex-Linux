@@ -79,7 +79,10 @@ def test_state_health_reports_missing_and_healthy_owners_without_creating_state(
     assert health.missing_count == 12
     framework = next(owner for owner in health.owners if owner.name == "framework")
     assert framework.status == "healthy"
-    assert framework.schema_version == 22
+    assert (
+        framework.schema_version
+        == STATE_STORE_REGISTRY.by_owner("framework").expected_schema_version
+    )
     assert framework.observations == {}
     assert (state / "framework.sqlite3").read_bytes() == before
 

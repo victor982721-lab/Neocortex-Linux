@@ -46,6 +46,15 @@ y el launcher se resuelven mediante XDG. El corpus nunca debe contener los
 
 ## Capas
 
+El grafo productivo no admite ciclos de imports inmediatos. Los ciclos que
+incluyen imports diferidos o de tipado se fijan con contratos exactos de módulos,
+dirección y función en `tests/architecture/test_boundaries.py`. Archive comparte
+primitivas y registro durable; Reset delega inventario, evaluación y recuperación;
+ArtifactRegistry conserva el writer al delegar compensación; HistoricalManager
+delega adopción. Sus auxiliares reutilizan contratos del mismo owner sin volver a
+entrar en la operación que los llamó. Estas cuatro delegaciones tienen 30 aristas
+concretas revisadas; cualquier arista nueva exige revisar de nuevo el contrato.
+
 ### Foundation y plataforma
 
 `neocortex.foundation` define identidad y procedencia compartidas.
@@ -460,6 +469,12 @@ Catálogo y Semantic son proyecciones reconstruibles con heads publicados.
 Knowledge crea un snapshot lógico sobre owners compatibles y fusiona rankings
 sin convertir scores heterogéneos en una sola certeza. Puede entregar evidencia
 y contexto citado, pero no genera autoridad de mutación.
+
+La doble observación mutable de Knowledge cierra el handle cercado de la
+primera lectura y abre otro para la segunda. Así no retiene páginas inmutables
+de una publicación anterior entre observaciones. El kernel sigue eligiendo
+zero-copy para owners quiescentes y conserva sus fences y presupuesto; no se
+fuerza una copia temporal por el tamaño del owner ni se amplían sus límites.
 
 Semantic conserva desde v8 el control de generación en el mismo owner SQLite.
 Los cinco contadores de jobs de una generación `building` se actualizan por

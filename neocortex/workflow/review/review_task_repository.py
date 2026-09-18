@@ -1,8 +1,9 @@
 """Owner-local persistence for bounded, append-only ReviewTask facts.
 
-The Framework owner must already be at schema 22.  This module never creates or
-migrates state.  Page publication and cursor advancement share one Framework
-transaction; human/system transitions are append-only compare-and-swap events.
+The Framework owner must already be at its current schema version. This module
+never creates or migrates state, including legacy schema 22. Page publication
+and cursor advancement share one Framework transaction; human/system transitions
+are append-only compare-and-swap events.
 """
 
 from __future__ import annotations
@@ -16,12 +17,14 @@ from typing import cast
 
 from neocortex.workflow.review import review_task_contracts as _contracts
 from neocortex.persistence.framework_connection import connect_existing_framework
-from neocortex.persistence.framework_schema import validate_framework_schema_v22
+from neocortex.persistence.framework_schema import (
+    SCHEMA_VERSION as FRAMEWORK_SCHEMA_VERSION,
+    validate_framework_schema_v22,
+)
 from neocortex.workflow.review.review_task_contracts import (
     MAX_REVIEW_TASK_READ_PAGE,
     MAX_REVIEW_TASKS_PER_PAGE,
     REVIEW_TASK_CONTRACT_SCHEMA_VERSION,
-    REVIEW_TASK_FRAMEWORK_SCHEMA_VERSION,
     REVIEW_TASK_PRIORITY_ALGORITHM,
     CanonicalJsonObject,
     ReviewTaskActorKind,
@@ -106,18 +109,20 @@ def _require_review_task_schema(connection: sqlite3.Connection) -> None:
     except sqlite3.DatabaseError as exc:
         raise ReviewTaskRepositoryError("Framework review schema cannot be inspected") from exc
     if len(version_rows) != 1 or str(version_rows[0][0]) != str(
-        REVIEW_TASK_FRAMEWORK_SCHEMA_VERSION
+        FRAMEWORK_SCHEMA_VERSION
     ):
         observed = None if not version_rows else str(version_rows[0][0])
         raise ReviewTaskRepositoryError(
             "ReviewTask requires exact Framework schema "
-            f"{REVIEW_TASK_FRAMEWORK_SCHEMA_VERSION}; observed {observed!r}"
+            f"{FRAMEWORK_SCHEMA_VERSION}; observed {observed!r}"
         )
     try:
+        # Version 23 adds metadata freshness fences; its exact DDL remains v22.
         validate_framework_schema_v22(connection)
     except (RuntimeError, sqlite3.DatabaseError) as exc:
         raise ReviewTaskRepositoryError(
-            "Framework schema 22 does not match the exact ReviewTask contract"
+            f"Framework schema {FRAMEWORK_SCHEMA_VERSION} does not match "
+            "the exact ReviewTask contract"
         ) from exc
 
 

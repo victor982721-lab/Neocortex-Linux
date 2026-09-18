@@ -853,10 +853,21 @@ def _capture_available_owner(
                 connection.execute("ROLLBACK")
             raise
 
+        # Each mutable observation owns one fenced handle. Release it before
+        # another owner publication can run: retaining immutable pages/guards
+        # across that boundary can hide the newly published state. Reopening
+        # preserves zero-copy reads for quiescent owners of any supported size.
+        if immutable is False:
+            previous_connection = connection
+            connection = None
+            previous_connection.close()
         cancellation.checkpoint()
         if between_observations is not None:
             between_observations(spec.owner, attempt)
 
+        cancellation.checkpoint()
+        if connection is None:
+            connection = _connect_readonly(path, immutable=False)
         connection.execute("BEGIN")
         try:
             cancellation.checkpoint()
@@ -901,7 +912,7 @@ def _capture_available_owner(
     finally:
         if read_session is not None:
             read_session.close()
-        else:
+        elif connection is not None:
             connection.close()
         if immutable_fence is not None:
             if immutable_fence != capture_sqlite_immutable_fence(path):
@@ -1124,6 +1135,8 @@ def _carry_change_evidence(
         if owner.changed:
             warning = owner.warning
             if first is not None:
+                if first.changed:
+                    warning = first.warning or warning
                 first_identity = first.identity_dict()
                 owner_identity = owner.identity_dict()
                 first_identity.pop("identity_changed", None)

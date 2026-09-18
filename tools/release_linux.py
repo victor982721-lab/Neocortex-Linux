@@ -1288,7 +1288,9 @@ def _create_pip_environment(
             root,
             pip_wheel,
             runner=runner,
-            symlinks=True,
+            # Materialize the provider's executable bytes inside each release.
+            # A standalone interpreter can live outside the system bin paths.
+            symlinks=False,
             builder_factory=venv.EnvBuilder,
             expected_version=PIP_BOOTSTRAP_VERSION,
             filename=PIP_BOOTSTRAP_FILENAME,

@@ -20,6 +20,7 @@ from neocortex.knowledge.knowledge_contracts import (
     RevisionState,
 )
 from neocortex.workflow.review.review_task_contracts import (
+    REVIEW_TASK_FRAMEWORK_SCHEMA_VERSION,
     CanonicalJsonObject,
     ReviewTaskActorKind,
     ReviewTaskCoverage,
@@ -1553,7 +1554,7 @@ def test_progress_integrity_validation_has_page_count_independent_vm_cost(
         ("INDEX", "review_tasks_queue_idx"),
     ),
 )
-def test_readers_require_the_exact_framework_v22_schema_objects(
+def test_readers_require_the_exact_current_framework_schema_objects(
     tmp_path: Path,
     object_type: str,
     name: str,
@@ -1640,27 +1641,45 @@ def test_human_transition_cannot_predate_task_or_current_event(tmp_path: Path) -
         ).fetchone() == (1,)
 
 
-def test_missing_or_old_framework_state_is_never_created_or_migrated(
+@pytest.mark.parametrize("version", (21, 22, framework_schema.SCHEMA_VERSION + 1))
+def test_missing_or_noncurrent_framework_state_is_never_created_or_migrated(
     tmp_path: Path,
+    version: int,
 ) -> None:
     missing = tmp_path / "missing.sqlite3"
     with pytest.raises(sqlite3.OperationalError):
         list_current_review_tasks(missing, limit=10)
     assert not missing.exists()
 
-    old = tmp_path / "old.sqlite3"
-    with closing(sqlite3.connect(old)) as connection:
-        framework_schema._build_v21_exact_schema(connection)
-        connection.execute("INSERT INTO metadata VALUES('schema_version','21')")
+    database = tmp_path / "noncurrent.sqlite3"
+    with closing(sqlite3.connect(database)) as connection:
+        if version == 21:
+            framework_schema._build_v21_exact_schema(connection)
+            connection.execute("INSERT INTO metadata VALUES('schema_version','21')")
+        else:
+            # v22 has the same exact DDL as v23. It still requires the owner
+            # migration before ReviewTask can read the operational contract.
+            initialize_framework_schema(connection, lambda: None)
+            connection.execute(
+                "UPDATE metadata SET value=? WHERE key='schema_version'",
+                (str(version),),
+            )
         connection.commit()
-    before = old.read_bytes()
-    with pytest.raises(ReviewTaskRepositoryError, match="schema 22"):
-        list_current_review_tasks(old, limit=10)
-    assert old.read_bytes() == before
-    with closing(sqlite3.connect(old)) as connection:
+    before = database.read_bytes()
+    with pytest.raises(
+        ReviewTaskRepositoryError,
+        match=f"schema {framework_schema.SCHEMA_VERSION}",
+    ):
+        list_current_review_tasks(database, limit=10)
+    assert database.read_bytes() == before
+    with closing(sqlite3.connect(database)) as connection:
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
-        ).fetchone() == ("21",)
+        ).fetchone() == (str(version),)
+
+
+def test_review_task_schema_version_compatibility_export_matches_owner() -> None:
+    assert REVIEW_TASK_FRAMEWORK_SCHEMA_VERSION == framework_schema.SCHEMA_VERSION
 
 
 def test_online_backup_restores_review_task_owner_facts(tmp_path: Path) -> None:

@@ -614,16 +614,16 @@ def _seed_review_page(connection: sqlite3.Connection) -> None:
     _insert_progress(connection)
 
 
-def test_fresh_v22_has_exact_empty_review_task_schema(tmp_path: Path) -> None:
+def test_fresh_current_schema_has_exact_empty_review_task_schema(tmp_path: Path) -> None:
     database = tmp_path / "framework.sqlite3"
     with closing(sqlite3.connect(database)) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         initialize_framework_schema(connection, lambda: None)
 
-        assert framework_schema.SCHEMA_VERSION == 22
+        assert framework_schema.SCHEMA_VERSION == 23
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
-        ).fetchone() == ("22",)
+        ).fetchone() == (str(framework_schema.SCHEMA_VERSION),)
         for table, expected_columns in _NEW_TABLES.items():
             columns = tuple(
                 str(row[1]) for row in connection.execute(f'PRAGMA table_info("{table}")')
@@ -642,7 +642,7 @@ def test_fresh_v22_has_exact_empty_review_task_schema(tmp_path: Path) -> None:
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
-def test_populated_v20_migrates_empty_to_v22_and_preserves_review_and_actions(
+def test_populated_v20_migrates_to_current_and_preserves_review_and_actions(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "framework.sqlite3"
@@ -665,7 +665,7 @@ def test_populated_v20_migrates_empty_to_v22_and_preserves_review_and_actions(
         initialize_framework_schema(connection, lambda: None)
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
-        ).fetchone() == ("22",)
+        ).fetchone() == (str(framework_schema.SCHEMA_VERSION),)
         assert {
             table: connection.execute(f'SELECT * FROM "{table}"').fetchall()
             for table in preserved_tables
@@ -677,7 +677,7 @@ def test_populated_v20_migrates_empty_to_v22_and_preserves_review_and_actions(
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
 
 
-def test_v22_reopen_is_idempotent(tmp_path: Path) -> None:
+def test_current_schema_reopen_is_idempotent(tmp_path: Path) -> None:
     database = tmp_path / "framework.sqlite3"
     with closing(sqlite3.connect(database)) as connection:
         initialize_framework_schema(connection, lambda: None)
@@ -692,7 +692,7 @@ def test_v22_reopen_is_idempotent(tmp_path: Path) -> None:
         )
 
 
-def test_v22_publication_preserves_concurrent_v20_reader_snapshot(
+def test_current_schema_publication_preserves_concurrent_v20_reader_snapshot(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "framework.sqlite3"
@@ -732,7 +732,7 @@ def test_v22_publication_preserves_concurrent_v20_reader_snapshot(
         reader.rollback()
         assert reader.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
-        ).fetchone() == ("22",)
+        ).fetchone() == (str(framework_schema.SCHEMA_VERSION),)
         assert reader.execute(
             "SELECT name FROM sqlite_master WHERE name='review_tasks'"
         ).fetchone() == ("review_tasks",)
@@ -746,7 +746,7 @@ def test_v22_publication_preserves_concurrent_v20_reader_snapshot(
 
 
 @pytest.mark.parametrize("failure_type", (KeyboardInterrupt, _InjectedBaseException))
-def test_v20_to_v22_rolls_back_ddl_and_version_on_base_exception(
+def test_v20_to_current_rolls_back_ddl_and_version_on_base_exception(
     tmp_path: Path,
     failure_type: type[BaseException],
 ) -> None:
@@ -776,7 +776,7 @@ def test_v20_to_v22_rolls_back_ddl_and_version_on_base_exception(
         connection.close()
 
 
-def test_v20_with_unknown_ddl_fails_closed_and_rolls_back_v22_objects(
+def test_v20_with_unknown_ddl_fails_closed_and_rolls_back_current_objects(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "framework.sqlite3"
@@ -845,17 +845,21 @@ def test_future_schema_fails_closed_before_configuration_or_writes(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "framework.sqlite3"
+    future_version = framework_schema.SCHEMA_VERSION + 1
     with closing(sqlite3.connect(database)) as connection:
         connection.executescript(
             """CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL)
             WITHOUT ROWID;
-            INSERT INTO metadata VALUES('schema_version','23');
             CREATE TABLE sentinel(value TEXT);
             INSERT INTO sentinel VALUES('preserve');"""
         )
+        connection.execute(
+            "INSERT INTO metadata VALUES('schema_version',?)", (str(future_version),)
+        )
+        connection.commit()
         before = _application_schema(connection)
         journal_mode = connection.execute("PRAGMA journal_mode").fetchone()
-        with pytest.raises(RuntimeError, match="schema 23 is unsupported"):
+        with pytest.raises(RuntimeError, match=f"schema {future_version} is unsupported"):
             initialize_framework_schema(connection, lambda: None)
         assert _application_schema(connection) == before
         assert connection.execute("PRAGMA journal_mode").fetchone() == journal_mode
@@ -871,7 +875,7 @@ def test_future_schema_fails_closed_before_configuration_or_writes(
         "ALTER TABLE review_tasks ADD COLUMN unexpected TEXT",
     ),
 )
-def test_current_v22_exact_contract_rejects_missing_or_unknown_ddl_without_repair(
+def test_current_exact_contract_rejects_missing_or_unknown_ddl_without_repair(
     tmp_path: Path,
     mutation: str,
 ) -> None:

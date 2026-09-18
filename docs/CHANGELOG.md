@@ -22,8 +22,16 @@ fuera de `docs/`.
   y aprobación privada; los manifests autocertificados dejan de autorizar retiros.
 - Framework compone preparación por selección y mantenimiento con recibos; los
   fallos parciales no se convierten en una ejecución completa.
+- ReviewTask consulta la versión canónica de Framework para aceptar el esquema
+  vigente en retención y curación. Conserva la comprobación del DDL exacto y
+  rechaza versiones antiguas o futuras sin migraciones implícitas.
+- Knowledge cierra y reabre la lectura cercada entre observaciones mutables del
+  owner para detectar publicaciones nuevas, manteniendo lectura zero-copy cuando
+  SQLite está quiescente y sin elevar el presupuesto temporal.
 - La release Linux v2 fija identidad nativa de SQLite a una política revisada y
   comprueba cierre de dependencias offline, promoción, verificación y rollback.
+  El venv copia los ejecutables acreditados cuando el proveedor Python vive
+  fuera de los directorios del sistema; mantiene la validación de sus enlaces.
 
 ## 2026-09-17 — Lectura SQLite quiescente para reset y retención
 

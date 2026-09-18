@@ -174,7 +174,7 @@ def test_current_schema_migrates_version_17_without_reinterpreting_legacy(
         integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
         foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
 
-    assert version == str(SCHEMA_VERSION) == "22"
+    assert version == str(SCHEMA_VERSION)
     assert row == (
         41,
         7,

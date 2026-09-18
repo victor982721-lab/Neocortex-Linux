@@ -292,7 +292,7 @@ def test_populated_framework_v21_migrates_exactly_without_reviewtask_changes(
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT value FROM metadata WHERE key='schema_version'"
-        ).fetchone() == ("22",)
+        ).fetchone() == (str(framework_schema.SCHEMA_VERSION),)
         assert connection.execute(
             "SELECT path,volume_id,file_id FROM route_candidates"
         ).fetchone() == ("/fixture/Case.txt", "a", "b")

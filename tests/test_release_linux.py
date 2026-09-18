@@ -828,13 +828,58 @@ def test_pip_bootstrap_never_invokes_the_bundled_venv_pip(
 
     release_linux._create_pip_environment(tmp_path / "environment", wheel, runner=runner)
 
-    assert builders == [{"with_pip": False, "clear": False, "symlinks": True}]
+    assert builders == [{"with_pip": False, "clear": False, "symlinks": False}]
     install = calls[0]
     assert install[1:4] == ("-I", "-c", release_linux._PIP_WHEEL_RUNNER)
     assert "-m" not in install
     assert "--no-index" in install
     assert "--no-deps" in install
     assert calls[1][1:3] == ("-I", "-c")
+
+
+def test_real_release_venv_copies_provider_and_preserves_native_identity_after_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Use real venv/native probes; only the pip wheel install is a fixture."""
+    payload = b"synthetic verified pip wheel"
+    wheel = tmp_path / "pip-safe-py3-none-any.whl"
+    wheel.write_bytes(payload)
+    monkeypatch.setattr(release_linux, "PIP_BOOTSTRAP_FILENAME", wheel.name)
+    monkeypatch.setattr(release_linux, "PIP_BOOTSTRAP_SHA256", hashlib.sha256(payload).hexdigest())
+
+    def pip_fixture(arguments, **_kwargs):
+        return subprocess.CompletedProcess(arguments, 0, release_linux.PIP_BOOTSTRAP_VERSION + "\n", "")
+
+    staging, final = tmp_path / "candidate", tmp_path / "release"
+    release_linux._create_pip_environment(staging, wheel, runner=pip_fixture)
+    executable_sha256 = hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest()
+    for name in ("python", "python3", f"python{sys.version_info.major}.{sys.version_info.minor}"):
+        executable = staging / "bin" / name
+        assert executable.is_file() and not executable.is_symlink()
+        assert hashlib.sha256(executable.read_bytes()).hexdigest() == executable_sha256
+    release_linux._validate_release_tree(staging, expected_tree_sha256=None)
+    before = sqlite_native.collect_release_sqlite_attestation(staging)
+    release_linux._rewrite_virtualenv_paths(staging, final)
+    tree_digest = release_linux._validate_release_tree(staging, expected_tree_sha256=None)
+    staging.rename(final)
+    assert release_linux._validate_release_tree(final, expected_tree_sha256=tree_digest) == tree_digest
+    after = sqlite_native.collect_release_sqlite_attestation(final)
+    assert after["python"]["invoked_executable"] == str(final / "bin" / "python")
+    assert before["identity_sha256"] == after["identity_sha256"]
+    assert after["python"]["executable"]["sha256"] == executable_sha256
+    assert after["capabilities"] == dict.fromkeys(sqlite_native.CAPABILITIES, True)
+    if after["sqlite"]["module"].get("kind") == "builtin":
+        assert after["sqlite"]["module"]["sha256"] == executable_sha256
+
+    # Even the measured provider may not be reintroduced as an arbitrary
+    # external interpreter link in the finalized release tree.
+    external_provider = tmp_path / "external-provider-python"
+    shutil.copyfile(Path(sys.executable).resolve(), external_provider)
+    interpreter = final / "bin" / "python3"
+    interpreter.unlink()
+    interpreter.symlink_to(external_provider)
+    with pytest.raises(release_linux.LinuxReleaseError, match="unsafe symlink: bin/python3"):
+        release_linux._validate_release_tree(final, expected_tree_sha256=None)
 
 
 def test_corpus_root_preparation_creates_once_and_rejects_non_directories(
