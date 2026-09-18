@@ -5,7 +5,7 @@ import re
 import sqlite3
 from collections import defaultdict
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -861,6 +861,24 @@ def _search_rows_for_mode(
     raise AssertionError(f"unhandled code search mode: {mode}")
 
 
+def _reuse_symbol_rows(
+    rows: tuple[_SearchRow, ...],
+    mode: str,
+    cancellation: SQLiteCancellationBridge,
+    row_admission: Callable[[int], None] | None,
+) -> tuple[_SearchRow, ...]:
+    """Project the second symbol signal while charging its logical rows."""
+
+    projected: list[_SearchRow] = []
+    for position, row in enumerate(rows):
+        if position % _CANCELLATION_BATCH_ROWS == 0:
+            cancellation.checkpoint()
+        if row_admission is not None:
+            row_admission(1)
+        projected.append(replace(row, evidence=f"{mode}:{row.evidence.partition(':')[2]}"))
+    return tuple(projected)
+
+
 def _search_rankings(
     path: Path,
     query: CodeSearchQuery,
@@ -873,6 +891,7 @@ def _search_rankings(
     row_admission: Callable[[int], None] | None = None,
 ) -> tuple[tuple[str, tuple[_SearchRow, ...]], ...]:
     rankings: list[tuple[str, tuple[_SearchRow, ...]]] = []
+    symbol_rows: tuple[_SearchRow, ...] | None = None
     with readonly_code_database(
         path,
         connect=connect_code_state,
@@ -883,17 +902,25 @@ def _search_rankings(
             connection.execute("BEGIN")
             with sqlite_cancellation_scope(connection, cancellation):
                 for mode in modes:
-                    rows = _search_rows_for_mode(
-                        path,
-                        connection,
-                        query,
-                        mode,
-                        fetch_limit,
-                        cancellation,
-                        semantic_model_cache=semantic_model_cache,
-                        semantic_threads=semantic_threads,
-                        row_admission=row_admission,
-                    )
+                    # Symbol and definition select identical rows in this
+                    # snapshot. Keep both ranked signals and their admission
+                    # charges without repeating the selection and hydration.
+                    if mode in {"symbol", "definition"} and symbol_rows is not None:
+                        rows = _reuse_symbol_rows(symbol_rows, mode, cancellation, row_admission)
+                    else:
+                        rows = _search_rows_for_mode(
+                            path,
+                            connection,
+                            query,
+                            mode,
+                            fetch_limit,
+                            cancellation,
+                            semantic_model_cache=semantic_model_cache,
+                            semantic_threads=semantic_threads,
+                            row_admission=row_admission,
+                        )
+                        if mode in {"symbol", "definition"}:
+                            symbol_rows = rows
                     rankings.append((mode, rows))
                     cancellation.checkpoint()
         except BaseException as exc:

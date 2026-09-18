@@ -575,6 +575,8 @@ class GlobalResourceCoordinator:
         snapshot: MemorySnapshot,
         sample: ResourceSample | None,
         cpu_load: float | None,
+        *,
+        cpu_load_is_explicit: bool,
     ) -> None:
         """Latch pressure until a materially safer sample is observed.
 
@@ -713,10 +715,10 @@ class GlobalResourceCoordinator:
         # The built-in sampler observes the whole system, including this
         # process; treating its own high utilization as external competition
         # would create the very self-throttling loop this coordinator is meant
-        # to avoid.  An explicitly injected probe is an owned/testable signal
-        # and retains the historical load-cap behavior.
+        # to avoid. Both explicit CPU inputs retain the load-cap behavior;
+        # the default sampler cannot prove recovery of a missing owned signal.
         if (
-            not self._using_default_cpu_probe
+            cpu_load_is_explicit
             and cpu_load is not None
             and cpu_load >= self.max_cpu_load_percent
         ):
@@ -724,7 +726,8 @@ class GlobalResourceCoordinator:
                 self._cpu_pressure = True
                 self._pressure_events += 1
         elif (
-            self._cpu_pressure
+            cpu_load_is_explicit
+            and self._cpu_pressure
             and cpu_load is not None
             and cpu_load
             <= self.max_cpu_load_percent - self.limits.cpu_hysteresis_percent
@@ -793,17 +796,17 @@ class GlobalResourceCoordinator:
         if self._automatic_native_thread_slots:
             self.native_thread_slots = cpu_capacity
         self._last_cpu_capacity = cpu_capacity
-        self._update_pressure_locked(snapshot, sample, cpu_load)
+        cpu_load_is_explicit = not self._using_default_cpu_probe or (
+            sample is not None and sample.cpu_load_percent is not None
+        )
+        self._update_pressure_locked(
+            snapshot, sample, cpu_load, cpu_load_is_explicit=cpu_load_is_explicit
+        )
         # The built-in whole-system sample includes the work already charged
         # to _cpu_in_use.  Reducing the total capacity by that same load would
         # count our active jobs twice.  Keep it as telemetry; only an explicit
         # caller-owned load probe can reduce the affinity/cgroup capacity.
-        admission_cpu_load = (
-            cpu_load
-            if not self._using_default_cpu_probe
-            or (sample is not None and sample.cpu_load_percent is not None)
-            else None
-        )
+        admission_cpu_load = cpu_load if cpu_load_is_explicit else None
         effective_cpu_slots = self._effective_cpu_capacity(admission_cpu_load, cpu_capacity)
         if cpu_load is None and self._cpu_pressure:
             effective_cpu_slots = min(

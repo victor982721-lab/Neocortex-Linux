@@ -193,6 +193,7 @@ class WeightedMemoryGate:
                 # larger value observed when the request first entered.
                 aggregate_reservation = self._reserved
             snapshot = memory_snapshot()
+            self.cancellation.checkpoint()
             physical_ok = (
                 snapshot.available_physical is None
                 or snapshot.available_physical
@@ -268,6 +269,7 @@ class WeightedMemoryGate:
                 self._wait_for_headroom(deadline)
             finally:
                 self._headroom_admission_lock.release()
+            self.cancellation.checkpoint()
             yield
         finally:
             if reserved:

@@ -7,6 +7,9 @@ their own durable state without importing the operational orchestration layer.
 from __future__ import annotations
 
 import sqlite3
+import sys
+import threading
+from collections import OrderedDict
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
 
@@ -209,6 +212,18 @@ class _SQLToken:
     value: str
 
 
+# Cache only immutable lexical results keyed by the exact observed SQL. Database
+# acceptance, PRAGMA reads and structural comparisons always run afresh. The
+# payload charge includes strings/tokens and a conservative per-entry allowance;
+# entry and source limits also bound bookkeeping and cache-miss accounting work.
+_SCHEMA_TOKEN_CACHE_MAX_BYTES = 2 * 1024 * 1024
+_SCHEMA_TOKEN_CACHE_MAX_ENTRIES = 256
+_SCHEMA_TOKEN_CACHE_MAX_SOURCE_CHARS = 4096
+_SCHEMA_TOKEN_CACHE: OrderedDict[str, tuple[tuple[_SQLToken, ...], int]] = OrderedDict()
+_SCHEMA_TOKEN_CACHE_BYTES = 0
+_SCHEMA_TOKEN_CACHE_LOCK = threading.Lock()
+
+
 def _ascii_casefold(value: str) -> str:
     return value.translate(_ASCII_CASEFOLD)
 
@@ -297,6 +312,40 @@ def _tokenize_schema_sql(source: str) -> tuple[_SQLToken, ...]:
 
     if len(source) > _MAX_SCHEMA_SQL_CHARS:
         raise _schema_definition_error("SQL text limit exceeded")
+    if len(source) > _SCHEMA_TOKEN_CACHE_MAX_SOURCE_CHARS:
+        return _tokenize_schema_sql_uncached(source)
+    with _SCHEMA_TOKEN_CACHE_LOCK:
+        cached = _SCHEMA_TOKEN_CACHE.get(source)
+        if cached is not None:
+            if len(cached[0]) > _MAX_SCHEMA_SQL_TOKENS:
+                raise _schema_definition_error("SQL token limit exceeded")
+            _SCHEMA_TOKEN_CACHE.move_to_end(source)
+            return cached[0]
+    tokens = _tokenize_schema_sql_uncached(source)
+    charge = sys.getsizeof(source) + sys.getsizeof(tokens) + 256 + sum(
+        sys.getsizeof(token) + sys.getsizeof(token.kind) + sys.getsizeof(token.value)
+        for token in tokens
+    )
+    if charge > _SCHEMA_TOKEN_CACHE_MAX_BYTES:
+        return tokens
+    global _SCHEMA_TOKEN_CACHE_BYTES
+    with _SCHEMA_TOKEN_CACHE_LOCK:
+        # Another thread may have parsed this SQL while the lock was released.
+        if source in _SCHEMA_TOKEN_CACHE:
+            _SCHEMA_TOKEN_CACHE.move_to_end(source)
+            return _SCHEMA_TOKEN_CACHE[source][0]
+        while _SCHEMA_TOKEN_CACHE and (
+            len(_SCHEMA_TOKEN_CACHE) >= _SCHEMA_TOKEN_CACHE_MAX_ENTRIES
+            or _SCHEMA_TOKEN_CACHE_BYTES + charge > _SCHEMA_TOKEN_CACHE_MAX_BYTES
+        ):
+            _, (_, removed_charge) = _SCHEMA_TOKEN_CACHE.popitem(last=False)
+            _SCHEMA_TOKEN_CACHE_BYTES -= removed_charge
+        _SCHEMA_TOKEN_CACHE[source] = (tokens, charge)
+        _SCHEMA_TOKEN_CACHE_BYTES += charge
+    return tokens
+
+
+def _tokenize_schema_sql_uncached(source: str) -> tuple[_SQLToken, ...]:
     tokens: list[_SQLToken] = []
     index = 0
     while index < len(source):

@@ -31,6 +31,8 @@ DEFAULT_HEAD_NAME = "default"
 _MAX_TEXT = 256
 _MAX_JSON_BYTES = 256 * 1024
 _MAX_CURSOR_BYTES = 16 * 1024
+_HASH_FRAGMENT_BYTES = 64 * 1024
+_HASH_FRAGMENT_NODES = 256
 _TABLES = frozenset(
     {
         "graph_generation_metadata",
@@ -247,16 +249,77 @@ def _cursor(value: str | None, *, required: bool = False) -> str | None:
     return value
 
 
+def _small_json_fragment(value: object) -> bool:
+    """Bound the C encoder's allocation before giving it a whole fragment.
+
+    Six bytes per character covers JSON escapes and UTF-8. Container and
+    scalar allowances deliberately overestimate; large or unusual objects
+    retain the streaming encoder. The node cap also bounds this inspection
+    for deeply nested or circular caller metadata.
+    """
+
+    remaining_bytes = _HASH_FRAGMENT_BYTES
+    remaining_nodes = _HASH_FRAGMENT_NODES
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        remaining_nodes -= 1
+        if type(item) is str:
+            remaining_bytes -= 2 + 6 * len(item)
+        elif type(item) is int:
+            remaining_bytes -= 3 + item.bit_length() // 3
+        elif type(item) is float:
+            remaining_bytes -= 32
+        elif item is None or type(item) is bool:
+            remaining_bytes -= 5
+        elif type(item) is dict:
+            if 2 * len(item) > remaining_nodes - len(pending):
+                return False
+            remaining_bytes -= 2 + 4 * len(item)
+            pending.extend(item)
+            pending.extend(item.values())
+        elif type(item) is list or type(item) is tuple:
+            if len(item) > remaining_nodes - len(pending):
+                return False
+            remaining_bytes -= 2 + len(item)
+            pending.extend(item)
+        else:
+            return False
+        if remaining_bytes < 0 or remaining_nodes < 0:
+            return False
+    return True
+
+
 def _hash(value: object, name: str) -> str:
-    """Hash canonical JSON without applying a per-metadata limit to a graph."""
+    """Hash exact canonical JSON using bounded, independently encoded fragments.
+
+    Graph arrays remain streamed member by member. Small rows use the C
+    encoder, while a large member retains the historical streaming path;
+    neither an arbitrary batch nor a complete graph becomes one JSON string.
+    """
 
     digest = hashlib.sha256()
     encoder = json.JSONEncoder(
         ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")
     )
     try:
-        for piece in encoder.iterencode(value):
-            digest.update(piece.encode("utf-8"))
+        if type(value) is list:
+            fragments: Sequence[object] = value
+            is_array = True
+            digest.update(b"[")
+        else:
+            fragments = (value,)
+            is_array = False
+        for index, fragment in enumerate(fragments):
+            if is_array and index:
+                digest.update(b",")
+            if _small_json_fragment(fragment):
+                digest.update(encoder.encode(fragment).encode("utf-8"))
+            else:
+                for piece in encoder.iterencode(fragment):
+                    digest.update(piece.encode("utf-8"))
+        if is_array:
+            digest.update(b"]")
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{name} must be JSON-serializable") from exc
     return digest.hexdigest()

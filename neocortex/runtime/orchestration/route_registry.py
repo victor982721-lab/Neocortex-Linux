@@ -254,6 +254,9 @@ def _candidate_route_workload(
     rather than guessed away.
     """
 
+    checkpoint = getattr(context.cancellation, "checkpoint", None)
+    if callable(checkpoint):
+        checkpoint()
     candidate_database = getattr(context.framework_state, "candidate_database", None)
     if candidate_database is None:
         # Legacy state doubles do not expose a detached candidate view.  The
@@ -272,6 +275,8 @@ def _candidate_route_workload(
     def candidate_sizes() -> Iterable[int]:
         seen_paths: set[str] = set()
         for mime in capability.mime_types:
+            if callable(checkpoint):
+                checkpoint()
             if mime.endswith("/"):
                 rows = context.framework_state.iter_selected_route_candidates_by_prefix(
                     context.run_id,
@@ -288,6 +293,8 @@ def _candidate_route_workload(
                     selection,
                 )
             for snapshot in iterator:
+                if callable(checkpoint):
+                    checkpoint()
                 if snapshot.path in seen_paths:
                     continue
                 seen_paths.add(snapshot.path)
@@ -295,7 +302,12 @@ def _candidate_route_workload(
                     continue
                 yield max(0, int(snapshot.size))
 
-    return _bounded_workload(candidate_sizes(), max_documents)
+    workload = _bounded_workload(candidate_sizes(), max_documents)
+    # The source may observe cancellation while finishing its last page,
+    # including a page whose rows were all filtered out of the workload.
+    if callable(checkpoint):
+        checkpoint()
+    return workload
 
 
 def _code_route_workload(context: RouteExecutionContext) -> RouteWorkload:

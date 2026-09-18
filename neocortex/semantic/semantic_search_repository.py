@@ -1156,14 +1156,19 @@ def _resolved_text_search_hit(
         }
         section_kind = SEMANTIC_TITLE_SECTION_KIND
     fingerprint = _fingerprint_from_row(row)
+    read_checkpoint()
     text = _decode_chunk_text(bytes(row["text_zlib"]), fingerprint)
+    read_checkpoint()
     snippet, excerpt = query_centered_snippet(text, query, max_chars=snippet_chars)
+    read_checkpoint()
     if query is not None:
         section_provenance = {**section_provenance, "retrieval_excerpt": excerpt}
         section_provenance["query_support"] = query_term_support(query, text, basis="scored_chunk")
+        read_checkpoint()
         section_provenance["snippet_query_support"] = query_term_support(
             query, snippet or "", basis="scored_chunk_window",
         )
+        read_checkpoint()
     return ResolvedSearchHit(
         hit=hit,
         path=None if row["path"] is None else str(row["path"]),
@@ -1211,15 +1216,21 @@ def _resolved_search_hit(
     snippet_chars: int,
     query: str | None = None,
 ) -> ResolvedSearchHit:
+    # Row admission precedes detached hydration. Keep cancellation/deadline
+    # live across that work too, including construction of the final result.
+    read_checkpoint()
     resolved_source = _resolved_search_source(hit, source)
     if hit.modality is EmbeddingModality.TEXT:
-        return _resolved_text_search_hit(
+        resolved = _resolved_text_search_hit(
             hit,
             resolved_source,
             snippet_chars=snippet_chars,
             query=query,
         )
-    return _resolved_image_search_hit(hit, resolved_source)
+    else:
+        resolved = _resolved_image_search_hit(hit, resolved_source)
+    read_checkpoint()
+    return resolved
 
 
 def resolve_search_hits(

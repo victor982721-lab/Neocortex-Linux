@@ -68,14 +68,18 @@ class _BoundedZipMember:
         *,
         member_limit: int,
         budget: _ReadBudget,
+        cancellation: CancellationCheckpoint,
     ):
         self._source = source
         self._remaining = member_limit
         self._budget = budget
+        self._cancellation = cancellation
 
     def read(self, size: int = -1) -> bytes:
+        self._cancellation.checkpoint()
         request = self._remaining + 1 if size < 0 else min(size, self._remaining + 1)
         payload = self._source.read(request)
+        self._cancellation.checkpoint()
         self._remaining -= len(payload)
         self._budget.consume(len(payload))
         if self._remaining < 0:
@@ -95,11 +99,14 @@ def _bounded_member(
     archive: zipfile.ZipFile,
     info: zipfile.ZipInfo,
     budget: _ReadBudget,
+    *,
+    cancellation: CancellationCheckpoint,
 ) -> _BoundedZipMember:
     return _BoundedZipMember(
         archive.open(info),
         member_limit=min(MAX_MEMBER_BYTES, int(info.file_size) + 1),
         budget=budget,
+        cancellation=cancellation,
     )
 
 
@@ -120,13 +127,9 @@ def _extract_part_text(
     format_name: str,
     accumulator: _TextAccumulator,
     budget: _ReadBudget,
+    cancellation: CancellationCheckpoint,
 ) -> None:
-    source = archive.open(info)
-    bounded = _BoundedZipMember(
-        source,
-        member_limit=min(MAX_MEMBER_BYTES, int(info.file_size) + 1),
-        budget=budget,
-    )
+    bounded = _bounded_member(archive, info, budget, cancellation=cancellation)
     try:
         for _event, element in safe_xml_iterparse(bounded, events=("end",)):
             local = _local_name(element.tag)

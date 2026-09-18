@@ -1574,16 +1574,6 @@ def update_document_catalog_source(
                                 exc,
                             )
                             errors += 1
-                    catalog.execute(
-                        "UPDATE catalog_generation_documents SET resource_binding_json=? "
-                        "WHERE generation_id=? AND source_kind=? AND file_key=?",
-                        (
-                            document.resource_binding_json,
-                            build.generation_id,
-                            document.source_kind,
-                            document.file_key,
-                        ),
-                    )
                     if candidates % CATALOG_PROGRESS_INTERVAL == 0 or candidates == candidate_total:
                         _emit_catalog_progress(
                             progress,
@@ -2783,7 +2773,7 @@ def _code_source_identity(
         ).fetchall()
     )
     if len(versions) > 1 or (
-        versions and str(versions[0][0]) not in {str(number) for number in range(1, 9)}
+        versions and str(versions[0][0]) not in {"1", "2", "3", "4", "5", "6", "7", "8", "9"}
     ):
         raise ResourceBindingError(
             "Code owner schema is unsupported",
@@ -2791,7 +2781,7 @@ def _code_source_identity(
             encoding="code-owner-schema",
             value=versions,
         )
-    if versions and str(versions[0][0]) in {"7", "8"}:
+    if versions and str(versions[0][0]) in {"7", "8", "9"}:
         # A declared current producer always owns hex. Never reinterpret a
         # stale current identity as decimal just because that matches a path.
         return hexadecimal
@@ -3383,9 +3373,10 @@ def _store_classification(
         standard_references_json,organizations_json,clients_json,projects_json,
         workstreams_json,topics_json,equipment_json,activities_json,
         classification_json,catalog_status,
-        error_type,error_message,active,last_seen_catalog_run_id,updated_ns)
+        error_type,error_message,active,last_seen_catalog_run_id,updated_ns,
+        resource_binding_json)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-        NULL,NULL,1,?,?)
+        NULL,NULL,1,?,?,?)
         ON CONFLICT(generation_id,source_kind,file_key) DO UPDATE SET
         path=excluded.path,volume_id=excluded.volume_id,file_id=excluded.file_id,
         size=excluded.size,mtime_ns=excluded.mtime_ns,birthtime_ns=excluded.birthtime_ns,
@@ -3409,7 +3400,8 @@ def _store_classification(
         classification_json=excluded.classification_json,
         catalog_status=excluded.catalog_status,error_type=NULL,error_message=NULL,
         active=1,last_seen_catalog_run_id=excluded.last_seen_catalog_run_id,
-        updated_ns=excluded.updated_ns""",
+        updated_ns=excluded.updated_ns,
+        resource_binding_json=excluded.resource_binding_json""",
         (
             build.generation_id,
             document.source_kind,
@@ -3445,6 +3437,7 @@ def _store_classification(
             catalog_status,
             build.catalog_run_id,
             now,
+            document.resource_binding_json,
         ),
     )
 
@@ -3465,9 +3458,10 @@ def _store_catalog_error(
         confidence,uncertainty,standard_references_json,organizations_json,
         clients_json,projects_json,workstreams_json,topics_json,
         equipment_json,activities_json,classification_json,catalog_status,
-        error_type,error_message,active,last_seen_catalog_run_id,updated_ns)
+        error_type,error_message,active,last_seen_catalog_run_id,updated_ns,
+        resource_binding_json)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'otro',NULL,NULL,NULL,0.0,'alta',
-        '[]','[]','[]','[]','[]','[]','[]','[]','{}','error',?,?,1,?,?)
+        '[]','[]','[]','[]','[]','[]','[]','[]','{}','error',?,?,1,?,?,?)
         ON CONFLICT(generation_id,source_kind,file_key) DO UPDATE SET path=excluded.path,
         size=excluded.size,mtime_ns=excluded.mtime_ns,birthtime_ns=excluded.birthtime_ns,
         source_status=excluded.source_status,
@@ -3483,7 +3477,8 @@ def _store_catalog_error(
         classification_json='{}',catalog_status='error',
         error_type=excluded.error_type,error_message=excluded.error_message,
         active=1,last_seen_catalog_run_id=excluded.last_seen_catalog_run_id,
-        updated_ns=excluded.updated_ns""",
+        updated_ns=excluded.updated_ns,
+        resource_binding_json=excluded.resource_binding_json""",
         (
             build.generation_id,
             document.source_kind,
@@ -3502,6 +3497,7 @@ def _store_catalog_error(
             str(error),
             build.catalog_run_id,
             now,
+            document.resource_binding_json,
         ),
     )
 

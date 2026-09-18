@@ -1252,7 +1252,13 @@ class DocxRoute:
             batch,
         )
 
-    def _cache_status(self, connection, snapshot: FileSnapshot) -> str:
+    def _cache_status(
+        self,
+        connection,
+        snapshot: FileSnapshot,
+        *,
+        validate_representation: bool = True,
+    ) -> str:
         row = connection.execute(
             """SELECT file_key,size,mtime_ns,birthtime_ns,processing_signature,status,
             retryable,failure_code,review_disposition,text_zlib,text_chars,text_xxh3_128,
@@ -1269,11 +1275,15 @@ class DocxRoute:
             and row["processing_signature"] == self.config.processing_signature
         ):
             return "miss"
-        if row["status"] in {"complete", "partial"} and _cached_docx_representation(
-            connection,
-            row,
-            max_chars=self.config.max_text_chars,
-        ) is None:
+        if (
+            validate_representation
+            and row["status"] in {"complete", "partial"}
+            and _cached_docx_representation(
+                connection,
+                row,
+                max_chars=self.config.max_text_chars,
+            ) is None
+        ):
             return "miss"
         if row["status"] == "complete":
             return "complete"
@@ -1342,17 +1352,36 @@ class DocxRoute:
                 (owner_key,),
             )
 
-        connection.execute(
-            "UPDATE documents SET path=?,birthtime_ns=?,"
-            "last_seen_run_id=?,updated_ns=? WHERE file_key=?",
-            (
-                snapshot.path,
-                snapshot.birthtime_ns,
-                self.run_id,
-                time.time_ns(),
-                key,
-            ),
+        predicate = "file_key=?"
+        parameters: tuple[object, ...] = (
+            snapshot.path,
+            snapshot.birthtime_ns,
+            self.run_id,
+            time.time_ns(),
+            key,
         )
+        if hasattr(self, "config"):
+            # Acquire the writer transaction only for the current physical
+            # observation and processing result. The following representation
+            # read stays inside that transaction until its FTS effect.
+            predicate += (
+                " AND size=? AND mtime_ns=? AND birthtime_ns=?"
+                " AND processing_signature=? AND status=?"
+            )
+            parameters += (
+                snapshot.size,
+                snapshot.mtime_ns,
+                snapshot.birthtime_ns,
+                self.config.processing_signature,
+                "error" if cache_status == "cached_error" else cache_status,
+            )
+        updated = connection.execute(
+            "UPDATE documents SET path=?,birthtime_ns=?,"
+            f"last_seen_run_id=?,updated_ns=? WHERE {predicate}",
+            parameters,
+        )
+        if updated.rowcount != 1:
+            return None
         # Preserve the narrow historical path-ownership seam used by callers
         # that construct a route probe without a full route configuration.
         if not hasattr(self, "config"):
@@ -2047,7 +2076,14 @@ class DocxRoute:
             for snapshot in self._candidates(connection):
                 self.cancellation.checkpoint()
                 try:
-                    cache_status = self._cache_status(connection, snapshot)
+                    # Classify cheaply here; _touch_cache_hit rechecks the
+                    # observation and validates all text/layout/parts once,
+                    # immediately before consuming a complete or partial hit.
+                    cache_status = self._cache_status(
+                        connection,
+                        snapshot,
+                        validate_representation=False,
+                    )
                     outcome = self._consume_cached_candidate(
                         connection,
                         snapshot,

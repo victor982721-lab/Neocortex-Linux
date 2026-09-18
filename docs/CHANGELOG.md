@@ -4,6 +4,25 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-18 — Menos trabajo repetido y contratos de cancelación
+
+- La validación estructural SQLite reutiliza tokens por SQL exacto en una caché
+  limitada, conservando todas las observaciones del esquema actual.
+- Code acelera la serialización de fragmentos acotados sin cambiar digests ni
+  materializar grafos completos. La búsqueda híbrida selecciona una vez los
+  símbolos y conserva las señales y presupuestos de símbolos y definiciones.
+- DOCX valida una sola vez la representación del acierto al consumirlo y
+  comprueba su identidad, firma y estado junto a la escritura. Office atiende
+  cancelación entre lecturas XML y antes de entregar la extracción.
+- PDF transmite cancelación local al coordinador; los gates comprueban el
+  token tras sondear memoria. Las señales explícitas CPU comparten la misma
+  política de presión, conservando el muestreo predeterminado como telemetría.
+- Semantic consulta cancelación y deadline entre descompresión, análisis y
+  materialización de hits. La estimación de carga de las rutas deja de recorrer
+  candidatos cuando se cancela la petición.
+- Catalog escribe el binding de recursos junto con la fila de staging y
+  reconoce la identidad hexadecimal del productor Code v9 en el flujo público.
+
 ## 2026-09-18 — Bloques compartidos y publicación con esperas acotadas
 
 - Code v9 reutiliza bloques de entradas y membresías entre generaciones mediante

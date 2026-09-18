@@ -293,6 +293,7 @@ def _extract_remaining_xlsx_parts(
             format_name="xlsx",
             accumulator=accumulator,
             budget=budget,
+            cancellation=cancellation,
         )
 
 
@@ -304,7 +305,7 @@ def _extract_xlsx_workbook(
     budget: _ReadBudget,
     cancellation: CancellationCheckpoint,
 ) -> tuple[tuple[_XlsxSheet, ...], bool]:
-    source = _bounded_member(archive, info, budget)
+    source = _bounded_member(archive, info, budget, cancellation=cancellation)
     sheets: list[_XlsxSheet] = []
     date_1904 = False
     events = 0
@@ -361,7 +362,7 @@ def _extract_xlsx_relationships(
 ) -> dict[str, str]:
     if info is None:
         return {}
-    source = _bounded_member(archive, info, budget)
+    source = _bounded_member(archive, info, budget, cancellation=cancellation)
     targets: dict[str, str] = {}
     count = 0
     try:
@@ -410,7 +411,7 @@ def _extract_xlsx_styles(
 ) -> tuple[_XlsxStyle, ...]:
     if info is None:
         return ()
-    source = _bounded_member(archive, info, budget)
+    source = _bounded_member(archive, info, budget, cancellation=cancellation)
     custom_formats: dict[int, str] = {}
     styles: list[_XlsxStyle] = []
     inside_cell_xfs = False
@@ -492,7 +493,7 @@ def _extract_xlsx_shared_strings(
 ) -> tuple[str, ...]:
     if info is None:
         return ()
-    source = _bounded_member(archive, info, budget)
+    source = _bounded_member(archive, info, budget, cancellation=cancellation)
     values: list[str] = []
     root: ET.Element | None = None
     try:
@@ -821,7 +822,7 @@ def _extract_xlsx_worksheet(
     cancellation: CancellationCheckpoint,
     max_cells: int,
 ) -> None:
-    source = _bounded_member(archive, info, budget)
+    source = _bounded_member(archive, info, budget, cancellation=cancellation)
     references: set[str] = set()
     try:
         for _event, element in safe_xml_iterparse(source, events=("end",)):

@@ -1,110 +1,99 @@
 # Handoff operativo vigente — NeoCortex
 
-**Ronda:** NEO-NEXT-PERFORMANCE-20260918.
-**Actualizado:** 2026-09-18T22:07:14.513659+00:00.
-**Base remota autenticada:** `0a78108d7b17ce0799198bf013a62bf06a9b2584`.
-**Árbol de fuente/tests aceptado:** `c41d432ba109f5a95cff25a7b287e4013457e11d`.
+**Ronda:** NEO-RESOURCE-CACHE-20260918.
+**Actualizado:** 2026-09-18T23:16:41.898998+00:00.
+**Base remota comprobada:** `e2e994c1e9213400271f0a17d399f97b12ed1526`.
+**Árbol integrado validado:** `cca804b0b4b8666263047fd94b5f60a4a068906f`.
 
-## Alcance y resultado
+## Resultado y alcance
 
-El usuario autorizó continuar en el repositorio remoto las cuatro mejoras
-pendientes del cierre anterior: limpieza de admisión Image, copias de generaciones
-Code, materialización Inventory y validación Catalog dentro del writer. Se
-implementaron con autores por dominio y revisiones independientes, preservando
-un único responsable de Git/integración y publicación directa en main.
-La fuente publicada no equivale a una nueva instalación del producto.
+El usuario autorizó continuar auditando e implementando optimizaciones en el
+remoto. La ronda usa seis actores internos, incluido un descendiente real, y
+raíz como único responsable de Git, integración y SSOT. Doce contratos cuentan
+con aceptación independiente; no quedan contratos de esta ronda pendientes.
+La publicación es código en main; no representa instalación de una release.
 
-- Image señala cancelación antes de esperar el executor, cancela trabajos
-  pendientes, cierra todos los decoders y conserva la excepción original y los
-  resultados ya consumidos. Registry comparte un token hijo entre Image y su
-  gate: hereda la cancelación de Framework sin transmitir un fallo local al
-  padre ni a rutas hermanas. El coordinador consulta el token de cada petición
-  durante la cola y antes de conceder recursos.
-- Code migra aditivamente 8→9 y graph generation 1→2, con seis tablas derivadas
-  de bloques compartidos y manifiestos completos. Valida payload, digest y
-  vínculo al productor original antes de reutilizar; sus lectores comprueban
-  también inputs y membresías. Conserva lectura directa graph v1/Code v8 y
-  todos los payloads/digests anteriores tras la migración. La retención protege
-  bloques referenciados por heads y builds, aunque el productor esté podado.
-- Inventory portable materializa una vez la observación actual completa y
-  calcula su digest fuera del writer. Revalida identidad, checkpoint, revisión,
-  summary y digest bajo lock; conserva historia, planes, rollback y presupuestos.
-- Catalog valida replay y prepara digests/recuentos en una transacción lectora.
-  Antes del efecto compara el fence de conexión/archivo, fuente, raíz y CAS.
-  La adquisición del writer y el registro de una cancelación tienen esperas
-  acotadas y preservan el timeout original y el error primario.
-- Dedup aplica sus límites sobre la lectura efectiva legacy/bloques antes de
-  materializar; Knowledge observa formas exactas Code v7/v8 sin migrarlas.
-  Diagnóstico, manifiesto de capacidades y reset reconocen Code v9.
+- R1/R2/R3: PDF transmite su cancelación local a la admisión global; los gates
+  comprueban el token después de los probes y antes de conceder recursos.
+  Las señales explícitas CPU comparten presión e histéresis; el sampler por
+  defecto conserva su función de telemetría.
+- F1/F2: Office comprueba cancelación alrededor de lecturas XML y antes de
+  devolver el resultado. DOCX valida una sola vez el hit al consumirlo y liga
+  el efecto a identidad, firma y estado vigentes dentro de la transacción.
+- K1: Semantic consulta cancelación/deadline entre descompresión, fragmento,
+  soporte literal y materialización final, preservando error y cargos de filas.
+- C1/C2: Code serializa fragmentos acotados con el encoder nativo, con digests
+  idénticos y fallback incremental. Símbolos/definiciones comparten una consulta
+  dentro del snapshot, conservando señales RRF y cargos lógicos separados.
+- W1/W2: Catalog escribe el binding junto con clasificación/error; el hit copia
+  el binding validado sin UPDATE posterior. Estimar carga deja de recorrer la
+  fuente cancelada, incluso ante descartes o finalización del iterador.
+- P1: el parser SQLite reutiliza tokens por SQL exacto, con 2 MiB contabilizados,
+  256 entradas y 4.096 caracteres por entrada. Repite todas las observaciones
+  estructurales; no cachea la aceptación de una base.
+- C3 amplía explícitamente la ronda al detectar un consumidor incompatible:
+  Catalog rechazaba Code v9 en la ruta pública de Framework. Admite ahora esa
+  versión con identidad hexadecimal y conserva rechazo de futuro/legacy ambiguo.
 
-La matriz externa conserva once contratos aplicables. Se amplió de diez a once
-al demostrar que cancelar el token compartido de Image podía ocultar el fallo
-original como interrupción del usuario y detener otras rutas. La revisión
-independiente también reprodujo y cerró una segunda espera al registrar la
-cancelación de Catalog y dos huecos de validación de bloques Code: inputs de la
-publicación y procedencia de sus cabeceras.
+## Validación y límites del entorno
 
-## Validación exacta
+Se verificaron 1.520 blobs contra el árbol Git y se mantuvieron sin cambios
+mientras se ejecutaban metadata propia, identidad 5/5, colección y pruebas.
+CPython 3.14.7, SQLite 3.53.1, NumPy 2.4.6. No se usaron corpus ni estado de
+usuario; no se descargaron modelos ni se instalaron componentes globales.
 
-La aceptación integrada ejecutó **107 módulos, 1.331 casos únicos**:
-**1.296 aprobados, 35 omitidos, cero fallos y cero pendientes** en 137,08 s.
-Las siete subpruebas aprobadas se cuentan aparte. La colección y JUnit coinciden
-exactamente por identificador, sin duplicados ni casos faltantes. Las 35
-omisiones corresponden exclusivamente a contratos Windows; no hubo omisiones
-de capacidades ni deselected. Una advertencia previa de `record_property` con
-JUnit xunit2 permanece registrada.
+La batería integrada comprende **158 módulos y 2.135 casos únicos**: **2.096
+aprobados, 37 omitidos Windows y 2 fallos de entorno previos**, cero regresiones
+nuevas. Las 23 subpruebas se cuentan aparte. Colección y JUnit coinciden sin
+faltantes ni duplicados; ejecución final 183,46 s. La advertencia previa de
+record_property con JUnit xunit2 permanece registrada.
 
-La copia privada completa contiene 1.510 blobs comprobados contra el árbol Git;
-ningún input de fuente/tests cambió durante colección, pruebas o análisis.
-Metadatos generados desde esa misma copia, identidad 5/5 sin omisiones,
-CPython 3.14.7 y SQLite 3.53.1. El SDK MCP real está disponible en el tooling
-privado y su prueba pública pasó. No se usaron corpus, modelos ni estado del
-usuario ni se instaló una release.
+Los dos fallos son test_pdf_route.PdfRouteTests.test_auto_ocr_only_for_page_without_native_text
+y test_verified_recycle_resolves_only_current_unrecoverable_reason. Ambos fallan
+igual en baseline porque falta spa de Tesseract, antes de construir el gate o
+admitir recursos. El runtime tiene eng/osd; los assets offline no incluyen spa.
+Permanecen FAIL de entorno, no se presentan como PASS ni se cambian defaults.
 
-Ruff pasó en los 29 archivos Python modificados. Mypy analizó 17 fuentes base
-más sus imports frente a 18 actuales: reproduce los mismos 65 diagnósticos,
-cero nuevos y cero retirados. Incluyen deuda previa y dependencias opcionales
-de inferencia ausentes de este laboratorio; Mypy no se presenta como limpio.
+La primera ejecución registró además 20 fallos por NumPy ausente. Se preparó
+sólo el wheel 2.4.6 y SHA256 fijados por el lock del repositorio en el tooling
+privado; pip check pasó y 4.678 archivos anteriores conservaron sus hashes.
+El total conocido de descargas es 93.759.868 bytes, bajo el techo previo de
+100 MB. Se repitió toda la batería, incluidos los backends vectorizados.
 
-Los focos de autor y los probes independientes permanecen en la evidencia,
-sin sumarse de nuevo al total integrado. Se conservan también los intentos
-anteriores: Inventory corrigió sólo la ubicación de basetemp dentro de TMPDIR;
-el foco MCP inicial falló por SDK ausente y pasó tras preparar ese tooling;
-Code descartó una copia incompleta de licencias antes de su aceptación final.
+Ruff pasó en los 23 archivos Python modificados. Mypy sobre 13 fuentes más sus
+imports reproduce 62 diagnósticos en baseline y candidato, cero nuevos y cero
+retirados. No se presenta Mypy como limpio; antes de añadir NumPy eran 66.
 
-## Medición y límites
+## Medidas reproducibles
 
-- Image, con el mismo timeout sintético de un segundo por admisión, pasa por
-  Registry de 2,051 a 1,049 s. La espera después del primer error pasa de
-  1,002 s a 0,00086 s; padre intacto, error original y cero reservas/cola.
-  Los defaults de 60/300 s no se rebajaron.
-- Code, con 1.024 archivos y tres pares alternados, reduce payload nuevo de
-  12.290 a 3.485 filas al cambiar uno y de 12.278 a 2.281 al borrar uno.
-  Las medianas de publicación son 626→454 ms y 636→453 ms respectivamente.
-  Replay conserva cero escrituras, pero su mediana total es 231→245 ms;
-  crear el esquema pasa de 182 a 232 ms. Se documentan esos costes adicionales.
-- Inventory, al retirar el 90 % de 10.000 archivos, pasa de 10.000 inserts más
-  9.000 deletes a 1.000 inserts; mediana de cinco pares 159,2→51,0 ms.
-  Un solo cambio aún materializa N actual: N+1→N escrituras. Sus tiempos
-  presentan rangos solapados y no prueban aceleración universal.
-- Catalog, con 1.024 documentos, reduce el writer del replay de 132–137 ms
-  a 0,32 ms, conservando un total cercano a 140 ms. Una publicación cambiada
-  reduce el writer de 200,2 a 48,7 ms, pero mantiene la proyección O(N).
+- Code, 1.024 archivos y tres pares alternados: cambiar uno pasa de 804,4 a
+  682,6 ms de ruta y de 463 a 349 ms de publicación. Borrar uno pasa de 854,7 a
+  680,4 ms de ruta y de 455 a 362 ms de publicación. La forma lógica es igual.
+  Replay mantiene 1.024 hits, cero procesados y publicación reutilizada;
+  mediana 238,3 a 223,2 ms, con rangos solapados, sin promesa universal.
+- Aperturas calientes CodeState, tres pares de 30 muestras: mediana 34,64 a
+  15,10 ms. Tras warmup evita 17.080 ejecuciones del lexer en 40 aperturas;
+  repite sus 17.080 consultas al wrapper y usa 1.606.600 bytes contabilizados.
+- DOCX conserva cache_hits=1, extracted=0 y FTS=0; validaciones 2→1,
+  descompresiones 6→3 y caracteres decodificados 6.300.092→3.150.046.
+- Catalog elimina 40 UPDATE adicionales tanto en frío como con 1 cambio y
+  39 hits. El estimador cancelado en la fila 10 consume 10 de 5.000 filas.
+- Office deja de leer 1.753.125 bytes tras cancelar y no publica FTS. Semantic
+  pasa de 7 a 1 descompresiones ante cancelación en la primera, sin tupla tardía.
 
-Las mediciones usan fixtures sintéticas en un entorno compartido. Code conserva
-captura/validación O(N) y ordenación O(N log N); Inventory conserva observación
-y materialización completas. Catalog conserva su RLock de proceso y proyección
-atómica; no congela archivos externos después de comprobarlos individualmente.
-La cancelación sigue siendo cooperativa. Los resultados completos aún no
-consumidos de Image pueden requerir reintento.
+Son fixtures sintéticas locales. Code/Catalog mantienen validación/proyección
+completas; la cancelación es cooperativa. Quedan observados para otra ronda los
+600 SELECT de metadatos Dedup para 200 miembros y la materialización de matches
+al construir fragmentos/soporte literal. No se implementaron ni se contaron como
+contratos cerrados. No hubo migración tecnológica ni cambio de esquema/defaults.
 
 ## Evidencia y publicación
 
-Evidencia externa: `acceptance-integrated-01/`, `acceptance-static-01/`, matriz
-de contratos, handoffs de autores, revisiones y probes con hashes, mediciones
-base/actual y `publication/closure.json`. El cierre de publicación exige lectura
-fresca de GitHub, igualdad HEAD/main/origin/main y árbol limpio. El SHA final
-se obtiene de Git y del informe de entrega, sin autorreferencia circular aquí.
-El delta posterior al árbol aceptado sólo actualiza este handoff y archiva el
-anterior íntegro en
-[NEOCORTEX_PERFORMANCE_FIXES_2026-09-18.md](NEOCORTEX_PERFORMANCE_FIXES_2026-09-18.md).
+La evidencia externa incluye contracts.json, handoffs/revisiones, perfiles,
+acceptance-integrated-recheck, acceptance-static-recheck, integrated-measurements,
+numpy-validation y publication/closure.json. Se conserva la primera ejecución
+fallida y sus causas. El cierre requiere lectura fresca de GitHub, árbol limpio
+e igualdad HEAD/main/origin/main; el SHA final se obtiene de Git y del informe,
+sin autorreferencia circular aquí. El delta posterior al árbol validado sólo
+actualiza este handoff y archiva el anterior íntegro en
+[NEOCORTEX_SHARED_BLOCKS_2026-09-18.md](NEOCORTEX_SHARED_BLOCKS_2026-09-18.md).

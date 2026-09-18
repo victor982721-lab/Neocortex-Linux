@@ -42,6 +42,7 @@ def extract_office_document(
 ) -> ExtractedOfficeDocument:
     """Extract bounded Office text plus typed XLSX cell evidence."""
 
+    cancellation.checkpoint()
     try:
         inspect_zip_structure(path, max_members=MAX_ZIP_MEMBERS)
         with zipfile.ZipFile(path) as archive:
@@ -76,6 +77,7 @@ def extract_office_document(
                         format_name=format_name,
                         accumulator=accumulator,
                         budget=budget,
+                        cancellation=cancellation,
                     )
     except OfficeExtractionError:
         raise
@@ -92,7 +94,7 @@ def extract_office_document(
             recommendation="deletion_candidate",
             retryable=False,
         ) from exc
-    return ExtractedOfficeDocument(
+    document = ExtractedOfficeDocument(
         format=format_name,
         title=metadata.get("title", "") or path.stem,
         author=metadata.get("creator", ""),
@@ -101,6 +103,8 @@ def extract_office_document(
         part_count=len(selected),
         xlsx_cells=cells,
     )
+    cancellation.checkpoint()
+    return document
 
 
 def _validated_members(archive: zipfile.ZipFile) -> tuple[zipfile.ZipInfo, ...]:

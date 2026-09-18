@@ -310,6 +310,12 @@ Las implementaciones no tienen la misma riqueza: algunos formatos publican
 localizadores estructurales y otros sólo texto o archivo completo. Esa brecha se
 expone como cobertura, no se rellena con localizadores inventados.
 
+Office comprueba cancelación antes y después de las lecturas XML y antes de
+devolver la extracción, incluidos los componentes XLSX. DOCX clasifica primero
+el posible acierto de caché y valida su representación completa una sola vez al
+consumirla. La escritura comprueba identidad, firma de procesamiento y estado
+vigentes, y mantiene la observación hasta la actualización de FTS.
+
 ### Lifecycle durable de `--all` (implementado; aceptación en curso)
 
 `--all` selecciona exactamente las nueve rutas registradas y las coordina bajo
@@ -602,6 +608,11 @@ por compatibilidad explícita. `KnowledgeReadBudget` limita filas, vectores,
 temporales, deadline y cancelación sin escribir estado ni introducir caches sin
 invalidación por heads/fences.
 
+La resolución de hits Semantic conserva los checkpoints de lectura durante la
+descompresión, creación del fragmento y análisis de soporte literal, además de
+la materialización final. Cancelación o deadline impiden devolver un lote tardío
+y mantienen el error tipado y el presupuesto de filas ya observadas.
+
 `neocortex.content-diagnostics/v2` federa los nueve owners de contenido mediante
 cursores ligados a raíz, filtros y snapshots, y conserva estados de ausencia,
 parcialidad, schema futuro, corrupción y bloqueo sin confundirlos con cero
@@ -680,6 +691,13 @@ ambas representaciones. La retención retira bloques sólo cuando ningún manifi
 conservado los referencia, manteniendo los localizadores del productor original.
 Esto reduce las escrituras de payload ante cambios pequeños; el recorrido,
 ordenación y validación de la fuente siguen dependiendo del tamaño total.
+
+El hashing canónico de Code usa el serializador nativo para fragmentos cuyo
+tamaño y número de nodos se acotan antes de codificarlos. Los arrays se procesan
+por miembro y los fragmentos grandes conservan el encoder incremental, con los
+mismos bytes y digests. En búsqueda híbrida, símbolos y definiciones comparten
+una selección dentro del mismo snapshot; mantienen señales, pesos, evidencia y
+cargos lógicos separados, sin caché de resultados entre consultas.
 
 ## Persistencia
 
@@ -882,6 +900,13 @@ El coordinador limita CPU/memoria y registra fases. Writers toman exclusión
 cooperativa; backup, restore, purge y state reset requieren exclusión más fuerte. Los
 subprocesos tardíos no pueden publicar sobre un head nuevo. Un fallo alrededor
 de la frontera de efecto produce un estado conciliable, no un reintento ciego.
+
+PDF transmite su token local a la admisión global. Los gates vuelven a consultar
+cancelación después del sondeo de memoria y antes de conceder recursos. Las dos
+entradas explícitas de carga CPU comparten presión e histéresis; el muestreo
+predeterminado conserva su papel de telemetría para evitar contar dos veces la
+carga propia. La estimación de trabajo sobre candidatos consulta cancelación
+mientras recorre la fuente y antes de entregar el presupuesto.
 
 La terminación de procesos aislados identifica el wrapper propio por PID y
 starttime y limpia su grupo original aunque el líder ya haya terminado. Este

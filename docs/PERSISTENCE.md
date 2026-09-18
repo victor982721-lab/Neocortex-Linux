@@ -81,6 +81,13 @@ Cada owner controla:
 - validación e integridad;
 - retención de su historia.
 
+El validador estructural compartido reutiliza únicamente tokens SQL inmutables
+por texto observado exacto. Su caché limita el almacenamiento contabilizado a
+2 MiB y 256 entradas, con un máximo de 4.096 caracteres por entrada. No conserva
+aceptaciones de bases ni sustituye lecturas de `sqlite_master`, PRAGMAs o
+comparaciones de contratos: un cambio de DDL sigue siendo observable aunque
+conserve `schema_version`. Los textos mayores usan el parser acotado habitual.
+
 Framework posee workflow: runs, acciones, Review, decisiones y recovery. Catalog
 posee clasificaciones y planes documentales. Inventory posee observaciones,
 generaciones y evidencia de duplicados. Knowledge es una vista en memoria y no
@@ -101,6 +108,10 @@ de escritura. La adquisición de ambos writers consulta cancelación entre inten
 acotados, sin ampliar el busy timeout configurado. Inventory conserva el coste
 de materializar la generación actual; Catalog conserva el cambio atómico de su
 proyección y su lock de coordinación dentro del proceso.
+
+Catalog persiste el binding de recursos en el mismo INSERT/UPSERT que la fila
+de staging, incluidos los errores de clasificación. Los aciertos reutilizados
+copian el binding validado; no requieren una segunda escritura por documento.
 
 Code v9 añade bloques derivados compartidos y manifiestos completos para sus
 generaciones v2. La migración preserva el ledger v1 y los lectores de Knowledge

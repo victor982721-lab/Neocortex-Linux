@@ -121,6 +121,8 @@ def wait_for_available_memory(
         if cancellation is not None:
             cancellation.checkpoint()
         snapshot = memory_snapshot()
+        if cancellation is not None:
+            cancellation.checkpoint()
         available = snapshot.available_physical
         commit = snapshot.available_commit if minimum_commit_bytes > 0 else None
         physical_ok = available is None or available >= minimum_bytes
@@ -276,8 +278,11 @@ class PdfResourceGate:
             requested = reservation_bytes or self.limits.worker_memory_bytes
             if self.global_coordinator is not None:
                 try:
-                    with self.global_coordinator.admit(self.route_name, requested, 1):
+                    with self.global_coordinator.admit(
+                        self.route_name, requested, 1, cancellation=self.cancellation
+                    ):
                         ensure_free_space(self.state_path, self.limits.min_free_bytes)
+                        self.cancellation.checkpoint()
                         yield
                 except MemoryError as exc:
                     raise PdfResourceError(str(exc)) from exc
@@ -290,6 +295,7 @@ class PdfResourceGate:
                         self.commit_floor_bytes,
                         self.cancellation,
                     )
+                    self.cancellation.checkpoint()
                     yield
         finally:
             if large:
