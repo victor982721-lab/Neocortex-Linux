@@ -46,13 +46,32 @@ def _term_ignoring_worker(ready: str) -> None:
     time.sleep(8)
 
 
-def _await_file(path: Path) -> str:
+def _await_file(path: Path, process=None) -> str:
     deadline = time.monotonic() + 4
     while time.monotonic() < deadline:
         if path.exists() and (value := path.read_text()):
             return value
         time.sleep(0.01)
-    pytest.fail("isolated worker did not publish fixture readiness")
+    if process is None:
+        pytest.fail("isolated worker did not publish fixture readiness")
+    try:
+        alive = process.is_alive()
+    except (AttributeError, ValueError) as exc:
+        alive = f"unavailable:{type(exc).__name__}"
+    try:
+        exitcode = process.exitcode
+    except (AttributeError, ValueError) as exc:
+        exitcode = f"unavailable:{type(exc).__name__}"
+    identity = getattr(process, "_neocortex_session_identity", None)
+    try:
+        identity = tuple(int(value) for value in identity) if identity is not None else None
+    except (TypeError, ValueError):
+        identity = "malformed"
+    pytest.fail(
+        "isolated worker did not publish fixture readiness; "
+        f"alive={alive!r}, exitcode={exitcode!r}, "
+        f"session_identity={identity!r}, path={path}"
+    )
 
 
 def _terminated(process_id: int) -> bool:
@@ -125,7 +144,7 @@ def test_cleanup_reaps_a_term_ignoring_leader_within_total_bound(tmp_path: Path)
     )
     process.start()
     try:
-        _await_file(ready)
+        _await_file(ready, process)
         started = time.monotonic()
         isolated.terminate_isolated_process(process, timeout_seconds=0.4)
         assert time.monotonic() - started < 0.8

@@ -500,13 +500,20 @@ def test_docx_shadow_table_corruption_in_live_wal_rejects_snapshot_without_sourc
         before = {path: path.read_bytes() if path.exists() else None for path in source_files}
 
         # The immutable kernel now verifies a temporary WAL materialization
-        # before the DOCX schema reader. Require the actual FTS corruption as
-        # the cause, not merely a generic refusal or a changed exception class.
+        # before the DOCX schema reader. SQLite may expose virtual-table
+        # corruption as PRAGMA result rows or as a sqlite3.DatabaseError; both
+        # forms must remain a typed rejection.
         with pytest.raises(ImmutableSQLiteUnavailable, match="temporary SQLite snapshot") as rejected:
             docx_state.initialize_docx_state(database)
 
-        assert isinstance(rejected.value.__cause__, sqlite3.DatabaseError)
-        assert "vtable constructor failed: document_fts" in str(rejected.value.__cause__)
+        cause = rejected.value.__cause__
+        if cause is None:
+            assert str(rejected.value) == (
+                "temporary SQLite snapshot integrity check failed during materialization"
+            )
+        else:
+            assert isinstance(cause, sqlite3.DatabaseError)
+            assert "vtable constructor failed: document_fts" in str(cause)
         after = {path: path.read_bytes() if path.exists() else None for path in source_files}
         assert after == before
     finally:

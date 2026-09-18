@@ -100,7 +100,13 @@ def test_video_sampler_registers_workspace_and_retires_it_on_success(
         assert (record.path / "manifest.json").is_file()
 
     assert manager.records() == ()
-    assert tuple(scratch.iterdir()) == ()
+    scratch_entries = tuple(scratch.iterdir())
+    assert {entry.name for entry in scratch_entries} == {".scratch-control"}
+    assert len(scratch_entries) == 1
+    scratch_control = scratch_entries[0]
+    assert scratch_control.is_dir()
+    assert not scratch_control.is_symlink()
+    assert scratch_control.stat().st_mode & 0o077 == 0
     assert source.read_bytes() == source_before
 
 

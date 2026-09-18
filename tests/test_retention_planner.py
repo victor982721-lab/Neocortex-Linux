@@ -1033,7 +1033,7 @@ def test_schema_drift_blocks_without_modifying_main_database(tmp_path: Path) -> 
     }
 
 
-def test_framework_retention_requires_exact_current_v22_without_migrating_legacy(
+def test_framework_retention_rejects_legacy_v21_against_current_schema_without_migrating(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "framework.sqlite3"
@@ -1046,7 +1046,10 @@ def test_framework_retention_requires_exact_current_v22_without_migrating_legacy
     plan = plan_retention(tmp_path, stores=("framework",), now_ns=NOW_NS)
 
     assert plan.stores[0].status == "blocked"
-    assert "framework schema is 21; expected 22" in str(plan.stores[0].detail)
+    assert (
+        f"framework schema is 21; expected {framework_schema.SCHEMA_VERSION}"
+        in str(plan.stores[0].detail)
+    )
     assert plan.stores[0].items == ()
     assert database.read_bytes() == before
 

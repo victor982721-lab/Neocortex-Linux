@@ -10,6 +10,7 @@ import pytest
 
 from neocortex.api import curation_lifecycle_api
 from neocortex.api import curation_authorization_api
+from neocortex.api.cli import human as human_cli
 import neocortex.curation.lifecycle as lifecycle
 from neocortex.curation.authorization import (
     CurationAuthorizationError,
@@ -467,6 +468,7 @@ def test_authorization_replay_rejects_changed_review_head_without_mutating_recei
 def test_authorization_rejects_unverified_trash_and_public_api_projects_grant(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     state, framework, plan_digest = _state(tmp_path)
     reviewed = lifecycle.review_curation_page(
@@ -524,3 +526,34 @@ def test_authorization_rejects_unverified_trash_and_public_api_projects_grant(
     }
     assert payload["trust"]["actions_authorized"] is True
     assert payload["trust"]["physical_effect_applied"] is False
+
+    real_authorize_payload = curation_authorization_api.curation_authorize_payload
+
+    def authorize_at_fixture_time(*args, **kwargs):
+        return real_authorize_payload(*args, **kwargs, clock_ns=lambda: 5_000)
+
+    monkeypatch.setattr(
+        curation_authorization_api, "curation_authorize_payload", authorize_at_fixture_time
+    )
+    common_arguments = [
+        "curate", "authorize", plan_digest,
+        "--actor", "victor", "--expires-ns", "12000", "--max-bytes", "4",
+    ]
+    assert human_cli.run_human_command(
+        [*common_arguments, "--item-id", duplicate.item.item_id, "--action", "trash"]
+    ) == 1
+    denied = capsys.readouterr()
+    assert "CURATION_AUTHORIZE status=unavailable grant=-" in denied.out
+    assert "No se emitió ningún grant" in denied.out
+    assert "Se emitió sólo un grant durable" not in denied.out
+    assert "full-hash" in denied.err
+
+    assert human_cli.run_human_command(
+        [*common_arguments, "--item-id", organization.item.item_id, "--action", "move"]
+    ) == 0
+    granted = capsys.readouterr()
+    assert "CURATION_AUTHORIZE status=complete" in granted.out
+    assert payload["grant"]["grant_id"] in granted.out
+    assert "Se emitió sólo un grant durable" in granted.out
+    assert "No se emitió ningún grant" not in granted.out
+    assert granted.err == ""

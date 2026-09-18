@@ -257,11 +257,10 @@ def test_machine_json_projects_separate_record_and_root_status_counts(
 
 def test_root_boundary_reason_summary_preserves_multiple_limits(tmp_path: Path) -> None:
     root = tmp_path / "root"
-    nested = root / "00-dir"
-    nested.mkdir(parents=True, mode=0o700)
-    (nested / "child").write_bytes(b"child")
-    (root / "01-file").write_bytes(b"one")
-    (root / "02-file").write_bytes(b"two")
+    for ordinal in range(3):
+        nested = root / f"{ordinal:02d}-dir"
+        nested.mkdir(parents=True, mode=0o700)
+        (nested / "child").write_bytes(b"child")
 
     report = collect_machine_inventory(
         (MachineInventoryRoot(root, category="tmp"),),
@@ -270,9 +269,11 @@ def test_root_boundary_reason_summary_preserves_multiple_limits(tmp_path: Path) 
         max_bytes=1_000_000,
     )
 
-    # The first directory proves the requested depth is bounded; the third
-    # root entry proves the same root also hit its fair-share entry quota.
-    assert report.roots[0].truncation_reasons == ("entry_limit", "depth_limit")
+    # Every bounded native readdir prefix encounters a directory with a child.
+    # Preserve both observed boundaries without depending on readdir order.
+    assert report.records_scanned == report.scanned == 2
+    assert report.root_entry_quotas == (2,)
+    assert set(report.roots[0].truncation_reasons) == {"entry_limit", "depth_limit"}
     assert report.reason_summary["entry_limit"] == 1
     assert report.reason_summary["depth_limit"] == 1
     assert report.root_marker_reason_counts == {

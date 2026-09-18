@@ -26,6 +26,10 @@ fuera de `docs/`.
 - Scratch y registro de artefactos unifican identidad, límites, actividad, cobertura
   y protección de dependencias. La adopción histórica requiere selección exacta
   y aprobación privada; los manifests autocertificados dejan de autorizar retiros.
+- Curación devuelve una denegación tipada si el grant completo excede su límite
+  de serialización o contiene una identidad raíz inválida, antes de persistir
+  autorización o acciones. La CLI anuncia un grant sólo cuando se emitió;
+  conserva el código de salida y distingue la denegación sin efectos.
 - Framework compone preparación por selección y mantenimiento con recibos; los
   fallos parciales no se convierten en una ejecución completa.
 - ReviewTask consulta la versión canónica de Framework para aceptar el esquema

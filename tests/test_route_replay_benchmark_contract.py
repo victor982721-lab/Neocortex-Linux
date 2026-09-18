@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -10,19 +11,24 @@ import pytest
 import benchmarks.route_replay_benchmark as benchmark
 
 
-def test_default_fixture_profile_is_heterogeneous_bounded_and_deterministic(
-    tmp_path: Path,
-) -> None:
-    first = benchmark.build_fixture(tmp_path / "first")
-    second = benchmark.build_fixture(tmp_path / "second")
+def test_default_fixture_profile_is_heterogeneous_bounded_and_deterministic() -> None:
+    # Exercise the real admission boundary even when pytest uses another
+    # private TMPDIR. This context owns and removes only its new /tmp child.
+    with tempfile.TemporaryDirectory(
+        prefix="neocortex-route-replay-contract-",
+        dir=benchmark.SYSTEM_TEMP_ROOT,
+    ) as temporary:
+        fixture_parent = Path(temporary)
+        first = benchmark.build_fixture(fixture_parent / "first")
+        second = benchmark.build_fixture(fixture_parent / "second")
 
-    assert first == second
-    assert 20 <= first.files <= 50
-    assert first.files == 28
-    assert first.groups["base"] == 20
-    assert first.groups["documents"] == 3
-    assert first.groups["archive"] == 1
-    assert (tmp_path / "first" / "archive" / "fixture.zip").is_file()
+        assert first == second
+        assert 20 <= first.files <= 50
+        assert first.files == 28
+        assert first.groups["base"] == 20
+        assert first.groups["documents"] == 3
+        assert first.groups["archive"] == 1
+        assert (fixture_parent / "first" / "archive" / "fixture.zip").is_file()
 
 
 def test_fixture_builder_rejects_a_non_temporary_destination(tmp_path: Path) -> None:

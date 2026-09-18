@@ -744,37 +744,42 @@ def authorize_curation_items(
             if not isinstance(key, str) or not key or key.strip() != key or len(key) > 512:
                 raise ValueError("authorization_key must be a bounded trimmed string")
         grant_digest = _key_digest({"authorization_key": key, **semantic})
-        grant = AuthorizationGrant(
-            grant_id=f"curation-authorization-grant-v1:{grant_digest}",
-            authorization_key=key,
-            scope=AUTHORIZATION_SCOPE,
-            task_type=AUTHORIZATION_TASK_TYPE,
-            selector_signature=AUTHORIZATION_SELECTOR_SIGNATURE,
-            plan_digest=digest,
-            snapshot_id=page.snapshot_id,
-            source_snapshot_fingerprint=fence.source_snapshot_fingerprint,
-            root=root,
-            actor=actor_text,
-            action=action,
-            backend=AUTHORIZATION_BACKEND,
-            item_ids=ids,
-            task_ids=tuple(record.task.task_id for record in records),
-            max_actions=len(authorized_effects),
-            max_bytes=max_bytes_value,
-            issued_ns=issued_ns,
-            expires_ns=expires_ns,
-            review_task_heads=tuple(review_task_heads),
-            review_task_heads_digest=review_task_heads_digest(tuple(review_task_heads)),
-            root_snapshot=AuthorizationRootSnapshot(
+        try:
+            grant = AuthorizationGrant(
+                grant_id=f"curation-authorization-grant-v1:{grant_digest}",
+                authorization_key=key,
+                scope=AUTHORIZATION_SCOPE,
+                task_type=AUTHORIZATION_TASK_TYPE,
+                selector_signature=AUTHORIZATION_SELECTOR_SIGNATURE,
+                plan_digest=digest,
+                snapshot_id=page.snapshot_id,
+                source_snapshot_fingerprint=fence.source_snapshot_fingerprint,
                 root=root,
-                volume_id=root_snapshot_value.volume_id,
-                file_id=root_snapshot_value.file_id,
-                birthtime_ns=root_snapshot_value.birthtime_ns,
-            ),
-            source_heads=source_heads,
-            source_heads_digest=source_heads_digest,
-            authorized_effects=authorized_effects,
-        )
+                actor=actor_text,
+                action=action,
+                backend=AUTHORIZATION_BACKEND,
+                item_ids=ids,
+                task_ids=tuple(record.task.task_id for record in records),
+                max_actions=len(authorized_effects),
+                max_bytes=max_bytes_value,
+                issued_ns=issued_ns,
+                expires_ns=expires_ns,
+                review_task_heads=tuple(review_task_heads),
+                review_task_heads_digest=review_task_heads_digest(tuple(review_task_heads)),
+                root_snapshot=AuthorizationRootSnapshot(
+                    root=root,
+                    volume_id=root_snapshot_value.volume_id,
+                    file_id=root_snapshot_value.file_id,
+                    birthtime_ns=root_snapshot_value.birthtime_ns,
+                ),
+                source_heads=source_heads,
+                source_heads_digest=source_heads_digest,
+                authorized_effects=authorized_effects,
+            )
+        except ValueError as exc:
+            raise CurationAuthorizationError(
+                f"authorization grant validation failed: {exc}"
+            ) from exc
         result = issue_authorization_grant(database, grant)
         return CurationAuthorizationOutcome(result=result, items=tuple(items))
 

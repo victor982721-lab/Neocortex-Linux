@@ -1484,7 +1484,14 @@ def _run_curation_authorize(args: argparse.Namespace) -> int:
     error = _mapping(payload.get("error"))
     if error is not None and error.get("message"):
         _print(f"Estado: {error['message']}", file=sys.stderr)
-    _print("Se emitió sólo un grant durable; no se aplicó ningún efecto físico.")
+    if (
+        payload.get("status") == "complete"
+        and isinstance(grant.get("grant_id"), str)
+        and grant["grant_id"]
+    ):
+        _print("Se emitió sólo un grant durable; no se aplicó ningún efecto físico.")
+    else:
+        _print("No se emitió ningún grant; la autorización no está disponible.")
     return _exit_code(payload)
 
 

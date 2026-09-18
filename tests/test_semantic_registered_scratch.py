@@ -53,13 +53,20 @@ def test_semantic_plan_retires_registered_workspace_on_success(
     assert plan.state_mutated is False
     assert plan.jobs_created == 0
     assert plan.scratch_storage_bytes > 0
-    assert list(scratch.iterdir()) == []
+    scratch_entries = tuple(scratch.iterdir())
+    assert {entry.name for entry in scratch_entries} == {".scratch-control"}
+    assert len(scratch_entries) == 1
+    scratch_control = scratch_entries[0]
+    assert scratch_control.is_dir()
+    assert not scratch_control.is_symlink()
+    assert scratch_control.stat().st_mode & 0o077 == 0
     assert not (tmp_path / "semantic.sqlite3").exists()
-    assert ScratchManager(
+    manager = ScratchManager(
         scratch,
         owner="semantic-planner",
         create_root=False,
-    ).records() == ()
+    )
+    assert manager.records() == ()
 
 
 def test_semantic_plan_retains_registered_workspace_after_failure(

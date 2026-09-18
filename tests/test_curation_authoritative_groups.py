@@ -6,11 +6,14 @@ import sqlite3
 from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
 
-from neocortex.curation import lifecycle
+from neocortex.api import curation_authorization_api
+from neocortex.curation import authorization, lifecycle
 from neocortex.curation.authorization import (
+    CurationAuthorizationError,
     CurationAuthorizationSnapshotChanged,
     _effect_manifest,
     authorize_curation_items,
@@ -20,15 +23,18 @@ from neocortex.curation.verification import CurationWorkBudget, verify_curation_
 from neocortex.deduplication import DedupIndex, DedupPlanner, InventoryCheckpoint
 from neocortex.documents.document_catalog import initialize_document_catalog
 from neocortex.persistence.framework_schema import initialize_framework_schema
+from neocortex.persistence.sqlite_immutable import SQLiteReadSession
+from neocortex.workflow.authorization.contracts import MAX_AUTHORIZATION_JSON_BYTES
 
 
-def _large_group(tmp_path: Path, *, count: int = 65):
-    state = tmp_path / "state"
-    corpus = tmp_path / "corpus"
+def _large_group(tmp_path: Path, *, count: int = 65, compact_paths: bool = False):
+    state = tmp_path / ("s" if compact_paths else "state")
+    corpus = tmp_path / ("c" if compact_paths else "corpus")
     state.mkdir()
     corpus.mkdir()
     for index in range(count):
-        (corpus / f"member-{index:04d}.bin").write_bytes(b"same")
+        name = f"{index:04d}" if compact_paths else f"member-{index:04d}.bin"
+        (corpus / name).write_bytes(b"same")
     with DedupIndex(state / "dedup.sqlite3") as owner:
         summary = owner.scan(corpus, excluded_paths=())
         owner.bind_inventory_checkpoint(
@@ -176,8 +182,10 @@ def test_authoritative_group_preserves_partial_budget_state(
     assert replay.files_checked == 65
 
 
-def test_authorization_expands_a_truncated_group_from_published_owner(tmp_path: Path) -> None:
-    state, _corpus, page, _item = _large_group(tmp_path)
+def _resolved_group(tmp_path: Path, *, count: int = 65, compact_paths: bool = False):
+    state, corpus, page, _item = _large_group(
+        tmp_path, count=count, compact_paths=compact_paths
+    )
     framework = state / "framework.sqlite3"
     with closing(sqlite3.connect(framework)) as connection:
         initialize_framework_schema(connection, lambda: None)
@@ -202,22 +210,163 @@ def test_authorization_expands_a_truncated_group_from_published_owner(tmp_path: 
         clock_ns=lambda: 2_000,
     )
 
-    outcome = authorize_curation_items(
-        state,
-        framework,
-        plan_digest=page.plan_digest,
-        item_ids=(duplicate.item.item_id,),
+    return state, corpus, page, duplicate, framework
+
+
+def _originals(corpus: Path) -> dict[str, tuple[bytes, int, int, int, int]]:
+    result = {}
+    for path in corpus.iterdir():
+        observed = path.stat()
+        result[path.name] = (
+            path.read_bytes(),
+            observed.st_dev,
+            observed.st_ino,
+            observed.st_size,
+            observed.st_mtime_ns,
+        )
+    return result
+
+
+def _assert_no_authorization_or_actions(framework: Path) -> None:
+    with SQLiteReadSession(framework) as connection:
+        table = connection.execute(
+            "SELECT name FROM sqlite_schema "
+            "WHERE type='table' AND name='curation_authorization_grants'"
+        ).fetchone()
+        if table is not None:
+            assert connection.execute(
+                "SELECT COUNT(*) FROM curation_authorization_grants"
+            ).fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM file_actions").fetchone()[0] == 0
+
+
+def test_authorization_expands_a_truncated_group_from_published_owner() -> None:
+    # Keep the positive grant within its independent wire budget. The private
+    # root still honors TMPDIR, and all 65 physical members remain authoritative.
+    with TemporaryDirectory(prefix="g") as temporary:
+        state, corpus, page, duplicate, framework = _resolved_group(
+            Path(temporary), compact_paths=True
+        )
+        before = _originals(corpus)
+        assert len(duplicate.item.evidence["members"]) == 64
+        assert duplicate.item.evidence["members_truncated"] is True
+
+        outcome = authorize_curation_items(
+            state,
+            framework,
+            plan_digest=page.plan_digest,
+            item_ids=(duplicate.item.item_id,),
+            action="trash",
+            actor="victor",
+            expires_ns=10_000,
+            max_bytes=10_000,
+            clock_ns=lambda: 3_000,
+        )
+
+        effects = outcome.grant.authorized_effects
+        assert effects is not None
+        assert len(effects) == 64
+        assert {effect.source.path for effect in effects} == {
+            str(path)
+            for path in corpus.iterdir()
+            if str(path) != duplicate.item.evidence["keep_path"]
+        }
+        grant_json = outcome.grant.to_json()
+        assert len(grant_json.encode("utf-8")) <= MAX_AUTHORIZATION_JSON_BYTES
+        with SQLiteReadSession(framework) as connection:
+            receipts = connection.execute(
+                "SELECT receipt_json FROM curation_authorization_grants"
+            ).fetchall()
+            assert [row[0] for row in receipts] == [grant_json]
+            assert connection.execute("SELECT COUNT(*) FROM file_actions").fetchone()[0] == 0
+        assert _originals(corpus) == before
+
+
+def test_authorization_denies_oversized_complete_grant_before_publication(
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The preview remains limited to 64 members, so its ReviewTask fits while
+    # the complete grant reaches 100 effects and exceeds the separate wire
+    # budget. Keep the root compact instead of overflowing the earlier row.
+    state, corpus, page, duplicate, framework = _resolved_group(
+        tmp_path_factory.mktemp("grant"), count=101, compact_paths=True
+    )
+    before = _originals(corpus)
+    assert len(before) == 101
+    assert duplicate.item.evidence["members_truncated"] is True
+
+    with pytest.raises(CurationAuthorizationError, match="byte limit") as rejected:
+        authorize_curation_items(
+            state,
+            framework,
+            plan_digest=page.plan_digest,
+            item_ids=(duplicate.item.item_id,),
+            action="trash",
+            actor="victor",
+            expires_ns=10_000,
+            max_bytes=10_000,
+            clock_ns=lambda: 3_000,
+        )
+
+    assert isinstance(rejected.value.__cause__, ValueError)
+    _assert_no_authorization_or_actions(framework)
+    assert _originals(corpus) == before
+
+    monkeypatch.setattr(curation_authorization_api, "default_state_directory", lambda: state)
+    payload = curation_authorization_api.curation_authorize_payload(
+        page.plan_digest,
+        [duplicate.item.item_id],
         action="trash",
         actor="victor",
         expires_ns=10_000,
         max_bytes=10_000,
         clock_ns=lambda: 3_000,
     )
+    assert payload["status"] == "unavailable"
+    assert payload["error"]["code"] == "authorization_denied"
+    assert "byte limit" in payload["error"]["message"]
+    assert payload["exit_code"] == 1
+    assert payload["grant"] is None
+    assert payload["effects"] == {"state": "none", "corpus": "none", "external": "none"}
+    assert payload["trust"]["actions_authorized"] is False
+    assert payload["trust"]["physical_effect_applied"] is False
+    _assert_no_authorization_or_actions(framework)
+    assert _originals(corpus) == before
 
-    assert len(outcome.grant.authorized_effects or ()) == 64
-    assert outcome.grant.authorized_effects is not None
-    assert outcome.grant.authorized_effects[-1].source.path.endswith("member-0064.bin")
-    assert all(effect.source.path != duplicate.item.evidence["keep_path"] for effect in outcome.grant.authorized_effects)
+
+def test_authorization_wraps_invalid_root_metadata_before_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state, corpus, page, duplicate, framework = _resolved_group(tmp_path, count=2)
+    before = _originals(corpus)
+    snapshot_path = authorization.snapshot_path
+
+    def invalid_root(path):
+        observed = snapshot_path(path)
+        if Path(path) == corpus:
+            return replace(observed, birthtime_ns=-2)
+        return observed
+
+    monkeypatch.setattr(authorization, "snapshot_path", invalid_root)
+    with pytest.raises(CurationAuthorizationError, match="birthtime_ns") as rejected:
+        authorize_curation_items(
+            state,
+            framework,
+            plan_digest=page.plan_digest,
+            item_ids=(duplicate.item.item_id,),
+            action="trash",
+            actor="victor",
+            expires_ns=10_000,
+            max_bytes=10_000,
+            clock_ns=lambda: 3_000,
+        )
+
+    assert isinstance(rejected.value.__cause__, ValueError)
+    assert "root_snapshot.birthtime_ns" in str(rejected.value.__cause__)
+    _assert_no_authorization_or_actions(framework)
+    assert _originals(corpus) == before
 
 
 def test_authorization_does_not_use_a_tampered_preview_sample(tmp_path: Path) -> None:

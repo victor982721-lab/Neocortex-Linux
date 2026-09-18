@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 from neocortex.capabilities.formats.archive import materialization
-from neocortex.runtime.artifact_registry import ArtifactRegistry
+from neocortex.runtime.artifact_registry import ArtifactRegistry, ArtifactState
 from neocortex.runtime.scratch import ScratchManager
 
 
@@ -41,9 +41,26 @@ def test_canonical_archive_scratch_creates_manifest_and_registry_claim(
         assert record.root == registry_root
         assert record.valid is True
 
-    # Successful lifecycle cleanup removes only the fixture workspace; the
-    # producer registry claim remains durable for the maintenance owner.
-    assert tuple(scratch.iterdir()) == ()
+    # Successful lifecycle cleanup removes only the fixture workspace.  The
+    # private control journal is durable, while the registry keeps a retired
+    # tombstone rather than an active claim.
+    scratch_entries = tuple(scratch.iterdir())
+    assert {entry.name for entry in scratch_entries} == {".scratch-control"}
+    assert len(scratch_entries) == 1
+    scratch_control = scratch_entries[0]
+    assert scratch_control.is_dir()
+    assert not scratch_control.is_symlink()
+    assert scratch_control.stat().st_mode & 0o077 == 0
+    assert not tuple(scratch.glob("workspace-*"))
+    registry_records_after = ArtifactRegistry(
+        registry_root,
+        owner=materialization.REGISTERED_SCRATCH_OWNER,
+        create_root=False,
+    ).records()
+    assert len(registry_records_after) == 1
+    retired_record = registry_records_after[0]
+    assert retired_record.state == ArtifactState.RETIRED.value
+    assert retired_record.valid is True
     assert registry_manifests[0].is_file()
 
 
