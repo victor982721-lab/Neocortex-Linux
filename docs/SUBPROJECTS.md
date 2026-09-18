@@ -28,6 +28,15 @@ identidad/enumeración se relaciona con inventario, seguridad de efectos con
 curación, progreso/control con runtime y SDK con interfaces. `semgrep` es una
 herramienta de desarrollo, no una capacidad del producto.
 
+`neocortex.api.status_codes` traduce los resultados de lectura al contrato común
+de códigos de salida; API/SDK, GUI y MCP no necesitan importar la CLI para usarlo.
+`neocortex.foundation.processing_provenance` mantiene la revisión compartida de
+procedencia y sus caches, sin asumir la autoridad de los owners que la consumen.
+`neocortex.semantic.semantic_models` define `TextSourceRecord`; el adaptador Video
+consume ese DTO directamente y `semantic_sources` conserva su reexport compatible.
+Estas separaciones siguen responsabilidades y consumidores concretos, no cuotas
+de líneas. Las fachadas y los ocho dominios del mapa mantienen sus rutas.
+
 Los tests heredan el AGENTS de `tests`; sus contratos de comportamiento están
 en la ficha del dominio bajo prueba. No desplaces fixtures ni módulos para que
 encajen en el mapa, no cambies namespaces, wheels ni fronteras de empaquetado.

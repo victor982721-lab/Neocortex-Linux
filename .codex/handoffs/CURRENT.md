@@ -1,7 +1,7 @@
 # Handoff operativo vigente — NeoCortex
 
 **Ronda:** NEO-AUDIT-UNIFIED-20260918.
-**Actualización:** 2026-09-18T04:31:03.917000+00:00.
+**Actualización:** 2026-09-18T05:23:00+00:00.
 **Objetivo autorizado:** corregir las auditorías de limpieza, EndToEnd y Text,
 publicar e integrar el código remoto, construir e instalar la suite offline y
 validarla en un laboratorio aislado. La autorización incluye preparación local
@@ -11,7 +11,7 @@ de modelos y herramientas; no requiere nuevas confirmaciones de esta ronda.
 
 El remoto verificado al iniciar es `victor982721-lab/Neocortex-Linux`,
 `main=f3bbf439d7c5b192f1509b1675bc64a139602320`. La candidata
-`2a5a4d13577b8e79af23d4b15c97eedf61fdf25f` está publicada en
+`fec710692fb07d01bde23d28b0ee39a7a2dc6ced` está publicada en
 `fix/unified-audit-20260918`; la integración de esta ronda a `main` permanece
 pendiente de la aceptación final. No se reescribe historia. El cierre exige
 consultar otra vez el remoto y verificar `HEAD == main == origin/main` y árbol
@@ -45,6 +45,16 @@ pasan 69. Knowledge reabre la lectura cercada entre observaciones; 64 pruebas
 focales de snapshot/salud/kernel pasan conservando zero-copy y límites. La nueva
 suite completa y la aceptación instalada siguen pendientes.
 
+R3 recogió 8.635 casos y se interrumpió por presión de cache durante una
+instalación concurrente: 759 pasaron, tres fallaron, seis se omitieron y 7.867
+quedaron sin ejecutar. Sus tres fallos de pipes se reprodujeron también en la
+base. La fixture ahora espera una señal explícita del descendiente después de
+`setsid` y conserva los plazos y las aserciones: 15 repeticiones frías y cinco
+casos independientes pasan; el módulo completo pasa 19, con tres omisiones
+exclusivas de Windows. R4 debe ejecutarse sin instalaciones ni empaquetado en
+paralelo. No se modificó la admisión de recursos ni el runner productivo de
+procesos para obtener estos resultados.
+
 ## Instalación y entorno
 
 El laboratorio usa CPython 3.14.7, SQLite 3.53.1, dependencias del lock cp314 y
@@ -56,8 +66,23 @@ FastEmbed, transcripción Whisper, PDF/QPDF, OCR en español, FFprobe y Qt offsc
 La primera instalación de la candidata rechazó correctamente un enlace externo
 de Python. El instalador se corrigió para materializar copias del ejecutable,
 manteniendo el rechazo de enlaces ajenos y la identidad nativa aprobada después
-del rename. La repetición de instalación, verify y aceptación de la interfaz
-instalada permanece pendiente. No hay una promoción de esta ronda certificada.
+del rename. La instalación de `60ea7bea3711d3c7a07dce4c159bb23021c67f00` terminó
+con cinco modelos preparados y un recibo real. `candidate-verify-04` pasó con
+`verified=true`, fuente y wheelhouse acreditados, y runtime sólo de producto.
+
+El laboratorio conservó en cuarentena árboles temporales que reaparecieron con
+inodos nuevos después de un movimiento. Retiró los duplicados conocidos bajo
+lock y restauró permisos de sólo lectura tras verificar todos los bytes contra
+el manifest; una comprobación posterior conserva staging vacío y modos 0555.
+No se estableció una causa definitiva de la reaparición ni se atribuye sin
+reproducción a un defecto de producto. Los logs del incidente se preservan fuera
+del repositorio. La aceptación funcional instalada está en curso; un verify
+aprobado no sustituye esos flujos ni la suite integral.
+
+Se preparó Noto Sans con procedencia para las fixtures de OCR del contenedor.
+Los wrappers locales de QPDF y Tesseract resuelven su destino al invocarse por
+symlink con PATH restringido; las pruebas conservan los requisitos de idiomas.
+Estas preparaciones pertenecen al laboratorio y no al equipo del usuario.
 
 Este laboratorio no es la máquina Kubuntu del usuario: su Corpus, releases,
 estado, sesión Plasma/KIO y entorno personal no se han abierto ni modificado.

@@ -55,6 +55,15 @@ delega adopción. Sus auxiliares reutilizan contratos del mismo owner sin volver
 entrar en la operación que los llamó. Estas cuatro delegaciones tienen 30 aristas
 concretas revisadas; cualquier arista nueva exige revisar de nuevo el contrato.
 
+El traslado de `TextSourceRecord` a `semantic_models` eliminó la dependencia
+circular entre el agregador `semantic_sources` y el adaptador `video_source`,
+manteniendo el reexport y la identidad pública histórica del DTO. El contrato
+conceptual conserva las cinco relaciones diferidas previas y las cuatro
+delegaciones descritas arriba: nueve componentes en total, sin ciclos inmediatos.
+El analizador distingue imports de módulo, función y `TYPE_CHECKING`; diferir una
+arista no equivale a eliminarla del grafo conceptual. No se extraen módulos por
+tamaño ni se introducen capas sin consumidores.
+
 ### Foundation y plataforma
 
 `neocortex.foundation` define identidad y procedencia compartidas.

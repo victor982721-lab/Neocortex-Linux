@@ -18,6 +18,11 @@ retención. `safety` mantiene fronteras físicas compartidas. Consulta
 - El consumo del grant pertenece a `curate apply`; los backends se inyectan
   explícitamente sobre fixtures. No promociones selección automática de backend,
   KIO real, restore de escritorio ni mutación MCP por una tarea de código.
+- La ruta de Framework tiene un punto de construcción distinto:
+  `FrameworkOrchestrator._execute_initial_actions` crea `KioTrashBackend` en Linux
+  cuando `apply_actions` lo requiere, después del gate de plataforma. Esto no
+  cambia la inyección explícita de `curate apply` ni acredita KDE/KIO o restore
+  de escritorio; esas comprobaciones pertenecen al entorno instalado autorizado.
 - `--apply` y `--organization-apply` conservan su rechazo previo a efectos según
   el contrato vigente. Cualquier ampliación requiere una instrucción expresa,
   no una interpretación de la autorización de publicación en main.
