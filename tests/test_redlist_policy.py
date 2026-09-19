@@ -46,7 +46,7 @@ def _snapshot(path: str) -> FileSnapshot:
 
 
 def test_redlist_matches_names_and_suffixes_case_insensitively() -> None:
-    assert redlist_match("/root/cache.BAK") == ".bak"
+    assert redlist_match("/root/cache.BAK-2") == ".bak-2"
     assert redlist_match("/root/.GITIGNORE") == ".gitignore"
     assert redlist_match("/root/report.sqlite3-wal") == ".sqlite3-wal"
     assert redlist_match("/root/report.keep") is None
@@ -60,12 +60,21 @@ def test_redlist_does_not_treat_intermediate_version_dots_as_extensions() -> Non
 
 
 def test_redlist_policy_is_stable_and_metadata_binding_does_not_read_payload() -> None:
-    assert len(REDLIST_ENTRIES) > 150
+    assert len(REDLIST_ENTRIES) == 288
     assert redlist_policy_digest().startswith("sha256:")
     first = metadata_binding(_snapshot("/root/a.bak"))
     second = metadata_binding(_snapshot("/root/a.bak"))
     assert first == second
     assert first.startswith("metadata-v1:")
+
+
+def test_redlist_uses_only_the_current_explicit_list() -> None:
+    assert ".0_ cu" in REDLIST_ENTRIES
+    assert ".bak legado (v1)" in REDLIST_ENTRIES
+    assert ".astro" in REDLIST_ENTRIES
+    assert ".py" in REDLIST_ENTRIES
+    assert ".pdbxml" not in REDLIST_ENTRIES
+    assert ".bak" not in REDLIST_ENTRIES
 
 
 def test_redlist_exports_only_policy_symbols() -> None:
@@ -86,7 +95,7 @@ def test_redlist_prepass_removes_matches_before_content_hashing(tmp_path: Path, 
     state_root = tmp_path / "state"
     root.mkdir()
     state_root.mkdir()
-    redlisted = root / "generated.BAK"
+    redlisted = root / "generated.BAK-2"
     redlisted.write_bytes(b"must never be hashed")
     retained = root / "keep.txt"
     retained.write_text("keep", encoding="utf-8")
@@ -143,7 +152,7 @@ def test_all_apply_prefilters_the_corpus_before_planning_and_never_leaves_root(
     outside = tmp_path / "outside.BAK"
     root.mkdir()
     outside.write_bytes(b"outside")
-    redlisted = root / "inside.BAK"
+    redlisted = root / "inside.BAK-2"
     redlisted.write_bytes(b"redlist content")
     retained = root / "keep.txt"
     retained.write_text("retained", encoding="utf-8")
@@ -174,14 +183,14 @@ def test_all_apply_prefilters_the_corpus_before_planning_and_never_leaves_root(
             "SELECT action_type,evidence FROM file_actions ORDER BY action_id LIMIT 1"
         ).fetchone()
     assert row is not None and row[0] == "trash_redlist"
-    assert "\"redlist_entry\":\".bak\"" in row[1]
+    assert "\"redlist_entry\":\".bak-2\"" in row[1]
 
 
 def test_all_apply_route_input_excludes_redlisted_source(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path / "corpus"
     state = tmp_path / "state"
     root.mkdir()
-    (root / "discard.BAK").write_bytes(b"discard")
+    (root / "discard.BAK-2").write_bytes(b"discard")
     (root / "keep.txt").write_text("keep", encoding="utf-8")
     seen: list[str] = []
 
@@ -216,7 +225,7 @@ def test_redlist_reserves_durable_budget_and_publishes_counters(tmp_path: Path) 
     state_root = tmp_path / "state"
     root.mkdir()
     state_root.mkdir()
-    redlisted = root / "discard.BAK"
+    redlisted = root / "discard.BAK-2"
     redlisted.write_bytes(b"discard")
     retained = root / "keep.txt"
     retained.write_text("keep", encoding="utf-8")
