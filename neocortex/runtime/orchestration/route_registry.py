@@ -136,10 +136,11 @@ def _project_roots_relevant_to_corpus(
     """Keep allowlist roots that overlap the selected corpus lexically.
 
     The default personal project roots normally live outside the controlled
-    corpus.  Treating those unrelated paths as an always-nonempty allowlist
-    would suppress marker discovery for an intentionally copied project.  An
-    explicitly overlapping root remains authoritative; no filesystem walk or
-    symlink resolution is performed here.
+    corpus.  Discarding disjoint roots keeps the route's effective allowlist
+    bounded to inventory paths; an empty result remains empty and therefore
+    cannot fall back to marker discovery.  An explicitly overlapping root
+    remains authoritative; no filesystem walk or symlink resolution is
+    performed here.
     """
 
     corpus = Path(corpus_root).absolute()
@@ -269,11 +270,12 @@ def _code_route_workload(context: RouteExecutionContext) -> RouteWorkload:
     from neocortex.code.ingestion.code_candidate_scope import (
         ProjectCandidateScope,
         is_project_marker,
+        normalize_code_path,
     )
     from neocortex.code.ingestion.code_detection import likely_code_candidate
     config = context.config
     selected_paths = {
-        str(Path(value).expanduser().absolute()) for value in config.selection.paths
+        normalize_code_path(value) for value in config.selection.paths
     }
     project_roots = _project_roots_relevant_to_corpus(
         context.root,
@@ -292,7 +294,7 @@ def _code_route_workload(context: RouteExecutionContext) -> RouteWorkload:
 
         def code_sizes() -> Iterable[int]:
             for snapshot in index.snapshots(context.scan_id):
-                if selected_paths and str(Path(snapshot.path).absolute()) not in selected_paths:
+                if selected_paths and normalize_code_path(snapshot.path) not in selected_paths:
                     continue
                 if not likely_code_candidate(snapshot.path) and not is_project_marker(snapshot.path):
                     continue

@@ -471,6 +471,10 @@ class ElasticMap(AbstractContextManager["ElasticMap[_Input, _Output]"],
         self._exhausted = False
         self._closed = False
         self._owner = threading.get_ident()
+        # Workers publish their durable per-work state before setting this
+        # event. One notification covers admission, completion and failure;
+        # preparation and consumption still belong to the caller alone.
+        self._owner_wakeup = threading.Event()
 
     def _check_owner(self) -> None:
         if threading.get_ident() != self._owner:
@@ -642,12 +646,16 @@ class ElasticMap(AbstractContextManager["ElasticMap[_Input, _Output]"],
                 work.value = _MISSING
             work.ready.set()
             work.finished.set()
+            self._owner_wakeup.set()
 
     def _execute(self, work: _Work[_Output], grant: Any,
                  claim: _ProcessClaim | None) -> None:
         executor = None if claim is None else claim.executor
         work.grant = grant
         work.admitted.set()
+        # The result cannot become ready until its caller prepares it. Wake
+        # that caller on admission instead of waiting for its result poll.
+        self._owner_wakeup.set()
         while not work.prepared.wait(self._poll):
             self._stop.checkpoint()
         self._stop.checkpoint()
@@ -699,6 +707,7 @@ class ElasticMap(AbstractContextManager["ElasticMap[_Input, _Output]"],
         work.value = value
         del value
         work.ready.set()
+        self._owner_wakeup.set()
         while not work.release.wait(self._poll):
             self._stop.checkpoint()
         work.value = _MISSING
@@ -727,6 +736,10 @@ class ElasticMap(AbstractContextManager["ElasticMap[_Input, _Output]"],
         try:
             self._release_current()
             while True:
+                # Clear BEFORE checking per-work state. A publication before
+                # this clear is still visible in admitted/ready; one after it
+                # leaves the event set through wait(), avoiding a lost wakeup.
+                self._owner_wakeup.clear()
                 self._checkpoint()
                 self._fill()
                 self._prepare_ready()
@@ -749,9 +762,14 @@ class ElasticMap(AbstractContextManager["ElasticMap[_Input, _Output]"],
                 for pending in self._pending:
                     if pending.ready.is_set() and pending.error is not None:
                         raise pending.error
+                # All workers may make preparation or a fatal error ready,
+                # including siblings behind a slow first result. The timeout
+                # remains a fallback for capacity/deadline/cancellation probes.
                 if self._pending:
-                    self._pending[0].ready.wait(self._poll)
+                    self._owner_wakeup.wait(self._poll)
                 else:
+                    # With no producer to signal this map, retain the token's
+                    # bounded observation of parent cancellation while idle.
                     self._stop.wait(self._poll)
         except StopIteration:
             raise

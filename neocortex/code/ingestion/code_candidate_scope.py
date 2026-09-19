@@ -3,8 +3,8 @@
 The broad inventory is shared by every media route.  Code must therefore
 distinguish owned software projects from arbitrary JSON, text and installed
 dependencies without walking the corpus a second time.  This module honors an
-explicit project allowlist when supplied; marker discovery is only the legacy
-fallback.  Bounded deterministic path rules run before candidate bytes are read.
+explicit project allowlist; marker discovery never widens normal ``projects``
+mode.  Bounded deterministic path rules run before candidate bytes are read.
 """
 
 from __future__ import annotations
@@ -125,11 +125,13 @@ def is_project_marker(path: str | Path) -> bool:
 
 
 def _path_key(path: str | Path) -> str:
-    return os.path.normcase(os.path.abspath(os.fspath(path)))
+    return os.path.normcase(os.path.abspath(os.path.expanduser(os.fspath(path))))
 
 
-def _directory_parts(path: str | Path) -> tuple[str, ...]:
-    return tuple(part.casefold() for part in Path(path).parent.parts)
+def normalize_code_path(path: str | Path) -> str:
+    """Return the lexical key shared by scope and route selection checks."""
+
+    return _path_key(path)
 
 
 def _is_vendored_part(part: str) -> bool:
@@ -191,26 +193,30 @@ class ProjectCandidateScope:
     @classmethod
     def discover(
         cls,
-        paths: Iterable[str],
+        paths: Iterable[str | Path],
         *,
         include_generated: bool,
         include_vendored: bool,
         explicit_roots: Iterable[str | Path] = (),
     ) -> "ProjectCandidateScope":
-        """Build an allowlist, falling back to marker discovery only if empty."""
+        """Build the explicit project allowlist for normal ``projects`` mode.
 
-        raw_roots = {_path_key(root): os.path.abspath(os.fspath(root)) for root in explicit_roots}
-        if not raw_roots:
-            for value in paths:
-                if not is_project_marker(value):
-                    continue
-                directory_parts = _directory_parts(value)
-                if not include_vendored and any(
-                    _is_vendored_part(part) for part in directory_parts
-                ):
-                    continue
-                root = os.path.abspath(os.fspath(Path(value).parent))
-                raw_roots.setdefault(_path_key(root), root)
+        ``paths`` is retained as part of the inventory-facing API, but marker
+        discovery is deliberately not a source of authority here.  A marker
+        in an arbitrary corpus must never promote its parent directory into a
+        Code project; callers add a new project only by supplying its root
+        explicitly.  The broad route is the separate, explicit opt-in for
+        marker/code-like discovery.
+        """
+
+        # Do not inspect ``paths``.  Keeping the inventory iterable in the
+        # signature preserves the bounded owner seam while making an empty or
+        # disjoint allowlist fail closed instead of widening from markers.
+        del paths
+        raw_roots = {
+            _path_key(root): os.path.abspath(os.path.expanduser(os.fspath(root)))
+            for root in explicit_roots
+        }
 
         accepted: dict[str, str] = {}
         for root_key, root in sorted(
@@ -269,4 +275,5 @@ __all__ = [
     "ProjectCandidateScope",
     "ScopeDecision",
     "is_project_marker",
+    "normalize_code_path",
 ]

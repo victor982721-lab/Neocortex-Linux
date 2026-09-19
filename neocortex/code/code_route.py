@@ -28,7 +28,11 @@ from neocortex.progress import (
 
 from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
 from .ingestion.code_analyzers import AnalyzerRegistry, builtin_analyzer_registry
-from .ingestion.code_candidate_scope import ProjectCandidateScope, is_project_marker
+from .ingestion.code_candidate_scope import (
+    ProjectCandidateScope,
+    is_project_marker,
+    normalize_code_path,
+)
 from .code_contracts import (
     AnalysisStatus,
     CodeAnalysis,
@@ -52,7 +56,7 @@ from .code_processing import (
     process_code_candidate,
     validate_code_snapshot,
 )
-from neocortex.semantic.semantic_models import fingerprint_bytes
+from neocortex.semantic.semantic_models import canonical_json, fingerprint_bytes, fingerprint_text
 
 # region [01] Structural collaborators and safe I/O
 
@@ -212,13 +216,25 @@ class CodeRoute(CodeContentProcessor):
         self.cancellation = cancellation or CancellationToken()
         self.analyzers = analyzers or builtin_analyzer_registry()
         self.memory_gate = memory_gate
+        scope_policy = canonical_json(
+            {
+                "candidate_scope": self.config.candidate_scope,
+                "explicit_project_roots": tuple(
+                    sorted(normalize_code_path(root) for root in self.config.explicit_project_roots)
+                ),
+                "include_generated": self.config.include_generated,
+                "include_vendored": self.config.include_vendored,
+            }
+        )
+        scope_signature = fingerprint_text(scope_policy).xxh3_128
         self.processing_signature = (
             f"{self.config.processing_signature}|"
             f"artifact-detector={DETECTOR_VERSION}|"
-            f"{self.analyzers.processing_signature}"
+            f"{self.analyzers.processing_signature}|"
+            f"candidate-policy-v1={scope_signature}"
         )
         self._selected_paths = frozenset(
-            os.path.normcase(os.path.abspath(item)) for item in self.config.selection.paths
+            normalize_code_path(item) for item in self.config.selection.paths
         )
 
     def _emit(
@@ -234,7 +250,7 @@ class CodeRoute(CodeContentProcessor):
             ProgressEvent(
                 operation="code",
                 phase="analysis",
-                description="Análisis incremental de código",
+                description="Indexando código de proyectos seleccionados",
                 completed=completed,
                 total=self.config.max_documents,
                 unit="archivos",
@@ -249,7 +265,7 @@ class CodeRoute(CodeContentProcessor):
     def _selected_path(self, path: str) -> bool:
         if not self._selected_paths:
             return True
-        normalized = os.path.normcase(os.path.abspath(path))
+        normalized = normalize_code_path(path)
         return normalized in self._selected_paths
 
     def _discover_project_scope(self) -> ProjectCandidateScope | None:

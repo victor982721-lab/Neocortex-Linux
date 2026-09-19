@@ -10,17 +10,18 @@ attempt for the runtime maintenance owner to inspect.
 from __future__ import annotations
 
 import math
+import operator
 import os
 import re
 import shutil
 import subprocess
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, overload
 
 from neocortex.foundation.hash_compat import xxhash
 
@@ -204,15 +205,45 @@ def parse_showinfo_timestamps(payload: bytes, *, duration_seconds: float) -> tup
     return tuple(sorted(values))
 
 
-def _even_subset(values: tuple[int, ...], limit: int) -> tuple[int, ...]:
+def _even_subset(values: Sequence[int], limit: int) -> tuple[int, ...]:
     if limit <= 0 or not values:
         return ()
     if len(values) <= limit:
-        return values
+        return tuple(values)
     if limit == 1:
         return (values[len(values) // 2],)
     indexes = {round(index * (len(values) - 1) / (limit - 1)) for index in range(limit)}
     return tuple(values[index] for index in sorted(indexes))
+
+
+@dataclass(frozen=True, slots=True)
+class _IntervalTimestamps(Sequence[int]):
+    """Sorted unique interval ticks, retaining only a range and optional end."""
+
+    regular: range
+    extra_end: int | None = None
+
+    def __len__(self) -> int:
+        return len(self.regular) + int(self.extra_end is not None)
+
+    @overload
+    def __getitem__(self, index: int) -> int: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> tuple[int, ...]: ...
+
+    def __getitem__(self, index: int | slice) -> int | tuple[int, ...]:
+        if isinstance(index, slice):
+            return tuple(self[item] for item in range(*index.indices(len(self))))
+        index = operator.index(index)
+        if index < 0:
+            index += len(self)
+        if not 0 <= index < len(self):
+            raise IndexError("interval timestamp index out of range")
+        if index < len(self.regular):
+            return self.regular[index]
+        assert self.extra_end is not None
+        return self.extra_end
 
 
 def _interval_timestamps(
@@ -220,7 +251,7 @@ def _interval_timestamps(
     interval_seconds: float,
     *,
     frame_rate: float | None = None,
-) -> tuple[int, ...]:
+) -> Sequence[int]:
     duration_ms = max(0, math.floor(duration_seconds * 1000))
     # Container duration commonly points just beyond the final decodable frame.
     # Stay a small bounded distance inside the media instead of manufacturing a
@@ -248,10 +279,15 @@ def _interval_timestamps(
             aligned_end = math.floor((frame_slots - 1) * 1000 / frame_rate)
             final = min(final, max(0, aligned_end))
     interval_ms = max(1, round(interval_seconds * 1000))
-    values = list(range(0, final + 1, interval_ms))
-    if not values or final - values[-1] >= min(interval_ms // 2, 1000):
-        values.append(final)
-    return tuple(sorted(set(values)))
+    regular = range(0, final + 1, interval_ms)
+    # final >= 0 and interval_ms >= 1, so zero is always present.  The former
+    # sorted(set(...)) only removed an appended duplicate of the endpoint.
+    extra_end = (
+        final
+        if final != regular[-1] and final - regular[-1] >= min(interval_ms // 2, 1000)
+        else None
+    )
+    return _IntervalTimestamps(regular, extra_end)
 
 
 def build_frame_plan(
@@ -289,7 +325,7 @@ def _validate_frame_plan_inputs(
 
 
 def _initial_frame_selections(
-    interval: tuple[int, ...],
+    interval: Sequence[int],
     scenes: tuple[int, ...],
     keyframes: tuple[int, ...],
     max_frames: int,
@@ -306,12 +342,15 @@ def _initial_frame_selections(
 
 def _fill_interval_budget(
     selected: list[tuple[int, FrameReason]],
-    interval: tuple[int, ...],
+    interval: Sequence[int],
     max_frames: int,
 ) -> None:
     # Empty discovery sources donate their reserved budget back to uniform coverage.
     if len(selected) >= max_frames:
         return
+    # _initial_frame_selections fills its remaining budget by indexed sampling
+    # whenever interval is that long.  Reaching this branch therefore implies
+    # len(interval) < remaining <= max_frames; iteration stays bounded here.
     already = {timestamp for timestamp, _reason in selected}
     unused = tuple(value for value in interval if value not in already)
     selected.extend(

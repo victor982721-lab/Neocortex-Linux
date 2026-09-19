@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import re
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -188,14 +189,25 @@ def _collect_impl_evidence(
             )
 
 
-def _containing_impl(
-    impl_spans: list[_ImplSpan],
-    offset: int,
-) -> _ImplSpan | None:
-    return next(
-        (span for span in impl_spans if span[0] < offset < span[1]),
-        None,
-    )
+class _ImplCursor:
+    """First containing span for increasing item offsets and ordered impls."""
+
+    def __init__(self, impl_spans: list[_ImplSpan]) -> None:
+        self.spans = impl_spans
+        self.next_span = 0
+        self.active: deque[_ImplSpan] = deque()
+
+    def containing(self, offset: int) -> _ImplSpan | None:
+        while self.next_span < len(self.spans):
+            span = self.spans[self.next_span]
+            if span[0] >= offset:
+                break
+            self.active.append(span)
+            self.next_span += 1
+        while self.active and self.active[0][1] <= offset:
+            self.active.popleft()
+        # A later overlapping/nested span must not displace the first one.
+        return self.active[0] if self.active else None
 
 
 def _rust_item_identity(
@@ -217,10 +229,8 @@ def _rust_item_identity(
 def _rust_item_signature(text: str, match: re.Match[str], end: int) -> str:
     signature_end = text.find("{", match.end(), min(len(text), match.end() + 8192))
     if signature_end < 0 or signature_end > end:
-        signature_end = min(
-            end,
-            text.find("\n", match.end()) if "\n" in text[match.end() :] else end,
-        )
+        line_end = text.find("\n", match.end(), end)
+        signature_end = end if line_end < 0 else line_end
     return text[match.start() : signature_end].strip()[:4096]
 
 
@@ -276,11 +286,12 @@ def _collect_item_evidence(
     analyzer_version: str,
     evidence: _RustEvidence,
 ) -> None:
+    impl_cursor = _ImplCursor(evidence.impl_spans)
     for match in _ITEM.finditer(text):
         kind = match.group("kind")
         name = match.group("name")
         end = _matching_brace(text, match.start())
-        containing_impl = _containing_impl(evidence.impl_spans, match.start())
+        containing_impl = impl_cursor.containing(match.start())
         symbol_kind, parent, qualified = _rust_item_identity(
             module,
             kind,

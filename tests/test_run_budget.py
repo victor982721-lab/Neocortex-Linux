@@ -14,6 +14,19 @@ from neocortex.runtime.orchestration.orchestrator import FrameworkOrchestrator
 from neocortex.runtime.orchestration.route_registry import RouteAdapter
 from neocortex.runtime.orchestration.run_status import list_run_status
 from neocortex.runtime.models import FrameworkConfig
+from neocortex.workflow.actions.corpus_admission import CorpusAdmissionPolicy
+
+
+def _current_admission_configuration() -> dict[str, object]:
+    config = FrameworkConfig()
+    policy = CorpusAdmissionPolicy(
+        interested_roots=config.code_project_roots,
+        code_scope=config.code_candidate_scope,
+    )
+    return {
+        "corpus_admission": policy.to_dict(),
+        "corpus_admission_signature": policy.signature,
+    }
 
 
 def _run_with_budget(tmp_path: Path, budget: dict[str, object]) -> tuple[FrameworkState, int]:
@@ -27,6 +40,7 @@ def _run_with_budget(tmp_path: Path, budget: dict[str, object]) -> tuple[Framewo
         root=str(root),
         root_identity=(1, 2, -1),
         selected_routes=("probe",),
+        configuration=_current_admission_configuration(),
         budget=budget,
     )
     assert state.publish_run_manifest(run_id, manifest.event_payload())
@@ -87,6 +101,7 @@ def test_abrupt_run_recovery_is_idempotent_and_retains_route_inputs(tmp_path: Pa
                 root=str(root),
                 root_identity=(1, 2, -1),
                 selected_routes=("probe",),
+                configuration=_current_admission_configuration(),
                 budget={"durable": {"max_items": 5}},
             ).event_payload(),
         )

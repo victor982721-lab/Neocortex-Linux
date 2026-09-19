@@ -781,6 +781,8 @@ def _stage_source(
         with sqlite_cancellation_scope(connection, bridge):
             base_revisions: dict[str, tuple[object, ...] | None] = {}
             previous_item_id: str | None = None
+            revision_window_size = STAGING_BATCH_SIZE
+            revision_window_uses = 0
             session = _SemanticTextStagingSession(
                 connection,
                 generation_id=generation_id,
@@ -798,12 +800,22 @@ def _stage_source(
                 first = next(iterator)
                 item = first.item
                 if base_generation_id is not None and item.item_id not in base_revisions:
+                    # A range is useful only if the source consumes it. Keep
+                    # monotone forward/reverse streams amortized; a discarded
+                    # mostly unused window switches this attempt to one-item
+                    # reads. Tiny boundary windows do not establish disorder.
+                    if len(base_revisions) >= 8 and revision_window_uses * 4 < len(base_revisions):
+                        revision_window_size = 1
                     session._commit()
                     base_revisions = _published_item_revision_keys(
                         connection, base_generation_id, source_kind,
                         first_item_id=item.item_id,
+                        batch_size=revision_window_size,
                         descending=previous_item_id is not None and item.item_id < previous_item_id,
                     )
+                    revision_window_uses = 0
+                if item.item_id in base_revisions:
+                    revision_window_uses += 1
                 previous_item_id = item.item_id
                 unchanged = session.mark_unchanged_item_seen(
                     item, base_revisions.get(item.item_id),

@@ -154,6 +154,7 @@ def test_project_scope_keeps_owned_files_and_rejects_profile_noise(
         candidate_scope="projects",
         include_generated=False,
         include_vendored=False,
+        explicit_project_roots=(project,),
     )
     summary = CodeRoute(
         config,
@@ -275,13 +276,19 @@ def test_project_scope_reconciles_broad_state_without_discarding_history(
         candidate_scope="projects",
         include_generated=False,
         include_vendored=False,
+        explicit_project_roots=(project,),
     )
     second = CodeRoute(narrowed, inventory, _FrameworkState(), 2, 2).run()
 
     assert first.candidates == 3
     assert second.candidates == 2
-    assert second.cache_hits == 2
-    assert second.invalidated_versions == 1
+    # The admission policy is part of the processing signature.  Narrowing a
+    # prior broad run therefore republishes the admitted rows under the strict
+    # policy instead of reusing broad observations; the disallowed row is
+    # invalidated by the full reconciliation pass.
+    assert second.cache_hits == 0
+    assert second.processed == 2
+    assert second.invalidated_versions == 3
     with sqlite3.connect(state_path) as connection:
         current_paths = {
             str(row[0])

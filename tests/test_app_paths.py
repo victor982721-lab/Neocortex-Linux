@@ -50,8 +50,8 @@ class ApplicationPathTests(unittest.TestCase):
                         project / generated
                         for project in (
                             profile / "Neocortex" / "Repository",
-                            profile / "Frameworks" / "Generador de bitácoras EPS",
-                            profile / "OneDrive" / "Documentos" / "Bitácoras EPS",
+                            profile / "MTF",
+                            profile / "Documentos" / "ANDRITZ" / "Bitacoras-EPS",
                         )
                         for generated in ("build", "dist", "wheelhouse")
                     ),

@@ -38,12 +38,22 @@ permanecen efectivos y los límites globales sólo aparecen cuando se expresan d
 forma explícita: no se añade un techo global oculto y los flags repetibles siguen
 siendo acumulativos.
 
-La procedencia de Code distingue señales fuertes de dependencia/vendor,
-generado/build/cache y binario, pero no infiere autoría. En el flujo normal
-`--all` prepara automáticamente la limpieza de terceros; `--apply` es el gate
-que la ejecuta. Sólo usa candidatos con evidencia suficiente y conserva la
-revalidación/receipt KIO; lo ambiguo se deja intacto. La política `keep` queda
-disponible para overrides internos de Codex.
+La admisión del corpus separa utilidad, interés y regenerabilidad antes de
+la extracción profunda. Los proyectos de código predeterminados son NeoCortex,
+MTF y bitácoras EPS, por sus raíces configuradas; un marcador encontrado no
+añade otro proyecto. El código ajeno queda como metadatos de inventario, no
+como texto para indexar indirectamente. Los documentos y datos útiles dentro
+de `AppData`, cachés o ZIP mixtos siguen procesándose; no se excluye un árbol
+completo sólo por su nombre.
+
+`--all` prepara un plan de regenerables y `--apply` conserva el gate físico.
+Un nombre, extensión o score no basta: cada candidato requiere una copia
+exacta en un paquete local retenido o un caché de bytecode reproducido desde
+su fuente conservada, con identidad, presupuesto y prueba revalidados junto
+al efecto. Credenciales, licencias, fixtures, paquetes fuente y casos inciertos
+se conservan. La exclusión de procesamiento no equivale a eliminación. El
+resumen `CORPUS_ADMISSION` y el stage del lifecycle explican conteos, razones y
+cobertura acotada. Véase [operación](docs/OPERATIONS.md#curación-previa-del-corpus).
 
 El stage Semantic integrado considera también Archive, Code y Video cuando sus
 owners, heads y dependencias están disponibles. Una dependencia ausente degrada

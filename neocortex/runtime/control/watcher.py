@@ -35,6 +35,10 @@ from neocortex.integrations.inventory.inventory_boundary import (
 )
 from neocortex.runtime.models import FrameworkConfig
 from neocortex.runtime.orchestration.orchestrator import FrameworkOrchestrator
+from neocortex.runtime.orchestration.route_selection import (
+    BUILTIN_ROUTE_ORDER,
+    normalize_route_selection,
+)
 from neocortex.runtime.control.watcher_life_lease import (
     WatcherLifeLease,
     WatcherLifeLeaseConflict,
@@ -288,6 +292,9 @@ class IncrementalWatcher:
             access_policy=access_policy,
             state_policy=state_layout.state_policy,
             internal_paths_policy=state_layout.internal_paths_policy,
+            observe_regenerable_artifacts=bool(
+                normalize_route_selection(framework_config.route, BUILTIN_ROUTE_ORDER)
+            ),
         )
         self.root = self._boundary.access_policy.root
         self.framework_config = replace(

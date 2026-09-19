@@ -699,7 +699,9 @@ class ScanCheckpointRepositoryMixin:
         removed["files"] = _delete_batches(
             self._connection,
             select_sql=(
-                f"SELECT scan_id,path FROM files WHERE scan_id NOT IN ({retained_scans}) LIMIT ?"
+                "SELECT scan_id,path FROM files WHERE scan_id IN ("
+                f"SELECT scan_id FROM scans WHERE scan_id NOT IN ({retained_scans})"
+                ") LIMIT ?"
             ),
             delete_sql="DELETE FROM files WHERE scan_id=? AND path=?",
         )

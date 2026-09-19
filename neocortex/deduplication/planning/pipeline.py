@@ -45,6 +45,8 @@ from neocortex.progress import ProgressCallback, ProgressEvent, emit_progress
 
 DEFAULT_PARTIAL_THRESHOLD = 8 * 1024 * 1024
 PLAN_GROUP_BATCH_SIZE = 256
+PLAN_MEMBER_BATCH_SIZE = 2048
+PLAN_ALIAS_BATCH_SIZE = 4096
 FINGERPRINT_WRITE_BATCH_SIZE = 512
 MAX_REDUNDANT_MEMBERS_PER_GROUP = 1024
 MAX_EXACT_HASH_COLLISION_SETS = 128
@@ -172,6 +174,8 @@ class _PlanAccumulator:
         self._index = index
         self._scan_id = scan_id
         self._batch: list[DuplicateGroup] = []
+        self._batch_member_count = 0
+        self._batch_alias_count = 0
         self.group_count = 0
         self.redundant_files = 0
         self.reclaimable_bytes = 0
@@ -228,6 +232,8 @@ class _PlanAccumulator:
                 full_fingerprint=digest.hex(),
                 exact_compare=self._exact_compare,
             )
+        if self._batch_member_count + len(members) > PLAN_MEMBER_BATCH_SIZE:
+            self.flush()
         ranks = tuple(keeper_rank(member, self._keeper_policy) for member in members)
         missing: tuple[str, ...] = (
             "path_disposability_not_verified",
@@ -263,11 +269,22 @@ class _PlanAccumulator:
                 )
             ),
         )
+        alias_count = sum(len(proof.aliases) for proof in group.member_proofs)
+        if self._batch_alias_count + alias_count > PLAN_ALIAS_BATCH_SIZE:
+            self.flush()
         self._batch.append(group)
+        self._batch_member_count += len(members)
+        self._batch_alias_count += alias_count
         self.group_count += 1
         self.redundant_files += len(redundant)
         self.reclaimable_bytes += group.reclaimable_bytes
-        if len(self._batch) >= PLAN_GROUP_BATCH_SIZE:
+        # A group keeps its complete proof even when its alias sample alone
+        # exceeds the batch budget; persist that group immediately.
+        if (
+            len(self._batch) >= PLAN_GROUP_BATCH_SIZE
+            or self._batch_member_count >= PLAN_MEMBER_BATCH_SIZE
+            or self._batch_alias_count >= PLAN_ALIAS_BATCH_SIZE
+        ):
             self.flush()
 
     def flush(self) -> None:
@@ -275,6 +292,8 @@ class _PlanAccumulator:
             return
         self._index.store_duplicate_groups(self._scan_id, self._batch)
         self._batch.clear()
+        self._batch_member_count = 0
+        self._batch_alias_count = 0
 
 
 def _store_fingerprints(index: DedupIndex, stage: str, batch: list[FingerprintRow]) -> None:
@@ -494,17 +513,20 @@ class PlanningSession:
     def _plan_size(self, size: int) -> None:
         self._index.clear_planning_fingerprints()
         used_partial = size >= self._partial_threshold
-        self._fingerprint_size_members(size, partial=used_partial)
+        if not self._fingerprint_size_members(size, partial=used_partial):
+            return
         if used_partial:
             self._fingerprint_partial_collisions()
         self._group_full_collisions()
 
-    def _fingerprint_size_members(self, size: int, *, partial: bool) -> None:
+    def _fingerprint_size_members(self, size: int, *, partial: bool) -> bool:
         stage = "partial" if partial else "full"
         batch: list[FingerprintRow] = []
         full_observations: list[FingerprintObservation] = []
         with self._metadata_scope() if self._metadata_scope is not None else nullcontext():
             self._capture_size_members(size)
+            if not self._index.planning_has_multiple_identities():
+                return False
         with self._fingerprint_results(self._index.iter_planning_identities(), partial=partial) as results:
             for snapshot, result in results:
                 self._work.extend(1)
@@ -528,6 +550,7 @@ class PlanningSession:
                 )
         _store_fingerprints(self._index, stage, batch)
         self._index.store_planning_full_observations(full_observations)
+        return True
 
     def _capture_size_members(self, size: int) -> None:
         observations: list[tuple[FileSnapshot, KeeperRank, int]] = []

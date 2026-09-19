@@ -4,6 +4,28 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-19 — Curación previa por utilidad y reconstrucción demostrable
+
+- Code limita `projects` a raíces explícitas: NeoCortex, MTF y bitácoras EPS por
+  defecto. Una lista vacía/disjunta no se amplía mediante markers; cambios de
+  interés invalidan la firma y retiran de la vista vigente análisis previos.
+- La admisión de corpus separa código ajeno, metadatos de paquetes, credenciales
+  y documentos/datos antes de procesamiento profundo. No excluye carpetas mixtas
+  como AppData por su nombre. ZIP aplica el mismo criterio por miembro sin omitir
+  CRC/tamaño ni convertir recursos virtuales en archivos mutables.
+- La limpieza de terceros exige paquetes locales retenidos con igualdad exacta
+  o bytecode reproducido desde fuente conservada; ni rutas, extensiones ni scores
+  sustituyen esa prueba. Preserva licencias, fixtures, credenciales y fuentes.
+  La exclusión queda separada de Papelera y las decisiones se publican como un
+  stage acotado con política, razones, conteos y límites, reutilizando los owners.
+- Los hotfixes aceptados reducen comparaciones de buffers y recorridos de
+  inventario/catálogo, acotan acumulación de pruebas de aliases y eliminan esperas
+  de polling evitables. El observador CPU/RAM no queda detenido por una sonda GPU.
+  Content/Media evitan recorridos y copias redundantes preservando los testigos de
+  extracción; Retrieval reutiliza el grafo de contexto y reduce hidratación
+  especulativa. Las mediciones son sintéticas y no predicen la duración del corpus.
+  Los diseños pendientes y el candidato full-fit no equivalente no se integran.
+
 ## 2026-09-19 — Factory reset operativo
 
 - `Neocortex --factory-reset` sustituye la receta anterior de reset selectivo:

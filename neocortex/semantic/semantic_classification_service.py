@@ -224,11 +224,12 @@ def prepare_label_prototypes(
         limit=10_000,
     )
     loaded_by_id = {value.prototype.prototype_id: value for value in loaded}
-    _embed_missing_prototypes(
-        database,
-        backend,
-        _validate_loaded_prototypes(expected, loaded_by_id),
-    )
+    missing = _validate_loaded_prototypes(expected, loaded_by_id)
+    # Once validation has produced immutable prototype requests, the original
+    # decoded vectors are no longer needed. Do not retain up to 10,000 old
+    # vectors through embedding and the second, authoritative published load.
+    del loaded_by_id, loaded
+    _embed_missing_prototypes(database, backend, missing)
     finalize_label_prototype_refresh(
         database,
         ontology_id=SEMANTIC_ONTOLOGY_ID,

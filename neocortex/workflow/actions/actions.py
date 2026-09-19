@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import os
 import json
+import hashlib
 import stat
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 from neocortex.platform.policy import stat_birthtime_ns
 from neocortex.foundation.hash_compat import HASH_ALGORITHM_128
@@ -49,21 +51,33 @@ from neocortex.safety.corpus_access import CorpusMutationGuard, ProtectedAnalysi
 from neocortex.safety.internal_paths import InternalPathProtectionError
 from neocortex.runtime.models import ActionSummary
 from neocortex.safety.protected_content import ProtectedContentError
-from neocortex.persistence.framework_state_writer import FrameworkState
+from neocortex.persistence.framework_state_writer import FrameworkState, RunBudgetExceeded
+from neocortex.runtime.control.cancellation import CancellationRequested
 from neocortex.workflow.actions.file_action_recovery import expected_identity_json
 from neocortex.curation.application import BackendOutcome, KioTrashBackend
+from neocortex.code.code_contracts import ThirdPartyClassification
 from neocortex.code.ingestion.code_detection import (
     classify_third_party_artifact,
     likely_code_candidate,
 )
-from neocortex.code.code_contracts import ThirdPartyKind
 from neocortex.runtime.config.third_party_policy import CodeThirdPartyPolicy
+from neocortex.workflow.actions.corpus_admission import (
+    AdmissionDecision,
+    CorpusAdmissionPolicy,
+    MAX_PREFIX_BYTES,
+    assess_file,
+)
+
+if TYPE_CHECKING:
+    from neocortex.workflow.actions.regeneration import RegenerationProof
 # endregion [01]
 
 # region [02] Implementación
 
 
 TRASH_BATCH_SIZE = 256
+ReserveWork = Callable[[str, int, int], None]
+MAX_PRESERVATION_EXAMPLES = 24
 _THIRD_PARTY_METADATA_NAMES = frozenset(
     {
         "authors",
@@ -74,6 +88,9 @@ _THIRD_PARTY_METADATA_NAMES = frozenset(
         "copying.md",
         "license",
         "license.txt",
+        "licenses",
+        "licenses.txt",
+        "licenses.md",
         "licence",
         "licence.txt",
         "notice",
@@ -116,36 +133,6 @@ def _is_third_party_metadata_name(path: str | Path) -> bool:
     )
 
 
-def _third_party_binary_probe(snapshot: FileSnapshot) -> bytes | None:
-    """Read a tiny identity-bound prefix for an extensionless binary probe."""
-
-    descriptor: int | None = None
-    try:
-        flags = os.O_RDONLY | int(getattr(os, "O_CLOEXEC", 0))
-        flags |= int(getattr(os, "O_NOFOLLOW", 0))
-        descriptor = os.open(snapshot.path, flags)
-        before = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(before.st_mode)
-            or before.st_nlink != 1
-            or not stat_matches_snapshot(snapshot, before)
-        ):
-            return None
-        probe = os.read(descriptor, min(8192, max(0, snapshot.size)))
-        after = os.fstat(descriptor)
-        if not stat_matches_snapshot(snapshot, after):
-            return None
-        return probe
-    except OSError:
-        return None
-    finally:
-        if descriptor is not None:
-            try:
-                os.close(descriptor)
-            except OSError:
-                pass
-
-
 class FrameworkActions:
     """Apply bounded action batches with durable before/after records."""
 
@@ -164,6 +151,9 @@ class FrameworkActions:
         trash_backend: KioTrashBackend | None = None,
         third_party_policy: CodeThirdPartyPolicy | None = None,
         third_party_project_roots: Iterable[str | Path] = (),
+        corpus_admission_policy: CorpusAdmissionPolicy | None = None,
+        cancellation_check: Callable[[], None] | None = None,
+        reserve_work: ReserveWork | None = None,
     ):
         self._index = index
         self._state = state
@@ -183,10 +173,34 @@ class FrameworkActions:
             Path(root).expanduser().absolute() for root in third_party_project_roots
         )
         self._deferred_reconciliation_paths: list[str] = []
+        self._admission_policy = corpus_admission_policy
+        from neocortex.runtime.config.app_paths import default_code_project_roots
+
+        self._preservation_policy = corpus_admission_policy or CorpusAdmissionPolicy(
+            interested_roots=self._third_party_project_roots or default_code_project_roots(),
+        )
+        self._cancellation_check = cancellation_check
+        self._reserve_work = reserve_work
+        self._admission_reasons: dict[str, int] = {}
+        self._admission_examples: list[dict[str, object]] = []
+        self._preservation_reasons: dict[str, int] = {}
+        self._preservation_examples: list[dict[str, object]] = []
+        self._regeneration_proofs: dict[str, RegenerationProof] = {}
+        self._retained_regeneration_sources: dict[str, FileSnapshot] = {}
+        self._regeneration_sources_truncated = False
+        self._duplicate_work_reserved = False
 
     def execute(self, plan: DedupPlan, *, cleanup_empty_directories: bool = True) -> ActionSummary:
         self._validate_apply_root()
         self._deferred_reconciliation_paths.clear()
+        self._admission_reasons.clear()
+        self._admission_examples.clear()
+        self._preservation_reasons.clear()
+        self._preservation_examples.clear()
+        self._regeneration_proofs.clear()
+        self._retained_regeneration_sources.clear()
+        self._regeneration_sources_truncated = False
+        self._duplicate_work_reserved = False
         summary = ActionSummary(apply_actions=self._apply)
         started = time.perf_counter_ns()
         summary = self._trash_empty_files(plan, summary)
@@ -204,12 +218,309 @@ class FrameworkActions:
         started = time.perf_counter_ns()
         summary = self._validate_extensions(plan, summary)
         self._record_phase("content-types", started, summary)
+        self._publish_preservation_summary(
+            "execute",
+            admission_policy=(
+                None if self._admission_policy is None else self._admission_policy.to_dict()
+            ),
+            summary=summary,
+        )
         if cleanup_empty_directories:
             started = time.perf_counter_ns()
             summary = self._trash_empty_directories(plan, summary)
             self._record_phase("empty-directories", started, summary)
         self._state.store_action_summary(self._run_id, summary)
         return summary
+
+    def _admission_checkpoint(self) -> None:
+        if self._cancellation_check is not None:
+            self._cancellation_check()
+
+    @staticmethod
+    def _preservation_reason_code(reason: str) -> str:
+        value = str(reason).casefold()
+        if "credential" in value or "secret" in value or "private" in value:
+            return "credential"
+        if "fixture" in value or "test_data" in value or "testdata" in value:
+            return "fixture"
+        if "license" in value or "licence" in value or "notice" in value or "legal" in value:
+            return "legal_metadata"
+        if "witness" in value or "regenerat" in value or "archive" in value:
+            return "retained_witness"
+        if "scope" in value or "outside" in value:
+            return "out_of_scope"
+        if "identity" in value or "changed" in value or "prefix" in value:
+            return "identity_drift"
+        if "protected" in value or "reparse" in value or "system" in value:
+            return "protected_path"
+        return "preservation_veto"
+
+    def _record_preservation_veto(
+        self,
+        action_type: str,
+        path: str | Path,
+        reason: str,
+        snapshot: FileSnapshot | None = None,
+    ) -> None:
+        """Keep bounded, non-payload evidence for a pre-ledger veto."""
+
+        code = self._preservation_reason_code(reason)
+        self._preservation_reasons[code] = self._preservation_reasons.get(code, 0) + 1
+        if len(self._preservation_examples) >= MAX_PRESERVATION_EXAMPLES:
+            return
+        raw_path = os.fspath(path)
+        self._preservation_examples.append(
+            {
+                "action_type": action_type,
+                "reason": code,
+                "path_digest": hashlib.sha256(
+                    raw_path.encode("utf-8", "surrogatepass")
+                ).hexdigest(),
+                "size": None if snapshot is None else int(snapshot.size),
+            }
+        )
+
+    def _preservation_summary_payload(
+        self,
+        operation: str,
+        *,
+        admission_policy: dict[str, object] | None,
+        summary: ActionSummary | None,
+    ) -> dict[str, object]:
+        return {
+            "schema": "neocortex.corpus-admission-summary/v1",
+            "preservation_schema": "neocortex.corpus-preservation/v1",
+            "operation": operation,
+            "policy": admission_policy,
+            "processed": 0 if summary is None else summary.admission_processed,
+            "metadata_only": 0 if summary is None else summary.admission_metadata_only,
+            "sensitive": 0 if summary is None else summary.admission_sensitive,
+            "reasons": dict(sorted(self._admission_reasons.items())),
+            "examples": list(self._admission_examples),
+            "examples_limit": MAX_PRESERVATION_EXAMPLES,
+            "admission_policy_present": admission_policy is not None,
+            "veto_total": sum(self._preservation_reasons.values()),
+            "veto_reasons": dict(sorted(self._preservation_reasons.items())),
+            "preservation_examples": list(self._preservation_examples),
+            "preservation_examples_limit": MAX_PRESERVATION_EXAMPLES,
+            "file_actions_created_for_vetoes": 0,
+            "excluded_files_deleted": False,
+            "regeneration_proven": 0 if summary is None else summary.regeneration_proven,
+            "regeneration_unproven": 0 if summary is None else summary.regeneration_unproven,
+            "regeneration_action_limit_reached": (
+                False if summary is None else summary.regeneration_action_limit_reached
+            ),
+            "regeneration_sources_truncated": (
+                False if summary is None else summary.regeneration_sources_truncated
+            ),
+            "complete_coverage": summary is None or not (
+                summary.regeneration_action_limit_reached
+                or summary.regeneration_sources_truncated
+            ),
+        }
+
+    def _publish_preservation_summary(
+        self,
+        operation: str,
+        *,
+        admission_policy: dict[str, object] | None = None,
+        summary: ActionSummary | None = None,
+    ) -> None:
+        payload = self._preservation_summary_payload(
+            operation,
+            admission_policy=admission_policy,
+            summary=summary,
+        )
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        idempotency_key = "corpus-preservation:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        publish_stage = getattr(self._state, "publish_run_stage", None)
+        read_manifest = getattr(self._state, "read_run_manifest", None)
+        if callable(publish_stage) and callable(read_manifest) and read_manifest(self._run_id) is not None:
+            publish_stage(
+                self._run_id,
+                "corpus-admission",
+                "completed",
+                details=payload,
+                idempotency_key=idempotency_key,
+            )
+        else:
+            self._state.record_event(
+                self._run_id,
+                "info",
+                "corpus-admission",
+                "Vetoes de preservación registrados",
+                payload,
+            )
+
+    @staticmethod
+    def _work_snapshot_payload(snapshot: FileSnapshot | None) -> tuple[object, ...] | None:
+        if snapshot is None:
+            return None
+        return (
+            snapshot.path,
+            snapshot.volume_id,
+            snapshot.file_id,
+            snapshot.size,
+            snapshot.mtime_ns,
+            snapshot.birthtime_ns,
+        )
+
+    def _reserve_snapshot_work(
+        self,
+        scope: str,
+        snapshots: Iterable[FileSnapshot | None],
+        *,
+        references: Iterable[FileSnapshot | None] = (),
+        items: int | None = None,
+        bytes_multiplier: int = 1,
+        extra_bytes: int = 0,
+        bytes_override: int | None = None,
+    ) -> None:
+        """Reserve one bounded action batch before reading candidate payloads.
+
+        The callback belongs to the orchestration owner.  It receives a
+        conservative input/read bound, not a claim about exact physical I/O.
+        Keeping the reservation at batch scope avoids a durable event per
+        chunk or per file while still placing the budget gate before prefix,
+        digest, and keeper comparisons.
+        """
+
+        if self._reserve_work is None:
+            return
+        selected = tuple(snapshots)
+        retained = tuple(references)
+        if items is None:
+            items = len(selected)
+        if type(items) is not int or items < 0:
+            raise ValueError("reserved action items must be a non-negative integer")
+        if type(bytes_multiplier) is not int or bytes_multiplier < 1:
+            raise ValueError("reserved action multiplier must be a positive integer")
+        if type(extra_bytes) is not int or extra_bytes < 0:
+            raise ValueError("reserved action bytes must be non-negative")
+        if bytes_override is not None:
+            if type(bytes_override) is not int or bytes_override < 0:
+                raise ValueError("reserved action bytes must be non-negative")
+            byte_count = bytes_override
+        else:
+            byte_count = sum(
+                max(0, int(snapshot.size))
+                for snapshot in (*selected, *retained)
+                if snapshot is not None
+            )
+            byte_count = byte_count * bytes_multiplier + extra_bytes
+        payload = {
+            "run_id": self._run_id,
+            "scope": scope,
+            "items": items,
+            "snapshots": [self._work_snapshot_payload(item) for item in selected],
+            "references": [self._work_snapshot_payload(item) for item in retained],
+            "bytes_multiplier": bytes_multiplier,
+            "extra_bytes": extra_bytes,
+            "bytes_override": bytes_override,
+        }
+        digest = hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        self._reserve_work(f"actions-work-v1:{scope}:{digest}", items, byte_count)
+
+    def _effect_preservation_reason(self, snapshot: FileSnapshot) -> str | None:
+        """Retention veto shared by dedupe, direct callers and regeneration.
+
+        Metadata-only is not itself a veto: a proved regenerable artifact is
+        deliberately metadata-only. Credentials, originals used as witnesses,
+        licences and fixtures are separate protected categories.
+        """
+        path = Path(snapshot.path)
+        if _path_key(path) in getattr(self, "_retained_regeneration_sources", {}):
+            return "retained_regeneration_witness"
+        if _is_third_party_metadata_name(snapshot.path):
+            return "legal_metadata"
+        if path.suffix.lower() in {".whl", ".nupkg"}:
+            return "retained_package_archive"
+        decision = assess_file(
+            snapshot,
+            root=Path(self._index.scan_root(self._scan_id)),
+            policy=self._preservation_policy,
+            cancellation_check=self._cancellation_check,
+        )
+        if decision.disposition == "sensitive" or decision.category in {
+            "credential", "fixture", "preserved_artifact", "retained_archive",
+        }:
+            return f"{decision.category}:{decision.reason}"
+        return None
+
+    def _check_regeneration_at_effect(self, action_type: str, path: str) -> None:
+        if action_type != "trash_third_party_code":
+            return
+        from neocortex.workflow.actions.regeneration import revalidate_regeneration_proof
+
+        self._admission_checkpoint()
+        proof = self._regeneration_proofs.get(path)
+        if proof is None or not revalidate_regeneration_proof(
+            proof,
+            root=Path(self._index.scan_root(self._scan_id)),
+            cancellation_check=self._cancellation_check,
+        ):
+            raise RuntimeError("regeneration evidence changed or is unavailable before trash")
+
+    def _regeneration_source_paths(self) -> tuple[Path, ...]:
+        """Select bounded local source archives through the already-open owner."""
+
+        from neocortex.workflow.actions.regeneration import MAX_ARCHIVE_PATHS
+
+        sources: list[Path] = []
+        after_path = ""
+        while True:
+            self._admission_checkpoint()
+            page = self._index.snapshots_page(
+                self._scan_id, after_path=after_path, limit=TRASH_BATCH_SIZE,
+            )
+            if not page:
+                break
+            after_path = page[-1].path
+            for snapshot in page:
+                if Path(snapshot.path).suffix.lower() in {".whl", ".nupkg", ".tgz"}:
+                    if len(sources) == MAX_ARCHIVE_PATHS:
+                        self._regeneration_sources_truncated = True
+                        return tuple(sources)
+                    sources.append(Path(snapshot.path))
+        return tuple(sources)
+
+    @staticmethod
+    def _local_source_snapshots(paths: Iterable[str | Path]) -> tuple[FileSnapshot, ...]:
+        """Capture unique regular local inputs with lstat/no-follow only."""
+
+        snapshots: list[FileSnapshot] = []
+        identities: set[tuple[int, int]] = set()
+        for raw_path in paths:
+            path = Path(raw_path).absolute()
+            try:
+                metadata = os.lstat(path)
+            except OSError:
+                continue
+            if (
+                stat.S_ISLNK(metadata.st_mode)
+                or not stat.S_ISREG(metadata.st_mode)
+                or int(getattr(metadata, "st_nlink", 1)) != 1
+            ):
+                continue
+            identity = (int(metadata.st_dev), int(metadata.st_ino))
+            if identity in identities:
+                continue
+            identities.add(identity)
+            snapshots.append(
+                FileSnapshot(
+                    str(path),
+                    identity[0],
+                    identity[1],
+                    int(metadata.st_size),
+                    int(metadata.st_mtime_ns),
+                    int(stat_birthtime_ns(metadata)),
+                )
+            )
+        return tuple(snapshots)
 
     def recycle_verified_files(
         self,
@@ -220,6 +531,8 @@ class FrameworkActions:
 
         if not action_type.startswith("trash_"):
             raise ValueError("recycle action types must start with 'trash_'")
+        self._preservation_reasons.clear()
+        self._preservation_examples.clear()
         applied = failed = protected = 0
         batch: list[tuple[FileSnapshot, str]] = []
 
@@ -242,6 +555,7 @@ class FrameworkActions:
             if len(batch) >= TRASH_BATCH_SIZE:
                 flush()
         flush()
+        self._publish_preservation_summary(f"recycle:{action_type}")
         return applied, failed, protected
 
     def _record_phase(self, phase: str, started_ns: int, summary: ActionSummary) -> None:
@@ -445,6 +759,18 @@ class FrameworkActions:
             expected_snapshots,
             reference_snapshots,
         )
+        # Reserve before preservation-prefix reads and before any digest or
+        # exact keeper comparison.  The bound covers the candidate and its
+        # reference once; callers may use a stricter owner-level multiplier.
+        if not (
+            action_type == "trash_duplicate"
+            and getattr(self, "_duplicate_work_reserved", False)
+        ):
+            self._reserve_snapshot_work(
+                f"{action_type}:batch",
+                expected,
+                references=references,
+            )
         eligible, protected = self._begin_trash_candidates(
             action_type,
             batch,
@@ -532,6 +858,7 @@ class FrameworkActions:
                     target_path=None,
                 )
                 self._state.mark_file_actions_applying(((action_id, expected_json),))
+                self._check_regeneration_at_effect(action_type, path)
                 apply_snapshot = getattr(self._trash_backend, "apply_snapshot", None)
                 if callable(apply_snapshot):
                     outcome = apply_snapshot(
@@ -572,6 +899,9 @@ class FrameworkActions:
                 else:
                     self._state.finish_file_action(action_id, "failed", detail)
                     failed += 1
+            except (CancellationRequested, RunBudgetExceeded, KeyboardInterrupt) as exc:
+                self._best_effort_require_recovery((action_id,), str(exc), exc)
+                raise
             except (OSError, RuntimeError, FileChangedError, ValueError) as exc:
                 # A failure for one member must not suppress independent
                 # candidates in the same bounded batch.
@@ -677,6 +1007,8 @@ class FrameworkActions:
         )
 
         try:
+            for _id, path, _snapshot, _digest, _expected in prepared:
+                self._check_regeneration_at_effect(action_type, path)
             batch_result = apply_batch(
                 tuple((snapshot, source_digest) for _id, _path, snapshot, source_digest, _expected in prepared),
                 root=mutation_root,
@@ -693,6 +1025,10 @@ class FrameworkActions:
                 raise RuntimeError(
                     "trash backend returned an outcome count different from the batch"
                 )
+        except RunBudgetExceeded as exc:
+            for action_id, _path, _snapshot, _digest, _expected in prepared:
+                self._best_effort_require_recovery((action_id,), str(exc), exc)
+            raise
         except (OSError, RuntimeError, FileChangedError, ValueError, TypeError) as exc:
             # A batch process may have crossed its physical frontier before an
             # exception reached this owner.  Never retry it as individual work;
@@ -849,13 +1185,33 @@ class FrameworkActions:
         for item, planned, reference in zip(batch, expected, references, strict=True):
             path, _evidence = item
             reason = _protected_path_reason(path)
+            guard_reason = None if reason is not None else next(guard_reasons)
+            retention_reason = (
+                None
+                if planned is None or action_type == "trash_empty_directory"
+                else self._effect_preservation_reason(planned)
+            )
             if reason is None:
-                if next(guard_reasons) is not None:
-                    # A declared Protected Content root is outside the action
-                    # domain altogether; it must not acquire a file_actions row.
+                if guard_reason is not None:
+                    self._record_preservation_veto(
+                        action_type, path, str(guard_reason), planned
+                    )
                     filtered_protected += 1
                     continue
-            evaluated.append((item, planned, reference, reason))
+            else:
+                self._record_preservation_veto(action_type, path, reason, planned)
+                # Legacy action-policy denials keep their existing skipped
+                # ledger row for compatibility; corpus-preservation vetoes
+                # and mutation-guard denials remain outside the action domain.
+                evaluated.append((item, planned, reference, reason))
+                continue
+            if retention_reason is not None:
+                self._record_preservation_veto(
+                    action_type, path, retention_reason, planned
+                )
+                filtered_protected += 1
+                continue
+            evaluated.append((item, planned, reference, None))
         if not evaluated:
             return [], filtered_protected
 
@@ -1011,11 +1367,27 @@ class FrameworkActions:
             else _validate_mutation_path(validated_root, path, role="trash source")
         )
         if current_stat is None:
+            self._record_preservation_veto(
+                action_type, path, "identity_or_prefix_unverified", planned
+            )
             raise RuntimeError("trash source disappeared before the operation")
         if planned is not None and not stat_matches_snapshot(planned, current_stat):
+            self._record_preservation_veto(
+                action_type, path, "identity_changed_before_effect", planned
+            )
             raise RuntimeError("metadata changed after the trash candidate was planned")
         if original_stat is not None and not self._same_runtime_stat(original_stat, current_stat):
+            self._record_preservation_veto(
+                action_type, path, "identity_changed_after_preflight", planned
+            )
             raise RuntimeError("trash source changed after mutation preflight")
+        if planned is not None and action_type != "trash_empty_directory":
+            retention_reason = self._effect_preservation_reason(planned)
+            if retention_reason is not None:
+                self._record_preservation_veto(
+                    action_type, path, retention_reason, planned
+                )
+                raise RuntimeError(f"trash source is retained: {retention_reason}")
         if action_type == "trash_empty_directory":
             if planned is None:
                 raise RuntimeError("empty-directory action has no expected snapshot")
@@ -1181,6 +1553,17 @@ class FrameworkActions:
 
     def _trash_duplicates(self, plan: DedupPlan, summary: ActionSummary) -> ActionSummary:
         candidates = plan.redundant_files
+        # Cover the exact keeper/content comparisons performed below before
+        # the first pre-ledger read.  A duplicate member and its keeper have
+        # the same planned size, so twice the nominal reclaimable bytes is a
+        # conservative input bound for this phase.
+        self._reserve_snapshot_work(
+            "duplicates-plan",
+            (),
+            items=candidates,
+            bytes_override=max(0, int(plan.reclaimable_bytes)) * 2,
+        )
+        self._duplicate_work_reserved = True
         summary = replace(
             summary,
             duplicate_candidates=summary.duplicate_candidates + candidates,
@@ -1292,7 +1675,7 @@ class FrameworkActions:
                 f"byte-for-byte={str(self._verify_bytes_before_trash).lower()};"
                 f"keep={group.keep.path}"
             )
-            keep_now, keep_error = self._validated_duplicate_keeper(group.keep)
+            _keep_now, keep_error = self._validated_duplicate_keeper(group.keep)
             for redundant in group.redundant:
                 if _is_third_party_metadata_name(redundant.path):
                     fail_candidate(
@@ -1309,9 +1692,9 @@ class FrameworkActions:
                         redundant_now = snapshot_path(redundant.path)
                         if not _same_snapshot(redundant, redundant_now):
                             raise RuntimeError("metadata changed after exact duplicate planning")
-                        assert keep_now is not None
+                        assert _keep_now is not None
                         if self._verify_bytes_before_trash and not files_equal_exact(
-                            keep_now, redundant_now
+                            _keep_now, redundant_now
                         ):
                             raise RuntimeError("content changed after exact duplicate planning")
                     except (OSError, RuntimeError, FileChangedError) as exc:
@@ -1428,7 +1811,18 @@ class FrameworkActions:
             if not page:
                 break
             after_path = page[-1].path
+            if self._reserve_work is not None:
+                self._reserve_snapshot_work(
+                    "admission-prefix",
+                    page,
+                    items=0,
+                    bytes_override=sum(
+                        min(MAX_PREFIX_BYTES, max(0, int(snapshot.size)))
+                        for snapshot in page
+                    ),
+                )
             for planned in page:
+                self._admission_checkpoint()
                 if planned.size == 0:
                     continue
                 completed += 1
@@ -1484,150 +1878,198 @@ class FrameworkActions:
         plan: DedupPlan,
         summary: ActionSummary,
     ) -> ActionSummary:
-        """Apply an explicitly requested, conservative third-party plan.
+        """Select only artifacts reconstructible from a retained local witness.
 
-        Origin heuristics are advisory and never grant an effect by
-        themselves.  This phase is reached only when the CLI/configuration
-        carries the explicit ``action=trash`` policy; every selected member
-        still crosses the normal action ledger, identity revalidation, KIO
-        receipt and reconciliation boundary.  Unknown/unscoped artifacts and
-        virtual archive members remain untouched.
+        A directory name or origin score can exclude expensive processing, but
+        can no longer authorize disposal. The historical action identifier is
+        retained for ledger/read compatibility; each new action carries an
+        exact regeneration proof and revalidates it at the physical frontier.
         """
-
-        candidates_total = self._index.file_count(self._scan_id)
-        emit_progress(
-            self._progress,
-            ProgressEvent(
-                "framework",
-                "third-party-code",
-                "Identificando código de terceros",
-                0,
-                candidates_total,
-                "archivos",
-            ),
+        from neocortex.runtime.config.app_paths import default_code_project_roots
+        from neocortex.workflow.actions.regeneration import (
+            MAX_ARCHIVE_BYTES,
+            MAX_MEMBER_BYTES,
+            MAX_PYC_BYTES,
+            MAX_SOURCE_BYTES,
+            _pyc_source_path,
+            find_regeneration_proof,
         )
+
+        root = Path(self._index.scan_root(plan.scan_id))
+        admission = self._admission_policy or CorpusAdmissionPolicy(
+            interested_roots=default_code_project_roots(),
+        )
+        archive_paths = self._regeneration_source_paths()
+        archive_snapshots = tuple(
+            snapshot
+            for snapshot in self._local_source_snapshots(archive_paths)
+            if snapshot.size <= MAX_ARCHIVE_BYTES
+        )
+        candidates_total = self._index.file_count(self._scan_id)
         pending: list[tuple[str, str, FileSnapshot]] = []
-        selected = applied_total = failed_total = protected_total = 0
+        selected = applied_total = failed_total = protected_total = unproven = 0
         completed = 0
         capped = False
         after_path = ""
+
+        def report(*, finished: bool = False) -> None:
+            emit_progress(
+                self._progress,
+                ProgressEvent(
+                    "framework", "third-party-code",
+                    "Verificando utilidad y regenerabilidad",
+                    completed, candidates_total, "archivos", finished,
+                    (
+                        ProgressMetric("proven", selected),
+                        ProgressMetric("not_proven", unproven),
+                        ProgressMetric("applied", applied_total),
+                    ),
+                ),
+            )
 
         def flush() -> None:
             nonlocal applied_total, failed_total, protected_total
             if not pending:
                 return
-            batch = tuple((path, evidence) for path, evidence, _snapshot in pending)
-            expected = tuple(snapshot for _path, _evidence, snapshot in pending)
             applied, failed, protected = self._apply_trash_batch(
                 "trash_third_party_code",
-                batch,
-                expected_snapshots=expected,
+                tuple((path, evidence) for path, evidence, _snapshot in pending),
+                expected_snapshots=tuple(snapshot for _path, _evidence, snapshot in pending),
             )
             applied_total += applied
             failed_total += failed
             protected_total += protected
             pending.clear()
 
+        report()
         while True:
+            self._admission_checkpoint()
             page = self._index.snapshots_page(
-                plan.scan_id,
-                after_path=after_path,
-                limit=TRASH_BATCH_SIZE,
+                plan.scan_id, after_path=after_path, limit=TRASH_BATCH_SIZE,
             )
             if not page:
                 break
+            page = tuple(page)
+            self._reserve_snapshot_work(
+                "admission-prefix",
+                page,
+                items=0,
+                bytes_override=sum(
+                    min(MAX_PREFIX_BYTES, max(0, int(snapshot.size))) for snapshot in page
+                ),
+            )
+            proof_candidates: list[
+                tuple[FileSnapshot, AdmissionDecision, ThirdPartyClassification]
+            ] = []
+            pyc_sources: dict[str, FileSnapshot] = {}
             for snapshot in page:
+                self._admission_checkpoint()
                 completed += 1
-                if _is_third_party_metadata_name(snapshot.path):
+                path = Path(snapshot.path)
+                if (
+                    _is_third_party_metadata_name(snapshot.path)
+                    or path.suffix.lower() in {".whl", ".nupkg", ".tgz", ".zip"}
+                    or any(part.lower() in {"fixtures", "testdata", "test_data"} for part in path.parts)
+                ):
+                    continue
+                decision = assess_file(
+                    snapshot, root=root, policy=admission,
+                    cancellation_check=self._cancellation_check,
+                )
+                if decision.disposition != "metadata_only":
                     continue
                 classification = classify_third_party_artifact(
-                    snapshot.path,
-                    project_roots=self._third_party_project_roots,
+                    snapshot.path, project_roots=self._third_party_project_roots,
                 )
                 if not likely_code_candidate(snapshot.path) and not classification.is_binary:
                     continue
-                # An extensionless executable is still a common dependency
-                # payload.  Probe only the small set that already looks
-                # code-like and only after path-only classification found no
-                # stronger origin signal; the normal action boundary performs
-                # the full identity/hash revalidation before KIO.
-                if classification.kind is ThirdPartyKind.UNKNOWN:
-                    probe = _third_party_binary_probe(snapshot)
-                    if probe:
-                        classification = classify_third_party_artifact(
-                            snapshot.path,
-                            probe,
-                            project_roots=self._third_party_project_roots,
-                        )
-                # A bare binary signature is deliberately not an authorship
-                # proof.  Require a dependency/vendor origin signal before the
-                # default binary class can be trashed; explicit generated,
-                # build or cache policy overrides retain their documented
-                # opt-in behavior.
-                if (
-                    classification.kind is ThirdPartyKind.BINARY
-                    and not classification.is_third_party
+                if not self._third_party_policy.admits(
+                    classification.kind.value, classification.confidence,
                 ):
                     continue
-                if self._third_party_policy.admits(
-                    classification.kind.value,
-                    classification.confidence,
-                ):
-                    if selected >= self._third_party_policy.max_actions:
-                        capped = True
+                if selected + len(proof_candidates) >= self._third_party_policy.max_actions:
+                    capped = True
+                    continue
+                if snapshot.path.casefold().endswith(".pyc"):
+                    if snapshot.size > MAX_PYC_BYTES:
+                        unproven += 1
                         continue
-                    selected += 1
-                    evidence = (
-                        "code-origin="
-                        + classification.kind.value
-                        + ";confidence="
-                        + f"{classification.confidence:.3f}"
-                        + ";signals="
-                        + ",".join(classification.evidence)
-                    )[:8_192]
-                    pending.append((snapshot.path, evidence, snapshot))
-                    if len(pending) >= TRASH_BATCH_SIZE:
-                        flush()
-                if completed % TRASH_BATCH_SIZE == 0:
-                    emit_progress(
-                        self._progress,
-                        ProgressEvent(
-                            "framework",
-                            "third-party-code",
-                            "Identificando código de terceros",
-                            completed,
-                            candidates_total,
-                            "archivos",
-                        ),
+                    source_path = _pyc_source_path(Path(snapshot.path))
+                    source_candidates = self._local_source_snapshots(
+                        () if source_path is None else (source_path,)
                     )
+                    if not source_candidates or source_candidates[0].size > MAX_SOURCE_BYTES:
+                        unproven += 1
+                        continue
+                    pyc_sources[snapshot.path] = source_candidates[0]
+                else:
+                    if snapshot.size > MAX_MEMBER_BYTES or not archive_snapshots:
+                        unproven += 1
+                        continue
+                proof_candidates.append((snapshot, decision, classification))
+            if proof_candidates:
+                proof_inputs: list[FileSnapshot] = []
+                proof_input_identities: set[tuple[int, int]] = set()
+                for snapshot in (
+                    *(snapshot for snapshot, _decision, _classification in proof_candidates),
+                    *archive_snapshots,
+                    *(
+                        pyc_sources[snapshot.path]
+                        for snapshot, _decision, _classification in proof_candidates
+                        if snapshot.path.casefold().endswith(".pyc")
+                    ),
+                ):
+                    if snapshot.identity in proof_input_identities:
+                        continue
+                    proof_input_identities.add(snapshot.identity)
+                    proof_inputs.append(snapshot)
+                self._reserve_snapshot_work(
+                    "third-party-proof",
+                    tuple(proof_inputs),
+                    items=len(proof_candidates),
+                )
+            for snapshot, decision, classification in proof_candidates:
+                self._admission_checkpoint()
+                proof = find_regeneration_proof(
+                    snapshot, root=root, archive_paths=archive_paths,
+                    cancellation_check=self._cancellation_check,
+                )
+                if proof is None:
+                    unproven += 1
+                    continue
+                evidence = json.dumps(
+                    {
+                        "schema": "neocortex.regenerable-disposal/v1",
+                        "origin_signals": list(classification.evidence),
+                        "origin_confidence": classification.confidence,
+                        "admission_reason": decision.reason,
+                        "proof": proof.to_dict(),
+                    },
+                    ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+                )
+                if len(evidence.encode("utf-8")) > 8192:
+                    unproven += 1
+                    continue
+                self._regeneration_proofs[snapshot.path] = proof
+                for witness in proof.witnesses:
+                    self._retained_regeneration_sources[_path_key(witness.path)] = witness
+                selected += 1
+                pending.append((snapshot.path, evidence, snapshot))
+                if len(pending) >= TRASH_BATCH_SIZE:
+                    flush()
             after_path = page[-1].path
+            report()
         flush()
-        third_party_skips = failed_total + protected_total
-        if capped:
-            # The cap is an intentional bounded policy outcome, not an error.
-            third_party_skips += 1
-        emit_progress(
-            self._progress,
-            ProgressEvent(
-                "framework",
-                "third-party-code",
-                "Código de terceros procesado",
-                completed,
-                candidates_total,
-                "archivos",
-                True,
-                (
-                    ProgressMetric("selected", selected),
-                    ProgressMetric("applied", applied_total),
-                    ProgressMetric("skipped", third_party_skips),
-                ),
-            ),
-        )
+        report(finished=True)
         return replace(
             summary,
             third_party_candidates=selected,
             third_party_trashed=applied_total,
-            third_party_skips=third_party_skips,
+            third_party_skips=failed_total + protected_total + int(capped),
+            regeneration_proven=selected,
+            regeneration_unproven=unproven,
+            regeneration_action_limit_reached=capped,
+            regeneration_sources_truncated=self._regeneration_sources_truncated,
             errors=summary.errors + failed_total,
         )
 
@@ -1643,6 +2085,32 @@ class FrameworkActions:
         summary, admitted = self._admit_content_type_candidate(planned, summary)
         if not admitted:
             return summary, None, None
+        if self._admission_policy is not None:
+            self._admission_checkpoint()
+            decision = assess_file(
+                planned,
+                root=Path(self._index.scan_root(self._scan_id)),
+                policy=self._admission_policy,
+                cancellation_check=self._cancellation_check,
+            )
+            reason = decision.reason
+            self._admission_reasons[reason] = self._admission_reasons.get(reason, 0) + 1
+            if decision.disposition != "process":
+                if len(self._admission_examples) < 24:
+                    self._admission_examples.append({
+                        "path_digest": hashlib.sha256(
+                            planned.path.encode("utf-8", "surrogatepass")
+                        ).hexdigest(),
+                        "decision": decision.to_dict(),
+                    })
+                if decision.disposition == "sensitive":
+                    summary = replace(summary, admission_sensitive=summary.admission_sensitive + 1)
+                else:
+                    summary = replace(
+                        summary, admission_metadata_only=summary.admission_metadata_only + 1,
+                    )
+                return summary, None, None
+            summary = replace(summary, admission_processed=summary.admission_processed + 1)
         summary, detected, usable = self._detect_planned_content_type(
             planned,
             summary,
@@ -1792,6 +2260,9 @@ class FrameworkActions:
         self._state.finish_file_action(action_id, "failed", str(error))
 
     def _rename_protected_reason(self, source: Path, target: Path) -> str | None:
+        retained = getattr(self, "_retained_regeneration_sources", {})
+        if _path_key(source) in retained or _path_key(target) in retained:
+            return "retained_regeneration_witness"
         protected_reason = _protected_path_reason(source)
         if protected_reason is None:
             protected_reason = _protected_path_reason(
@@ -1956,6 +2427,7 @@ def apply_exact_dedupe_plan(
         trash_backend=trash_backend or KioTrashBackend(),
     )
     summary = runner._trash_duplicates(plan, ActionSummary(apply_actions=True))
+    runner._publish_preservation_summary("apply_exact_dedupe_plan", summary=summary)
     state.store_action_summary(run_id, summary)
     return summary
 

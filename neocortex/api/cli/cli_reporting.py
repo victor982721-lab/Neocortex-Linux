@@ -346,6 +346,15 @@ def _print_action_report(result, dedup_policy: str) -> None:
         f"third_party_skips={_optional_counter(actions, 'third_party_skips') or 0} "
         f"action_errors={actions.errors}"
     )
+    print(
+        "CORPUS_ADMISSION "
+        f"processed={_optional_counter(actions, 'admission_processed') or 0} "
+        f"metadata_only={_optional_counter(actions, 'admission_metadata_only') or 0} "
+        f"sensitive={_optional_counter(actions, 'admission_sensitive') or 0} "
+        f"regeneration_proven={_optional_counter(actions, 'regeneration_proven') or 0} "
+        f"regeneration_unproven={_optional_counter(actions, 'regeneration_unproven') or 0} "
+        "exclusion_is_not_deletion=1"
+    )
 
 
 def _print_organization_report(result) -> None:

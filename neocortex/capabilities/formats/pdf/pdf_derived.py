@@ -138,15 +138,26 @@ def inspect_pdf_derived_coverage(state_path: Path, run_id: int) -> PdfDerivedCov
                 (run_id,),
             ).fetchone()[0]
         )
+        # Scan the UNINDEXED FTS keys once, then resolve their original SQLite
+        # equality against canonical page keys.  EXCEPT keeps duplicates from
+        # inflating coverage and remains usable with query_only enabled.  Do
+        # not CAST FTS values: it could turn nonmatching corruption into page IDs.
         missing_fts_pages = int(
             connection.execute(
-                """SELECT COUNT(*) FROM pages p JOIN documents d USING(file_key)
-                WHERE d.status IN ('done','partial') AND d.last_seen_run_id=?
-                AND (NOT EXISTS(SELECT 1 FROM page_fts_state s
-                    WHERE s.file_key=p.file_key AND s.page_number=p.page_number)
-                OR NOT EXISTS(SELECT 1 FROM page_fts f
-                    WHERE f.file_key=p.file_key AND f.page_number=p.page_number))""",
-                (run_id,),
+                """SELECT CASE WHEN EXISTS(
+                    SELECT 1 FROM pages p JOIN documents d USING(file_key)
+                    WHERE d.status IN ('done','partial') AND d.last_seen_run_id=?
+                ) THEN (SELECT COUNT(*) FROM (
+                        SELECT p.file_key,p.page_number
+                        FROM pages p JOIN documents d USING(file_key)
+                        WHERE d.status IN ('done','partial') AND d.last_seen_run_id=?
+                        EXCEPT
+                        SELECT p.file_key,p.page_number
+                        FROM page_fts f CROSS JOIN pages p CROSS JOIN page_fts_state s
+                        WHERE f.file_key=p.file_key AND f.page_number=p.page_number
+                        AND s.file_key=p.file_key AND s.page_number=p.page_number
+                )) ELSE 0 END""",
+                (run_id, run_id),
             ).fetchone()[0]
         )
         orphan_fts_rows = int(

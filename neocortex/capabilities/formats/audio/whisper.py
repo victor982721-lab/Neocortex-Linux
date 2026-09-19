@@ -33,6 +33,8 @@ from neocortex.runtime.control.isolated_process import (
 
 
 _RUNTIME_UNAVAILABLE_PREFIX = "[audio-runtime-unavailable] "
+_NATIVE_GROWTH_MIN_SECONDS = 30.0
+_NATIVE_GROWTH_MIN_REQUESTS = 3
 
 
 # region [01] Runtime discovery without model loading
@@ -436,8 +438,36 @@ class WhisperTranscriber:
         self._process: Any | None = None
         self._request_id = 0
         self._native_threads = 1
+        self._native_growth_target = 0
+        self._native_growth_since = 0.0
+        self._native_growth_requests = 0
+
+    def _reset_native_growth(self) -> None:
+        self._native_growth_target = 0
+        self._native_growth_since = 0.0
+        self._native_growth_requests = 0
+
+    def _should_restart_for_native_budget(self, desired: int) -> bool:
+        # A smaller grant is a hard execution bound, even immediately after a
+        # model load.  Higher grants are headroom: only a sustained identical
+        # offer justifies discarding the resident model to grow its thread pool.
+        if desired <= self._native_threads:
+            self._reset_native_growth()
+            return desired < self._native_threads
+        now = time.monotonic()
+        if desired != self._native_growth_target:
+            self._native_growth_target = desired
+            self._native_growth_since = now
+            self._native_growth_requests = 1
+            return False
+        self._native_growth_requests += 1
+        return (
+            self._native_growth_requests >= _NATIVE_GROWTH_MIN_REQUESTS
+            and now - self._native_growth_since >= _NATIVE_GROWTH_MIN_SECONDS
+        )
 
     def _discard_worker(self, *, terminate: bool) -> None:
+        self._reset_native_growth()
         process = self._process
         channels = (self._task_channel, self._result_channel)
         self._process = self._task_channel = self._result_channel = None
@@ -491,6 +521,7 @@ class WhisperTranscriber:
                     ) from None
 
     def _start(self, cancellation: CancellationToken) -> None:
+        self._reset_native_growth()
         grant = current_resource_grant()
         self._native_threads = 1 if grant is None else max(1, grant.native_threads)
         settings: dict[str, object] = {
@@ -556,7 +587,7 @@ class WhisperTranscriber:
         cancellation.checkpoint()
         grant = current_resource_grant()
         desired = 1 if grant is None else max(1, grant.native_threads)
-        if self._process is not None and desired != self._native_threads:
+        if self._process is not None and self._should_restart_for_native_budget(desired):
             self.close()
         self._ensure_started(cancellation)
         self._request_id += 1

@@ -131,19 +131,35 @@ def xml_text_and_layout(
         "styles": Counter(),
         "alignments": Counter(),
     }
-    for _event, element in safe_xml_iterparse(source, events=("end",)):
+    parents: list[ET.Element] = []
+    retained_children: list[int] = []
+    for event, element in safe_xml_iterparse(source, events=("start", "end")):
+        if event == "start":
+            parents.append(element)
+            retained_children.append(0)
+            continue
         if cancellation is not None:
             cancellation.checkpoint()
         tag = element.tag
         _collect_element_text(element, pieces, budget)
         if collect_layout:
             _record_element_layout(element, layout)
-        if tag in {f"{W}p", f"{W}tbl", f"{W}sectPr"}:
+        discard = tag in {f"{W}p", f"{W}tbl", f"{W}sectPr"}
+        if discard:
             element.clear()
+        if len(parents) > 1:
+            if discard:
+                # Track the child index: remove(element) would repeatedly
+                # search any earlier, retained extension/property siblings.
+                del parents[-2][retained_children[-2]]
+            else:
+                retained_children[-2] += 1
         if budget.consumed > budget.limit:
             raise ValueError(f"DOCX text exceeds {budget.limit} characters")
         if len(pieces) >= TEXT_PIECE_BATCH:
             _flush_text_pieces(pieces, output)
+        parents.pop()
+        retained_children.pop()
     if pieces:
         _flush_text_pieces(pieces, output)
     text = output.getvalue()

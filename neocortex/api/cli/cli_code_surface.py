@@ -82,10 +82,10 @@ def register_code_arguments(
         choices=THIRD_PARTY_ACTION_CHOICES,
         default="keep",
         help=(
-            "keep identified dependency/vendor/binary artifacts as advisory "
-            "content (default for direct/internal calls), or request a bounded "
-            "trash plan; integrated --all selects that plan automatically and "
-            "--apply is still required to enact it"
+            "keep artifacts (default for direct/internal calls), or request a "
+            "bounded trash plan only for artifacts with a retained local "
+            "regeneration proof; integrated --all selects that plan and "
+            "--apply is still required to enact it; names/scores alone never suffice"
         ),
     )
     code.add_argument(
@@ -93,7 +93,7 @@ def register_code_arguments(
         type=float,
         default=0.95,
         metavar="SCORE",
-        help="minimum classification confidence admitted to a third-party trash plan",
+        help="classification selection threshold; never substitutes a regeneration proof",
     )
     code.add_argument(
         "--code-third-party-max-actions",
@@ -110,8 +110,8 @@ def register_code_arguments(
         default=None,
         metavar="KIND",
         help=(
-            "third-party class admitted to an explicit trash plan; repeat to "
-            "opt into generated, build_artifact or cache artifacts"
+            "restrict the classes eligible for a trash plan; repeat as needed; "
+            "every class still requires local regeneration evidence"
         ),
     )
     code.add_argument("--retry-code-errors", action="store_true")
@@ -259,8 +259,8 @@ def _validate_third_party_arguments(
         if args.route_only or args.resume_run is not None:
             raise SystemExit("third-party Code trash is unavailable with --route-only/--resume-run")
         # Integrated ``--all`` is the controlled-corpus workflow.  Its root
-        # and marker-derived project scope are already captured by the
-        # lifecycle boundary, so no extra user flags are required.  A direct
+        # and regeneration policy are already captured by the lifecycle
+        # boundary, so no extra user flags are required. A direct
         # Code invocation remains stricter because it has no all-run boundary
         # to bind the cleanup policy to.
         if not args.all:

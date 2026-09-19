@@ -458,6 +458,7 @@ class FrameworkOrchestrator:
         boundary = build_normal_inventory_boundary(
             root,
             self.config.state_directory,
+            observe_regenerable_artifacts=bool(self.selected_routes),
         )
         return tuple(Path(path) for path in boundary.exclusion_policy.explicit_roots)
 
@@ -1033,6 +1034,7 @@ class FrameworkOrchestrator:
             access_policy=access_policy,
             state_policy=state_layout.state_policy,
             internal_paths_policy=state_layout.internal_paths_policy,
+            observe_regenerable_artifacts=bool(self.selected_routes),
         )
         boundary.verify()
         with FrameworkRunLock(self.config.state_directory / "framework.lock"):
@@ -1098,6 +1100,8 @@ class FrameworkOrchestrator:
         boundary: NormalInventoryBoundary,
         excluded_paths: tuple[Path, ...],
     ) -> dict[str, object]:
+        from neocortex.workflow.actions.corpus_admission import CorpusAdmissionPolicy
+
         return {
             "route": self.config.route,
             "selected_routes": list(self.selected_routes),
@@ -1131,6 +1135,18 @@ class FrameworkOrchestrator:
             "code_max_documents": self.config.code_max_documents,
             "code_cache_validation": self.config.code_cache_validation,
             "code_candidate_scope": self.config.code_candidate_scope,
+            "corpus_admission": CorpusAdmissionPolicy(
+                interested_roots=self.config.code_project_roots,
+                code_scope=self.config.code_candidate_scope,
+                include_generated=self.config.code_include_generated,
+                include_vendored=self.config.code_include_vendored,
+            ).to_dict(),
+            "corpus_admission_signature": CorpusAdmissionPolicy(
+                interested_roots=self.config.code_project_roots,
+                code_scope=self.config.code_candidate_scope,
+                include_generated=self.config.code_include_generated,
+                include_vendored=self.config.code_include_vendored,
+            ).signature,
             "code_include_generated": self.config.code_include_generated,
             "code_include_vendored": self.config.code_include_vendored,
             "code_third_party_policy": (
@@ -1561,19 +1577,12 @@ class FrameworkOrchestrator:
     ) -> tuple[Path, ...]:
         """Resolve the owned Code roots without opening another inventory DB."""
 
-        from neocortex.code.ingestion.code_candidate_scope import ProjectCandidateScope
-
-        configured = _project_roots_relevant_to_corpus(
+        # A marker is a fact about a directory, not an expression of user
+        # interest. In particular, an empty intersection must stay empty.
+        return _project_roots_relevant_to_corpus(
             corpus_root,
             self.config.code_project_roots,
         )
-        scope = ProjectCandidateScope.discover(
-            (snapshot.path for snapshot in dedup_index.snapshots(scan_id)),
-            include_generated=False,
-            include_vendored=False,
-            explicit_roots=configured,
-        )
-        return tuple(Path(root).absolute() for root in scope.roots)
 
     def _execute_initial_actions(
         self,
@@ -1587,6 +1596,27 @@ class FrameworkOrchestrator:
         inventory_policy: InventoryExclusionPolicy,
         third_party_project_roots: tuple[Path, ...] = (),
     ) -> tuple[FrameworkActions, ActionSummary]:
+        from neocortex.workflow.actions.corpus_admission import CorpusAdmissionPolicy
+
+        read_budget = getattr(state, "read_run_budget", None)
+        budgeted = callable(read_budget) and read_budget(run_id) is not None
+        last_budget_check = time.monotonic()
+
+        def action_checkpoint() -> None:
+            nonlocal last_budget_check
+            self._cancellation.checkpoint()
+            now = time.monotonic()
+            if budgeted and now - last_budget_check >= 0.1:
+                state.check_run_budget(run_id)
+                last_budget_check = now
+
+        def reserve_action_work(key: str, items: int, bytes_count: int) -> None:
+            action_checkpoint()
+            self._reserve_lifecycle_stage_work(
+                state, run_id, "actions", key,
+                items=items, bytes_count=bytes_count, worker="corpus-curation",
+            )
+
         trash_backend = None
         if self.config.apply_actions and os.name != "nt":
             # The CLI capability gate has already checked the active Linux
@@ -1608,6 +1638,17 @@ class FrameworkOrchestrator:
             trash_backend=trash_backend,
             third_party_policy=getattr(self.config, "code_third_party_policy", None),
             third_party_project_roots=third_party_project_roots,
+            corpus_admission_policy=(
+                CorpusAdmissionPolicy(
+                    interested_roots=self.config.code_project_roots,
+                    code_scope=self.config.code_candidate_scope,
+                    include_generated=self.config.code_include_generated,
+                    include_vendored=self.config.code_include_vendored,
+                )
+                if self.selected_routes else None
+            ),
+            cancellation_check=action_checkpoint,
+            reserve_work=reserve_action_work if budgeted else None,
         )
         state.set_run_phase(run_id, "actions")
         actions = runner.execute(
@@ -1619,7 +1660,9 @@ class FrameworkOrchestrator:
             run_id,
             "actions",
             f"actions:scan:{scan_id}",
-            items=int(actions.files_checked + actions.duplicate_candidates),
+            # Duplicate work is reserved before its plan is consumed. This
+            # terminal reservation accounts only for content-type checks.
+            items=int(actions.files_checked),
             bytes_count=0,
             worker="actions",
         )
@@ -2465,6 +2508,12 @@ class FrameworkOrchestrator:
             access_policy=access_policy,
             state_policy=state_layout.state_policy,
             internal_paths_policy=state_layout.internal_paths_policy,
+            # Resume resolves its routes from the durable manifest later.
+            # An initially empty selection is not an inventory-only run and
+            # must keep the source content run's observational boundary.
+            observe_regenerable_artifacts=(
+                bool(self.selected_routes) or self.config.resume_run_id is not None
+            ),
         )
         boundary.verify()
         with FrameworkRunLock(self.config.state_directory / "framework.lock"):
@@ -2695,6 +2744,7 @@ class FrameworkOrchestrator:
         boundary: NormalInventoryBoundary,
     ) -> _RouteOnlySource:
         source_run_id, expected_scan_id = self._route_only_source_run(state, boundary)
+        self._require_source_admission_policy(state, source_run_id)
         self._select_route_only_routes(state, source_run_id)
         route_input_sources = {
             name: self.route_registry[name].input_source for name in self.selected_routes
@@ -2741,13 +2791,45 @@ class FrameworkOrchestrator:
             candidate_rows,
         )
 
+    def _require_source_admission_policy(self, state: FrameworkState, source_run_id: int) -> None:
+        """Never replay candidate-backed routes under a different interest policy."""
+        from neocortex.workflow.actions.corpus_admission import CorpusAdmissionPolicy
+
+        manifest = state.read_run_manifest(source_run_id)
+        configuration = None if manifest is None else manifest.get("configuration")
+        expected = CorpusAdmissionPolicy(
+            interested_roots=self.config.code_project_roots,
+            code_scope=self.config.code_candidate_scope,
+            include_generated=self.config.code_include_generated,
+            include_vendored=self.config.code_include_vendored,
+        )
+        if (
+            not isinstance(configuration, Mapping)
+            or configuration.get("corpus_admission") != expected.to_dict()
+            or configuration.get("corpus_admission_signature") != expected.signature
+        ):
+            raise ValueError(
+                f"source run {source_run_id} has an incompatible corpus admission policy; "
+                "repeat the original explicit project roots/scope or start a new initial run"
+            )
+
     def _route_only_start_payload(
         self,
         boundary: NormalInventoryBoundary,
         source: _RouteOnlySource,
         copied_candidates: int,
     ) -> dict[str, object]:
+        from neocortex.workflow.actions.corpus_admission import CorpusAdmissionPolicy
+
+        admission = CorpusAdmissionPolicy(
+            interested_roots=self.config.code_project_roots,
+            code_scope=self.config.code_candidate_scope,
+            include_generated=self.config.code_include_generated,
+            include_vendored=self.config.code_include_vendored,
+        )
         return {
+            "corpus_admission": admission.to_dict(),
+            "corpus_admission_signature": admission.signature,
             "root": str(boundary.access_policy.root),
             "source_run_id": source.run_id,
             "inventory_exclusion_signature": boundary.exclusion_policy.signature,

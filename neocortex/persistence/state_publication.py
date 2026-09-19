@@ -552,19 +552,56 @@ def _read_journal(state_directory: Path) -> tuple[StatePublication, ...]:
     return tuple(result)
 
 
-def read_state_epoch(state_directory: str | Path) -> StateEpoch:
-    """Read the current publication epoch without creating any file.
+def _publication_file_fence(path: Path) -> tuple[int, int, int, int, int] | None:
+    """Observe a regular metadata file without creating a reader lock."""
 
-    A missing pointer is a valid epoch zero.  If a journal contains a newer
-    complete event than the pointer, the journal is returned as the source;
-    this makes a pointer-write interruption observable without repairing it
-    during a read.
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise StatePublicationError(
+            f"publication metadata cannot be inspected: {path.name}"
+        ) from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise StatePublicationError(f"publication metadata is not regular: {path.name}")
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _read_publication_observation(
+    state_directory: Path,
+) -> tuple[StateEpoch, tuple[StatePublication, ...]]:
+    """Parse the pointer and journal once within the same file fences.
+
+    Writers call this while holding the existing exclusive publication lock.
+    Readers do not create a lock file: an append or atomic pointer replacement
+    during the observation instead invalidates it.  Nothing is cached across
+    calls, and an interrupted pointer update is still resolved from the journal.
     """
 
-    selected = _required_state_directory(state_directory)
-    pointer = _read_json_file(_epoch_path(selected))
+    paths = (_epoch_path(state_directory), _journal_path(state_directory))
+    before = tuple(_publication_file_fence(path) for path in paths)
+    pointer = _read_json_file(paths[0])
     pointer_epoch = None if pointer is None else _parse_epoch(pointer, source="pointer")
-    journal = _read_journal(selected)
+    journal = _read_journal(state_directory)
+    after = tuple(_publication_file_fence(path) for path in paths)
+    if before != after:
+        raise StatePublicationConflictError("publication metadata changed during observation")
+    return _state_epoch_from_observation(pointer_epoch, journal), journal
+
+
+def _state_epoch_from_observation(
+    pointer_epoch: StateEpoch | None,
+    journal: tuple[StatePublication, ...],
+) -> StateEpoch:
+    """Resolve an epoch from already validated, coherent publication inputs."""
+
     complete = tuple(item for item in journal if item.status == "complete")
     latest = max(complete, key=lambda item: (item.epoch, item.created_ns), default=None)
     journal_epoch = None
@@ -599,6 +636,21 @@ def read_state_epoch(state_directory: str | Path) -> StateEpoch:
     return journal_epoch
 
 
+def read_state_epoch(state_directory: str | Path) -> StateEpoch:
+    """Read the current publication epoch without creating any file.
+
+    A missing pointer and no complete journal event form epoch zero.  A newer
+    complete journal event remains authoritative after a pointer-write
+    interruption.  A concurrent metadata change invalidates the observation;
+    this reader neither repairs the pointer nor acquires a writable lock.
+    """
+
+    epoch, _journal = _read_publication_observation(
+        _required_state_directory(state_directory)
+    )
+    return epoch
+
+
 def read_state_publications(state_directory: str | Path) -> tuple[StatePublication, ...]:
     """Return the bounded publication journal without changing it."""
 
@@ -618,8 +670,7 @@ def read_state_publication_state(state_directory: str | Path) -> StatePublicatio
     """
 
     selected = _required_state_directory(state_directory)
-    publications = _read_journal(selected)
-    epoch = read_state_epoch(selected)
+    epoch, publications = _read_publication_observation(selected)
     latest_by_key: dict[str, StatePublication] = {}
     for publication in publications:
         latest_by_key[publication.idempotency_key] = publication
@@ -1028,12 +1079,11 @@ def record_state_publication(
     append_completed: StatePublication | None = None
     try:
         with _publication_lock(selected):
-            current = read_state_epoch(selected)
+            current, journal = _read_publication_observation(selected)
             if expected_epoch is not None and current.epoch != expected_epoch:
                 raise StatePublicationConflictError(
                     f"publication epoch changed: expected {expected_epoch}, observed {current.epoch}"
                 )
-            journal = _read_journal(selected)
             latest_by_key = {item.idempotency_key: item for item in journal}
             if expected_pending_event_id is not None:
                 active = latest_by_key.get(digest)

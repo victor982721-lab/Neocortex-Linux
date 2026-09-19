@@ -18,7 +18,6 @@ from neocortex.runtime.orchestration.route_registry import (
     RouteExecutionContext,
     builtin_route_registry,
 )
-from neocortex.runtime.orchestration.run_manifest import RunManifest
 from neocortex.runtime.orchestration.run_status import list_run_status
 from neocortex.safety.route_filters import CandidateSelection
 from tests.test_run_control import _source_run
@@ -137,17 +136,6 @@ def test_semantic_only_resume_creates_no_content_route_run(tmp_path: Path) -> No
     database = state_directory / "framework.sqlite3"
     source_run = _source_run(database, root)
     with FrameworkState(database) as state:
-        state.publish_run_manifest(
-            source_run,
-            RunManifest(
-                run_id=source_run,
-                run_kind="initial",
-                root=str(root),
-                root_identity=(1, 2, -1),
-                selected_routes=("probe",),
-                route_capabilities={"probe": "safe_replay"},
-            ).event_payload(),
-        )
         state.publish_run_stage(
             source_run,
             "semantic",

@@ -483,6 +483,7 @@ def validate_text_publications_from_connection(
     *,
     lookup_available: bool | None = None,
     _representations: dict[str, TextValidatedRepresentation] | None = None,
+    _receipts: dict[str, WorkReceipt] | None = None,
 ) -> None:
     """Validate a bounded Text publication window with set-based owner queries."""
 
@@ -586,9 +587,11 @@ def validate_text_publications_from_connection(
             receipt_ids.extend(validated_receipts)
             if _representations is not None:
                 representations[file_key] = representation
-        _validated_terminal_receipts(
+        batch_receipts = _validated_terminal_receipts(
             connection, tuple(receipt_ids), lookup_available=lookup_available
         )
+        if _receipts is not None:
+            _receipts.update(batch_receipts)
         if _representations is not None:
             _representations.update(representations)
 
@@ -2125,9 +2128,10 @@ def read_reusable_text_derivation_from_connection(
     revision_id = str(document["revision_id"])
     lookup_available = text_route_lookups_available(connection)
     representations: dict[str, TextValidatedRepresentation] = {}
+    validated_receipts: dict[str, WorkReceipt] = {}
     validate_text_publications_from_connection(
         connection, ((file_key, revision_id),), lookup_available=lookup_available,
-        _representations=representations,
+        _representations=representations, _receipts=validated_receipts,
     )
     revision_row = connection.execute(
         "SELECT * FROM text_input_revisions WHERE revision_id=?", (revision_id,)
@@ -2174,9 +2178,13 @@ def read_reusable_text_derivation_from_connection(
     producer_receipts = {str(row["producer_receipt_id"]) for row in rows}
     if len(producer_receipts) != 1:
         return None
-    _validated_terminal_receipt(
-        connection, next(iter(producer_receipts)), lookup_available=lookup_available
-    )
+    producer_receipt_id = next(iter(producer_receipts))
+    # Uncommitted callers have no replay observation and retain the full
+    # second proof. A committed observation is checked again before return.
+    if observation is None or producer_receipt_id not in validated_receipts:
+        _validated_terminal_receipt(
+            connection, producer_receipt_id, lookup_available=lookup_available
+        )
     outputs = tuple(
         OutputBinding(
             name=str(row["binding_name"]),
@@ -2189,7 +2197,7 @@ def read_reusable_text_derivation_from_connection(
     if observation is not None:
         validate_text_cache_observation(connection, observation)
     return TextReusableDerivation(
-        producer_receipt_id=next(iter(producer_receipts)),
+        producer_receipt_id=producer_receipt_id,
         revision=_revision_from_row(revision_row),
         outputs=outputs,
         representation=representations[file_key],

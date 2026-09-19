@@ -889,17 +889,10 @@ def _inventory_file_page(
         after_volume_id = bytes.fromhex(after.volume_id_hex)
         after_file_id = bytes.fromhex(after.file_id_hex)
         clauses.append(
-            """(
-            f.volume_id>? OR
-            (f.volume_id=? AND f.file_id>?) OR
-            (f.volume_id=? AND f.file_id=? AND f.birthtime_ns>?)
-            )"""
+            "(f.volume_id,f.file_id,f.birthtime_ns)>(?,?,?)"
         )
         parameters.extend(
             (
-                after_volume_id,
-                after_volume_id,
-                after_file_id,
                 after_volume_id,
                 after_file_id,
                 after.birthtime_ns,

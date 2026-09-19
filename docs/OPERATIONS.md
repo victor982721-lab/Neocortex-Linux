@@ -329,10 +329,11 @@ incluida Code como contenido, pero en Code conserva el alcance seguro `projects`
 Registra las copias de proyectos que quieras procesar con
 `--code-project-root PATH`; sólo usa `--code-scope broad` cuando quieras asumir
 explícitamente una exploración amplia dentro de la raíz elegida.
-El flujo normal `--all` prepara automáticamente la limpieza de
-dependencias/vendor/binarios con señales fuertes; sin `--apply` sólo prepara el
-plan y con `--apply` cruza la frontera física. Los artefactos ambiguos permanecen
-intactos y los efectos usan la misma frontera KIO receipt-bound que dedupe.
+El flujo normal `--all` clasifica el corpus antes de extracción profunda y
+prepara un plan de regenerables. Sin `--apply` sólo prepara el plan; con
+`--apply` cruza la frontera física únicamente cuando revalida la prueba de
+reconstrucción local. Los artefactos ambiguos permanecen intactos y los efectos
+usan la misma frontera KIO receipt-bound que dedupe.
 
 Para reproducir o regresionar el lifecycle 0.14, ejecuta la ampliación sólo
 sobre el piloto temporal y prueba las nueve rutas (`pdf`, `docx`, `office`,
@@ -347,6 +348,40 @@ de esta oleada antes de declararse cerradas.
 Una corrida sin `--apply` no modifica originales, pero sí escribe inventario,
 cachés, planes y publicaciones. Distingue siempre consulta read-only, producción
 de estado y efecto sobre corpus.
+
+### Curación previa del corpus
+
+La selección normal de Code usa exclusivamente las raíces configuradas de
+NeoCortex, MTF y bitácoras EPS. `--code-project-root` reemplaza la lista para una
+ejecución; repítelo por cada raíz interesada. Los marcadores de proyectos ajenos
+no amplían esa lista. Declarar interés tampoco amplía el corpus ni permite
+ingerir árboles internos protegidos.
+
+La clasificación individual distingue `process`, `metadata_only` y `sensitive`.
+Fuente/script ajeno y metadatos reconocidos de paquetes/cachés no llegan a OCR,
+parsers profundos o embeddings por otras rutas. Un JSON, CSV, documento o ZIP
+útil no se descarta por estar dentro de `AppData`, `vendor` o una carpeta de
+caché. Archive aplica la misma política por miembro después de sus verificaciones
+CRC/tamaño y antes de extraer texto; conserva el localizador virtual sin fabricar
+contenido ni identidad física. Cambiar la política invalida su replay.
+
+La prueba de regenerabilidad admite casos concretos: miembro idéntico en un
+wheel, nupkg o paquete npm local retenido, con metadata y layout comprobados;
+o `.pyc` compatible con el runtime actual, reproducido por compilación de una
+copia privada y acotada del `.py` conservado, sin ejecutar código. Versiones de
+bytecode no compatibles, fuentes ausentes/cambiadas, evidencia ambigua o límites
+agotados se conservan. No se descarga un sustituto ni se interpreta “se puede
+instalar otra vez” como prueba. Los originales, licencias, fixtures y credenciales
+no se convierten en Papelera por esta política.
+
+La selección mantiene límites por corrida y por prueba. `CORPUS_ADMISSION` y
+el stage `corpus-admission` conservan política, conteos, razones, ejemplos acotados
+y límites alcanzados; bytes reservados no son una medición de E/S física.
+`regeneration_unproven` significa conservado sin prueba, no basura confirmada.
+El status terminal puede leerse mediante la interfaz pública habitual. No abrir
+SQLite viva para observarlo. Resume/route-only exige la misma política de admisión
+y rechaza entradas antiguas sin ese contrato: no cambia silenciosamente intereses
+ni reconstruye candidatos bajo otro ámbito.
 
 Las rutas reutilizan extracción válida para reparar FTS y derivados sin repetir
 OCR, transcripción o análisis íntegros. Los reintentos sólo proceden con

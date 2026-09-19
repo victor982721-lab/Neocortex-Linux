@@ -5,7 +5,7 @@ import inspect
 import json
 import sqlite3
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,6 +34,8 @@ from neocortex.runtime.orchestration.route_registry import RouteAdapter
 from neocortex.runtime.orchestration.run_status import list_run_status
 from neocortex.persistence.framework_route_state import FrameworkRouteState
 from neocortex.persistence.framework_state_writer import FrameworkState
+from neocortex.runtime.orchestration.run_manifest import RunManifest
+from neocortex.workflow.actions.corpus_admission import CorpusAdmissionPolicy
 
 
 # region [01] Route-only and resumable execution
@@ -44,7 +46,11 @@ def _bind_policy_checkpoint(
     database: Path,
     root: Path,
 ) -> tuple[ScanSummary, str]:
-    boundary = build_normal_inventory_boundary(root, database.parent)
+    boundary = build_normal_inventory_boundary(
+        root,
+        database.parent,
+        observe_regenerable_artifacts=True,
+    )
     scan = index.scan(root, exclusion_policy=boundary.exclusion_policy)
     index.bind_inventory_checkpoint(
         InventoryCheckpoint(
@@ -60,12 +66,25 @@ def _bind_policy_checkpoint(
     return scan, boundary.effective_signature
 
 
+def _current_admission_configuration() -> dict[str, object]:
+    config = FrameworkConfig()
+    policy = CorpusAdmissionPolicy(
+        interested_roots=config.code_project_roots,
+        code_scope=config.code_candidate_scope,
+    )
+    return {
+        "corpus_admission": policy.to_dict(),
+        "corpus_admission_signature": policy.signature,
+    }
+
+
 def _source_run(
     database: Path,
     root: Path,
     *,
     route_running: bool = False,
     persist_policy: bool = True,
+    manifest_budget: Mapping[str, object] | None = None,
 ) -> int:
     source_path = root / "one.pdf"
     source_path.write_bytes(b"%PDF-1.4\n")
@@ -90,6 +109,20 @@ def _source_run(
             JournalCursor("C:", 1, 10),
             inventory_policy_signature=(effective_signature if persist_policy else None),
         )
+        if persist_policy:
+            state.publish_run_manifest(
+                run_id,
+                RunManifest(
+                    run_id=run_id,
+                    run_kind="initial",
+                    root=str(root),
+                    root_identity=(1, 2, -1),
+                    selected_routes=("probe",),
+                    route_capabilities={"probe": "safe_replay"},
+                    configuration=_current_admission_configuration(),
+                    budget={} if manifest_budget is None else dict(manifest_budget),
+                ).event_payload(),
+            )
         state.store_route_candidates(run_id, (("application/pdf", snapshot),))
         state.publish_initial_routing_snapshot(
             run_id,
@@ -134,6 +167,18 @@ def _inventory_snapshot_source_run(
             root,
             JournalCursor("C:", 1, 10),
             inventory_policy_signature=effective_signature,
+        )
+        state.publish_run_manifest(
+            run_id,
+            RunManifest(
+                run_id=run_id,
+                run_kind="initial",
+                root=str(root),
+                root_identity=(1, 2, -1),
+                selected_routes=("code",),
+                route_capabilities={"code": "safe_replay"},
+                configuration=_current_admission_configuration(),
+            ).event_payload(),
         )
         state.publish_initial_routing_snapshot(
             run_id,
@@ -184,6 +229,10 @@ class _RouteOnlyStateDouble:
     def __init__(self, events: list[str]) -> None:
         self.events = events
         self.recorded_details: dict[str, dict[str, object]] = {}
+        self._run_manifest = {"configuration": _current_admission_configuration()}
+
+    def read_run_manifest(self, _run_id: int) -> dict[str, object]:
+        return self._run_manifest
 
     def __enter__(self):
         self.events.append("state.enter")
@@ -905,7 +954,7 @@ def test_resume_recovers_legacy_scan_link_from_durable_inventory_evidence(
 
     mismatch_root = tmp_path / "another-corpus"
     mismatch_root.mkdir()
-    with pytest.raises(ValueError, match="belongs to another corpus root"):
+    with pytest.raises(ValueError, match="incompatible corpus admission policy"):
         FrameworkOrchestrator(
             FrameworkConfig(
                 root=mismatch_root,
@@ -925,28 +974,30 @@ def test_resume_recovers_legacy_scan_link_from_durable_inventory_evidence(
             is None
         )
 
-    result = FrameworkOrchestrator(
-        FrameworkConfig(
-            root=corpus,
-            state_directory=state_dir,
-            route="none",
-            route_only=True,
-            resume_run_id=source_run,
-            # Recovery uses the productive heartbeat default, not a 100 Hz
-            # writer racing every bounded SQLite snapshot copy.
-        ),
-        route_registry={"probe": RouteAdapter("probe", execute)},
-    ).run()
+    with pytest.raises(ValueError, match="incompatible corpus admission policy"):
+        FrameworkOrchestrator(
+            FrameworkConfig(
+                root=corpus,
+                state_directory=state_dir,
+                route="none",
+                route_only=True,
+                resume_run_id=source_run,
+                # Recovery uses the productive heartbeat default, not a 100 Hz
+                # writer racing every bounded SQLite snapshot copy.
+            ),
+            route_registry={"probe": RouteAdapter("probe", execute)},
+        ).run()
 
-    assert isinstance(result, RouteOnlyRunResult)
-    assert seen == [str(source_path)]
-    assert collected_during_snapshot is collect_during_snapshot
+    assert seen == []
+    assert collected_during_snapshot is False
     with closing(sqlite3.connect(state_dir / "framework.sqlite3")) as connection, connection:
         source_row = connection.execute(
             "SELECT status,scan_id FROM initial_runs WHERE run_id=?",
             (source_run,),
         ).fetchone()
-    assert source_row == ("interrupted", scan.scan_id)
+    # A legacy source has no admission manifest; the new replay gate rejects
+    # it before inventory recovery or a new operational run is created.
+    assert source_row == ("running", None)
 
 
 # endregion [01]
@@ -1265,7 +1316,7 @@ def test_explicit_route_source_with_legacy_policy_fails_before_new_run(
         executed = True
         return {"processed": 0}
 
-    with pytest.raises(ValueError, match="incompatible inventory policy"):
+    with pytest.raises(ValueError, match="incompatible corpus admission policy"):
         FrameworkOrchestrator(
             FrameworkConfig(
                 root=corpus,

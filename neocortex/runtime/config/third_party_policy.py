@@ -19,9 +19,8 @@ CodeThirdPartyAction = Literal["keep", "trash"]
 THIRD_PARTY_POLICY_SCHEMA: Final = "neocortex.code-third-party-policy/v1"
 THIRD_PARTY_ACTION_CHOICES: Final[tuple[CodeThirdPartyAction, ...]] = ("keep", "trash")
 
-# The default deliberately excludes generated/build/cache artifacts.  Those
-# can be project-owned even when they are noisy, whereas dependency/vendor
-# paths and binary payloads are the narrow request this policy is designed for.
+# These classes are eligible for proof, not for disposal by classification.
+# Every physical action also requires a retained local regeneration witness.
 THIRD_PARTY_KIND_CHOICES: Final[tuple[str, ...]] = (
     "dependency",
     "vendored",
@@ -34,6 +33,9 @@ DEFAULT_THIRD_PARTY_KINDS: Final[tuple[str, ...]] = (
     "dependency",
     "vendored",
     "binary",
+    "generated",
+    "build_artifact",
+    "cache",
 )
 DEFAULT_THIRD_PARTY_MIN_CONFIDENCE: Final[float] = 0.95
 DEFAULT_THIRD_PARTY_MAX_ACTIONS: Final[int] = 256
@@ -110,6 +112,7 @@ class CodeThirdPartyPolicy:
             # This is intentionally a request marker, not an authorization
             # claim.  The action/receipt owner owns the real effect gate.
             "mutation_requested": self.mutation_requested,
+            "requires_regeneration_proof": True,
         }
 
 

@@ -824,8 +824,14 @@ def _extract_xlsx_worksheet(
 ) -> None:
     source = _bounded_member(archive, info, budget, cancellation=cancellation)
     references: set[str] = set()
+    parents: list[ET.Element] = []
+    retained_children: list[int] = []
     try:
-        for _event, element in safe_xml_iterparse(source, events=("end",)):
+        for event, element in safe_xml_iterparse(source, events=("start", "end")):
+            if event == "start":
+                parents.append(element)
+                retained_children.append(0)
+                continue
             local = _local_name(element.tag)
             if local == "c":
                 cell = _xlsx_cell_from_element(
@@ -850,6 +856,13 @@ def _extract_xlsx_worksheet(
                 element.clear()
             elif local == "row":
                 element.clear()
+            if len(parents) > 1:
+                if local in {"c", "row"}:
+                    del parents[-2][retained_children[-2]]
+                else:
+                    retained_children[-2] += 1
+            parents.pop()
+            retained_children.pop()
     finally:
         source.close()
 

@@ -22,7 +22,7 @@ from neocortex.persistence.sqlite_schema_contract import (
 # region [01] Canonical schema
 
 
-CATALOG_SCHEMA_VERSION = 11
+CATALOG_SCHEMA_VERSION = 12
 _PATH_COLLATION = sqlite_path_collation()
 
 
@@ -444,7 +444,21 @@ _V10_CORRECTION_DDL = (
 # fold the correction table into this tuple: v9 databases have no such table
 # and must be validated before the additive v10 step.
 _V9_SCHEMA_DDL = _CURRENT_SCHEMA_DDL
-_CURRENT_SCHEMA_DDL = (*_V9_SCHEMA_DDL, *_V10_CORRECTION_DDL)
+# The v11 reader fence did not change the v10 physical schema.  Preserve
+# this exact source contract before adding indexes to the v12 owner schema.
+_V11_SCHEMA_DDL = (*_V9_SCHEMA_DDL, *_V10_CORRECTION_DDL)
+_V12_LOOKUP_DDL = (
+    """CREATE INDEX IF NOT EXISTS classification_corrections_identity_idx
+        ON classification_corrections(
+            logical_identity,root,dimension,correction_id
+        )""",
+    """CREATE INDEX IF NOT EXISTS catalog_generation_documents_fingerprint_idx
+        ON catalog_generation_documents(text_fingerprint,generation_id,source_kind)
+        WHERE active=1""",
+    """CREATE INDEX IF NOT EXISTS organization_plans_run_root_idx
+        ON organization_plans(catalog_run_id,organization_root,plan_id)""",
+)
+_CURRENT_SCHEMA_DDL = (*_V11_SCHEMA_DDL, *_V12_LOOKUP_DDL)
 
 
 def _create_v7_schema(connection: sqlite3.Connection) -> None:
@@ -493,9 +507,32 @@ def _create_v9_schema(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
+def _create_v11_schema(connection: sqlite3.Connection) -> None:
+    """Build the unchanged physical schema shared by versions 10 and 11."""
+
+    for statement in _V11_SCHEMA_DDL:
+        connection.execute(statement)
+
+
+@lru_cache(maxsize=1)
+def _v11_schema_contract() -> SQLiteSchemaContract:
+    return schema_contract_from_builder(_create_v11_schema)
+
+
+def validate_v11_document_catalog_schema(connection: sqlite3.Connection) -> None:
+    """Validate the exact v10/v11 physical source before any additive DDL."""
+
+    validate_sqlite_schema_contract(
+        connection,
+        _v11_schema_contract(),
+        label="document catalog v10/v11 migration source",
+        exact=True,
+    )
+
+
 @lru_cache(maxsize=1)
 def document_catalog_schema_contract() -> SQLiteSchemaContract:
-    """Return the immutable structural contract for the current schema v10."""
+    """Return the immutable structural contract for the current schema."""
 
     return schema_contract_from_builder(create_document_catalog_schema)
 
@@ -1087,6 +1124,14 @@ def _migrate_to_v11(connection: sqlite3.Connection) -> None:
     connection.execute("SELECT key,value FROM metadata LIMIT 0")
 
 
+def _migrate_to_v12(connection: sqlite3.Connection) -> None:
+    """Add lookup indexes without changing durable catalog rows."""
+
+    validate_v11_document_catalog_schema(connection)
+    for statement in _V12_LOOKUP_DDL:
+        connection.execute(statement)
+
+
 def migrate_document_catalog_schema(
     connection: sqlite3.Connection,
     prior_version: int,
@@ -1097,9 +1142,7 @@ def migrate_document_catalog_schema(
 
     if prior_version == 10:
         # The reader fence is additive; do not repair an invalid v10 database.
-        validate_sqlite_schema_contract(
-            connection, document_catalog_schema_contract(), label="document catalog v10", exact=True,
-        )
+        validate_v11_document_catalog_schema(connection)
     migrations: dict[int, Callable[[], None]] = {
         1: lambda: _migrate_to_v1(connection),
         2: lambda: _migrate_to_v2(connection),
@@ -1113,6 +1156,7 @@ def migrate_document_catalog_schema(
         10: lambda: _migrate_to_v10(connection),
         # Version 11 fences readers that may reactivate a reset historical head.
         11: lambda: _migrate_to_v11(connection),
+        12: lambda: _migrate_to_v12(connection),
     }
     for target_version in range(prior_version + 1, CATALOG_SCHEMA_VERSION + 1):
         migrations[target_version]()
@@ -1135,4 +1179,5 @@ __all__ = [
     "validate_v7_document_catalog_schema",
     "validate_v8_document_catalog_schema",
     "validate_v9_document_catalog_schema",
+    "validate_v11_document_catalog_schema",
 ]

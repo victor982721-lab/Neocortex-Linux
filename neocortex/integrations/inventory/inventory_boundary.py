@@ -115,6 +115,15 @@ _CANONICAL_STATE_DATABASE_NAMES = (
     "text.sqlite3",
 )
 
+# A pre-admission inventory may observe regenerable payloads so the classifier
+# can distinguish useful metadata from generated output.  Keep only VCS
+# directories as broad-name exclusions in that mode; canonical roots and the
+# restricted rules below remain explicit identity-bound fences.
+_OBSERVATION_DIRECTORY_NAMES = (".git", ".hg", ".svn")
+_OBSERVATION_DIRECTORY_PREFIXES: tuple[str, ...] = ()
+_OBSERVATION_DIRECTORY_FRAGMENTS: tuple[str, ...] = ()
+_OBSERVATION_FILE_SUFFIXES: tuple[str, ...] = ()
+
 
 @dataclass(frozen=True, slots=True)
 class NormalInventoryBoundary:
@@ -368,8 +377,19 @@ def build_normal_inventory_boundary(
     state_policy: CorpusAccessPolicy | None = None,
     internal_paths_policy: InternalPathsPolicy | None = None,
     protected_content_policy: ProtectedContentPolicy | None = None,
+    observe_regenerable_artifacts: bool = False,
 ) -> NormalInventoryBoundary:
-    """Capture the canonical normal boundary after authorized layout setup."""
+    """Capture the canonical normal boundary after authorized layout setup.
+
+    ``observe_regenerable_artifacts`` is an explicit pre-admission mode.  It
+    keeps canonical excluded roots, protected-content restrictions, and VCS
+    directories, but does not discard a nested directory or file merely because
+    its name looks generated.  The caller still receives the same metadata
+    identity fence and a distinct policy signature for checkpoint binding.
+    """
+
+    if type(observe_regenerable_artifacts) is not bool:
+        raise TypeError("observe_regenerable_artifacts must be a bool")
 
     if access_policy is None:
         access_policy = CorpusAccessPolicy.capture("normal", root)
@@ -402,6 +422,20 @@ def build_normal_inventory_boundary(
     restricted_roots, allowed_trees, allowed_files = _protected_inventory_restrictions(
         protected_content_policy
     )
+    directory_names: tuple[str, ...]
+    directory_prefixes: tuple[str, ...]
+    directory_fragments: tuple[str, ...]
+    file_suffixes: tuple[str, ...]
+    if observe_regenerable_artifacts:
+        directory_names = _OBSERVATION_DIRECTORY_NAMES
+        directory_prefixes = _OBSERVATION_DIRECTORY_PREFIXES
+        directory_fragments = _OBSERVATION_DIRECTORY_FRAGMENTS
+        file_suffixes = _OBSERVATION_FILE_SUFFIXES
+    else:
+        directory_names = DEFAULT_GENERATED_DIRECTORY_NAMES
+        directory_prefixes = DEFAULT_GENERATED_DIRECTORY_PREFIXES
+        directory_fragments = DEFAULT_GENERATED_DIRECTORY_FRAGMENTS
+        file_suffixes = DEFAULT_GENERATED_FILE_SUFFIXES
     exclusion_policy = InventoryExclusionPolicy.compile(
         (
             *DEFAULT_EXCLUDED_PATHS,
@@ -410,10 +444,10 @@ def build_normal_inventory_boundary(
             *internal_paths_policy.inventory_exclusion_roots(access_policy),
             *protected_content_policy.inventory_exclusion_roots(access_policy),
         ),
-        directory_names=DEFAULT_GENERATED_DIRECTORY_NAMES,
-        directory_prefixes=DEFAULT_GENERATED_DIRECTORY_PREFIXES,
-        directory_fragments=DEFAULT_GENERATED_DIRECTORY_FRAGMENTS,
-        file_suffixes=DEFAULT_GENERATED_FILE_SUFFIXES,
+        directory_names=directory_names,
+        directory_prefixes=directory_prefixes,
+        directory_fragments=directory_fragments,
+        file_suffixes=file_suffixes,
         restricted_roots=restricted_roots,
         restricted_allowed_trees=allowed_trees,
         restricted_allowed_files=allowed_files,

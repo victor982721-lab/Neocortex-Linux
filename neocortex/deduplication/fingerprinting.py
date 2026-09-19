@@ -311,7 +311,15 @@ def files_equal_exact(
                 if left_count == 0:
                     break
                 bytes_compared += left_count
-                if left_view[:left_count] != right_view[:right_count]:
+                # Whole buffers avoid element-wise memoryview comparison on
+                # full reads. Short reads compare only the current prefixes;
+                # repeatedly comparing their unchanged tails can be costly.
+                buffers_differ = (
+                    left_buffer != right_buffer
+                    if left_count == capacity
+                    else left_view[:left_count] != right_view[:right_count]
+                )
+                if buffers_differ:
                     equal = False
                     break
             if equal and bytes_compared != left.size:

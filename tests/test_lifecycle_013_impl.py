@@ -58,6 +58,7 @@ from neocortex.runtime.orchestration.route_registry import (
 from neocortex.runtime.orchestration.route_selection import BUILTIN_ROUTE_ORDER
 from neocortex.runtime.orchestration.run_manifest import RunBudget, RunManifest
 from neocortex.runtime.orchestration.run_status import list_run_status
+from neocortex.workflow.actions.corpus_admission import CorpusAdmissionPolicy
 import neocortex.sdk as sdk
 from neocortex.sdk import read_run_status_json as sdk_read_run_status_json
 
@@ -95,6 +96,18 @@ def _root_identity(root: Path) -> tuple[int, int, int]:
     return (int(metadata.st_dev), int(metadata.st_ino), stat_birthtime_ns(metadata))
 
 
+def _current_admission_configuration() -> dict[str, object]:
+    config = FrameworkConfig()
+    policy = CorpusAdmissionPolicy(
+        interested_roots=config.code_project_roots,
+        code_scope=config.code_candidate_scope,
+    )
+    return {
+        "corpus_admission": policy.to_dict(),
+        "corpus_admission_signature": policy.signature,
+    }
+
+
 def _make_source_fixture(
     tmp_path: Path,
     *,
@@ -116,7 +129,11 @@ def _make_source_fixture(
         paths.append(path)
 
     dedup_database = state_directory / "dedup.sqlite3"
-    boundary = build_normal_inventory_boundary(root, state_directory)
+    boundary = build_normal_inventory_boundary(
+        root,
+        state_directory,
+        observe_regenerable_artifacts=True,
+    )
     with DedupIndex(dedup_database) as index:
         scan = index.scan(root, exclusion_policy=boundary.exclusion_policy)
         index.bind_inventory_checkpoint(
@@ -172,7 +189,7 @@ def _make_source_fixture(
                 root_identity=_root_identity(root),
                 selected_routes=selected_routes,
                 route_capabilities=capabilities,
-                configuration={"fixture": True},
+                configuration={"fixture": True, **_current_admission_configuration()},
                 budget={"durable": RunBudget().payload()},
                 input_snapshot={
                     "scan_id": scan.scan_id,
@@ -454,6 +471,7 @@ def test_global_budget_covers_route_semantic_and_final_deadline_gate(
                 root=str(source.root),
                 root_identity=_root_identity(source.root),
                 selected_routes=("text",),
+                configuration=_current_admission_configuration(),
                 budget={"durable": budget.payload()},
             ).event_payload(),
         )
@@ -721,7 +739,10 @@ def test_integrated_stage_runner_sees_pending_stage_before_framework_finalize(
             ).fetchone()
             observed["run_status"] = None if row is None else str(row[0])
             stages = state.read_run_stages(run_id)
-            observed["pending"] = stages[-1]["status"]
+            semantic_stage = next(
+                stage for stage in stages if stage.get("stage") == "semantic"
+            )
+            observed["pending"] = semantic_stage["status"]
             state.publish_run_stage(
                 run_id,
                 "semantic",

@@ -1706,7 +1706,7 @@ def build_context_response_v2(
             shortened["citations"][-1].update(
                 excerpt=snippet[:protected_end] + _TRUNCATED, fragment_state="truncated"
             )
-            _refresh_graph_projection(shortened, entries)
+            # Excerpt-only edits preserve the already projected citation graph.
             _set_status(shortened, len(candidates), assessment_cache, compact=compact_profile)
             short_cost = _measure(shortened)
             # A truncation marker + partial envelope can cost MORE than a
@@ -1746,14 +1746,13 @@ def build_context_response_v2(
                 excerpt=snippet[:count] + (_TRUNCATED if count < len(snippet) else ""),
                 fragment_state="truncated" if count < len(snippet) else "full",
             )
-            _refresh_graph_projection(proposal, entries)
+            # Citation identities and entries are unchanged by this expansion.
             _set_status(proposal, len(candidates), assessment_cache, compact=compact_profile)
             if _measure(proposal) <= max_characters:
                 payload = proposal
                 changed = True
         if not changed:
             break
-    _refresh_graph_projection(payload, entries)
     _set_status(payload, len(candidates), assessment_cache, compact=compact_profile)
     _measure(payload)
     return validate_context_response(payload)

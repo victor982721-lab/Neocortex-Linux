@@ -709,20 +709,21 @@ con `--code-project-root PATH`; `--code-scope broad` queda como opt-in explícit
 para una exploración amplia y no ejecuta el código observado ni produce
 evidencia de validación del repositorio.
 
-La procedencia de Code es sólo una señal explicable, no una prueba legal de
-autoría. En el flujo normal `--all`, NeoCortex prepara automáticamente la
-limpieza de dependencias, árboles `vendor` y binarios con evidencia fuerte; sin
-`--apply` sólo genera el plan y con `--apply` lo ejecuta. La política integrada
-es `trash` para esas clases; overrides internos pueden usar `keep`. Artefactos
-ambiguos, licencias, contenedores ZIP y miembros virtuales no se mueven. La
-firma binaria por sí sola no prueba procedencia: un binario fuera de una ruta
-de dependencia/vendor queda intacto. La acción conserva la misma identidad,
-revalidación, Papelera KIO y receipt por
-archivo que el dedupe.
-Las carpetas que el inventario excluye por política (por ejemplo `.venv`,
-`node_modules`, `.git` y cachés) no forman parte de esta acción y no se borran;
-para una limpieza posterior de una copia concreta habrá que incluirla mediante
-una política de inventario independiente.
+La procedencia de Code es una señal, no una prueba de autoría ni regenerabilidad.
+La lista predeterminada corresponde a las raíces de NeoCortex, MTF y bitácoras EPS;
+no se amplía por encontrar marcadores en el corpus. `--all` admite por archivo
+qué merece procesamiento y prepara un plan de regenerables; `--apply` mantiene
+el gate físico. Cada candidato necesita un paquete fuente local conservado con
+miembro idéntico o bytecode reproducido desde su fuente, además de los límites,
+identidad, revalidación, ledger y receipt KIO. La política `keep` conserva el
+contenido sin ejecutar ese plan. Credenciales, licencias, fixtures, originales
+de paquetes, ambiguos y miembros virtuales permanecen protegidos.
+
+La observación integrada admite metadatos de copias de dependencias y cachés
+sin darles autorización de borrado. Mantiene raíces canónicas y VCS protegidos;
+no excluye un `AppData` mixto por nombre. El resumen `CORPUS_ADMISSION` y el stage
+homónimo explican procesados, excluidos de procesamiento, sensibles, pruebas
+de regeneración y cobertura limitada. Excluir no equivale a enviar a Papelera.
 
 Ejemplo de una copia controlada:
 

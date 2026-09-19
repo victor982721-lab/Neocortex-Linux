@@ -108,6 +108,8 @@ MAX_MEMBER_SEGMENT_CHARS = 255
 MAX_EMBEDDED_DOCUMENT_MEMBERS = 20_000
 MAX_EMBEDDED_XML_BYTES = 64 * 1024 * 1024
 ARCHIVE_READ_CHUNK_BYTES = 64 * 1024
+MAX_ARCHIVE_ADMISSION_PREFIX_BYTES = 8 * 1024
+ARCHIVE_MEMBER_ADMISSION_DISABLED_SIGNATURE = "archive-member-admission:none-v1"
 _ARCHIVE_RESOURCES: ContextVar[tuple[Any, CancellationToken] | None] = ContextVar(
     "archive_resources", default=None
 )
@@ -135,6 +137,32 @@ def _archive_cancellation() -> CancellationToken | None:
     worker = current_worker_cancellation()
     context = _ARCHIVE_RESOURCES.get()
     return worker if worker is not None else (None if context is None else context[1])
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveMemberAdmissionContext:
+    """Verified, bounded metadata exposed to an optional member policy.
+
+    ``prefix`` is the only member content exposed to the callback.  It is
+    bounded and is supplied only after the ZIP reader has consumed the member
+    to EOF, so the reader has performed its normal CRC/size validation.  The
+    complete payload is never handed to a policy and is released immediately
+    when the policy denies the member.
+    """
+
+    # ``member_name`` is the normalized path within the current ZIP; the
+    # chain retains outer nested ZIP notation for policy/localizer decisions.
+    member_name: str
+    member_chain: str
+    depth: int
+    container_path: Path
+    size: int
+    compressed_size: int
+    crc32: int
+    prefix: bytes
+
+
+ArchiveMemberAdmission = Callable[[ArchiveMemberAdmissionContext], object]
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +197,15 @@ class ArchiveRouteConfig:
     # Framework ``apply_actions`` request and points it at state-managed output.
     materialize_on_apply: bool = field(default=False, kw_only=True)
     materialization_directory: Path | None = field(default=None, kw_only=True)
+    # Integrated --all may inject a serializable/picklable policy callback.
+    # Standalone Archive remains byte-compatible when this is absent.  The
+    # signature is deliberately separate so a changed admission policy cannot
+    # reuse or publish an earlier, broader member representation.
+    member_admission: ArchiveMemberAdmission | None = field(default=None, kw_only=True)
+    member_admission_signature: str = field(
+        default=ARCHIVE_MEMBER_ADMISSION_DISABLED_SIGNATURE,
+        kw_only=True,
+    )
 
     @property
     def processing_signature(self) -> str:
@@ -196,6 +233,7 @@ class ArchiveRouteConfig:
             self.ocr_timeout_seconds,
             self.tesseract_cmd,
             self.tessdata_dir,
+            self.member_admission_signature,
         )
 
 
@@ -220,6 +258,7 @@ def _archive_processing_provenance(
     ocr_timeout_seconds: float,
     tesseract_cmd: str | None,
     tessdata_dir: str | None,
+    member_admission_signature: str,
 ) -> ProcessingProvenance:
     ocr_component = (
         {
@@ -260,6 +299,7 @@ def _archive_processing_provenance(
             "tessdata_source": "explicit" if tessdata_dir else "default",
             "member_name_policy": "portable-posix-no-traversal-exact-case-v1",
             "nested_path_notation": "container.zip!/member.zip!/file",
+            "member_admission_signature": member_admission_signature,
         },
         (
             python_runtime_component(),
@@ -1432,6 +1472,68 @@ def _metadata_content(
     )
 
 
+def _archive_member_admission(
+    config: ArchiveRouteConfig,
+    snapshot: FileSnapshot,
+    info: zipfile.ZipInfo,
+    *,
+    name: str,
+    member_chain: str,
+    depth: int,
+    payload: bytes,
+    cancellation: CancellationToken,
+) -> tuple[bool, str | None, str | None]:
+    """Run the optional policy after verified member read and before parsing.
+
+    The callback is intentionally a narrow seam: it receives bounded metadata
+    and a prefix, never the full payload, and its result is interpreted as a
+    disposition only.  A false/sensitive/metadata-only disposition preserves
+    the virtual member as metadata while preventing text extraction, nested
+    traversal and FTS body publication.
+    """
+
+    cancellation.checkpoint()
+    callback = config.member_admission
+    if callback is None:
+        return True, None, None
+    context = ArchiveMemberAdmissionContext(
+        member_name=name,
+        member_chain=member_chain,
+        depth=depth,
+        container_path=Path(snapshot.path),
+        size=int(info.file_size),
+        compressed_size=int(info.compress_size),
+        crc32=int(info.CRC),
+        prefix=payload[:MAX_ARCHIVE_ADMISSION_PREFIX_BYTES],
+    )
+    try:
+        decision = callback(context)
+        disposition = getattr(decision, "disposition", decision)
+        if disposition is True or disposition == "process":
+            allowed = True
+        elif disposition is False or disposition in {"metadata_only", "sensitive", "deny"}:
+            allowed = False
+        else:
+            raise ValueError("member admission callback returned an unsupported disposition")
+    except CancellationRequested:
+        raise
+    except Exception as exc:
+        cancellation.checkpoint()
+        return (
+            False,
+            "archive_member_admission_error",
+            f"member admission policy failed: {type(exc).__name__}",
+        )
+    cancellation.checkpoint()
+    if allowed:
+        return True, None, None
+    return (
+        False,
+        "archive_member_admission_denied",
+        "member denied by configured archive admission policy",
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _ArchiveMemberWork:
     info: zipfile.ZipInfo
@@ -1852,68 +1954,88 @@ def _walk_zip(
                     issue_code=code,
                 )
             else:
-                suffix = PurePosixPath(name).suffix.casefold()
-                zip_kind = None
-                if payload.startswith(_ZIP_MAGIC_PREFIXES) or suffix in _NESTED_ARCHIVE_EXTENSIONS:
-                    try:
-                        inspect_zip_bytes(
-                            payload,
-                            max_members=MAX_EMBEDDED_DOCUMENT_MEMBERS,
-                            max_central_directory_bytes=config.max_central_directory_bytes,
-                        )
-                        with zipfile.ZipFile(io.BytesIO(payload)) as nested:
-                            nested_observation, _ = _inspect_logical_document(
-                                nested,
-                                budget=budget,
-                                config=config,
-                            )
-                        zip_kind = (
-                            nested_observation.logical_kind
-                            if nested_observation is not None and nested_observation.identified
-                            else "archive"
-                        )
-                    except ArchiveExtractionError as exc:
-                        zip_kind = "archive"
-                        _record_issue(
-                            connection,
-                            container_key,
-                            counters,
-                            member_chain=member_chain,
-                            depth=depth,
-                            code=exc.code,
-                            detail=str(exc),
-                        )
-                    except (
-                        OSError,
-                        RuntimeError,
-                        ZipStructureError,
-                        zipfile.BadZipFile,
-                        zlib.error,
-                    ):
-                        zip_kind = "corrupt_archive"
-                    if nested_observation is not None:
-                        _store_logical_observation(
-                            connection,
-                            container_key,
-                            member_chain,
-                            nested_observation,
-                            name=name,
-                            depth=depth,
-                            counters=counters,
-                        )
-                if zip_kind == "archive":
-                    content = _ExtractedContent(
-                        None,
-                        "archive",
-                        "application/zip",
-                    )
-                elif zip_kind == "corrupt_archive":
+                admitted, admission_code, admission_detail = _archive_member_admission(
+                    config,
+                    snapshot,
+                    info,
+                    name=name,
+                    member_chain=member_chain,
+                    depth=depth,
+                    payload=payload,
+                    cancellation=cancellation,
+                )
+                if not admitted:
+                    # Do not retain a denied member's full bytes in the owner
+                    # spool.  Metadata/CRC/localizer fields remain durable,
+                    # but no text or nested parser is allowed to observe it.
+                    payload = None
                     content = _metadata_content(
-                        detail="nested ZIP structure is corrupt or unsupported",
-                        issue_code="archive_nested_corrupt",
+                        detail=admission_detail,
+                        issue_code=admission_code,
                     )
                 else:
-                    content = None
+                    suffix = PurePosixPath(name).suffix.casefold()
+                    zip_kind = None
+                    if payload.startswith(_ZIP_MAGIC_PREFIXES) or suffix in _NESTED_ARCHIVE_EXTENSIONS:
+                        try:
+                            inspect_zip_bytes(
+                                payload,
+                                max_members=MAX_EMBEDDED_DOCUMENT_MEMBERS,
+                                max_central_directory_bytes=config.max_central_directory_bytes,
+                            )
+                            with zipfile.ZipFile(io.BytesIO(payload)) as nested:
+                                nested_observation, _ = _inspect_logical_document(
+                                    nested,
+                                    budget=budget,
+                                    config=config,
+                                )
+                            zip_kind = (
+                                nested_observation.logical_kind
+                                if nested_observation is not None and nested_observation.identified
+                                else "archive"
+                            )
+                        except ArchiveExtractionError as exc:
+                            zip_kind = "archive"
+                            _record_issue(
+                                connection,
+                                container_key,
+                                counters,
+                                member_chain=member_chain,
+                                depth=depth,
+                                code=exc.code,
+                                detail=str(exc),
+                            )
+                        except (
+                            OSError,
+                            RuntimeError,
+                            ZipStructureError,
+                            zipfile.BadZipFile,
+                            zlib.error,
+                        ):
+                            zip_kind = "corrupt_archive"
+                        if nested_observation is not None:
+                            _store_logical_observation(
+                                connection,
+                                container_key,
+                                member_chain,
+                                nested_observation,
+                                name=name,
+                                depth=depth,
+                                counters=counters,
+                            )
+                    if zip_kind == "archive":
+                        content = _ExtractedContent(
+                            None,
+                            "archive",
+                            "application/zip",
+                        )
+                    elif zip_kind == "corrupt_archive":
+                        content = _metadata_content(
+                            detail="nested ZIP structure is corrupt or unsupported",
+                            issue_code="archive_nested_corrupt",
+                        )
+                    else:
+                        content = None
         return _ArchiveMemberWork(
             info, name, member_chain, payload, zip_kind, content, nested_observation, config,
             content is None,
@@ -2641,6 +2763,21 @@ class ArchiveRoute:
             raise ValueError("archive retry_recoverable_errors must be a boolean")
         if not isinstance(self.config.materialize_on_apply, bool):
             raise ValueError("archive materialize_on_apply must be a boolean")
+        admission_signature = self.config.member_admission_signature
+        if (
+            not isinstance(admission_signature, str)
+            or not admission_signature
+            or admission_signature.strip() != admission_signature
+            or len(admission_signature.encode("utf-8")) > 4096
+        ):
+            raise ValueError("archive member admission signature is invalid")
+        if (
+            self.config.member_admission is not None
+            and admission_signature == ARCHIVE_MEMBER_ADMISSION_DISABLED_SIGNATURE
+        ):
+            raise ValueError(
+                "archive member admission callbacks require an explicit policy signature"
+            )
         if self.config.materialize_on_apply and self.config.materialization_directory is not None:
             directory = self.config.materialization_directory
             if not isinstance(directory, Path) or not directory.is_absolute():
@@ -3365,9 +3502,12 @@ class ArchiveRoute:
 
 
 __all__ = (
+    "ARCHIVE_MEMBER_ADMISSION_DISABLED_SIGNATURE",
     "ARCHIVE_MIME",
     "ARCHIVE_ROUTE_VERSION",
     "ArchiveExtractionError",
+    "ArchiveMemberAdmission",
+    "ArchiveMemberAdmissionContext",
     "ArchiveRoute",
     "ArchiveRouteConfig",
     "ArchiveRouteSummary",

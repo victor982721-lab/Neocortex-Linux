@@ -9,7 +9,7 @@ import math
 import sqlite3
 import time
 import zlib
-from contextlib import ExitStack, nullcontext
+from contextlib import ExitStack, closing, nullcontext
 from neocortex.runtime.control.elastic_workers import current_worker_cancellation, elastic_map
 from neocortex.runtime.control.gpu_runtime import cuda_memory_snapshot
 from ..media_resources import ResidentMediaGate, current_media_resource, media_gate_scope
@@ -961,7 +961,7 @@ def _audio_fts_matches(
 ) -> bool:
     predicate, parameters = format_fts_key_predicate(connection, "transcript_fts", (key,))
     rows = connection.execute(
-        f"SELECT file_key,path,title,body FROM transcript_fts WHERE {predicate}",
+        f"SELECT file_key,path,title,body FROM transcript_fts WHERE {predicate} LIMIT 2",
         parameters,
     ).fetchall()
     if len(rows) != 1:
@@ -973,6 +973,43 @@ def _audio_fts_matches(
         and str(row["title"]) == title
         and str(row["body"]) == text
     )
+
+
+def _read_cached_audio_segments(
+    connection: sqlite3.Connection, key: str, raw_metadata: object,
+) -> tuple[str, float, int] | None:
+    """Reconstruct text without retaining a second collection of segment rows."""
+    text_parts: list[str] = []
+    speech_seconds = 0.0
+    segment_count = 0
+    with closing(connection.execute(
+        """SELECT segment_index,start_ms,end_ms,text
+        FROM segments WHERE file_key=? ORDER BY segment_index""",
+        (key,),
+    )) as segments:
+        for expected_index, segment in enumerate(segments):
+            try:
+                segment_index = int(segment["segment_index"])
+                start_ms = int(segment["start_ms"])
+                end_ms = int(segment["end_ms"])
+            except (TypeError, ValueError, OverflowError):
+                return None
+            text_value = segment["text"]
+            if (
+                segment_index != expected_index
+                or start_ms < 0
+                or end_ms < start_ms
+                or not isinstance(text_value, str)
+            ):
+                return None
+            text_parts.append(text_value)
+            speech_seconds += (end_ms - start_ms) / 1000.0
+            segment_count += 1
+    if not segment_count or not _audio_segment_extent_matches(raw_metadata, segment_count):
+        return None
+    # The helper's row, cursor and text-parts references die before the caller
+    # creates UTF-8, compressed and FTS representations of the joined text.
+    return " ".join(text_parts), speech_seconds, segment_count
 
 
 def _repair_cached_audio_derivatives(
@@ -999,35 +1036,10 @@ def _repair_cached_audio_derivatives(
     title = Path(snapshot.path).stem
 
     if status == "complete":
-        segment_rows = connection.execute(
-            """SELECT segment_index,start_ms,end_ms,text
-            FROM segments WHERE file_key=? ORDER BY segment_index""",
-            (key,),
-        ).fetchall()
-        if not segment_rows:
+        reconstructed = _read_cached_audio_segments(connection, key, row["media_metadata_json"])
+        if reconstructed is None:
             return False
-        text_parts: list[str] = []
-        speech_seconds = 0.0
-        for expected_index, segment in enumerate(segment_rows):
-            try:
-                segment_index = int(segment["segment_index"])
-                start_ms = int(segment["start_ms"])
-                end_ms = int(segment["end_ms"])
-            except (TypeError, ValueError, OverflowError):
-                return False
-            text_value = segment["text"]
-            if (
-                segment_index != expected_index
-                or start_ms < 0
-                or end_ms < start_ms
-                or not isinstance(text_value, str)
-            ):
-                return False
-            text_parts.append(text_value)
-            speech_seconds += (end_ms - start_ms) / 1000.0
-        if not _audio_segment_extent_matches(row["media_metadata_json"], len(segment_rows)):
-            return False
-        text = " ".join(text_parts)
+        text, speech_seconds, segment_count = reconstructed
         if not text:
             return False
         encoded = text.encode("utf-8")
@@ -1049,6 +1061,8 @@ def _repair_cached_audio_derivatives(
             # Both durable validators are absent or unusable; the remaining
             # segments cannot prove that the transcript is complete.
             return False
+        representation_valid = current_text is not None
+        del current_text
         try:
             stored_text_chars: int | None = (
                 0 if row["text_chars"] is None else int(row["text_chars"])
@@ -1070,7 +1084,7 @@ def _repair_cached_audio_derivatives(
         except (TypeError, ValueError, OverflowError):
             stored_speech_seconds = None
         if (
-            stored_segment_count != len(segment_rows)
+            stored_segment_count != segment_count
             or stored_speech_seconds is None
             or not math.isclose(
                 stored_speech_seconds,
@@ -1084,7 +1098,7 @@ def _repair_cached_audio_derivatives(
             return False
         document_needs_repair = (
             str(row["title"] or "") != title
-            or current_text is None
+            or not representation_valid
             or stored_text_chars != len(text)
             or not hash_matches
         )
@@ -1098,11 +1112,12 @@ def _repair_cached_audio_derivatives(
                     zlib.compress(encoded, 6),
                     len(text),
                     fingerprint,
-                    len(segment_rows),
+                    segment_count,
                     speech_seconds,
                     key,
                 ),
             )
+        del encoded
         if not _audio_fts_matches(connection, key, snapshot.path, title, text):
             delete_format_fts_keys(connection, "transcript_fts", (key,))
             insert_format_fts_row(

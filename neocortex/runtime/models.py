@@ -371,4 +371,11 @@ class ActionSummary:
     third_party_candidates: int = field(default=0, kw_only=True)
     third_party_trashed: int = field(default=0, kw_only=True)
     third_party_skips: int = field(default=0, kw_only=True)
+    admission_processed: int = field(default=0, kw_only=True)
+    admission_metadata_only: int = field(default=0, kw_only=True)
+    admission_sensitive: int = field(default=0, kw_only=True)
+    regeneration_proven: int = field(default=0, kw_only=True)
+    regeneration_unproven: int = field(default=0, kw_only=True)
+    regeneration_action_limit_reached: bool = field(default=False, kw_only=True)
+    regeneration_sources_truncated: bool = field(default=False, kw_only=True)
 # endregion [02]

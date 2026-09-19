@@ -32,15 +32,31 @@ from neocortex.runtime.orchestration.route_registry import builtin_route_registr
 from neocortex.runtime.orchestration.orchestrator import build_normal_inventory_boundary
 from neocortex.runtime.orchestration.run_manifest import RunManifest
 from neocortex.runtime.orchestration.run_status import list_run_status
+from neocortex.workflow.actions.corpus_admission import CorpusAdmissionPolicy
 
 
-def _manifest(run_id: int, root: Path) -> dict[str, object]:
+def _manifest(
+    run_id: int,
+    root: Path,
+    *,
+    selected_routes: tuple[str, ...] = ("text",),
+) -> dict[str, object]:
+    config = FrameworkConfig()
+    policy = CorpusAdmissionPolicy(
+        interested_roots=config.code_project_roots,
+        code_scope=config.code_candidate_scope,
+    )
     return RunManifest(
         run_id=run_id,
         run_kind="initial",
         root=str(root),
         root_identity=(1, 2, -1),
-        selected_routes=("text",),
+        selected_routes=selected_routes,
+        route_capabilities=dict.fromkeys(selected_routes, "safe_replay"),
+        configuration={
+            "corpus_admission": policy.to_dict(),
+            "corpus_admission_signature": policy.signature,
+        },
     ).event_payload()
 
 
@@ -208,7 +224,11 @@ def test_two_recovery_attempts_keep_24_route_inputs_idempotent(tmp_path: Path) -
     for item_index in range(24):
         (root / f"item-{item_index:02d}.pdf").write_bytes(b"%PDF-1.4\n")
 
-    boundary = build_normal_inventory_boundary(root, state_directory)
+    boundary = build_normal_inventory_boundary(
+        root,
+        state_directory,
+        observe_regenerable_artifacts=True,
+    )
     with DedupIndex(state_directory / "dedup.sqlite3") as index:
         scan = index.scan(root, exclusion_policy=boundary.exclusion_policy)
         index.bind_inventory_checkpoint(
@@ -243,6 +263,10 @@ def test_two_recovery_attempts_keep_24_route_inputs_idempotent(tmp_path: Path) -
             root,
             JournalCursor("C:", 1, 10),
             inventory_policy_signature=boundary.effective_signature,
+        )
+        state.publish_run_manifest(
+            source_run,
+            _manifest(source_run, root, selected_routes=("probe",)),
         )
         state.store_route_candidates(source_run, candidates)
         state.publish_initial_routing_snapshot(

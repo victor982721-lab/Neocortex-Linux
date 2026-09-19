@@ -1748,6 +1748,14 @@ class CodeState:
         roots = self._manifest_roots()
         if not roots:
             return
+        roots_by_path: dict[str, list[tuple[int, str, str, str]]] = {}
+        for item in roots:
+            normalized_root = os.path.normcase(os.path.abspath(item[3]))
+            # commonpath collapses a POSIX double leading slash; such a root
+            # never matched the former equality test. Keep that exact rule.
+            if os.path.commonpath((normalized_root, normalized_root)) != normalized_root:
+                continue
+            roots_by_path.setdefault(normalized_root, []).append(item)
         rows = self.connection.execute(
             """SELECT v.version_id,f.current_path FROM files f
             JOIN file_versions v ON v.version_id=f.current_version_id
@@ -1758,20 +1766,19 @@ class CodeState:
             version_id = int(row[0])
             path = str(row[1])
             normalized_path = os.path.normcase(os.path.abspath(path))
-            matches: list[tuple[int, str, str, str]] = []
-            for item in roots:
-                normalized_root = os.path.normcase(os.path.abspath(item[3]))
-                try:
-                    if os.path.commonpath((normalized_path, normalized_root)) == normalized_root:
-                        matches.append(item)
-                except ValueError:
-                    continue
-            if not matches:
+            candidate = os.path.commonpath((normalized_path, normalized_path))
+            matches = roots_by_path.get(candidate)
+            while matches is None:
+                parent = os.path.dirname(candidate)
+                if parent == candidate:
+                    break
+                candidate = parent
+                matches = roots_by_path.get(candidate)
+            if matches is None:
                 continue
-            project_id, _project_name, _ecosystem, root = max(
-                matches,
-                key=lambda item: len(os.path.normcase(os.path.abspath(item[3]))),
-            )
+            # The deepest ancestor is the longest normalized root. Within
+            # one root, max(..., key=len) chose the first original candidate.
+            project_id, _project_name, _ecosystem, root = matches[0]
             try:
                 proposed = str(Path(path).relative_to(Path(root))).replace("\\", "/")
             except ValueError:
@@ -2006,6 +2013,76 @@ class CodeState:
             symbol_id INTEGER NOT NULL) WITHOUT ROWID"""
         )
         self.connection.execute(
+            """CREATE TEMP TABLE _nc_scoped_reference_candidates(
+            reference_id INTEGER NOT NULL,
+            symbol_id INTEGER NOT NULL,
+            PRIMARY KEY(reference_id,symbol_id)) WITHOUT ROWID"""
+        )
+        # Enumerate every dotted suffix, including empty trailing suffixes.
+        # A symbol name may itself contain dots. Keep SQLite substr/NULL and
+        # BINARY semantics, and retain the original predicate below as well.
+        # Dense dotted names keep the former candidate scan rather than
+        # materializing an unbounded quadratic collection of long suffixes.
+        self.connection.execute(
+            """INSERT OR IGNORE INTO _nc_scoped_reference_candidates(
+            reference_id,symbol_id)
+            WITH RECURSIVE eligible AS (
+                SELECT r.reference_id,r.version_id,r.name,r.target_hint,r.evidence,
+                    CASE WHEN length(r.name)-length(replace(r.name,'.',''))>64
+                        OR length(r.target_hint)-length(replace(r.target_hint,'.',''))>64
+                        THEN 1 ELSE 0 END AS dense_suffixes
+                FROM code_references r JOIN _nc_current_versions current
+                  ON current.version_id=r.version_id
+                WHERE r.target_symbol_id IS NULL AND r.kind IN(
+                    'call','inherits','implements_trait','decorator')
+            ), nontext_targets AS MATERIALIZED (
+                SELECT target.symbol_id,target.version_id FROM symbols target
+                JOIN _nc_current_versions current
+                  ON current.version_id=target.version_id
+                WHERE typeof(target.name)!='text'
+                  AND target.kind IN ('function','class','method')
+            ), dense_eligible AS MATERIALIZED (
+                SELECT reference_id,version_id
+                FROM eligible WHERE dense_suffixes=1
+            ), lookup_keys(reference_id,version_id,lookup_kind,lookup_value) AS (
+                SELECT reference_id,version_id,'qualified',target_hint
+                FROM eligible WHERE target_hint IS NOT NULL AND evidence IS NOT NULL
+                UNION
+                SELECT reference_id,version_id,'name',name FROM eligible
+                WHERE evidence!='python-ast:call-expression-import-bound'
+                  AND dense_suffixes=0
+                UNION
+                SELECT reference_id,version_id,'name',target_hint FROM eligible
+                WHERE evidence!='python-ast:call-expression-import-bound'
+                  AND target_hint IS NOT NULL AND dense_suffixes=0
+                UNION
+                SELECT reference_id,version_id,'name',
+                    substr(lookup_value,instr(lookup_value,'.')+1)
+                FROM lookup_keys WHERE lookup_kind='name'
+                    AND instr(lookup_value,'.')>0
+            )
+            SELECT k.reference_id,target.symbol_id FROM lookup_keys k
+            CROSS JOIN symbols target INDEXED BY symbols_name_idx
+                ON target.name=k.lookup_value AND target.version_id=k.version_id
+                AND target.kind IN ('function','class','method')
+            WHERE k.lookup_kind='name'
+            UNION ALL
+            SELECT k.reference_id,target.symbol_id FROM lookup_keys k
+            CROSS JOIN symbols target INDEXED BY symbols_qualified_idx
+                ON target.qualified_name=k.lookup_value
+                AND target.version_id=k.version_id
+                AND target.kind IN ('function','class','method')
+            WHERE k.lookup_kind='qualified'
+            UNION ALL
+            SELECT e.reference_id,target.symbol_id
+            FROM nontext_targets target CROSS JOIN eligible e
+            WHERE target.version_id=e.version_id
+            UNION ALL
+            SELECT e.reference_id,target.symbol_id FROM dense_eligible e
+            CROSS JOIN symbols target ON target.version_id=e.version_id
+                AND target.kind IN ('function','class','method')"""
+        )
+        self.connection.execute(
             """INSERT INTO _nc_scoped_reference_targets(
             reference_id,symbol_id)
             SELECT r.reference_id,MIN(target.symbol_id)
@@ -2015,11 +2092,15 @@ class CodeState:
             JOIN symbols source ON source.symbol_id=r.source_symbol_id
             JOIN symbols module ON module.version_id=r.version_id
                 AND module.kind='module'
-            JOIN symbols target ON target.version_id=r.version_id
+            JOIN _nc_scoped_reference_candidates candidate
+                ON candidate.reference_id=r.reference_id
+            CROSS JOIN symbols target
             LEFT JOIN symbols target_parent
                 ON target_parent.symbol_id=target.parent_symbol_id
             WHERE r.target_symbol_id IS NULL AND r.kind IN(
                 'call','inherits','implements_trait','decorator')
+            AND target.symbol_id=candidate.symbol_id
+            AND target.version_id=r.version_id
             AND (
                 (r.evidence='python-ast:call-expression-import-bound'
                     AND r.target_hint=target.qualified_name)
@@ -2208,6 +2289,7 @@ class CodeState:
             "_nc_reexport_reference_targets",
             "_nc_reference_targets",
             "_nc_scoped_reference_targets",
+            "_nc_scoped_reference_candidates",
             "_nc_symbol_lookup",
             "_nc_current_versions",
         )

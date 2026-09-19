@@ -277,6 +277,25 @@ una fuente al registry no amplía su ámbito ni habilita su `--apply`.
 
 ### Inventario y deduplicación
 
+La ruta integrada observa metadatos de dependencias/cachés antes de decidir por
+archivo; conserva las raíces canónicas protegidas y los directorios VCS. El
+owner de acciones aplica `CorpusAdmissionPolicy` antes de publicar candidatos
+de contenido. Código fuente fuera de los proyectos expresamente interesados
+queda sólo en inventario; documentos/datos en carpetas mixtas siguen disponibles.
+Archive recibe una política por miembro, ligada a su firma de procesamiento,
+después del control CRC/tamaño y antes de parseo, texto/FTS y ZIP anidado. Un
+miembro virtual nunca se convierte en objetivo físico.
+
+La admisión y la retención son distintas. Las señales de origen sólo seleccionan
+candidatos: la Papelera de regenerables exige una prueba exacta contra paquetes
+locales conservados o la reproducción de `.pyc` desde una copia privada de su
+fuente, sin ejecutar código. La comprobación vuelve a realizarse después del
+ledger `applying` y antes del backend, tanto individualmente como por lote.
+Credenciales, fixtures, licencias y fuentes de reconstrucción permanecen fuera
+de los efectos, también mediante dedupe y callers directos. No se añade otra
+base: política y resumen acotado usan el manifest/stages Framework y los efectos
+conservan el ledger/KIO/receipt existente. Resume rechaza drift de admisión.
+
 La identidad física se valida con `FileIdentity` y el codec explícito del owner;
 un recurso virtual conserva su `ResourceRef` y ancla, sin reinterpretarlo como
 inode. Catálogo v8 añade bindings y ámbito mediante migración aditiva con copia

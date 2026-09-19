@@ -160,6 +160,7 @@ def corpus_mutation_guard(
         state_policy,
         internal_paths_policy,
         protected_content_policy,
+        inventory_signature=signature,
     )
     if signature != expected_signature:
         raise InternalPathProtectionError(
@@ -194,6 +195,8 @@ def _mutation_inventory_boundary(
     state_policy: CorpusAccessPolicy,
     internal_paths_policy: InternalPathsPolicy,
     protected_content_policy: ProtectedContentPolicy,
+    *,
+    inventory_signature: str | None = None,
 ) -> tuple[str, ProtectedContentPolicy]:
     """Rebuild the mode-specific inventory boundary for a verified run."""
 
@@ -206,6 +209,23 @@ def _mutation_inventory_boundary(
             internal_paths_policy=internal_paths_policy,
             protected_content_policy=protected_content_policy,
         )
+        if inventory_signature is not None and inventory_signature != boundary.effective_signature:
+            # A content run may deliberately observe regenerable artifacts
+            # rather than prune them by directory name. Accept only the exact
+            # second supported boundary, still tied to the durable run, root,
+            # internal/protected paths and current physical identities. An
+            # arbitrary signature remains an error in the caller below.
+            observed = build_normal_inventory_boundary(
+                access_policy.root,
+                state_policy.root,
+                access_policy=access_policy,
+                state_policy=state_policy,
+                internal_paths_policy=internal_paths_policy,
+                protected_content_policy=protected_content_policy,
+                observe_regenerable_artifacts=True,
+            )
+            if inventory_signature == observed.effective_signature:
+                boundary = observed
         return boundary.effective_signature, boundary.protected_content_policy
     raise InternalPathProtectionError(
         f"run {run_id} uses retired analyze-only inventory mode"

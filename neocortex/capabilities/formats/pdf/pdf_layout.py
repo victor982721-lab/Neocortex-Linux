@@ -186,7 +186,9 @@ def _visual_grid(page: Any) -> tuple[list[int], str, str, str, str | None]:
         width = int(pixmap.width)
         height = int(pixmap.height)
         stride = int(pixmap.stride)
-        samples = memoryview(pixmap.samples)
+        # Keep the Pixmap owner alive while reading its native pixels; samples
+        # would first allocate a full bytes copy before wrapping a memoryview.
+        samples = pixmap.samples_mv
         grid: list[int] = []
         combined = [0] * SIMHASH_BITS
         header = [0] * SIMHASH_BITS

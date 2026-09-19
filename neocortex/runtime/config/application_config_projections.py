@@ -8,6 +8,7 @@ dependency doubles and lazy-load guarantees intact.
 from __future__ import annotations
 
 from importlib import import_module
+from functools import partial
 from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, TypedDict
@@ -54,6 +55,7 @@ if TYPE_CHECKING:
     from neocortex.capabilities.formats.archive import route as _archive_contracts
     from neocortex.capabilities.formats.docx import models as _docx_contracts
     from neocortex.capabilities.formats.image import contracts as _image_contracts
+    from neocortex.workflow.actions import corpus_admission as _admission_contracts
 else:
     _application_contracts = _DeferredTypeModule("neocortex.runtime.models")
     _archive_contracts = _DeferredTypeModule("neocortex.capabilities.formats.archive.route")
@@ -66,6 +68,7 @@ else:
     _text_contracts = _DeferredTypeModule("neocortex.capabilities.formats.text.text_route")
     _video_contracts = _DeferredTypeModule("neocortex.capabilities.formats.video.route")
     _resource_contracts = _DeferredTypeModule("neocortex.runtime.control.global_resources")
+    _admission_contracts = _DeferredTypeModule("neocortex.workflow.actions.corpus_admission")
 
 __all__ = [
     "archive_route_config_from_application",
@@ -86,12 +89,34 @@ __all__ = [
 # region [02] Import-local owner projections
 
 
+def _archive_member_admission(
+    context: _archive_contracts.ArchiveMemberAdmissionContext,
+    *,
+    policy: _admission_contracts.CorpusAdmissionPolicy,
+) -> _admission_contracts.AdmissionDecision:
+    """Spawn-picklable adapter; the Archive owner retains integrity authority."""
+    from neocortex.workflow.actions.corpus_admission import assess_virtual_member
+
+    return assess_virtual_member(
+        context.member_chain, context.prefix,
+        container_path=context.container_path, policy=policy,
+    )
+
+
 def archive_route_config_from_application(
     config: _application_contracts.FrameworkConfig,
 ) -> _archive_contracts.ArchiveRouteConfig:
     """Project current application values into recursive ZIP indexing."""
 
     from neocortex.capabilities.formats.archive.route import ArchiveRouteConfig
+    from neocortex.workflow.actions.corpus_admission import CorpusAdmissionPolicy
+
+    admission = CorpusAdmissionPolicy(
+        interested_roots=config.code_project_roots,
+        code_scope=config.code_candidate_scope,
+        include_generated=config.code_include_generated,
+        include_vendored=config.code_include_vendored,
+    )
 
     return ArchiveRouteConfig(
         state_path=config.archive_database,
@@ -100,6 +125,8 @@ def archive_route_config_from_application(
         retry_errors=config.archive_retry_errors,
         retry_recoverable_errors=getattr(config, "retry_recoverable_errors", False),
         selection=config.selection,
+        member_admission=partial(_archive_member_admission, policy=admission),
+        member_admission_signature=admission.signature,
         max_depth=config.archive_max_depth,
         max_members=config.archive_max_members,
         max_central_directory_bytes=config.archive_max_central_directory_bytes,

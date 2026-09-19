@@ -11,7 +11,7 @@ from neocortex.persistence.framework_state_writer import FrameworkState, RunBudg
 from neocortex.runtime.models import FrameworkConfig
 from neocortex.runtime.orchestration.orchestrator import FrameworkOrchestrator
 from neocortex.runtime.orchestration.route_registry import RouteAdapter
-from neocortex.runtime.orchestration.run_manifest import RunBudget, RunManifest
+from neocortex.runtime.orchestration.run_manifest import RunBudget
 from neocortex.runtime.orchestration.run_status import list_run_status
 from tests.test_run_control import _source_run
 
@@ -24,20 +24,13 @@ def _interrupted_source(
     reserved: tuple[int, int] | None = None,
 ) -> int:
     database = state_directory / "framework.sqlite3"
-    source_run = _source_run(database, root, route_running=True)
+    source_run = _source_run(
+        database,
+        root,
+        route_running=True,
+        manifest_budget={"durable": budget.payload()},
+    )
     with FrameworkState(database) as state:
-        state.publish_run_manifest(
-            source_run,
-            RunManifest(
-                run_id=source_run,
-                run_kind="initial",
-                root=str(root),
-                root_identity=(1, 2, -1),
-                selected_routes=("probe",),
-                route_capabilities={"probe": "safe_replay"},
-                budget={"durable": budget.payload()},
-            ).event_payload(),
-        )
         if reserved is not None:
             state.reserve_run_budget(
                 source_run,

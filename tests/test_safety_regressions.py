@@ -215,7 +215,9 @@ class InventoryRootSafetyTests(_DirectoryLinkTestCase):
                 trash.assert_not_called()
                 self.assertEqual(summary.duplicates_trashed, 0)
                 self.assertEqual(summary.duplicate_skips, 1)
-                self.assertEqual(summary.errors, 1)
+                # Identity drift is now retained by the common preservation
+                # frontier, before an action ledger row is admitted.
+                self.assertEqual(summary.errors, 0)
                 self.assertEqual(empty.read_bytes(), b"new content")
 
     def test_late_file_blocks_empty_directory_before_first_trash_call(self) -> None:
@@ -539,15 +541,17 @@ class InventoryRootSafetyTests(_DirectoryLinkTestCase):
                         ),
                     )
 
-                self.assertEqual(result, (0, 1, 1))
+                self.assertEqual(result, (0, 0, 2))
                 trash.assert_not_called()
                 self.assertTrue(safe.exists())
                 self.assertTrue(outside.exists())
-                detail = state._connection.execute(
-                    "SELECT detail FROM file_actions WHERE source_path=?",
+                outside_action = state._connection.execute(
+                    "SELECT action_id FROM file_actions WHERE source_path=?",
                     (str(outside),),
-                ).fetchone()[0]
-                self.assertIn("escapes the inventory root lexically", detail)
+                ).fetchone()
+                # Out-of-scope paths never enter the action domain, not even
+                # as failed ledger rows; the independent safe item is kept.
+                self.assertIsNone(outside_action)
 
     def test_simulated_intermediate_reparse_is_rejected_before_trash(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1152,7 +1156,7 @@ class VerifiedRecycleSafetyTests(unittest.TestCase):
                         ((snapshot, "all PDF engines failed"),),
                     )
             trash.assert_not_called()
-            self.assertEqual((applied, failed, protected), (0, 1, 0))
+            self.assertEqual((applied, failed, protected), (0, 0, 1))
             self.assertTrue(candidate.is_file())
 
     def test_verified_recycle_abstains_and_preserves_inventory(self) -> None:

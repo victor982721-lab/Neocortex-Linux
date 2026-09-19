@@ -64,6 +64,7 @@ from .document_catalog_schema import (
     validate_v7_document_catalog_schema,
     validate_v8_document_catalog_schema,
     validate_v9_document_catalog_schema,
+    validate_v11_document_catalog_schema,
     catalog_generation_digest,
     catalog_input_manifest_digest,
 )
@@ -1048,13 +1049,15 @@ def _read_catalog_version(path: Path) -> int | None:
                 f"document catalog schema {version} is newer than supported "
                 f"schema {CATALOG_SCHEMA_VERSION}"
             )
-        if version in {10, CATALOG_SCHEMA_VERSION}:
+        if version == CATALOG_SCHEMA_VERSION:
             validate_sqlite_schema_contract(
                 connection,
                 document_catalog_schema_contract(),
                 label="document catalog",
                 exact=True,
             )
+        elif version in {10, 11}:
+            validate_v11_document_catalog_schema(connection)
         elif version == 5:
             validate_v5_document_catalog_schema(connection)
         elif version == 6:

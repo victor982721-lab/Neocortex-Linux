@@ -641,6 +641,11 @@ class GlobalResourceCoordinator:
             str, Callable[[], Mapping[tuple[int, int], int]]
         ] = {}
         self._gpu_materialized_cache: dict[str, Mapping[tuple[int, int], int]] = {}
+        self._gpu_probe_generations: dict[str, int] = {}
+        self._gpu_sample_lock = threading.Lock()
+        self._gpu_monitor_thread: threading.Thread | None = None
+        self._gpu_monitor_stop = threading.Event()
+        self._gpu_monitor_wakeup = threading.Event()
         self._io_pressure = False
         self._materialized_credit_bytes = 0
         self._monitor_stop = threading.Event()
@@ -702,38 +707,112 @@ class GlobalResourceCoordinator:
         """Register a backend-observed device capacity; never invent free VRAM."""
         if memory_bytes < 1:
             raise ValueError("GPU capacity must be positive")
+        device = str(device)
         with self._condition:
-            self._gpu_capacity[str(device)] = int(memory_bytes)
+            self._gpu_capacity[device] = int(memory_bytes)
             if available_probe is not None:
-                self._gpu_available_probes[str(device)] = available_probe
+                self._gpu_available_probes[device] = available_probe
             if materialized_probe is not None:
-                self._gpu_materialized_probes[str(device)] = materialized_probe
-            self._condition.notify_all()
-        # A backend probe can invoke a driver/tool. Never hold the accounting
-        # lock while reading it or block other routes behind GPU telemetry.
+                self._gpu_materialized_probes[device] = materialized_probe
+            self._gpu_probe_generations[device] = (
+                self._gpu_probe_generations.get(device, 0) + 1
+            )
+        # Preserve the synchronous registration contract. A healthy existing
+        # sample remains usable within its normal TTL while its replacement
+        # is read; an artificial unknown value here could retire live models.
+        # Driver queries never hold the accounting lock or the CPU monitor.
         self._sample_gpu_resources()
+        with self._condition:
+            if (
+                self._monitor_thread is not None
+                and self._monitor_thread.is_alive()
+                and not self._monitor_stop.is_set()
+            ):
+                self._start_gpu_monitor_locked()
+            self._condition.notify_all()
 
-    def _sample_gpu_resources(self) -> None:
-        with self._condition:
-            probes = dict(self._gpu_available_probes)
-            materialized_probes = dict(self._gpu_materialized_probes)
-        observed: dict[str, tuple[int | None, float]] = {}
-        materialized: dict[str, Mapping[tuple[int, int], int]] = {}
-        for device, probe in probes.items():
+    def _sample_gpu_resources(self, stop: threading.Event | None = None) -> None:
+        # A restarted observer must not overlap a driver query still finishing
+        # for the previous scope. Synchronous, unmonitored GPU callers wait for
+        # this one producer; CPU/RAM admission never takes this lock.
+        if not self._gpu_sample_lock.acquire(blocking=stop is None):
+            return
+        try:
+            if stop is not None and stop.is_set():
+                return
+            with self._condition:
+                probes = dict(self._gpu_available_probes)
+                materialized_probes = dict(self._gpu_materialized_probes)
+                generations = dict(self._gpu_probe_generations)
+            observed: dict[str, tuple[int | None, float]] = {}
+            materialized: dict[str, Mapping[tuple[int, int], int]] = {}
+            for device, probe in probes.items():
+                if stop is not None and stop.is_set():
+                    return
+                try:
+                    value = probe()
+                    available = None if value is None else max(0, int(value))
+                except (OSError, RuntimeError, ValueError, TypeError):
+                    available = None
+                observed[device] = available, time.monotonic()
+            for device, materialized_probe in materialized_probes.items():
+                if stop is not None and stop.is_set():
+                    return
+                try:
+                    materialized[device] = dict(materialized_probe())
+                except (OSError, RuntimeError, ValueError, TypeError):
+                    materialized[device] = {}
+            with self._condition:
+                # Closing a scope or replacing a registration cannot publish a
+                # late result as the new owner's current GPU observation.
+                if stop is not None and stop.is_set():
+                    return
+                for device, observation in observed.items():
+                    if self._gpu_probe_generations.get(device) == generations.get(device):
+                        self._gpu_available_cache[device] = observation
+                for device, values in materialized.items():
+                    if self._gpu_probe_generations.get(device) == generations.get(device):
+                        self._gpu_materialized_cache[device] = values
+                self._condition.notify_all()
+        finally:
+            self._gpu_sample_lock.release()
+
+    def _gpu_monitor_running(self) -> bool:
+        return (
+            self._gpu_monitor_thread is not None
+            and self._gpu_monitor_thread.is_alive()
+            and not self._gpu_monitor_stop.is_set()
+        )
+
+    def _start_gpu_monitor_locked(self) -> None:
+        """Start one advisory GPU producer while the accounting lock is held."""
+        if (
+            not self._gpu_available_probes and not self._gpu_materialized_probes
+        ) or self._gpu_monitor_running():
+            return
+        # Each lifetime has its own stop token: start() after a bounded close
+        # cannot revive a previous observer whose tool has not returned yet.
+        stop = self._gpu_monitor_stop = threading.Event()
+        wakeup = self._gpu_monitor_wakeup = threading.Event()
+        self._gpu_monitor_thread = threading.Thread(
+            target=self._monitor_gpu_resources, args=(stop, wakeup),
+            name="neocortex-gpu-monitor", daemon=True,
+        )
+        self._gpu_monitor_thread.start()
+
+    def _monitor_gpu_resources(
+        self, stop: threading.Event, wakeup: threading.Event,
+    ) -> None:
+        while not stop.is_set():
+            wakeup.clear()
             try:
-                value = probe()
-                available = None if value is None else max(0, int(value))
+                self._sample_gpu_resources(stop)
             except (OSError, RuntimeError, ValueError, TypeError):
-                available = None
-            observed[device] = available, time.monotonic()
-        for device, materialized_probe in materialized_probes.items():
-            try:
-                materialized[device] = dict(materialized_probe())
-            except (OSError, RuntimeError, ValueError, TypeError):
-                materialized[device] = {}
-        with self._condition:
-            self._gpu_available_cache.update(observed)
-            self._gpu_materialized_cache.update(materialized)
+                # Freshness is checked per device. A failed GPU observation
+                # does not stop publication of healthy CPU/RAM samples.
+                pass
+            if not stop.is_set():
+                wakeup.wait(self.limits.sample_interval_seconds)
 
     def _gpu_available_locked(self, device: str) -> int | None:
         sample = self._gpu_available_cache.get(device)
@@ -768,7 +847,7 @@ class GlobalResourceCoordinator:
         """
         if estimated_bytes <= 0 or reusable_resident_bytes < 0:
             raise ValueError("GPU worker memory must be positive and reusable bytes nonnegative")
-        if self._monitor_thread is None or not self._monitor_thread.is_alive():
+        if not self._gpu_monitor_running():
             self._sample_gpu_resources()
         with self._condition:
             configured = self._gpu_capacity.get(device, 0)
@@ -798,15 +877,20 @@ class GlobalResourceCoordinator:
                 name="neocortex-resource-monitor", daemon=True,
             )
             self._monitor_thread.start()
+            self._start_gpu_monitor_locked()
 
     def close(self) -> None:
         """Stop monitoring; held leases retain ownership until their owners exit."""
-        self._monitor_stop.set()
         with self._condition:
+            self._monitor_stop.set()
+            self._gpu_monitor_stop.set()
+            self._gpu_monitor_wakeup.set()
             self._condition.notify_all()
-        monitor = self._monitor_thread
-        if monitor is not None and monitor is not threading.current_thread():
-            monitor.join(max(1.0, self.limits.sample_interval_seconds * 2))
+            monitors = self._monitor_thread, self._gpu_monitor_thread
+        deadline = time.monotonic() + max(1.0, self.limits.sample_interval_seconds * 2)
+        for monitor in monitors:
+            if monitor is not None and monitor is not threading.current_thread():
+                monitor.join(max(0.0, deadline - time.monotonic()))
 
     def _monitor_resources(self) -> None:
         while not self._monitor_stop.is_set():
@@ -814,7 +898,6 @@ class GlobalResourceCoordinator:
                 # Warm the cached system sample outside the accounting lock.
                 if self._default_sampler is not None:
                     self._default_sampler.sample()
-                self._sample_gpu_resources()
                 with self._condition:
                     self._observe_live_resources()
                     self._condition.notify_all()
@@ -1818,10 +1901,6 @@ class GlobalResourceCoordinator:
         self.checkpoint()
         if cancellation is not None:
             cancellation.checkpoint()
-        if self._gpu_available_probes and (
-            self._monitor_thread is None or not self._monitor_thread.is_alive()
-        ):
-            self._sample_gpu_resources()
         if route_name not in self._queues:
             raise ValueError(f"route is not coordinated: {route_name}")
         try:
@@ -1840,6 +1919,11 @@ class GlobalResourceCoordinator:
             raise ValueError("global memory reservation cannot be negative")
         if min(requested_resident, requested_temp, requested_native, requested_io, requested_gpu) < 0:
             raise ValueError("global resource components cannot be negative")
+        if (requested_gpu and self._gpu_available_probes
+                and not self._gpu_monitor_running()):
+            # An unmonitored GPU request needs a current device observation;
+            # an unrelated CPU/RAM request must not invoke driver telemetry.
+            self._sample_gpu_resources()
         if requested_transient is not None and requested_transient < 0:
             raise ValueError("global transient reservation cannot be negative")
         component_mode = (

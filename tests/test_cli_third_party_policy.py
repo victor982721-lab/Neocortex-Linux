@@ -199,4 +199,5 @@ def test_third_party_policy_manifest_payload_is_non_authorizing() -> None:
     assert payload["schema"] == "neocortex.code-third-party-policy/v1"
     assert payload["mutation_requested"] is True
     assert "authorized" not in payload
-    assert payload["kinds"] == ["dependency", "vendored", "binary"]
+    assert payload["kinds"] == list(DEFAULT_THIRD_PARTY_KINDS)
+    assert payload["requires_regeneration_proof"] is True

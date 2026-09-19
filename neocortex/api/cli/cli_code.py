@@ -59,22 +59,23 @@ def _code_scope_feedback(
         return None
     root_key = _path_key(root)
     normalized_roots = tuple(_path_key(value) for value in project_roots)
-    # An empty explicit collection preserves ProjectCandidateScope's marker
-    # discovery fallback, so it cannot prove a zero-candidate outcome.
-    if not normalized_roots:
-        return None
     if any(
         _path_contains(root_key, project_root) or _path_contains(project_root, root_key)
         for project_root in normalized_roots
     ):
         return None
     root_text = _quoted_path(root)
+    reason = (
+        "the configured project allowlist is empty"
+        if not normalized_roots
+        else "the root does not overlap the configured project roots"
+    )
     return {
         "code": _CODE_SCOPE_NO_CANDIDATES,
         "severity": "warning",
         "message": (
             "Code scope=projects would admit 0 candidates for explicit --root "
-            f"{root_text}: the root does not overlap the configured project roots. "
+            f"{root_text}: {reason}. "
             "Use --code-project-root PATH for that project, or "
             "--code-scope broad for an intentional broad scan."
         ),

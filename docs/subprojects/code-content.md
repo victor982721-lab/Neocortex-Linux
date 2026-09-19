@@ -21,12 +21,19 @@ La procedencia se expresa como señal (`dependency`, `vendored`, `generated`,
 `build_artifact`, `cache`, `binary`, `project_code` o `unknown`), nunca como
 prueba de autoría. `--all` usa `projects` por defecto; las raíces de proyecto
 propias se declaran con `--code-project-root` y una exploración `broad` es un
-opt-in explícito. En el flujo normal `--all`, la limpieza de terceros prepara un
-plan automáticamente (y `--apply` lo ejecuta) para candidatos regulares con
-señales fuertes y límite configurable; lo ambiguo, las licencias,
-los contenedores y los miembros virtuales quedan fuera. Las carpetas que el
-inventario excluye (`.venv`, `node_modules`, `.git`, cachés, etc.) tampoco son
-escaneadas ni afectadas por este modo.
+opt-in explícito. Las raíces predeterminadas corresponden a NeoCortex, MTF y
+bitácoras EPS. Una lista vacía o disjunta no cae a descubrimiento por marcadores;
+raíces y alcance forman parte de la firma de procesamiento.
+
+La admisión de corpus pertenece al flujo de acciones/rutas, no a otro analizador
+de Code. En la ruta integrada el inventario observa metadatos de dependencias y
+cachés para decidir por archivo, preservando raíces canónicas protegidas y VCS.
+El código fuera del interés no se cuela como texto ni por ZIP. `--all` prepara
+un plan de regenerables y `--apply` ejecuta sólo los que tengan testigo local
+conservado y comparación exacta, o bytecode reproducible desde su fuente.
+Score y señal de tercero siguen sin ser prueba de reconstrucción. Licencias,
+fixtures, credenciales, paquetes fuente, ambiguos y miembros virtuales no se
+convierten en efectos físicos por esa clasificación.
 
 ## Validación proporcional
 

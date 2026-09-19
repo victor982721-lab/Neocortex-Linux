@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from zipfile import ZIP_STORED, ZipFile
 
 from neocortex.curation.application import BackendOutcome
 from neocortex.deduplication import DedupIndex
@@ -38,6 +39,31 @@ class _FixtureBatchBackend:
         return tuple(outcomes)
 
 
+def _write_fixture_wheel(path: Path, members: dict[str, bytes]) -> None:
+    """Create the smallest standards-shaped wheel used as a local witness."""
+
+    dist_info = "fixture_pkg-1.0.dist-info"
+    all_members = {
+        **members,
+        f"{dist_info}/WHEEL": (
+            "Wheel-Version: 1.0\n"
+            "Generator: test\n"
+            "Root-Is-Purelib: true\n"
+            "Tag: py3-none-any\n"
+        ).encode(),
+        f"{dist_info}/METADATA": (
+            "Metadata-Version: 2.1\nName: fixture-pkg\nVersion: 1.0\n"
+        ).encode(),
+    }
+    record_name = f"{dist_info}/RECORD"
+    record = "".join(f"{name},,\n" for name in sorted((*all_members, record_name)))
+    all_members[record_name] = record.encode()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with ZipFile(path, "w", ZIP_STORED) as archive:
+        for name, payload in all_members.items():
+            archive.writestr(name, payload)
+
+
 def test_explicit_third_party_cleanup_moves_only_strong_signals(tmp_path: Path) -> None:
     root = tmp_path / "corpus"
     state_root = tmp_path / "state"
@@ -50,6 +76,10 @@ def test_explicit_third_party_cleanup_moves_only_strong_signals(tmp_path: Path) 
     (root / "vendor" / "library.py").parent.mkdir()
     (root / "vendor" / "library.py").write_text("VALUE = 2\n", encoding="utf-8")
     (root / "vendor" / "libfoo.so").write_bytes(b"\x7fELF\x02\x01\x01\x00fixture")
+    _write_fixture_wheel(
+        root / "vendor" / "fixture_pkg-1.0-py3-none-any.whl",
+        {"library.py": b"VALUE = 2\n", "libfoo.so": b"\x7fELF\x02\x01\x01\x00fixture"},
+    )
     (root / "standalone.so").write_bytes(b"\x7fELF\x02\x01\x01\x00unscoped")
     (root / "vendor" / "archive.zip").write_bytes(b"PK\x03\x04not-a-code-action")
     generated = root / "generated" / "client.py"
@@ -131,8 +161,9 @@ def test_third_party_cleanup_is_preview_only_without_apply(tmp_path: Path) -> No
                 ActionSummary(apply_actions=False),
             )
 
-    assert summary.third_party_candidates == 1
+    assert summary.third_party_candidates == 0
     assert summary.third_party_trashed == 0
+    assert summary.regeneration_unproven == 1
     assert backend.calls == []
     assert candidate.exists()
 
@@ -151,6 +182,10 @@ def test_applied_third_party_cleanup_precedes_route_candidate_publication(
     vendor_source = root / "vendor" / "library.py"
     vendor_source.parent.mkdir()
     vendor_source.write_text("VALUE = 2\n", encoding="utf-8")
+    _write_fixture_wheel(
+        root / "vendor" / "fixture_pkg-1.0-py3-none-any.whl",
+        {"library.py": b"VALUE = 2\n"},
+    )
 
     backend = _FixtureBatchBackend()
     route_candidate_paths: set[str] = set()

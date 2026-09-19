@@ -1271,18 +1271,23 @@ class DocxRoute:
         """Delete obsolete DOCX cache rows in bounded committed batches."""
 
         removed = 0
+        after_key: str | None = None
         while True:
             self.cancellation.checkpoint()
             # A migrated sentinel cannot prove reuse, but matching identity,
             # size and mtime still prove the source remains in the inventory.
             # Preserve it until an eligible run refreshes the real birth time.
+            after_clause = "" if after_key is None else " AND d.file_key>?"
+            parameters: tuple[int | str, ...] = (UNKNOWN_BIRTHTIME_NS, DOCX_PRUNE_BATCH)
+            if after_key is not None:
+                parameters = (UNKNOWN_BIRTHTIME_NS, after_key, DOCX_PRUNE_BATCH)
             keys = connection.execute(
                 """SELECT d.file_key FROM documents d WHERE NOT EXISTS(
                 SELECT 1 FROM docx_inventory i WHERE i.file_key=d.file_key
                 AND i.size=d.size AND i.mtime_ns=d.mtime_ns
-                AND (i.birthtime_ns=d.birthtime_ns OR d.birthtime_ns=?))
-                ORDER BY d.file_key LIMIT ?""",
-                (UNKNOWN_BIRTHTIME_NS, DOCX_PRUNE_BATCH),
+                AND (i.birthtime_ns=d.birthtime_ns OR d.birthtime_ns=?))"""
+                + after_clause + " ORDER BY d.file_key LIMIT ?",
+                parameters,
             ).fetchall()
             if not keys:
                 return removed
@@ -1291,6 +1296,7 @@ class DocxRoute:
                 connection.executemany("DELETE FROM documents WHERE file_key=?", keys).rowcount
             )
             connection.commit()
+            after_key = str(keys[-1][0])
 
     @staticmethod
     def _write_inventory_batch(

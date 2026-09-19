@@ -111,7 +111,8 @@ def test_code_projection_uses_only_the_configured_project_allowlist(tmp_path: Pa
     assert projected.explicit_project_roots == owned_roots
     assert default_code_project_roots() == (
         source_repository_directory(),
-        Path.home() / "Frameworks" / "Generador de bitácoras EPS",
+        Path.home() / "MTF",
+        Path.home() / "Documentos" / "ANDRITZ" / "Bitacoras-EPS",
     )
 
 

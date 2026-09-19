@@ -156,6 +156,26 @@ class PlanRepositoryMixin:
                 ),
             )
 
+    def planning_has_multiple_identities(self) -> bool:
+        """Find a second physical identity without walking its first aliases.
+
+        Both probes use the temporary identity index. The first identity is
+        only a range boundary; no path or fingerprint becomes authority.
+        An empty observation set has no boundary and yields no match.
+        """
+
+        rows = self._connection.execute(
+            """SELECT 1 FROM planning_observations
+            WHERE (volume_id,file_id) > (
+                SELECT volume_id,file_id FROM planning_observations
+                ORDER BY volume_id,file_id LIMIT 1
+            ) LIMIT 1"""
+        )
+        try:
+            return rows.fetchone() is not None
+        finally:
+            rows.close()
+
     def iter_planning_identities(self) -> Iterator[FileSnapshot]:
         """Choose a preferred observed alias before hashing each object once."""
 

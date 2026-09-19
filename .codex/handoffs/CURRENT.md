@@ -1,5 +1,18 @@
 # Handoff operativo vigente — NeoCortex
 
+**Ronda:** NEO-CURACION-AUTONOMA-20260919.
+**Alcance:** admisión granular del corpus y Papelera de terceros regenerables con prueba local, más hotfixes del ZIP aportado.
+
+Los intereses predeterminados de Code son las raíces de NeoCortex, MTF y bitácoras EPS. Los marcadores no añaden proyectos. La admisión se aplica antes de los extractores de contenido y por miembro de Archive, sin excluir documentos/datos por estar en AppData o una caché. Las altas y los opt-ins de Code son explícitos y forman parte de las firmas de procesamiento y replay.
+
+La señal de origen no autoriza Papelera: se requiere un miembro idéntico de wheel/nupkg/npm local retenido o bytecode reproducido desde una copia privada de su fuente. Fuentes, licencias, fixtures, credenciales e inciertos permanecen protegidos. Inventario, límites, ledger, identidad, revalidación y receipt mantienen sus fronteras. Resume no reutiliza candidatos bajo otra política ni migra entradas antiguas silenciosamente.
+
+La entrega no reinicia la corrida detenida ni procesa/limpia el corpus real. Las pruebas usan owners, HOME/XDG y efectos reversibles privados. Las cabezas históricas no se regeneran por instalar código. La evidencia final, decisiones de los 50 IDs del ZIP, publicación e instalación autorizada se registran fuera del producto en `/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-19-curacion-autonoma-01a0ba3f/`.
+
+---
+
+# Handoff anterior — NeoCortex
+
 **Ronda:** NEO-FACTORY-RESET-20260919.
 **Alcance:** reemplazo del reset selectivo por `Neocortex --factory-reset`.
 
