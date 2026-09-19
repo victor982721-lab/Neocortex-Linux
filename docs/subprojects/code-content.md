@@ -8,8 +8,9 @@ código observado, importa herramientas de desarrollo ni audita el propio reposi
 Consulta [Architecture](../ARCHITECTURE.md#code-como-contenido).
 
 No agregues review, experimentos, proveedores externos, autoanálisis, receipts de
-calidad o un circuito `trusted-deep` al runtime. `Neocortex --all` selecciona Code
-como contenido, no produce ni refresca evidencia del desarrollo de NeoCortex.
+calidad o un circuito `trusted-deep` al runtime. `Neocortex --all` no selecciona
+Code: la ruta integrada usa la redlist del Corpus y reserva Code para
+`--route code` explícito.
 Las operaciones públicas exponen contenido: ingesta, estado de índice, búsqueda,
 proyectos y relaciones/reconstrucción respaldadas por publicación productiva.
 
@@ -19,19 +20,25 @@ Conserva la lectura histórica y demuestra el límite ejecutable actual.
 
 La procedencia se expresa como señal (`dependency`, `vendored`, `generated`,
 `build_artifact`, `cache`, `binary`, `project_code` o `unknown`), nunca como
-prueba de autoría. `--all` usa `projects` por defecto; las raíces de proyecto
-propias se declaran con `--code-project-root` y una exploración `broad` es un
-opt-in explícito. Las raíces predeterminadas corresponden a NeoCortex, MTF y
+prueba de autoría. `--route code` usa `projects` por defecto; las raíces de
+proyecto propias se declaran con `--code-project-root` y una exploración `broad`
+es un opt-in explícito. Las raíces predeterminadas corresponden a NeoCortex, MTF y
 bitácoras EPS. Una lista vacía o disjunta no cae a descubrimiento por marcadores;
 raíces y alcance forman parte de la firma de procesamiento.
+
+`--all --semantic-source code` se rechaza porque `--all` no activa la ruta Code.
+Para producir estado Code usa `--route code`; para consumir un cache Code ya
+publicado desde Semantic, usa una operación Semantic explícita fuera de `--all`.
 
 La admisión de corpus pertenece al flujo de acciones/rutas, no a otro analizador
 de Code. En la ruta integrada el inventario observa metadatos de dependencias y
 cachés para decidir por archivo, preservando raíces canónicas protegidas y VCS.
-El código fuera del interés no se cuela como texto ni por ZIP. `--all` prepara
-un plan de regenerables y `--apply` ejecuta sólo los que tengan testigo local
+El código fuera del interés no se cuela como texto ni por ZIP. `--route code`
+prepara un plan de regenerables y `--apply` ejecuta sólo los que tengan testigo local
 conservado y comparación exacta, o bytecode reproducible desde su fuente.
-Score y señal de tercero siguen sin ser prueba de reconstrucción. Licencias,
+Score y señal de tercero siguen sin ser prueba de reconstrucción. En `--all --apply`,
+la decisión de Papelera no usa este clasificador: la redlist case-insensitive
+se aplica antes de hashing y validación. Licencias,
 fixtures, credenciales, paquetes fuente, ambiguos y miembros virtuales no se
 convierten en efectos físicos por esa clasificación.
 

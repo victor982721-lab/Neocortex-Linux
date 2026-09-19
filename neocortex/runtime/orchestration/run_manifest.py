@@ -228,6 +228,8 @@ def lifecycle_envelope(
     *,
     manifest: Mapping[str, Any] | None,
     status: str,
+    run_id: int | None = None,
+    source_run_id: int | None = None,
     routes: tuple[Mapping[str, Any], ...] = (),
     errors: tuple[Mapping[str, Any], ...] = (),
     resumed_from: int | None = None,
@@ -246,8 +248,16 @@ def lifecycle_envelope(
     return {
         "schema": "neocortex.lifecycle-envelope/v1",
         "status": status,
-        "run_id": None if manifest is None else manifest.get("run_id"),
-        "source_run_id": None if manifest is None else manifest.get("source_run_id"),
+        "run_id": (
+            manifest.get("run_id")
+            if manifest is not None
+            else run_id
+        ),
+        "source_run_id": (
+            manifest.get("source_run_id")
+            if manifest is not None
+            else source_run_id
+        ),
         "manifest_digest": None if manifest is None else manifest.get("digest"),
         "resumed_from": resumed_from,
         "resumed": bool(resumed) if resumed is not None else resumed_from is not None,

@@ -343,7 +343,11 @@ def _metadata(
     if value is None or type(value) is bool:
         return value
     if type(value) is int:
-        return _integer(value, label=label)
+        # ``-1`` is the platform contract's unavailable birthtime sentinel,
+        # used in manifest/stage root identities.  Other lifecycle metadata
+        # remains non-negative and bounded.
+        minimum = -1 if ".root_identity[" in label else 0
+        return _integer(value, label=label, minimum=minimum)
     if type(value) is float:
         if not math.isfinite(value):
             raise LifecycleStatusContractError(f"{label} contains a non-finite number")

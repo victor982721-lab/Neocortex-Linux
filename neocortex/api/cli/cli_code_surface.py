@@ -54,14 +54,14 @@ def register_code_arguments(
         type=Path,
         default=None,
         metavar="PATH",
-        help="replace the default project roots; repeat for each owned project",
+        help="replace project roots for explicit --route code; repeat for each owned project",
     )
     code.add_argument(
         "--code-scope",
         dest="code_candidate_scope",
         choices=("projects", "broad"),
         default="projects",
-        help="admit owned projects or all code-like inventory candidates",
+        help="for explicit --route code, admit owned projects or all code-like candidates",
     )
     code.add_argument(
         "--code-generated",
@@ -84,8 +84,8 @@ def register_code_arguments(
         help=(
             "keep artifacts (default for direct/internal calls), or request a "
             "bounded trash plan only for artifacts with a retained local "
-            "regeneration proof; integrated --all selects that plan and "
-            "--apply is still required to enact it; names/scores alone never suffice"
+            "regeneration proof on an explicit --route code; --apply is still "
+            "required to enact it; names/scores alone never suffice"
         ),
     )
     code.add_argument(
@@ -246,32 +246,30 @@ def _validate_third_party_arguments(
         & explicit
     )
     selected_routes = normalize_route_selection(args.route, BUILTIN_ROUTE_ORDER)
-    code_selected = bool(args.all or "code" in selected_routes)
+    # Integrated ``--all`` no longer runs Code analysis; Code remains an
+    # explicit route for callers that request it directly.
+    code_selected = (not args.all) and "code" in selected_routes
     if code_direct and policy_requested:
         raise SystemExit("third-party Code policy cannot be combined with direct Code queries")
     if args.dedupe and policy_requested:
         raise SystemExit("third-party Code policy cannot be combined with --dedupe")
     if policy_requested and not code_selected and not args.route_only and args.resume_run is None:
-        raise SystemExit("third-party Code policy requires --all or --route code")
+        raise SystemExit("third-party Code policy requires --route code")
+    if not code_selected and not policy_requested:
+        return
     if args.code_third_party_action == "trash":
         if not code_selected:
-            raise SystemExit("--code-third-party-action trash requires --all or --route code")
+            raise SystemExit("--code-third-party-action trash requires --route code")
         if args.route_only or args.resume_run is not None:
             raise SystemExit("third-party Code trash is unavailable with --route-only/--resume-run")
-        # Integrated ``--all`` is the controlled-corpus workflow.  Its root
-        # and regeneration policy are already captured by the lifecycle
-        # boundary, so no extra user flags are required. A direct
-        # Code invocation remains stricter because it has no all-run boundary
-        # to bind the cleanup policy to.
-        if not args.all:
-            if "root" not in explicit:
-                raise SystemExit(
-                    "--code-third-party-action trash requires an explicit --root"
-                )
-            if "code_project_root" not in explicit:
-                raise SystemExit(
-                    "--code-third-party-action trash requires at least one --code-project-root"
-                )
+        if "root" not in explicit:
+            raise SystemExit(
+                "--code-third-party-action trash requires an explicit --root"
+            )
+        if "code_project_root" not in explicit:
+            raise SystemExit(
+                "--code-third-party-action trash requires at least one --code-project-root"
+            )
 
 
 def _validate_explicit_root_project_scope(
@@ -280,33 +278,7 @@ def _validate_explicit_root_project_scope(
     *,
     code_direct: bool,
 ) -> None:
-    """Reject an explicit Code route that is provably going to be a no-op.
-
-    A full ``--all`` run may legitimately continue to report failures from
-    other routes, so only an explicitly selected ``--code-scope projects`` is
-    rejected during argument validation.  This keeps the broad integrated
-    command's established failure ordering while making the focused Code
-    command fail closed before it creates inventory or Code state.
-    """
-
-    if (
-        args.all
-        and args.code_candidate_scope == "projects"
-        and "code_project_root" in explicit
-    ):
-        corpus_root = Path(args.root).expanduser().absolute()
-        for project_root in tuple(args.code_project_root or ()):
-            candidate = Path(project_root).expanduser().absolute()
-            try:
-                corpus_root.relative_to(candidate)
-            except ValueError:
-                try:
-                    candidate.relative_to(corpus_root)
-                except ValueError as exc:
-                    raise SystemExit(
-                        "--code-project-root must overlap the selected --root "
-                        "when --all uses code scope=projects"
-                    ) from exc
+    """Reject an explicit Code route that is provably going to be a no-op."""
 
     if code_direct or "root" not in explicit:
         return
@@ -316,13 +288,7 @@ def _validate_explicit_root_project_scope(
         return
 
     routes = normalize_route_selection(args.route, BUILTIN_ROUTE_ORDER)
-    code_selected = "code" in routes
-    if args.all:
-        # ``--all`` uses the default project scope unless the user opts into
-        # it explicitly.  Do not preempt unrelated route diagnostics for the
-        # legacy default; an explicitly requested project scope is safe to
-        # reject here because its no-candidate outcome is deterministic.
-        code_selected = code_selected and "code_candidate_scope" in explicit
+    code_selected = (not args.all) and "code" in routes
     if not code_selected:
         return
 

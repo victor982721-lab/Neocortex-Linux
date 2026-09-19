@@ -702,22 +702,17 @@ Cuando se proporciona una raíz explícita para Code, el alcance predeterminado
 NeoCortex se abstiene antes de crear estado y muestra cómo usar
 `--code-project-root PATH` o `--code-scope broad`.
 
-`--all` selecciona todas las rutas registradas, incluida Code, pero conserva el
-alcance seguro `projects`: no convierte automáticamente toda la raíz del corpus
-en código candidato. Para analizar una copia de un proyecto, registra su raíz
-con `--code-project-root PATH`; `--code-scope broad` queda como opt-in explícito
-para una exploración amplia y no ejecuta el código observado ni produce
-evidencia de validación del repositorio.
+`--all` es la limpieza integrada del Corpus y **no selecciona Code**. El análisis
+Code sigue disponible sólo con `--route code` explícito; no convierte la raíz del
+Corpus en código candidato por inferencia. Los selectores `--code-project-root`
+y `--code-scope` sólo tienen efecto en esa ruta explícita.
 
-La procedencia de Code es una señal, no una prueba de autoría ni regenerabilidad.
-La lista predeterminada corresponde a las raíces de NeoCortex, MTF y bitácoras EPS;
-no se amplía por encontrar marcadores en el corpus. `--all` admite por archivo
-qué merece procesamiento y prepara un plan de regenerables; `--apply` mantiene
-el gate físico. Cada candidato necesita un paquete fuente local conservado con
-miembro idéntico o bytecode reproducido desde su fuente, además de los límites,
-identidad, revalidación, ledger y receipt KIO. La política `keep` conserva el
-contenido sin ejecutar ese plan. Credenciales, licencias, fixtures, originales
-de paquetes, ambiguos y miembros virtuales permanecen protegidos.
+La procedencia de Code es una señal, no una prueba de autoría. `--all --apply`
+aplica primero la redlist determinista del Corpus, con comparación
+case-insensitive, root efectivo y auditoría por entrada, antes de dedupe,
+hashing, validación de tipos o rutas. Las coincidencias se envían a Papelera con
+el backend KIO receipt-bound; Code/regenerabilidad no participa en esa decisión.
+Los artefactos no coincidentes permanecen disponibles para las rutas de contenido.
 
 La observación integrada admite metadatos de copias de dependencias y cachés
 sin darles autorización de borrado. Mantiene raíces canónicas y VCS protegidos;
@@ -746,7 +741,8 @@ Neocortex --root "$Root" --all \
 
 `--run-max-items`, `--run-max-bytes` y `--run-time-budget-seconds` se persisten
 en `neocortex.run-budget/v1` junto con el deadline efectivo. El límite cubre
-preflight/inventario, catalogación y deduplicación, las nueve rutas, Semantic y
+preflight/inventario, redlist, catalogación y deduplicación, las rutas de contenido,
+Semantic y
 la publicación lógica. Cada reserva por stage/ruta/unidad es bounded e
 idempotente; cancelación, deadline o falta de presupuesto detienen la admisión
 antes de cruzar otra frontera de trabajo.
@@ -775,12 +771,17 @@ fail-closed y no una corrida nueva por inferencia. El replay terminal expone
 `replayed`/`new_work` sin ocultar trabajo reejecutado.
 
 Semantic pertenece al mismo lifecycle cuando se solicita `--all` o se reanuda
-un stage Semantic, pero el Semantic pesado continúa siendo opt-in. Archive,
-Code y Video son fuentes Semantic explícitas; `--all` coordina sus rutas de
-contenido sin indexarlas automáticamente como fuentes Semantic pesadas. Code
-permanece contenido no ejecutable. Si falta Audio/Whisper, FFmpeg, un modelo u
+un stage Semantic, pero el Semantic pesado continúa siendo opt-in. Archive y
+Video son fuentes Semantic explícitas; Code sólo puede ser fuente cuando se
+solicita explícitamente la ruta Code. `--all` coordina sus rutas de contenido
+sin indexarlas automáticamente como fuentes Semantic pesadas. Si falta Audio/Whisper, FFmpeg, un modelo u
 otra herramienta, la ruta o el stage conserva `unavailable`/`blocked` y el run
 queda `incomplete`, nunca éxito vacío ni skip silencioso.
+
+Por la misma frontera, `--all --semantic-source code` se rechaza: no convierte
+Code en una ruta implícita. Usa `--route code` para la ruta Code o, si sólo
+quieres indexar un cache Code ya publicado, una invocación Semantic explícita
+fuera de `--all` (`--semantic-index text --semantic-source code`).
 
 `read_run_status`, `lifecycle_status`, API, SDK y MCP deben devolver el envelope
 bounded `neocortex.lifecycle-envelope/v1`, con manifest/digest, stages, rutas,

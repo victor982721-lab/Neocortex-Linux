@@ -11,7 +11,11 @@ una consulta. Un archivo tiene un escritor; la raíz integra Git y registros.
 Trabaja directamente en main bajo la autorización permanente: sin ramas/PR,
 reescritura o force push; fast-forward para trabajo previo verificado cuando sea
 posible. Publicación exige SHA remoto comprobado, `HEAD == main == origin/main`,
-árbol limpio y evidencia proporcional, no sólo un commit local.
+árbol limpio y evidencia proporcional, no sólo un commit local. En una
+implementación o corrección autorizada, commit, publicación,
+instalación/promoción y verificación del launcher instalado forman una sola
+entrega por defecto; sólo análisis/docs-only o una excepción explícita de Víctor
+omiten esos gates.
 
 ## Cobertura por ronda
 
@@ -112,7 +116,8 @@ validación final proporcional con herramientas individuales. No dupliques el
 gate pesado por actor ni edites entradas durante la corrida. Si cambia código,
 configuración efectiva o fixtures después del gate, revalida lo afectado; no
 disfraces ese cambio de docs-only. Publicación e instalación conservan sus
-verificaciones separadas en este documento y AGENTS.
+verificaciones separadas en este documento y AGENTS; nunca presentes como
+instalada una fuente que sólo fue probada desde el checkout.
 
 Mide cobertura verificada de la misma ronda y registra retrabajo, defectos
 escapados, tiempo de coordinación/espera y bytes de contexto sólo cuando ayuden

@@ -176,9 +176,13 @@ def _selected_semantic_text_sources(args: argparse.Namespace) -> tuple[str, ...]
 
     if args.semantic_source is not None:
         return tuple(dict.fromkeys(args.semantic_source))
+    source_kinds = tuple(
+        source for source in TEXT_SOURCE_KINDS
+        if not (getattr(args, "all", False) and source == "code")
+    )
     return tuple(
         source_kind
-        for source_kind in TEXT_SOURCE_KINDS
+        for source_kind in source_kinds
         if semantic_source_database(args.state_directory, source_kind).is_file()
     )
 
@@ -1617,14 +1621,19 @@ def _integrated_checkpoint_needs_code(
     metadata: _PendingIntegratedMetadata,
     args: argparse.Namespace,
 ) -> bool:
-    """Select Code only when old, previous, or new integrated scope includes it."""
+    """Keep legacy integrated publication ownership coherent during recovery.
+
+    A healthy ``--all`` no longer selects the Code route or its Semantic cache,
+    but an interrupted publication checkpoint may still have been created with
+    the historical ``semantic+code`` owner set.  Observing that owner head is
+    recovery bookkeeping, not Code analysis; preserve it so the publication
+    CAS cannot silently drop a prior owner.
+    """
 
     if "code" in metadata.pending_owners or "code" in metadata.previous_owners:
         return True
     current_sources = getattr(args, "semantic_source", None)
     if bool(getattr(args, "all", False)) and current_sources is None:
-        # Owner coherence is not an extra processing capability: the default
-        # full source selection includes Code whenever its owner is applicable.
         return True
     return isinstance(current_sources, (list, tuple)) and "code" in current_sources
 
@@ -2561,7 +2570,16 @@ def _select_integrated_sources(args: argparse.Namespace, run_id: int | None):
                 count = summary.get("candidates", 0) if isinstance(summary, dict) else 0
                 route_states[str(route_name)] = (str(status), count if type(count) is int else 0)
     explicit = args.semantic_source is not None
-    requested = tuple(args.semantic_source) if explicit else TEXT_SOURCE_KINDS
+    requested = (
+        tuple(args.semantic_source)
+        if explicit
+        else tuple(source for source in TEXT_SOURCE_KINDS if source != "code")
+    )
+    if getattr(args, "all", False) and explicit and "code" in requested:
+        raise ValueError(
+            "--semantic-source code requires an explicit --route code; "
+            "it cannot be selected by --all"
+        )
     selected: list[str] = []
     empty: list[str] = []
     blocked: dict[str, str] = {}

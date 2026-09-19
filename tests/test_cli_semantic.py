@@ -1060,7 +1060,7 @@ def test_semantic_index_reports_budget_truncation_as_nonzero(
     assert "truncation_reason=max_items" in output
 
 
-def test_all_includes_broad_archive_and_code_without_hidden_semantic_ceiling(
+def test_all_excludes_code_from_integrated_semantic_by_default_without_hidden_ceiling(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -1076,7 +1076,7 @@ def test_all_includes_broad_archive_and_code_without_hidden_semantic_ceiling(
         "neocortex.semantic.semantic_service.index_text_embeddings",
         return_value=_index_result(
             tmp_path,
-            ("pdf", "archive", "code"),
+            ("pdf", "archive"),
             pending=1,
             truncated=True,
             truncation_reason="time_budget",
@@ -1085,12 +1085,12 @@ def test_all_includes_broad_archive_and_code_without_hidden_semantic_ceiling(
         assert run_integrated_all_semantic_index(args) == 2
 
     kwargs = operation.call_args.kwargs
-    assert kwargs["source_kinds"] == ("pdf", "archive", "code")
+    assert kwargs["source_kinds"] == ("pdf", "archive")
     assert kwargs["work_budget"].max_items is None
     assert kwargs["work_budget"].max_new_jobs is None
     output = capsys.readouterr().out
-    assert "SEMANTIC_ALL status=starting sources=pdf,archive,code" in output
-    assert "code_explicit=1" in output
+    assert "SEMANTIC_ALL status=starting sources=pdf,archive" in output
+    assert "code_explicit=0" in output
     assert "truncated=1" in output
 
 
@@ -1132,10 +1132,7 @@ def test_all_semantic_uses_shared_progress_and_captures_structured_result(
     assert capsys.readouterr().out == ""
 
 
-def test_all_accepts_explicit_code_semantic_selection(tmp_path: Path) -> None:
-    from tests.test_semantic_sources import _create_code_text_state
-
-    _create_code_text_state(tmp_path)
+def test_all_rejects_explicit_code_semantic_selection(tmp_path: Path) -> None:
     args = build_parser().parse_args(
         [
             "--all",
@@ -1143,25 +1140,10 @@ def test_all_accepts_explicit_code_semantic_selection(tmp_path: Path) -> None:
             str(tmp_path),
             "--semantic-source",
             "code",
-            "--semantic-time-budget-seconds",
-            "3600",
         ]
     )
-    validate_arguments(args)
-    with (
-        patch(
-            "neocortex.semantic.semantic_service.index_text_embeddings",
-            return_value=_index_result(tmp_path, ("code",)),
-        ) as operation,
-        patch(
-            "neocortex.code.search.code_semantic_links.current_code_embedding_link_counts",
-            return_value=(0, 0),
-        ),
-    ):
-        assert run_integrated_all_semantic_index(args) == 0
-
-    assert operation.call_args.kwargs["source_kinds"] == ("code",)
-    assert operation.call_args.kwargs["work_budget"].deadline is not None
+    with pytest.raises(SystemExit, match="requires an explicit --route code"):
+        validate_arguments(args)
 
 
 def test_all_accepts_explicit_archive_semantic_selection(tmp_path: Path) -> None:

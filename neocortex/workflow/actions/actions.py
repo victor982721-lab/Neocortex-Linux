@@ -55,6 +55,7 @@ from neocortex.persistence.framework_state_writer import FrameworkState, RunBudg
 from neocortex.runtime.control.cancellation import CancellationRequested
 from neocortex.workflow.actions.file_action_recovery import expected_identity_json
 from neocortex.curation.application import BackendOutcome, KioTrashBackend
+from neocortex.safety.kio_trash import metadata_binding
 from neocortex.code.code_contracts import ThirdPartyClassification
 from neocortex.code.ingestion.code_detection import (
     classify_third_party_artifact,
@@ -189,6 +190,11 @@ class FrameworkActions:
         self._retained_regeneration_sources: dict[str, FileSnapshot] = {}
         self._regeneration_sources_truncated = False
         self._duplicate_work_reserved = False
+        # A redlist page reserves the bounded lifecycle work before any of its
+        # candidates can cross the action frontier.  Keep that reservation
+        # visible while the corresponding trash batch is applied so the
+        # generic batch helper does not charge the same page a second time.
+        self._redlist_page_reserved = False
 
     def execute(self, plan: DedupPlan, *, cleanup_empty_directories: bool = True) -> ActionSummary:
         self._validate_apply_root()
@@ -201,6 +207,7 @@ class FrameworkActions:
         self._retained_regeneration_sources.clear()
         self._regeneration_sources_truncated = False
         self._duplicate_work_reserved = False
+        self._redlist_page_reserved = False
         summary = ActionSummary(apply_actions=self._apply)
         started = time.perf_counter_ns()
         summary = self._trash_empty_files(plan, summary)
@@ -231,6 +238,274 @@ class FrameworkActions:
             self._record_phase("empty-directories", started, summary)
         self._state.store_action_summary(self._run_id, summary)
         return summary
+
+    def _publish_redlist_stage(
+        self,
+        *,
+        status: str,
+        policy_digest: str,
+        matched: int,
+        applied: int,
+        failed: int,
+        protected: int,
+        error: BaseException | None = None,
+    ) -> None:
+        """Publish bounded redlist counters through the Framework lifecycle.
+
+        The redlist is an integrated stage, not merely an action-side event.
+        Keeping the counters in the stage details makes cancellation, budget
+        exhaustion, and partial physical outcomes visible to the public status
+        reader without serializing paths or payload bytes.
+        """
+
+        from neocortex.workflow.actions.redlist import REDLIST_POLICY_SCHEMA
+
+        details: dict[str, object] = {
+            "schema": REDLIST_POLICY_SCHEMA,
+            "policy_digest": policy_digest,
+            "matched": max(0, int(matched)),
+            "applied": max(0, int(applied)),
+            "failed": max(0, int(failed)),
+            "protected": max(0, int(protected)),
+        }
+        if error is not None:
+            details.update(
+                {
+                    "error_type": type(error).__name__,
+                    "error": str(error)[:8192],
+                }
+            )
+        publish_stage = getattr(self._state, "publish_run_stage", None)
+        read_manifest = getattr(self._state, "read_run_manifest", None)
+        if (
+            callable(publish_stage)
+            and callable(read_manifest)
+            and read_manifest(self._run_id) is not None
+        ):
+            publish_stage(
+                self._run_id,
+                "redlist",
+                status,
+                details=details,
+                idempotency_key=f"redlist:{policy_digest}:{status}",
+            )
+            return
+        # Direct action callers may use a pre-manifest fixture run.  Preserve
+        # their diagnostic evidence without pretending it is a lifecycle stage.
+        self._state.record_event(
+            self._run_id,
+            "error" if status == "failed" else "warning" if status == "interrupted" else "info",
+            "redlist",
+            f"Redlist stage {status}",
+            details,
+        )
+
+    def apply_redlist_prepass(self, *, policy_digest: str) -> dict[str, int | str]:
+        """Trash configured redlist matches before content planning.
+
+        The inventory has already captured metadata, but no content bytes have
+        been read.  This pass deliberately bypasses all admission, Code and
+        regeneration heuristics.  The only content binding used by the Trash
+        safety adapter is the metadata-only source binding; it is not a
+        content hash and exists solely to bind the physical effect to the
+        preflighted inode/metadata snapshot.
+        """
+
+        from neocortex.workflow.actions.redlist import (
+            REDLIST_POLICY_SCHEMA,
+            redlist_match,
+        )
+
+        if not self._apply:
+            return {
+                "schema": REDLIST_POLICY_SCHEMA,
+                "matched": 0,
+                "applied": 0,
+                "failed": 0,
+                "protected": 0,
+            }
+        matched = applied = failed = protected = 0
+        pending: list[tuple[str, str, FileSnapshot]] = []
+        after_path = ""
+        self._publish_redlist_stage(
+            status="running",
+            policy_digest=policy_digest,
+            matched=matched,
+            applied=applied,
+            failed=failed,
+            protected=protected,
+        )
+        try:
+            while True:
+                self._admission_checkpoint()
+                page = self._index.snapshots_page(
+                    self._scan_id,
+                    after_path=after_path,
+                    limit=TRASH_BATCH_SIZE,
+                )
+                if not page:
+                    break
+                # Redlist matching is metadata-only, but it still consumes the
+                # run's bounded admission work.  Reserve the whole page before
+                # classifying or effecting any member.  Bytes remain zero: no
+                # payload is read by this policy.
+                self._redlist_page_reserved = self._reserve_work is not None
+                self._reserve_snapshot_work(
+                    "redlist-page",
+                    page,
+                    bytes_override=0,
+                )
+                for snapshot in page:
+                    token = redlist_match(snapshot.path)
+                    if token is None:
+                        continue
+                    matched += 1
+                    evidence = json.dumps(
+                        {
+                            "schema": REDLIST_POLICY_SCHEMA,
+                            "policy_digest": policy_digest,
+                            "redlist_entry": token,
+                            "match": "basename_or_suffix_casefold_v1",
+                            "snapshot": {
+                                "volume_id": snapshot.volume_id,
+                                "file_id": snapshot.file_id,
+                                "size": snapshot.size,
+                                "mtime_ns": snapshot.mtime_ns,
+                                "birthtime_ns": snapshot.birthtime_ns,
+                            },
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    pending.append((snapshot.path, evidence, snapshot))
+                    if len(pending) >= TRASH_BATCH_SIZE:
+                        a, f, p = self._apply_trash_batch(
+                            "trash_redlist",
+                            tuple((path, evidence) for path, evidence, _ in pending),
+                            expected_snapshots=tuple(snapshot for _, _, snapshot in pending),
+                            defer_reconciliation=True,
+                        )
+                        applied += a
+                        failed += f
+                        protected += p
+                        pending.clear()
+                self._redlist_page_reserved = False
+                after_path = page[-1].path
+                emit_progress(
+                    self._progress,
+                    ProgressEvent(
+                        "framework",
+                        "redlist",
+                        "Enviando redlist a Papelera",
+                        matched,
+                        None,
+                        "archivos",
+                        metrics=(
+                            ProgressMetric("applied", applied),
+                            ProgressMetric("errors", failed),
+                        ),
+                    ),
+                )
+            if pending:
+                # The final page has already been reserved above; avoid a
+                # second reservation for this final partial batch.
+                self._redlist_page_reserved = self._reserve_work is not None
+                try:
+                    a, f, p = self._apply_trash_batch(
+                        "trash_redlist",
+                        tuple((path, evidence) for path, evidence, _ in pending),
+                        expected_snapshots=tuple(snapshot for _, _, snapshot in pending),
+                        defer_reconciliation=True,
+                    )
+                finally:
+                    self._redlist_page_reserved = False
+                applied += a
+                failed += f
+                protected += p
+            if failed or protected:
+                # Do not publish a successor generation after a partial or
+                # ambiguous redlist effect.  The file-action ledger remains
+                # the recovery source and the caller aborts before hashing.
+                raise RuntimeError(
+                    f"redlist prepass incomplete: matched={matched} applied={applied} "
+                    f"failed={failed} protected={protected}"
+                )
+            if applied:
+                self._flush_deferred_reconciliation()
+                self._index.refresh_scan_aggregates(
+                    self._index.current_scan_id(self._scan_id)
+                )
+        except (KeyboardInterrupt, CancellationRequested, RunBudgetExceeded) as exc:
+            self._redlist_page_reserved = False
+            self._publish_redlist_stage(
+                status="interrupted",
+                policy_digest=policy_digest,
+                matched=matched,
+                applied=applied,
+                failed=failed,
+                protected=protected,
+                error=exc,
+            )
+            raise
+        except BaseException as exc:
+            self._redlist_page_reserved = False
+            self._publish_redlist_stage(
+                status="failed",
+                policy_digest=policy_digest,
+                matched=matched,
+                applied=applied,
+                failed=failed,
+                protected=protected,
+                error=exc,
+            )
+            raise
+        self._publish_redlist_stage(
+            status="completed",
+            policy_digest=policy_digest,
+            matched=matched,
+            applied=applied,
+            failed=failed,
+            protected=protected,
+        )
+        self._state.record_event(
+            self._run_id,
+            "info",
+            "redlist",
+            "Redlist aplicada antes del procesamiento de contenido",
+            {
+                "schema": REDLIST_POLICY_SCHEMA,
+                "policy_digest": policy_digest,
+                "matched": matched,
+                "applied": applied,
+                "failed": failed,
+                "protected": protected,
+            },
+        )
+        emit_progress(
+            self._progress,
+            ProgressEvent(
+                "framework",
+                "redlist",
+                "Redlist aplicada",
+                matched,
+                matched,
+                "archivos",
+                True,
+                (
+                    ProgressMetric("applied", applied),
+                    ProgressMetric("errors", failed),
+                ),
+            ),
+        )
+        return {
+            "schema": REDLIST_POLICY_SCHEMA,
+            "policy_digest": policy_digest,
+            "matched": matched,
+            "applied": applied,
+            "failed": failed,
+            "protected": protected,
+        }
 
     def _admission_checkpoint(self) -> None:
         if self._cancellation_check is not None:
@@ -765,6 +1040,9 @@ class FrameworkActions:
         if not (
             action_type == "trash_duplicate"
             and getattr(self, "_duplicate_work_reserved", False)
+        ) and not (
+            action_type == "trash_redlist"
+            and getattr(self, "_redlist_page_reserved", False)
         ):
             self._reserve_snapshot_work(
                 f"{action_type}:batch",
@@ -848,7 +1126,11 @@ class FrameworkActions:
                 failed += 1
                 continue
             try:
-                source_digest = f"{FULL_ALGORITHM}:" + full_fingerprint(planned).hex()
+                source_digest = (
+                    metadata_binding(planned)
+                    if action_type == "trash_redlist"
+                    else f"{FULL_ALGORITHM}:" + full_fingerprint(planned).hex()
+                )
                 if reference is not None:
                     if not files_equal_exact(planned, reference):
                         raise RuntimeError("keeper changed during exact duplicate comparison")
@@ -983,7 +1265,11 @@ class FrameworkActions:
                 failed += 1
                 continue
             try:
-                source_digest = f"{FULL_ALGORITHM}:" + full_fingerprint(planned).hex()
+                source_digest = (
+                    metadata_binding(planned)
+                    if action_type == "trash_redlist"
+                    else f"{FULL_ALGORITHM}:" + full_fingerprint(planned).hex()
+                )
                 if reference is not None and not files_equal_exact(planned, reference):
                     raise RuntimeError("keeper changed during exact duplicate comparison")
                 expected_json = expected_identity_json(
@@ -1188,7 +1474,7 @@ class FrameworkActions:
             guard_reason = None if reason is not None else next(guard_reasons)
             retention_reason = (
                 None
-                if planned is None or action_type == "trash_empty_directory"
+                if planned is None or action_type in {"trash_empty_directory", "trash_redlist"}
                 else self._effect_preservation_reason(planned)
             )
             if reason is None:
@@ -1381,7 +1667,7 @@ class FrameworkActions:
                 action_type, path, "identity_changed_after_preflight", planned
             )
             raise RuntimeError("trash source changed after mutation preflight")
-        if planned is not None and action_type != "trash_empty_directory":
+        if planned is not None and action_type not in {"trash_empty_directory", "trash_redlist"}:
             retention_reason = self._effect_preservation_reason(planned)
             if retention_reason is not None:
                 self._record_preservation_veto(

@@ -786,6 +786,8 @@ def serialized_run_status(status: RunStatus) -> str:
             "lifecycle": lifecycle_envelope(
                 manifest=status.manifest,
                 status=status.status,
+                run_id=status.run_id,
+                source_run_id=status.source_run_id,
                 routes=tuple(
                     {
                         "route_name": route.route_name,

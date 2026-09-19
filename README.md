@@ -29,10 +29,10 @@ proyectan visibilidad, sin borrar vectores ni diagnósticos.
 ## Implementación funcional integrada
 
 La ruta integrada conserva los owners y contratos existentes. `--all` selecciona
-las nueve rutas (`pdf`, `docx`, `office`, `archive`, `text`, `audio`, `video`,
-`image` y `code`); para esa modalidad Code conserva el alcance seguro
-`projects` y sólo admite raíces de proyectos configuradas, sin ejecutar el
-código observado. Un escaneo amplio requiere el opt-in explícito
+las ocho rutas de contenido (`pdf`, `docx`, `office`, `archive`, `text`, `audio`,
+`video` e `image`). En `--all --apply` aplica primero la redlist determinista
+del Corpus, antes de dedupe, hashing, validación o extracción. Code se conserva como ruta explícita
+`--route code`, sin ejecutar el código observado. Un escaneo amplio requiere el opt-in explícito
 `--code-scope broad`; sus límites por formato
 permanecen efectivos y los límites globales sólo aparecen cuando se expresan de
 forma explícita: no se añade un techo global oculto y los flags repetibles siguen
@@ -425,9 +425,8 @@ Neocortex --root "$Root" --route pdf --max-count 25 --strict-exit-codes
 
 Repite el mismo comando y revisa cache, errores y tiempo antes de ampliar el
 alcance. `--max-count` limita PDFs, no el inventario completo. `--all` ejecuta
-todas las rutas de contenido registradas, incluida Code
-como contenido; no ejecuta el código observado ni reintroduce el antiguo
-autoanálisis del propio repositorio.
+las rutas de contenido registradas y excluye Code; no ejecuta el código observado
+ni reintroduce el antiguo autoanálisis del propio repositorio.
 
 ## Ruta de curación actual
 

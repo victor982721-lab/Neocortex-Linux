@@ -220,6 +220,13 @@ class FrameworkOrchestrator:
         self.selected_routes = normalize_route_selection(
             self.config.route, tuple(self.route_registry)
         )
+        if self.config.route.casefold() == "all" and not self.config.route_only:
+            # ``--all`` is the controlled ingestion workflow.  Code analysis
+            # remains available through an explicit ``--route code`` request,
+            # but is not part of the default Corpus cleaning pipeline.
+            self.selected_routes = tuple(
+                route for route in self.selected_routes if route != "code"
+            )
         self.progress = progress or NullProgress()
         self._progress_lock = threading.Lock()
         self._active_progress: dict[tuple[str, str], ProgressEvent] = {}
@@ -1101,6 +1108,10 @@ class FrameworkOrchestrator:
         excluded_paths: tuple[Path, ...],
     ) -> dict[str, object]:
         from neocortex.workflow.actions.corpus_admission import CorpusAdmissionPolicy
+        from neocortex.workflow.actions.redlist import (
+            redlist_policy_digest,
+            redlist_policy_payload,
+        )
 
         return {
             "route": self.config.route,
@@ -1155,6 +1166,8 @@ class FrameworkOrchestrator:
                 else self.config.code_third_party_policy.to_dict()
             ),
             "apply_actions": self.config.apply_actions,
+            "corpus_redlist": redlist_policy_payload(),
+            "corpus_redlist_digest": redlist_policy_digest(),
             "runtime_cache_home": os.environ.get(XDG_CACHE_HOME_ENVIRONMENT),
             "excluded_paths": [str(path) for path in excluded_paths],
             "inventory_exclusion_signature": boundary.exclusion_policy.signature,
@@ -1636,7 +1649,11 @@ class FrameworkOrchestrator:
             exclusion_policy=inventory_policy,
             progress=self.progress,
             trash_backend=trash_backend,
-            third_party_policy=getattr(self.config, "code_third_party_policy", None),
+            third_party_policy=(
+                getattr(self.config, "code_third_party_policy", None)
+                if "code" in self.selected_routes
+                else None
+            ),
             third_party_project_roots=third_party_project_roots,
             corpus_admission_policy=(
                 CorpusAdmissionPolicy(
@@ -1645,7 +1662,7 @@ class FrameworkOrchestrator:
                     include_generated=self.config.code_include_generated,
                     include_vendored=self.config.code_include_vendored,
                 )
-                if self.selected_routes else None
+                if "code" in self.selected_routes else None
             ),
             cancellation_check=action_checkpoint,
             reserve_work=reserve_action_work if budgeted else None,
@@ -1730,6 +1747,65 @@ class FrameworkOrchestrator:
                 dedup_index=dedup_index,
                 journal_before=journal_before,
             )
+            # The explicit Corpus redlist is a metadata-only admission gate.
+            # It must cross the Trash boundary before duplicate planning or
+            # any content-type/route work can read the selected files.
+            if (
+                self.config.apply_actions
+                and self.config.route.casefold() == "all"
+                and not self.config.route_only
+            ):
+                from neocortex.curation.application import KioTrashBackend
+                from neocortex.workflow.actions.redlist import redlist_policy_digest
+
+                read_budget = getattr(state, "read_run_budget", None)
+                budgeted = callable(read_budget) and read_budget(run_id) is not None
+                last_budget_check = time.monotonic()
+
+                def redlist_checkpoint() -> None:
+                    nonlocal last_budget_check
+                    self._cancellation.checkpoint()
+                    if budgeted and time.monotonic() - last_budget_check >= 0.1:
+                        state.check_run_budget(run_id)
+                        last_budget_check = time.monotonic()
+
+                def reserve_redlist_work(
+                    reservation_id: str,
+                    items: int,
+                    bytes_count: int,
+                ) -> None:
+                    redlist_checkpoint()
+                    self._reserve_lifecycle_stage_work(
+                        state,
+                        run_id,
+                        "redlist",
+                        reservation_id,
+                        items=items,
+                        bytes_count=bytes_count,
+                        worker="redlist",
+                    )
+
+                redlist_runner = FrameworkActions(
+                    dedup_index,
+                    state,
+                    run_id,
+                    inventory.scan.scan_id,
+                    apply=True,
+                    exclusion_policy=boundary.exclusion_policy,
+                    progress=self.progress,
+                    trash_backend=KioTrashBackend(),
+                    cancellation_check=redlist_checkpoint,
+                    reserve_work=reserve_redlist_work if budgeted else None,
+                )
+                redlist_runner.apply_redlist_prepass(
+                    policy_digest=redlist_policy_digest(),
+                )
+                successor_scan_id = dedup_index.current_scan_id(inventory.scan.scan_id)
+                if successor_scan_id != inventory.scan.scan_id:
+                    inventory = replace(
+                        inventory,
+                        scan=dedup_index.scan_summary(successor_scan_id),
+                    )
             plan = self._plan_initial_dedup(
                 state,
                 run_id,
@@ -1738,7 +1814,11 @@ class FrameworkOrchestrator:
             )
             third_party_project_roots: tuple[Path, ...] = ()
             third_party_policy = getattr(self.config, "code_third_party_policy", None)
-            if third_party_policy is not None and third_party_policy.mutation_requested:
+            if (
+                "code" in self.selected_routes
+                and third_party_policy is not None
+                and third_party_policy.mutation_requested
+            ):
                 third_party_project_roots = self._code_project_roots_for_actions(
                     dedup_index=dedup_index,
                     scan_id=inventory.scan.scan_id,

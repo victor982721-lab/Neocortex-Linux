@@ -109,13 +109,32 @@ def archive_route_config_from_application(
     """Project current application values into recursive ZIP indexing."""
 
     from neocortex.capabilities.formats.archive.route import ArchiveRouteConfig
-    from neocortex.workflow.actions.corpus_admission import CorpusAdmissionPolicy
 
-    admission = CorpusAdmissionPolicy(
-        interested_roots=config.code_project_roots,
-        code_scope=config.code_candidate_scope,
-        include_generated=config.code_include_generated,
-        include_vendored=config.code_include_vendored,
+    # The historical owner projection is also used by direct Archive callers
+    # whose flat config route is ``none`` (the owner is selected by its own
+    # facade).  Keep its explicit admission contract everywhere except the
+    # integrated ``--all`` preset, where Code analysis is deliberately out of
+    # scope and archive members must not invoke Code classifiers.
+    code_enabled = str(config.route).strip().casefold() != "all"
+    if code_enabled:
+        from neocortex.workflow.actions.corpus_admission import CorpusAdmissionPolicy
+
+        admission = CorpusAdmissionPolicy(
+            interested_roots=config.code_project_roots,
+            code_scope=config.code_candidate_scope,
+            include_generated=config.code_include_generated,
+            include_vendored=config.code_include_vendored,
+        )
+    else:
+        admission = None
+
+    admission_kwargs = (
+        {
+            "member_admission": partial(_archive_member_admission, policy=admission),
+            "member_admission_signature": admission.signature,
+        }
+        if admission is not None
+        else {}
     )
 
     return ArchiveRouteConfig(
@@ -125,8 +144,6 @@ def archive_route_config_from_application(
         retry_errors=config.archive_retry_errors,
         retry_recoverable_errors=getattr(config, "retry_recoverable_errors", False),
         selection=config.selection,
-        member_admission=partial(_archive_member_admission, policy=admission),
-        member_admission_signature=admission.signature,
         max_depth=config.archive_max_depth,
         max_members=config.archive_max_members,
         max_central_directory_bytes=config.archive_max_central_directory_bytes,
@@ -155,6 +172,7 @@ def archive_route_config_from_application(
             if bool(getattr(config, "apply_actions", False))
             else None
         ),
+        **admission_kwargs,
     )
 
 

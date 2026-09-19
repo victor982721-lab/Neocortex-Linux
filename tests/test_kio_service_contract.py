@@ -197,6 +197,47 @@ def test_service_native_context_bus_and_receipt_roundtrip(
     assert info.stat().st_ino == stat_before.st_ino
 
 
+def test_metadata_binding_roundtrip_does_not_read_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = TrashFixture(tmp_path)
+    item = fixture.item("generated.BAK")
+    metadata = kio.metadata_binding(item.expected)
+    monkeypatch.setattr(kio, "full_fingerprint", lambda *_a, **_k: pytest.fail("content hash"))
+    monkeypatch.setattr(kio.subprocess, "run", fixture.runner)
+    result = fixture.service(private_config=False, private_bus=False).move(
+        item.expected,
+        source_digest=metadata,
+    )
+    assert result.status is kio.KioTrashStatus.APPLIED
+    assert result.receipt is not None
+    receipt = json.loads(result.receipt.trash_evidence)
+    observed = kio.verify_trash_receipt_evidence(receipt, item.expected, metadata)
+    assert observed.path.endswith("generated.BAK")
+
+
+def test_metadata_binding_receipt_restores_without_content_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = TrashFixture(tmp_path)
+    item = fixture.item("restore.BAK")
+    metadata = kio.metadata_binding(item.expected)
+    monkeypatch.setattr(kio.subprocess, "run", fixture.runner)
+    outcome = fixture.backend(private_config=False, private_bus=False).apply_snapshot(
+        item.expected,
+        root=fixture.root,
+        source_digest=metadata,
+    )
+    assert outcome.status == "applied"
+    assert outcome.receipt_json is not None
+    monkeypatch.setattr(kio, "full_fingerprint", lambda *_a, **_k: pytest.fail("content hash"))
+
+    restored = kio.restore_trash_receipt(outcome.receipt_json, root=fixture.root)
+
+    assert restored["status"] == "restored"
+    assert Path(item.source).exists()
+
+
 def test_service_injected_runner_preserves_environment_and_no_claims(tmp_path: Path) -> None:
     fixture = TrashFixture(tmp_path)
     items = (fixture.item("first"), fixture.item("second"))

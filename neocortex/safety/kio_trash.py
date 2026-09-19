@@ -1,9 +1,10 @@
 """Prepared, fail-closed KDE/KIO trash primitive for Linux.
 
-The adapter is intentionally not wired into Linux ``--apply``.  KIO accepts a
-path rather than an already-open file descriptor, so a successful operation is
-classified as reversible and path-bound.  Callers must persist
-``recovery_required`` whenever this module returns that status.
+The integrated Corpus ``--all --apply`` path uses this adapter for reversible,
+path-bound effects.  KIO accepts a path rather than an already-open file
+descriptor, so callers must persist ``recovery_required`` whenever this module
+returns that status.  Redlist actions may use a metadata binding; ordinary
+dedupe actions retain their full-content digest contract.
 """
 
 from __future__ import annotations
@@ -56,8 +57,39 @@ MAX_KIO_BATCH_ITEMS = 256
 MAX_KIO_BATCH_ARGUMENT_BYTES = 128 * 1024
 KIO_CLAIM_SCHEMA = "neocortex.kio-claim/v1"
 KIO_RESTORE_SCHEMA = "neocortex.kio-restore/v1"
+METADATA_BINDING_PREFIX = "metadata-v1:"
 
 _ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
+
+
+def metadata_binding(snapshot: FileSnapshot) -> str:
+    """Bind a redlist effect to identity/metadata without reading payload bytes."""
+
+    payload = {
+        "schema": "neocortex.redlist-metadata-binding/v1",
+        "volume_id": snapshot.volume_id,
+        "file_id": snapshot.file_id,
+        "size": snapshot.size,
+        "mtime_ns": snapshot.mtime_ns,
+        "birthtime_ns": snapshot.birthtime_ns,
+    }
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return METADATA_BINDING_PREFIX + hashlib.sha256(encoded).hexdigest()
+
+
+def is_metadata_binding(value: str) -> bool:
+    if not isinstance(value, str) or not value.startswith(METADATA_BINDING_PREFIX):
+        return False
+    digest = value.removeprefix(METADATA_BINDING_PREFIX)
+    return len(digest) == 64 and all(char in "0123456789abcdef" for char in digest)
+
+
+def _binding_matches_snapshot(snapshot: FileSnapshot, binding: str) -> bool:
+    if is_metadata_binding(binding):
+        return metadata_binding(snapshot) == binding
+    return f"{FULL_ALGORITHM}:" + full_fingerprint(snapshot).hex() == binding
 
 
 class KioTrashStatus(StrEnum):
@@ -489,7 +521,7 @@ def _verify_curation_trash_evidence(
     observed = snapshot_path(trash_path)
     if observed != relocated or not stat_matches_snapshot(relocated, metadata):
         raise ValueError("trash destination no longer identifies the original source")
-    if f"{FULL_ALGORITHM}:" + full_fingerprint(observed).hex() != source_digest:
+    if not _binding_matches_snapshot(observed, source_digest):
         raise ValueError("trash destination digest changed")
     _validate_trash_info(info_path, expected.path)
     if os.path.lexists(expected.path):
@@ -1212,7 +1244,7 @@ def _default_kio_verifier(
                         continue
                     relocated = replace(expected, path=os.fspath(trash_path))
                     try:
-                        if full_fingerprint(relocated).hex() != source_digest.split(":", 1)[-1]:
+                        if not _binding_matches_snapshot(relocated, source_digest):
                             continue
                     except (FileChangedError, OSError, ValueError):
                         continue
@@ -1466,8 +1498,12 @@ def restore_trash_receipt(receipt_json: str, *, root: Path) -> dict[str, object]
     )
     if info_path.name != trash_path.name + ".trashinfo":
         raise ValueError("KIO restore metadata name does not match its file")
+    metadata_mode = is_metadata_binding(digest_value)
     expected_digest = digest_value.split(":", 1)[-1]
-    if len(expected_digest) != 32 or any(c not in "0123456789abcdef" for c in expected_digest):
+    if metadata_mode:
+        if len(expected_digest) != 64 or any(c not in "0123456789abcdef" for c in expected_digest):
+            raise ValueError("KIO restore metadata binding is invalid")
+    elif len(expected_digest) != 32 or any(c not in "0123456789abcdef" for c in expected_digest):
         raise ValueError("KIO restore digest is invalid")
 
     source_exists = os.path.lexists(source)
@@ -1484,7 +1520,7 @@ def restore_trash_receipt(receipt_json: str, *, root: Path) -> dict[str, object]
                 "kio_restore_destination_unsafe", "restore source is not a unique regular file"
             )
         current = snapshot_path(source)
-        if full_fingerprint(current).hex() != expected_digest:
+        if not _binding_matches_snapshot(current, digest_value):
             raise KioTrashUnavailable(
                 "kio_restore_destination_collision", "restore destination contains different bytes"
             )
@@ -1527,7 +1563,7 @@ def restore_trash_receipt(receipt_json: str, *, root: Path) -> dict[str, object]
             "kio_restore_origin_mismatch", "Trash metadata does not name the original source"
         )
     trash_snapshot = snapshot_path(trash_path)
-    if full_fingerprint(trash_snapshot).hex() != expected_digest:
+    if not _binding_matches_snapshot(trash_snapshot, digest_value):
         raise KioTrashUnavailable(
             "kio_restore_content_changed", "Trash bytes differ from the receipt digest"
         )
@@ -1537,7 +1573,7 @@ def restore_trash_receipt(receipt_json: str, *, root: Path) -> dict[str, object]
     _fsync_directory(trash_path.parent)
     _fsync_directory(source.parent)
     restored = snapshot_path(source)
-    if full_fingerprint(restored).hex() != expected_digest:
+    if not _binding_matches_snapshot(restored, digest_value):
         return {
             "schema": KIO_RESTORE_SCHEMA,
             "status": "recovery_required",
@@ -1945,6 +1981,13 @@ def _batch_digest(expected: FileSnapshot, supplied: str | None) -> str:
 
     if supplied is not None:
         digest_prefix = f"{FULL_ALGORITHM}:"
+        if is_metadata_binding(supplied):
+            if metadata_binding(expected) != supplied:
+                raise KioTrashUnavailable(
+                    "kio_source_digest_invalid",
+                    "metadata binding does not match the expected source",
+                )
+            return supplied
         digest = supplied.split(":", 1)[1] if ":" in supplied else ""
         if (
             not supplied.startswith(digest_prefix)
@@ -2207,7 +2250,7 @@ def _default_kio_verifier_batch(
                         continue
                     relocated = replace(expected, path=os.fspath(trash_path))
                     try:
-                        if full_fingerprint(relocated).hex() != work.digest.split(":", 1)[-1]:
+                        if not _binding_matches_snapshot(relocated, work.digest):
                             continue
                     except (FileChangedError, OSError, ValueError):
                         continue
@@ -2990,6 +3033,8 @@ __all__ = [
     "KioTrashVerification",
     "KioVerifier",
     "discover_kio_client",
+    "is_metadata_binding",
+    "metadata_binding",
     "move_many_to_trash",
     "move_to_trash",
     "preflight_kio_trash",

@@ -8,8 +8,11 @@ una autorización para partir el paquete, mover código o crear repositorios.
 El código, schemas, ayuda viva y pruebas pertinentes prevalecen sobre relatos
 históricos. Las instrucciones superiores de la sesión conservan su prioridad.
 
-Atiende la solicitud concreta: una consulta no dispara auditorías, pilotos,
-refactors, instalación ni mantenimiento ajeno. Carga sólo la ficha del dominio
+Atiende la solicitud concreta: una consulta read-only no dispara auditorías,
+pilotos, refactors, instalación ni mantenimiento ajeno. En una implementación,
+corrección o configuración autorizada, el cierre por defecto incluye commit,
+integración/publicación e instalación/verificación según el contrato de release;
+carga sólo la ficha del dominio
 afectado desde [SUBPROJECTS](docs/SUBPROJECTS.md) y sus AGENTS más cercanos;
 para una edición transversal consulta únicamente los contratos compartidos.
 
@@ -39,17 +42,21 @@ ramas/PR ni force push. Conserva trabajo ajeno; integra una rama ya verificada
 por fast-forward cuando sea posible, sin reescribir historia. El cierre de
 publicación exige `HEAD == main == origin/main`, árbol limpio y validación
 proporcional. No confundas una referencia remota local vieja con comprobación
-del remoto. La raíz coordina Git, integración, validación y registros; cada
+del remoto. En una entrega de código, publicar el commit y construir,
+instalar/promover y verificar la release final son gates del cierre por defecto;
+no termines sólo con el checkout probado. La raíz coordina Git, integración,
+publicación, instalación, validación y registros; cada
 archivo tiene un único escritor y sólo se delegan frentes independientes.
 En trabajo complejo, usa una sola tarea principal y mide contratos/riesgos
 verificados por ronda, con oleadas y aceptación independiente según
 [cobertura por ronda](docs/subprojects/development-release.md#cobertura-por-ronda).
 
-Publicar código no incluye por sí solo instalar. Cuando la tarea incluya release,
-la autorización permanente cubre construir, instalar/promover y verificar el
-artefacto final, conservando el rollback inmediato. Corpus, modelos, privacidad,
-KIO real y borrados no solicitados mantienen gates separados. El procedimiento
-está en [desarrollo y release](docs/subprojects/development-release.md).
+La autorización permanente de una mejora NeoCortex cubre construir,
+instalar/promover y verificar el artefacto final como parte del cierre, salvo que
+Víctor pida explícitamente sólo análisis/docs o conserve un gate separado.
+Conserva el rollback inmediato y no confundas venv editable con instalación.
+Corpus, modelos, privacidad, KIO real y borrados no solicitados mantienen gates
+separados. El procedimiento está en [desarrollo y release](docs/subprojects/development-release.md).
 
 Usa el goal existente cuando corresponda y crea otro sólo conforme al contrato
 superior de la herramienta, nunca por una macro local. Actualiza el SSOT y su

@@ -52,6 +52,8 @@ from neocortex.safety.kio_trash import (
     KioTrashVerification,
     trash_receipt_paths,
     verify_trash_receipt_evidence,
+    is_metadata_binding,
+    metadata_binding,
 )
 from neocortex.workflow.actions.file_action_reconciliation_store import (
     RecordedFileActionReconciliation,
@@ -267,7 +269,10 @@ def _validate_effect_paths(root: Path, effect: AuthorizationEffect) -> None:
 def _validate_effect_physical(effect: AuthorizationEffect, root: Path) -> None:
     _validate_effect_paths(root, effect)
     source = _validate_regular_unique(effect.source, role="curation source")
-    if _digest_snapshot(source) != effect.source_digest:
+    if is_metadata_binding(effect.source_digest):
+        if metadata_binding(source) != effect.source_digest:
+            raise CurationApplicationSnapshotChanged("curation source metadata binding changed")
+    elif _digest_snapshot(source) != effect.source_digest:
         raise CurationApplicationSnapshotChanged("curation source digest changed")
     if effect.keeper is not None:
         keeper = _validate_regular_unique(effect.keeper, role="curation keeper")
@@ -939,7 +944,7 @@ class KioTrashBackend:
         root: Path,
         source_digest: str,
     ) -> BackendOutcome:
-        """Apply one exact-dedup snapshot without manufacturing a new plan.
+        """Apply one planned snapshot without manufacturing a new plan.
 
         ``FrameworkActions`` owns the inventory plan and ledger, while this
         adapter owns the physical KIO frontier.  A tiny structural candidate
@@ -973,8 +978,10 @@ class KioTrashBackend:
 
         Each source is physically revalidated before the shared KIO frontier;
         the safety adapter then claims and verifies every member independently.
-        The supplied digest is the content identity already admitted by the
-        action owner.  A malformed or stale digest is rejected before KIO.
+        The supplied digest is the identity binding already admitted by the
+        action owner: ordinary actions use a full-content digest, while the
+        metadata-only redlist uses its explicit metadata binding.  A malformed
+        or stale binding is rejected before KIO.
         """
 
         if not isinstance(items, Sequence):

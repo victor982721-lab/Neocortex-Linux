@@ -335,6 +335,11 @@ def validate_semantic_arguments(args: argparse.Namespace) -> None:
     )
     if args.semantic_source is not None and not text_scope:
         raise SystemExit("--semantic-source requires semantic text/all planning or indexing")
+    if integrated_all and args.semantic_source is not None and "code" in args.semantic_source:
+        raise SystemExit(
+            "--semantic-source code requires an explicit --route code; "
+            "it cannot be selected by --all"
+        )
     image_scope = args.semantic_index in {"image", "all"} or args.semantic_plan in {
         "image",
         "all",

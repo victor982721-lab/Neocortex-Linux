@@ -2396,6 +2396,7 @@ class FrameworkState:
                 "stage": stage,
                 "status": status,
                 "details": selected_details,
+                "idempotency_key": key,
             }
             changed = self._append_lifecycle_event_once(
                 run_id,
@@ -2455,6 +2456,7 @@ class FrameworkState:
                 "manifest_digest": manifest["digest"],
                 "stage": stage,
                 "checkpoint": selected,
+                "idempotency_key": idempotency_key,
             },
         )
 
@@ -2488,6 +2490,13 @@ class FrameworkState:
             if not isinstance(payload.get("details"), dict):
                 raise RuntimeError(f"run {run_id} lifecycle stage details are invalid")
             payload["event_id"] = int(event_id)
+            # Releases before the idempotency field was copied into the
+            # public stage envelope still have a valid append-only event key
+            # in the event identity.  Project a bounded legacy key so a
+            # cancelled historical run remains readable; new writes always
+            # persist the canonical key above.
+            if not isinstance(payload.get("idempotency_key"), str):
+                payload["idempotency_key"] = f"legacy:event:{int(event_id)}"
             result.append(payload)
         return tuple(result)
 
@@ -2555,6 +2564,8 @@ class FrameworkState:
             if not isinstance(payload.get("checkpoint"), dict):
                 raise RuntimeError(f"run {run_id} lifecycle checkpoint details are invalid")
             payload["event_id"] = int(event_id)
+            if not isinstance(payload.get("idempotency_key"), str):
+                payload["idempotency_key"] = f"legacy:event:{int(event_id)}"
             result.append(payload)
         return tuple(result)
 

@@ -21,7 +21,7 @@ def _validated(*arguments: str):
     return args
 
 
-def test_third_party_cleanup_is_trash_by_default_for_all(tmp_path: Path) -> None:
+def test_integrated_all_keeps_code_policy_inert(tmp_path: Path) -> None:
     args = _validated(
         "--root",
         str(tmp_path),
@@ -33,11 +33,11 @@ def test_third_party_cleanup_is_trash_by_default_for_all(tmp_path: Path) -> None
     policy = framework_config_from_args(args).code_third_party_policy
 
     assert isinstance(policy, CodeThirdPartyPolicy)
-    assert policy.action == "trash"
+    assert policy.action == "keep"
     assert policy.kinds == DEFAULT_THIRD_PARTY_KINDS
     assert policy.min_confidence == pytest.approx(0.95)
     assert policy.max_actions == 256
-    assert policy.mutation_requested is True
+    assert policy.mutation_requested is False
 
 
 def test_direct_code_defaults_to_keep_for_internal_callers(tmp_path: Path) -> None:
@@ -55,7 +55,7 @@ def test_direct_code_defaults_to_keep_for_internal_callers(tmp_path: Path) -> No
     assert policy.mutation_requested is False
 
 
-def test_third_party_trash_requires_scope_but_allows_a_preview(tmp_path: Path) -> None:
+def test_third_party_trash_requires_explicit_code_route(tmp_path: Path) -> None:
     root = tmp_path / "corpus"
     root.mkdir()
 
@@ -70,8 +70,8 @@ def test_third_party_trash_requires_scope_but_allows_a_preview(tmp_path: Path) -
             "trash",
         ]
     )
-    validate_arguments(preview)
-    assert framework_config_from_args(preview).code_third_party_policy.action == "trash"
+    with pytest.raises(SystemExit, match="requires --route code"):
+        validate_arguments(preview)
 
     no_code_route = build_parser().parse_args(
         [
@@ -84,16 +84,14 @@ def test_third_party_trash_requires_scope_but_allows_a_preview(tmp_path: Path) -
             "trash",
         ]
     )
-    with pytest.raises(SystemExit, match="requires --all or --route code"):
+    with pytest.raises(SystemExit, match="requires --route code"):
         validate_arguments(no_code_route)
 
     no_owned_root = build_parser().parse_args(
         ["--all", "--apply", "--code-third-party-action", "trash"]
     )
-    # The integrated ``--all`` command binds the policy to its configured
-    # corpus boundary; normal users must not need to repeat ``--root``.
-    validate_arguments(no_owned_root)
-    assert framework_config_from_args(no_owned_root).code_third_party_policy.action == "trash"
+    with pytest.raises(SystemExit, match="requires --route code"):
+        validate_arguments(no_owned_root)
 
     no_project_allowlist = build_parser().parse_args(
         [
@@ -105,10 +103,8 @@ def test_third_party_trash_requires_scope_but_allows_a_preview(tmp_path: Path) -
             "trash",
         ]
     )
-    # Marker discovery and the configured project roots provide the ownership
-    # boundary for an integrated run; an explicit allowlist is optional.
-    validate_arguments(no_project_allowlist)
-    assert framework_config_from_args(no_project_allowlist).code_third_party_policy.action == "trash"
+    with pytest.raises(SystemExit, match="requires --route code"):
+        validate_arguments(no_project_allowlist)
 
     disjoint_project_root = build_parser().parse_args(
         [
@@ -119,15 +115,16 @@ def test_third_party_trash_requires_scope_but_allows_a_preview(tmp_path: Path) -
             str(tmp_path / "outside"),
         ]
     )
-    with pytest.raises(SystemExit, match="must overlap the selected --root"):
-        validate_arguments(disjoint_project_root)
+    validate_arguments(disjoint_project_root)
+    assert framework_config_from_args(disjoint_project_root).code_third_party_policy.action == "keep"
 
 
 def test_third_party_trash_policy_is_explicit_and_bounded(tmp_path: Path) -> None:
     args = _validated(
         "--root",
         str(tmp_path),
-        "--all",
+        "--route",
+        "code",
         "--apply",
         "--code-project-root",
         str(tmp_path / "owned-project"),

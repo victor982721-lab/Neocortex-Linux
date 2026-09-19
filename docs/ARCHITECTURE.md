@@ -343,11 +343,12 @@ vigentes, y mantiene la observación hasta la actualización de FTS.
 
 ### Lifecycle durable de `--all` (implementado; aceptación en curso)
 
-`--all` selecciona exactamente las nueve rutas registradas y las coordina bajo
-un único run Framework: `pdf`, `docx`, `office`, `archive`, `text`, `audio`,
-`video`, `image` y `code`. Code sigue siendo contenido observado: detecta,
-extrae y publica relaciones, pero nunca ejecuta el código del corpus ni lo
-convierte en una herramienta de validación del repositorio.
+`--all` coordina las ocho rutas de contenido bajo un único run Framework:
+`pdf`, `docx`, `office`, `archive`, `text`, `audio`, `video` e `image`. Code no
+forma parte de la ingestión integrada; se conserva como ruta explícita
+(`--route code`) para quien la solicite deliberadamente. Con `--all --apply`, la
+ingestión integrada aplica primero la redlist determinista del Corpus y registra
+cada efecto de Papelera antes de dedupe, hashing, validación o extracción.
 
 Los artefactos 0.13 y post-0.13 anteriores conservan su evidencia histórica en
 receipts separados; no se usan aquí para declarar aceptado o instalado el
@@ -363,8 +364,9 @@ capacidad de replay y presupuesto. Cada transición de stage usa
 interrumpido no se presenta como completado.
 
 El ledger `neocortex.run-budget/v1` es global para toda la corrida, no sólo para
-un worker: cubre inventario, catalogación/deduplicación, las nueve rutas, la
-etapa Semantic y la publicación lógica. Las reservas por stage/ruta/unidad son
+un worker: cubre inventario, redlist, catalogación/deduplicación, las rutas de
+contenido, la etapa Semantic y la publicación lógica. Las reservas por
+stage/ruta/unidad son
 bounded e idempotentes, con items, bytes, deadline absoluto y cancelación
 durable. El gate se consulta antes de admitir trabajo y antes de cada transición
 terminal; el replay consume sólo el remanente del run origen y nunca abre una
@@ -438,10 +440,9 @@ de checkpoints, planes y el componente conectado por sucesores; el planner
 común valida reachability bounded, FK/schema y estados incompletos. Es una
 superficie de diagnóstico y no una compactación general.
 
-Semantic y Code quedan ligados al mismo run, no como una operación posterior
-sin identidad. `--all` coordina las nueve rutas y, en su selección integrada,
-considera Archive, Code y Video junto con los demás owners Semantic cuando sus
-fuentes, heads y dependencias están disponibles. Una selección explícita puede
+Semantic queda ligado al mismo run, no como una operación posterior sin
+identidad. `--all` coordina las rutas de contenido y no activa Code; Code se
+solicita con una ruta explícita. Una selección explícita puede
 acotar fuentes; no se introducen techos globales implícitos y los límites
 expresados por el usuario siguen siendo acumulativos. Si una fuente, modelo o
 herramienta falta, el stage conserva `unavailable` o `blocked` y la corrida

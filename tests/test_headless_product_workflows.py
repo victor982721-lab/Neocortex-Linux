@@ -703,12 +703,12 @@ raise SystemExit(exit_code)
     run = status_payload["runs"][0]
     assert run["status"] == "failed"
     routes = {route["route_name"]: route for route in run["routes"]}
-    assert set(routes) == set(registered), "--all selection must retain every registered route"
+    assert set(routes) == (set(registered) - {"code"}), "--all excludes the opt-in Code route"
     assert routes["audio"]["status"] == "failed"
     # The current public degradation contract names the unavailable optional
     # capability explicitly; older releases surfaced WhisperRuntimeError.
     assert routes["audio"]["error_type"] == "AudioRuntimeUnavailableError"
-    assert routes["text"]["status"] == routes["code"]["status"] == "completed"
+    assert routes["text"]["status"] == "completed"
     audio_error = lab.query(
         "framework.sqlite3", "SELECT error_message FROM route_runs WHERE route_name='audio'"
     )

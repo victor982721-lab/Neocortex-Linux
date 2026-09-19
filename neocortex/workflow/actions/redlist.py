@@ -1,0 +1,303 @@
+"""Deterministic Corpus redlist policy.
+
+The redlist is deliberately metadata-only.  It is evaluated against a
+``FileSnapshot`` before duplicate planning, content-type detection, or route
+execution.  A match is a policy decision, not a code/third-party inference.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+
+REDLIST_POLICY_SCHEMA = "neocortex.corpus-redlist/v1"
+
+# Source of truth requested by Víctor.  Entries beginning with a dot are either
+# exact dot-file names or case-insensitive suffixes.  Keeping the literal list
+# here makes the policy auditable and avoids heuristic classification.
+_REDLIST_TEXT = """
+.0
+.0-0
+.0-x86
+.0_loc
+.0-2f9188b68640dbf72295f9083a21d674a314721ef06f82db281cbcb052ff8ec1
+.0-a82cb2897a8bf9445d68dcc2be05af89ad4b2fda1fddb2952693be7cd5353ad3
+.04
+.0m1
+.0ot
+.0qa
+.0qg
+.14w
+.1
+.1e5
+.1mc
+.2pf
+.2sa
+.2yu
+.2zc
+.32_13402350686004841
+.32_13408249610041376
+.32_13408298767158414
+.32_13410268068806609
+.32_13410701584334782
+.32_13410774908705768
+.32_13410808930593498
+.32_13410808930746352
+.32_13410858722815258
+.3dk
+.3ih
+.3jy
+.3oy
+.3vl
+.42c
+.4_13410639177679524
+.4_13410808930745843
+.4_13410839634851478
+.4_13410847262681627
+.4_13410858722918349
+.4_13410860530526431
+.4_13410860531260085
+.4_13410860531265363
+.4_13410860531274139
+.4_13410860531280041
+.4_13410860531285410
+.4aj
+.4ry
+.4wx
+.4xy
+.4zp
+.5
+.5r5
+.78
+.92c
+.a
+.a4k
+.a5a
+.adobefeatureflagnotification
+.adobestatusnotification
+.agents
+.ajz
+.android
+.apache
+.aq0
+.aqc
+.ar1
+.asp
+.asy
+.b3n
+.bad
+.baf
+.baj
+.bak
+.bak-2
+.bak-20260501-201535
+.bak-20260626-012214
+.bak_2
+.bak_20260626_115656
+.bak_20260626_170337_rustlog
+.bash
+.bash_
+.bash_logout
+.bashrc
+.bazel
+.bazelignore
+.bazelrc
+.bazelversion
+.bb3
+.bdic
+.before
+.bg
+.bh5
+.binarypb
+.bin
+.blf
+.blob
+.bpf
+.bsd
+.build
+.bundle
+.c0b
+.c4
+.cab
+.cache
+.cacheinputsfingerprint
+.cdp
+.cdpresource
+.cjs
+.cmd
+.codex-backup-wslprompt-20260529
+.com_hrd
+.com_hrd_metadata
+.com_identity_provider
+.conf
+.conf activo
+.conf previo
+.config
+.csh
+.ctm
+.cur
+.data
+.db-shm
+.db-wal
+.dead
+.desktop
+.desktop (v1)
+.directory
+.directory__dd41da77de37
+.dist
+.dll
+.dmp
+.drm
+.edb
+.etl
+.etlgz
+.exception
+.fish
+.gitattributes
+.gitignore
+.gitignore__9e3a60f1e6ec
+.gitignore__c7db9145bde8
+.gyi
+.hbc
+.igpi
+.idx
+.installstate
+.ipclog
+.jar
+.jcp
+.jfm
+.jrs
+.json previo
+.jsonlz4
+.jtx
+.keystore
+.lastupdatedate
+.ldb
+.lib
+.list
+.lm
+.lnk
+.lock
+.log1
+.log2
+.loggz
+.map
+.marker
+.miplog
+.mpack
+.msf
+.msi
+.nanorc
+.node
+.onnx
+.otc
+.otc-shm
+.otc-wal
+.pack
+.pak
+.pdbxml
+.personality_migration
+.pid
+.post
+.promisor
+.ps1
+.ps1xml
+.psd1
+.psm1
+.pth
+.pyc
+.reg
+.regtrans-ms
+.rels
+.repair
+.resjson
+.resmoncfg
+.rev
+.service
+.sig
+.sqlite-shm
+.sqlite-wal
+.sqlite3-shm
+.sqlite3-wal
+.sst
+.store
+.targets
+.tmp
+.tsx
+.ttf
+.tz
+.uca
+.updateuri
+.usage
+.uuid
+.vcrd
+.vol
+.vpol
+.vsch
+.vssettings
+.vstdir
+.vstemplate
+.vstman
+.wasm
+.whl
+.wim
+.wmdb
+.woff
+.woff2
+.wxs
+"""
+
+
+REDLIST_ENTRIES = tuple(
+    dict.fromkeys(line.strip() for line in _REDLIST_TEXT.splitlines() if line.strip())
+)
+_REDLIST_CASEFOLDED = frozenset(item.casefold() for item in REDLIST_ENTRIES)
+
+
+def redlist_policy_payload() -> dict[str, object]:
+    """Return the bounded, auditable policy payload."""
+
+    return {
+        "schema": REDLIST_POLICY_SCHEMA,
+        "match": "basename_exact_or_suffix_casefold_v1",
+        "entries": list(REDLIST_ENTRIES),
+    }
+
+
+def redlist_policy_digest() -> str:
+    encoded = json.dumps(
+        redlist_policy_payload(), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def redlist_match(path: str | Path) -> str | None:
+    """Return the exact configured token matching ``path`` or ``None``.
+
+    Matching is deterministic and case-insensitive.  A token matches either
+    the complete basename (for dotfiles and unusual generated names) or one of
+    the suffixes returned by :attr:`Path.suffixes` (for multi-extension names).
+    No file content or code classifier is consulted.
+    """
+
+    name = Path(path).name
+    folded_name = name.casefold()
+    candidates = (folded_name, *(suffix.casefold() for suffix in Path(name).suffixes))
+    for candidate in candidates:
+        if candidate in _REDLIST_CASEFOLDED:
+            # Return the canonical spelling from the supplied policy, not the
+            # filesystem's presentation.
+            for entry in REDLIST_ENTRIES:
+                if entry.casefold() == candidate:
+                    return entry
+    return None
+
+
+__all__ = [
+    "REDLIST_ENTRIES",
+    "REDLIST_POLICY_SCHEMA",
+    "redlist_match",
+    "redlist_policy_digest",
+    "redlist_policy_payload",
+]

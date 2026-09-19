@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from threading import RLock
 
 from rich.console import Console
 from rich.progress import (
     BarColumn,
+    Column,
     MofNCompleteColumn,
     Progress,
     ProgressColumn,
@@ -75,6 +78,41 @@ _ZERO_VISIBLE_METRICS = {
 }
 
 
+def _terminal_dimensions() -> tuple[int, int] | None:
+    """Return the live stderr PTY size, ignoring stale ``COLUMNS``/``LINES``.
+
+    Rich normally gives the environment variables precedence over the terminal
+    ioctl.  A stale ``COLUMNS`` value is common when a command is launched from
+    a wrapper or an embedded terminal, and makes Live compute a wider table
+    than the PTY can actually render.  That is precisely the condition in
+    which a changing description can wrap and leave old rows behind.  Only the
+    interactive default console uses this probe; pipes and caller-supplied
+    consoles retain Rich's existing non-interactive behavior.
+    """
+
+    stream = sys.stderr
+    try:
+        if not stream.isatty():
+            return None
+        size = os.get_terminal_size(stream.fileno())
+    except (AttributeError, OSError, ValueError):
+        return None
+    columns, lines = int(size.columns), int(size.lines)
+    if columns <= 0 or lines <= 0:
+        return None
+    return columns, lines
+
+
+def _default_console() -> Console:
+    """Build the default console without changing pipe/noninteractive output."""
+
+    dimensions = _terminal_dimensions()
+    if dimensions is None:
+        return Console(stderr=True)
+    columns, lines = dimensions
+    return Console(stderr=True, width=columns, height=lines)
+
+
 class _MetricsColumn(ProgressColumn):
     def render(self, task: Task) -> Text:
         metrics = task.fields.get("metrics", ())
@@ -107,20 +145,25 @@ class RichProgress:
         transient: bool = False,
         refresh_per_second: float = 10.0,
     ) -> None:
-        self._console = console or Console(stderr=True)
+        self._console = console if console is not None else _default_console()
         self._progress = Progress(
             SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
+            TextColumn(
+                "[progress.description]{task.description}",
+                table_column=Column(no_wrap=True, overflow="ellipsis"),
+            ),
             BarColumn(),
             MofNCompleteColumn(),
-            TextColumn("{task.fields[unit]}"),
-            _MetricsColumn(),
+            TextColumn(
+                "{task.fields[unit]}",
+                table_column=Column(no_wrap=True, overflow="ellipsis"),
+            ),
+            _MetricsColumn(table_column=Column(no_wrap=True, overflow="ellipsis")),
             TimeElapsedColumn(),
             TimeRemainingColumn(),
             console=self._console,
             transient=transient,
             refresh_per_second=refresh_per_second,
-            expand=True,
         )
         self._tasks: dict[tuple[str, str], TaskID] = {}
         self._lock = RLock()

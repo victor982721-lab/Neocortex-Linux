@@ -10,10 +10,19 @@ from __future__ import annotations
 
 import multiprocessing
 import os
+import signal
 import threading
+import time
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator
-from concurrent.futures import Executor, Future, ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import (
+    CancelledError,
+    Executor,
+    Future,
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+)
+from concurrent.futures.process import BrokenProcessPool
 from concurrent.futures import TimeoutError as FutureTimeout
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from contextvars import ContextVar, copy_context
@@ -31,6 +40,7 @@ _WORKER_CANCELLATION: ContextVar[CancellationToken | None] = ContextVar(
     "neocortex_elastic_worker_cancellation", default=None
 )
 _PROCESS_CANCELLATION_EVENT: Any = None
+_PROCESS_SHUTDOWN_GRACE_SECONDS = 1.0
 
 
 class _ProcessCancellationToken(CancellationToken):
@@ -70,6 +80,11 @@ def current_worker_cancellation() -> CancellationToken | None:
 def _initialize_process(event: Any, native_threads: int) -> None:
     global _PROCESS_CANCELLATION_EVENT
     _PROCESS_CANCELLATION_EVENT = event
+    # Ctrl-C belongs to the foreground owner.  Spawned workers observe the
+    # shared cancellation event instead; inheriting SIGINT makes every worker
+    # print a traceback during a normal user cancellation and can leak the
+    # process-pool semaphore warning shown by the CLI.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     from .worker_priority import configure_worker_priority
 
     configure_worker_priority()
@@ -192,6 +207,46 @@ class _ProcessCohort:
     finished: threading.Event = field(default_factory=threading.Event)
 
 
+def _process_alive(process: Any) -> bool:
+    """Return process liveness without turning a reaped handle into failure."""
+
+    try:
+        return bool(process.is_alive())
+    except (OSError, ValueError):
+        return False
+
+
+def _wait_for_processes(processes: Iterable[Any], timeout: float) -> bool:
+    """Wait boundedly for owned worker processes to honor cancellation."""
+
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        if not any(_process_alive(process) for process in processes):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.01, remaining))
+
+
+def _signal_processes(processes: Iterable[Any], *, hard: bool) -> None:
+    """Escalate only the process handles owned by one resident cohort."""
+
+    method_name = "kill" if hard else "terminate"
+    for process in processes:
+        if not _process_alive(process):
+            continue
+        method = getattr(process, method_name, None)
+        if not callable(method):
+            continue
+        try:
+            method()
+        except (OSError, ProcessLookupError, ValueError):
+            # The worker may have exited between the liveness probe and the
+            # signal.  Its owner-side join below remains authoritative.
+            continue
+
+
 class _ProcessClaim:
     def __init__(self, pool: _ResidentProcessPool, cohort: _ProcessCohort) -> None:
         self.pool = pool
@@ -269,9 +324,32 @@ class _ResidentProcessPool:
                         if self._stop.is_cancelled:
                             break
                 finally:
-                    if self._stop.is_cancelled:
+                    process_handles = tuple(
+                        getattr(executor, "_processes", {}).values()
+                    )
+                    if self._stop.is_cancelled or cohort.stop.is_set():
                         cancelled.set()
+                        # Stop admitting new calls first, then give an active
+                        # worker a bounded window to observe the shared event
+                        # and release its own resources.  Killing immediately
+                        # loses cooperative cancellation evidence and can
+                        # leave multiprocessing semaphores registered.
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        if not _wait_for_processes(
+                            process_handles, _PROCESS_SHUTDOWN_GRACE_SECONDS
+                        ):
+                            _signal_processes(process_handles, hard=False)
+                            if not _wait_for_processes(
+                                process_handles, _PROCESS_SHUTDOWN_GRACE_SECONDS
+                            ):
+                                _signal_processes(process_handles, hard=True)
                     executor.shutdown(wait=True, cancel_futures=True)
+                    # ``shutdown`` may leave a just-killed spawn child as a
+                    # zombie until its Process handle is joined.  Keep this
+                    # cleanup bounded and local to the owned cohort; it does
+                    # not inspect or signal unrelated processes.
+                    for process in process_handles:
+                        process.join(timeout=max(1.0, self._poll * 20))
         except BaseException as exc:
             cohort.error = exc
         finally:
@@ -690,10 +768,14 @@ class ElasticMap(AbstractContextManager["ElasticMap[_Input, _Output]"],
                             raise
                         if self._stop.is_cancelled:
                             future.cancel()
-                            # Keep its lease until the owned process
-                            # finishes; a cancelled wait is not a kill.
                             try:
                                 future.result()
+                            except (CancelledError, BrokenProcessPool):
+                                # The owner cancellation path may have
+                                # terminated the process cohort.  Preserve the
+                                # foreground cancellation as the public error.
+                                self._stop.checkpoint()
+                                raise
                             finally:
                                 self._stop.checkpoint()
                 del future

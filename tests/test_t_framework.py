@@ -701,7 +701,7 @@ class OrchestratorTests(unittest.TestCase):
             config = FrameworkConfig(
                 root=corpus,
                 state_directory=state_directory,
-                route="all",
+                route="pdf,docx,office,archive,text,audio,video,image,code",
                 image_workers=2,
                 image_document_ocr_mode="never",
                 image_min_free_memory_bytes=0,

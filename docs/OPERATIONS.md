@@ -324,23 +324,31 @@ ocultar las rutas independientes.
 ## Ampliación controlada
 
 Después de validar un foco, amplía sólo sobre la raíz temporal. `--all` es una
-operación amplia, no el primer smoke: selecciona todas las rutas registradas,
-incluida Code como contenido, pero en Code conserva el alcance seguro `projects`.
+operación amplia, no el primer smoke: selecciona las rutas de contenido
+registradas y **excluye Code**. Code se solicita únicamente con `--route code`.
 Registra las copias de proyectos que quieras procesar con
 `--code-project-root PATH`; sólo usa `--code-scope broad` cuando quieras asumir
 explícitamente una exploración amplia dentro de la raíz elegida.
-El flujo normal `--all` clasifica el corpus antes de extracción profunda y
-prepara un plan de regenerables. Sin `--apply` sólo prepara el plan; con
-`--apply` cruza la frontera física únicamente cuando revalida la prueba de
-reconstrucción local. Los artefactos ambiguos permanecen intactos y los efectos
-usan la misma frontera KIO receipt-bound que dedupe.
+El flujo `--all --apply` aplica primero la redlist explícita del Corpus, sólo por
+metadata/ruta y de forma case-insensitive, antes de dedupe, hashing, validación
+de tipos o extracción. Las coincidencias se envían a Papelera con
+la frontera KIO receipt-bound y una entrada de auditoría por token; fuera del
+root efectivo la política se abstiene fail-closed. Sin `--apply` no se cruza la
+frontera física.
+
+La fuente de verdad de esa política vive en
+`neocortex.workflow.actions.redlist`: cada entrada se compara contra el
+basename exacto o un sufijo de `Path.suffixes`, sin leer payload ni invocar
+clasificadores de Code. El pre-filtro conserva `policy_digest`, token de
+redlist, identidad y receipt en `file_actions`; un fallo parcial o
+`recovery_required` aborta antes de dedupe y no reintenta la acción.
 
 Para reproducir o regresionar el lifecycle 0.14, ejecuta la ampliación sólo
-sobre el piloto temporal y prueba las nueve rutas (`pdf`, `docx`, `office`,
-`archive`, `text`, `audio`, `video`, `image`, `code`) bajo el mismo presupuesto.
-Code no ejecuta el contenido observado. El stage Semantic integrado se ejecuta
-con `--all`; sus fuentes pueden acotarse con `--semantic-source` y la preparación
-de modelos continúa siendo explícita. `--all` no añade techos globales implícitos;
+sobre el piloto temporal y prueba las rutas de contenido (`pdf`, `docx`, `office`,
+`archive`, `text`, `audio`, `video`, `image`) bajo el mismo presupuesto. El
+stage Semantic integrado se ejecuta con `--all`; sus fuentes pueden acotarse con
+`--semantic-source` y la preparación de modelos continúa siendo explícita.
+Code requiere `--route code` separado. `--all` no añade techos globales implícitos;
 sus límites globales y los límites por formato son acumulativos cuando se
 expresan. La validación C0–C7 y la instalación deben repetirse desde el SHA final
 de esta oleada antes de declararse cerradas.
