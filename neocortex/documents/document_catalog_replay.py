@@ -263,12 +263,34 @@ def corrections_digest(connection: sqlite3.Connection) -> str:
 
 
 def current_projection_matches(connection: sqlite3.Connection, generation_id: int, source_kind: str) -> bool:
+    """Compare every publication field once through the unique document keys.
+
+    The reverse lookup also rejects missing current rows or foreign source
+    kinds in the generation. Unary plus removes column affinity, preserving
+    EXCEPT's storage-value comparison; IS retains its NULL equality. No accepted
+    result or database identity is cached between observations.
+    """
     from .document_catalog_schema import _GENERATION_DIGEST_COLUMNS
 
-    columns = ",".join(_GENERATION_DIGEST_COLUMNS)
-    current = f"SELECT {columns} FROM documents WHERE source_kind=? AND active=1"
-    published = f"SELECT {columns} FROM catalog_generation_documents WHERE generation_id=?"
+    current = ",".join(f"+current.{column}" for column in _GENERATION_DIGEST_COLUMNS)
+    published = ",".join(f"+published.{column}" for column in _GENERATION_DIGEST_COLUMNS)
     return (
-        connection.execute(f"SELECT 1 FROM ({current} EXCEPT {published}) LIMIT 1", (source_kind, generation_id)).fetchone() is None
-        and connection.execute(f"SELECT 1 FROM ({published} EXCEPT {current}) LIMIT 1", (generation_id, source_kind)).fetchone() is None
+        connection.execute(
+            f"""SELECT 1 FROM documents AS current
+            LEFT JOIN catalog_generation_documents AS published
+            ON published.generation_id=? AND published.source_kind=current.source_kind
+            AND published.file_key=current.file_key
+            WHERE current.source_kind=? AND current.active=1
+            AND (published.generation_id IS NULL OR ({current}) IS NOT ({published}))
+            LIMIT 1""", (generation_id, source_kind),
+        ).fetchone() is None
+        and connection.execute(
+            """SELECT 1 FROM catalog_generation_documents AS published
+            WHERE published.generation_id=? AND NOT EXISTS(
+                SELECT 1 FROM documents AS current
+                WHERE current.source_kind=published.source_kind
+                AND current.file_key=published.file_key
+                AND current.source_kind=? AND current.active=1)
+            LIMIT 1""", (generation_id, source_kind),
+        ).fetchone() is None
     )

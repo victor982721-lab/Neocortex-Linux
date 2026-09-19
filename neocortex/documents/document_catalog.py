@@ -2118,7 +2118,12 @@ def _replace_catalog_projection(
     *,
     now: int,
 ) -> None:
-    """Replace the compatible current projection inside the publish transaction."""
+    """Project the generation without retiring rows that keep their live path.
+
+    Only absent or relocated rows release their unique active path before the
+    upsert. This also releases both paths in a swap, while stable rows retain
+    their index entries until their observation metadata is refreshed below.
+    """
 
     connection.execute(
         f"""UPDATE documents SET active=0,updated_ns=?
@@ -2129,9 +2134,14 @@ def _replace_catalog_projection(
         (now, build.source_kind, build.generation_id),
     )
     connection.execute(
-        """UPDATE documents SET active=0,updated_ns=?
-        WHERE source_kind=? AND active=1""",
-        (now, build.source_kind),
+        f"""UPDATE documents SET active=0,updated_ns=?
+        WHERE source_kind=? AND active=1 AND NOT EXISTS(
+            SELECT 1 FROM catalog_generation_documents AS staged
+            WHERE staged.generation_id=? AND staged.active=1
+            AND staged.source_kind=documents.source_kind
+            AND staged.file_key=documents.file_key
+            AND staged.path=documents.path COLLATE {_PATH_COLLATION})""",
+        (now, build.source_kind, build.generation_id),
     )
     columns = ",".join(_CATALOG_DOCUMENT_COLUMNS)
     updates = ",".join(

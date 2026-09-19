@@ -6,14 +6,17 @@ not share a calibrated scale; callers can combine ranks with RRF instead.
 """
 
 from __future__ import annotations
-from neocortex.runtime.control.read_operation import read_rows, read_checkpoint, read_query_limit
+from neocortex.runtime.control.read_operation import (
+    current_read_operation, read_rows, read_checkpoint, read_query_limit,
+)
 import math
 import re
 import sqlite3
 import unicodedata
 import stat
 import time
-from collections.abc import Callable
+from collections import OrderedDict, deque
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from itertools import combinations
@@ -320,8 +323,11 @@ QUERY_SUPPORT_POLICY = "retrieval-query-support-v1"
 
 
 def _fold_retrieval_term(term: str) -> str:
+    folded = term.casefold()
+    if folded.isascii():
+        return folded
     return "".join(
-        character for character in unicodedata.normalize("NFKD", term.casefold())
+        character for character in unicodedata.normalize("NFKD", folded)
         if not unicodedata.combining(character)
     )
 
@@ -339,54 +345,223 @@ def _query_support_terms(query: str) -> tuple[str, ...]:
     return tuple(terms)[:MAX_QUERY_TERMS]
 
 
-def _query_term_matches(
-    text: str, terms: tuple[str, ...],
-) -> tuple[tuple[int, int, int, str], ...]:
-    wanted = set(terms)
-    return tuple(
-        (index, match.start(), match.end(), folded)
-        for index, match in enumerate(_NATURAL_TERM.finditer(text))
-        if (folded := _fold_retrieval_term(match.group())) in wanted
+_LITERAL_SCAN_BLOCK_CHARS = 4_096
+
+
+def _literal_checkpoint(cancellation_check: CancellationCheck | None) -> None:
+    if cancellation_check is not None:
+        cancellation_check()
+    read_checkpoint()
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedLiteralQuery:
+    """Bounded query work reusable within one retrieval or context operation."""
+
+    original: str
+    terms: tuple[str, ...]
+    wanted: frozenset[str]
+    phrase_terms: tuple[str, ...]
+    phrase_failure: tuple[int, ...]
+    max_folded_term_chars: int
+
+
+def prepare_literal_query(
+    query: str, *, cancellation_check: CancellationCheck | None = None,
+) -> PreparedLiteralQuery:
+    _literal_checkpoint(cancellation_check)
+    terms = _query_support_terms(query)
+    phrase = tuple(
+        _fold_retrieval_term(term) for term in _NATURAL_TERM.findall(query[:MAX_QUERY_CHARS])
+    )[:MAX_QUERY_TERMS]
+    failure = [0] * len(phrase)
+    prefix = 0
+    for index in range(1, len(phrase)):
+        while prefix and phrase[index] != phrase[prefix]:
+            prefix = failure[prefix - 1]
+        if phrase[index] == phrase[prefix]:
+            prefix += 1
+        failure[index] = prefix
+    _literal_checkpoint(cancellation_check)
+    return PreparedLiteralQuery(
+        query, terms, frozenset(terms), phrase, tuple(failure),
+        max((len(term) for term in (*terms, *phrase)), default=0),
     )
 
 
-def _minimum_term_span(matches: tuple[tuple[int, int, int, str], ...]) -> int | None:
-    if not matches:
-        return None
-    target_count = len({match[3] for match in matches})
+def _literal_tokens(
+    text: str, max_folded_chars: int,
+    *, cancellation_check: CancellationCheck | None = None,
+) -> Iterator[tuple[int, int, int, str | None]]:
+    """Keep original word boundaries without retaining arbitrarily long tokens.
+
+    Regex work and normalization both receive bounded character blocks. NFKD
+    can reorder combining characters across a boundary, but removing those
+    characters makes the folded fragments concatenate to the same token.
+    A token longer than any folded query term cannot match; only its original
+    extent and ordinal need to survive until its final fragment.
+    """
+    index = 0
+    start = end = -1
+    pieces: list[str] = []
+    folded_chars = 0
+    for block_start in range(0, len(text), _LITERAL_SCAN_BLOCK_CHARS):
+        _literal_checkpoint(cancellation_check)
+        block_end = min(len(text), block_start + _LITERAL_SCAN_BLOCK_CHARS)
+        for match in _NATURAL_TERM.finditer(text, block_start, block_end):
+            if start >= 0 and match.start() != end:
+                yield index, start, end, "".join(pieces) if folded_chars <= max_folded_chars else None
+                index += 1
+                start = -1
+                pieces.clear()
+                folded_chars = 0
+            if start < 0:
+                start = match.start()
+            end = match.end()
+            if folded_chars <= max_folded_chars:
+                folded = _fold_retrieval_term(match.group())
+                folded_chars += len(folded)
+                if folded_chars <= max_folded_chars:
+                    pieces.append(folded)
+                else:
+                    pieces.clear()
+            if end < block_end:
+                yield index, start, end, "".join(pieces) if folded_chars <= max_folded_chars else None
+                index += 1
+                start = -1
+                pieces.clear()
+                folded_chars = 0
+        if start >= 0 and end < block_end:
+            yield index, start, end, "".join(pieces) if folded_chars <= max_folded_chars else None
+            index += 1
+            start = -1
+            pieces.clear()
+            folded_chars = 0
+    _literal_checkpoint(cancellation_check)
+    if start >= 0:
+        yield index, start, end, "".join(pieces) if folded_chars <= max_folded_chars else None
+
+
+@dataclass(frozen=True, slots=True)
+class LiteralTextAnalysis:
+    """Ephemeral evidence for exactly one immutable text and prepared query."""
+
+    text: str
+    query: PreparedLiteralQuery
+    snippet_chars: int | None
+    includes_support: bool
+    observed: frozenset[str]
+    phrase_match: bool
+    minimum_span_terms: int | None
+    snippet_start: int
+
+
+def analyze_literal_text(
+    text: str, prepared: PreparedLiteralQuery, *,
+    snippet_chars: int | None = None, include_support: bool = True,
+    cancellation_check: CancellationCheck | None = None,
+) -> LiteralTextAnalysis:
+    """Compute coverage and an optional snippet in one bounded traversal."""
+    if snippet_chars is not None and snippet_chars < 0:
+        raise ValueError("snippet max_chars cannot be negative")
+    _literal_checkpoint(cancellation_check)
+    phrase = prepared.phrase_terms if include_support else ()
+    prefix = 0
+    phrase_match = False
+    latest: OrderedDict[str, int] = OrderedDict()
+    minimum_span: int | None = None
+    observed: set[str] = set()
+    window_chars = snippet_chars or 0
+    select_window = bool(window_chars and len(text) > window_chars)
+    window: deque[tuple[int, int, str]] = deque()
     counts: dict[str, int] = {}
-    left = 0
-    best: int | None = None
-    for right, match in enumerate(matches):
-        counts[match[3]] = counts.get(match[3], 0) + 1
-        while len(counts) == target_count:
-            span = matches[right][0] - matches[left][0] + 1
-            best = span if best is None else min(best, span)
-            term = matches[left][3]
-            counts[term] -= 1
-            if counts[term] == 0:
-                del counts[term]
-            left += 1
-    return best
+    best: tuple[int, int, int] | None = None
+    best_bounds: tuple[int, int] | None = None
+    if prepared.wanted or phrase:
+        for index, start, end, folded in _literal_tokens(
+            text, prepared.max_folded_term_chars, cancellation_check=cancellation_check,
+        ):
+            if phrase and not phrase_match:
+                while prefix and folded != phrase[prefix]:
+                    prefix = prepared.phrase_failure[prefix - 1]
+                if folded == phrase[prefix]:
+                    prefix += 1
+                phrase_match = prefix == len(phrase)
+            if folded is None or folded not in prepared.wanted:
+                continue
+            observed.add(folded)
+            if include_support:
+                # For the terms observed so far, their latest positions give
+                # the tightest complete span ending here. A newly seen term
+                # invalidates earlier spans, whose coverage was incomplete.
+                new_term = folded not in latest
+                latest[folded] = index
+                latest.move_to_end(folded)
+                span = index - next(iter(latest.values())) + 1
+                minimum_span = span if new_term or minimum_span is None else min(minimum_span, span)
+            if select_window:
+                if best_bounds is None:
+                    best_bounds = (start, end)
+                window.append((start, end, folded))
+                counts[folded] = counts.get(folded, 0) + 1
+                while window and (
+                    end - window[0][0] > window_chars
+                    or counts[window[0][2]] > 1
+                ):
+                    term = window.popleft()[2]
+                    counts[term] -= 1
+                    if not counts[term]:
+                        del counts[term]
+                if window:
+                    key = (-len(counts), end - window[0][0], window[0][0])
+                    if best is None or key < best:
+                        best, best_bounds = key, (window[0][0], end)
+    snippet_start = 0
+    if best_bounds is not None and snippet_chars is not None:
+        span = best_bounds[1] - best_bounds[0]
+        snippet_start = max(0, best_bounds[0] - max(0, snippet_chars - span) // 2)
+        snippet_start = min(snippet_start, max(0, len(text) - snippet_chars))
+    _literal_checkpoint(cancellation_check)
+    return LiteralTextAnalysis(
+        text, prepared, snippet_chars, include_support, frozenset(observed),
+        phrase_match, minimum_span, snippet_start,
+    )
 
 
-def query_term_support(query: str, text: str, *, basis: str) -> dict[str, object]:
+def _prepared_literal_query(
+    query: str, prepared: PreparedLiteralQuery | None,
+    cancellation_check: CancellationCheck | None,
+) -> PreparedLiteralQuery:
+    if prepared is None:
+        return prepare_literal_query(query, cancellation_check=cancellation_check)
+    if prepared.original != query:
+        raise ValueError("prepared literal query does not match the query")
+    return prepared
+
+
+def query_term_support(
+    query: str, text: str, *, basis: str,
+    prepared: PreparedLiteralQuery | None = None,
+    analysis: LiteralTextAnalysis | None = None,
+    cancellation_check: CancellationCheck | None = None,
+) -> dict[str, object]:
     """Explain literal coverage, never infer entailment or relevance probability."""
     from .semantic_query_evidence import query_role_counterevidence, requested_evidence_checks
 
-    terms = _query_support_terms(query)
-    matches = _query_term_matches(text, terms)
-    observed = {match[3] for match in matches}
+    _literal_checkpoint(cancellation_check)
+    selected = _prepared_literal_query(query, prepared, cancellation_check)
+    if analysis is None:
+        analysis = analyze_literal_text(text, selected, cancellation_check=cancellation_check)
+    elif analysis.text is not text or analysis.query != selected or not analysis.includes_support:
+        raise ValueError("literal support analysis does not match its text and query")
+    terms = selected.terms
+    observed = analysis.observed
     missing = [term for term in terms if term not in observed]
-    text_terms = [_fold_retrieval_term(match.group()) for match in _NATURAL_TERM.finditer(text)]
-    phrase_terms = tuple(
-        _fold_retrieval_term(term) for term in _NATURAL_TERM.findall(query[:MAX_QUERY_CHARS])
-    )[:MAX_QUERY_TERMS]
-    phrase_match = bool(phrase_terms) and any(
-        tuple(text_terms[index:index + len(phrase_terms)]) == phrase_terms
-        for index in range(max(0, len(text_terms) - len(phrase_terms) + 1))
-    )
     negations = [term for term in terms if term in _PROTECTED_NEGATIONS]
+    counterevidence = query_role_counterevidence(query, text)
+    _literal_checkpoint(cancellation_check)
+    witness_checks = requested_evidence_checks(query, text)
+    _literal_checkpoint(cancellation_check)
     return {
         "policy_signature": QUERY_SUPPORT_POLICY,
         "basis": basis,
@@ -400,47 +575,34 @@ def query_term_support(query: str, text: str, *, basis: str) -> dict[str, object
         "negation_terms": negations,
         "missing_negation_terms": [term for term in negations if term not in observed],
         "term_coverage": len(observed) / len(terms) if terms else 0.0,
-        "phrase_match": phrase_match,
-        "minimum_span_terms": _minimum_term_span(matches),
-        "role_counterevidence": query_role_counterevidence(query, text),
-        "requested_witness_checks": requested_evidence_checks(query, text),
+        "phrase_match": analysis.phrase_match,
+        "minimum_span_terms": analysis.minimum_span_terms,
+        "role_counterevidence": counterevidence,
+        "requested_witness_checks": witness_checks,
     }
 
 
 def query_centered_snippet(
     text: str, query: str | None, *, max_chars: int,
+    prepared: PreparedLiteralQuery | None = None,
+    analysis: LiteralTextAnalysis | None = None,
+    cancellation_check: CancellationCheck | None = None,
 ) -> tuple[str | None, dict[str, object]]:
     """Select a verbatim window of the scored chunk, with explicit local offsets."""
     if max_chars < 0:
         raise ValueError("snippet max_chars cannot be negative")
-    start = 0
-    matches = _query_term_matches(text, _query_support_terms(query or ""))
-    if max_chars and len(text) > max_chars and matches:
-        # Prefer the window containing the most distinct query terms; then the
-        # shortest covering span and earliest occurrence.  Only the displayed
-        # witness changes, never the vector score or document ranking.
-        best: tuple[int, int, int] | None = None
-        best_bounds = (matches[0][1], matches[0][2])
-        counts: dict[str, int] = {}
-        left = 0
-        for right, match in enumerate(matches):
-            counts[match[3]] = counts.get(match[3], 0) + 1
-            while left <= right and (
-                match[2] - matches[left][1] > max_chars or counts[matches[left][3]] > 1
-            ):
-                term = matches[left][3]
-                counts[term] -= 1
-                if counts[term] == 0:
-                    del counts[term]
-                left += 1
-            if left <= right:
-                key = (-len(counts), match[2] - matches[left][1], matches[left][1])
-                if best is None or key < best:
-                    best, best_bounds = key, (matches[left][1], match[2])
-        span = best_bounds[1] - best_bounds[0]
-        start = max(0, best_bounds[0] - max(0, max_chars - span) // 2)
-        start = min(start, max(0, len(text) - max_chars))
+    _literal_checkpoint(cancellation_check)
+    selected = _prepared_literal_query(query or "", prepared, cancellation_check)
+    if analysis is None:
+        analysis = analyze_literal_text(
+            text, selected, snippet_chars=max_chars, include_support=False,
+            cancellation_check=cancellation_check,
+        )
+    elif analysis.text is not text or analysis.query != selected or analysis.snippet_chars != max_chars:
+        raise ValueError("literal snippet analysis does not match its text, query and window")
+    start = analysis.snippet_start
     end = min(len(text), start + max_chars)
+    _literal_checkpoint(cancellation_check)
     return (text[start:end] if max_chars else None), {
         "policy_signature": "query-centered-scored-chunk-v1",
         "basis": "normalized_scored_chunk",
@@ -448,7 +610,7 @@ def query_centered_snippet(
         "end_in_chunk": end,
         "chunk_chars": len(text),
         "truncated": start > 0 or end < len(text),
-        "query_terms_found": bool(matches),
+        "query_terms_found": bool(analysis.observed),
     }
 
 
@@ -1099,6 +1261,8 @@ def _source_backed_excerpt(
     spec: _SourceSpec,
     row: sqlite3.Row,
     query: str,
+    *, prepared: PreparedLiteralQuery | None = None,
+    cancellation_check: CancellationCheck | None = None,
 ) -> tuple[str | None, int | None, int | None, dict[str, object]]:
     """Return an exact, source-relative excerpt for owner-hydratable hits.
 
@@ -1116,6 +1280,7 @@ def _source_backed_excerpt(
         return None, None, None, {}
     snippet, extent = query_centered_snippet(
         str(source_text), query, max_chars=MAX_SNIPPET_CHARS,
+        prepared=prepared, cancellation_check=cancellation_check,
     )
     if snippet is None:
         return None, None, None, {}
@@ -1141,6 +1306,9 @@ def _resolved_hit(
     *,
     retrieval_backend: str = "sqlite_fts5",
     cjk_scanned_rows: int | None = None,
+    prepared_support: PreparedLiteralQuery | None = None,
+    prepared_excerpt: PreparedLiteralQuery | None = None,
+    cancellation_check: CancellationCheck | None = None,
 ) -> ResolvedSearchHit:
     file_key = str(row["file_key"])
     item_source_kind = (
@@ -1187,11 +1355,15 @@ def _resolved_hit(
     end_char: int | None = None
     source_excerpt, source_start, source_end, source_extent = _source_backed_excerpt(
         spec, row, applied_query,
+        prepared=prepared_excerpt, cancellation_check=cancellation_check,
     )
     if source_excerpt is not None:
         snippet = source_excerpt
         start_char, end_char = source_start, source_end
-    support = query_term_support(query_plan.original_query, snippet or "", basis="fts_snippet")
+    support = query_term_support(
+        query_plan.original_query, snippet or "", basis="fts_snippet",
+        prepared=prepared_support, cancellation_check=cancellation_check,
+    )
     support.update(
         {
             "query_strategy": query_strategy,
@@ -1442,6 +1614,12 @@ def _search_compiled_source(
                     query_strategy = "cjk_substring_all_terms"
                     retrieval_backend = "sqlite_bounded_cjk_substring"
     hits: list[ResolvedSearchHit] = []
+    prepared_support = prepare_literal_query(
+        query_plan.original_query, cancellation_check=cancellation.checkpoint,
+    )
+    prepared_excerpt = prepare_literal_query(
+        applied_query, cancellation_check=cancellation.checkpoint,
+    )
     for rank_position, row in enumerate(rows, start=1):
         if rank_position % _CANCELLATION_BATCH_ROWS == 0:
             cancellation.checkpoint()
@@ -1456,6 +1634,9 @@ def _search_compiled_source(
                 rank_position,
                 retrieval_backend=retrieval_backend,
                 cjk_scanned_rows=cjk_scanned_rows,
+                prepared_support=prepared_support,
+                prepared_excerpt=prepared_excerpt,
+                cancellation_check=cancellation.checkpoint,
             )
         )
     cancellation.checkpoint()
@@ -1485,6 +1666,22 @@ def _duration_ns(clock_ns: Callable[[], int], started_ns: int) -> int:
     return finished_ns - started_ns
 
 
+def _lexical_cancellation_bridge(
+    cancellation_check: CancellationCheck | None,
+) -> SQLiteCancellationBridge:
+    if current_read_operation() is None:
+        return SQLiteCancellationBridge(cancellation_check)
+
+    def checkpoint() -> None:
+        # Preserve an ambient typed budget failure in the same bridge that
+        # distinguishes cancellation from an unavailable owner in multi-search.
+        read_checkpoint()
+        if cancellation_check is not None:
+            cancellation_check()
+
+    return SQLiteCancellationBridge(checkpoint)
+
+
 def search_lexical_source(
     source_kind: str,
     state_path: Path | None,
@@ -1498,7 +1695,7 @@ def search_lexical_source(
 
     _validate_limit(limit)
     query_plan = _compile_natural_fts_query_plan(query)
-    cancellation = SQLiteCancellationBridge(cancellation_check)
+    cancellation = _lexical_cancellation_bridge(cancellation_check)
     clock = clock_ns or time.perf_counter_ns
     started_ns = clock()
     ranking = _search_compiled_source(
@@ -1523,7 +1720,7 @@ def search_lexical_sources(
 
     _validate_limit(limit)
     query_plan = _compile_natural_fts_query_plan(query)
-    cancellation = SQLiteCancellationBridge(cancellation_check)
+    cancellation = _lexical_cancellation_bridge(cancellation_check)
     clock = clock_ns or time.perf_counter_ns
     rankings: list[LexicalRanking] = []
     for source_kind, state_path in paths.ordered():

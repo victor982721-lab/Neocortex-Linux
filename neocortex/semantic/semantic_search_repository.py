@@ -16,7 +16,13 @@ if TYPE_CHECKING:
     from .semantic_exact_index import ExactIndexHandle
 
 from .semantic_item_repository import _decode_chunk_text
-from .semantic_lexical import query_centered_snippet, query_term_support
+from .semantic_lexical import (
+    PreparedLiteralQuery,
+    analyze_literal_text,
+    prepare_literal_query,
+    query_centered_snippet,
+    query_term_support,
+)
 from .semantic_models import (
     ActiveEmbeddingPage,
     ActiveEmbeddingRecord,
@@ -1128,6 +1134,7 @@ def _resolved_text_search_hit(
     *,
     snippet_chars: int,
     query: str | None = None,
+    prepared_query: PreparedLiteralQuery | None = None,
 ) -> ResolvedSearchHit:
     row = source.row
     section_provenance = _json_object(
@@ -1159,14 +1166,24 @@ def _resolved_text_search_hit(
     read_checkpoint()
     text = _decode_chunk_text(bytes(row["text_zlib"]), fingerprint)
     read_checkpoint()
-    snippet, excerpt = query_centered_snippet(text, query, max_chars=snippet_chars)
+    prepared = prepared_query or prepare_literal_query(query or "")
+    analysis = analyze_literal_text(
+        text, prepared, snippet_chars=snippet_chars, include_support=query is not None,
+    )
+    snippet, excerpt = query_centered_snippet(
+        text, query, max_chars=snippet_chars, prepared=prepared, analysis=analysis,
+    )
     read_checkpoint()
     if query is not None:
         section_provenance = {**section_provenance, "retrieval_excerpt": excerpt}
-        section_provenance["query_support"] = query_term_support(query, text, basis="scored_chunk")
+        section_provenance["query_support"] = query_term_support(
+            query, text, basis="scored_chunk", prepared=prepared, analysis=analysis,
+        )
         read_checkpoint()
         section_provenance["snippet_query_support"] = query_term_support(
             query, snippet or "", basis="scored_chunk_window",
+            prepared=prepared,
+            analysis=analysis if snippet is text else None,
         )
         read_checkpoint()
     return ResolvedSearchHit(
@@ -1215,6 +1232,7 @@ def _resolved_search_hit(
     *,
     snippet_chars: int,
     query: str | None = None,
+    prepared_query: PreparedLiteralQuery | None = None,
 ) -> ResolvedSearchHit:
     # Row admission precedes detached hydration. Keep cancellation/deadline
     # live across that work too, including construction of the final result.
@@ -1226,6 +1244,7 @@ def _resolved_search_hit(
             resolved_source,
             snippet_chars=snippet_chars,
             query=query,
+            prepared_query=prepared_query,
         )
     else:
         resolved = _resolved_image_search_hit(hit, resolved_source)
@@ -1251,12 +1270,14 @@ def resolve_search_hits(
         return ()
     member_ids = tuple(dict.fromkeys(hit.ref_id for hit in hits))
     snapshots = _load_search_hit_snapshots(path, member_ids)
+    prepared_query = prepare_literal_query(query or "")
     return tuple(
         _resolved_search_hit(
             hit,
             snapshots.get(hit.ref_id),
             snippet_chars=snippet_chars,
             query=query,
+            prepared_query=prepared_query,
         )
         for hit in hits
     )

@@ -33,6 +33,7 @@ _MAX_JSON_BYTES = 256 * 1024
 _MAX_CURSOR_BYTES = 16 * 1024
 _HASH_FRAGMENT_BYTES = 64 * 1024
 _HASH_FRAGMENT_NODES = 256
+_PUBLICATION_VALIDATION_BYTES = 16 * 1024 * 1024
 _TABLES = frozenset(
     {
         "graph_generation_metadata",
@@ -193,6 +194,12 @@ class PublishedGraph:
     head: GenerationHead
     generation: GraphGeneration
     memberships: tuple[GraphMembership, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _BatchValidationRows:
+    batch_digest: str
+    rows: tuple[tuple[object, ...], ...]
 
 
 def _text(value: str, name: str) -> str:
@@ -412,6 +419,8 @@ class CodeGraphGenerationStore:
             raise TypeError("graph generation store requires a sqlite3 connection")
         self._connection = connection
         self._shared_blocks = self._validate_schema() == 2
+        self._publication_batch_rows: dict[tuple[str, int], _BatchValidationRows] | None = None
+        self._publication_batch_bytes = 0
 
     @property
     def connection(self) -> sqlite3.Connection:
@@ -1287,6 +1296,74 @@ class CodeGraphGenerationStore:
         connection.execute(
             "INSERT INTO graph_batch_blocks VALUES(?,?,?)", (generation_id, batch_index, block_id),
         )
+        self._remember_publication_batch(
+            generation_id, batch_index, batch_digest, expected, cancellation_check,
+        )
+
+    @contextmanager
+    def _publication_validation_scope(self) -> Iterator[None]:
+        """Bound row evidence to one publication, including cancellation/rollback."""
+
+        previous_rows = self._publication_batch_rows
+        previous_bytes = self._publication_batch_bytes
+        self._publication_batch_rows = {}
+        self._publication_batch_bytes = 0
+        try:
+            yield
+        finally:
+            self._publication_batch_rows = previous_rows
+            self._publication_batch_bytes = previous_bytes
+
+    def _remember_publication_batch(
+        self, generation_id: str, batch_index: int, batch_digest: str,
+        rows: tuple[tuple[object, ...], ...],
+        cancellation_check: Callable[[], None] | None = None,
+    ) -> None:
+        cache = self._publication_batch_rows
+        if cache is None:
+            return
+        # Overestimate retained tuples, scalars, Unicode storage, and the map
+        # entry. Large generations retain the complete historical validator
+        # once this publication's fixed memory budget is exhausted.
+        retained_bytes = 1024
+        metadata_values: set[str] = set()
+        for row in rows:
+            if cancellation_check is not None:
+                cancellation_check()
+            retained_bytes += 256 + sum(4 * len(value) for value in row if isinstance(value, str))
+            if self._publication_batch_bytes + retained_bytes > _PUBLICATION_VALIDATION_BYTES:
+                return
+            metadata_values.add(str(row[3]))
+        # The batch digest used caller metadata. Reuse is valid only when its
+        # serialized form has the same canonical JSON after the reader decodes
+        # it; numeric mapping keys, for example, can change their sort order.
+        for metadata_json in metadata_values:
+            if cancellation_check is not None:
+                cancellation_check()
+            if _json(json.loads(metadata_json), "membership metadata") != metadata_json:
+                return
+        cache[generation_id, batch_index] = _BatchValidationRows(batch_digest, rows)
+        self._publication_batch_bytes += retained_bytes
+
+    def _publication_batch_matches(
+        self, generation_id: str, batch_index: int, batch_digest: str,
+        rows: Sequence[sqlite3.Row | tuple[object, ...]],
+        cancellation_check: Callable[[], None] | None,
+    ) -> bool:
+        cache = self._publication_batch_rows
+        proof = None if cache is None else cache.get((generation_id, batch_index))
+        if proof is None or proof.batch_digest != batch_digest or len(proof.rows) != len(rows):
+            return False
+        # Re-read authority in the completion transaction. A digest, block ID,
+        # source version, or an earlier equality check alone cannot authorize
+        # reuse. SQLite's numeric equality also must not conflate 1 and 1.0.
+        for row, expected in zip(rows, proof.rows, strict=True):
+            if cancellation_check is not None:
+                cancellation_check()
+            if any(type(value) is not type(original) or value != original
+                   for value, original in zip(row, expected, strict=True)):
+                return False
+        return True
 
     def membership_materialization(self, generation_id: str, *, limit: int) -> tuple[int, int]:
         """Bound a reader's complete logical graph before Python materialization.
@@ -1517,6 +1594,9 @@ class CodeGraphGenerationStore:
                 raise GenerationSchemaError(
                     f"generation batch membership count differs: {generation_id}/{batch_index}"
                 )
+            reuse_digest = not materialize and self._publication_batch_matches(
+                generation_id, batch_index, batch_digest, rows, cancellation_check,
+            )
             members: list[GraphMembership] = []
             for member_row in rows:
                 if cancellation_check is not None:
@@ -1525,6 +1605,8 @@ class CodeGraphGenerationStore:
                 if key in keys:
                     raise GenerationSchemaError("generation contains duplicate membership keys")
                 keys.add(key)
+                if reuse_digest:
+                    continue
                 try:
                     metadata = json.loads(str(member_row[3]))
                 except (TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -1532,7 +1614,7 @@ class CodeGraphGenerationStore:
                 if not isinstance(metadata, dict):
                     raise GenerationSchemaError("membership metadata is not an object")
                 members.append(GraphMembership(key, str(member_row[1]), member_row[2], metadata))
-            if _hash(_member_payload(members), "graph batch") != batch_digest:
+            if not reuse_digest and _hash(_member_payload(members), "graph batch") != batch_digest:
                 raise GenerationSchemaError(
                     f"generation batch digest differs: {generation_id}/{batch_index}"
                 )
@@ -1656,7 +1738,7 @@ class CodeGraphGenerationStore:
             if cancellation_check is not None:
                 cancellation_check()
 
-        with self._transaction():
+        with self._transaction(), self._publication_validation_scope():
             source = self.validate_source_run_id(source_run_id)
             source_id = _row_int(source["source_run_id"], "source_run_id")
             framework_id = _row_int(source["framework_run_id"], "framework_run_id")

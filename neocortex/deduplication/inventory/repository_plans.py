@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from neocortex.persistence.operational_freshness import require_operational_identity
 
+import json
 import sqlite3
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
+from itertools import islice
 
 from neocortex.platform.policy import sqlite_path_collation
 
@@ -27,6 +29,10 @@ from .scan import id_blob as _id_blob
 
 
 _PATH_COLLATION = sqlite_path_collation()
+PLANNING_METADATA_BATCH_SIZE = 128
+MAX_PLANNING_ALIAS_SAMPLE = 128
+
+type PlanningMemberMetadata = tuple[tuple[str, ...], int, int, bool]
 
 
 class PlanRepositoryMixin:
@@ -169,6 +175,89 @@ class PlanRepositoryMixin:
         if not count or links is None or computed is None:
             raise InventoryError("duplicate member lacks complete planning observations")
         return aliases, int(count), int(links), bool(computed[0])
+
+    def iter_planning_member_metadata(
+        self,
+        snapshots: Iterable[FileSnapshot],
+        *,
+        alias_limit: int = MAX_PLANNING_ALIAS_SAMPLE,
+        checkpoint: Callable[[], None] | None = None,
+    ) -> Iterator[PlanningMemberMetadata]:
+        """Read bounded member batches while their planning observations exist.
+
+        Each request keeps its own preferred alias, even when two requests
+        describe the same identity. Counts and link evidence cover every
+        observed alias; only the returned path sample is limited. No evidence
+        is cached across groups or planning runs.
+        """
+
+        if (
+            isinstance(alias_limit, bool)
+            or not isinstance(alias_limit, int)
+            or not 1 <= alias_limit <= MAX_PLANNING_ALIAS_SAMPLE
+        ):
+            raise ValueError(f"alias_limit must be between 1 and {MAX_PLANNING_ALIAS_SAMPLE}")
+        source = iter(snapshots)
+        while True:
+            if checkpoint is not None:
+                checkpoint()
+            batch = tuple(islice(source, PLANNING_METADATA_BATCH_SIZE))
+            if checkpoint is not None:
+                checkpoint()
+            if not batch:
+                return
+            parameters: list[int | bytes | str] = []
+            for ordinal, snapshot in enumerate(batch):
+                parameters.extend((ordinal, _id_blob(snapshot.volume_id),
+                                   _id_blob(snapshot.file_id), snapshot.path))
+            values = ",".join("(?,?,?,?)" for _ in batch)
+            # The identity index also orders its primary-key path suffix.
+            # Sample only the first alias_limit other paths, without sorting
+            # every alias. JSON transports bounded values within this read;
+            # it does not become persisted evidence or an authority cache.
+            rows = self._connection.execute(
+                f"""WITH requested(ordinal,volume_id,file_id,preferred_path) AS (
+                    VALUES {values}
+                ) SELECT r.ordinal,
+                    (SELECT json_array(COUNT(*),MAX(link_count)) FROM planning_observations
+                        WHERE volume_id=r.volume_id AND file_id=r.file_id),
+                    (SELECT computed FROM planning_fingerprints
+                        WHERE stage='full' AND volume_id=r.volume_id AND file_id=r.file_id),
+                    (SELECT path FROM planning_observations
+                        WHERE path=r.preferred_path AND volume_id=r.volume_id AND file_id=r.file_id),
+                    (SELECT json_group_array(path) FROM (
+                        SELECT path FROM planning_observations
+                        WHERE volume_id=r.volume_id AND file_id=r.file_id AND path<>r.preferred_path
+                        ORDER BY path LIMIT ?
+                    )) FROM requested r""",
+                (*parameters, alias_limit),
+            )
+            try:
+                if checkpoint is not None:
+                    checkpoint()
+                metadata: list[PlanningMemberMetadata | None] = [None] * len(batch)
+                for ordinal, counts, computed, preferred, sample in rows:
+                    count, links = json.loads(counts)
+                    if not count or links is None or computed is None:
+                        raise InventoryError("duplicate member lacks complete planning observations")
+                    aliases: list[str] = json.loads(sample)
+                    if preferred is not None:
+                        aliases = [preferred, *aliases[:alias_limit - 1]]
+                    if not aliases:
+                        raise InventoryError("duplicate member lacks complete planning observations")
+                    metadata[ordinal] = (tuple(aliases), int(count), int(links), bool(computed))
+                    if checkpoint is not None:
+                        checkpoint()
+            finally:
+                rows.close()
+            if checkpoint is not None:
+                checkpoint()
+            # Avoid ORDER BY on the outer query: SQLite can then hand back a
+            # row before evaluating every identity, keeping checks responsive.
+            for observation in metadata:
+                if observation is None:
+                    raise InventoryError("duplicate member lacks complete planning observations")
+                yield observation
 
     def claim_planning_identity(self, snapshot: FileSnapshot) -> bool:
         cursor = self._connection.execute(

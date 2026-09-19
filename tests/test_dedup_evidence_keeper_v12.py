@@ -184,8 +184,11 @@ def test_alias_sample_declares_truncation_and_external_links(tmp_path: Path) -> 
     os.link(a, tmp_path / "outside-inventory.bin")
     with DedupIndex(tmp_path / "inventory.sqlite3") as index:
         scan = index.scan(root, excluded_paths=())
-        metadata = index.planning_member_metadata
-        with patch.object(index, "planning_member_metadata", side_effect=lambda s: metadata(s, alias_limit=2)):
+        metadata = index.iter_planning_member_metadata
+        with patch.object(
+            index, "iter_planning_member_metadata",
+            side_effect=lambda s, **options: metadata(s, alias_limit=2, **options),
+        ):
             group = DedupPlanner(index).plan(scan.scan_id, preview_limit=20).groups[0]
     alias_proof = next(proof for proof in group.member_proofs if proof.alias_count == 3)
     assert len(alias_proof.aliases) == 2 and alias_proof.aliases_truncated

@@ -35,6 +35,7 @@ from ..fingerprinting import (
     stat_matches_snapshot,
 )
 from ..inventory.index import DedupIndex
+from ..inventory.repository_plans import PlanningMemberMetadata
 from .keeper import KeeperRank, keeper_factors, keeper_rank, keeper_reason
 from neocortex.progress import ProgressCallback, ProgressEvent, emit_progress
 
@@ -139,6 +140,12 @@ class _PlanningProgress:
             ),
         )
 
+    def checkpoint(self, description: str) -> None:
+        # Metadata does not increment completed. A completed multiple of 32
+        # must not make every check publish another identical UI event.
+        if self._callback is not None and time.monotonic() - self._last_progress_at >= 0.1:
+            self.report(description, force=True)
+
 
 class _PlanAccumulator:
     """Persist plan groups in bounded batches while retaining exact totals."""
@@ -150,6 +157,7 @@ class _PlanAccumulator:
         *,
         exact_compare: bool,
         keeper_policy: KeeperPolicy,
+        progress: _PlanningProgress,
     ) -> None:
         self._index = index
         self._scan_id = scan_id
@@ -159,9 +167,12 @@ class _PlanAccumulator:
         self.reclaimable_bytes = 0
         self._exact_compare = exact_compare
         self._keeper_policy = keeper_policy
+        self._work = progress
 
-    def _member_proof(self, member: FileSnapshot, keep: FileSnapshot) -> DuplicateMemberProof:
-        aliases, alias_count, links, computed = self._index.planning_member_metadata(member)
+    def _member_proof(
+        self, member: FileSnapshot, keep: FileSnapshot, metadata: PlanningMemberMetadata,
+    ) -> DuplicateMemberProof:
+        aliases, alias_count, links, computed = metadata
         reference = member.identity == keep.identity
         missing = []
         if not reference and not self._exact_compare:
@@ -189,12 +200,16 @@ class _PlanAccumulator:
             observed_link_count=links,
         )
 
+    def _metadata_checkpoint(self) -> None:
+        self._work.checkpoint("Documentando evidencia de duplicados")
+
     def store(self, digest: bytes, keep: FileSnapshot, redundant: list[FileSnapshot]) -> None:
         if not redundant:
             return
+        members = (keep, *redundant)
         explicit = frozenset(self._keeper_policy.explicit_keep_identities)
         selected = tuple(
-            member.identity for member in (keep, *redundant) if member.identity in explicit
+            member.identity for member in members if member.identity in explicit
         )
         if len(set(selected)) > 1:
             raise KeeperConflictError(
@@ -203,7 +218,7 @@ class _PlanAccumulator:
                 full_fingerprint=digest.hex(),
                 exact_compare=self._exact_compare,
             )
-        ranks = tuple(keeper_rank(member, self._keeper_policy) for member in (keep, *redundant))
+        ranks = tuple(keeper_rank(member, self._keeper_policy) for member in members)
         missing: tuple[str, ...] = (
             "path_disposability_not_verified",
             "authorization_not_granted",
@@ -227,7 +242,16 @@ class _PlanAccumulator:
                 keeper_reason=keeper_reason(ranks),
                 keeper_factors=keeper_factors(keep, self._keeper_policy),
             ),
-            member_proofs=tuple(self._member_proof(member, keep) for member in (keep, *redundant)),
+            member_proofs=tuple(
+                self._member_proof(member, keep, metadata)
+                for member, metadata in zip(
+                    members,
+                    self._index.iter_planning_member_metadata(
+                        members, checkpoint=self._metadata_checkpoint,
+                    ),
+                    strict=True,
+                )
+            ),
         )
         self._batch.append(group)
         self.group_count += 1
@@ -410,6 +434,7 @@ class PlanningSession:
             scan_id,
             exact_compare=exact_compare,
             keeper_policy=self._keeper_policy,
+            progress=self._work,
         )
 
     def run(self) -> DedupPlan:

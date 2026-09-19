@@ -292,6 +292,12 @@ verificación efectuada y cobertura del plan. La selección de keeper es explica
 las preferencias explícitas prevalecen y mtime no representa versión documental;
 aliases y bytes redundantes nominales no demuestran liberación física de espacio.
 
+La construcción de pruebas obtiene metadatos en lotes de hasta 128 solicitudes,
+con recuentos completos de alias y enlaces y muestras de rutas acotadas. Los
+datos se consumen mientras siguen vigentes las observaciones del grupo; no se
+difieren hasta vaciar el acumulador ni se conservan entre planes. La cadencia
+temporal del progreso evita emitir un evento por cada fila de metadatos.
+
 Los sucesores copy-on-write y los digests de contenido impiden reutilizar un plan
 cuando cambia el contenido aunque `size` y `mtime` permanezcan iguales; los
 `scan_id` anteriores quedan históricos y no vuelven a ser el head vigente.
@@ -485,6 +491,12 @@ Knowledge crea un snapshot lógico sobre owners compatibles y fusiona rankings
 sin convertir scores heterogéneos en una sola certeza. Puede entregar evidencia
 y contexto citado, pero no genera autoridad de mutación.
 
+Al publicar Catalog, sólo las filas retiradas o que cambian de ruta liberan su
+ruta activa antes del UPSERT. Las observaciones y sus fechas se actualizan como
+parte de la misma publicación atómica. Replay compara todos los campos de la
+proyección mediante sus claves únicas y comprueba también filas ausentes o de
+otro tipo de fuente, conservando la igualdad de NULL y valores almacenados.
+
 La doble observación mutable de Knowledge cierra el handle cercado de la
 primera lectura y abre otro para la segunda. Así no retiene páginas inmutables
 de una publicación anterior entre observaciones. El kernel sigue eligiendo
@@ -608,10 +620,17 @@ por compatibilidad explícita. `KnowledgeReadBudget` limita filas, vectores,
 temporales, deadline y cancelación sin escribir estado ni introducir caches sin
 invalidación por heads/fences.
 
-La resolución de hits Semantic conserva los checkpoints de lectura durante la
-descompresión, creación del fragmento y análisis de soporte literal, además de
-la materialización final. Cancelación o deadline impiden devolver un lote tardío
-y mantienen el error tipado y el presupuesto de filas ya observadas.
+La resolución de hits Semantic prepara la consulta una vez y comparte el
+recorrido literal del chunk entre su soporte y su fragmento. Procesa bloques de
+4.096 caracteres, sin almacenar todas las coincidencias ni todos los tokens;
+el estado auxiliar depende de la consulta y de la ventana solicitada. Conserva
+normalización Unicode, frases, cobertura, negaciones, posiciones y desempates.
+Los checkpoints de lectura se consultan dentro del recorrido, incluso al cruzar
+una palabra larga, y alrededor de descompresión y materialización. La búsqueda
+léxica independiente transmite también su callback explícito. Cancelación o
+deadline mantienen su error y los cargos de filas observadas. Las comprobaciones
+de testigos conservan su cota y su interpretación, sin convertir coincidencia
+literal en suficiencia de respuesta.
 
 `neocortex.content-diagnostics/v2` federa los nueve owners de contenido mediante
 cursores ligados a raíz, filtros y snapshots, y conserva estados de ausencia,
@@ -698,6 +717,14 @@ por miembro y los fragmentos grandes conservan el encoder incremental, con los
 mismos bytes y digests. En búsqueda híbrida, símbolos y definiciones comparten
 una selección dentro del mismo snapshot; mantienen señales, pesos, evidencia y
 cargos lógicos separados, sin caché de resultados entre consultas.
+
+Dentro de una publicación, Code conserva evidencia transitoria de las filas de
+los bloques ya calculados, con un presupuesto contabilizado de 16 MiB. La
+finalización vuelve a leer y comparar cada valor y su tipo antes de reutilizar
+el digest, evitando reconstruir y serializar de nuevo esos mismos miembros.
+Una diferencia o falta de evidencia usa el validador completo. La evidencia se
+descarta al salir, también ante cancelación o rollback; los lectores públicos
+conservan su validación completa y no heredan esa reutilización.
 
 ## Persistencia
 

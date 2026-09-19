@@ -1546,7 +1546,12 @@ def build_context_response_v2(
     # observable query support.  Raw character volume alone is not evidence:
     # a set of long administrative prefixes must not be advertised as
     # substantive coverage merely because it crosses the byte threshold.
-    from neocortex.semantic.semantic_lexical import query_term_support
+    from neocortex.semantic.semantic_lexical import prepare_literal_query, query_term_support
+
+    prepared_literal_query = (
+        prepare_literal_query(payload["query"])
+        if valid_limit and valid_budget and valid_metadata else None
+    )
 
     compact_candidate_window = (
         valid_limit and valid_budget and valid_metadata and 15_000 <= max_characters < 20_000
@@ -1560,6 +1565,7 @@ def build_context_response_v2(
                 payload["query"],
                 snippet,
                 basis="compact_profile_activation",
+                prepared=prepared_literal_query,
             )
             matched_terms = support.get("matched_terms")
             if isinstance(matched_terms, list) and matched_terms:
@@ -1615,8 +1621,6 @@ def build_context_response_v2(
     originals: dict[str, str] = {}
     sources: dict[str, str] = {}
     text_available = any(snippet for _source_ref, _citation_ref, snippet in candidates)
-    from neocortex.semantic.semantic_lexical import query_term_support
-
     term_cache: dict[str, frozenset[str]] = {}
 
     def original_query_terms(text: str) -> frozenset[str]:
@@ -1625,6 +1629,7 @@ def build_context_response_v2(
                 payload["query"],
                 text,
                 basis="context_excerpt_original_query",
+                prepared=prepared_literal_query,
             )
             matched_terms = support.get("matched_terms")
             term_cache[text] = (

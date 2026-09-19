@@ -4,6 +4,22 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-19 — Recuperación acotada y menos trabajo al publicar
+
+- Semantic y Knowledge reutilizan la preparación de la consulta. La hidratación
+  comparte soporte literal y fragmento en un recorrido por bloques, conserva
+  resultados y atiende cancelación y deadline dentro del texto. La búsqueda
+  léxica independiente propaga su callback durante ese procesamiento.
+- Dedup obtiene metadatos de pruebas por lotes con muestras de alias limitadas,
+  conservando recuentos, enlaces, procedencia, selección de keeper y digests.
+  El progreso de esa etapa mantiene una cadencia temporal acotada.
+- Catalog conserva activas las rutas que continúan en su generación y evita
+  desactivarlas para restaurarlas después. Replay compara campos mediante
+  claves únicas con la misma semántica de valores y NULL.
+- Code reutiliza durante la publicación el cálculo de bloques cuyas filas
+  vuelve a comparar exactamente. La evidencia temporal tiene un presupuesto
+  limitado y se descarta al salir; los lectores mantienen validación completa.
+
 ## 2026-09-18 — Menos trabajo repetido y contratos de cancelación
 
 - La validación estructural SQLite reutiliza tokens por SQL exacto en una caché
