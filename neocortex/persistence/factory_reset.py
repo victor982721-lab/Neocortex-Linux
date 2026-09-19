@@ -588,8 +588,7 @@ def _sqlite_guard_candidates(entries: tuple[_Entry, ...]) -> tuple[Path, ...]:
             sibling.name[len(prefix) :]
             for sibling in regular
             if sibling.parent == entry.path.parent
-            and sibling.name.startswith(prefix)
-            and sibling.name != prefix
+            and sibling.name.startswith(prefix + "-")
         }
         # An incomplete sidecar set is usually an orphan from an interrupted
         # owner.  It has no SQLite connection to guard; /proc and the writer

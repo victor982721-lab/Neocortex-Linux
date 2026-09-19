@@ -268,3 +268,29 @@ def test_new_owner_roots_cannot_be_created_during_reset(lab, monkeypatch, writer
     monkeypatch.setattr(reset, "_delete_entry", effect)
     assert reset.factory_reset(lab)["status"] == "complete"
     assert checked == [True]
+
+
+def test_canonical_route_lock_does_not_hide_sqlite_effect_guard(lab, monkeypatch):
+    from contextlib import contextmanager
+
+    database = lab / "code.sqlite3"
+    database.write_bytes(b"fixture database")
+    (lab / "code.sqlite3-wal").write_bytes(b"nonempty WAL fixture")
+    (lab / "code.sqlite3-shm").write_bytes(bytes(32768))
+    # A route lock and a migration backup are not SQLite sidecar suffixes.
+    (lab / "code.sqlite3.route.lock").touch()
+    (lab / "code.sqlite3.pre-migration.sqlite3").write_bytes(b"old fixture")
+    original = reset.sqlite_owner_effect_guard
+    observed = []
+
+    @contextmanager
+    def guarded(path):
+        with original(path) as fence:
+            observed.append(path)
+            yield fence
+
+    monkeypatch.setattr(reset, "sqlite_owner_effect_guard", guarded)
+    result = reset.factory_reset(lab)
+    assert result["status"] == "complete"
+    assert database in observed
+    assert not _operational(lab)
