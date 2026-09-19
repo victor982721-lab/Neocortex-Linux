@@ -703,6 +703,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     from neocortex.runtime.orchestration.orchestrator import RouteExecutionError
     from neocortex.runtime.config.runtime_cache import RuntimeCacheConfigurationError
     from neocortex.safety.protected_content import ProtectedContentError
+    from neocortex.workflow.actions.actions import RedlistPrepassError
 
     from .cli_reporting import (
         has_organization_errors,
@@ -801,6 +802,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 RunBudgetExceeded,
                 RuntimeCacheConfigurationError,
                 ProtectedContentError,
+                RedlistPrepassError,
             ) as exc:
                 error_code = (
                     "budget_exhausted"
@@ -811,6 +813,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
                     if isinstance(exc, ProtectedContentError)
                     else "runtime_cache_configuration"
                     if isinstance(exc, RuntimeCacheConfigurationError)
+                    else "redlist_prepass_failed"
+                    if isinstance(exc, RedlistPrepassError)
                     else "route_execution_failed"
                     if isinstance(exc, RouteExecutionError)
                     else "sqlite_snapshot_unavailable"
@@ -821,7 +825,16 @@ def main(arguments: Sequence[str] | None = None) -> int:
                     progress,
                     exc,
                     error_code=error_code,
-                    errors=len(exc.failures) if isinstance(exc, RouteExecutionError) else 1,
+                    errors=(
+                        len(exc.failures)
+                        if isinstance(exc, RouteExecutionError)
+                        else max(
+                            1,
+                            exc.failed + exc.protected
+                            if isinstance(exc, RedlistPrepassError)
+                            else 1,
+                        )
+                    ),
                     failed_routes=tuple(exc.failures)
                     if isinstance(exc, RouteExecutionError)
                     else (),
@@ -884,6 +897,20 @@ def main(arguments: Sequence[str] | None = None) -> int:
         print(
             "ERROR protected_content_root status=failed completion=incomplete: "
             + sanitize_untrusted_text(exc, limit=800),
+            file=sys.stderr,
+        )
+        return 2
+    except RedlistPrepassError as exc:
+        if bool(getattr(args, "json_output", False)):
+            _emit_json_execution_error(code="redlist_prepass_failed", failure=exc)
+            return 2
+        print(
+            "ERROR redlist_prepass_failed status=failed completion=incomplete: "
+            + sanitize_untrusted_text(exc, limit=800),
+            file=sys.stderr,
+        )
+        print(
+            "Las acciones inciertas quedaron en recovery_required; no se reintentaron automáticamente.",
             file=sys.stderr,
         )
         return 2

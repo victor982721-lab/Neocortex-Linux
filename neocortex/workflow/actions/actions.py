@@ -79,6 +79,27 @@ if TYPE_CHECKING:
 TRASH_BATCH_SIZE = 256
 ReserveWork = Callable[[str, int, int], None]
 MAX_PRESERVATION_EXAMPLES = 24
+
+
+class RedlistPrepassError(RuntimeError):
+    """A redlist effect stopped with bounded per-action recovery evidence."""
+
+    def __init__(
+        self,
+        *,
+        matched: int,
+        applied: int,
+        failed: int,
+        protected: int,
+    ) -> None:
+        self.matched = matched
+        self.applied = applied
+        self.failed = failed
+        self.protected = protected
+        super().__init__(
+            "redlist prepass incomplete: "
+            f"matched={matched} applied={applied} failed={failed} protected={protected}"
+        )
 _THIRD_PARTY_METADATA_NAMES = frozenset(
     {
         "authors",
@@ -427,9 +448,11 @@ class FrameworkActions:
                 # Do not publish a successor generation after a partial or
                 # ambiguous redlist effect.  The file-action ledger remains
                 # the recovery source and the caller aborts before hashing.
-                raise RuntimeError(
-                    f"redlist prepass incomplete: matched={matched} applied={applied} "
-                    f"failed={failed} protected={protected}"
+                raise RedlistPrepassError(
+                    matched=matched,
+                    applied=applied,
+                    failed=failed,
+                    protected=protected,
                 )
             if applied:
                 self._flush_deferred_reconciliation()

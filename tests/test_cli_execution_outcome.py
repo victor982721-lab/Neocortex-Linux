@@ -13,6 +13,7 @@ from neocortex.persistence.sqlite_immutable import ImmutableSQLiteUnavailable
 from neocortex.progress import ProgressEvent
 from neocortex.runtime.orchestration.orchestrator import RouteExecutionError
 from neocortex.safety.protected_content import ProtectedContentError
+from neocortex.workflow.actions.actions import RedlistPrepassError
 
 
 def _stream_events(stderr: str) -> list[dict[str, object]]:
@@ -166,6 +167,32 @@ def test_protected_content_failure_has_one_bounded_failed_terminal_event(
     assert "protected_content_root" in output.err
     assert output.out == ""
     assert not state.exists()
+
+
+def test_redlist_failure_has_one_bounded_failed_terminal_event_without_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    failure = RedlistPrepassError(matched=3897, applied=1536, failed=2352, protected=9)
+
+    def run(_args, *, progress):
+        progress(ProgressEvent("framework", "redlist", "Enviando redlist", 3897, None))
+        raise failure
+
+    monkeypatch.setenv("NEOCORTEX_PROGRESS_STREAM", "1")
+    monkeypatch.setattr(cli_app, "run_framework", run)
+    assert entrypoint(["--all", "--apply", "--state-directory", str(tmp_path / "state")]) == 2
+
+    output = capsys.readouterr()
+    terminal = [event for event in _stream_events(output.err) if event["phase"] == "result"]
+    assert len(terminal) == 1
+    assert terminal[0]["metrics"]["status"] == "failed"
+    assert terminal[0]["metrics"]["error_code"] == "redlist_prepass_failed"
+    assert terminal[0]["metrics"]["errors"] == 2361
+    assert "redlist prepass incomplete" in output.err
+    assert "Traceback" not in output.err
+    assert output.out == ""
 
 
 def test_runtime_cache_configuration_failure_is_typed(

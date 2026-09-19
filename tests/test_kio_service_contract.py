@@ -250,6 +250,22 @@ def test_service_injected_runner_preserves_environment_and_no_claims(tmp_path: P
     assert not list(fixture.root.glob(".neocortex-kio-claim-*"))
 
 
+def test_batch_verifier_finds_new_item_after_large_existing_trash_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = TrashFixture(tmp_path)
+    for index in range(5_000):
+        (fixture.trash / "info" / f"noise-{index}.txt.trashinfo").write_text(
+            "[Trash Info]\nPath=/unrelated\n", encoding="utf-8"
+        )
+    item = fixture.item("late.BAK")
+    monkeypatch.setattr(kio.subprocess, "run", fixture.runner)
+
+    result = fixture.service(private_config=False, private_bus=False).move_many((item,))
+
+    assert [outcome.status for outcome in result] == [kio.KioTrashStatus.APPLIED]
+
+
 def test_service_preserves_earlier_receipt_when_later_chunk_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

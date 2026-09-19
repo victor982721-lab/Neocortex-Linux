@@ -1173,6 +1173,21 @@ def _trash_info_path_value(raw: bytes) -> str | None:
     return paths[0] if len(paths) == 1 else None
 
 
+def _trash_name_matches_source_basename(trash_name: str, basename: str) -> bool:
+    """Keep collision scans focused on one source basename.
+
+    KDE normally preserves the basename and adds `` (N)`` when the Trash
+    already contains a collision.  Filtering before reading ``.trashinfo``
+    avoids an arbitrary first-N directory slice while retaining the exact
+    source-path check below.
+    """
+
+    if trash_name == basename or trash_name.startswith(basename):
+        return True
+    stem, suffix = os.path.splitext(basename)
+    return bool(suffix and trash_name.startswith(stem + " (") and trash_name.endswith(suffix))
+
+
 def _default_kio_verifier(
     source: Path,
     expected: FileSnapshot,
@@ -2190,6 +2205,61 @@ def _default_kio_verifier_batch(
             roots.setdefault(key, root)
 
     matches: dict[str, list[tuple[Path, Path, Path]]] = {}
+
+    def observe_candidate(
+        root: Path,
+        files_root: Path,
+        info_path: Path,
+    ) -> None:
+        """Validate one candidate metadata pair and retain exact matches."""
+
+        if not info_path.name.endswith(".trashinfo"):
+            return
+        trash_name = info_path.name[: -len(".trashinfo")]
+        candidate_keys = [
+            source_key
+            for source_key, work in targets.items()
+            if _trash_name_matches_source_basename(
+                trash_name, Path(os.fspath(work.kio_source)).name
+            )
+        ]
+        if not candidate_keys:
+            return
+        try:
+            info_metadata = os.lstat(info_path)
+            if (
+                stat.S_ISLNK(info_metadata.st_mode)
+                or not stat.S_ISREG(info_metadata.st_mode)
+                or info_metadata.st_nlink != 1
+            ):
+                return
+            source_key = _trash_info_path_value(
+                _read_regular_bounded(info_path, limit=MAX_TRASH_INFO_BYTES)
+            )
+            if source_key is None or source_key not in targets:
+                return
+            work = targets[source_key]
+            trash_path = files_root / trash_name
+            trash_metadata = os.lstat(trash_path)
+            expected = work.item.expected
+            if (
+                stat.S_ISLNK(trash_metadata.st_mode)
+                or not stat.S_ISREG(trash_metadata.st_mode)
+                or trash_metadata.st_nlink != 1
+                or trash_metadata.st_dev != expected.volume_id
+                or not stat_matches_snapshot(expected, trash_metadata)
+            ):
+                return
+            relocated = replace(expected, path=os.fspath(trash_path))
+            if not _binding_matches_snapshot(relocated, work.digest):
+                return
+        except (FileChangedError, OSError, ValueError):
+            return
+        candidate = (root, trash_path, info_path)
+        bucket = matches.setdefault(source_key, [])
+        if candidate not in bucket:
+            bucket.append(candidate)
+
     for root in roots.values():
         try:
             root_stat = os.lstat(root)
@@ -2206,55 +2276,24 @@ def _default_kio_verifier_batch(
                 or not stat.S_ISDIR(files_stat.st_mode)
             ):
                 continue
-            with os.scandir(info_root) as entries:
-                for position, entry in enumerate(entries):
-                    if position >= MAX_TRASH_ENTRIES:
-                        break
-                    if not entry.name.endswith(".trashinfo"):
-                        continue
-                    info_path = info_root / entry.name
-                    try:
-                        info_metadata = os.lstat(info_path)
-                        if (
-                            stat.S_ISLNK(info_metadata.st_mode)
-                            or not stat.S_ISREG(info_metadata.st_mode)
-                            or info_metadata.st_nlink != 1
-                        ):
+            # The direct basename is the overwhelmingly common case and avoids
+            # scanning a large accumulated Trash directory at all.
+            unresolved: set[str] = set()
+            for source_key, work in targets.items():
+                basename = Path(os.fspath(work.kio_source)).name
+                observe_candidate(root, files_root, info_root / (basename + ".trashinfo"))
+                if not matches.get(source_key):
+                    unresolved.add(source_key)
+            if unresolved:
+                # For basename collisions, scan only candidate families and
+                # retain exact Path= matches.  Do not use the old arbitrary
+                # first-4096 slice: newly created entries may be later in a
+                # large Trash directory.
+                with os.scandir(info_root) as entries:
+                    for entry in entries:
+                        if not entry.name.endswith(".trashinfo"):
                             continue
-                        raw = _read_regular_bounded(
-                            info_path,
-                            limit=MAX_TRASH_INFO_BYTES,
-                        )
-                    except (OSError, ValueError):
-                        continue
-                    source_key = _trash_info_path_value(raw)
-                    work = None if source_key is None else targets.get(source_key)
-                    if work is None:
-                        continue
-                    if source_key is None:
-                        continue
-                    trash_name = entry.name[: -len(".trashinfo")]
-                    trash_path = files_root / trash_name
-                    try:
-                        trash_metadata = os.lstat(trash_path)
-                    except OSError:
-                        continue
-                    expected = work.item.expected
-                    if (
-                        stat.S_ISLNK(trash_metadata.st_mode)
-                        or not stat.S_ISREG(trash_metadata.st_mode)
-                        or trash_metadata.st_nlink != 1
-                        or trash_metadata.st_dev != expected.volume_id
-                        or not stat_matches_snapshot(expected, trash_metadata)
-                    ):
-                        continue
-                    relocated = replace(expected, path=os.fspath(trash_path))
-                    try:
-                        if not _binding_matches_snapshot(relocated, work.digest):
-                            continue
-                    except (FileChangedError, OSError, ValueError):
-                        continue
-                    matches.setdefault(source_key, []).append((root, trash_path, info_path))
+                        observe_candidate(root, files_root, info_root / entry.name)
         except OSError:
             continue
 
