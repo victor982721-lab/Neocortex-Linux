@@ -190,21 +190,6 @@ EXPECTED_EXPORTS = (
     "RunStatus",
     "read_run_status",
     "read_run_status_json",
-    "RESET_STATE_CONFIRMATION",
-    "STATE_RESET_API_SCHEMA",
-    "STATE_RESET_CONFIRMATION",
-    "STATE_RESET_SCHEMA",
-    "STATE_RESET_SCOPES",
-    "StateResetEntry",
-    "StateResetPlan",
-    "StateResetResult",
-    "StateResetScope",
-    "StateResetTarget",
-    "apply_state_reset",
-    "execute_state_reset",
-    "plan_state_reset",
-    "reset_state",
-    "state_reset_payload",
 )
 
 FUTURE_ENDPOINTS = (

@@ -8,34 +8,23 @@ pero no reconstruyen decisiones, autorizaciones, acciones, correcciones ni toda
 la evidencia de recuperación. La reconstruibilidad se determina por tabla,
 referencias y procedencia; no por la extensión SQLite o por llamar caché al owner.
 
-El resultado de reset distingue owners seleccionados, transformados y bases
-retiradas o preservadas. `verified` conserva su alcance histórico de targets,
-indicado por `verification_scope=selected_targets`. El contrato adicional
-`owner_verifications` demuestra por owner la conservación de autoridad,
-referencias válidas y ausencia de selección operacional anterior. Sólo un
-`all` con observación completa, sin bloqueos y todas esas postcondiciones
-satisfechas anuncia `operational_freshness=fresh`; los scopes parciales usan
-`not_assessed`. `database_count` y `cache_count` siguen contando selección.
+El factory reset sólo informa el efecto local que pudo verificar. Si una frontera
+impide completarlo, conserva conteos parciales y un error concreto; la CLI no lo
+presenta como completo ni acredita una nueva corrida o la disponibilidad de una
+release o modelo.
 
 `STATE_STORE_REGISTRY` expone `lifecycle_policy_version` y `lifecycle_rules`.
 Cada tabla admitida declara su rol, fuente de reconstrucción, retención,
-selector de dependencias, frontera de durabilidad y acción de reset. El mapa
-versionado es único; reset deriva de él sus políticas protectoras. Una tabla
-sin regla bloquea `all`, aunque esté vacía. Los trece SQLite conservan su
-distribución física y Knowledge sigue componiendo snapshots de esos owners.
+selector de dependencias y frontera de durabilidad. El mapa versionado es único;
+el factory reset no convierte una tabla desconocida en descartable ni cambia la
+autoridad del owner. Los trece SQLite conservan su distribución física y
+Knowledge sigue componiendo snapshots de esos owners.
 
-Un reset sin `backup_directory` utiliza una copia transitoria de rollback. Antes
-de adquirir esa área escribe un intento inmutable en `state-reset-operations`
-y lo registra en `artifacts` con owner `state-reset`. Su identidad, fases,
-digest del recibo y promociones se enlazan de forma durable. La CLI puede
-conciliar ese intento desde otro proceso, sin explorar directorios temporales.
-Un fallo de limpieza posterior a efectos verificados conserva
-`applied-cleanup-pending`; un cambio ajeno durante rollback conserva sus bytes,
-el raw y `recovery_required`. Antes de retirar un claim, reset registra su
-compensación con el productor. Tras un rollback, esa API valida el intento,
-el sello original y las promociones exactas antes de restituir estado, metadata,
-dependencias y binding del claim. Un claim legado sin enrolamiento, una copia
-incompleta o una identidad ajena mantiene `recovery_required`.
+El factory reset no crea backup, snapshot SQL, plan, digest ni receipt durable
+adicional. La recuperación de backup/restore y purge mantiene sus propios
+manifests y contratos, sin ser invocada por el factory reset. Un bloqueo o una
+interrupción se informa con el alcance realmente retirado y requiere una nueva
+invocación después de resolver la frontera.
 
 La raíz predeterminada es:
 
@@ -124,9 +113,9 @@ ni conservar autoridad después de cambiar el tamaño de candidatos.
 
 Code v9 añade bloques derivados compartidos y manifiestos completos para sus
 generaciones v2. La migración preserva el ledger v1 y los lectores de Knowledge
-aceptan las formas exactas v7/v8 sin migrarlas. Reset clasifica las seis tablas
-nuevas como derivadas; los heads y localizadores históricos conservan su política
-operacional y de retención.
+aceptan las formas exactas v7/v8 sin migrarlas. La política de lifecycle
+clasifica las seis tablas nuevas como derivadas; los heads y localizadores
+históricos conservan su política operacional y de retención.
 La evidencia de validación de bloques dentro de una publicación es transitoria:
 su presupuesto contabilizado es de 16 MiB y la reutilización exige una nueva
 comparación exacta de filas y tipos. No cambia el esquema, la autoridad de las
@@ -261,117 +250,40 @@ Backup de varios owners puede demostrar un conjunto coherente sólo si mantiene
 la coordinación y recaptura los mismos heads. De otro modo debe declararse
 `independent_owner_snapshots`.
 
-## Reset selectivo
+## Factory reset operativo
 
-El motor `neocortex.persistence.state_reset` publica el contrato
-`neocortex.state-reset/v1` y coordina un reset explícito con scopes
-`runs`, `runs-and-caches` o `all`. El scope no es una etiqueta informativa: forma
-parte del digest del plan y de la lista de targets, por lo que no puede cambiarse
-entre preview y apply.
+La frontera pública para eliminar todo el estado operativo administrado es
+`Neocortex --factory-reset`. Trabaja únicamente sobre la raíz de estado
+seleccionada y retira las bases SQLite operativas con sus sidecars, las
+materializaciones de ZIP administradas bajo ella (incluido
+`state/archive-materialized`), las cachés y los metadatos de procesamiento. No
+toca destinos externos producidos por APIs standalone. Los ZIP originales y el
+resto del corpus, la instalación, los modelos y los `installation-receipts` no
+son targets.
 
-| Scope | Owners/artefactos afectados | Invariante de propiedad |
-|---|---|---|
-| `runs` | Ledger de ejecución Framework y lifecycle asociado, sin borrar por inferencia Review, recovery o curación no ligados | Los owners de contenido y sus heads permanecen intactos |
-| `runs-and-caches` | Todos los owners SQLite del registro, sus sidecars y metadata de publicación necesaria (`epoch`/journal/manifests administrados) | La frontera cross-owner se retira como conjunto lógico, no como purga aislada de un archivo |
-| `all` | `runs-and-caches` más artefactos no-SQLite administrados por el estado | Sólo se alcanzan rutas registradas; corpus, releases, modelos y backups externos quedan fuera |
+```bash
+Neocortex --factory-reset
+```
 
-`runs` debe mantener la continuidad de IDs y procedencia: no reutiliza un ID que
-pueda seguir referenciado. Si se compacta el ledger, el plan conserva un high
-water mark/tombstone o un mecanismo equivalente de asignación futura y reporta
-las referencias cruzadas que impidan retirar una fila. Ningún reset convierte
-una referencia histórica en autoridad nueva.
+`--state-directory` queda disponible como override para fixtures sin seleccionar
+el estado productivo por accidente. La operación no lee ni procesa el corpus, no
+reconstruye contenido y no cambia schemas, owners ni datos fuera de su raíz.
+No existen scopes ni contratos de preview/apply: no crea backup, snapshot SQL,
+plan, digest o receipt durable adicional, y no acepta `--apply` ni `--yes`.
 
-`runs-and-caches` transforma o retira coordinadamente owners y metadata de publicación;
-no abre una transacción SQLite distribuida ni simula que varios archivos son una
-sola base. El motor toma los locks de writers/publicación, registra baseline y
-postcondición, y sólo declara `complete` después de verificar el conjunto. WAL,
-SHM y journals siempre se tratan como parte del owner correspondiente. Para
-inspeccionar un owner grande durante preview, el layout residual exacto
-`-wal=0`/`-shm=32768` evita copiar el main completo sólo cuando la prueba de
-locks de sólo lectura y el fence demuestran quiescencia; un owner activo o
-ambiguo sigue la ruta de snapshot acotado o se bloquea si rebasa el presupuesto
-canónico.
+La operación toma sus locks y verifica writers, procesos y rutas/montajes antes
+de retirar. Los symlinks dentro de la raíz se desvinculan sin tocar sus targets;
+no se siguen ni se borran targets externos. Rutas o montajes ajenos, permisos
+insuficientes, corrupción, cambios concurrentes y objetos cuya propiedad no
+pueda verificarse producen un error con conteos parciales. No se borra un
+sidecar aislado ni se relaja la valla para continuar, y la operación tampoco
+adopta rutas externas como parte del estado.
 
-En `all`, un `recovery_required` del Framework se conserva dentro del owner
-staged y se informa como `preserved_recovery_action_ids`; no autoriza reintentar
-ni descartar la evidencia. Runs, fases y acciones `started`/`applying` continúan
-siendo una frontera activa que bloquea la aplicación.
-
-Framework, Inventory y Catalog se transforman en staging aun cuando sólo sea
-necesario conservar el suelo de identidades. Inventory preserva planes,
-evidencia y scans padres, y retira checkpoints y heads vigentes. Catalog
-preserva generaciones publicadas, documentos, manifests, ancestros,
-correcciones e historia, y vacía `catalog_publications`. Framework conserva
-Review, autorizaciones y acciones, incluidos sus padres de recuperación.
-
-La barrera `neocortex.operational-reset-barrier/v1`, ligada al `plan_digest`,
-impide seleccionar o reanudar identidades anteriores. Los nuevos scans, runs y
-generaciones se asignan por encima del mayor ID retirado; una consulta histórica
-explícita conserva su significado. Las versiones Framework 23, Inventory 14 y
-Catalog 11 introducen el contrato de lector mediante migraciones de metadata
-que validan el schema previo y conservan su DDL. Un lector anterior rechaza el
-nuevo fence. Un segundo reset sin trabajo nuevo verifica `no_changes` sin
-volver a promover estos archivos.
-
-Los owners Semantic, Text y Code que contengan evidencia, outbox o receipts
-autoritativos bloquean antes del primer efecto: no hay transformador de frescura
-para esos casos. Los owners exclusivamente derivados pueden retirarse una vez
-validados. No se descarta autoridad para desbloquear un reset.
-Una referencia de evidencia huérfana, una generación con ancestry no conciliable
-o un sidecar nuevo durante la promoción bloquea el efecto; no se convierte en
-un target implícito ni se borra para hacer pasar el reset.
-
-`all` recorre de forma acotada la raíz de estado y compone los contratos SQLite,
-las rutas canónicas y los claims reales de `ArtifactRegistry`. El digest incluye
-observaciones de archivos, identidades, reglas de owner, manifests, pruebas de
-reconstrucción, dependencias y la reserva calculada para metadata de recuperación.
-Si las promociones de todas las rutas y un temporal no caben en los 65.536 bytes
-del registro, el preview muestra la cantidad, el límite y
-`reset-recovery-metadata-budget-exceeded` antes de iniciar efectos. La cobertura parcial, los objetos desconocidos,
-los claims inválidos o solapados, un ciclo y un consumidor retenido bloquean el
-plan antes del primer efecto. Apply vuelve a observar el mismo grafo bajo los
-locks de writers y registro y verifica después el inventario resultante.
-
-Archive persiste manifests de procedencia fuera de su SQLite derivado. Cada
-salida enlaza el contenedor original, la identidad del miembro, su destino y sus
-hashes. Reset sólo retira una materialización cuando reproduce y compara todos
-los outputs desde originales supervivientes autorizados; ni la extensión ni el
-nombre de carpeta aportan permiso. Los límites de profundidad, miembros, bytes,
-ratio y tiempo se aplican a esa prueba. Los contenedores anidados pequeños usan
-un spool de memoria de hasta 8 MiB; si se necesita un spool mayor y no hay scratch
-registrado autorizado, la prueba se abstiene. Preview no crea scratch en disco.
-
-Los backups se escriben fuera de la raíz y nunca forman parte del target.
-
-La única excepción interna documentada son los backups canónicos de migración del
-catálogo: `document_catalog.sqlite3.pre-vN-to-vN+1-<timestamp>.sqlite3` y su
-sidecar asociado, incluido el receipt JSON homónimo (`...sqlite3.json`) y los
-sidecars SQLite del mismo backup, si existen, se conservan íntegros aun cuando
-estén dentro de la raíz de `State`. El patrón y la relación deben ser exactos;
-una SQLite desconocida o una SQLite de `recovery`, `restore` o `staging` (con sus
-sidecars) bloquea el reset fail-closed.
-
-El preview es read-only y calcula digest, fingerprints, conteos y bytes dentro de
-límites bounded. Apply requiere el digest exacto, `RESET_STATE` y una segunda
-validación de locks, epoch, heads, schemas, referencias y límites. Sin
-`--backup-directory` el motor usa sólo staging/rollback efímero; el backup
-durable es opcional y debe ser nuevo, absoluto y externo cuando se solicita de
-forma explícita. Ante drift, schema futuro, writer activo o referencia no
-conciliable, el motor se abstiene fail-closed. Si una reversión o publicación
-quedan inciertas, conserva lo necesario y expone `recovery_required` en vez de
-reintentar.
-
-Durante `apply` se conserva además una guardia SQLite de control para cada
-owner target desde la revalidación hasta el efecto y la promoción. Un WAL o
-journal cerrado puede retirarse como parte del reset, pero un writer que ya
-exista o aparezca después del preview no puede competir con el reemplazo: la
-guardia aborta antes de borrar o promover. Las tablas no reconocidas, incluso vacías, bloquean la aplicación hasta que
-su owner declare una política válida.
-
-La operación no migra ni abre el corpus, no modifica bytes originales y no toca
-los directorios de releases/modelos. Una nueva corrida debe volver a crear sólo
-las proyecciones que sus writers publiquen; la ausencia temporal de un owner no
-se presenta como cobertura completa.
+Si no se puede retirar todo el estado operacional alcanzable, el error conserva
+los conteos parciales y la CLI termina con código distinto de cero; no declara
+un factory reset completo. La ausencia posterior de una base no prueba que el
+corpus se haya procesado, que una instalación esté vigente o que los modelos
+estén disponibles.
 
 ## Retención
 
@@ -392,7 +304,7 @@ abstiene fail-closed. No usa el tamaño de WAL como señal de borrado ni ejecuta
 - actualizar schema, migración y registro de owner;
 - cubrir fuente vacía y poblada de cada versión admitida;
 - comprobar rollback, foreign keys, integridad y objetos desconocidos;
-- actualizar backup/restore/purge/reset, health, Knowledge y retención;
+- actualizar backup/restore/purge/factory reset, health, Knowledge y retención;
 - probar writer concurrente, WAL/SHM y publicación interrumpida;
 - documentar sólo el contrato final, no el transcript de la migración.
 

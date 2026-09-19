@@ -41,7 +41,6 @@ HUMAN_COMMANDS = frozenset(
         "inspect",
         "review",
         "knowledge",
-        "state",
         "databases",
         "database",
         "agent",
@@ -192,21 +191,6 @@ def _curation_limit(value: str) -> int:
     if not 1 <= limit <= 100:
         raise argparse.ArgumentTypeError("limit must be between 1 and 100")
     return limit
-
-
-class _RejectDuplicateOption(argparse.Action):
-    """Reject repeated single-valued options instead of silently taking last."""
-
-    def __call__(
-        self,
-        parser: argparse.ArgumentParser,
-        namespace: argparse.Namespace,
-        values: object,
-        option_string: str | None = None,
-    ) -> None:
-        if getattr(namespace, self.dest, None) is not None:
-            parser.error(f"{option_string or self.dest} no puede repetirse")
-        setattr(namespace, self.dest, values)
 
 
 def build_human_parser() -> argparse.ArgumentParser:
@@ -531,71 +515,6 @@ def build_human_parser() -> argparse.ArgumentParser:
     knowledge_health.add_argument("resource_id", metavar="RESOURCE_ID")
     _add_scope(knowledge_health, default=ReadScope.ALL)
     knowledge_health.add_argument("--json", action="store_true")
-
-    state = commands.add_parser(
-        "state",
-        help="consulta y mantiene el estado local de NeoCortex",
-        allow_abbrev=False,
-    )
-    state_commands = state.add_subparsers(dest="state_command", metavar="ACCIÓN")
-    state_reset = state_commands.add_parser(
-        "reset",
-        help="previsualiza o reinicia un alcance explícito de estado",
-        allow_abbrev=False,
-    )
-    state_reset.add_argument(
-        "--state-directory",
-        type=Path,
-        default=default_state_directory(),
-        help="directorio de estado; por defecto, el estado Linux canónico",
-    )
-    state_reset.add_argument(
-        "--scope",
-        action=_RejectDuplicateOption,
-        required=True,
-        choices=("runs", "runs-and-caches", "all"),
-        help=(
-            "alcance único: runs (sólo historial), runs-and-caches (runs y caches), "
-            "all (todo el estado gestionado)"
-        ),
-    )
-    state_reset.add_argument(
-        "--backup-directory",
-        type=Path,
-        help="directorio nuevo fuera del estado para conservar el backup verificado",
-    )
-    state_reset.add_argument(
-        "--apply",
-        action="store_true",
-        help="ejecuta el reset; sin esta opción sólo muestra la vista previa",
-    )
-    state_reset.add_argument(
-        "--yes",
-        action="store_true",
-        help=(
-            "confirma de forma no interactiva el plan exacto mostrado por la "
-            "vista previa (no crea backup implícito)"
-        ),
-    )
-    state_reset.add_argument(
-        "--confirm-state-reset",
-        metavar="TOKEN",
-        help="debe ser RESET_STATE junto con --apply",
-    )
-    state_reset.add_argument(
-        "--plan-digest",
-        metavar="SHA256",
-        help="digest de la vista previa; obligatorio junto con --apply",
-    )
-    state_reset.add_argument("--json", action="store_true", help="emite el contrato JSON")
-    state_reset.add_argument(
-        "--reconcile-operation", metavar="OPERATION_ID",
-        help="reconcilia una operación de reset previa usando su recibo privado",
-    )
-    state_reset.add_argument(
-        "--receipt-digest", metavar="SHA256",
-        help="digest exacto del recibo de la operación que se va a reconciliar",
-    )
 
     databases = commands.add_parser(
         "databases",
@@ -1712,12 +1631,6 @@ def _run_knowledge_health(args: argparse.Namespace) -> int:
     return _exit_code(payload)
 
 
-def _run_state_reset(args: argparse.Namespace) -> int:
-    from .state_reset import run_state_reset
-
-    return run_state_reset(args)
-
-
 def _run_agent_serve() -> int:
     from ..agent_server import run_stdio_server
 
@@ -1814,8 +1727,6 @@ def run_human_command(arguments: Sequence[str]) -> int:
         return _run_review_task(args)
     if args.command == "knowledge" and args.knowledge_command == "health":
         return _run_knowledge_health(args)
-    if args.command == "state" and args.state_command == "reset":
-        return _run_state_reset(args)
     if args.command in {"databases", "database"}:
         if args.database_command == "status":
             return _run_database_status(args)

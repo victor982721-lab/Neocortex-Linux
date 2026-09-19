@@ -1325,6 +1325,27 @@ def _validate_route_only(args: argparse.Namespace) -> None:
         raise SystemExit("--failed-pages-only can only be used with --route pdf")
 
 
+def _validate_factory_reset_operation(args: argparse.Namespace) -> bool:
+    """Validate the exclusive flat factory-reset selector before other leaves."""
+
+    if not bool(getattr(args, "factory_reset", False)):
+        return False
+
+    explicit = set(getattr(args, "_explicit_options", ()))
+    counts = getattr(args, "_explicit_option_counts", {})
+    for destination in ("factory_reset", "state_directory"):
+        if counts.get(destination, 0) > 1:
+            raise SystemExit(f"--{destination.replace('_', '-')} no puede repetirse")
+
+    unsupported = sorted(explicit - {"factory_reset", "state_directory"})
+    if unsupported:
+        options = ", ".join(f"--{name.replace('_', '-')}" for name in unsupported)
+        raise SystemExit(f"--factory-reset no puede combinarse con {options}")
+    if getattr(args, "command", None) is not None:
+        raise SystemExit("--factory-reset es una operación exclusiva y no acepta comandos")
+    return True
+
+
 # endregion [02]
 
 
@@ -1332,6 +1353,8 @@ def _validate_route_only(args: argparse.Namespace) -> None:
 
 
 def validate_arguments(args: argparse.Namespace) -> None:
+    if _validate_factory_reset_operation(args):
+        return
     if _validate_agent_activity_operation(args):
         return
     if _validate_hygiene_operation(args):

@@ -264,31 +264,6 @@ _RETAINED_DOMAIN_CYCLES = {
         ('neocortex.capabilities.formats.archive.materialization', 'neocortex.capabilities.formats.archive.rebuild', 'deferred', ('materialize_archive',)),
         ('neocortex.capabilities.formats.archive.rebuild', 'neocortex.capabilities.formats.archive.materialization', 'eager', ()),
     },
-    # The reset coordinator delegates inventory, assessment and recovery; helpers return only to owner contracts and guarded primitives.
-    frozenset({'neocortex.persistence.state_reset', 'neocortex.persistence.state_reset_inventory', 'neocortex.persistence.state_reset_owners', 'neocortex.persistence.state_reset_recovery'}): {
-        ('neocortex.persistence.state_reset', 'neocortex.persistence.state_reset_inventory', 'deferred', ('_apply_reset_locked_impl',)),
-        ('neocortex.persistence.state_reset', 'neocortex.persistence.state_reset_inventory', 'eager', ()),
-        ('neocortex.persistence.state_reset', 'neocortex.persistence.state_reset_owners', 'eager', ()),
-        ('neocortex.persistence.state_reset', 'neocortex.persistence.state_reset_recovery', 'deferred', ('_apply_reset_locked_impl',)),
-        ('neocortex.persistence.state_reset', 'neocortex.persistence.state_reset_recovery', 'deferred', ('_restore_raw',)),
-        ('neocortex.persistence.state_reset', 'neocortex.persistence.state_reset_recovery', 'eager', ()),
-        ('neocortex.persistence.state_reset_inventory', 'neocortex.persistence.state_reset', 'deferred', ('observe_reset_inventory',)),
-        ('neocortex.persistence.state_reset_inventory', 'neocortex.persistence.state_reset', 'deferred', ('retire_inventory_targets',)),
-        ('neocortex.persistence.state_reset_owners', 'neocortex.persistence.state_reset', 'deferred', ('assess_reset_owners',)),
-        ('neocortex.persistence.state_reset_recovery', 'neocortex.persistence.state_reset', 'deferred', ('_matches_promotion',)),
-        ('neocortex.persistence.state_reset_recovery', 'neocortex.persistence.state_reset', 'deferred', ('_restore_absent_files',)),
-        ('neocortex.persistence.state_reset_recovery', 'neocortex.persistence.state_reset', 'deferred', ('_retire_restore_temporaries',)),
-        ('neocortex.persistence.state_reset_recovery', 'neocortex.persistence.state_reset', 'deferred', ('prepare',)),
-        ('neocortex.persistence.state_reset_recovery', 'neocortex.persistence.state_reset', 'deferred', ('reconcile_state_reset',)),
-        ('neocortex.persistence.state_reset_recovery', 'neocortex.persistence.state_reset', 'deferred', ('record_state_reset_promotion',)),
-        ('neocortex.persistence.state_reset_recovery', 'neocortex.persistence.state_reset', 'deferred', ('require_original_artifact_bindings',)),
-    },
-    # The two decorated public registry methods defer importing their implementation until inside the registry write lock. The compensation implementation consumes ArtifactRecord, registry types, identity and error contracts and calls lower-level verify/update/dependency/publication operations. It never calls either compensation wrapper, so the reverse dependency preserves the existing owner lock and produces no recursive entry or second writer.
-    frozenset({'neocortex.runtime.artifact_compensation', 'neocortex.runtime.artifact_registry'}): {
-        ('neocortex.runtime.artifact_compensation', 'neocortex.runtime.artifact_registry', 'eager', ()),
-        ('neocortex.runtime.artifact_registry', 'neocortex.runtime.artifact_compensation', 'deferred', ('prepare_retirement_compensation',)),
-        ('neocortex.runtime.artifact_registry', 'neocortex.runtime.artifact_compensation', 'deferred', ('reconcile_restored_retirement',)),
-    },
     # Five public HistoricalAuditManager methods delegate exact selected adoption to HistoricalAdoption(self). The implementation eagerly imports only the shared HistoricalAuditError and identity helper from the established owner module. Its manager reference supplies configuration/limits/root; implementation does not call back into the five public delegation methods. Private approval and effect receipts remain with the same owner.
     frozenset({'neocortex.runtime.historical_adoption', 'neocortex.runtime.historical_audit'}): {
         ('neocortex.runtime.historical_adoption', 'neocortex.runtime.historical_audit', 'eager', ()),

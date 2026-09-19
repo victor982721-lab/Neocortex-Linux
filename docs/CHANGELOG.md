@@ -4,6 +4,18 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-19 — Factory reset operativo
+
+- `Neocortex --factory-reset` sustituye la receta anterior de reset selectivo:
+  elimina el estado operativo dentro de la raíz seleccionada (SQLite y
+  sidecars, materializaciones ZIP integradas, cachés y metadatos de
+  procesamiento), protege corpus, instalación, modelos y
+  `installation-receipts`. Ante writers, montajes o rutas ajenas devuelve un
+  error con conteos parciales y código no cero; los symlinks bajo la raíz se
+  desvinculan sin tocar sus targets. No crea backup, snapshot SQL, plan, digest
+  ni receipt adicional, ni acepta `--apply`/`--yes`; `--state-directory` permite
+  fixtures. Backup/restore permanecen independientes.
+
 ## 2026-09-19 — Menos recorridos repetidos y reservas completas
 
 - Catalog pagina por claves indexadas y comparte la observación del productor

@@ -32,7 +32,6 @@ _HUMAN_COMMANDS = frozenset(
         "inspect",
         "review",
         "knowledge",
-        "state",
         "databases",
         "database",
         "agent",
@@ -70,14 +69,15 @@ def _print_root_help() -> None:
     """Print concise installed-command guidance, not the route inventory."""
 
     print(
-        """usage: Neocortex [--root ROOT] (--all | --dedupe | --route ROUTES | COMMAND)
+        """usage: Neocortex [--root ROOT] (--factory-reset | --all | --dedupe | --route ROUTES | COMMAND)
 
 Consulta local:
-  status, search, ask, inspect, review, knowledge, curate, state, databases
+  status, search, ask, inspect, review, knowledge, curate, databases
   machine-inventory --machine-root PATH [--machine-root PATH ...]
                         diagnóstico federado read-only y bounded
 
 Procesamiento:
+  --factory-reset       borra el estado local administrado, sin backup, plan, digest ni confirmaciones extra
   --all                 ejecuta las rutas configuradas
   --dedupe              solicita el servicio de duplicados, sin rutas de contenido
   maintenance --scope S planifica o retira scratch propio o audita históricos

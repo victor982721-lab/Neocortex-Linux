@@ -6,22 +6,9 @@ Owner-local transforms and dependency checks remain with each owner.
 """
 from __future__ import annotations
 
-from collections.abc import Iterable
-
 from neocortex.safety.state_lifecycle_contracts import TableLifecycleRole, TableLifecycleRule
 
 LIFECYCLE_POLICY_VERSION = 1
-_PROTECTED_METADATA_MARKERS = ("policy", "policie", "correction", "review", "recovery", "authorization", "decision", "evidence", "receipt")
-
-
-def metadata_requires_owner_preservation(keys: Iterable[str]) -> bool:
-    """Conservatively protect legacy metadata whose authority is not normalized.
-
-    This only withholds removal authority; it never classifies a table or
-    makes an unrecognized object disposable.
-    """
-    return any(marker in key.casefold() for key in keys for marker in _PROTECTED_METADATA_MARKERS)
-
 # Every table appears once. FTS shadows inherit an explicitly declared role.
 _DECLARATIONS: dict[str, dict[TableLifecycleRole, tuple[str, ...]]] = {
     'framework': {

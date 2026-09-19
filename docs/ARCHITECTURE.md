@@ -49,8 +49,8 @@ y el launcher se resuelven mediante XDG. El corpus nunca debe contener los
 El grafo productivo no admite ciclos de imports inmediatos. Los ciclos que
 incluyen imports diferidos o de tipado se fijan con contratos exactos de módulos,
 dirección y función en `tests/architecture/test_boundaries.py`. Archive comparte
-primitivas y registro durable; Reset delega inventario, evaluación y recuperación;
-ArtifactRegistry conserva el writer al delegar compensación; HistoricalManager
+primitivas y registro durable; factory reset delega la enumeración y retirada
+acotada al owner de persistencia; HistoricalManager
 delega adopción. Sus auxiliares reutilizan contratos del mismo owner sin volver a
 entrar en la operación que los llamó. Estas cuatro delegaciones tienen 30 aristas
 concretas revisadas; cualquier arista nueva exige revisar de nuevo el contrato.
@@ -271,7 +271,7 @@ categoría/política y límites. El preview nunca se convierte por sí mismo en
 autorización y no hay retry automático ante una frontera incierta.
 
 Así, `hygiene` federará evidencia sin absorber los efectos ya existentes de
-`maintenance`, `state reset`, curación, `machine-inventory` o
+`maintenance`, `--factory-reset`, curación, `machine-inventory` o
 `external-maintenance`. Esas superficies conservan sus owners y gates; agregar
 una fuente al registry no amplía su ámbito ni habilita su `--apply`.
 
@@ -796,40 +796,32 @@ El producto sí expone backup y restore generales mediante `Neocortex databases`
 Persistencia define el contrato; el procedimiento está en
 [RECOVERY.md](RECOVERY.md).
 
-### Reset seleccionable de estado
+### Factory reset operativo
 
-`Neocortex state reset` es una frontera de mantenimiento separada de las rutas
-de contenido y de `databases purge`. Su contrato `neocortex.state-reset/v1`
-construye un plan inmutable y exige uno de tres scopes:
+`Neocortex --factory-reset` es una frontera de mantenimiento separada de las
+rutas de contenido y de `databases purge`. Su propósito es retirar todo el
+estado operativo administrado de la raíz seleccionada: bases SQLite y sidecars,
+materializaciones de ZIP administradas bajo ella (incluido
+`state/archive-materialized`), cachés y metadatos de procesamiento. No toca
+destinos externos producidos por APIs standalone. Los originales del corpus, los
+ZIP que los contienen, la instalación, los modelos y los
+`installation-receipts` permanecen protegidos.
 
-- `runs`: limpia el ledger de ejecución de Framework y lifecycle expresamente
-  asociado, sin borrar owners de contenido ni datos de Review/recovery/curación
-  que no estén ligados por un contrato verificable;
-- `runs-and-caches`: extiende el alcance a todos los owners SQLite registrados,
-  sus sidecars y la metadata de publicación administrada, retirando la frontera
-  cross-owner como conjunto lógico;
-- `all`: agrega los artefactos no-SQLite administrados por el estado. No adopta
-  archivos desconocidos, corpus, releases, modelos ni backups externos como
-  targets.
+La invocación admite `--state-directory` como override para cercar fixtures y
+no acepta `--root`, rutas de contenido, scopes, preview/apply, backup, snapshot
+SQL, plan,
+digest, receipt durable adicional, `--apply` ni `--yes`. No procesa el corpus ni
+reconstruye contenido. La operación toma sus locks y verifica writers, procesos y
+rutas/montajes antes de retirar. Los symlinks dentro de la raíz se desvinculan
+sin tocar sus targets; no se siguen ni se borran targets externos. Rutas o
+montajes ajenos, permisos insuficientes, cambios concurrentes y targets no
+verificables producen un error con conteos parciales.
 
-El plan incluye scope, raíz, targets, referencias cruzadas, fingerprints,
-conteos/bytes, epoch y conflictos de locks/fences. El digest cubre esos datos y
-los límites efectivos, por lo que modificar scope, raíz, estado observado o
-límite entre preview y apply invalida la operación. El preview no crea estado ni
-backup. Apply adquiere exclusión fuerte, vuelve a comprobar writers, publicación,
-schemas y heads, y usa staging/rollback efímero; sólo `--backup-directory`
-explícito crea una copia durable externa. Las reservas de bytes/archivos son
-bounded; no existe un fallback que quite el límite para terminar.
-
-La implementación no simula una transacción física distribuida. Cada owner se
-respalda/retira con su contrato y el journal de reset registra baseline,
-postcondición y manifest. `runs` conserva continuidad de identificadores y
-procedencia mediante high-water mark/tombstone o un allocator equivalente; las
-referencias que no puedan conciliarse producen abstención. Si falla la
-preparación, el backup o la reversión, el estado queda `recovery_required` con
-staging/backup conservados. Un resultado `complete` sólo significa que el
-alcance local fue verificado; no inicia una corrida ni afirma efectos sobre el
-corpus, releases o modelos.
+El borrado no es una transacción física distribuida ni una autorización para
+adoptar rutas externas. Si alguna frontera impide completar el alcance
+operativo, el error conserva los conteos parciales y la CLI termina con código
+distinto de cero; no declara éxito completo por conteos esperados ni por
+ausencia posterior de una base.
 
 ## Interfaces públicas
 
@@ -849,9 +841,9 @@ corpus, releases o modelos.
   temporales/cache, procedencia, drift y cobertura. En esta cohorte es
   read-only/preview-only, con zero deletion y sin `file_actions`; no es un nuevo
   owner ni expone `apply`.
-- **API/SDK Python:** `state_reset_payload` ofrece el mismo preview/apply
-  explícito y envelope bounded; exige raíz, scope, digest y confirmación cuando
-  aplica, sin seleccionar el estado productivo por omisión.
+- **API/SDK Python:** no exponen una variante paralela del factory reset; la
+  operación destructiva completa permanece en la CLI `--factory-reset` y
+  conserva el `--state-directory` explícito para fixtures.
 - **GUI:** presentación PySide6 que delega trabajo a workers; no redefine reglas.
 - **MCP:** servidor stdio local con consultas read-only y las escrituras de
   estado advisory `curation_review`/`curation_decide`; estas últimas declaran
@@ -1036,7 +1028,7 @@ inspección de metadata, localización de ejecutable, archivos de modelo y éxit
 de procesamiento no son equivalentes.
 
 El coordinador registra consumo, espera, capacidad y fases. Writers toman exclusión
-cooperativa; backup, restore, purge y state reset requieren exclusión más fuerte. Los
+cooperativa; backup, restore, purge y factory reset requieren exclusión más fuerte. Los
 subprocesos tardíos no pueden publicar sobre un head nuevo. Un fallo alrededor
 de la frontera de efecto produce un estado conciliable, no un reintento ciego.
 
@@ -1100,18 +1092,18 @@ La prioridad y los criterios de aceptación están en
 ## Contratos consolidados de estado, mantenimiento y preparación
 
 El registro de owners expone una política versionada de tablas. Cada regla declara
-rol, fuente de reconstrucción, retención, dependencias y frontera durable. Reset,
-backup y restore consumen ese mismo mapa; las tablas desconocidas, incluso vacías,
-no se convierten en proyecciones descartables. Framework, Inventory y Catalog
-conservan una barrera operacional monotónica para distinguir historial protegido
-de trabajo reutilizable. Los assessments y las postcondiciones verifican frescura,
-autoridad y referencias por owner antes de declarar completo un reset.
+rol, fuente de reconstrucción, retención, dependencias y frontera durable. Factory
+reset, backup y restore respetan ese mismo mapa; las tablas desconocidas, incluso
+vacías, no se convierten en proyecciones descartables. Framework, Inventory y
+Catalog conservan sus barreras operacionales para distinguir historial protegido
+de trabajo reutilizable. El factory reset sólo declara el alcance físico que
+pudo retirar y verificar.
 
 El inventario de estado relaciona SQLite, artefactos, referencias y pruebas de
-reconstrucción Archive. La retirada sigue el orden de consumidores antes de sus
-fuentes de evidencia. Cada operación registra intención antes del primer staging
-y mantiene recibos que permiten reconciliar una sesión interrumpida. Las copias
-canónicas y cualquier copia única siguen protegidas.
+reconstrucción Archive. El factory reset retira únicamente los objetivos
+operativos dentro de la raíz cercada; no procesa el corpus ni adopta rutas
+externas. Las copias canónicas, los ZIP originales, la instalación, los modelos
+y los `installation-receipts` siguen protegidos.
 
 El coordinador de mantenimiento usa planes y verificadores de los owners
 existentes. La autoridad de cada scope viaja separada de su fingerprint. Framework

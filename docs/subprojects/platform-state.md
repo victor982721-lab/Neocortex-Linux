@@ -50,7 +50,7 @@ guards, intenciones y recibos. Un owner ausente, una dependencia activa, un
 ciclo o un fallo al publicar evidencia obligatoria queda en el resultado
 global como mantenimiento parcial. El estado del trabajo principal se informa
 por separado. La composición normal sólo incluye ámbitos configurados bajo
-state; no añade Corpus, HOME, cachés ajenas ni reset de bases.
+state; no añade Corpus, HOME, cachés ajenas ni una operación de factory reset.
 
 `AgentActivity.prepare(..., workspace_root=...)` permite una raíz privada
 exacta, por ejemplo `Auditorias/una-auditoria/work`. La reanudación localiza ese
@@ -146,14 +146,9 @@ compartidos y reflinks impiden afirmar exclusividad: el campo
 parcial y bytes desconocidos. La variación de espacio libre se informa como
 observación concurrente, sin prometer que coincida con los bytes retirados.
 
-Un rollback de reset compuesto conserva también el contrato del productor.
-`ArtifactRegistry.prepare_retirement_compensation` registra, antes de entrar
-al guard de retirada, el claim original y el sello de contenido bajo la
-operación durable de reset. `reconcile_restored_retirement` sólo revincula ese
-claim a bytes ya restaurados cuando la identidad nueva tiene una promoción
-`raw-rollback` registrada por la misma operación y el árbol exacto conserva
-contenido y permisos. Revalida el propietario, las dependencias y el manifiesto
-de retirada vigente; mantiene la intención, los campos y el estado originales.
-El recibo permite replay sin reescritura. Una interrupción con retirada todavía
-`applying` usa esas mismas pruebas. Claims no enrolados, cambios de contenido o
-promociones ausentes siguen requiriendo recuperación y conservan la copia raw.
+El factory reset es una operación del owner de persistencia, no una variante
+superpuesta de scratch, adopción histórica o retención. Sólo puede retirar el
+estado operacional que pertenece a la raíz de estado cercada; no consume claims
+de retirada ni crea compensaciones o receipts adicionales. Una ruta externa o
+un montaje ajeno permanece fuera de alcance y una cobertura incompleta produce
+un error con conteos parciales.

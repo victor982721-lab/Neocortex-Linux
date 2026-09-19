@@ -244,6 +244,10 @@ def _dispatch_dedupe_service(args: argparse.Namespace) -> int:
 def dispatch_direct(args: argparse.Namespace) -> int | None:
     """Run a selected direct operation, or return ``None`` for a full run."""
 
+    if getattr(args, "factory_reset", False):
+        from .factory_reset import run_factory_reset
+
+        return run_factory_reset(args)
     # Hygiene is a plan/preview/verification leaf.  Its owner import stays
     # behind parsing and validation and can never fall through to Framework or
     # a physical file-action path.

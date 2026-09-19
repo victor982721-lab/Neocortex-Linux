@@ -351,6 +351,10 @@ class HistoricalAdoption:
             metadata = os.fstat(state_fd)
             if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077:
                 raise HistoricalAuditError("adoption_state_must_be_private")
+            try:
+                fcntl.flock(state_fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise HistoricalAuditError("state_directory_factory_reset_active") from exc
             if create:
                 try:
                     os.mkdir("historical-adoptions", 0o700, dir_fd=state_fd)

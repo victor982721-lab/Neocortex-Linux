@@ -78,12 +78,12 @@ class StateStoreContract:
 
     @property
     def lifecycle_policy_version(self) -> int:
-        from neocortex.persistence.state_reset_policy import LIFECYCLE_POLICY_VERSION
+        from neocortex.persistence.state_lifecycle_policy import LIFECYCLE_POLICY_VERSION
         return LIFECYCLE_POLICY_VERSION
 
     @property
     def lifecycle_rules(self) -> tuple[TableLifecycleRule, ...]:
-        from neocortex.persistence.state_reset_policy import owner_lifecycle_rules
+        from neocortex.persistence.state_lifecycle_policy import owner_lifecycle_rules
         return owner_lifecycle_rules(self.state_owner_id)
 
     def lifecycle_rule(self, table: str) -> TableLifecycleRule | None:

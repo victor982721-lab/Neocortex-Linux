@@ -1,5 +1,30 @@
 # Handoff operativo vigente — NeoCortex
 
+**Ronda:** NEO-FACTORY-RESET-20260919.
+**Alcance:** reemplazo del reset selectivo por `Neocortex --factory-reset`.
+
+La orden elimina el estado operacional bajo la raíz seleccionada sin abrir
+SQLite, crear backups, planes/digests, snapshots ni recibos de reset. Incluye
+bases/sidecars, materializaciones Archive, caches y metadatos operacionales.
+Conserva Corpus/originales, instalación/modelos, receipts de instalación y los
+inodes de control de locks para no romper exclusión de writers. No sigue rutas
+externas desde claims ni symlinks. Backup/restore independientes no cambiaron.
+
+Se retiran el motor de reset selectivo, transformaciones por owner, su API/SDK,
+CLI anterior y compensación exclusiva; los lectores de pisos legacy conservan
+compatibilidad con estado anterior. Las reglas compartidas de lifecycle siguen
+sirviendo backup/restore y topology, no el nuevo factory reset.
+
+La aceptación usa fixtures con HOME/XDG privados: owner sparse de 14 GiB con
+WAL no vacío, materializaciones, bases inválidas/ausentes, locks activos, rutas
+protegidas, enlaces externos, cambios de mount y repetición idempotente. La
+aceptación instalada exige procesar → factory reset → procesar nuevamente sin
+reutilizar el estado anterior. No se ejecuta factory reset sobre estado real.
+Los resultados de publicación/instalación se registran fuera del producto en
+`/home/winterboss/Documentos/NeoCortex/Auditorias/2026-09-19-factory-reset/`.
+
+## Handoff anterior (histórico; no acredita el reset nuevo)
+
 **Ronda:** NEO-ADAPTIVE-OPTIMIZATION-20260919.
 **Estado:** implementación y validación proporcional terminadas.
 **Entrega:** integración directa en main; la raíz conserva Git y los recibos de publicación.

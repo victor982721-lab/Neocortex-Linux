@@ -131,6 +131,21 @@ def _path_for(state_directory: Path, checkpoint_id: str) -> Path:
     return state_directory / _CHECKPOINT_DIRECTORY / f"{checkpoint_id}.json"
 
 
+def _publish_checkpoint(state_directory: Path, checkpoint: CurationCheckpoint) -> CurationCheckpoint:
+    """Publish one checkpoint under the shared state writer lock.
+
+    The checkpoint file itself is immutable and no-replace, but that alone
+    does not exclude ``--factory-reset`` from removing its parent tree.  Keep
+    the existing framework lock as the narrow control-plane boundary; the
+    factory owner acquires the same lock before its effect.
+    """
+
+    from neocortex.runtime.control.locking import FrameworkRunLock
+
+    with FrameworkRunLock(state_directory / "framework.lock"):
+        return write_checkpoint(_path_for(state_directory, checkpoint.event_id), checkpoint)
+
+
 def _safe_root(value: object) -> CurationCheckpointRoot:
     if not isinstance(value, str) or not value or not os.path.isabs(value):
         raise CurationCheckpointApiError(
@@ -712,7 +727,7 @@ def curation_checkpoint_create_payload(
             coverage=work.coverage,
             coverage_reasons=work.coverage_reasons,
         )
-        write_checkpoint(_path_for(state_root, checkpoint.event_id), checkpoint)
+        _publish_checkpoint(state_root, checkpoint)
         return _published_payload(
             checkpoint,
             schema=CURATION_CHECKPOINT_CREATE_API_SCHEMA,
@@ -725,6 +740,7 @@ def curation_checkpoint_create_payload(
         CurationCheckpointApiError,
         CurationCheckpointError,
         OSError,
+        RuntimeError,
         TypeError,
         ValueError,
     ) as error:
@@ -915,7 +931,7 @@ def curation_checkpoint_resume_payload(
             coverage=work.coverage,
             coverage_reasons=work.coverage_reasons,
         )
-        write_checkpoint(_path_for(state_root, successor.event_id), successor)
+        _publish_checkpoint(state_root, successor)
         return _published_payload(
             successor,
             schema=CURATION_CHECKPOINT_RESUME_API_SCHEMA,
@@ -929,6 +945,7 @@ def curation_checkpoint_resume_payload(
         CurationCheckpointApiError,
         CurationCheckpointError,
         OSError,
+        RuntimeError,
         TypeError,
         ValueError,
     ) as error:

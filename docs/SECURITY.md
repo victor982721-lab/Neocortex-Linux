@@ -23,7 +23,7 @@ contenido nunca concede permisos ni se interpreta como instrucciones.
 | Adquisición externa | models prepare | Requiere autorización y procedencia |
 | Decisión | review/authorize | Registra intención; no ejecuta |
 | Corpus | rename, move, Papelera | Plan y autorización ligados al efecto |
-| Estado destructivo | state reset, restore, purge | Confirmación, plan/manifest, locks y backup |
+| Estado destructivo | `--factory-reset`, restore, purge | Factory reset: invocación explícita, writers y vallas de raíz; restore/purge conservan sus propios plan/manifest/backup |
 
 “No muta corpus” no significa read-only: una ruta normal actualiza bases y caches.
 
@@ -91,7 +91,9 @@ delete. Si no puede garantizarse reversibilidad, NeoCortex se abstiene.
 
 Un plan es inmutable y conserva evidencia, reason, verification mode y digest.
 El ledger registra intentos append-only. Un receipt no demuestra por sí solo el
-efecto: debe conciliarse con el filesystem.
+efecto: debe conciliarse con el filesystem. Esta regla aplica a las operaciones
+que tienen plan/receipt; `--factory-reset` no crea ninguno y sólo reporta el
+resultado local de su invocación.
 
 Estados inciertos no se reintentan automáticamente. `applying`,
 `applied_unverified`, `ambiguous` y `recovery_required` exigen observación y una
@@ -145,8 +147,18 @@ release o plataforma no sustituye esa revisión.
 - no borrar WAL/SHM para “reparar” una base;
 - rechazar schemas futuros y objetos incompatibles;
 - migrar sobre fixtures/copias antes del único estado;
-- backup/restore/purge/state reset toman locks y verifican manifests;
+- backup/restore/purge/factory reset toman sus locks y verifican las vallas de su
+  propio contrato;
 - una lectura que altera sidecars invalida esa corrida como evidencia.
+
+`--factory-reset` sólo puede retirar SQLite operativas y sidecars,
+materializaciones de ZIP administradas dentro de la raíz de estado seleccionada
+(incluido `state/archive-materialized`), cachés y metadatos de procesamiento.
+Las salidas de APIs standalone en destinos externos quedan fuera. Protege
+corpus y ZIP originales, instalación, modelos y `installation-receipts`;
+desvincula symlinks dentro de la raíz sin tocar sus targets y no sigue ni borra
+targets externos. Un bloqueo produce un error con conteos parciales y código de
+salida distinto de cero.
 
 ## Rutas internas y privilegios
 
@@ -170,7 +182,8 @@ externos sin autorización explícita.
 ## Incidente o efecto inesperado
 
 1. detén nuevas aplicaciones sin matar writers a ciegas;
-2. conserva logs, plan, autorización, receipt y estado;
+2. conserva logs, la salida de la operación y la evidencia previa; no inventa
+   plan, autorización o receipt para `--factory-reset`;
 3. observa proceso/cgroup y filesystem sin abrir SQLite cercada;
 4. clasifica el último estado durable;
 5. ejecuta conciliación antes de rollback o retry;

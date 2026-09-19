@@ -186,6 +186,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
+        "--factory-reset",
+        action="store_true",
+        help=(
+            "borra el estado local administrado en una sola operación; "
+            "no crea backup ni acepta plan, digest, --apply o --yes"
+        ),
+    )
+    parser.add_argument(
         "--show-groups",
         type=int,
         default=0,

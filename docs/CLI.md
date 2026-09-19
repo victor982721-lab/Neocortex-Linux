@@ -314,7 +314,7 @@ tendría que cruzar; no la implementa ni la salta:
 | `verify` | postcondición física y conciliación con identidad/receipt | Futuro; no se infiere del retorno del backend. |
 | `recovery` | estado ambiguo, receipt y siguiente decisión/reversión | Obligatorio ante fallo o drift; no hay retry automático. |
 
-`hygiene` no reemplaza `maintenance`, `state reset`, `curate apply`,
+`hygiene` no reemplaza `maintenance`, `--factory-reset`, `curate apply`,
 `machine-inventory` ni `external-maintenance`: esas superficies conservan sus
 owners y gates actuales. En particular, un `--apply` existente de scratch o de
 auditoría histórica no se vuelve accesible por incluirlo en una federación de
@@ -616,7 +616,7 @@ adoptados) nunca son candidatas ni se modifican.
 | Producción de estado | rutas, Semantic, catálogo, Review refresh, `curate review/decide` | Escribe owners; no modifica originales ni autoriza efectos |
 | Grant de autorización | `curate authorize` | Escribe un grant acotado; no aplica ni verifica un efecto físico |
 | Descarga | `--models-prepare` | Adquiere modelos de forma explícita |
-| Estado destructivo | `state reset`, `databases restore`, `databases purge` con `--apply` | Requiere confirmación, manifest/plan y locks |
+| Estado destructivo | `--factory-reset`, `databases restore`, `databases purge` con `--apply` | Factory reset usa una invocación explícita y locks; restore/purge conservan sus propios contratos |
 | Aplicación grant-bound | `curate apply` | Requiere confirmación exacta y conserva su autoridad independiente |
 | Conciliación | `curate reconcile` | Registra evidencia bounded; no reintenta ni modifica corpus |
 | Mantenimiento de scratch registrado | `maintenance --scope owned-temp|audit-work` | Plan limitado a `state_directory/scratch`; `--apply` sólo retira scratch propio `completed`, sin KIO |
@@ -877,91 +877,40 @@ Neocortex databases purge --json
 del plan según la operación. Restore publica desde staging; purge crea primero
 su backup verificable. Consulta [RECOVERY.md](RECOVERY.md).
 
-## Reset selectivo del estado
+## Factory reset operativo
 
-El comando canónico para limpiar estado local es `Neocortex state reset`. Es una
-operación distinta de `databases purge`: permite escoger cuánto estado derivado
-se retira sin tocar el corpus. El alcance es obligatorio y sólo acepta uno de
-estos valores:
+`Neocortex --factory-reset` es la operación directa para eliminar todo el estado
+operativo administrado de la raíz de estado seleccionada. Retira las bases
+SQLite y sus sidecars, las materializaciones de ZIP administradas bajo esa raíz
+(incluido
+`state/archive-materialized`), las cachés y los metadatos de procesamiento. No
+toca destinos externos producidos por APIs standalone. No lee ni procesa el
+corpus, no usa `--root`, no reconstruye materializaciones y no toca la
+instalación, los modelos ni los
+`installation-receipts`.
 
-| `--scope` | Alcance | Conserva fuera del alcance |
-|---|---|---|
-| `runs` | Ledger de ejecución de Framework y sus datos de lifecycle expresamente ligados a ese ledger | Owners SQLite de contenido, caches y metadata de publicación no ligada |
-| `runs-and-caches` | `runs` más todos los owners SQLite derivados registrados, incluidos sus WAL/SHM/journal, y la metadata de publicación necesaria para que el estado quede coherente | Artefactos no-SQLite gestionados por `all`, archivos desconocidos y backups externos |
-| `all` | `runs-and-caches` más los artefactos no-SQLite gestionados del directorio de estado | Corpus, releases, modelos, backups externos y backups canónicos de migración del catálogo |
-
-El plan enumera targets, conteos, bytes, referencias cruzadas, locks/fences y la
-estrategia de continuidad de identificadores. Si una referencia, writer,
-publicación pendiente, schema o cambio concurrente impide garantizar el alcance,
-el reset se abstiene; no borra filas de Review, recovery o curación por
-inferencia. Las tres variantes preservan los originales del corpus.
-
-Aunque estén dentro de `State`, los backups canónicos de migración del catálogo
-con nombre `document_catalog.sqlite3.pre-vN-to-vN+1-<timestamp>.sqlite3` se
-conservan con su sidecar asociado, incluido el receipt JSON homónimo
-(`...sqlite3.json`) y cualquier sidecar SQLite que pertenezca al mismo backup.
-Esta excepción sólo aplica a ese patrón canónico: una SQLite desconocida o una
-SQLite de `recovery`, `restore` o `staging` (con sus sidecars) sigue bloqueando
-el reset con abstención fail-closed.
-
-El modo predeterminado es read-only y sólo produce un plan con digest. No crea
-el backup ni modifica SQLite, sidecars, epoch, journals o artefactos gestionados:
+No es `databases purge`: no hay scopes, preview, plan, digest, snapshot SQL,
+backup o receipt durable del factory reset. La invocación principal es:
 
 ```bash
-State="$HOME/.local/state/Neocortex/state"
-Neocortex state reset --state-directory "$State" \
-  --scope runs --json
-Neocortex state reset --state-directory "$State" \
-  --scope runs-and-caches --json
-Neocortex state reset --state-directory "$State" \
-  --scope all --json
+Neocortex --factory-reset
 ```
 
-Para aplicar, el uso normal es `--yes`: el adaptador obtiene un preview nuevo,
-enlaza su `plan_digest` internamente y confirma sólo ese plan. No crea un backup
-persistentemente salvo que se indique `--backup-directory`; el staging temporal
-se elimina tras éxito o rollback verificado. El motor verifica de nuevo el plan,
-toma locks exclusivos y deja un estado conciliable ante fallo, sin retry ciego:
+No requiere banderas adicionales de aplicación o confirmación. `--state-directory` queda disponible como
+override para fixtures aislados. La operación toma sus locks y verifica
+writers, procesos y rutas/montajes antes de retirar. Los symlinks dentro de la
+raíz se desvinculan sin tocar sus targets; no se siguen ni se borran targets
+externos. Rutas o montajes ajenos, permisos insuficientes y cambios concurrentes
+producen un error con conteos parciales. La CLI termina con código distinto de
+cero y no se presenta ese efecto como factory reset completo.
 
-```bash
-Neocortex state reset --state-directory "$State" --scope runs \
-  --backup-directory "$HOME/.local/state/Neocortex/state-reset-backups/runs-20260911" \
-  --plan-digest PLAN_SHA256 --confirm-state-reset RESET_STATE \
-  --apply --json
-```
+Los archivos de coordinación de locks permanecen vacíos o sin datos de
+procesamiento para no cambiar el inode mientras un writer espera. No son
+backups, caches ni historial de ejecución.
 
-`--backup-directory` debe ser absoluto, nuevo y estar fuera de `State`; nunca se
-usa una ruta dentro del estado que se va a limpiar. La forma legacy con
-`--confirm-state-reset RESET_STATE` y `--plan-digest` se mantiene para integradores.
-En una tubería o sesión no-TTY, `--apply` sin `--yes` se rechaza con una
-instrucción concreta. El digest se liga a la raíz, alcance, fingerprints, epoch,
-referencias y límites efectivos; si cualquier dato cambia desde el preview hay
-que generar otro plan.
-
-El resultado añade `operation_status`, `operationally_fresh`, assessments y
-postcondiciones por owner. La política de tablas diferencia autoridad,
-proyecciones, trabajo operacional y schema. La frescura se acredita con una
-barrera operacional monotónica que impide reutilizar IDs históricos; conservar
-historial protegido no lo convierte en una ejecución nueva. Los backups completos
-incluyen versión de política y tablas de autoridad; restore valida esa declaración.
-
-Si una operación se interrumpe, utiliza su ID y el digest exacto del recibo:
-
-```bash
-Neocortex state reset --state-directory "$State" --scope all \
-  --reconcile-operation OPERATION_ID --receipt-digest RECEIPT_SHA256 --json
-```
-
-La reconciliación consume la intención registrada antes del primer staging,
-conserva copias únicas y se abstiene ante un estado ambiguo. No reconstruyas
-recibos manualmente ni presentes una limpieza de staging como recuperación.
-
-La salida JSON usa `neocortex.state-reset/v1` y distingue `preview` de
-`applied`, `read_only`, `scope`, `plan_digest`, backup/manifest, conteos y errores.
-Un resultado `applied` sólo acredita el reset local; no acredita una nueva
-corrida, release instalada, reconstrucción del corpus ni promoción de modelos.
-Para restaurar/conciliar usa el manifest del backup cuando se haya solicitado y
-[RECOVERY.md](RECOVERY.md).
+El factory reset sólo prueba el borrado local que pudo verificar; no prueba una
+nueva corrida, una release instalada, la reconstrucción del corpus ni la
+disponibilidad de modelos.
 
 ## Modelos y GUI
 

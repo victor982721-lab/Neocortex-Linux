@@ -396,4 +396,4 @@ replay, `curation.recovery` y `workflow.actions.file_action_recovery` consumen
 validadores públicos, sin helpers privados de safety. `FrameworkActions`
 conserva una fila y un recibo por source. Consultar un recibo o claim no autoriza
 restaurar, reintentar ni ampliar la ejecución nativa. No se requieren migración,
-reset del estado ni reclasificación de acciones históricas.
+factory reset del estado ni reclasificación de acciones históricas.

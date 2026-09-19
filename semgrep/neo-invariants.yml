@@ -95,8 +95,6 @@ rules:
         - /neocortex/persistence/framework_connection.py
         - /neocortex/persistence/framework_route_state.py
         - /neocortex/persistence/framework_state_writer.py
-        # state_reset.py opens only a verified backup-derived staging copy.
-        - /neocortex/persistence/state_reset.py
         - /neocortex/persistence/sqlite_connection.py
         - /neocortex/persistence/sqlite_immutable.py
         - /neocortex/persistence/sqlite_writer_snapshot.py

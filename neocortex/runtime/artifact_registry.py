@@ -2371,26 +2371,6 @@ class ArtifactRegistry:
         self._write_existing_registration(manifest_path, self._payload_from_record(updated))
 
     @_registry_write_locked
-    def prepare_retirement_compensation(self, artifact: str | ArtifactRecord, *,
-                                        recovery_artifact_id: str) -> ArtifactRecord:
-        """Enroll exact reset rollback evidence before the owner retirement."""
-        from neocortex.runtime.artifact_compensation import prepare
-        if self.owner is None:
-            raise ArtifactSecurityError("federated artifact registry view is read-only for compensation")
-        return prepare(self, artifact.artifact_id if isinstance(artifact, ArtifactRecord) else artifact,
-                       recovery_artifact_id=recovery_artifact_id)
-
-    @_registry_write_locked
-    def reconcile_restored_retirement(self, artifact: str | ArtifactRecord, *,
-                                      recovery_artifact_id: str,
-                                      expected_retirement_manifest_digest: str) -> ArtifactRecord:
-        """Restore only a privately enrolled claim over verified rollback bytes."""
-        from neocortex.runtime.artifact_compensation import reconcile
-        return reconcile(self, artifact.artifact_id if isinstance(artifact, ArtifactRecord) else artifact,
-                         recovery_artifact_id=recovery_artifact_id,
-                         expected_retirement_manifest_digest=expected_retirement_manifest_digest)
-
-    @_registry_write_locked
     def recover_retirements(self) -> dict[str, object]:
         """Reconcile durable retirement intents without repeating effects.
 

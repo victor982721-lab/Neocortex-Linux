@@ -18,9 +18,11 @@ destructivas usan fixtures aisladas.
 
 El cierre operativo reúne cuatro fronteras en el mismo lifecycle: (1) dedupe
 Linux/KIO recuperable, (2) `--all` con admisión, reutilización, reparación,
-normalización bounded de ZIP, clasificación y publicación, (3) reset/retención
-de estado sin backup implícito y (4) coordinación adaptativa de recursos. Cada
-frontera conserva su owner, receipt y motivo de operación; materializar un ZIP
+normalización bounded de ZIP, clasificación y publicación, (3) factory reset y
+retención de estado sin backup implícito y (4) coordinación adaptativa de
+recursos. Cada frontera conserva su owner y motivo de operación; las operaciones
+que tienen receipt lo mantienen en su propia frontera. Factory reset no crea un
+receipt adicional. Materializar un ZIP
 no retira su contenedor automáticamente y las exclusiones Semantic sólo
 proyectan visibilidad, sin borrar vectores ni diagnósticos.
 
@@ -62,13 +64,11 @@ La GUI usa la misma orden de rutas, estados y stage Semantic que la CLI: el perf
 completo se traduce al lifecycle `--all`, mientras un subconjunto guardado no se
 expande por sorpresa y el perfil piloto mantiene límites acotados. Una publicación
 Semantic pendiente posterior a epoch 0 se recupera mediante el mismo productor,
-manifest y heads de todos los modelos; no se reinicia ni se resetea el estado
-automáticamente.
-Un reset destructivo sólo ocurre mediante `Neocortex state reset` con un alcance
-seleccionado, preview y confirmación explícita. Sin `--backup-directory` no se
-crea un backup persistente; los datos no regenerables se preservan por owner.
-Si la compatibilidad no puede demostrarse, el resultado es `recovery_required`
-explicable.
+manifest y heads de todos los modelos; la GUI no dispara un factory reset ni
+cambia el estado automáticamente. El borrado operativo completo del estado sólo
+se solicita de forma explícita con `Neocortex --factory-reset`. No crea backup,
+snapshot SQL, plan, digest ni receipt adicional, no acepta `--apply`/`--yes` y
+deja fuera el corpus, la instalación, los modelos y los `installation-receipts`.
 
 ## Qué resuelve hoy
 
@@ -96,21 +96,37 @@ NeoCortex puede:
   ownership/procedencia, estados y métricas explicables, sin leer payloads ni
   producir efectos;
 - respaldar, restaurar, inspeccionar y purgar el estado mediante comandos
-  explícitos.
+  explícitos;
+- restablecer el estado operativo completo con `Neocortex --factory-reset`, sin
+  procesar el corpus.
 
-El estado derivado también puede limpiarse de forma seleccionable, siempre con
-preview y confirmación explícitos:
+### Factory reset operativo
+
+`Neocortex --factory-reset` elimina todo el estado operativo administrado dentro
+de la raíz de estado seleccionada: las bases de NeoCortex y sus sidecars, las
+materializaciones de ZIP administradas bajo esa raíz (incluido
+`state/archive-materialized`), las cachés y
+los metadatos de procesamiento. No toca destinos externos producidos por APIs
+standalone. No es un alias de
+`databases purge`, no elige scopes y no procesa archivos del corpus: no usa
+`--root`, rutas de contenido ni modelos para reconstruir nada.
+
+La orden es deliberadamente directa: no crea backup, snapshot SQL, plan, digest
+de aprobación ni receipt adicional, y no admite `--apply` ni `--yes`. Protege el
+corpus (incluidos los ZIP originales), la instalación, los modelos y los
+`installation-receipts`. La invocación principal es:
 
 ```bash
-Neocortex state reset --scope runs
-Neocortex state reset --scope runs-and-caches
-Neocortex state reset --scope all
+Neocortex --factory-reset
 ```
 
-Estas variantes no tocan el corpus, releases, modelos ni backups externos.
-`--apply --yes` enlaza un preview nuevo de forma no interactiva; también se
-conserva la forma legacy con digest y `RESET_STATE`. `--backup-directory` sólo
-se usa cuando se solicita expresamente.
+`--state-directory` queda disponible como override para fixtures aislados. La
+operación toma sus locks y verifica writers, procesos y rutas/montajes antes de
+retirar. Los symlinks dentro de la raíz se desvinculan sin tocar sus targets;
+no se siguen ni se borran targets externos. Rutas o montajes ajenos, permisos
+insuficientes y cambios concurrentes producen un error con conteos parciales.
+La CLI termina con código distinto de cero y no presenta ese efecto como factory
+reset completo.
 
 El recorrido físico Linux usa el backend KIO nativo receipt-bound con claim
 same-filesystem/no-replace, sin `gio trash`, borrado directo ni fallback
@@ -125,7 +141,7 @@ la restauración visual única desde Dolphin permanece como gate humano separado
 En esta etapa sólo observa y devuelve un registro/manifest de preview:
 `read_only=true`, cero `file_actions`, cero eliminaciones y ningún cambio en
 corpus, owners, configuración o sistemas externos. No es un limpiador global ni
-un alias de `maintenance`, `state reset`, `curate apply` o
+un alias de `maintenance`, `--factory-reset`, `curate apply` o
 `external-maintenance`; un eventual `--apply` pertenece a una etapa posterior.
 
 El registro de higiene relaciona cada observación con su raíz, identidad física,

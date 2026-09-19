@@ -1123,7 +1123,7 @@ class FrameworkState:
             # the visible run ledger.  Allocate explicitly inside the same
             # writer transaction so a new run can never reuse an identifier
             # still present in owner/cache provenance.
-            from neocortex.persistence.framework_run_reset import framework_next_run_id
+            from neocortex.persistence.framework_run_ids import framework_next_run_id
 
             self._connection.execute("BEGIN IMMEDIATE")
             run_id = framework_next_run_id(self._connection)
@@ -1176,7 +1176,7 @@ class FrameworkState:
             raise ValueError(f"source run {source_run_id} is still running")
         now = time.time_ns()
         with self._connection:
-            from neocortex.persistence.framework_run_reset import framework_next_run_id
+            from neocortex.persistence.framework_run_ids import framework_next_run_id
 
             self._connection.execute("BEGIN IMMEDIATE")
             run_id = framework_next_run_id(self._connection)

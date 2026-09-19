@@ -58,17 +58,3 @@ def next_operational_identity(connection: sqlite3.Connection, owner: str, table:
         raise ValueError("unknown operational identity allocator")
     row = connection.execute(f'SELECT COALESCE(MAX("{column}"),0) FROM "{table}"').fetchone()
     return max(int(row[0]), operational_identity_floor(connection, owner)) + 1
-
-
-def write_operational_barrier(
-    connection: sqlite3.Connection, owner: str, *, identity_floor: int, plan_digest: str,
-) -> None:
-    if not connection.in_transaction:
-        raise RuntimeError("reset barrier requires the owner's staged transaction")
-    floor = max(identity_floor, operational_identity_floor(connection, owner))
-    payload = {"schema": OPERATIONAL_RESET_SCHEMA, "owner": owner,
-               "identity_floor": floor, "plan_digest": plan_digest}
-    connection.execute(
-        "INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        (OPERATIONAL_RESET_KEY, json.dumps(payload, sort_keys=True, separators=(",", ":"))),
-    )

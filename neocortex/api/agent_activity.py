@@ -436,60 +436,63 @@ class AgentActivity:
         """Create and register one private activity workspace."""
 
         state = _private_root(_absolute_path(state_directory, label="state directory"), create=True)
-        normalized_id = _bounded_text(activity_id, label="activity_id", limit=_MAX_ACTIVITY_ID_BYTES)
-        normalized_owner = _canonical_activity_owner(owner)
-        if process_pid is not None and (
-            type(process_pid) is not int or process_pid < 1
-        ):
-            raise ValueError("process_pid must be a positive integer or null")
-        scratch_root = (state / "scratch" / _SCRATCH_SCOPE if workspace_root is None
-                        else _private_root(_absolute_path(workspace_root, label="workspace root"), create=True))
-        if state.is_relative_to(scratch_root) and state != scratch_root:
-            raise AgentActivityConflict("activity workspace root cannot contain its durable state")
-        registry_root = state / "artifacts"
-        registry = ArtifactRegistry(registry_root, owner=normalized_owner, create_root=True)
-        manager = ScratchManager(
-            scratch_root,
-            owner=normalized_owner,
-            create_root=True,
-            artifact_registry=registry,
-        )
-        existing = [item for item in manager.records() if _record_activity_id(item) == normalized_id]
-        if existing:
-            raise AgentActivityConflict(f"activity id is already registered: {normalized_id}")
-        activity_meta: dict[str, Any] = {
-            "schema": AGENT_ACTIVITY_SCHEMA,
-            "activity_id": normalized_id,
-            "owner": normalized_owner,
-            "workspace_root": str(scratch_root),
-        }
-        if process_pid is not None:
-            activity_meta["process_pid"] = process_pid
-        user_metadata = _safe_metadata(metadata)
-        reserved = {"schema", "activity_id", "owner", "process_pid", "workspace_root"}
-        if reserved.intersection(user_metadata):
-            raise ValueError("activity metadata contains reserved lifecycle keys")
-        activity_meta.update(user_metadata)
-        fixture_grant = None
-        if payload_profile != "strict":
-            if payload_profile != "fixture_posix_v1" or fixture_creation_grant_id is None:
-                raise AgentActivityConflict("fixture profile requires its explicit creation grant")
-            fixture_grant = manager.issue_fixture_grant(activity_id=normalized_id,
-                                creation_grant_id=fixture_creation_grant_id, authorized=fixture_authorized)
-        workspace = manager.create(
-            run_id=run_id,
-            retain_on_success=True,
-            metadata={_ACTIVITY_META_KEY: activity_meta},
-            payload_profile=payload_profile,
-            fixture_grant=fixture_grant,
-        )
-        return cls(
-            state_directory=state,
-            owner=normalized_owner,
-            manager=manager,
-            registry=registry,
-            record=workspace.record,
-        )
+        from neocortex.runtime.control.locking import state_directory_writer
+
+        with state_directory_writer(state):
+            normalized_id = _bounded_text(activity_id, label="activity_id", limit=_MAX_ACTIVITY_ID_BYTES)
+            normalized_owner = _canonical_activity_owner(owner)
+            if process_pid is not None and (
+                type(process_pid) is not int or process_pid < 1
+            ):
+                raise ValueError("process_pid must be a positive integer or null")
+            scratch_root = (state / "scratch" / _SCRATCH_SCOPE if workspace_root is None
+                            else _private_root(_absolute_path(workspace_root, label="workspace root"), create=True))
+            if state.is_relative_to(scratch_root) and state != scratch_root:
+                raise AgentActivityConflict("activity workspace root cannot contain its durable state")
+            registry_root = state / "artifacts"
+            registry = ArtifactRegistry(registry_root, owner=normalized_owner, create_root=True)
+            manager = ScratchManager(
+                scratch_root,
+                owner=normalized_owner,
+                create_root=True,
+                artifact_registry=registry,
+            )
+            existing = [item for item in manager.records() if _record_activity_id(item) == normalized_id]
+            if existing:
+                raise AgentActivityConflict(f"activity id is already registered: {normalized_id}")
+            activity_meta: dict[str, Any] = {
+                "schema": AGENT_ACTIVITY_SCHEMA,
+                "activity_id": normalized_id,
+                "owner": normalized_owner,
+                "workspace_root": str(scratch_root),
+            }
+            if process_pid is not None:
+                activity_meta["process_pid"] = process_pid
+            user_metadata = _safe_metadata(metadata)
+            reserved = {"schema", "activity_id", "owner", "process_pid", "workspace_root"}
+            if reserved.intersection(user_metadata):
+                raise ValueError("activity metadata contains reserved lifecycle keys")
+            activity_meta.update(user_metadata)
+            fixture_grant = None
+            if payload_profile != "strict":
+                if payload_profile != "fixture_posix_v1" or fixture_creation_grant_id is None:
+                    raise AgentActivityConflict("fixture profile requires its explicit creation grant")
+                fixture_grant = manager.issue_fixture_grant(activity_id=normalized_id,
+                                    creation_grant_id=fixture_creation_grant_id, authorized=fixture_authorized)
+            workspace = manager.create(
+                run_id=run_id,
+                retain_on_success=True,
+                metadata={_ACTIVITY_META_KEY: activity_meta},
+                payload_profile=payload_profile,
+                fixture_grant=fixture_grant,
+            )
+            return cls(
+                state_directory=state,
+                owner=normalized_owner,
+                manager=manager,
+                registry=registry,
+                record=workspace.record,
+            )
 
     @classmethod
     def resume(

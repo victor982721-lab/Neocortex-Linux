@@ -10,6 +10,8 @@ from __future__ import annotations
 import os
 import importlib
 import errno
+from contextlib import contextmanager
+from collections.abc import Iterator
 from pathlib import Path
 from typing import BinaryIO
 # endregion [01]
@@ -97,3 +99,25 @@ class FrameworkRunLock:
 
 
 # endregion [02]
+
+
+@contextmanager
+def state_directory_writer(path: Path) -> Iterator[None]:
+    """Share the directory fence with factory reset before creating owner roots."""
+    import fcntl
+
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    selected = path.absolute()
+    descriptor = os.open(selected.anchor, flags)
+    try:
+        for component in selected.parts[1:]:
+            child = os.open(component, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("state directory is being factory-reset") from exc
+        yield
+    finally:
+        os.close(descriptor)
