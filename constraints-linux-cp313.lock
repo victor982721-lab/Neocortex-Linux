@@ -3,7 +3,7 @@
 # this closure was resolved separately against original cp313/abi3 wheels.
 # Install with --no-index --find-links dev-resources/offline/artifacts --require-hashes.
 # Artifact origin, compatibility tags and licenses: dev-resources/offline/provenance.json.
-# Combined runtime-base, build, test-base, documents-image and optional fast-hash;
+# Combined runtime-base, build, test-base, documents-image, native-threads and optional fast-hash;
 # not the full extra.  ``xxhash`` is present only for the opt-in accelerator.
 # Inference engines/models, UI and platform integrations are intentionally absent.
 build==1.5.0 --hash=sha256:13f3eecb844759ab66efec90ca17639bbf14dc06cb2fdf37a9010322d9c50a6f
@@ -26,4 +26,5 @@ pytesseract==0.3.13 --hash=sha256:7a99c6c2ac598360693d83a416e36e0b33a67638bb9d77
 pytest==9.1.1 --hash=sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c
 rich==15.0.0 --hash=sha256:33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb
 setuptools==83.0.0 --hash=sha256:29b23c360f22f414dc7336bb39178cc7bcbf6021ed2733cde173f09dba19abb3
+threadpoolctl==3.6.0 --hash=sha256:43a0b8fd5a2928500110039e43a5eed8480b918967083ea48dc3ab9f13c4a7fb
 xxhash==3.8.1 --hash=sha256:98ee81b4b7f3023c9cb04a78cc67610baffcb5812d92f2096cb5a5efc6f19437

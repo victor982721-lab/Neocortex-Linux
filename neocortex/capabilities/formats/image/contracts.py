@@ -33,7 +33,7 @@ IMAGE_ROUTE_VERSION = "image-route-v7-no-nudenet"
 class ImageRouteConfig:
     state_path: Path
     root: Path
-    workers: int = 4
+    workers: int | None = None
     max_file_bytes: int | None = None
     max_documents: int | None = None
     retry_errors: bool = False
@@ -42,7 +42,7 @@ class ImageRouteConfig:
     memory_budget_bytes: int = 512 * 1024 * 1024
     min_free_memory_bytes: int = 1024 * 1024 * 1024
     min_free_commit_bytes: int = 1024 * 1024 * 1024
-    memory_wait_timeout_seconds: float = 60.0
+    memory_wait_timeout_seconds: float | None = None
     worker_timeout_seconds: float = 120.0
     isolate_decoders: bool = True
     document_ocr_mode: Literal["auto", "never"] = "auto"

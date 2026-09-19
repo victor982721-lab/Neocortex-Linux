@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import importlib.metadata
 import multiprocessing
+import os
 import queue
 import shutil
 import time
 from pathlib import Path
 from typing import Any, Mapping
+from neocortex.runtime.control.global_resources import current_resource_grant
+from neocortex.runtime.control.gpu_runtime import cuda_memory_snapshot, register_gpu_process
+from ..media_resources import checkpoint_before_deadline, current_media_resource, register_media_process
 
 from neocortex.platform.policy import default_whisper_model_cache
 from .models import (
@@ -78,6 +82,12 @@ def _resolve_whisper_device(device: str, cuda_devices: int) -> str:
     if resolved_device == "cuda" and cuda_devices < 1:
         raise AudioRuntimeUnavailableError(
             "Whisper device 'cuda' was requested but CTranslate2 found no CUDA device"
+        )
+    if resolved_device == "cuda" and cuda_memory_snapshot() is None:
+        if device == "auto":
+            return "cpu"
+        raise AudioRuntimeUnavailableError(
+            "Whisper CUDA memory/identity could not be observed for resource admission"
         )
     return resolved_device
 
@@ -240,6 +250,7 @@ def _transcribe_loaded_model(
     path: str,
     config: Mapping[str, object],
     runtime: WhisperRuntime,
+    checkpoint=None,
 ) -> TranscriptResult:
     segments_iterator, info = model.transcribe(
         path,
@@ -257,6 +268,8 @@ def _transcribe_loaded_model(
     text_chars = 0
     speech_seconds = 0.0
     for segment in segments_iterator:
+        if checkpoint is not None:
+            checkpoint()
         if len(result_segments) >= max_segments:
             raise AudioProcessingError(
                 "audio_segment_limit",
@@ -309,6 +322,9 @@ def _whisper_worker(task_channel, result_channel, settings: Mapping[str, object]
     """Load one model, then service sequential bounded requests."""
 
     try:
+        environment = settings.get("native_environment", {})
+        if isinstance(environment, dict):
+            os.environ.update(environment)
         download_root = settings.get("model_cache_directory")
         if download_root is not None and not isinstance(download_root, str):
             raise ValueError("invalid Whisper model cache directory")
@@ -333,6 +349,8 @@ def _whisper_worker(task_channel, result_channel, settings: Mapping[str, object]
             compute_type=runtime.resolved_compute_type,
             download_root=download_root,
             local_files_only=bool(settings["local_models_only"]),
+            cpu_threads=_configuration_int(settings, "cpu_threads") if "cpu_threads" in settings else 1,
+            num_workers=1,
         )
     except AudioRuntimeUnavailableError as exc:
         # Keep the established three-field startup protocol.  The private
@@ -355,8 +373,16 @@ def _whisper_worker(task_channel, result_channel, settings: Mapping[str, object]
         if task is None:
             return
         request_id, path, config = task
+        def checkpoint(request_id=request_id):
+            result_channel.put(("checkpoint", request_id))
+            response = task_channel.get()
+            if response != ("resume", request_id):
+                raise RuntimeError("invalid Whisper execution grant response")
         try:
-            result = _transcribe_loaded_model(model, path, config, runtime)
+            result = _transcribe_loaded_model(
+                model, path, config, runtime,
+                checkpoint=checkpoint if config.get("resource_checkpoints") else None,
+            )
         except AudioProcessingError as exc:
             result_channel.put(
                 (
@@ -409,6 +435,7 @@ class WhisperTranscriber:
         self._result_channel: Any | None = None
         self._process: Any | None = None
         self._request_id = 0
+        self._native_threads = 1
 
     def _discard_worker(self, *, terminate: bool) -> None:
         process = self._process
@@ -446,7 +473,17 @@ class WhisperTranscriber:
             if remaining <= 0:
                 raise TimeoutError(timeout_message)
             try:
-                return self._result_channel.get(timeout=min(0.25, remaining))
+                message = self._result_channel.get(timeout=min(0.25, remaining))
+                if message == ("checkpoint", self._request_id):
+                    grant = current_resource_grant()
+                    if grant is not None:
+                        checkpoint_before_deadline(
+                            grant, deadline, cancellation, TimeoutError(timeout_message),
+                        )
+                    assert self._task_channel is not None
+                    self._task_channel.put(("resume", self._request_id), timeout=1)
+                    continue
+                return message
             except queue.Empty:
                 if not self._process.is_alive():
                     raise WhisperRuntimeError(
@@ -454,6 +491,8 @@ class WhisperTranscriber:
                     ) from None
 
     def _start(self, cancellation: CancellationToken) -> None:
+        grant = current_resource_grant()
+        self._native_threads = 1 if grant is None else max(1, grant.native_threads)
         settings: dict[str, object] = {
             "model_name": self.config.model_name,
             "device": self.runtime.resolved_device,
@@ -464,6 +503,8 @@ class WhisperTranscriber:
                 else None
             ),
             "local_models_only": self.config.local_models_only,
+            "cpu_threads": self._native_threads,
+            "native_environment": {} if grant is None else grant.native_env,
         }
         self._task_channel = self._context.Queue(maxsize=1)
         self._result_channel = self._context.Queue(maxsize=1)
@@ -474,6 +515,13 @@ class WhisperTranscriber:
         )
         try:
             self._process.start()
+            identity = None
+            if current_media_resource() is not None:
+                identity = register_media_process(self._process.pid)
+            elif grant is not None:
+                identity = grant.register_process(self._process.pid)
+            if self.runtime.resolved_device == "cuda" and identity is not None:
+                register_gpu_process(*identity)
             message = self._receive_until(
                 time.monotonic() + self.config.worker_startup_timeout_seconds,
                 cancellation,
@@ -506,6 +554,10 @@ class WhisperTranscriber:
         cancellation: CancellationToken,
     ) -> TranscriptResult:
         cancellation.checkpoint()
+        grant = current_resource_grant()
+        desired = 1 if grant is None else max(1, grant.native_threads)
+        if self._process is not None and desired != self._native_threads:
+            self.close()
         self._ensure_started(cancellation)
         self._request_id += 1
         request_id = self._request_id
@@ -529,6 +581,7 @@ class WhisperTranscriber:
             "vad_filter": self.config.vad_filter,
             "max_transcript_chars": self.config.max_transcript_chars,
             "max_segments": self.config.max_segments,
+            "resource_checkpoints": current_resource_grant() is not None,
         }
 
     def _request_transcription(

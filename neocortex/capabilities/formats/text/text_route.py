@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 import stat
+import subprocess
 import sys
 import time
 import xml.etree.ElementTree as ET
@@ -45,8 +46,12 @@ from neocortex.deduplication.fingerprinting import snapshot_path, stat_matches_s
 from neocortex.deduplication.io import native_io_path
 from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, emit_progress
 
-from neocortex.runtime.control.bounded_subprocess import SubprocessOutputLimitError
+from neocortex.runtime.control.bounded_subprocess import (
+    SubprocessOutputLimitError,
+    run_bounded_capture,
+)
 from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
+from neocortex.runtime.control.memory_runtime import MemoryBudgetExceeded
 from neocortex.semantic.derivation_contracts import (
     CapabilityFailure,
     InputBinding,
@@ -112,7 +117,7 @@ _TEXT_EXTRACT_STAGE_VERSION = "2"
 # hash; the source characterization requires updating it when those symbols
 # change, which in turn changes every affected processing signature.
 _TEXT_EXTRACTOR_CONTRACT_SHA256 = (
-    "sha256:982a71b97ca4f1e5efed9a228874ddc461adda96df7798b7de178739cbf35e37"
+    "sha256:99bb9e9ddabf86269d595c8623c3e1f33ad23f4c12c9d55f0e636a295c63047f"
 )
 _TEXT_IMPLEMENTATION_SCHEMA = "neocortex.text-implementation-contract/v1"
 _TEXT_DISTRIBUTION_NAME = "neocortex-framework"
@@ -649,7 +654,7 @@ def _redacted_failure_message(exc: BaseException) -> str:
 def _failure_retry_evidence(exc: BaseException) -> tuple[bool, str]:
     """Classify only typed source failures for the bounded retry policy."""
 
-    retryable = isinstance(exc, (FileChangedError, OSError))
+    retryable = isinstance(exc, (FileChangedError, OSError, MemoryBudgetExceeded))
     return retryable, "retry" if retryable else "manual_review"
 
 
@@ -814,7 +819,7 @@ def _email_text(payload: bytes, limit: int) -> _ExtractedText:
     )
 
 
-def _extract(
+def _extract_builtin(
     payload: bytes,
     mime: str,
     path: str,
@@ -852,6 +857,63 @@ def _extract(
         truncated=truncated,
         detail=f"encoding={encoding}",
     )
+
+
+def _extract(
+    payload: bytes,
+    mime: str,
+    path: str,
+    config: TextRouteConfig,
+    selection: CapabilitySelection,
+) -> _ExtractedText:
+    """Apply effective isolation limits for legacy/direct extraction callers."""
+
+    selected = selection.selected
+    if selected is None:
+        raise TextCapabilityUnavailableError(selection)
+    if selected.implementation_id != TEXT_BUILTIN_IMPLEMENTATION_ID:
+        raise RuntimeError("Text capability selection changed before execution")
+    if config.worker_memory_bytes < 64 * 1024 * 1024:
+        raise MemoryBudgetExceeded("Text worker memory cannot fit an isolated interpreter")
+    from neocortex.runtime.control.global_resources import current_resource_grant
+
+    grant = current_resource_grant()
+    environment = dict(os.environ) if grant is None else grant.subprocess_env(os.environ)
+    for name in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        environment[name] = "1"
+    try:
+        completed = run_bounded_capture(
+            (
+                sys.executable, "-m", "neocortex.capabilities.formats.text.text_worker",
+                "--mime", mime, "--source", path,
+                "--max-input-bytes", str(len(payload)),
+                "--max-text-chars", str(config.max_text_chars),
+                "--extractor", _extract_builtin.__name__,
+            ),
+            input_bytes=payload, timeout_seconds=config.worker_timeout_seconds,
+            memory_limit_bytes=config.worker_memory_bytes,
+            stdout_limit_bytes=max(128 * 1024, config.max_text_chars * 6 + 128 * 1024),
+            stderr_limit_bytes=128 * 1024, environment=environment,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError("Text worker exceeded its execution deadline") from exc
+    if completed.returncode != 0:
+        raise RuntimeError(f"Text worker exited before publication: {completed.returncode}")
+    output = json.loads(completed.stdout)
+    if not isinstance(output, dict):
+        raise ValueError("Text worker returned an invalid response")
+    if output.get("ok") is not True:
+        errors = {"ParseError": ET.ParseError, "UnicodeError": UnicodeError,
+                  "ValueError": ValueError, "MemoryError": MemoryBudgetExceeded}
+        raise errors.get(str(output.get("error_type")), RuntimeError)(
+            str(output.get("message", "Text worker failed"))[:4096]
+        )
+    result = output.get("result")
+    if not isinstance(result, dict) or not isinstance(result.get("text"), str):
+        raise ValueError("Text worker returned an invalid representation")
+    if len(result["text"]) > config.max_text_chars:
+        raise ValueError("Text worker exceeded the admitted output bound")
+    return _ExtractedText(**result)
 
 
 def _read_exact(snapshot: FileSnapshot, limit: int, cancellation: CancellationToken) -> bytes:
@@ -965,6 +1027,154 @@ class TextRoute:
         return self.memory_gate.admit(
             max(4 * 1024 * 1024, snapshot.size * 3 + self.config.max_text_chars * 4)
         )
+
+    def _run_elastic_candidates(
+        self, connection, text_runtime_status, provenance, effective_signatures,
+        counters, selected,
+    ) -> None:
+        from neocortex.runtime.control.elastic_workers import ImmediateResult, elastic_map
+        from .text_processing import (
+            TextParseResult, TextParseWork, parse_text_work, text_worker_failure,
+        )
+
+        brokers: dict[str, CapabilityBroker] = {}
+        pending: dict[str, tuple[_TextDerivationWork, FileSnapshot, str]] = {}
+        handled_errors = (
+            FileChangedError, OSError, RuntimeError, SubprocessOutputLimitError,
+            UnicodeError, ValueError, ET.ParseError, MemoryBudgetExceeded,
+        )
+
+        def immediate(**values):
+            return ImmediateResult(TextParseResult("", completed_metrics=tuple(values.items())))
+
+        def prepare(item):
+            mime, snapshot = item
+            self.cancellation.checkpoint()
+            request = _text_capability_request(mime, snapshot.size)
+            key = request.execution_contract_fingerprint
+            broker = brokers.get(key)
+            if broker is None:
+                broker = build_runtime_capability_broker(request, statuses=(text_runtime_status,))
+                brokers[key] = broker
+            selection = broker.select(request, _TEXT_CAPABILITY_POLICY)
+            candidate_provenance = _candidate_processing_provenance(
+                provenance, mime, snapshot.path, selection,
+            )
+            signature = candidate_provenance.signature
+            effective_signatures.add(signature)
+            file_key = file_key_from_snapshot(snapshot)
+            try:
+                payload = _read_exact(
+                    snapshot, self.config.max_file_bytes or snapshot.size, self.cancellation,
+                )
+            except CancellationRequested as exc:
+                resource, revision, binding = _partial_input_binding(snapshot)
+                work = self._begin_derivation(
+                    connection, candidate_provenance, resource, revision, binding,
+                    selection, causation_id=None,
+                )
+                self._publish_cancellation(connection, work, exc)
+                raise
+            except handled_errors as exc:
+                resource, revision, binding = _partial_input_binding(snapshot)
+                work = self._begin_derivation(
+                    connection, candidate_provenance, resource, revision, binding,
+                    selection, causation_id=None,
+                )
+                retryable = self._publish_error(connection, work, snapshot, mime, exc)
+                return immediate(processed=1, errors=1, retryable_errors=int(retryable))
+
+            resource, revision, binding = _input_binding(snapshot, payload)
+            reuse_allowed = _selection_allows_reuse(selection)
+            cached_failure = (
+                None if self.config.retry_errors or not reuse_allowed
+                else read_reusable_text_failure_from_connection(
+                    connection, file_key, stage_id=_TEXT_EXTRACT_STAGE_ID,
+                    processing_signature=signature, revision_id=revision.revision_id,
+                    size=snapshot.size, mtime_ns=snapshot.mtime_ns,
+                    birthtime_ns=snapshot.birthtime_ns,
+                )
+            )
+            automatic_retry = (
+                cached_failure is not None
+                and self._claim_recoverable_retry(connection, snapshot, cached_failure)
+            )
+            if cached_failure is not None and not automatic_retry:
+                self._refresh_cached_error(connection, snapshot, file_key, signature)
+                return immediate(cache_hits=1, cached_errors=1)
+            reusable = (
+                self._reusable_derivation(connection, file_key, resource, revision, signature)
+                if reuse_allowed else None
+            )
+            work = self._begin_derivation(
+                connection, candidate_provenance, resource, revision, binding, selection,
+                causation_id=None if reusable is None else reusable[0].producer_receipt_id,
+                cache_observation=None if reusable is None else reusable[0].observation,
+            )
+            if reusable is not None:
+                # An observation belongs to this owner/connection. Consume it
+                # before preparing another candidate can mutate the same state.
+                self._publish_cache_hit(connection, work, snapshot, reusable[0])
+                delta = dict.fromkeys(counters, 0)
+                delta["cache_hits"] = 1
+                _record_extracted_counters(delta, reusable[1])
+                return immediate(**delta)
+            if selection.selected is None:
+                retryable = self._publish_error(
+                    connection, work, snapshot, mime, TextCapabilityUnavailableError(selection),
+                )
+                return immediate(processed=1, errors=1, retryable_errors=int(retryable))
+            pending[work.attempt_id] = (work, snapshot, mime)
+            return TextParseWork(
+                work.attempt_id, snapshot, mime, payload, self.config, selection, _extract_builtin,
+            )
+
+        try:
+            with elastic_map(
+                parse_text_work, self._candidates(), gate=self.memory_gate,
+                estimated_bytes=lambda item: max(
+                    4 * 1024 * 1024, item[1].size * 4 + self.config.max_text_chars * 8,
+                ),
+                prepare=prepare, executor_kind="process", cancellation=self.cancellation,
+                native_threads=1, io_slots=1,
+                io_device=lambda item: str(item[1].volume_id), phase="text.extract",
+            ) as results:
+                for result in results:
+                    self.cancellation.checkpoint()
+                    if result.completed_metrics:
+                        for name, value in result.completed_metrics:
+                            counters[name] += value
+                    else:
+                        work, snapshot, mime = pending[result.attempt_id]
+                        from neocortex.runtime.control.global_resources import current_resource_grant
+                        grant = current_resource_grant()
+                        if grant is not None:
+                            grant.checkpoint()
+                        try:
+                            if result.failure is not None:
+                                raise text_worker_failure(result.failure)
+                            if result.extracted is None:
+                                raise RuntimeError("Text worker returned no extracted representation")
+                            if snapshot_path(snapshot.path) != snapshot:
+                                raise FileChangedError("Text source changed before publication")
+                        except handled_errors as exc:
+                            retryable = self._publish_error(connection, work, snapshot, mime, exc)
+                            counters["processed"] += 1
+                            counters["errors"] += 1
+                            counters["retryable_errors"] += int(retryable)
+                        else:
+                            self._publish_success(connection, work, snapshot, result.extracted)
+                            counters["processed"] += 1
+                            counters["extracted"] += 1
+                            _record_extracted_counters(counters, result.extracted)
+                        del pending[result.attempt_id]
+                    self._emit(counters["processed"] + counters["cache_hits"], selected, counters)
+        except CancellationRequested as exc:
+            # Workers are drained by the map before this owner terminalizes
+            # every prepared attempt; no child can publish an obsolete result.
+            for work, _snapshot, _mime in pending.values():
+                self._publish_cancellation(connection, work, exc)
+            raise
 
     def _reusable_derivation(
         self,
@@ -1475,9 +1685,9 @@ class TextRoute:
                         ("diagnostic_detail", "[redacted]"),
                         (
                             "rejections",
-                            _capability_rejections(work.capability_selection),
+                            _capability_rejections(work.capability_selection) or "no_candidates",
                         ),
-                        ("selection", "|".join(work.capability_selection.explanation)),
+                        ("selection", "|".join(work.capability_selection.explanation) or "unreported"),
                         ("recommendation", recommendation),
                     ),
                 ),
@@ -1589,191 +1799,198 @@ class TextRoute:
             UnicodeError,
             ValueError,
             ET.ParseError,
+            MemoryBudgetExceeded,
         )
         effective_signatures: set[str] = set()
         capability_brokers: dict[str, CapabilityBroker] = {}
         self._emit(0, selected, counters)
         with text_database(self.config.state_path, create=False) as connection:
             initialize_text_fts_lookup(connection)
-            for mime, snapshot in self._candidates():
-                capability_request = _text_capability_request(mime, snapshot.size)
-                broker_key = capability_request.execution_contract_fingerprint
-                capability_broker = capability_brokers.get(broker_key)
-                if capability_broker is None:
-                    capability_broker = build_runtime_capability_broker(
+            if callable(getattr(self.memory_gate, "worker_capacity", None)):
+                self._run_elastic_candidates(
+                    connection, text_runtime_status, provenance,
+                    effective_signatures, counters, selected,
+                )
+            else:
+                for mime, snapshot in self._candidates():
+                    capability_request = _text_capability_request(mime, snapshot.size)
+                    broker_key = capability_request.execution_contract_fingerprint
+                    capability_broker = capability_brokers.get(broker_key)
+                    if capability_broker is None:
+                        capability_broker = build_runtime_capability_broker(
+                            capability_request,
+                            statuses=(text_runtime_status,),
+                        )
+                        capability_brokers[broker_key] = capability_broker
+                    capability_selection = capability_broker.select(
                         capability_request,
-                        statuses=(text_runtime_status,),
+                        _TEXT_CAPABILITY_POLICY,
                     )
-                    capability_brokers[broker_key] = capability_broker
-                capability_selection = capability_broker.select(
-                    capability_request,
-                    _TEXT_CAPABILITY_POLICY,
-                )
-                candidate_provenance = _candidate_processing_provenance(
-                    provenance,
-                    mime,
-                    snapshot.path,
-                    capability_selection,
-                )
-                candidate_signature = candidate_provenance.signature
-                effective_signatures.add(candidate_signature)
-                self.cancellation.checkpoint()
-                file_key = file_key_from_snapshot(snapshot)
-                with self._admission(snapshot):
-                    try:
-                        payload = _read_exact(
-                            snapshot,
-                            self.config.max_file_bytes or snapshot.size,
-                            self.cancellation,
-                        )
-                    except CancellationRequested as exc:
-                        resource, revision, input_binding = _partial_input_binding(snapshot)
-                        work = self._begin_derivation(
-                            connection,
-                            candidate_provenance,
-                            resource,
-                            revision,
-                            input_binding,
-                            capability_selection,
-                            causation_id=None,
-                        )
-                        self._publish_cancellation(connection, work, exc)
-                        raise
-                    except handled_errors as exc:
-                        resource, revision, input_binding = _partial_input_binding(snapshot)
-                        work = self._begin_derivation(
-                            connection,
-                            candidate_provenance,
-                            resource,
-                            revision,
-                            input_binding,
-                            capability_selection,
-                            causation_id=None,
-                        )
-                        retryable = self._publish_error(
-                            connection,
-                            work,
-                            snapshot,
-                            mime,
-                            exc,
-                        )
-                        counters["processed"] += 1
-                        counters["errors"] += 1
-                        counters["retryable_errors"] += int(retryable)
-                    else:
-                        resource, revision, input_binding = _input_binding(snapshot, payload)
-                        reuse_allowed = _selection_allows_reuse(capability_selection)
-                        cached_failure = (
-                            None
-                            if self.config.retry_errors or not reuse_allowed
-                            else read_reusable_text_failure_from_connection(
-                                connection,
-                                file_key,
-                                stage_id=_TEXT_EXTRACT_STAGE_ID,
-                                processing_signature=candidate_signature,
-                                revision_id=revision.revision_id,
-                                size=snapshot.size,
-                                mtime_ns=snapshot.mtime_ns,
-                                birthtime_ns=snapshot.birthtime_ns,
-                            )
-                        )
-                        automatic_retry = (
-                            cached_failure is not None
-                            and self._claim_recoverable_retry(
-                                connection,
+                    candidate_provenance = _candidate_processing_provenance(
+                        provenance,
+                        mime,
+                        snapshot.path,
+                        capability_selection,
+                    )
+                    candidate_signature = candidate_provenance.signature
+                    effective_signatures.add(candidate_signature)
+                    self.cancellation.checkpoint()
+                    file_key = file_key_from_snapshot(snapshot)
+                    with self._admission(snapshot):
+                        try:
+                            payload = _read_exact(
                                 snapshot,
-                                cached_failure,
+                                self.config.max_file_bytes or snapshot.size,
+                                self.cancellation,
                             )
-                        )
-                        if cached_failure is not None and not automatic_retry:
-                            self._refresh_cached_error(
+                        except CancellationRequested as exc:
+                            resource, revision, input_binding = _partial_input_binding(snapshot)
+                            work = self._begin_derivation(
                                 connection,
-                                snapshot,
-                                file_key,
-                                candidate_signature,
-                            )
-                            counters["cache_hits"] += 1
-                            counters["cached_errors"] += 1
-                            completed = counters["processed"] + counters["cache_hits"]
-                            self._emit(completed, selected, counters)
-                            continue
-                        reusable_state = (
-                            self._reusable_derivation(
-                                connection,
-                                file_key,
+                                candidate_provenance,
                                 resource,
                                 revision,
-                                candidate_signature,
+                                input_binding,
+                                capability_selection,
+                                causation_id=None,
                             )
-                            if reuse_allowed
-                            else None
-                        )
-                        reusable = None if reusable_state is None else reusable_state[0]
-                        work = self._begin_derivation(
-                            connection,
-                            candidate_provenance,
-                            resource,
-                            revision,
-                            input_binding,
-                            capability_selection,
-                            causation_id=(
-                                None if reusable is None else reusable.producer_receipt_id
-                            ),
-                            cache_observation=None if reusable is None else reusable.observation,
-                        )
-                        try:
-                            self.cancellation.checkpoint()
-                        except CancellationRequested as exc:
                             self._publish_cancellation(connection, work, exc)
                             raise
-                        if reusable_state is not None:
-                            self._publish_cache_hit(
+                        except handled_errors as exc:
+                            resource, revision, input_binding = _partial_input_binding(snapshot)
+                            work = self._begin_derivation(
+                                connection,
+                                candidate_provenance,
+                                resource,
+                                revision,
+                                input_binding,
+                                capability_selection,
+                                causation_id=None,
+                            )
+                            retryable = self._publish_error(
                                 connection,
                                 work,
                                 snapshot,
-                                reusable_state[0],
+                                mime,
+                                exc,
                             )
-                            counters["cache_hits"] += 1
-                            _record_extracted_counters(counters, reusable_state[1])
+                            counters["processed"] += 1
+                            counters["errors"] += 1
+                            counters["retryable_errors"] += int(retryable)
                         else:
-                            try:
-                                extracted = _extract(
-                                    payload,
-                                    mime,
-                                    snapshot.path,
-                                    self.config,
-                                    capability_selection,
+                            resource, revision, input_binding = _input_binding(snapshot, payload)
+                            reuse_allowed = _selection_allows_reuse(capability_selection)
+                            cached_failure = (
+                                None
+                                if self.config.retry_errors or not reuse_allowed
+                                else read_reusable_text_failure_from_connection(
+                                    connection,
+                                    file_key,
+                                    stage_id=_TEXT_EXTRACT_STAGE_ID,
+                                    processing_signature=candidate_signature,
+                                    revision_id=revision.revision_id,
+                                    size=snapshot.size,
+                                    mtime_ns=snapshot.mtime_ns,
+                                    birthtime_ns=snapshot.birthtime_ns,
                                 )
+                            )
+                            automatic_retry = (
+                                cached_failure is not None
+                                and self._claim_recoverable_retry(
+                                    connection,
+                                    snapshot,
+                                    cached_failure,
+                                )
+                            )
+                            if cached_failure is not None and not automatic_retry:
+                                self._refresh_cached_error(
+                                    connection,
+                                    snapshot,
+                                    file_key,
+                                    candidate_signature,
+                                )
+                                counters["cache_hits"] += 1
+                                counters["cached_errors"] += 1
+                                completed = counters["processed"] + counters["cache_hits"]
+                                self._emit(completed, selected, counters)
+                                continue
+                            reusable_state = (
+                                self._reusable_derivation(
+                                    connection,
+                                    file_key,
+                                    resource,
+                                    revision,
+                                    candidate_signature,
+                                )
+                                if reuse_allowed
+                                else None
+                            )
+                            reusable = None if reusable_state is None else reusable_state[0]
+                            work = self._begin_derivation(
+                                connection,
+                                candidate_provenance,
+                                resource,
+                                revision,
+                                input_binding,
+                                capability_selection,
+                                causation_id=(
+                                    None if reusable is None else reusable.producer_receipt_id
+                                ),
+                                cache_observation=None if reusable is None else reusable.observation,
+                            )
+                            try:
                                 self.cancellation.checkpoint()
-                                refreshed = snapshot_path(snapshot.path)
-                                if refreshed != snapshot:
-                                    raise FileChangedError("text source changed after extraction")
                             except CancellationRequested as exc:
                                 self._publish_cancellation(connection, work, exc)
                                 raise
-                            except handled_errors as exc:
-                                retryable = self._publish_error(
+                            if reusable_state is not None:
+                                self._publish_cache_hit(
                                     connection,
                                     work,
                                     snapshot,
-                                    mime,
-                                    exc,
+                                    reusable_state[0],
                                 )
-                                counters["processed"] += 1
-                                counters["errors"] += 1
-                                counters["retryable_errors"] += int(retryable)
+                                counters["cache_hits"] += 1
+                                _record_extracted_counters(counters, reusable_state[1])
                             else:
-                                self._publish_success(
-                                    connection,
-                                    work,
-                                    snapshot,
-                                    extracted,
-                                )
-                                counters["processed"] += 1
-                                counters["extracted"] += 1
-                                _record_extracted_counters(counters, extracted)
-                completed = counters["processed"] + counters["cache_hits"]
-                self._emit(completed, selected, counters)
+                                try:
+                                    extracted = _extract(
+                                        payload,
+                                        mime,
+                                        snapshot.path,
+                                        self.config,
+                                        capability_selection,
+                                    )
+                                    self.cancellation.checkpoint()
+                                    refreshed = snapshot_path(snapshot.path)
+                                    if refreshed != snapshot:
+                                        raise FileChangedError("text source changed after extraction")
+                                except CancellationRequested as exc:
+                                    self._publish_cancellation(connection, work, exc)
+                                    raise
+                                except handled_errors as exc:
+                                    retryable = self._publish_error(
+                                        connection,
+                                        work,
+                                        snapshot,
+                                        mime,
+                                        exc,
+                                    )
+                                    counters["processed"] += 1
+                                    counters["errors"] += 1
+                                    counters["retryable_errors"] += int(retryable)
+                                else:
+                                    self._publish_success(
+                                        connection,
+                                        work,
+                                        snapshot,
+                                        extracted,
+                                    )
+                                    counters["processed"] += 1
+                                    counters["extracted"] += 1
+                                    _record_extracted_counters(counters, extracted)
+                    completed = counters["processed"] + counters["cache_hits"]
+                    self._emit(completed, selected, counters)
             pruned = 0
             if self.config.max_documents is None and not self.config.selection.active:
                 connection.execute("BEGIN IMMEDIATE")

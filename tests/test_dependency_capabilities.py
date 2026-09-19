@@ -55,6 +55,7 @@ FULL_DEPENDENCIES = (
     "faster-whisper>=1.2,<2",
     "mcp==1.29.0",
     "numpy>=2.1,<3",
+    "threadpoolctl>=3.6,<4",
     "Pillow>=12.3,<13",
     "PyMuPDF>=1.27,<2",
     "pdfminer.six>=20260107",
@@ -79,6 +80,7 @@ OPTIONAL_DEPENDENCIES = {
     "semantic": (
         "fastembed==0.8.0",
         "numpy>=2.1,<3",
+        "threadpoolctl>=3.6,<4",
         "Pillow>=12.3,<13",
     ),
     "ui": ("PySide6>=6.11,<7",),

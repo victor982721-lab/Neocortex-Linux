@@ -12,7 +12,9 @@ import sqlite3
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import copy_context
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
@@ -39,6 +41,8 @@ from neocortex.safety.corpus_access import CorpusAccessPolicy
 from neocortex.runtime.control.global_resources import (
     GlobalResourceCoordinator,
     GlobalResourceSummary,
+    resource_gate,
+    resource_scope,
 )
 from neocortex.runtime.control.incremental_gate import (
     IncrementalGateRequest,
@@ -223,6 +227,7 @@ class FrameworkOrchestrator:
         self._coordinator_lock = threading.Lock()
         self._active_coordinator: GlobalResourceCoordinator | None = None
         self._active_run: tuple[Path, int] | None = None
+        self._resource_deadline: tuple[int, Mapping[str, object]] | None = None
         self._run_budget = (
             RunBudget.from_mapping(run_budget)
             if isinstance(run_budget, Mapping)
@@ -479,14 +484,64 @@ class FrameworkOrchestrator:
             inventory=dedup_index,
         ).as_tuple()
 
-    def _resource_coordinator(self) -> GlobalResourceCoordinator | None:
-        if not self.selected_routes:
-            return None
+    def _resource_coordinator(self) -> GlobalResourceCoordinator:
+        if self._active_coordinator is not None:
+            return self._active_coordinator
+        stages = tuple(dict.fromkeys((
+            "inventory", "dedup", *self.selected_routes,
+            "catalog", "semantic", "knowledge", "preparation",
+        )))
         return GlobalResourceCoordinator(
-            self.selected_routes,
+            stages,
             global_resource_limits_from_application(self.config),
             cancellation=self._cancellation,
+            checkpoint=self._check_resource_deadline,
+            route_memory_budgets={
+                name: budget
+                for name in ("image", "docx", "office", "audio", "pdf")
+                if (budget := getattr(self.config, f"{name}_memory_budget_bytes")) is not None
+            },
         )
+
+    def _bind_resource_deadline(self, state: FrameworkState, run_id: int) -> None:
+        """Copy the published deadline once through the owner connection.
+
+        Resource waits may run on workers or block the inventory owner itself.
+        Their checkpoints must neither open SQLite nor renew the run's clock.
+        """
+
+        read_budget = getattr(state, "read_run_budget", None)
+        budget = read_budget(run_id) if callable(read_budget) else None
+        deadline = None if budget is None else budget.get("deadline_ns")
+        if budget is None or deadline is None:
+            self._resource_deadline = None
+        elif type(deadline) is not int:
+            raise RuntimeError("run budget has an invalid resource-wait deadline")
+        else:
+            monotonic_deadline = time.monotonic_ns() + deadline - time.time_ns()
+            self._resource_deadline = monotonic_deadline, dict(budget)
+
+    def _check_resource_deadline(self) -> None:
+        observation = self._resource_deadline
+        if observation is not None and time.monotonic_ns() >= observation[0]:
+            raise RunBudgetExceeded("time", observation[1])
+
+    @contextmanager
+    def _run_resource_scope(self) -> Iterator[GlobalResourceCoordinator]:
+        """Keep one adaptive budget alive through inventory and final consumers."""
+
+        previous = self._active_coordinator
+        previous_deadline = self._resource_deadline
+        coordinator = self._resource_coordinator()
+        with self._coordinator_lock:
+            self._active_coordinator = coordinator
+        try:
+            with resource_scope(coordinator):
+                yield coordinator
+        finally:
+            with self._coordinator_lock:
+                self._active_coordinator = previous
+            self._resource_deadline = previous_deadline
 
     def _run_document_organization(
         self,
@@ -693,12 +748,14 @@ class FrameworkOrchestrator:
         inventory_workload: tuple[int, int] | None = None,
     ) -> tuple[dict[str, object], GlobalResourceSummary | None]:
         coordinator: GlobalResourceCoordinator | None = None
+        previous_coordinator = self._active_coordinator
         executor: ThreadPoolExecutor | None = None
         interrupted = False
         futures: dict[Future[tuple[object, int]], str] = {}
         try:
             state.set_run_phase(run_id, "routes")
             coordinator = self._resource_coordinator()
+            coordinator.start()
             with self._coordinator_lock:
                 self._active_coordinator = coordinator
             if coordinator is not None:
@@ -736,6 +793,11 @@ class FrameworkOrchestrator:
                     int(inventory_summary.bytes_seen),
                 )
 
+            source_publications = {name: threading.Event() for name in self.selected_routes}
+
+            def source_published(route_name: str) -> None:
+                source_publications[route_name].set()
+
             def route_context(route_name: str) -> RouteExecutionContext:
                 return RouteExecutionContext(
                     config=self.config,
@@ -751,6 +813,7 @@ class FrameworkOrchestrator:
                     resource_coordinator=coordinator,
                     cancellation=self._cancellation,
                     inventory_view=inventory_view,
+                    source_published=source_published,
                 )
 
             def execute_route(route_name: str) -> tuple[object, int]:
@@ -788,6 +851,10 @@ class FrameworkOrchestrator:
                         adapter = self.route_registry[route_name]
                         if any(
                             dependency in selected and dependency not in settled
+                            and not (
+                                route_name == "video" and dependency == "audio"
+                                and source_publications[dependency].is_set()
+                            )
                             for dependency in adapter.depends_on
                         ):
                             continue
@@ -800,7 +867,7 @@ class FrameworkOrchestrator:
                             context=route_context(route_name),
                             stage="routes",
                         )
-                        future = executor.submit(execute_route, route_name)
+                        future = executor.submit(copy_context().run, execute_route, route_name)
                         futures[future] = route_name
                         pending.add(future)
                         remaining.remove(route_name)
@@ -888,7 +955,9 @@ class FrameworkOrchestrator:
             finally:
                 with self._coordinator_lock:
                     if self._active_coordinator is coordinator:
-                        self._active_coordinator = None
+                        self._active_coordinator = previous_coordinator
+                if previous_coordinator is None and coordinator is not None:
+                    coordinator.close()
 
         resource_summary = self._complete_resource_coordination(
             state,
@@ -973,7 +1042,8 @@ class FrameworkOrchestrator:
 
             clear_processing_provenance_caches()
             self._prepare_run_contract(boundary)
-            return self._run_initial_locked(boundary)
+            with self._run_resource_scope():
+                return self._run_initial_locked(boundary)
 
     def _prepare_run_contract(self, boundary: NormalInventoryBoundary) -> None:
         from neocortex.runtime.orchestration.preparation import prepare_framework_run
@@ -1268,6 +1338,7 @@ class FrameworkOrchestrator:
         publish_manifest = getattr(state, "publish_run_manifest", None)
         if callable(publish_manifest):
             publish_manifest(run_id, manifest.event_payload())
+            self._bind_resource_deadline(state, run_id)
             if self.config.document_catalog_enabled and ORGANIZABLE_ROUTE_NAMES.intersection(self.selected_routes):
                 from .organization_lifecycle import register_organization_stages
 
@@ -1323,6 +1394,43 @@ class FrameworkOrchestrator:
                 "inventory_policy_signature": boundary.effective_signature,
             },
         )
+        from neocortex.deduplication.inventory.scanner import (
+            InventoryWorkBudget, MAX_SCAN_BYTES, MAX_SCAN_FILES,
+        )
+
+        durable_budget = read_budget(run_id) if callable(read_budget) else None
+        deadline = None
+        maximum_files, maximum_bytes = MAX_SCAN_FILES, MAX_SCAN_BYTES
+        if durable_budget is not None:
+            for dimension, target in (("items", "files"), ("bytes", "bytes")):
+                limit = durable_budget.get(f"max_{dimension}")
+                if limit is None:
+                    continue
+                remaining = int(limit) - int(durable_budget[f"consumed_{dimension}"])
+                if remaining <= 0:
+                    raise RunBudgetExceeded(dimension, durable_budget)
+                if target == "files":
+                    maximum_files = min(maximum_files, remaining)
+                else:
+                    maximum_bytes = min(maximum_bytes, remaining)
+            if durable_budget.get("deadline_ns") is not None:
+                deadline = time.monotonic() + max(
+                    0.0, (int(durable_budget["deadline_ns"]) - time.time_ns()) / 1e9,
+                )
+        last_budget_check = time.monotonic()
+
+        def inventory_checkpoint() -> None:
+            nonlocal last_budget_check
+            self._cancellation.checkpoint()
+            now = time.monotonic()
+            if durable_budget is not None and now - last_budget_check >= 0.1:
+                state.check_run_budget(run_id)
+                last_budget_check = now
+
+        work_budget = InventoryWorkBudget(
+            max_files=maximum_files, max_bytes=maximum_bytes,
+            deadline_monotonic=deadline, cancellation_check=inventory_checkpoint,
+        )
         inventory = prepare_inventory(
             dedup_index,
             state,
@@ -1333,6 +1441,7 @@ class FrameworkOrchestrator:
             exclusion_policy=boundary.exclusion_policy,
             allow_incremental=allow_incremental,
             publish_portable_checkpoint=True,
+            work_budget=work_budget,
         )
         boundary.verify()
         if inventory.inventory_policy_signature != boundary.exclusion_policy.signature:
@@ -1391,6 +1500,8 @@ class FrameworkOrchestrator:
                 dedup_index,
                 keeper_policy=policy,
                 keeper_validation=verify_keeper_inputs,
+                resource_gate=resource_gate("dedup", self._active_coordinator),
+                cancellation=self._cancellation,
             ).plan(
                 scan_id,
                 progress=self.progress,
@@ -1616,32 +1727,36 @@ class FrameworkOrchestrator:
                     inventory.scan.scan_id,
                     cancellation=self._cancellation,
                 )
-            # Actions may have published a reconciliation successor.  Read
-            # the post-action summary from the owner that is already open so
-            # route reservations reflect the same generation as Code and do
-            # not reopen the WAL-backed inventory database.
-            route_inventory_summary = dedup_index.scan_summary(inventory.scan.scan_id)
-            (
-                actions,
-                route_results,
-                image_summary,
-                global_resources,
-                organization_plan,
-                organization_apply,
-            ) = self._run_initial_routes(
-                root=boundary.access_policy.root,
-                state=state,
-                run_id=run_id,
-                scan_id=inventory.scan.scan_id,
-                action_runner=action_runner,
-                plan=plan,
-                actions=actions,
-                inventory_view=inventory_view,
-                inventory_workload=(
-                    int(route_inventory_summary.files_seen),
-                    int(route_inventory_summary.bytes_seen),
-                ),
-            )
+            try:
+                # Actions may have published a reconciliation successor.  Read
+                # the post-action summary from the owner that is already open so
+                # route reservations reflect the same generation as Code and do
+                # not reopen the WAL-backed inventory database.
+                route_inventory_summary = dedup_index.scan_summary(inventory.scan.scan_id)
+                (
+                    actions,
+                    route_results,
+                    image_summary,
+                    global_resources,
+                    organization_plan,
+                    organization_apply,
+                ) = self._run_initial_routes(
+                    root=boundary.access_policy.root,
+                    state=state,
+                    run_id=run_id,
+                    scan_id=inventory.scan.scan_id,
+                    action_runner=action_runner,
+                    plan=plan,
+                    actions=actions,
+                    inventory_view=inventory_view,
+                    inventory_workload=(
+                        int(route_inventory_summary.files_seen),
+                        int(route_inventory_summary.bytes_seen),
+                    ),
+                )
+            finally:
+                if inventory_view is not None:
+                    inventory_view.close()
         return _InitialWork(
             inventory,
             plan,
@@ -2359,7 +2474,8 @@ class FrameworkOrchestrator:
 
             clear_processing_provenance_caches()
             self._prepare_run_contract(boundary)
-            return self._run_route_only_locked(boundary)
+            with self._run_resource_scope():
+                return self._run_route_only_locked(boundary)
 
     @staticmethod
     def _normalized_root(path: Path) -> str:
@@ -2639,6 +2755,11 @@ class FrameworkOrchestrator:
             "candidate_rows": copied_candidates,
             "source_candidate_rows": source.candidate_rows,
             "route_input_sources": source.route_input_sources,
+            "image_memory_budget_bytes": self.config.image_memory_budget_bytes,
+            "docx_memory_budget_bytes": self.config.docx_memory_budget_bytes,
+            "office_memory_budget_bytes": self.config.office_memory_budget_bytes,
+            "audio_memory_budget_bytes": self.config.audio_memory_budget_bytes,
+            "pdf_memory_budget_bytes": self.config.pdf_memory_budget_bytes,
             "selected_routes": list(self.selected_routes),
             "resume": self.config.resume_run_id is not None,
             "runtime_cache_home": os.environ.get(XDG_CACHE_HOME_ENVIRONMENT),
@@ -2755,6 +2876,7 @@ class FrameworkOrchestrator:
                         input_snapshot=input_snapshot,
                     ).event_payload(),
                 )
+                self._bind_resource_deadline(state, run_id)
                 if self._lifecycle_stage_runner is not None:
                     state.publish_run_stage(
                         run_id,

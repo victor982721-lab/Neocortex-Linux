@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .models import AudioProcessingError, MediaProbe
+from ..media_resources import native_subprocess_arguments
+from neocortex.runtime.control.global_resources import current_resource_grant
 from neocortex.runtime.control.bounded_subprocess import (
     SubprocessOutputLimitError,
     run_bounded_capture,
@@ -62,6 +64,8 @@ def _run_ffprobe(
     timeout_seconds: float,
     creation_flags: int,
 ) -> subprocess.CompletedProcess[bytes]:
+    grant = current_resource_grant()
+    resources = native_subprocess_arguments(grant)
     try:
         return run_bounded_capture(
             command,
@@ -69,6 +73,7 @@ def _run_ffprobe(
             stdout_limit_bytes=MAX_FFPROBE_OUTPUT_BYTES,
             stderr_limit_bytes=MAX_FFPROBE_OUTPUT_BYTES,
             creationflags=creation_flags,
+            **resources,
         )
     except subprocess.TimeoutExpired as exc:
         raise AudioProcessingError(

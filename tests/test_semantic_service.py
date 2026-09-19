@@ -375,14 +375,16 @@ def test_exact_text_replay_skips_backend_source_enumeration_and_chunking(
         "iter_text_source_records",
         lambda _state, source: iter((_text_record(),)) if source == "pdf" else iter(()),
     )
-    baseline = service.index_text_embeddings(tmp_path, source_kinds=("pdf",))
+    monkeypatch.setattr("neocortex.runtime.control.cpu_runtime.effective_cpu_count", lambda: 2)
+    baseline = service.index_text_embeddings(tmp_path, source_kinds=("pdf",), threads=2)
 
     def unexpected(*_args, **_kwargs):
         raise AssertionError("exact replay must not enumerate sources or load a backend")
 
     monkeypatch.setattr(service, "iter_text_source_records", unexpected)
     monkeypatch.setattr(service, "_backend", unexpected)
-    replay = service.index_text_embeddings(tmp_path, source_kinds=("pdf",))
+    monkeypatch.setattr("neocortex.runtime.control.cpu_runtime.effective_cpu_count", lambda: 24)
+    replay = service.index_text_embeddings(tmp_path, source_kinds=("pdf",), threads=24)
 
     assert baseline.execution_mode == "enumerated"
     assert replay.execution_mode == "exact_replay"

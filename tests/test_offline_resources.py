@@ -43,6 +43,7 @@ PROFILES = {
     "build": ("build",),
     "test-base": ("test-base",),
     "documents-image": ("documents", "image"),
+    "native-threads": ("native-threads",),
 }
 
 
@@ -81,9 +82,25 @@ def _direct(profile: str) -> list[Requirement]:
         values = project["dependencies"]
     elif profile == "build":
         values = [*metadata["build-system"]["requires"], *project["optional-dependencies"]["build"], "pip"]
+    elif profile == "native-threads":
+        # This lightweight supply profile provisions the shared controller;
+        # the semantic inference engines keep their separate installation.
+        values = [
+            value for value in project["optional-dependencies"]["semantic"]
+            if canonicalize_name(Requirement(value).name) == "threadpoolctl"
+        ]
+        assert len(values) == 1
     else:
         values = project["optional-dependencies"][profile]
     return [Requirement(value) for value in values]
+
+
+def _profile_lock(profile: str) -> Path:
+    filename = (
+        "native-threads-py3.lock" if profile == "native-threads"
+        else f"{profile}-cp313-linux-x86_64.lock"
+    )
+    return SUPPLY / "locks" / filename
 
 
 def _required(requirement: Requirement) -> bool:
@@ -149,7 +166,7 @@ def test_offline_artifacts_have_original_hashes_licenses_and_compatible_tags() -
 @pytest.mark.parametrize("profile", tuple(PROFILES))
 def test_offline_profile_locks_supply_exact_direct_and_transitive_closure(profile: str) -> None:
     artifacts = {canonicalize_name(item["name"]): item for item in _json()["artifacts"]}
-    pins = _locked(SUPPLY / "locks" / f"{profile}-cp313-linux-x86_64.lock")
+    pins = _locked(_profile_lock(profile))
     pending = [requirement for group in PROFILES[profile] for requirement in _direct(group)]
     seen = set()
     while pending:
@@ -171,7 +188,7 @@ def test_offline_profile_locks_supply_exact_direct_and_transitive_closure(profil
 def test_offline_aggregate_lock_is_exactly_the_provisioned_capabilities() -> None:
     union = {}
     for profile in PROFILES:
-        for name, pin in _locked(SUPPLY / "locks" / f"{profile}-cp313-linux-x86_64.lock").items():
+        for name, pin in _locked(_profile_lock(profile)).items():
             assert name not in union or union[name] == pin
             union[name] = pin
     assert union == _locked(ROOT / "constraints-linux-cp313.lock")

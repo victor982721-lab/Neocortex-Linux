@@ -119,7 +119,8 @@ def test_framework_cancellation_reaches_images_local_token(tmp_path):
                 original_progress(event)
             if event.operation == "image" and event.phase == "classify":
                 metrics = {metric.name: metric.value for metric in event.metrics}
-                if metrics.get("in_flight", 0):
+                if metrics.get("pending_admissions", 0):
+                    assert metrics.get("in_flight", 0) == 0
                     entered.set()
 
         # The registry owns the child token; this observes its parent without
@@ -144,7 +145,7 @@ def test_framework_cancellation_reaches_images_local_token(tmp_path):
     thread = threading.Thread(target=run)
     thread.start()
     try:
-        assert entered.wait(5), "Image did not submit work"
+        assert entered.wait(5), "Image did not queue work for resource admission"
         orchestrator.request_cancellation()
         thread.join(3)
         assert not thread.is_alive()

@@ -6,6 +6,7 @@ import os
 import stat as stat_module
 import time
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -302,10 +303,30 @@ class InventoryTraversal:
         )
 
     def run(self) -> ScanCounters:
+        from neocortex.runtime.control.global_resources import resource_gate
+
+        gate = resource_gate("inventory")
+        # Retain one metadata buffer reservation; scanning stays sequential
+        # until a measured storage-specific producer justifies more workers.
+        # CPU/I/O permits are renewed between bounded groups of observations.
+        admission = (
+            nullcontext(None) if gate is None else gate.admit(
+                32 * 1024 * 1024, io_slots=1, io_device=str(self._root.volume_id),
+                phase="inventory_metadata",
+            )
+        )
+        with admission as grant:
+            return self._run_admitted(grant)
+
+    def _run_admitted(self, grant) -> ScanCounters:
         stack: TraversalStack = [(self._root.path, None)]
+        observed = 0
         try:
             while stack:
+                if grant is not None and observed % 64 == 0:
+                    grant.checkpoint()
                 self._advance(stack)
+                observed += 1
         except BaseException as exc:
             try:
                 self._row_sink.flush()

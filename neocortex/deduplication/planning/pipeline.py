@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import time
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from itertools import islice
 from typing import Protocol
@@ -30,8 +31,8 @@ from ..domain.fingerprint_observation import ExactComparisonObservation, Fingerp
 from ..fingerprinting import (
     FULL_ALGORITHM,
     PARTIAL_ALGORITHM,
-    full_fingerprint,
     fingerprint_change_version,
+    require_fingerprint_change_version,
     stat_matches_snapshot,
 )
 from ..inventory.index import DedupIndex
@@ -55,6 +56,15 @@ type ExactMatcher = Callable[[FileSnapshot, FileSnapshot], bool | ExactCompariso
 
 class FingerprintProvider(Protocol):
     def __call__(self, snapshot: FileSnapshot, *, partial: bool) -> FingerprintObservation | tuple[bytes, bool]: ...
+
+
+type FingerprintResult = tuple[FileSnapshot, FingerprintObservation | tuple[bytes, bool] | Exception]
+
+
+class FingerprintBatchProvider(Protocol):
+    def __call__(
+        self, snapshots: Iterable[FileSnapshot], *, partial: bool, after_partial: bool = False,
+    ) -> AbstractContextManager[Iterator[FingerprintResult]]: ...
 
 
 @dataclass(slots=True)
@@ -282,7 +292,7 @@ def _store_fingerprints(index: DedupIndex, stage: str, batch: list[FingerprintRo
     cache_updates = [
         (snapshot, digest)
         for snapshot, digest, computed, _content, cache_hit in batch
-        if computed and not cache_hit
+        if computed and not cache_hit and _content is not None
     ]
     if cache_updates:
         algorithm = PARTIAL_ALGORITHM if stage == "partial" else FULL_ALGORITHM
@@ -414,6 +424,9 @@ class PlanningSession:
         exact_matcher: ExactMatcher,
         keeper_policy: KeeperPolicy | None = None,
         keeper_validation: Callable[[], None] | None = None,
+        fingerprint_batch: FingerprintBatchProvider | None = None,
+        checkpoint: Callable[[], None] | None = None,
+        metadata_scope: Callable[[], AbstractContextManager[object]] | None = None,
     ) -> None:
         self._index = index
         self._scan_id = scan_id
@@ -421,6 +434,9 @@ class PlanningSession:
         self._preview_limit = preview_limit
         self._exact_compare = exact_compare
         self._fingerprint = fingerprint
+        self._fingerprint_batch = fingerprint_batch
+        self._checkpoint = checkpoint
+        self._metadata_scope = metadata_scope
         self._capture_snapshot = capture_snapshot
         self._exact_matcher = exact_matcher
         self._keeper_policy = keeper_policy or KeeperPolicy()
@@ -438,9 +454,13 @@ class PlanningSession:
         )
 
     def run(self) -> DedupPlan:
+        if self._checkpoint is not None:
+            self._checkpoint()
         self._work.start()
         self._index.begin_planning_fingerprints()
         for size, _raw_count in self._index.size_collision_sizes(self._scan_id):
+            if self._checkpoint is not None:
+                self._checkpoint()
             self._plan_size(size)
         self._groups.flush()
         if self._keeper_validation is not None:
@@ -482,9 +502,38 @@ class PlanningSession:
     def _fingerprint_size_members(self, size: int, *, partial: bool) -> None:
         stage = "partial" if partial else "full"
         batch: list[FingerprintRow] = []
-        observations: list[tuple[FileSnapshot, KeeperRank, int]] = []
         full_observations: list[FingerprintObservation] = []
+        with self._metadata_scope() if self._metadata_scope is not None else nullcontext():
+            self._capture_size_members(size)
+        with self._fingerprint_results(self._index.iter_planning_identities(), partial=partial) as results:
+            for snapshot, result in results:
+                self._work.extend(1)
+                try:
+                    self._counters.size_candidates += 1
+                    if isinstance(result, Exception):
+                        raise result
+                    observation = self._accept_fingerprint(snapshot, result, partial=partial)
+                    batch.append((snapshot, observation.digest, observation.computed, observation.full_digest, observation.cache_hit))
+                    if partial:
+                        full_observations.append(observation)
+                    if len(batch) >= FINGERPRINT_WRITE_BATCH_SIZE:
+                        _store_fingerprints(self._index, stage, batch)
+                        self._index.store_planning_full_observations(full_observations)
+                        full_observations.clear()
+                except (OSError, FileChangedError) as exc:
+                    _record_failed_reads(self._counters, exc)
+                    self._counters.failures += 1
+                self._work.complete(
+                    "Calculando firmas parciales" if partial else "Calculando hashes completos"
+                )
+        _store_fingerprints(self._index, stage, batch)
+        self._index.store_planning_full_observations(full_observations)
+
+    def _capture_size_members(self, size: int) -> None:
+        observations: list[tuple[FileSnapshot, KeeperRank, int]] = []
         for recorded in self._index.snapshots_by_size(self._scan_id, size):
+            if self._checkpoint is not None:
+                self._checkpoint()
             try:
                 snapshot = self._capture_snapshot(recorded.path)
                 if not self._matches_recorded(snapshot, recorded):
@@ -505,26 +554,6 @@ class PlanningSession:
             finally:
                 self._work.complete("Validando identidades y alias físicos")
         self._index.store_planning_observations(observations)
-        for snapshot in self._index.iter_planning_identities():
-            self._work.extend(1)
-            try:
-                self._counters.size_candidates += 1
-                observation = self._observe_fingerprint(snapshot, partial=partial)
-                batch.append((snapshot, observation.digest, observation.computed, observation.full_digest, observation.cache_hit))
-                if partial:
-                    full_observations.append(observation)
-                if len(batch) >= FINGERPRINT_WRITE_BATCH_SIZE:
-                    _store_fingerprints(self._index, stage, batch)
-                    self._index.store_planning_full_observations(full_observations)
-                    full_observations.clear()
-            except (OSError, FileChangedError) as exc:
-                _record_failed_reads(self._counters, exc)
-                self._counters.failures += 1
-            self._work.complete(
-                "Calculando firmas parciales" if partial else "Calculando hashes completos"
-            )
-        _store_fingerprints(self._index, stage, batch)
-        self._index.store_planning_full_observations(full_observations)
 
     @staticmethod
     def _matches_recorded(snapshot: FileSnapshot, recorded: FileSnapshot) -> bool:
@@ -535,18 +564,59 @@ class PlanningSession:
             and snapshot.birthtime_ns == recorded.birthtime_ns
         )
 
-    def _observe_fingerprint(self, snapshot: FileSnapshot, *, partial: bool) -> FingerprintObservation:
-        result = self._fingerprint(snapshot, partial=partial)
+    @contextmanager
+    def _fingerprint_results(
+        self, snapshots: Iterable[FileSnapshot], *, partial: bool, after_partial: bool = False,
+    ) -> Iterator[Iterator[FingerprintResult]]:
+        if self._fingerprint_batch is not None:
+            with self._fingerprint_batch(snapshots, partial=partial, after_partial=after_partial) as results:
+                yield results
+            return
+
+        def serial() -> Iterator[FingerprintResult]:
+            for snapshot in snapshots:
+                if self._checkpoint is not None:
+                    self._checkpoint()
+                try:
+                    observation: FingerprintObservation | tuple[bytes, bool] | None = (
+                        self._index.planning_full_observation(snapshot) if after_partial else None
+                    )
+                    if observation is None:
+                        observation = self._fingerprint(snapshot, partial=partial)
+                        if after_partial:
+                            version = self._index.planning_observed_change_version(snapshot)
+                            if version is not None:
+                                try:
+                                    require_fingerprint_change_version(snapshot, version)
+                                except FileChangedError as exc:
+                                    if isinstance(observation, FingerprintObservation):
+                                        raise FingerprintReadFailure(
+                                            str(exc), full_reads=observation.full_reads,
+                                            partial_reads=observation.partial_reads,
+                                            full_read_bytes=observation.full_read_bytes,
+                                            partial_read_bytes=observation.partial_read_bytes,
+                                            validation_read_bytes=observation.validation_read_bytes,
+                                        ) from exc
+                                    raise
+                    yield snapshot, observation
+                except (OSError, FileChangedError) as exc:
+                    yield snapshot, exc
+        yield serial()
+
+    def _accept_fingerprint(
+        self, snapshot: FileSnapshot, result: FingerprintObservation | tuple[bytes, bool], *, partial: bool,
+    ) -> FingerprintObservation:
         if not isinstance(result, FingerprintObservation):
             # Preserve the established injected-provider seam used for
             # adversarial hash-collision tests. Production returns evidence.
             digest, computed = result
-            full = full_fingerprint(snapshot) if partial else digest
+            full = None if partial else digest
             result = FingerprintObservation(
                 snapshot=snapshot, algorithm=PARTIAL_ALGORITHM if partial else FULL_ALGORITHM,
                 digest=digest, full_digest=full, ctime_ns=fingerprint_change_version(snapshot),
-                computed=computed, cache_hit=not computed, full_reads=int(partial or computed),
-                partial_reads=int(partial and computed), full_read_bytes=snapshot.size if partial or computed else 0,
+                computed=computed, cache_hit=not computed and not partial,
+                full_reads=int(not partial and computed),
+                partial_reads=int(partial and computed), full_read_bytes=snapshot.size if not partial and computed else 0,
             )
         self._count_observation(result)
         return result
@@ -565,20 +635,20 @@ class PlanningSession:
         self._work.extend(full_candidates)
         self._work.report("Preparando hashes completos", force=True)
         batch: list[FingerprintRow] = []
-        for _partial_digest, snapshot in self._index.iter_planning_collision_members("partial"):
-            try:
-                observation = self._index.planning_full_observation(snapshot)
-                if observation is None:
-                    observation = self._observe_fingerprint(snapshot, partial=False)
-                else:
-                    self._count_observation(observation)
-                batch.append((snapshot, observation.digest, observation.computed, observation.full_digest, observation.cache_hit))
-                if len(batch) >= FINGERPRINT_WRITE_BATCH_SIZE:
-                    _store_fingerprints(self._index, "full", batch)
-            except FileChangedError as exc:
-                _record_failed_reads(self._counters, exc)
-                self._counters.failures += 1
-            self._work.complete("Calculando hashes completos")
+        snapshots = (snapshot for _digest, snapshot in self._index.iter_planning_collision_members("partial"))
+        with self._fingerprint_results(snapshots, partial=False, after_partial=True) as results:
+            for snapshot, result in results:
+                try:
+                    if isinstance(result, Exception):
+                        raise result
+                    observation = self._accept_fingerprint(snapshot, result, partial=False)
+                    batch.append((snapshot, observation.digest, observation.computed, observation.full_digest, observation.cache_hit))
+                    if len(batch) >= FINGERPRINT_WRITE_BATCH_SIZE:
+                        _store_fingerprints(self._index, "full", batch)
+                except (OSError, FileChangedError) as exc:
+                    _record_failed_reads(self._counters, exc)
+                    self._counters.failures += 1
+                self._work.complete("Calculando hashes completos")
         _store_fingerprints(self._index, "full", batch)
 
     def _group_full_collisions(self) -> None:

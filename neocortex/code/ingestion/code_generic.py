@@ -11,6 +11,7 @@ from .code_analyzer_common import (
     SourceMap,
     comparison_fingerprints,
     manifest_evidence,
+    manifest_syntax_language,
     searchable_chunks,
 )
 from ..code_contracts import (
@@ -112,7 +113,9 @@ _FENCED_CODE = re.compile(r"(?ms)^```(?P<language>[\w+-]*)[^\n]*\n(?P<body>.*?)^
 # region [02] Syntax probes and lexical structure
 
 
-def _syntax_diagnostics(source: CodeFileInput) -> tuple[DiagnosticRecord, ...]:
+def _syntax_diagnostics(
+    source: CodeFileInput, source_map: SourceMap,
+) -> tuple[DiagnosticRecord, ...]:
     language = source.classification.language
     try:
         if language in {"json", "jsonl"}:
@@ -127,7 +130,6 @@ def _syntax_diagnostics(source: CodeFileInput) -> tuple[DiagnosticRecord, ...]:
     except (json.JSONDecodeError, tomllib.TOMLDecodeError, ValueError) as exc:
         line_number = max(1, int(getattr(exc, "lineno", 1) or 1))
         column = max(0, int(getattr(exc, "colno", 1) or 1) - 1)
-        source_map = SourceMap.build(source.text)
         return (
             DiagnosticRecord(
                 source="stdlib-parser",
@@ -222,12 +224,19 @@ class GenericAnalyzer:
         source_map = SourceMap.build(source.text)
         symbols = _lexical_symbols(source, source_map)
         references = _lexical_references(source, source_map)
-        hints, dependencies, manifest_diagnostics = manifest_evidence(
-            Path(source.snapshot.path), source.text
-        )
-        syntax_diagnostics = _syntax_diagnostics(source)
-        diagnostics = (*manifest_diagnostics, *syntax_diagnostics)
+        path = Path(source.snapshot.path)
+        hints, dependencies, manifest_diagnostics = manifest_evidence(path, source.text)
         language = source.classification.language
+        # A successful manifest parse already checked the entire JSON/TOML
+        # document.  Failed parses keep their distinct syntax diagnostic and
+        # exact error location, as do non-manifest inputs and other languages.
+        syntax_diagnostics = (
+            () if language is not None
+            and language == manifest_syntax_language(path)
+            and not manifest_diagnostics
+            else _syntax_diagnostics(source, source_map)
+        )
+        diagnostics = (*manifest_diagnostics, *syntax_diagnostics)
         native_syntax = language in {"json", "jsonl", "toml"} and not syntax_diagnostics
         source_like = source.classification.artifact_kind in {
             ArtifactKind.SOURCE,
@@ -270,7 +279,7 @@ class GenericAnalyzer:
                 MetricRecord("symbol_count", len(symbols), confirmed=False, provenance=parser_kind),
                 MetricRecord("reference_count", len(references), confirmed=False, provenance=parser_kind),
             ),
-            chunks=searchable_chunks(source.text, config.chunk_chars),
+            chunks=searchable_chunks(source.text, config.chunk_chars, source_map=source_map),
             project_hints=hints,
             provenance={
                 "parser": parser_kind if native_syntax else None,

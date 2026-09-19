@@ -48,7 +48,7 @@ def register_docx_arguments(
         action="store_true",
         help="force one new attempt for unchanged cached DOCX errors",
     )
-    docx.add_argument("--docx-memory-budget-mb", type=int, default=512)
+    docx.add_argument("--docx-memory-budget-mb", type=int, help="aggregate route memory ceiling in MiB; default: automatic")
     docx.add_argument("--docx-min-free-memory-mb", type=int, default=1024)
     docx.add_argument("--docx-min-free-commit-mb", type=int, default=1024)
     docx.add_argument("--docx-memory-wait-timeout", type=float, default=60.0)
@@ -76,7 +76,7 @@ def validate_docx_arguments(args: argparse.Namespace) -> None:
         raise SystemExit("--docx-max-count must be positive")
     if args.docx_max_text_chars < 1:
         raise SystemExit("--docx-max-text-chars must be positive")
-    if args.docx_memory_budget_mb < 1:
+    if args.docx_memory_budget_mb is not None and args.docx_memory_budget_mb < 1:
         raise SystemExit("--docx-memory-budget-mb must be positive")
     if args.docx_min_free_memory_mb < 0 or args.docx_min_free_commit_mb < 0:
         raise SystemExit("DOCX memory headroom cannot be negative")

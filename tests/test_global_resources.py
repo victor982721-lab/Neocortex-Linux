@@ -109,10 +109,10 @@ class GlobalResourceCoordinatorTests(unittest.TestCase):
         summary = coordinator.summary()
         # Automatic capacity is derived from the effective host rather than
         # being capped at the historical 5 GiB preset.
-        self.assertEqual(summary.memory_budget_bytes, 6 * gib)
-        self.assertEqual(summary.min_free_memory_bytes, (16 * gib) // 6)
-        self.assertEqual(summary.min_free_commit_bytes, (16 * gib) // 6)
-        self.assertEqual(summary.cpu_slots, 15)
+        self.assertEqual(summary.memory_budget_bytes, 16 * gib - gib // 2)
+        self.assertEqual(summary.min_free_memory_bytes, gib // 2)
+        self.assertEqual(summary.min_free_commit_bytes, gib // 2)
+        self.assertEqual(summary.cpu_slots, 16)
 
     def test_default_cpu_sample_does_not_count_admitted_work_twice(self):
         snapshot = MemorySnapshot(10_000, 10_000, 20_000, 20_000)
@@ -175,9 +175,14 @@ class GlobalResourceCoordinatorTests(unittest.TestCase):
                     min_free_memory_bytes=0,
                     min_free_commit_bytes=0,
                 ),
+                resource_probe=lambda: {
+                    "available_physical": snapshot.available_physical,
+                    "total_physical": snapshot.total_physical,
+                    "effective_cpu_capacity": effective_cpus[0],
+                },
             )
             with coordinator.admit("pdf", 10):
-                effective_cpus[0] = 2
+                effective_cpus[0] = 1
                 with patch.object(
                     coordinator._condition, "wait", side_effect=RuntimeError("quota wait")
                 ):

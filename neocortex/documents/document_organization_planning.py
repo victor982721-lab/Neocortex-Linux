@@ -13,7 +13,7 @@ import sqlite3
 import stat
 import time
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -64,6 +64,7 @@ _WINDOWS_RESERVED_NAMES = frozenset(
 _CLIENT_ACCOUNT_ORGANIZATIONS = frozenset({"ANDRITZ"})
 _PATH_COLLATION = sqlite_path_collation()
 ORGANIZATION_CORPUS_POLICY_SCHEMA = "neocortex.organization-corpus-policy/v1"
+_ORGANIZATION_CANDIDATE_PAGE_SIZE = 128
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,7 +257,6 @@ def _canonical_regular_file(path: Path) -> bool:
 def _decompressed_ooxml_package(
     path: Path,
     scope_root: Path,
-    cache: dict[str, tuple[Path, str] | None],
 ) -> tuple[Path, str] | None:
     """Find an exact OOXML directory package enclosing ``path``.
 
@@ -267,9 +267,6 @@ def _decompressed_ooxml_package(
     incomplete.
     """
 
-    key = str(path)
-    if key in cache:
-        return cache[key]
     current = path.parent
     result: tuple[Path, str] | None = None
     while current.is_relative_to(scope_root):
@@ -290,7 +287,6 @@ def _decompressed_ooxml_package(
         if current == scope_root:
             break
         current = current.parent
-    cache[key] = result
     return result
 
 
@@ -337,10 +333,18 @@ def plan_document_organization(
             # not supersede the previous proposals or expose half a new scope.
             connection.execute("BEGIN IMMEDIATE")
             source_scope.verify(connection)
-            rows: list[sqlite3.Row] = []
-            decompressed_package_cache: dict[str, tuple[Path, str] | None] = {}
+            # Freeze membership and SQLite's path ordering without retaining
+            # every classification payload in Python. The TEMP table belongs
+            # only to this writer connection and this transaction.
+            connection.execute(
+                """CREATE TEMP TABLE organization_plan_candidates(
+                ordinal INTEGER PRIMARY KEY,source_kind TEXT NOT NULL,
+                file_key TEXT NOT NULL)"""
+            )
+            total = 0
             for candidate in connection.execute(
-                """SELECT * FROM documents WHERE active=1
+                """SELECT source_kind,file_key,path,resource_binding_json
+                FROM documents WHERE active=1
                 ORDER BY path,source_kind,file_key"""
             ):
                 if cancellation is not None:
@@ -358,7 +362,6 @@ def plan_document_organization(
                         and _decompressed_ooxml_package(
                             Path(str(candidate["path"])),
                             source_scope.root,
-                            decompressed_package_cache,
                         )
                         is not None
                     ):
@@ -368,12 +371,15 @@ def plan_document_organization(
                         # independent XML moves that split the package.
                         excluded_components += 1
                     else:
-                        rows.append(candidate)
+                        total += 1
+                        connection.execute(
+                            "INSERT INTO temp.organization_plan_candidates VALUES(?,?,?)",
+                            (total, candidate["source_kind"], candidate["file_key"]),
+                        )
                 elif assessment.reason == "source_outside_scope":
                     excluded_out_of_scope += 1
                 else:
                     unresolved_scope += 1
-            total = len(rows)
             managed_locations = {
                 (
                     str(source_kind),
@@ -398,7 +404,7 @@ def plan_document_organization(
                 blocked=0,
                 organized=0,
             )
-            for row in rows:
+            for row in _iter_organization_plan_candidates(connection, total):
                 if cancellation is not None:
                     cancellation.checkpoint()
                 considered += 1
@@ -465,6 +471,27 @@ def plan_document_organization(
             connection.rollback()
             _fail_organization_run(connection, run_id, exc)
             raise
+
+
+def _iter_organization_plan_candidates(
+    connection: sqlite3.Connection, total: int,
+) -> Iterator[sqlite3.Row]:
+    """Read one frozen key page before writes, with no per-document SELECT."""
+
+    for after in range(0, total, _ORGANIZATION_CANDIDATE_PAGE_SIZE):
+        # CROSS JOIN keeps the bounded ordinal range outside the PK lookups;
+        # payload size and unrelated catalog rows cannot amplify the page.
+        page = connection.execute(
+            """SELECT document.* FROM temp.organization_plan_candidates AS selected
+            CROSS JOIN documents AS document
+            ON document.source_kind=selected.source_kind
+            AND document.file_key=selected.file_key
+            WHERE selected.ordinal>? AND selected.ordinal<=?
+            ORDER BY selected.ordinal""",
+            (after, after + _ORGANIZATION_CANDIDATE_PAGE_SIZE),
+        ).fetchall()
+        yield from page
+        del page
 
 
 def _plan_catalog_document(

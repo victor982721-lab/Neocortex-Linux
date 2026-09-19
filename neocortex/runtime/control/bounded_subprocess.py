@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 import os
 import selectors
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -20,7 +21,10 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, Protocol, cast
+from typing import IO, Protocol, TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from .cancellation import CancellationToken
 
 
 _READ_CHUNK_BYTES = 64 * 1024
@@ -298,6 +302,32 @@ def _start_bounded_process(
             "--",
             *command,
         )
+    if os.name != "nt":
+        from .global_resources import current_resource_grant
+        from .worker_priority import background_command
+
+        if current_resource_grant() is not None:
+            # Only tools admitted as execution work receive this policy. A
+            # resolved executable avoids changing Popen's missing/permission
+            # errors for probes and unresolved commands. The launcher changes
+            # its own priority, then execs the tool in the same process group.
+            executable = command[0]
+            if os.path.isabs(executable):
+                resolved = executable if os.path.isfile(executable) and os.access(executable, os.X_OK) else None
+            elif os.path.dirname(executable):
+                candidate = os.path.join(cwd or os.getcwd(), executable)
+                resolved = candidate if os.path.isfile(candidate) and os.access(candidate, os.X_OK) else None
+            else:
+                working_directory = os.path.abspath(cwd or os.getcwd())
+                search_path = os.pathsep.join(
+                    path if os.path.isabs(path) else os.path.join(working_directory, path)
+                    for path in os.get_exec_path(environment)
+                )
+                resolved = shutil.which(executable, path=search_path)
+            if resolved is not None:
+                # Configure priority before prlimit so the launcher's Python
+                # imports do not consume the native tool's address-space cap.
+                effective_command = tuple(background_command(effective_command))
     try:
         process = subprocess.Popen(
             effective_command,
@@ -446,10 +476,15 @@ def _drain_ready_capture_stream(
     controller: _TerminationController,
     *,
     deadline: float,
+    cancellation: CancellationToken | None = None,
 ) -> None:
     """Drain one ready POSIX pipe without ever entering a blocking read."""
 
     while capture.registered:
+        if cancellation is not None:
+            cancellation.checkpoint()
+        if time.monotonic() >= deadline:
+            return
         try:
             chunk = os.read(capture.fd, _READ_CHUNK_BYTES)
         except BlockingIOError:
@@ -486,6 +521,7 @@ def _wait_for_capture_posix(
     stdout_limit_bytes: int,
     stderr_limit_bytes: int,
     deadline: float,
+    cancellation: CancellationToken | None = None,
 ) -> _CaptureWait:
     """Wait, drain, and clean up POSIX pipes under one total deadline."""
 
@@ -529,6 +565,9 @@ def _wait_for_capture_posix(
                 controller.terminate(deadline)
                 break
 
+            if cancellation is not None:
+                cancellation.checkpoint()
+
             if returncode is None:
                 try:
                     observed_returncode = process.poll()
@@ -567,6 +606,7 @@ def _wait_for_capture_posix(
                         buffers,
                         controller,
                         deadline=deadline,
+                        cancellation=cancellation,
                     )
             else:
                 # Registration can fail for a single stream, but the process
@@ -605,6 +645,7 @@ def _wait_for_capture_windows(
     *,
     timeout_seconds: float,
     deadline: float,
+    cancellation: CancellationToken | None = None,
 ) -> _CaptureWait:
     """Retain the Job Object/thread fallback for Windows installations."""
 
@@ -616,12 +657,18 @@ def _wait_for_capture_windows(
         for reader in readers:
             reader.start()
             started_readers.append(reader)
-        remaining = max(0.0, min(timeout_seconds, deadline - time.monotonic()))
-        try:
-            returncode = process.wait(timeout=remaining)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            controller.terminate(deadline)
+        while returncode is None:
+            if cancellation is not None:
+                cancellation.checkpoint()
+            remaining = max(0.0, min(timeout_seconds, deadline - time.monotonic()))
+            if remaining <= 0:
+                timed_out = True
+                controller.terminate(deadline)
+                break
+            try:
+                returncode = process.wait(timeout=min(remaining, _PROCESS_POLL_INTERVAL_SECONDS))
+            except subprocess.TimeoutExpired:
+                continue
     except BaseException as error:
         primary_error = error
         controller.terminate(deadline)
@@ -640,6 +687,7 @@ def _wait_for_capture(
     stdout_limit_bytes: int,
     stderr_limit_bytes: int,
     deadline: float,
+    cancellation: CancellationToken | None = None,
 ) -> _CaptureWait:
     if os.name != "nt":
         return _wait_for_capture_posix(
@@ -649,6 +697,7 @@ def _wait_for_capture(
             stdout_limit_bytes=stdout_limit_bytes,
             stderr_limit_bytes=stderr_limit_bytes,
             deadline=deadline,
+            cancellation=cancellation,
         )
     return _wait_for_capture_windows(
         process,
@@ -657,6 +706,7 @@ def _wait_for_capture(
         controller,
         timeout_seconds=timeout_seconds,
         deadline=deadline,
+        cancellation=cancellation,
     )
 
 
@@ -801,10 +851,13 @@ def _execute_bounded_capture(
     memory_limit_bytes: int | None,
     on_started: Callable[[int, int | None], None] | None = None,
     process_scope: _ProcessScope | None = None,
+    cancellation: CancellationToken | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     # The deadline starts before process creation so start/wait/termination,
     # reaping and descriptor cleanup share one finite budget.
     deadline = math.inf if timeout_seconds is None else time.monotonic() + timeout_seconds
+    if cancellation is not None:
+        cancellation.checkpoint()
     process, job = _start_bounded_process(
         command if process_scope is None else process_scope.prepare_command(command),
         stdin=stdin,
@@ -862,6 +915,7 @@ def _execute_bounded_capture(
         stdout_limit_bytes=stdout_limit_bytes,
         stderr_limit_bytes=stderr_limit_bytes,
         deadline=deadline,
+        cancellation=cancellation,
     )
     returncode, cleanup_errors = _finalize_capture(
         process,
@@ -900,6 +954,7 @@ def run_bounded_capture(
     memory_limit_bytes: int | None = None,
     on_started: Callable[[int, int | None], None] | None = None,
     process_scope: _ProcessScope | None = None,
+    cancellation: CancellationToken | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     """Run a child with bounded capture and deterministic descendant cleanup.
 
@@ -913,6 +968,10 @@ def run_bounded_capture(
     capture size remains bounded; closure after the leader exits is limited
     to five seconds. ``on_started`` registers PID/start ticks before capture;
     callback failure terminates and reaps the producer before propagating.
+    Coordinated execution of a resolved POSIX tool inherits lower worker
+    scheduling priority without changing the caller's priority or environment.
+    An optional cancellation token is checked before creation and throughout
+    capture; cancellation terminates and reaps the owned child before returning.
     """
 
     _validate_capture_bounds(
@@ -924,6 +983,8 @@ def run_bounded_capture(
     )
     command = tuple(os.fspath(argument) for argument in arguments)
     working_directory = None if cwd is None else os.fspath(cwd)
+    if cancellation is not None:
+        cancellation.checkpoint()
     with ExitStack() as resources:
         stdin = _prepare_stdin(resources, input_bytes)
         return _execute_bounded_capture(
@@ -938,6 +999,7 @@ def run_bounded_capture(
             memory_limit_bytes=memory_limit_bytes,
             on_started=on_started,
             process_scope=process_scope,
+            cancellation=cancellation,
         )
 
 

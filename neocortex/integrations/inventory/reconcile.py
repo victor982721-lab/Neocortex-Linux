@@ -28,6 +28,7 @@ from neocortex.progress import ProgressCallback, ProgressEvent, emit_progress
 
 if TYPE_CHECKING:
     from neocortex.enumeration.models import JournalCursor, NtfsEntry, UsnChangeBatch
+    from neocortex.deduplication.inventory.scanner import InventoryWorkBudget
 
 
 def consume_changes(*args: Any, **kwargs: Any):
@@ -317,9 +318,12 @@ def reconcile_usn_window(
     persist_checkpoint: bool = False,
     excluded_paths: Iterable[str | Path] | None = None,
     exclusion_policy: InventoryExclusionPolicy | None = None,
+    work_budget: InventoryWorkBudget | None = None,
 ) -> ReconcileResult:
     """Apply file changes through *target* and flag unsafe directory moves."""
 
+    if work_budget is not None:
+        work_budget.checkpoint()
     if start.volume != target.volume or start.journal_id != target.journal_id:
         raise RuntimeError("USN reconciliation boundaries do not share one journal")
     state = _ReconcileState()
@@ -346,8 +350,12 @@ def reconcile_usn_window(
         bytes_to_wait_for=0,
     ) as reader:
         for batch in reader.iter_until(target.next_usn):
+            if work_budget is not None:
+                work_budget.checkpoint()
             changes = _BatchChanges()
             for record in batch.records:
+                if work_budget is not None:
+                    work_budget.checkpoint()
                 _process_usn_record(
                     index,
                     scan_id,
@@ -359,6 +367,8 @@ def reconcile_usn_window(
                     changes,
                     state,
                 )
+            if work_budget is not None:
+                work_budget.checkpoint()
             safe_batch = _apply_reconcile_batch(
                 index,
                 scan_id,

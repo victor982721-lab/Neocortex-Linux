@@ -353,10 +353,12 @@ def test_default_pdf_and_docx_projections_use_current_canonical_paths() -> None:
     expected_pdf = PdfRouteConfig(
         state_path=Path("canonical-document-state") / "pdf.sqlite3",
         document_timeout_seconds=600.0,
+        memory_wait_timeout_seconds=canonical.pdf_memory_wait_timeout_seconds,
     )
     docx = docx_route_config_from_application(canonical)
     expected_docx = DocxRouteConfig(
         state_path=Path("canonical-document-state") / "docx.sqlite3",
+        memory_wait_timeout_seconds=canonical.docx_memory_wait_timeout_seconds,
     )
 
     assert requested.pdf_database == Path("requested-document-state") / "pdf.sqlite3"
@@ -596,9 +598,11 @@ def test_orchestrator_consumes_the_domain_projection() -> None:
 
     projection.assert_called_once_with(config)
     coordinator.assert_called_once_with(
-        ("first", "second"),
+        ("inventory", "dedup", "first", "second", "catalog", "semantic", "knowledge", "preparation"),
         projected,
         cancellation=orchestrator._cancellation,
+        checkpoint=orchestrator._check_resource_deadline,
+        route_memory_budgets={},
     )
     assert result is coordinator.return_value
 

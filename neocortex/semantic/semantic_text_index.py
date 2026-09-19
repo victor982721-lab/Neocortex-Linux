@@ -67,6 +67,7 @@ from .semantic_sources import (
     require_readable_source_heads,
 )
 from .semantic_schema import SemanticStateError, semantic_database
+from .semantic_resources import governed_staging, staging_batch_capacity, staging_commit_checkpoint
 from .semantic_state import (
     generation_summary,
     prepare_embedding_generation,
@@ -468,6 +469,7 @@ class _SemanticTextStagingSession:
         self._work_budget = work_budget
         self._transaction_chunks = 0
         self._transaction_items = 0
+        self._batch_size = staging_batch_capacity(STAGING_BATCH_SIZE)
 
     def _begin(self) -> None:
         self._cancellation.checkpoint()
@@ -481,6 +483,7 @@ class _SemanticTextStagingSession:
         self._connection.commit()
         self._transaction_chunks = 0
         self._transaction_items = 0
+        staging_commit_checkpoint()
 
     def stage_item(
         self,
@@ -489,14 +492,11 @@ class _SemanticTextStagingSession:
     ) -> tuple[int, int, int, bool]:
         """Stage one item while committing oversized work in bounded slices."""
 
-        self._begin()
-        _upsert_item(
-            self._connection,
-            item,
-            refresh_token=self._refresh_token,
-            updated_ns=time.time_ns(),
-            invalidate_text_on_fingerprint_change=True,
-        )
+        if self._token_counter is not None:
+            # Exact tokenization can cross a supervised process boundary.
+            # Finish the previous slice before preparing the next one.
+            self._commit()
+        item_staged = False
         chunks_staged = queued = new_jobs = 0
         chunks = iter_semantic_text_chunks(
             item.item_id,
@@ -505,8 +505,17 @@ class _SemanticTextStagingSession:
             token_counter=self._token_counter,
         )
         while True:
-            capacity = STAGING_BATCH_SIZE - self._transaction_chunks
+            if self._token_counter is not None:
+                self._commit()
+            capacity = self._batch_size - self._transaction_chunks
             batch = tuple(itertools.islice(chunks, capacity))
+            if not item_staged:
+                self._begin()
+                _upsert_item(
+                    self._connection, item, refresh_token=self._refresh_token,
+                    updated_ns=time.time_ns(), invalidate_text_on_fingerprint_change=True,
+                )
+                item_staged = True
             if not batch:
                 break
             self._begin()
@@ -535,7 +544,7 @@ class _SemanticTextStagingSession:
                 self._work_budget.mark_job_limit()
                 self._commit()
                 return chunks_staged, queued, new_jobs, False
-            if self._transaction_chunks >= STAGING_BATCH_SIZE:
+            if self._transaction_chunks >= self._batch_size:
                 self._commit()
 
         self._begin()
@@ -563,6 +572,28 @@ class _SemanticTextStagingSession:
             updated_ns=time.time_ns(),
         )
         self._commit()
+
+    def mark_unchanged_item_seen(
+        self, item: SemanticItem, base_revision: tuple[object, ...] | None,
+    ) -> bool:
+        if not _mark_unchanged_item_seen(
+            self._connection, item, base_revision=base_revision,
+            refresh_token=self._refresh_token,
+        ):
+            return False
+        self._transaction_items += 1
+        self._cancellation.checkpoint()
+        if self._transaction_items >= STAGING_BATCH_SIZE:
+            self._commit()
+        return True
+
+    def checkpoint_unchanged_sections(self) -> None:
+        """A large unchanged item still yields between bounded source slices."""
+        if self._connection.in_transaction:
+            self._commit()
+        else:
+            self._cancellation.checkpoint()
+            staging_commit_checkpoint()
 
 
 def _semantic_item_revision_key(item: SemanticItem) -> tuple[object, ...]:
@@ -608,23 +639,47 @@ def _published_item_revision_keys(
     connection: sqlite3.Connection,
     generation_id: int,
     source_kind: str,
+    *, first_item_id: str = "", batch_size: int = STAGING_BATCH_SIZE,
+    descending: bool = False,
 ) -> dict[str, tuple[object, ...] | None]:
-    """Load base item revisions, marking conflicting historical bindings unsafe."""
+    """Read one indexed identity window, preserving historical conflicts.
+
+    Deduplicate item/revision pairs in SQLite before transferring metadata:
+    an item with many chunks otherwise repeats its entire revision per chunk.
+    Source adapters need not enumerate items in this index's lexical order.
+    A descending window can reuse the same bounded read when the source is
+    traversed in reverse, without buffering source records before processing.
+    The selected window drives the CROSS JOIN so SQLite does not scan the
+    entire generation again to find each window's member revisions.
+    """
+
+    if not 1 <= batch_size <= STAGING_BATCH_SIZE:
+        raise ValueError("revision window must be within the staging batch bound")
+    comparison, ordering = ("<=", "DESC") if descending else (">=", "ASC")
 
     rows = connection.execute(
-        """SELECT member.item_id AS member_item_id,
+        f"""WITH selected_items AS (
+            SELECT DISTINCT item_id FROM embedding_generation_members
+            WHERE generation_id=? AND entity_kind='text_chunk' AND item_id{comparison}?
+            ORDER BY item_id {ordering} LIMIT ?
+        ), selected_revisions AS (
+            SELECT DISTINCT member.item_id,member.item_revision_id
+            FROM selected_items selected
+            CROSS JOIN embedding_generation_members member ON selected.item_id=member.item_id
+            WHERE member.generation_id=? AND member.entity_kind='text_chunk'
+        )
+        SELECT selected.item_id AS member_item_id,
             revision.item_id,revision.source_kind,revision.source_identity,
             revision.identity_version,revision.path,revision.content_xxh3_128,
             revision.content_bytes,revision.content_xxh3_64_guard,
             revision.provenance_json,revision.source_revision_json
-        FROM embedding_generation_members member
+        FROM selected_revisions selected
         JOIN semantic_item_revisions revision
-          ON revision.item_revision_id=member.item_revision_id
-        WHERE member.generation_id=? AND member.entity_kind='text_chunk'
-          AND revision.source_kind=?
-        ORDER BY member.item_id,revision.item_revision_id""",
-        (generation_id, source_kind),
-    ).fetchall()
+          ON revision.item_revision_id=selected.item_revision_id
+        WHERE revision.source_kind=?
+        ORDER BY selected.item_id,revision.item_revision_id""",
+        (generation_id, first_item_id, batch_size, generation_id, source_kind),
+    )
     revisions: dict[str, tuple[object, ...] | None] = {}
     for row in rows:
         item_id = str(row["member_item_id"])
@@ -663,6 +718,8 @@ def _mark_unchanged_item_seen(
     ).fetchone()
     if current is None or _semantic_item_revision_row_key(current) != current_key:
         return False
+    if not connection.in_transaction:
+        connection.execute("BEGIN IMMEDIATE")
     updated = connection.execute(
         """UPDATE semantic_items SET refresh_token=?,updated_ns=?
         WHERE item_id=? AND source_kind=? AND active=1""",
@@ -671,6 +728,7 @@ def _mark_unchanged_item_seen(
     return updated.rowcount == 1
 
 
+@governed_staging
 def _stage_source(
     database: Path,
     state_directory: Path,
@@ -721,11 +779,8 @@ def _stage_source(
     )
     with semantic_database(database) as connection:
         with sqlite_cancellation_scope(connection, bridge):
-            base_revisions = (
-                _published_item_revision_keys(connection, base_generation_id, source_kind)
-                if base_generation_id is not None
-                else {}
-            )
+            base_revisions: dict[str, tuple[object, ...] | None] = {}
+            previous_item_id: str | None = None
             session = _SemanticTextStagingSession(
                 connection,
                 generation_id=generation_id,
@@ -742,15 +797,22 @@ def _stage_source(
                 iterator = iter(grouped)
                 first = next(iterator)
                 item = first.item
-                unchanged = _mark_unchanged_item_seen(
-                    connection,
-                    item,
-                    base_revision=base_revisions.get(item.item_id),
-                    refresh_token=refresh_token,
+                if base_generation_id is not None and item.item_id not in base_revisions:
+                    session._commit()
+                    base_revisions = _published_item_revision_keys(
+                        connection, base_generation_id, source_kind,
+                        first_item_id=item.item_id,
+                        descending=previous_item_id is not None and item.item_id < previous_item_id,
+                    )
+                previous_item_id = item.item_id
+                unchanged = session.mark_unchanged_item_seen(
+                    item, base_revisions.get(item.item_id),
                 )
                 if unchanged:
-                    for _record in iterator:
+                    for record_index, _record in enumerate(iterator, 1):
                         bridge.checkpoint()
+                        if record_index % STAGING_BATCH_SIZE == 0:
+                            session.checkpoint_unchanged_sections()
                     continue
                 if not budget.try_admit_item():
                     source_complete = False

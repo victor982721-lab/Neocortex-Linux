@@ -23,6 +23,7 @@ from neocortex.runtime.control.bounded_subprocess import (
     SubprocessOutputLimitError,
     run_bounded_capture,
 )
+from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
 # endregion [01]
 
 # region [02] Implementación
@@ -146,6 +147,54 @@ def test_bounded_capture_kills_and_reaps_timeout() -> None:
         )
 
     assert captured.value.timeout == 0.05
+
+
+def test_bounded_capture_cancelled_before_launch_does_not_create_child(monkeypatch) -> None:
+    cancellation = CancellationToken()
+    cancellation.cancel()
+
+    def unexpected_child(*_args, **_kwargs):
+        pytest.fail("a cancelled capture launched a child")
+
+    monkeypatch.setattr(subprocess, "Popen", unexpected_child)
+    with pytest.raises(CancellationRequested):
+        run_bounded_capture(
+            _python("pass"), cancellation=cancellation, timeout_seconds=30,
+            stdout_limit_bytes=64, stderr_limit_bytes=64,
+        )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX owned process cancellation")
+@pytest.mark.parametrize("timeout", (30.0, None))
+@pytest.mark.parametrize("streaming", (False, True))
+def test_bounded_capture_cancellation_stops_and_reaps_active_child(timeout, streaming) -> None:
+    cancellation = CancellationToken()
+    pids: list[int] = []
+    timer = threading.Timer(0.2, cancellation.cancel)
+
+    def started(pid, _start_ticks):
+        pids.append(pid)
+        timer.start()
+
+    script = (
+        "import os,time\nwhile True:\n os.write(1,b'x'*4096)\n time.sleep(0.001)\n"
+        if streaming else "import time; time.sleep(30)"
+    )
+    began = time.monotonic()
+    try:
+        with pytest.raises(CancellationRequested):
+            run_bounded_capture(
+                _python(script), cancellation=cancellation, timeout_seconds=timeout,
+                stdout_limit_bytes=16 * 1024 * 1024, stderr_limit_bytes=64,
+                on_started=started,
+            )
+    finally:
+        timer.cancel()
+        timer.join(1)
+    assert time.monotonic() - began < 5
+    assert len(pids) == 1
+    with pytest.raises(ChildProcessError):
+        os.waitpid(pids[0], os.WNOHANG)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX selector capture behavior")

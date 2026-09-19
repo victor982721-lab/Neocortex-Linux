@@ -505,8 +505,8 @@ def test_global_default_coordination_uses_cgroup_scale_without_replacing_config(
     with coordinator.admit("text", GIB // 4):
         pass
     summary = coordinator.summary()
-    assert summary.cpu_slots == 3  # Existing policy leaves one usable CPU aside.
-    assert summary.memory_budget_bytes == 3 * GIB // 2
+    assert summary.cpu_slots == 4  # All effective CPUs are available without competition.
+    assert summary.memory_budget_bytes == 4 * GIB - GIB // 8
     assert summary.min_observed_available_memory_bytes == 3 * GIB
     explicit = GlobalResourceCoordinator(
         ("text",),

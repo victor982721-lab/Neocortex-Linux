@@ -10,6 +10,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, Mapping
 
+from ..media_resources import native_subprocess_arguments
+from neocortex.runtime.control.global_resources import current_resource_grant
 from neocortex.runtime.control.bounded_subprocess import SubprocessOutputLimitError, run_bounded_capture
 from .models import (
     SubtitleStreamProbe,
@@ -67,6 +69,8 @@ def _run_video_probe(
     timeout_seconds: float,
 ) -> subprocess.CompletedProcess[bytes]:
     creation_flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) if os.name == "nt" else 0
+    grant = current_resource_grant()
+    resources = native_subprocess_arguments(grant)
     try:
         return run_bounded_capture(
             command,
@@ -74,6 +78,7 @@ def _run_video_probe(
             stdout_limit_bytes=MAX_VIDEO_FFPROBE_OUTPUT_BYTES,
             stderr_limit_bytes=MAX_VIDEO_FFPROBE_OUTPUT_BYTES,
             creationflags=creation_flags,
+            **resources,
         )
     except subprocess.TimeoutExpired as exc:
         raise VideoProcessingError(

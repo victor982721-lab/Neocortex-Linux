@@ -934,4 +934,102 @@ def test_deadline_inside_large_item_keeps_committed_prefix_resumable(
     assert _counts(database) == (1, 261, 261)
 
 
+def test_exact_tokenization_prepares_every_batch_outside_writer_transaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "semantic.sqlite3"
+    generation_id = _generation(database, "exact-no-writer-lock")
+    records = _records(2, sections_per_item=140)
+    active_connections: list[sqlite3.Connection] = []
+    original_database = semantic_text_index.semantic_database
+    calls = 0
+
+    @contextmanager
+    def observed_database(*args, **kwargs):
+        with original_database(*args, **kwargs) as connection:
+            active_connections.append(connection)
+            try:
+                yield connection
+            finally:
+                active_connections.remove(connection)
+
+    def exact_counter(texts):
+        nonlocal calls
+        assert active_connections
+        assert not active_connections[-1].in_transaction
+        # Another owner can acquire the writer while exact processing runs.
+        with sqlite3.connect(database, timeout=0) as probe:
+            probe.execute("BEGIN IMMEDIATE")
+            probe.rollback()
+        calls += 1
+        return tuple(len(text.split()) for text in texts), 512
+
+    monkeypatch.setattr(semantic_text_index, "semantic_database", observed_database)
+    chunking = replace(CHUNKING, model_token_limit=512,
+                       tokenizer_signature="fixture-exact-tokenizer-v1")
+    first = semantic_text_index._stage_source(
+        database, database.parent, "pdf", generation_id=generation_id,
+        refresh_token="exact-owner-refresh", chunking=chunking,
+        token_counter=exact_counter, source_record_iterator=_iterator(records),
+    )
+    assert first == (2, 282, 282, True)
+    first_counts = _counts(database)
+    replay = semantic_text_index._stage_source(
+        database, database.parent, "pdf", generation_id=generation_id,
+        refresh_token="exact-owner-refresh", chunking=chunking,
+        token_counter=exact_counter, source_record_iterator=_iterator(records),
+    )
+    assert replay == first
+    assert _counts(database) == first_counts
+    assert calls > 2
+
+
+def test_governed_staging_and_exact_tokenizer_share_one_cpu_without_nested_deadlock(
+    tmp_path: Path,
+) -> None:
+    from neocortex.runtime.control.global_resources import (
+        CoordinatedMemoryGate, GlobalResourceCoordinator, GlobalResourceLimits,
+        current_resource_grant, resource_scope,
+    )
+    from neocortex.semantic.semantic_resources import (
+        CoordinatedEmbeddingBackend, retrieval_resource_scope,
+    )
+
+    database = tmp_path / "semantic.sqlite3"
+    generation_id = _generation(database, "single-cpu-staging")
+    records = _records(1, sections_per_item=140)
+    coordinator = GlobalResourceCoordinator(("semantic",), GlobalResourceLimits(
+        cpu_slots=1, memory_budget_bytes=128 * 1024 * 1024,
+        min_free_memory_bytes=0, min_free_commit_bytes=0,
+        wait_timeout_seconds=0.5, poll_interval_seconds=0.001,
+    ), cpu_load_probe=lambda: 0)
+
+    class Backend(_FixtureBackend):
+        def text_token_counts(self, texts):
+            grant = current_resource_grant()
+            assert grant is not None and grant.native_threads == 1
+            assert coordinator.summary().active_execution_requests == 1
+            return tuple(len(t.split()) for t in texts), 512
+
+    with resource_scope(coordinator), retrieval_resource_scope("semantic"):
+        backend = CoordinatedEmbeddingBackend(
+            _model(), lambda _n: Backend(_model()),
+            gate=CoordinatedMemoryGate(coordinator, "semantic"),
+            resident_bytes=8 * 1024 * 1024,
+        )
+        result = semantic_text_index._stage_source(
+            database, database.parent, "pdf", generation_id=generation_id,
+            refresh_token="single-cpu-staging-refresh",
+            chunking=replace(CHUNKING, model_token_limit=512,
+                             tokenizer_signature="fixture-tokenizer-v1"),
+            token_counter=backend.text_token_counts, source_record_iterator=_iterator(records),
+        )
+        assert result == (1, 141, 141, True)
+        assert coordinator.summary().native_threads == 0
+        assert coordinator.summary().transient_bytes == 0
+        assert coordinator.summary().peak_io_slots == 1
+    assert coordinator.summary().resident_bytes == 0
+    assert coordinator.summary().peak_cpu_slots == 1
+
+
 # endregion [02]

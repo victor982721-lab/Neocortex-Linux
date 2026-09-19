@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 from neocortex.enumeration.errors import JournalDiscontinuityError, NtfsUsnError
 from neocortex.enumeration.models import JournalCursor
@@ -13,6 +13,7 @@ from neocortex.deduplication import (
     InventoryCheckpoint,
     InventoryError,
     InventoryExclusionPolicy,
+    InventoryWorkBudget,
     ScanSummary,
 )
 from neocortex.progress import ProgressCallback, ProgressEvent, emit_progress
@@ -23,6 +24,14 @@ from neocortex.deduplication.inventory.portable import prepare_portable_inventor
 
 if TYPE_CHECKING:
     from neocortex.integrations.inventory.reconcile import ReconcileResult
+
+
+class _WorkBudgetOptions(TypedDict, total=False):
+    work_budget: InventoryWorkBudget
+
+
+def _work_budget_options(work_budget: InventoryWorkBudget | None) -> _WorkBudgetOptions:
+    return {} if work_budget is None else {"work_budget": work_budget}
 
 
 def query_journal_cursor(volume: str) -> JournalCursor:
@@ -93,7 +102,10 @@ def _try_incremental_inventory(
     *,
     progress: ProgressCallback,
     exclusion_policy: InventoryExclusionPolicy,
+    work_budget: InventoryWorkBudget | None = None,
 ) -> PreparedInventory | None:
+    if work_budget is not None:
+        work_budget.checkpoint()
     checkpoint, cursor = _checkpoint_cursor(
         index,
         root,
@@ -112,6 +124,7 @@ def _try_incremental_inventory(
             progress=progress,
             persist_checkpoint=True,
             exclusion_policy=exclusion_policy,
+            **_work_budget_options(work_budget),
         )
     except JournalDiscontinuityError:
         index.bind_inventory_checkpoint(
@@ -153,17 +166,25 @@ def _full_inventory_without_journal(
     progress: ProgressCallback,
     exclusion_policy: InventoryExclusionPolicy,
     publish_checkpoint: bool,
+    work_budget: InventoryWorkBudget | None = None,
 ) -> PreparedInventory:
     """Capture one honest portable snapshot without inventing a USN cursor."""
 
     observation = None
+    budget_options = _work_budget_options(work_budget)
+    if work_budget is not None:
+        work_budget.checkpoint()
     # ``allow_incremental`` gates journal replay, not reuse after a complete
     # portable filesystem observation. Linux still observes every file.
     if publish_checkpoint:
-        observation = prepare_portable_inventory(index, root, exclusion_policy=exclusion_policy, progress=progress)
+        observation = prepare_portable_inventory(
+            index, root, exclusion_policy=exclusion_policy, progress=progress, **budget_options
+        )
         scan = observation.scan
     else:
-        scan = index.scan(root, exclusion_policy=exclusion_policy, progress=progress)
+        scan = index.scan(root, exclusion_policy=exclusion_policy, progress=progress, **budget_options)
+    if work_budget is not None:
+        work_budget.checkpoint()
     if scan.errors:
         raise InventoryError(
             f"inventory scan {scan.scan_id} was partial with "
@@ -204,14 +225,18 @@ def _full_inventory(
     *,
     progress: ProgressCallback,
     exclusion_policy: InventoryExclusionPolicy,
+    work_budget: InventoryWorkBudget | None = None,
 ) -> PreparedInventory:
     attempt_cursor = query_journal_cursor(root.drive)
     reconciliation_records = 0
     for attempt in range(1, MAX_INVENTORY_ATTEMPTS + 1):
+        if work_budget is not None:
+            work_budget.checkpoint()
         scan = index.scan(
             root,
             exclusion_policy=exclusion_policy,
             progress=progress,
+            **_work_budget_options(work_budget),
         )
         if scan.errors:
             raise InventoryError(
@@ -227,6 +252,7 @@ def _full_inventory(
             target_cursor,
             progress=progress,
             exclusion_policy=exclusion_policy,
+            **_work_budget_options(work_budget),
         )
         reconciliation_records += reconciliation.records_seen
         if not reconciliation.requires_rescan:
@@ -285,7 +311,12 @@ def prepare_inventory(
     exclusion_policy: InventoryExclusionPolicy,
     allow_incremental: bool = True,
     publish_portable_checkpoint: bool = False,
+    work_budget: InventoryWorkBudget | None = None,
 ) -> PreparedInventory:
+    if work_budget is not None:
+        if not isinstance(work_budget, InventoryWorkBudget):
+            raise TypeError("work_budget must be an InventoryWorkBudget")
+        work_budget.checkpoint()
     started = time.perf_counter_ns()
     recovered_scan_ids = index.mark_abandoned_scans()
     if recovered_scan_ids:
@@ -308,6 +339,7 @@ def prepare_inventory(
             progress=progress,
             exclusion_policy=exclusion_policy,
             publish_checkpoint=publish_portable_checkpoint,
+            work_budget=work_budget,
         )
     else:
         try:
@@ -318,6 +350,7 @@ def prepare_inventory(
                     journal_before,
                     progress=progress,
                     exclusion_policy=exclusion_policy,
+                    work_budget=work_budget,
                 )
             if prepared is None:
                 prepared = _full_inventory(
@@ -325,6 +358,7 @@ def prepare_inventory(
                     root,
                     progress=progress,
                     exclusion_policy=exclusion_policy,
+                    work_budget=work_budget,
                 )
         except (NtfsUsnError, OSError) as exc:
             state.record_event(
@@ -343,8 +377,11 @@ def prepare_inventory(
                 progress=progress,
                 exclusion_policy=exclusion_policy,
                 publish_checkpoint=publish_portable_checkpoint,
+                work_budget=work_budget,
             )
 
+    if work_budget is not None:
+        work_budget.checkpoint()
     protected_scan_ids = set(state.referenced_inventory_scan_ids())
     protected_scan_ids.update(recovered_scan_ids)
     removed_state = index.prune_obsolete_state(protected_scan_ids=sorted(protected_scan_ids))

@@ -13,6 +13,7 @@ page per active worker and interrupted documents can resume.
 # region [01] Dependencias del módulo
 from __future__ import annotations
 import json
+import math
 import queue
 import sqlite3
 import threading
@@ -25,6 +26,9 @@ from pathlib import Path
 from typing import Any, Iterator, Literal, Protocol, cast, runtime_checkable
 
 from neocortex.deduplication import DedupIndex, FileSnapshot
+from neocortex.runtime.control.global_resources import (
+    GlobalResourceCoordinator, GlobalResourceLimits, current_resource_coordinator, resource_scope,
+)
 from neocortex.progress import (
     ProgressCallback,
     ProgressEvent,
@@ -33,6 +37,8 @@ from neocortex.progress import (
 )
 
 from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
+from neocortex.runtime.control.elastic_workers import elastic_map, ImmediateResult
+from neocortex.runtime.control.global_resources import current_resource_grant
 from .pdf_cache import binary_fingerprint
 from .pdf_derived import (
     PdfDerivedCoverage,
@@ -449,7 +455,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         global_coordinator=None,
         cancellation: CancellationToken | None = None,
     ):
-        if config.workers < 1 or config.ocr_workers < 1:
+        if any(value is not None and value < 1 for value in (config.workers, config.ocr_workers)):
             raise ValueError("PDF worker counts must be positive")
         if config.dpi < 72:
             raise ValueError("PDF OCR DPI must be at least 72")
@@ -506,7 +512,8 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         self.scan_id = scan_id
         self.progress = progress
         self.cancellation = cancellation or CancellationToken()
-        self._ocr_slots = threading.BoundedSemaphore(config.ocr_workers)
+        self._ocr_slots = (None if config.ocr_workers is None
+                           else threading.BoundedSemaphore(config.ocr_workers))
         self._recycle_lock = threading.Lock()
         self._review_reconciliation_lock = threading.Lock()
         self._review_reconciliations: list[ReviewCandidateReconciliation] = []
@@ -774,6 +781,32 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
             self._persist_review_reconciliations(batch)
 
     def run(self) -> PdfRouteSummary:
+        if self._resource_gate.global_coordinator is not None:
+            return self._run_with_resources()
+        shared = current_resource_coordinator()
+        if shared is not None:
+            shared.register_route("pdf")
+            self._resource_gate.global_coordinator = shared
+            try:
+                return self._run_with_resources()
+            finally:
+                self._resource_gate.global_coordinator = None
+        coordinator = GlobalResourceCoordinator(
+            ("pdf",), GlobalResourceLimits(
+                memory_budget_bytes=self.config.memory_budget_bytes,
+                min_free_memory_bytes=self.config.memory_backpressure_bytes,
+                min_free_commit_bytes=self.config.commit_backpressure_bytes,
+                wait_timeout_seconds=self.config.memory_wait_timeout_seconds,
+            ), cancellation=self.cancellation,
+        )
+        with resource_scope(coordinator):
+            self._resource_gate.global_coordinator = coordinator
+            try:
+                return self._run_with_resources()
+            finally:
+                self._resource_gate.global_coordinator = None
+
+    def _run_with_resources(self) -> PdfRouteSummary:
         retry_keys = getattr(self, "_recoverable_retry_keys", None)
         if retry_keys is None:
             self._recoverable_retry_keys = set()
@@ -919,35 +952,39 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         runtime: _ExtractionRuntime,
         cache_connection: sqlite3.Connection,
     ) -> None:
-        executor = ThreadPoolExecutor(
-            max_workers=self.config.workers,
-            thread_name_prefix="neocortex-pdf-worker",
-        )
         interrupted = False
+
+        def prepare(snapshot):
+            runtime.stats.total += 1
+            decision = self._is_cache_hit(snapshot, connection=cache_connection, touch=False)
+            if decision:
+                self._consume_cache_hit(runtime, cache_connection, snapshot, decision)
+                return ImmediateResult(None)
+            runtime.stats.register_cache_miss(decision)
+            context = self._prepare_worker_context(snapshot, cache_connection)
+            digest = binary_fingerprint(
+                self.index, snapshot, required=self.config.cache_validation == "full",
+            )
+            return snapshot, digest, context
+
         try:
-            max_pending = max(self.config.workers, self.config.workers * 2)
-            while runtime.pending or not runtime.exhausted:
-                self.cancellation.checkpoint()
-                self._fill_extraction_queue(
-                    runtime,
-                    cache_connection,
-                    executor,
-                    max_pending,
-                )
-                if runtime.pending:
-                    self._poll_extraction_queue(runtime, cache_connection)
+            with elastic_map(
+                lambda payload: self._process_document(*payload), runtime.iterator,
+                capacity=lambda: self._resource_gate.worker_capacity(max_workers=self.config.workers),
+                max_workers=self.config.workers, cancellation=self.cancellation,
+                prepare=prepare,
+            ) as results:
+                for result in results:
+                    if result is not None:
+                        runtime.stats.processed += 1
+                        runtime.stats.register_result(result)
+                    self._report_extraction(runtime)
+            runtime.exhausted = True
         except CancellationRequested:
             interrupted = True
-            for future in runtime.pending:
-                future.cancel()
             raise
         finally:
-            executor.shutdown(wait=True, cancel_futures=interrupted)
-            self._flush_cache_touches(
-                runtime,
-                cache_connection,
-                interrupted=interrupted,
-            )
+            self._flush_cache_touches(runtime, cache_connection, interrupted=interrupted)
 
     def _fill_extraction_queue(
         self,
@@ -1301,7 +1338,7 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
                 retry_profile_errors=self.config.retry_errors,
                 min_free_bytes=self.config.min_free_bytes,
                 resource_gate=self._resource_gate,
-                profile_memory_bytes=self._worker_memory_reservation,
+                profile_memory_bytes=effective_pdf_worker_memory_bytes(replace(self.config, ocr_mode="never")),
                 progress=self.progress,
                 cancellation=self.cancellation,
             ).run()
@@ -1724,15 +1761,15 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         with self._resource_gate.admit(
             snapshot.size,
             reservation_bytes=self._worker_memory_reservation,
-        ):
+        ) as grant:
             for attempt in range(TRANSIENT_RETRIES_PER_RUN + 1):
                 self.cancellation.checkpoint()
                 timeout_seconds = worker_context.timeout_seconds
-                if timeout_seconds is not None:
+                if timeout_seconds is not None or self.config.workers != 1:
                     result = self._process_document_isolated(
                         snapshot,
                         binary_digest,
-                        timeout_seconds=timeout_seconds,
+                        timeout_seconds=math.inf if timeout_seconds is None else timeout_seconds,
                         ocr_scale_factor=0.75**attempt,
                         worker_context=worker_context,
                     )
@@ -1745,8 +1782,12 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
                 if not result.transient or attempt >= TRANSIENT_RETRIES_PER_RUN:
                     return result
                 worker_context = self._refresh_worker_context(snapshot)
+                if grant is not None:
+                    grant.release_cpu()
                 if self.cancellation.wait(0.25):
                     self.cancellation.checkpoint()
+                if grant is not None:
+                    grant.checkpoint()
         raise RuntimeError("unreachable PDF retry state")
 
     def _process_document_isolated(
@@ -2733,6 +2774,9 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
             self.cancellation.checkpoint()
             if page_number < skip_before or (only_pages and page_number not in only_pages):
                 continue
+            grant = current_resource_grant()
+            if grant is not None:
+                grant.checkpoint()
             source = self._extract_local_page(
                 connection,
                 snapshot,
@@ -2906,6 +2950,9 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
         self._owner_call(prepare)
         for page_number, layout in enumerate(extract_pages(snapshot.path)):
             self.cancellation.checkpoint()
+            grant = current_resource_grant()
+            if grant is not None:
+                grant.checkpoint()
             page_count = page_number + 1
             if end is not None and page_number >= end:
                 break
@@ -3027,7 +3074,16 @@ class PdfRoute(PdfRouteStorageMixin, PdfRouteCacheMixin):
             ocr_processing_signature=self.config.processing_signature,
             ocr_traineddata_hashes=runtime_hashes,
         )
-        result = _ocr_page_result(page, fitz, extraction, self._ocr_slots)
+        from contextlib import nullcontext
+        grant = current_resource_grant()
+        if grant is not None:
+            grant.release_cpu()
+        from .pdf_isolation import pdf_ocr_execution
+        with self._ocr_slots or nullcontext():
+            with pdf_ocr_execution(grant, self.cancellation):
+                result = _ocr_page_result(page, fitz, extraction, nullcontext())
+        if grant is not None:
+            grant.checkpoint()
         return _OcrTextWithProvenance(result.text, result.provenance)
 
     def _store_text_duplicate_batch(

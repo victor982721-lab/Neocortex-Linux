@@ -50,7 +50,7 @@ def _measured_reads():
         yield counters
 
 
-def test_large_partial_candidates_read_full_once_cold_and_warm(tmp_path: Path) -> None:
+def test_large_partial_candidates_read_full_only_for_survivors_cold_and_warm(tmp_path: Path) -> None:
     root = tmp_path / "corpus"
     root.mkdir()
     size = 9 * 1024 * 1024
@@ -62,15 +62,15 @@ def test_large_partial_candidates_read_full_once_cold_and_warm(tmp_path: Path) -
             with _measured_reads() as measured:
                 plan = DedupPlanner(index).plan(scan.scan_id, exact_compare=False)
             assert plan.group_count == 1
-            assert measured["full_reads"] == plan.statistics.full_hash_files == 3
+            assert measured["full_reads"] == plan.statistics.full_hash_files == 2
             assert measured["bytes"] == plan.statistics.hash_read_bytes
-            assert plan.statistics.full_digest_reuses == 2
-            assert plan.statistics.partial_hash_files == (0 if warm else 3)
-            assert plan.statistics.cache_validation_reads == (3 if warm else 0)
-            assert plan.statistics.cache_validation_bytes == (3 * size if warm else 0)
+            assert plan.statistics.full_digest_reuses == 0
+            assert plan.statistics.partial_hash_files == 3
+            assert plan.statistics.cache_validation_reads == (2 if warm else 0)
+            assert plan.statistics.cache_validation_bytes == (2 * size if warm else 0)
+            assert measured["bytes"] == 2 * size + 9 * fingerprinting.DEFAULT_SAMPLE_SIZE
             if warm:
-                assert measured["bytes"] == 3 * size
-                assert plan.statistics.fingerprint_cache_hits == 3
+                assert plan.statistics.fingerprint_cache_hits == 2
 
 
 def test_same_stat_cache_miss_retains_the_new_full_digest(tmp_path: Path) -> None:
@@ -181,7 +181,7 @@ def test_failed_exact_comparison_retains_actual_read_metrics(tmp_path: Path) -> 
         (root / name).write_bytes(b"same")
     original = fingerprinting.files_equal_exact
 
-    def changed_comparison(left, right, *, read_observer):
+    def changed_comparison(left, right, *, read_observer, checkpoint=None):
         changed = False
 
         def observe(count):
@@ -192,7 +192,7 @@ def test_failed_exact_comparison_retains_actual_read_metrics(tmp_path: Path) -> 
                 Path(right.path).write_bytes(b"diff")
                 os.utime(right.path, ns=(right.mtime_ns, right.mtime_ns))
 
-        return original(left, right, read_observer=observe)
+        return original(left, right, read_observer=observe, checkpoint=checkpoint)
 
     with DedupIndex(tmp_path / "index.sqlite3") as index:
         scan = index.scan(root, excluded_paths=())

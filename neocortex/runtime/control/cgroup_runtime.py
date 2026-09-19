@@ -47,6 +47,8 @@ def _unsigned(raw: str | None) -> int | None:
 def cgroup_v2_directories(
     cgroup_path: Path = _PROC_SELF_CGROUP,
     mountinfo_path: Path = _PROC_SELF_MOUNTINFO,
+    *,
+    membership_text: str | None = None,
 ) -> tuple[Path, ...]:
     """Locate membership through mountinfo and include every visible ancestor.
 
@@ -56,7 +58,8 @@ def cgroup_v2_directories(
     guess a mapping when membership is outside that mount's exposed subtree.
     """
 
-    membership_text = _read_proc_paths(cgroup_path)
+    if membership_text is None:
+        membership_text = _read_proc_paths(cgroup_path)
     mountinfo = _read_proc_paths(mountinfo_path)
     if membership_text is None or mountinfo is None:
         return ()
@@ -274,19 +277,30 @@ def _intersect_cpu_ranges(left: CpuRanges, right: CpuRanges) -> CpuRanges:
 
 
 @dataclass(frozen=True, slots=True)
+class CgroupCpuQuotaSnapshot:
+    directory: Path
+    quota_cpus: Fraction
+    usage_usec: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class CgroupCpuSnapshot:
     quota_cpus: Fraction | None
     cpuset_ranges: CpuRanges | None
     visible_cgroups: int
+    quota_observations: tuple[CgroupCpuQuotaSnapshot, ...] = ()
 
 
 def cgroup_cpu_snapshot(
     directories: tuple[Path, ...] | None = None,
+    *,
+    include_usage: bool = False,
 ) -> CgroupCpuSnapshot:
     """Return the strictest visible bandwidth quota and effective cpuset."""
 
     visible = cgroup_v2_directories() if directories is None else directories
     quotas: list[Fraction] = []
+    observations: list[CgroupCpuQuotaSnapshot] = []
     cpus = None
     for directory in visible:
         quota = _read_ascii(directory / "cpu.max")
@@ -295,8 +309,18 @@ def cgroup_cpu_snapshot(
             if len(values) == 2:
                 maximum, period = (_unsigned(value) for value in values)
                 if maximum is not None and maximum > 0 and period is not None and period > 0:
-                    quotas.append(Fraction(maximum, period))
+                    quota_cpus = Fraction(maximum, period)
+                    quotas.append(quota_cpus)
+                    usage = None
+                    if include_usage:
+                        raw = _read_ascii(directory / "cpu.stat")
+                        for line in () if raw is None else raw.splitlines():
+                            parts = line.split()
+                            if len(parts) == 2 and parts[0] == "usage_usec":
+                                usage = _unsigned(parts[1])
+                                break
+                    observations.append(CgroupCpuQuotaSnapshot(directory, quota_cpus, usage))
         effective = _cpu_ranges(_read_ascii(directory / "cpuset.cpus.effective"))
         if effective is not None:
             cpus = effective if cpus is None else _intersect_cpu_ranges(cpus, effective)
-    return CgroupCpuSnapshot(min(quotas, default=None), cpus, len(visible))
+    return CgroupCpuSnapshot(min(quotas, default=None), cpus, len(visible), tuple(observations))

@@ -21,7 +21,7 @@ import stat
 import struct
 import sys
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
@@ -2343,6 +2343,8 @@ def _query_numeric(
     cancellation_check: Callable[[], None] | None,
     hydrate_provenance: bool,
     numeric_norms: bool = False,
+    score_scope: Callable[[int, int], AbstractContextManager[Any]] | None = None,
+    workspace_scope: Callable[[int], AbstractContextManager[Any]] | None = None,
 ) -> DerivedSearchPage:
     """Use prepared numeric codes and, optionally, a sealed norm sidecar."""
     numeric_meta = view.manifest.get("numeric_projection")
@@ -2411,7 +2413,7 @@ def _query_numeric(
         stored_runtime = _runtime_binding_payload(norm_meta.get("runtime_binding"))
         if _canonical_json(current_runtime) != _canonical_json(stored_runtime):
             raise _numeric_fallback("numeric norm cache runtime binding differs", "numeric_norms")
-    with _mapped(view, include_numeric=True, include_norms=numeric_norms) as maps:
+    with _mapped(view, include_numeric=True, include_norms=numeric_norms) as maps, ExitStack() as workspace:
         rows_blob = maps["rows.bin"]
         codes_blob = maps.get("numeric-codes.bin")
         norms_blob = maps.get("numeric-norms-f64.bin") if numeric_norms else None
@@ -2447,6 +2449,21 @@ def _query_numeric(
             group_count = group_count_value
             if not 1 <= group_count <= view.row_count:
                 raise _numeric_fallback("numeric group count is invalid", "numeric_codes")
+            if workspace_scope is not None:
+                # Scores/row indexes/seen retain 17 bytes per group. Top-K
+                # partitioning and masks need at most another 32 bytes per
+                # observed group; bounded identity keys and batch temporaries
+                # coexist with these arrays independently of the score matrix.
+                observed_groups = min(group_count, max_vectors)
+                retained_groups = min(observed_groups, limit)
+                identity_bytes = min(
+                    len(identity) * 4,
+                    retained_groups * MAX_IDENTITY_BYTES * 4,
+                )
+                workspace.enter_context(workspace_scope(
+                    group_count * 17 + observed_groups * 32 + identity_bytes
+                    + retained_groups * 1024 + batch_size * 512 + 4096
+                ))
             group_name = "evidence_code" if evidence_mode else "item_code"
             group_codes_all = codes[group_name]
             best_score = numpy.full(group_count, -numpy.inf, dtype=numpy.float64)
@@ -2496,14 +2513,15 @@ def _query_numeric(
                         if bool(numpy.any(rows[absolute]["dtype_code"] != DTYPE_CODE[norm_vector_dtype])) or bool(numpy.any(rows[absolute]["dimensions"] != norm_dimensions)):
                             raise _numeric_fallback("numeric norm cache vector shape differs from scanned rows", "numeric_norms")
                         cached_norms = norm_cache_all[absolute].copy()
-                    scores = _numeric_scores(
-                        rows[absolute],
-                        vector_maps={"float16": maps["vectors-f16.bin"], "float32": maps["vectors-f32.bin"]},
-                        query_vector=query_vector,
-                        dimensions=query.dimensions,
-                        numpy=numpy,
-                        cached_norms=cached_norms,
-                    )
+                    with score_scope(len(absolute), query.dimensions) if score_scope else nullcontext():
+                        scores = _numeric_scores(
+                            rows[absolute],
+                            vector_maps={"float16": maps["vectors-f16.bin"], "float32": maps["vectors-f32.bin"]},
+                            query_vector=query_vector,
+                            dimensions=query.dimensions,
+                            numpy=numpy,
+                            cached_norms=cached_norms,
+                        )
                     cached_norms = None
                     groups = group_codes_all[absolute]
                     if bool(numpy.any(groups >= group_count)):
@@ -2598,6 +2616,8 @@ def query_exact_view(
     numeric_norms: bool = False,
     _normalized_query_vector: tuple[float, ...] | None = None,
     _cancellation_already_checked: bool = False,
+    score_scope: Callable[[int, int], AbstractContextManager[Any]] | None = None,
+    workspace_scope: Callable[[int], AbstractContextManager[Any]] | None = None,
 ) -> DerivedSearchPage:
     """Score a validated artifact; caller handles ``FallbackExactRequired``."""
     if text_scope not in SCOPE_CODE or not isinstance(evidence_mode, bool) or not isinstance(numeric, bool) or not isinstance(numeric_norms, bool) or not isinstance(_cancellation_already_checked, bool) or (numeric_norms and not numeric) or (query.target_modality == "image" and text_scope != "all"):
@@ -2654,6 +2674,8 @@ def query_exact_view(
             cancellation_check=cancellation_check,
             hydrate_provenance=hydrate_provenance,
             numeric_norms=numeric_norms,
+            score_scope=score_scope,
+            workspace_scope=workspace_scope,
         )
     target = _TargetDiagnostics(selected_diagnostics, evidence_mode) if selected_diagnostics else None
     best: dict[object, tuple[ExactSearchHeapKey, int, int, object, _Candidate]] = {}
@@ -2671,16 +2693,17 @@ def query_exact_view(
             nonlocal scored_count, serial
             if not candidates:
                 return
-            scored = _score(
-                candidates,
-                query_vector=query_vector,
-                dimensions=query.dimensions,
-                vector_maps={
-                    "float16": maps["vectors-f16.bin"],
-                    "float32": maps["vectors-f32.bin"],
-                },
-                cancellation_check=cancellation_check,
-            )
+            with score_scope(len(candidates), query.dimensions) if score_scope else nullcontext():
+                scored = _score(
+                    candidates,
+                    query_vector=query_vector,
+                    dimensions=query.dimensions,
+                    vector_maps={
+                        "float16": maps["vectors-f16.bin"],
+                        "float32": maps["vectors-f32.bin"],
+                    },
+                    cancellation_check=cancellation_check,
+                )
             for candidate in scored:
                 pair = pair_by_index[candidate.pair_index]
                 if target is not None:

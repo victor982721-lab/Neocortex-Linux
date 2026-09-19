@@ -416,8 +416,17 @@ def test_lookup_exact_orchestration_preserves_primary_state_bytes(
         clock_ns=lambda: next(clock_values),
     )
 
+    semantic_payload = result.to_dict()
+    semantic_payload.pop("sqlite_steps")
+    semantic_reports = semantic_payload["reports"]
+    assert isinstance(semantic_reports, list)
+    for report in semantic_reports:
+        assert isinstance(report, dict)
+        report.pop("sqlite_steps")
+    semantic_digest = fingerprint_text(
+        json.dumps(semantic_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    ).xxh3_128
     characterization = {
-        "result_xxh3_128": fingerprint_text(result.to_json()).xxh3_128,
         "matches": [
             [
                 match.term.kind.value,
@@ -443,16 +452,23 @@ def test_lookup_exact_orchestration_preserves_primary_state_bytes(
             "truncated": result.truncated,
             "omitted_matches": result.omitted_matches,
             "rows_observed": result.rows_observed,
-            "sqlite_steps": result.sqlite_steps,
             "warnings": list(result.warnings),
         },
     }
     fixture = json.loads(LOOKUP_ORCHESTRATION_FIXTURE.read_text(encoding="utf-8"))
 
     assert fixture["schema"] == "neocortex-lookup-exact-orchestration/v1"
-    expected = fixture["expected"]
+    # The original digest remains in the fixture as historical evidence. Its
+    # VM accounting depends on SQLite and schema preparation; neither changes
+    # the returned identities, evidence or orchestration. Freeze those fields
+    # separately and verify the actual work accounting below.
+    expected = dict(fixture["expected"])
+    expected.pop("result_xxh3_128")
+    expected["summary"] = dict(expected["summary"])
+    expected["summary"].pop("sqlite_steps")
     if HASH_ALGORITHM_128 == "xxh3-128":
         assert characterization == expected
+        assert semantic_digest == fixture["semantic_result_xxh3_128"]
     else:
         # The checked-in characterization predates the optional backend.  The
         # fallback intentionally changes digest values while preserving the
@@ -460,9 +476,11 @@ def test_lookup_exact_orchestration_preserves_primary_state_bytes(
         assert characterization["matches"] == expected["matches"]
         assert characterization["reports"] == expected["reports"]
         assert characterization["summary"] == expected["summary"]
-        assert len(characterization["result_xxh3_128"]) == 32
+        assert len(semantic_digest) == 32
+        actual_timings = characterization["owner_timings"]
+        assert isinstance(actual_timings, list)
         for actual, golden in zip(
-            characterization["owner_timings"], expected["owner_timings"], strict=True
+            actual_timings, expected["owner_timings"], strict=True
         ):
             assert actual["owner"] == golden["owner"]
             assert actual["executed"] == golden["executed"]
@@ -470,6 +488,13 @@ def test_lookup_exact_orchestration_preserves_primary_state_bytes(
             assert [name.split(":", 1)[0] for name in actual["ranking_names"]] == [
                 name.split(":", 1)[0] for name in golden["ranking_names"]
             ]
+    assert result.sqlite_steps == sum(report.sqlite_steps for report in result.reports)
+    assert 0 < result.sqlite_steps <= knowledge_exact_module.DEFAULT_EXACT_SQLITE_STEPS
+    assert all(
+        report.sqlite_steps >= knowledge_exact_module.SQLITE_PROGRESS_INTERVAL
+        if report.executed else report.sqlite_steps == 0
+        for report in result.reports
+    )
     after = _state_file_bytes(state)
     database_names = {
         "code.sqlite3",

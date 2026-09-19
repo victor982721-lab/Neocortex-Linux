@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 import multiprocessing
+import os
 import queue
 import time
 from pathlib import Path
 from typing import Any
 
 from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
+from neocortex.runtime.control.global_resources import current_resource_grant
+from ..media_resources import current_media_resource, register_media_process
 from .decode import open_image_no_follow, pillow_decode_scope
 from .errors import (
     ImageFailure,
@@ -104,7 +107,9 @@ def _image_worker(task_channel, result_channel) -> None:
         task = task_channel.get()
         if task is None:
             return
-        request_id, path, root, features, document_verifier = task
+        request_id, path, root, features, document_verifier, *execution = task
+        if execution:
+            os.environ.update(execution[0])
         try:
             decision = classify(
                 Path(path),
@@ -226,6 +231,11 @@ class ImageWorkerSupervisor:
         assert self._task_channel is not None
         assert self._result_channel is not None
         assert self._process is not None
+        grant = current_resource_grant()
+        if current_media_resource() is not None:
+            register_media_process(self._process.pid)
+        elif grant is not None:
+            grant.register_process(self._process.pid)
         try:
             self._task_channel.put(
                 (
@@ -234,6 +244,7 @@ class ImageWorkerSupervisor:
                     str(root),
                     features,
                     document_verifier,
+                    {} if grant is None else grant.native_env,
                 ),
                 block=True,
                 timeout=1,

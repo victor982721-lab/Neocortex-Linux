@@ -5,7 +5,11 @@ import json
 import threading
 import time
 import zlib
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from concurrent.futures import Future
+from contextlib import nullcontext
+from neocortex.runtime.control.elastic_workers import current_worker_cancellation, elastic_map, ImmediateResult
+from neocortex.runtime.control.global_resources import current_resource_grant
+from ..media_resources import ResidentMediaGate, current_media_resource, media_gate_scope
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Protocol, cast
@@ -49,6 +53,7 @@ from .errors import (
 )
 from .isolation import (
     ImageWorkerSupervisor,
+    MIN_IMAGE_WORKER_BYTES,
     image_worker_memory_reservation,
 )
 from .state import (
@@ -167,6 +172,18 @@ class _AnalysisResult:
 
 
 @dataclass(frozen=True, slots=True)
+class _ImageCandidate:
+    row: Any
+    snapshot: FileSnapshot
+    features: Features | None
+    memory_reservation: int | None
+
+    @property
+    def transient_bytes(self) -> int:
+        return max(0, (self.memory_reservation or MIN_IMAGE_WORKER_BYTES) - MIN_IMAGE_WORKER_BYTES)
+
+
+@dataclass(frozen=True, slots=True)
 class _ImageCounterDelta:
     processed: int = 0
     cache_hits: int = 0
@@ -188,6 +205,7 @@ class _ImageCounterDelta:
 @dataclass(slots=True)
 class _ImageWorkState:
     work_submitted: int = 0
+    pending_admissions: int = 0
     feature_cache_hits: int = 0
     new_images: int = 0
     retried_images: int = 0
@@ -214,7 +232,7 @@ class ImageRoute:
         cancellation: CancellationToken | None = None,
         dedup_index: ImageFingerprintIndex | None = None,
     ):
-        if config.workers < 1:
+        if config.workers is not None and config.workers < 1:
             raise ValueError("image workers must be positive")
         if config.max_file_bytes is not None and config.max_file_bytes < 1:
             raise ValueError("image max_file_bytes must be positive")
@@ -252,6 +270,7 @@ class ImageRoute:
             self.document_verifier,
         )
         self.processing_signature = self.processing_provenance.signature
+        self._provided_memory_gate = memory_gate
         self.memory_gate = (
             memory_gate
             if memory_gate is not None
@@ -265,6 +284,7 @@ class ImageRoute:
                 self.cancellation,
             )
         )
+        self._memory_limits = getattr(self.memory_gate, "limits", None)
         initialize_image_state(config.state_path)
 
     def _claim_recoverable_retry(self, snapshot: FileSnapshot) -> bool:
@@ -527,170 +547,109 @@ class ImageRoute:
         flush_results: Callable[[], None],
         report: Callable[[], None],
     ) -> None:
-        executor = ThreadPoolExecutor(max_workers=self.config.workers)
+        pool = ResidentMediaGate(
+            self.memory_gate, ImageWorkerSupervisor, resident_bytes=MIN_IMAGE_WORKER_BYTES,
+            cancellation=self.cancellation,
+        )
+        pending_keys: dict[str, Future[_AnalysisResult]] = {}
+
+        def observe(row):
+            snapshot = snapshot_from_row(row)
+            features = _cached_features_from_row(row)
+            try:
+                total = image_worker_memory_reservation(
+                    Path(snapshot.path), features,
+                    document_ocr=self.document_verifier.enabled,
+                )
+            except (OSError, ValueError):
+                # Preserve the analyzer's typed failure/refinement path if
+                # metadata could not be observed. Never cache that fallback.
+                total = None
+            return _ImageCandidate(row, snapshot, features, total)
+
+        def candidates():
+            for row in rows:
+                cached = self._cached_row_delta(row, retry_selected, review_batch, reconciliations)
+                if cached is not None:
+                    apply_delta(cached)
+                    flush_results()
+                    report()
+                    continue
+                candidate = observe(row)
+                budget = getattr(getattr(self.memory_gate, "limits", None), "memory_budget_bytes", None)
+                coordinator = getattr(self.memory_gate, "coordinator", None)
+                if coordinator is not None:
+                    route_budget = getattr(coordinator, "route_memory_budget_bytes", None)
+                    budget = (
+                        coordinator.memory_budget_bytes
+                        if route_budget is None
+                        else route_budget(getattr(self.memory_gate, "route_name", "Image"))
+                    )
+                if budget is not None and candidate.transient_bytes + MIN_IMAGE_WORKER_BYTES > budget:
+                    snapshot = candidate.snapshot
+                    failure = MemoryBudgetExceeded("image estimate exceeds the configured memory budget")
+                    result = _AnalysisResult(
+                        key=file_key(snapshot), snapshot=snapshot, decision=None,
+                        feature_cache_used=False, failure=classify_image_failure(failure),
+                    )
+                    apply_delta(self._analysis_result_delta(
+                        result, success_batch, error_batch, review_batch, reconciliations,
+                    ))
+                    flush_results()
+                    report()
+                    continue
+                work.pending_admissions += 1
+                report()
+                yield candidate
+
+        def prepare(candidate):
+            work.pending_admissions -= 1
+            if work.work_submitted >= selected_work:
+                return ImmediateResult(None)
+            work.work_submitted += 1
+            row = candidate.row
+            snapshot = candidate.snapshot
+            self._ensure_full_fingerprint(snapshot)
+            features = candidate.features
+            work.feature_cache_hits += int(features is not None)
+            work.retried_images += int(row["status"] == "error")
+            work.new_images += int(row["status"] != "error" and row["processing_signature"] is None)
+            work.reclassified_images += int(row["status"] != "error" and row["processing_signature"] is not None)
+            token: Future[_AnalysisResult] = Future()
+            work.pending.add(token)
+            pending_keys[file_key(snapshot)] = token
+            report()
+            return snapshot, features, candidate.memory_reservation
+
+        def analyze(payload):
+            return self._analyze(*payload)
+
         try:
-            exhausted = False
-            while work.pending or not exhausted:
-                self.cancellation.checkpoint()
-                exhausted = self._fill_work_queue(
-                    rows,
-                    retry_selected,
-                    selected_work,
-                    exhausted,
-                    executor,
-                    work,
-                    review_batch,
-                    reconciliations,
-                    apply_delta,
-                    flush_results,
-                    report,
-                )
-                if not work.pending:
-                    continue
-                completed, work.pending = wait(
-                    work.pending,
-                    timeout=0.1,
-                    return_when=FIRST_COMPLETED,
-                )
-                if not completed:
-                    continue
-                self._consume_completed(
-                    completed,
-                    success_batch,
-                    error_batch,
-                    review_batch,
-                    reconciliations,
-                    apply_delta,
-                    flush_results,
-                    report,
-                )
-        except BaseException as failure:
-            # Signal running admissions/decoders before shutdown waits for them.
-            # The executor also cancels tasks that have not started; a task
-            # already dequeued observes the same cooperative cancellation token.
+            with elastic_map(
+                analyze, candidates(), gate=pool,
+                max_workers=self.config.workers, estimated_bytes=lambda item: item.transient_bytes,
+                native_threads=1, io_slots=1,
+                io_device=lambda item: f"dev:{item.snapshot.volume_id:x}",
+                phase="image-classify", cancellation=self.cancellation,
+                prepare=prepare,
+            ) as results:
+                for result in results:
+                    if result is None:
+                        continue
+                    token = pending_keys.pop(result.key, None)
+                    if token is not None:
+                        work.pending.discard(token)
+                    apply_delta(self._analysis_result_delta(
+                        result, success_batch, error_batch, review_batch, reconciliations,
+                    ))
+                    # The map keeps transient result bytes until the next item.
+                    flush_results()
+                    report()
+        except BaseException:
             self.cancellation.cancel()
-            try:
-                executor.shutdown(wait=True, cancel_futures=True)
-            except BaseException as cleanup_error:
-                failure.add_note(f"image executor shutdown failed: {cleanup_error!r}")
             raise
-        else:
-            executor.shutdown(wait=True)
-
-    def _fill_work_queue(
-        self,
-        rows: Iterator[Any],
-        retry_selected: bool,
-        selected_work: int,
-        exhausted: bool,
-        executor: ThreadPoolExecutor,
-        work: _ImageWorkState,
-        review_batch: list[ReviewCandidate],
-        reconciliations: list[ReviewCandidateReconciliation],
-        apply_delta: Callable[[_ImageCounterDelta], None],
-        flush_results: Callable[[], None],
-        report: Callable[[], None],
-    ) -> bool:
-        while not exhausted and len(work.pending) < self.config.workers * 2:
-            self.cancellation.checkpoint()
-            try:
-                row = next(rows)
-            except StopIteration:
-                return True
-            self._consume_candidate_row(
-                row,
-                retry_selected,
-                selected_work,
-                executor,
-                work,
-                review_batch,
-                reconciliations,
-                apply_delta,
-                flush_results,
-                report,
-            )
-        return exhausted
-
-    def _consume_candidate_row(
-        self,
-        row: Any,
-        retry_selected: bool,
-        selected_work: int,
-        executor: ThreadPoolExecutor,
-        work: _ImageWorkState,
-        review_batch: list[ReviewCandidate],
-        reconciliations: list[ReviewCandidateReconciliation],
-        apply_delta: Callable[[_ImageCounterDelta], None],
-        flush_results: Callable[[], None],
-        report: Callable[[], None],
-    ) -> None:
-        cached_delta = self._cached_row_delta(
-            row,
-            retry_selected,
-            review_batch,
-            reconciliations,
-        )
-        if cached_delta is not None:
-            apply_delta(cached_delta)
-            if self._cached_batch_ready(
-                cached_delta,
-                review_batch,
-                reconciliations,
-            ):
-                flush_results()
-            report()
-            return
-        if work.work_submitted >= selected_work:
-            return
-        work.work_submitted += 1
-        snapshot = snapshot_from_row(row)
-        self._ensure_full_fingerprint(snapshot)
-        cached_features = _cached_features_from_row(row)
-        if cached_features is not None:
-            work.feature_cache_hits += 1
-        if row["status"] == "error":
-            work.retried_images += 1
-        elif row["processing_signature"] is None:
-            work.new_images += 1
-        else:
-            work.reclassified_images += 1
-        work.pending.add(
-            executor.submit(
-                self._analyze,
-                snapshot,
-                cached_features,
-            )
-        )
-        report()
-
-    def _consume_completed(
-        self,
-        completed: set[Future[_AnalysisResult]],
-        success_batch: list[tuple],
-        error_batch: list[tuple],
-        review_batch: list[ReviewCandidate],
-        reconciliations: list[ReviewCandidateReconciliation],
-        apply_delta: Callable[[_ImageCounterDelta], None],
-        flush_results: Callable[[], None],
-        report: Callable[[], None],
-    ) -> None:
-        for future in completed:
-            result = future.result()
-            apply_delta(
-                self._analysis_result_delta(
-                    result,
-                    success_batch,
-                    error_batch,
-                    review_batch,
-                    reconciliations,
-                )
-            )
-            if (
-                len(success_batch) + len(error_batch) + len(review_batch) + len(reconciliations)
-                >= RESULT_BATCH_SIZE
-            ):
-                flush_results()
-            report()
+        finally:
+            pool.close()
 
     def _flush_result_batches(
         self,
@@ -722,6 +681,13 @@ class ImageRoute:
         return stored_reviews
 
     def run(self) -> ImageRouteSummary:
+        with media_gate_scope(
+            "Image", self._provided_memory_gate, self._memory_limits, self.cancellation,
+        ) as gate:
+            self.memory_gate = gate
+            return self._run_with_resources()
+
+    def _run_with_resources(self) -> ImageRouteSummary:
         self.cancellation.checkpoint()
         retry_keys = getattr(self, "_recoverable_retry_keys", None)
         if retry_keys is None:
@@ -821,6 +787,7 @@ class ImageRoute:
                         ProgressMetric("reclassified", work.reclassified_images),
                         ProgressMetric("errors", errors),
                         ProgressMetric("in_flight", len(work.pending)),
+                        ProgressMetric("pending_admissions", work.pending_admissions),
                         ProgressMetric("remaining", max(0, selection_total - processed)),
                         ProgressMetric("cached_errors", cached_errors),
                         ProgressMetric("completed_work", classified),
@@ -941,6 +908,7 @@ class ImageRoute:
         self,
         snapshot: FileSnapshot,
         cached_features: Features | None = None,
+        memory_reservation: int | None = None,
     ) -> _AnalysisResult:
         key = file_key(snapshot)
         try:
@@ -968,18 +936,23 @@ class ImageRoute:
                     document_verifier=self.document_verifier,
                 )
             elif self.config.isolate_decoders:
-                reservation = image_worker_memory_reservation(
-                    path,
-                    cached_features,
-                    document_ocr=needs_document_ocr,
-                )
-                with self.memory_gate.admit(reservation):
+                # The bounded producer observation belongs to this exact
+                # snapshot, revalidated above and again after classification.
+                reservation = memory_reservation
+                if reservation is None:
+                    reservation = image_worker_memory_reservation(
+                        path,
+                        cached_features,
+                        document_ocr=needs_document_ocr,
+                    )
+                with (nullcontext() if current_media_resource() is not None or current_resource_grant() is not None
+                      else self.memory_gate.admit(reservation)):
                     decision = self._image_worker().classify(
                         path,
                         self.config.root,
                         memory_limit_bytes=reservation,
                         timeout_seconds=self.config.worker_timeout_seconds,
-                        cancellation=self.cancellation,
+                        cancellation=current_worker_cancellation() or self.cancellation,
                         features=cached_features,
                         document_verifier=self.document_verifier,
                     )
@@ -987,7 +960,7 @@ class ImageRoute:
                 decision = classify(
                     path,
                     self.config.root,
-                    self.memory_gate,
+                    None if current_media_resource() is not None else self.memory_gate,
                     features=cached_features,
                     document_verifier=self.document_verifier,
                 )
@@ -1029,6 +1002,9 @@ class ImageRoute:
             )
 
     def _image_worker(self) -> ImageWorkerSupervisor:
+        pooled = current_media_resource()
+        if pooled is not None:
+            return pooled
         supervisor = getattr(self._worker_local, "supervisor", None)
         if supervisor is None:
             supervisor = ImageWorkerSupervisor()

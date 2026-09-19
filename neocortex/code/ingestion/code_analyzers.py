@@ -110,6 +110,17 @@ class AnalyzerRegistry:
             )
 
     @property
+    def specs(self) -> tuple[AnalyzerSpec, ...]:
+        """Return immutable import recipes for an isolated analysis worker.
+
+        Loaded analyzers and registry locks remain in their owning process;
+        the recipes preserve the same signature and fallback order on spawn.
+        """
+
+        with self._lock:
+            return tuple(self._specs.values())
+
+    @property
     def processing_signature(self) -> str:
         """Fingerprint the lazy analyzer contract without importing analyzers."""
 

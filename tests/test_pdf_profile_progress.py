@@ -7,7 +7,11 @@ from __future__ import annotations
 
 
 import time
+import threading
+from types import SimpleNamespace
 from unittest.mock import patch
+
+import pytest
 
 from neocortex.progress import ProgressEvent
 from neocortex.capabilities.formats.pdf.pdf_derived import PdfDerivedIndexer
@@ -19,11 +23,24 @@ TEST_CAPABILITIES = ('documents',)
 # region [02] Implementación
 
 
-def test_profile_wait_emits_periodic_liveness_metrics() -> None:
+@pytest.mark.parametrize("waiting_admission", [False, True])
+def test_profile_wait_emits_periodic_liveness_metrics(waiting_admission) -> None:
     events: list[ProgressEvent] = []
+    owner = threading.get_ident()
+    callbacks = []
+
+    def progress(event):
+        callbacks.append(threading.get_ident())
+        events.append(event)
+
     indexer = object.__new__(PdfDerivedIndexer)
     indexer.workers = 1
-    indexer.progress = events.append
+    indexer.progress = progress
+    indexer.resource_gate = (
+        SimpleNamespace(active_count=0, worker_capacity=lambda **kwargs: 0)
+        if waiting_admission else None
+    )
+    indexer.profile_memory_bytes = 1
     from neocortex.runtime.control.cancellation import CancellationToken
 
     indexer.cancellation = CancellationToken()
@@ -46,10 +63,17 @@ def test_profile_wait_emits_periodic_liveness_metrics() -> None:
 
     assert (built, errors) == (1, 0)
     waiting = [event for event in events if not event.finished and event.completed == 0]
+    metric = "pending_admissions" if waiting_admission else "in_flight"
     assert any(
-        {metric.name: metric.value for metric in event.metrics}.get("in_flight") == 1
+        {item.name: item.value for item in event.metrics}.get(metric) == 1
         for event in waiting
     )
+    if waiting_admission:
+        assert all(
+            {item.name: item.value for item in event.metrics}.get("in_flight") == 0
+            for event in waiting
+        )
+    assert callbacks and set(callbacks) == {owner}
 
 
 # endregion [02]

@@ -634,7 +634,7 @@ def _validate_global(args: argparse.Namespace) -> None:
         raise SystemExit("--global-cpu-slots must be positive")
     if not 0 < args.global_max_cpu_load_percent <= 100:
         raise SystemExit("--global-max-cpu-load-percent must be in (0, 100]")
-    if args.global_resource_wait_timeout < 0:
+    if args.global_resource_wait_timeout is not None and args.global_resource_wait_timeout < 0:
         raise SystemExit("--global-resource-wait-timeout cannot be negative")
 
 
@@ -666,11 +666,11 @@ def _validate_run_budget(args: argparse.Namespace) -> None:
 
 
 def _validate_image(args: argparse.Namespace) -> None:
-    if args.image_workers < 1:
+    if args.image_workers is not None and args.image_workers < 1:
         raise SystemExit("--image-workers must be positive")
     if args.image_max_documents is not None and args.image_max_documents < 1:
         raise SystemExit("--image-max-count must be positive")
-    if args.image_memory_budget_mb < 1:
+    if args.image_memory_budget_mb is not None and args.image_memory_budget_mb < 1:
         raise SystemExit("--image-memory-budget-mb must be positive")
     if args.image_min_free_memory_mb < 0 or args.image_min_free_commit_mb < 0:
         raise SystemExit("image memory headroom cannot be negative")
@@ -694,9 +694,11 @@ def _validate_pdf_processing(args: argparse.Namespace) -> None:
         parse_language_spec(args.ocr_lang)
     except ValueError as exc:
         raise SystemExit(f"--ocr-lang: {exc}") from exc
+    for name in ("pdf_workers", "ocr_workers"):
+        value = getattr(args, name)
+        if value is not None and value < 1:
+            raise SystemExit(f"--{name.replace('_', '-')} must be positive")
     for name in (
-        "pdf_workers",
-        "ocr_workers",
         "pdf_min_page_chars",
         "pdf_max_page_text_chars",
         "pdf_max_render_pixels",
@@ -751,7 +753,7 @@ def _validate_pdf_memory(args: argparse.Namespace) -> None:
         if value is not None and value < 0:
             raise SystemExit(f"--{name.replace('_', '-')} cannot be negative")
 
-    if args.pdf_large_document_workers < 1:
+    if args.pdf_large_document_workers is not None and args.pdf_large_document_workers < 1:
         raise SystemExit("--pdf-large-document-workers must be positive")
 
 

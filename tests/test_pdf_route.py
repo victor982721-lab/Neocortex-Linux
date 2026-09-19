@@ -332,6 +332,8 @@ class PdfRouteTests(unittest.TestCase):
             snapshot = snapshot_path(source)
             result_channel = _ProtocolQueue()
             control_channel = _ProtocolQueue()
+            for _ in range(100):
+                control_channel.put(("page_granted", {}))
 
             class BrokenPageTree:
                 needs_pass = False
@@ -374,6 +376,8 @@ class PdfRouteTests(unittest.TestCase):
             snapshot = snapshot_path(source)
             result_channel = _ProtocolQueue()
             control_channel = _ProtocolQueue()
+            for _ in range(100):
+                control_channel.put(("page_granted", {}))
 
             class BrokenPageTree:
                 needs_pass = False
@@ -1879,6 +1883,7 @@ class PdfRouteTests(unittest.TestCase):
                     root / "pdf.sqlite3",
                     apply_actions=True,
                     min_free_bytes=0,
+                    ocr_mode="never",
                 ),
                 SimpleNamespace(),
                 state,
@@ -2129,7 +2134,9 @@ class PdfRouteTests(unittest.TestCase):
             with DedupIndex(root / "dedup.sqlite3") as index:
                 scan = index.scan(root, excluded_paths=())
                 route = PdfRoute(
-                    PdfRouteConfig(root / "pdf.sqlite3", ocr_mode="auto", workers=1),
+                    PdfRouteConfig(
+                        root / "pdf.sqlite3", ocr_mode="auto", ocr_lang="eng", workers=1,
+                    ),
                     index,
                     _State(index.snapshots(scan.scan_id)),
                     1,

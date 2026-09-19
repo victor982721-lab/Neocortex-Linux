@@ -50,7 +50,8 @@ class AudioRouteConfig:
     memory_budget_bytes: int = 2 * 1024 * 1024 * 1024
     min_free_memory_bytes: int = 2 * 1024 * 1024 * 1024
     min_free_commit_bytes: int = 2 * 1024 * 1024 * 1024
-    memory_wait_timeout_seconds: float = 300.0
+    memory_wait_timeout_seconds: float | None = None
+    workers: int | None = None
 
     def probe_processing_provenance(self) -> ProcessingProvenance:
         """Version stream inspection without claiming an available speech engine."""

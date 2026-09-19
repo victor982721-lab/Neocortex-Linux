@@ -75,9 +75,9 @@ def test_builtin_inventory_and_signature_remain_exact() -> None:
     taxonomy = builtin_taxonomy()
 
     assert BUILTIN_TAXONOMY_VERSION == "electrical-document-taxonomy-v13"
-    assert CLASSIFIER_VERSION == "technical-document-classifier-v16"
+    assert CLASSIFIER_VERSION == "technical-document-classifier-v17"
     assert document_classifier_signature(taxonomy) == (
-        "technical-document-classifier-v16|electrical-document-taxonomy-v13|"
+        "technical-document-classifier-v17|electrical-document-taxonomy-v13|"
         "technical-document-naming-v9"
     )
     assert _payload_fingerprint(asdict(taxonomy)) == (
@@ -162,7 +162,7 @@ def test_representative_classification_payload_is_byte_stable(
     ):
         payload.pop(field)
     payload["classifier_signature"] = payload["classifier_signature"].replace(
-        "classifier-v16", "classifier-v14"
+        "classifier-v17", "classifier-v14"
     )
     assert _payload_fingerprint(payload) == expected_fingerprint
 # endregion [02]

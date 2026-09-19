@@ -140,6 +140,8 @@ def test_worker_accepts_an_unset_model_cache_and_stops_cleanly(
         "compute_type": "int8",
         "download_root": None,
         "local_files_only": True,
+        "cpu_threads": 1,
+        "num_workers": 1,
     }
 
 
@@ -677,20 +679,20 @@ def test_audio_model_memory_is_reserved_once_until_worker_close(
     events: list[str] = []
 
     class PersistentGate(FakeMemoryGate):
-        active = False
+        active = 0
         admissions = 0
 
         @contextmanager
         def admit(self, estimated_bytes: int):
             self.admissions += 1
-            self.active = True
+            self.active += 1
             self.peak_reserved_bytes = estimated_bytes
             events.append("enter")
             try:
                 yield
             finally:
                 events.append("exit")
-                self.active = False
+                self.active -= 1
 
     gate = PersistentGate()
 
@@ -709,6 +711,7 @@ def test_audio_model_memory_is_reserved_once_until_worker_close(
     route = AudioRoute(
         AudioRouteConfig(
             state_path=tmp_path / "audio.sqlite3",
+            workers=1,
             min_free_memory_bytes=0,
             min_free_commit_bytes=0,
         ),
@@ -723,11 +726,15 @@ def test_audio_model_memory_is_reserved_once_until_worker_close(
     summary = route.run()
 
     assert summary.transcribed == 2
-    assert gate.admissions == 1
+    assert gate.admissions == 3
     assert events == [
         "enter",
+        "enter",
         "transcribe:primero.opus",
+        "exit",
+        "enter",
         "transcribe:segundo.opus",
+        "exit",
         "close",
         "exit",
     ]
@@ -783,7 +790,7 @@ def test_audio_cancellation_closes_model_before_releasing_memory(
         raise AssertionError("audio cancellation did not propagate")
 
     assert transcriber.closed
-    assert events == ["enter", "transcribe:cancelado.opus", "close", "exit"]
+    assert events == ["enter", "enter", "transcribe:cancelado.opus", "exit", "close", "exit"]
 
 
 def test_invalid_audio_is_only_marked_as_deletion_candidate(tmp_path: Path) -> None:

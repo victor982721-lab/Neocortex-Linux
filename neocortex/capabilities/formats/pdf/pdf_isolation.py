@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import time
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterator, Literal, Sequence
@@ -17,6 +17,7 @@ from typing import Any, Iterator, Literal, Sequence
 from neocortex.deduplication import FileSnapshot, stat_matches_snapshot
 
 from neocortex.runtime.control.cancellation import CancellationToken
+from ..media_resources import DeadlineCancellation, checkpoint_before_deadline, native_subprocess_arguments
 from neocortex.runtime.control.bounded_subprocess import run_bounded_capture
 from neocortex.runtime.control.isolated_process import (
     close_isolated_process as _close_process_handles,
@@ -324,6 +325,9 @@ def _ocr_scales(initial_scale: float) -> tuple[float, ...]:
 
 
 def _run_tesseract(pytesseract, image, config: IsolatedExtractionConfig) -> str:
+    controlled = _controlled_tesseract(image, config, languages=config.ocr_lang, mode="txt", psm=3)
+    if controlled is not None:
+        return controlled
     for attempt in range(2):
         try:
             return pytesseract.image_to_string(
@@ -337,6 +341,42 @@ def _run_tesseract(pytesseract, image, config: IsolatedExtractionConfig) -> str:
                 raise
             time.sleep(0.25)
     raise RuntimeError("unreachable OCR retry state")
+
+
+def _controlled_tesseract(image, config, *, languages: str, mode: str, psm: int):
+    """Set native limits per subprocess when OCR is running in parent threads."""
+    import io
+    from neocortex.runtime.control.global_resources import current_resource_grant
+    from neocortex.runtime.control.bounded_subprocess import run_bounded_capture
+
+    grant = current_resource_grant()
+    if grant is None:
+        return None
+    deadline = time.monotonic() + config.ocr_timeout_seconds
+    command = [config.tesseract_cmd or "tesseract", "stdin", "stdout",
+               "-l", languages, "--psm", str(psm)]
+    if config.tessdata_dir:
+        command.extend(("--tessdata-dir", str(config.tessdata_dir)))
+    if mode == "tsv":
+        command.append("tsv")
+    resources = native_subprocess_arguments(grant)
+    timeout_error = subprocess.TimeoutExpired(command, config.ocr_timeout_seconds)
+    checkpoint_before_deadline(
+        grant, deadline, resources.get("cancellation"), timeout_error,
+    )
+    with io.BytesIO() as buffer:
+        image.save(buffer, format="PNG")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise timeout_error
+        result = run_bounded_capture(
+            command, input_bytes=buffer.getvalue(), timeout_seconds=remaining,
+            stdout_limit_bytes=max(1024 * 1024, config.max_page_text_chars * 8),
+            stderr_limit_bytes=1024 * 1024, **resources,
+        )
+    if result.returncode:
+        raise RuntimeError(result.stderr.decode("utf-8", "replace")[-1000:])
+    return result.stdout.decode("utf-8", "replace")
 
 
 def _profile_tesseract_config(
@@ -355,6 +395,9 @@ def _run_tesseract_osd(
     image,
     config: IsolatedExtractionConfig,
 ) -> OcrOrientation:
+    controlled = _controlled_tesseract(image, config, languages="osd", mode="txt", psm=0)
+    if controlled is not None:
+        return parse_osd_output(controlled)
     for attempt in range(2):
         try:
             output = pytesseract.image_to_osd(
@@ -381,6 +424,20 @@ def _run_tesseract_attempt(
     languages: tuple[str, ...],
     page_segmentation_mode: int,
 ) -> _PdfOcrAttempt:
+    controlled = _controlled_tesseract(
+        image, config, languages="+".join(languages), mode="tsv", psm=page_segmentation_mode,
+    )
+    if controlled is not None:
+        import csv
+        import io
+        rows = tuple(csv.DictReader(io.StringIO(controlled), delimiter="\t"))
+        data = {name: [row.get(name, "") for row in rows] for name in ("text", "conf")}
+    else:
+        data = _pytesseract_data(pytesseract, image, config, languages, page_segmentation_mode)
+    return _ocr_attempt_from_data(data, languages, page_segmentation_mode)
+
+
+def _pytesseract_data(pytesseract, image, config, languages, page_segmentation_mode):
     for attempt in range(2):
         try:
             data = pytesseract.image_to_data(
@@ -400,6 +457,10 @@ def _run_tesseract_attempt(
             time.sleep(0.25)
     else:  # pragma: no cover - bounded loop invariant
         raise RuntimeError("unreachable OCR data retry state")
+    return data
+
+
+def _ocr_attempt_from_data(data, languages, page_segmentation_mode):
     if not isinstance(data, dict):
         raise TypeError("pytesseract OCR data result must be a mapping")
     raw_words = data.get("text", ())
@@ -658,12 +719,25 @@ def _remote_ocr_admission(channel, control_channel):
 
     channel.put(("ocr_request",))
     response = control_channel.get()
-    if response != ("ocr_granted",):
+    if not isinstance(response, tuple) or response[0] != "ocr_granted":
         raise RuntimeError("invalid OCR admission response")
+    if len(response) == 2:
+        os.environ.update(response[1])
     try:
         yield
     finally:
         channel.put(("ocr_release",))
+
+
+def _remote_page_checkpoint(channel, control_channel) -> None:
+    if control_channel is None:
+        return
+    channel.put(("page_checkpoint",))
+    response = control_channel.get()
+    if not isinstance(response, tuple) or response[0] != "page_granted":
+        raise RuntimeError("invalid PDF page admission response")
+    if len(response) == 2:
+        os.environ.update(response[1])
 
 
 def _page_bounds(page_count: int, config: IsolatedExtractionConfig) -> tuple[int, int]:
@@ -968,6 +1042,7 @@ class _ChildExtractionSession:
                 self.config.only_pages and page_number not in self.config.only_pages
             ):
                 continue
+            _remote_page_checkpoint(self.channel, self.ocr_control)
             try:
                 page = self.document.load_page(page_number)
                 source, text, provenance = self._page_text(page)
@@ -1191,7 +1266,11 @@ class _ParentOcrLease:
     """Keep the semaphore token in the supervisor so child death cannot leak it."""
 
     def __init__(self, slots) -> None:
+        from neocortex.runtime.control.global_resources import current_resource_grant
         self._slots = slots
+        self.grant = current_resource_grant()
+        self.native_grant: Any = None
+        self._native_context: AbstractContextManager[Any] | None = None
         self.acquired = False
 
     def acquire(
@@ -1204,6 +1283,8 @@ class _ParentOcrLease:
     ) -> None:
         if self.acquired:
             raise PdfChildProcessError("PDF child requested two OCR leases")
+        if self.grant is not None:
+            self.grant.release_cpu()
         while True:
             if cancellation is not None:
                 cancellation.checkpoint()
@@ -1212,8 +1293,17 @@ class _ParentOcrLease:
                 raise PdfDocumentTimeout(
                     f"PDF extraction exceeded its deadline waiting for an OCR slot: {path}"
                 )
-            if self._slots.acquire(timeout=min(0.1, remaining)):
+            if self._slots is None or self._slots.acquire(timeout=min(0.1, remaining)):
                 self.acquired = True
+                if self.grant is not None:
+                    token = DeadlineCancellation(cancellation, deadline)
+                    self._native_context = pdf_ocr_execution(self.grant, token)
+                    try:
+                        self.native_grant = self._native_context.__enter__()
+                    except Exception:
+                        if token.expired and not (cancellation is not None and cancellation.is_cancelled):
+                            raise PdfDocumentTimeout(f"PDF OCR admission exceeded its deadline: {path}") from None
+                        raise
                 return
             if not process.is_alive():
                 raise PdfChildProcessError(
@@ -1224,8 +1314,30 @@ class _ParentOcrLease:
 
     def release(self) -> None:
         if self.acquired:
-            self._slots.release()
+            if self._native_context is not None:
+                context, self._native_context = self._native_context, None
+                self.native_grant = None
+                context.__exit__(None, None, None)
+            if self._slots is not None:
+                self._slots.release()
             self.acquired = False
+
+
+@contextmanager
+def pdf_ocr_execution(grant, cancellation=None):
+    """Replace the page's CPU lease with useful currently idle native capacity."""
+    from neocortex.runtime.control.global_resources import CoordinatedMemoryGate, resource_grant_scope
+
+    if grant is None:
+        yield None
+        return
+    grant.release_cpu()
+    gate = CoordinatedMemoryGate(grant.coordinator, "pdf", cancellation=cancellation)
+    capacity = gate.worker_capacity(estimated_bytes=0, native_threads=1)
+    in_use = grant.coordinator.summary().cpu_slots_in_use
+    with gate.native_budget(0, max_threads=max(1, capacity - in_use), phase="pdf-ocr", io_slots=1) as native:
+        with resource_grant_scope(native):
+            yield native
 
 
 def _next_extraction_message(
@@ -1272,6 +1384,14 @@ def _handle_extraction_control(
     last_phase: str,
 ) -> tuple[bool, str]:
     kind = message[0]
+    if kind == "page_checkpoint":
+        if ocr_lease.grant is not None:
+            checkpoint_before_deadline(
+                ocr_lease.grant, deadline, cancellation,
+                PdfDocumentTimeout(f"PDF page admission exceeded its deadline: {path}"),
+            )
+        control_channel.put(("page_granted", {} if ocr_lease.grant is None else ocr_lease.grant.native_env))
+        return True, "page_admission"
     if kind == "phase":
         return True, str(message[1])
     if kind == "ocr_request":
@@ -1281,12 +1401,17 @@ def _handle_extraction_control(
             path=path,
             cancellation=cancellation,
         )
-        control_channel.put(("ocr_granted",))
+        control_channel.put(("ocr_granted", {} if ocr_lease.native_grant is None else ocr_lease.native_grant.native_env))
         return True, "ocr"
     if kind == "ocr_release":
         if not ocr_lease.acquired:
             raise PdfChildProcessError("PDF child released an OCR lease it did not own")
         ocr_lease.release()
+        if ocr_lease.grant is not None:
+            checkpoint_before_deadline(
+                ocr_lease.grant, deadline, cancellation,
+                PdfDocumentTimeout(f"PDF page admission exceeded its deadline: {path}"),
+            )
         return True, last_phase
     return False, last_phase
 
@@ -1357,11 +1482,15 @@ def stream_isolated_extraction(
         memory_limit_bytes=memory_limit_bytes,
     )
     process.start()
+    from neocortex.runtime.control.global_resources import current_resource_grant
+    grant = current_resource_grant()
     deadline = time.monotonic() + timeout_seconds
     complete = False
     ocr_lease = _ParentOcrLease(ocr_slots)
     last_phase = "startup"
     try:
+        if grant is not None:
+            grant.register_process(process.pid)
         while not complete:
             message = _next_extraction_message(
                 channel,
@@ -1421,7 +1550,11 @@ def stream_isolated_profiles(
     process.start()
     deadline = time.monotonic() + timeout_seconds
     complete = False
+    from neocortex.runtime.control.global_resources import current_resource_grant
+    grant = current_resource_grant()
     try:
+        if grant is not None:
+            grant.register_process(process.pid)
         while not complete:
             if cancellation is not None:
                 cancellation.checkpoint()
@@ -1438,6 +1571,11 @@ def stream_isolated_profiles(
                         f"PDF profiler exited with code {process.exitcode}: {path}"
                     ) from None
                 continue
+            if grant is not None:
+                checkpoint_before_deadline(
+                    grant, deadline, cancellation,
+                    PdfDocumentTimeout(f"PDF profiling exceeded its deadline: {path}"),
+                )
             yield message
             complete = message[0] in {"done", "fatal"}
         join_deadline = time.monotonic() + 5

@@ -89,7 +89,10 @@ def framework_config_from_args(args: argparse.Namespace) -> FrameworkConfig:
         image_max_file_bytes=args.image_max_file_bytes,
         image_max_documents=args.image_max_documents,
         image_retry_errors=args.retry_image_errors,
-        image_memory_budget_bytes=args.image_memory_budget_mb * 1024 * 1024,
+        image_memory_budget_bytes=(
+            None if args.image_memory_budget_mb is None
+            else args.image_memory_budget_mb * 1024 * 1024
+        ),
         image_min_free_memory_bytes=args.image_min_free_memory_mb * 1024 * 1024,
         image_min_free_commit_bytes=args.image_min_free_commit_mb * 1024 * 1024,
         image_memory_wait_timeout_seconds=args.image_memory_wait_timeout,
@@ -104,7 +107,10 @@ def framework_config_from_args(args: argparse.Namespace) -> FrameworkConfig:
         docx_max_documents=args.docx_max_documents,
         docx_max_text_chars=args.docx_max_text_chars,
         docx_retry_errors=args.retry_docx_errors,
-        docx_memory_budget_bytes=args.docx_memory_budget_mb * 1024 * 1024,
+        docx_memory_budget_bytes=(
+            None if args.docx_memory_budget_mb is None
+            else args.docx_memory_budget_mb * 1024 * 1024
+        ),
         docx_min_free_memory_bytes=args.docx_min_free_memory_mb * 1024 * 1024,
         docx_min_free_commit_bytes=args.docx_min_free_commit_mb * 1024 * 1024,
         docx_memory_wait_timeout_seconds=args.docx_memory_wait_timeout,
@@ -112,7 +118,10 @@ def framework_config_from_args(args: argparse.Namespace) -> FrameworkConfig:
         office_max_documents=args.office_max_documents,
         office_max_text_chars=args.office_max_text_chars,
         office_retry_errors=args.retry_office_errors,
-        office_memory_budget_bytes=args.office_memory_budget_mb * 1024 * 1024,
+        office_memory_budget_bytes=(
+            None if args.office_memory_budget_mb is None
+            else args.office_memory_budget_mb * 1024 * 1024
+        ),
         office_min_free_memory_bytes=(args.office_min_free_memory_mb * 1024 * 1024),
         office_min_free_commit_bytes=(args.office_min_free_commit_mb * 1024 * 1024),
         office_memory_wait_timeout_seconds=args.office_memory_wait_timeout,
@@ -163,7 +172,10 @@ def framework_config_from_args(args: argparse.Namespace) -> FrameworkConfig:
         audio_ffprobe_path=args.ffprobe_path,
         audio_model_cache_directory=args.audio_model_cache,
         audio_local_models_only=args.audio_local_models_only,
-        audio_memory_budget_bytes=args.audio_memory_budget_mb * 1024 * 1024,
+        audio_memory_budget_bytes=(
+            None if args.audio_memory_budget_mb is None
+            else args.audio_memory_budget_mb * 1024 * 1024
+        ),
         audio_min_free_memory_bytes=args.audio_min_free_memory_mb * 1024 * 1024,
         audio_min_free_commit_bytes=args.audio_min_free_commit_mb * 1024 * 1024,
         audio_memory_wait_timeout_seconds=args.audio_memory_wait_timeout,

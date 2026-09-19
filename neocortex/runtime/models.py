@@ -80,7 +80,7 @@ class FrameworkConfig:
     global_min_free_commit_bytes: int | None = None
     global_cpu_slots: int | None = None
     global_max_cpu_load_percent: float = 90.0
-    global_resource_wait_timeout_seconds: float = 300.0
+    global_resource_wait_timeout_seconds: float | None = None
     code_max_file_bytes: int = 8 * 1024 * 1024
     code_max_documents: int | None = None
     code_max_text_chars: int = 4_000_000
@@ -97,11 +97,11 @@ class FrameworkConfig:
         default_factory=CodeThirdPartyPolicy,
         kw_only=True,
     )
-    image_workers: int = 4
+    image_workers: int | None = None
     image_max_file_bytes: int | None = None
     image_max_documents: int | None = None
     image_retry_errors: bool = False
-    image_memory_budget_bytes: int = 512 * 1024 * 1024
+    image_memory_budget_bytes: int | None = None
     image_min_free_memory_bytes: int = 1024 * 1024 * 1024
     image_min_free_commit_bytes: int = 1024 * 1024 * 1024
     image_memory_wait_timeout_seconds: float = 60.0
@@ -115,7 +115,7 @@ class FrameworkConfig:
     docx_max_documents: int | None = None
     docx_max_text_chars: int = 20_000_000
     docx_retry_errors: bool = False
-    docx_memory_budget_bytes: int = 512 * 1024 * 1024
+    docx_memory_budget_bytes: int | None = None
     docx_min_free_memory_bytes: int = 1024 * 1024 * 1024
     docx_min_free_commit_bytes: int = 1024 * 1024 * 1024
     docx_memory_wait_timeout_seconds: float = 60.0
@@ -123,7 +123,7 @@ class FrameworkConfig:
     office_max_documents: int | None = None
     office_max_text_chars: int = 20_000_000
     office_retry_errors: bool = False
-    office_memory_budget_bytes: int = 512 * 1024 * 1024
+    office_memory_budget_bytes: int | None = None
     office_min_free_memory_bytes: int = 1024 * 1024 * 1024
     office_min_free_commit_bytes: int = 1024 * 1024 * 1024
     office_memory_wait_timeout_seconds: float = 60.0
@@ -174,7 +174,7 @@ class FrameworkConfig:
     audio_ffprobe_path: str | None = None
     audio_model_cache_directory: Path | None = field(default_factory=default_whisper_model_cache)
     audio_local_models_only: bool = field(default_factory=default_local_models_only)
-    audio_memory_budget_bytes: int = 2 * 1024 * 1024 * 1024
+    audio_memory_budget_bytes: int | None = None
     audio_min_free_memory_bytes: int = 2 * 1024 * 1024 * 1024
     audio_min_free_commit_bytes: int = 2 * 1024 * 1024 * 1024
     audio_memory_wait_timeout_seconds: float = 300.0
@@ -205,8 +205,8 @@ class FrameworkConfig:
     pdf_ocr_mode: Literal["auto", "never", "always"] = "auto"
     pdf_ocr_lang: str = "spa+eng"
     pdf_dpi: int = 200
-    pdf_workers: int = 4
-    pdf_ocr_workers: int = 2
+    pdf_workers: int | None = None
+    pdf_ocr_workers: int | None = None
     pdf_min_page_chars: int = 40
     pdf_max_page_text_chars: int = 5_000_000
     pdf_max_render_pixels: int = 40_000_000
@@ -234,7 +234,7 @@ class FrameworkConfig:
     pdf_worker_memory_bytes: int = 512 * 1024 * 1024
     pdf_memory_wait_timeout_seconds: float = 60.0
     pdf_large_document_bytes: int = 128 * 1024 * 1024
-    pdf_large_document_workers: int = 2
+    pdf_large_document_workers: int | None = None
     image_document_ocr_profile: OcrProfileName = "configured"
     pdf_ocr_profile: OcrProfileName = "configured"
 

@@ -1261,12 +1261,22 @@ e.actor_kind AS current_actor_kind,e.actor_id AS current_actor_id,
 e.provenance_json AS current_provenance_json,
 e.decision_json AS current_decision_json,e.note AS current_note,
 e.observed_ns AS current_observed_ns,e.recorded_ns AS current_recorded_ns"""
+# Keep logical_key as the indexable equality. Group the remaining filters into
+# a truth test so SQLite cannot choose a broader scope or source index. WHERE
+# already discards FALSE and NULL, so this preserves the existence predicate
+# without depending on generated UNIQUE-index names or changing affinities.
 _EFFECTIVE_SOURCE_PUBLICATION_PREDICATE = """h.publication_id IS NOT NULL
 AND e.to_state IN ('open','in_review')
 AND t.source_snapshot_fingerprint<>h.source_snapshot_fingerprint
 AND t.created_ns<=h.confirmed_ns AND b.confirmed_ns<h.confirmed_ns
 AND e.observed_ns<=h.confirmed_ns AND e.recorded_ns<h.confirmed_ns
-AND replacement.logical_key IS NULL"""
+AND NOT EXISTS(
+    SELECT 1 FROM review_tasks replacement
+    WHERE replacement.logical_key=t.logical_key
+      AND (replacement.scope=t.scope AND replacement.task_type=t.task_type
+      AND replacement.source_snapshot_fingerprint=h.source_snapshot_fingerprint
+      ) IS TRUE
+)"""
 _EFFECTIVE_SOURCE_PUBLICATION_JOIN = """ LEFT JOIN
 review_task_source_publications h ON h.scope=t.scope AND h.task_type=t.task_type
 AND h.selector_signature=b.selector_signature AND NOT EXISTS(
@@ -1274,13 +1284,7 @@ AND h.selector_signature=b.selector_signature AND NOT EXISTS(
     WHERE later_head.scope=h.scope AND later_head.task_type=h.task_type
       AND later_head.selector_signature=h.selector_signature
       AND later_head.revision>h.revision
-) LEFT JOIN (
-    SELECT logical_key,scope,task_type,source_snapshot_fingerprint
-    FROM review_tasks
-    GROUP BY logical_key,scope,task_type,source_snapshot_fingerprint
-) replacement ON replacement.logical_key=t.logical_key
-AND replacement.scope=t.scope AND replacement.task_type=t.task_type
-AND replacement.source_snapshot_fingerprint=h.source_snapshot_fingerprint """
+) """
 _EFFECTIVE_SOURCE_PUBLICATION_COLUMNS = (
     "CASE WHEN "
     + _EFFECTIVE_SOURCE_PUBLICATION_PREDICATE
@@ -2659,39 +2663,37 @@ def list_current_review_tasks(
                 event.provenance_json,'$.replacement_task_id'
             )
         )"""
-    current_events_sql = (
-        """SELECT e.* FROM review_task_events e
-        WHERE NOT EXISTS(
+    # Probe the existing task/sequence index from each selected task. A UNION
+    # of all current events would be materialized before scope and page limits
+    # and make every published-source page scan unrelated event history.
+    current_events_join = (
+        """ LEFT JOIN review_task_events e ON e.task_id=t.task_id
+        AND NOT EXISTS(
             SELECT 1 FROM review_task_events later
             WHERE later.task_id=e.task_id AND later.sequence>e.sequence
         )"""
         if not source_snapshot_as_published
         else (
-            "SELECT event.* FROM review_task_events event WHERE NOT EXISTS("
+            " LEFT JOIN review_task_events event ON event.task_id=t.task_id "
+            "AND NOT EXISTS("
             "SELECT 1 FROM review_task_events later WHERE later.task_id=event.task_id "
-            "AND later.sequence>event.sequence) AND NOT ("
+            "AND later.sequence>event.sequence) "
+            "LEFT JOIN review_task_events e ON e.task_id=t.task_id "
+            "AND e.event_id=CASE ("
             + unpublished_replacement
-            + ") UNION ALL SELECT previous.* FROM review_task_events event "
-            "JOIN review_task_events previous ON previous.event_id=event.previous_event_id "
-            "AND previous.task_id=event.task_id WHERE NOT EXISTS(SELECT 1 FROM "
-            "review_task_events later WHERE later.task_id=event.task_id AND "
-            "later.sequence>event.sequence) AND (" + unpublished_replacement + ")"
+            + ") WHEN 1 THEN event.previous_event_id WHEN 0 THEN event.event_id END "
         )
     )
     sql = (
-        """WITH current_events AS (
-            """
-        + current_events_sql
-        + """
-        )
-        SELECT t.*,b.selector_signature AS batch_selector_signature,
+        """SELECT t.*,b.selector_signature AS batch_selector_signature,
         b.source_snapshot_json AS batch_source_snapshot_json,
         b.source_snapshot_fingerprint AS batch_source_snapshot_fingerprint,"""
         + _CURRENT_EVENT_COLUMNS
         + ","
         + _EFFECTIVE_SOURCE_PUBLICATION_COLUMNS
-        + " FROM review_tasks t LEFT JOIN current_events e ON e.task_id=t.task_id "
-        "LEFT JOIN review_task_batches b ON b.batch_id=t.batch_id "
+        + " FROM review_tasks t "
+        + current_events_join
+        + " LEFT JOIN review_task_batches b ON b.batch_id=t.batch_id "
         + _EFFECTIVE_SOURCE_PUBLICATION_JOIN
         + " WHERE "
         + " AND ".join(clauses)
@@ -2708,13 +2710,20 @@ def list_current_review_tasks(
                 rows = connection.execute(sql, parameters).fetchall()
                 if source_snapshot_as_published:
                     records = tuple(_task_record_from_row(row) for row in rows)
-                    current_by_id = {
-                        record.task.task_id: record
-                        for record in _validated_records_by_task_ids(
+                    record_ids = tuple(record.task.task_id for record in records)
+                    if len(set(record_ids)) != len(record_ids):
+                        raise ReviewTaskRepositoryError("bounded ReviewTask identity lookup is invalid")
+                    current_by_id: dict[str, ReviewTaskRecord] = {}
+                    # The maximum read page includes a lookahead record.
+                    # Validate it too, in bounded batches on this same read
+                    # transaction, without widening the repository's limit.
+                    for start in range(0, len(record_ids), MAX_REVIEW_TASKS_PER_PAGE):
+                        _checkpoint(bridge)
+                        current_records = _validated_records_by_task_ids(
                             connection,
-                            tuple(record.task.task_id for record in records),
+                            record_ids[start : start + MAX_REVIEW_TASKS_PER_PAGE],
                         )
-                    }
+                        current_by_id.update((record.task.task_id, record) for record in current_records)
                     for record in records:
                         current = current_by_id.get(record.task.task_id)
                         if (

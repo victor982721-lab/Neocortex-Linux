@@ -29,6 +29,9 @@ from neocortex.runtime.control.bounded_subprocess import (
     run_bounded_capture,
 )
 from neocortex.runtime.control.cancellation import CancellationToken
+from ..media_resources import checkpoint_before_deadline, native_subprocess_arguments
+from neocortex.runtime.control.elastic_workers import current_worker_cancellation
+from neocortex.runtime.control.global_resources import current_resource_grant
 from neocortex.capabilities.formats.image.png import probe_png_structure
 from .models import VideoProcessingError
 from .limits import (
@@ -41,11 +44,42 @@ from .limits import (
 MAX_VIDEO_FRAME_BYTES = 64 * 1024 * 1024
 MAX_VIDEO_FRAME_BATCH_BYTES = 512 * 1024 * 1024
 MAX_VIDEO_FFMPEG_DIAGNOSTIC_BYTES = 2 * 1024 * 1024
-VIDEO_FRAME_SAMPLING_POLICY = "frame-sampling-v2-frame-rate-end-guard"
+VIDEO_FRAME_SAMPLING_POLICY = "frame-sampling-v3-bounded-batch"
 REGISTERED_SCRATCH_OWNER = "video-frame-sampler"
 VIDEO_FRAME_SCRATCH_SCOPE = "video-frames"
 _TIMESTAMP_TOLERANCE_MS = 250
 _SHOWINFO_TIMESTAMP = re.compile(rb"\bpts_time:([0-9]+(?:\.[0-9]+)?)")
+
+
+def frame_batch_output_limit(pixels: int, count: int) -> int:
+    return min(MAX_VIDEO_FRAME_BATCH_BYTES, count * min(MAX_VIDEO_FRAME_BYTES, pixels * 8 + 65536))
+
+
+def video_worker_memory_reservation(config) -> int:
+    """Native address-space limit plus capture bytearray/copy and Python owner."""
+    capture = frame_batch_output_limit(config.max_frame_pixels, config.max_frames)
+    return config.worker_memory_bytes + 2 * capture + 64 * 1024 * 1024
+
+
+def _producer_remaining_timeout(deadline: float, timeout_error: VideoProcessingError) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise timeout_error
+    return remaining
+
+
+def _native_resources(cancellation=None, *, deadline=None, timeout_error=None):
+    token = cancellation or current_worker_cancellation()
+    if token is not None:
+        token.checkpoint()
+    grant = current_resource_grant()
+    if grant is None:
+        return "1", native_subprocess_arguments(None, token)
+    if deadline is None:
+        grant.checkpoint()
+    else:
+        checkpoint_before_deadline(grant, deadline, token, timeout_error)
+    return str(max(1, grant.native_threads)), native_subprocess_arguments(grant, token)
 
 
 @dataclass(frozen=True, slots=True)
@@ -323,7 +357,17 @@ def _discover_timestamps(
     max_frames: int,
     timeout_seconds: float,
     memory_limit_bytes: int,
+    cancellation: CancellationToken | None = None,
 ) -> tuple[int, ...]:
+    deadline = time.monotonic() + timeout_seconds
+    timeout_error = VideoProcessingError(
+        "video_frame_discovery_timeout",
+        "FFmpeg timestamp discovery exceeded its bounded timeout",
+        recommendation="retry", retryable=True,
+    )
+    threads, resources = _native_resources(
+        cancellation, deadline=deadline, timeout_error=timeout_error,
+    )
     command = (
         executable,
         "-hide_banner",
@@ -332,7 +376,7 @@ def _discover_timestamps(
         "-loglevel",
         "info",
         "-threads",
-        "1",
+        threads,
         "-filter_threads",
         "1",
         "-i",
@@ -353,19 +397,15 @@ def _discover_timestamps(
     try:
         result = run_bounded_capture(
             command,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=_producer_remaining_timeout(deadline, timeout_error),
             stdout_limit_bytes=MAX_VIDEO_FFMPEG_DIAGNOSTIC_BYTES,
             stderr_limit_bytes=MAX_VIDEO_FFMPEG_DIAGNOSTIC_BYTES,
             creationflags=creation_flags,
             memory_limit_bytes=memory_limit_bytes,
+            **resources,
         )
     except subprocess.TimeoutExpired as exc:
-        raise VideoProcessingError(
-            "video_frame_discovery_timeout",
-            "FFmpeg timestamp discovery exceeded its bounded timeout",
-            recommendation="retry",
-            retryable=True,
-        ) from exc
+        raise timeout_error from exc
     except SubprocessOutputLimitError as exc:
         raise VideoProcessingError(
             "video_frame_discovery_output_limit",
@@ -396,6 +436,7 @@ def _extract_frame(
     timeout_seconds: float,
     memory_limit_bytes: int,
 ) -> ExtractedVideoFrame:
+    threads, _resources = _native_resources()
     command = (
         executable,
         "-hide_banner",
@@ -404,7 +445,7 @@ def _extract_frame(
         "-loglevel",
         "error",
         "-threads",
-        "1",
+        threads,
         "-filter_threads",
         "1",
         "-ss",
@@ -452,6 +493,7 @@ def _run_frame_extraction(
     memory_limit_bytes: int,
 ) -> subprocess.CompletedProcess[bytes]:
     creation_flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) if os.name == "nt" else 0
+    _threads, resources = _native_resources()
     try:
         return run_bounded_capture(
             command,
@@ -460,6 +502,7 @@ def _run_frame_extraction(
             stderr_limit_bytes=MAX_VIDEO_FFMPEG_DIAGNOSTIC_BYTES,
             creationflags=creation_flags,
             memory_limit_bytes=memory_limit_bytes,
+            **resources,
         )
     except subprocess.TimeoutExpired as exc:
         raise VideoProcessingError(
@@ -521,6 +564,126 @@ def _frame_content_digest(path: Path) -> str:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _png_payloads(payload: bytes) -> Iterator[memoryview]:
+    """Walk a bounded image2pipe stream without decompressing or copying rasters."""
+    view = memoryview(payload)
+    offset = 0
+    while offset < len(view):
+        start = offset
+        if view[offset:offset + 8] != b"\x89PNG\r\n\x1a\n":
+            raise ValueError("invalid PNG batch signature")
+        offset += 8
+        while True:
+            if offset + 12 > len(view):
+                raise ValueError("truncated PNG batch chunk")
+            length = int.from_bytes(view[offset:offset + 4], "big")
+            kind = view[offset + 4:offset + 8]
+            offset += 12 + length
+            if offset > len(view) or offset - start > MAX_VIDEO_FRAME_BYTES:
+                raise ValueError("PNG batch frame exceeds its byte bound")
+            if kind == b"IEND":
+                if length:
+                    raise ValueError("invalid PNG batch terminator")
+                yield view[start:offset]
+                break
+
+
+def _extract_frames(
+    source: Path, scratch: Path, *, plan: tuple[VideoFrameCandidate, ...],
+    executable: str, stream_index: int, width: int, height: int,
+    timeout_seconds: float, memory_limit_bytes: int,
+    cancellation: CancellationToken | None = None,
+) -> tuple[ExtractedVideoFrame, ...]:
+    """Decode once, retaining only the first raster at or after each planned time.
+
+    Several requested times can identify the same low-rate source frame. They
+    share its exact raster while retaining their own timestamp and typed reasons,
+    matching the previous seek-per-candidate contract.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    timeout_error = VideoProcessingError(
+        "video_frame_timeout", "FFmpeg batch extraction exceeded its bounded timeout",
+        recommendation="retry", retryable=True,
+    )
+    threads, resources = _native_resources(
+        cancellation, deadline=deadline, timeout_error=timeout_error,
+    )
+    first = plan[0].timestamp_ms / 1000
+    selections = [f"isnan(prev_selected_t)*gte(t\\,{first:.3f})"]
+    selections.extend(
+        f"gte(t\\,{item.timestamp_ms / 1000:.3f})*lt(prev_selected_t\\,{item.timestamp_ms / 1000:.3f})"
+        for item in plan
+    )
+    command = (
+        executable, "-hide_banner", "-nostdin", "-nostats", "-loglevel", "info",
+        "-threads", threads, "-filter_threads", "1", "-i", str(source),
+        "-map", f"0:{stream_index}", "-an", "-sn", "-vf",
+        f"select={'+'.join(selections)},scale={width}:{height}:force_original_aspect_ratio=decrease,showinfo",
+        "-frames:v", str(len(plan)), "-fps_mode", "passthrough", "-threads", "1",
+        "-map_metadata", "-1", "-pix_fmt", "rgb24", "-c:v", "png", "-f", "image2pipe", "pipe:1",
+    )
+    # The captured PNG stream and materialized files both have explicit bounds.
+    output_limit = frame_batch_output_limit(width * height, len(plan))
+    grant = current_resource_grant()
+    if grant is not None:
+        # Admit the entire possible scratch peak before decoding: incremental
+        # upgrades while several videos retain earlier rasters can deadlock.
+        grant.resize_temp_bytes(output_limit, directory=scratch)
+    try:
+        result = run_bounded_capture(
+            command, timeout_seconds=_producer_remaining_timeout(deadline, timeout_error),
+            stdout_limit_bytes=output_limit,
+            stderr_limit_bytes=MAX_VIDEO_FFMPEG_DIAGNOSTIC_BYTES,
+            memory_limit_bytes=memory_limit_bytes, **resources,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise timeout_error from exc
+    except SubprocessOutputLimitError as exc:
+        raise VideoProcessingError(
+            "video_frame_batch_byte_limit", f"FFmpeg batch {exc.stream} exceeded its output bound",
+            recommendation="manual_review", retryable=False,
+        ) from exc
+    if result.returncode:
+        raise VideoProcessingError(
+            "video_frame_extract_error", result.stderr.decode("utf-8", "replace")[-1000:],
+            recommendation="retry", retryable=True,
+        )
+    timestamps = [round(float(value) * 1000) for value in _SHOWINFO_TIMESTAMP.findall(result.stderr)]
+    rasters = []
+    try:
+        for index, png in enumerate(_png_payloads(result.stdout)):
+            if (token := resources.get("cancellation")) is not None:
+                token.checkpoint()
+            _producer_remaining_timeout(deadline, timeout_error)
+            if index >= len(timestamps) or index >= len(plan):
+                raise ValueError("PNG batch and timestamp counts disagree")
+            destination = scratch / f"frame-{index:04d}-{timestamps[index]}.png"
+            destination.write_bytes(png)
+            frame_width, frame_height = _validate_extracted_frame(result, destination, timestamps[index])
+            if frame_width > width or frame_height > height:
+                raise ValueError("PNG batch dimensions exceed the requested bounds")
+            rasters.append((timestamps[index], destination, frame_width, frame_height,
+                            xxhash.xxh3_128(png).hexdigest()))
+        if len(rasters) != len(timestamps):
+            raise ValueError("PNG batch and timestamp counts disagree")
+    except ValueError as exc:
+        raise VideoProcessingError(
+            "video_frame_invalid_png", str(exc), recommendation="retry", retryable=True,
+        ) from exc
+    extracted: list[ExtractedVideoFrame] = []
+    for candidate in plan:
+        raster = next((item for item in rasters if item[0] + 1 >= candidate.timestamp_ms), None)
+        if raster is not None:
+            _actual_time, path, frame_width, frame_height, digest = raster
+            extracted.append(ExtractedVideoFrame(
+                len(extracted), candidate.timestamp_ms, candidate.reasons,
+                path, frame_width, frame_height, digest,
+            ))
+    if grant is not None:
+        grant.resize_temp_bytes(sum(item[1].stat().st_size for item in rasters), directory=scratch)
+    return tuple(extracted)
 
 
 def video_frame_scratch_root(state_path: Path) -> Path:
@@ -730,6 +893,7 @@ def sampled_video_frames(
                 max_frames=config.max_frames,
                 timeout_seconds=_remaining_timeout(deadline, config.discovery_timeout_seconds),
                 memory_limit_bytes=config.worker_memory_bytes,
+                cancellation=cancellation,
             )
         except VideoProcessingError as exc:
             warnings.append(exc.code)
@@ -744,6 +908,7 @@ def sampled_video_frames(
                 max_frames=config.max_frames,
                 timeout_seconds=_remaining_timeout(deadline, config.discovery_timeout_seconds),
                 memory_limit_bytes=config.worker_memory_bytes,
+                cancellation=cancellation,
             )
         except VideoProcessingError as exc:
             warnings.append(exc.code)
@@ -774,43 +939,23 @@ def sampled_video_frames(
         )
     with scratch_context as scratch_value:
         scratch = Path(scratch_value)
-        extracted: list[ExtractedVideoFrame] = []
-        extracted_bytes = 0
-        for candidate in plan:
-            cancellation.checkpoint()
-            destination = scratch / f"frame-{len(extracted):04d}-{candidate.timestamp_ms}.png"
-            try:
-                raw = _extract_frame(
-                    source,
-                    destination,
-                    executable=executable,
-                    stream_index=stream_index,
-                    timestamp_ms=candidate.timestamp_ms,
-                    width=target_width,
-                    height=target_height,
-                    timeout_seconds=_remaining_timeout(deadline, config.frame_timeout_seconds),
-                    memory_limit_bytes=config.worker_memory_bytes,
-                )
-            except VideoProcessingError as exc:
-                warnings.append(exc.code)
-                continue
-            frame_bytes = raw.path.stat().st_size
-            if extracted_bytes + frame_bytes > MAX_VIDEO_FRAME_BATCH_BYTES:
-                warnings.append("video_frame_batch_byte_limit")
-                raw.path.unlink(missing_ok=True)
-                break
-            extracted_bytes += frame_bytes
-            extracted.append(
-                ExtractedVideoFrame(
-                    index=len(extracted),
-                    timestamp_ms=raw.timestamp_ms,
-                    reasons=candidate.reasons,
-                    path=raw.path,
-                    width=raw.width,
-                    height=raw.height,
-                    content_xxh3_128=raw.content_xxh3_128,
-                )
+        cancellation.checkpoint()
+        try:
+            extracted = _extract_frames(
+                source, scratch, plan=plan, executable=executable, stream_index=stream_index,
+                width=target_width, height=target_height,
+                timeout_seconds=_remaining_timeout(
+                    deadline, config.frame_timeout_seconds * len(plan),
+                ),
+                memory_limit_bytes=config.worker_memory_bytes,
+                cancellation=cancellation,
             )
+        except VideoProcessingError as exc:
+            warnings.append(exc.code)
+            extracted = ()
+        cancellation.checkpoint()
+        if extracted and len(extracted) < len(plan):
+            warnings.append("video_frame_extract_error")
         if not extracted:
             raise VideoProcessingError(
                 "video_frames_unavailable",
@@ -820,6 +965,10 @@ def sampled_video_frames(
                 evidence={"planned_frames": len(plan), "warnings": sorted(set(warnings))},
             )
         yield VideoFrameBatch(tuple(extracted), tuple(sorted(set(warnings))))
+    grant = current_resource_grant()
+    if grant is not None:
+        # The scratch owner has completed cleanup before capacity is returned.
+        grant.resize_temp_bytes(0)
 
 
 __all__ = (

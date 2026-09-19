@@ -128,7 +128,7 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(selected_routes, tuple(builtin_route_registry()))
         self.assertEqual(args.ocr, "auto")
         self.assertEqual(args.pdf_cache_validation, "metadata")
-        self.assertEqual(args.pdf_large_document_workers, 2)
+        self.assertIsNone(args.pdf_large_document_workers)
         self.assertFalse(args.retry_pdf_errors)
         self.assertFalse(args.retry_docx_errors)
         self.assertFalse(args.retry_office_errors)
@@ -640,6 +640,7 @@ class OrchestratorTests(unittest.TestCase):
                 state_directory=state,
                 route="image",
                 image_workers=1,
+                    image_document_ocr_lang="eng",
                 image_memory_budget_bytes=256 * 1024 * 1024,
                 image_min_free_memory_bytes=0,
                 image_min_free_commit_bytes=0,

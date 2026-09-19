@@ -6,7 +6,6 @@ from collections.abc import Iterable
 from dataclasses import asdict, dataclass, is_dataclass, replace
 import heapq
 from pathlib import Path
-from threading import RLock
 from typing import Any, Callable, Literal, Mapping, Protocol, TYPE_CHECKING
 
 from neocortex.runtime.orchestration.route_selection import (
@@ -15,6 +14,11 @@ from neocortex.runtime.orchestration.route_selection import (
 from neocortex.runtime.orchestration.route_selection import (
     normalize_route_selection as normalize_route_selection,
 )
+from neocortex.runtime.orchestration.inventory_projection import (
+    CodeInventoryProjection as CodeInventoryProjection,
+    build_code_inventory_projection as build_code_inventory_projection,
+)
+
 from neocortex.runtime.orchestration.replay_metrics import (
     normalize_route_replay_metrics,
 )
@@ -60,13 +64,6 @@ class _InventorySnapshotSource(Protocol):
 
     def snapshots(self, scan_id: int) -> Iterable[FileSnapshot]: ...
 
-# Route workers run concurrently, while all source kinds publish into the
-# same document-catalog owner.  Keep extraction parallel and serialize only
-# the catalog generation/CAS boundary; the catalog module's writer lock is a
-# second defense for callers outside orchestration, not the lifecycle gate.
-_CATALOG_UPDATE_LOCK = RLock()
-
-
 @dataclass(frozen=True, slots=True)
 class RouteExecutionContext:
     config: "FrameworkConfig"
@@ -81,6 +78,7 @@ class RouteExecutionContext:
     # open inventory owner.  Keeping it optional preserves route-only and
     # legacy test adapters, while avoiding a second WAL-backed DedupIndex.
     inventory_view: "CodeInventory | None" = None
+    source_published: Callable[[str], None] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,23 +128,6 @@ class RouteAdapter:
         )
 
 
-@dataclass(frozen=True, slots=True)
-class CodeInventoryProjection:
-    """Bounded immutable Code input copied from the active inventory owner.
-
-    The projection contains only paths that the Code route can admit before
-    reading bytes.  It is intentionally ephemeral and in-memory: the owning
-    orchestration scope controls its lifetime and no corpus or inventory
-    database is rewritten.
-    """
-
-    records: tuple[FileSnapshot, ...]
-
-    def snapshots(self, scan_id: int) -> Iterable[FileSnapshot]:
-        if type(scan_id) is not int or scan_id <= 0:
-            raise ValueError("Code inventory projection scan_id must be positive")
-        yield from self.records
-
 
 def _project_roots_relevant_to_corpus(
     corpus_root: Path,
@@ -174,38 +155,6 @@ def _project_roots_relevant_to_corpus(
                 continue
         relevant.append(candidate)
     return tuple(relevant)
-
-
-def build_code_inventory_projection(
-    index: _InventorySnapshotSource,
-    scan_id: int,
-    *,
-    cancellation: object | None = None,
-) -> CodeInventoryProjection:
-    """Materialize the Code-admissible inventory rows from an open owner.
-
-    ``DedupIndex`` remains the sole reader of the live WAL-backed owner.  The
-    route workers consume this detached tuple, so no worker needs to run the
-    inventory schema validator or create a large temporary SQLite snapshot.
-    """
-
-    from neocortex.code.ingestion.code_candidate_scope import is_project_marker
-    from neocortex.code.ingestion.code_detection import likely_code_candidate
-    from neocortex.deduplication import FileSnapshot
-
-    checkpoint = getattr(cancellation, "checkpoint", None)
-    records: list[FileSnapshot] = []
-    for snapshot in index.snapshots(scan_id):
-        if callable(checkpoint):
-            checkpoint()
-        if not isinstance(snapshot, FileSnapshot):
-            raise TypeError("inventory owner returned an invalid FileSnapshot")
-        # Keep this projection semantically identical to CodeRoute's first
-        # admission predicate.  Project-scope discovery needs marker files;
-        # arbitrary non-code inventory rows cannot affect either pass.
-        if likely_code_candidate(snapshot.path) or is_project_marker(snapshot.path):
-            records.append(snapshot)
-    return CodeInventoryProjection(tuple(records))
 
 
 # region [01b] Bounded route workload projections
@@ -273,34 +222,38 @@ def _candidate_route_workload(
         raise ValueError(f"{route_name} max documents is invalid")
 
     def candidate_sizes() -> Iterable[int]:
-        seen_paths: set[str] = set()
+        prior_selectors: list[str] = []
         for mime in capability.mime_types:
             if callable(checkpoint):
                 checkpoint()
             if mime.endswith("/"):
                 rows = context.framework_state.iter_selected_route_candidates_by_prefix(
-                    context.run_id,
-                    mime,
-                    route_name,
-                    selection,
+                    context.run_id, mime, route_name, selection,
                 )
-                iterator = (snapshot for _observed_mime, snapshot in rows)
+                candidates = rows
             else:
-                iterator = context.framework_state.iter_selected_route_candidates(
-                    context.run_id,
-                    mime,
-                    route_name,
-                    selection,
+                snapshots = context.framework_state.iter_selected_route_candidates(
+                    context.run_id, mime, route_name, selection,
                 )
-            for snapshot in iterator:
+                candidates = ((mime, snapshot) for snapshot in snapshots)
+            # The owner has one MIME per unique candidate path. An earlier
+            # selector already consumed every matching row, so precedence can
+            # remove overlaps without retaining corpus-sized path sets. Keep
+            # MIME order and the conservative largest-N byte bound remain
+            # identical to the previous projection.
+            for observed_mime, snapshot in candidates:
                 if callable(checkpoint):
                     checkpoint()
-                if snapshot.path in seen_paths:
+                if any(
+                    observed_mime.startswith(previous) if previous.endswith("/")
+                    else observed_mime == previous
+                    for previous in prior_selectors
+                ):
                     continue
-                seen_paths.add(snapshot.path)
                 if max_file_bytes is not None and snapshot.size > max_file_bytes:
                     continue
                 yield max(0, int(snapshot.size))
+            prior_selectors.append(mime)
 
     workload = _bounded_workload(candidate_sizes(), max_documents)
     # The source may observe cancellation while finishing its last page,
@@ -625,6 +578,10 @@ def _run_audio(context: RouteExecutionContext) -> object:
         memory_gate=gate,
         cancellation=context.cancellation,
     ).run()
+    # AudioRoute returned after closing its source writer. Video may now read
+    # that complete source while the independent catalog obligation continues.
+    if context.source_published is not None:
+        context.source_published("audio")
     catalogs = _update_document_catalog_after_route(context, "audio")
     if catalogs:
         summary = _summary_with_catalog(summary, catalogs)
@@ -787,27 +744,24 @@ def _update_document_catalog_after_route(
             source_run_id=context.config.resume_run_id,
         )
     try:
-        # The lock covers the whole owner publication, not only the SQLite
-        # BEGIN IMMEDIATE section.  Otherwise independent route workers could
-        # build against the same catalog head concurrently and collide during
-        # generation/CAS even though extraction itself should remain parallel.
-        with _CATALOG_UPDATE_LOCK:
-            summaries = tuple(
-                update_document_catalog_source(
-                    context.config.document_catalog_database,
-                    source_path,
-                    document_kind,
-                    framework_run_id=context.run_id,
-                    taxonomy_path=context.config.document_taxonomy_path,
-                    max_text_chars=context.config.document_classification_max_chars,
-                    verify_source_paths=False,
-                    progress=context.progress,
-                    progress_operation=source_kind,
-                    cancellation=context.cancellation,
-                    source_root=context.root,
-                )
-                for source_path, document_kind in sources
+        # The catalog owner serializes its write/CAS boundaries and updates
+        # from the same source. Independent sources can prepare concurrently.
+        summaries = tuple(
+            update_document_catalog_source(
+                context.config.document_catalog_database,
+                source_path,
+                document_kind,
+                framework_run_id=context.run_id,
+                taxonomy_path=context.config.document_taxonomy_path,
+                max_text_chars=context.config.document_classification_max_chars,
+                verify_source_paths=False,
+                progress=context.progress,
+                progress_operation=source_kind,
+                cancellation=context.cancellation,
+                source_root=context.root,
             )
+            for source_path, document_kind in sources
+        )
     except BaseException as exc:
         if fail_phase is not None:
             fail_phase(context.run_id, source_kind, phase_name, exc)

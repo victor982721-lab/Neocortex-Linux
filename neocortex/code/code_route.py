@@ -9,9 +9,8 @@ searchable textual representation.
 
 from __future__ import annotations
 import os
-import stat
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import asdict, dataclass, replace
 from typing import Protocol
@@ -19,9 +18,7 @@ from typing import Protocol
 from neocortex.deduplication import (
     FileChangedError,
     FileSnapshot,
-    stat_matches_snapshot,
 )
-from neocortex.deduplication.io import native_io_path
 from neocortex.progress import (
     ProgressCallback,
     ProgressEvent,
@@ -34,23 +31,27 @@ from .ingestion.code_analyzers import AnalyzerRegistry, builtin_analyzer_registr
 from .ingestion.code_candidate_scope import ProjectCandidateScope, is_project_marker
 from .code_contracts import (
     AnalysisStatus,
-    ArtifactClassification,
     CodeAnalysis,
-    CodeFileInput,
     CodeRouteConfig,
     CodeRouteSummary,
-    DiagnosticRecord,
     DiagnosticSeverity,
 )
 from .ingestion.code_detection import (
     DETECTOR_VERSION,
     classify_artifact,
-    decode_text,
     likely_code_candidate,
-    looks_binary,
 )
 from .code_schema import checkpoint_code_wal, remove_checkpointed_code_sidecars
-from .code_state import CachedCodeVersion, CodeState, SkippedCodeObservation
+from .code_state import CachedCodeVersion, CodeState
+from .code_processing import (
+    CodeCandidateResult,
+    CodeCandidateTask,
+    CodeContentProcessor,
+    _diagnostic,
+    _read_exact_snapshot,
+    process_code_candidate,
+    validate_code_snapshot,
+)
 from neocortex.semantic.semantic_models import fingerprint_bytes
 
 # region [01] Structural collaborators and safe I/O
@@ -178,92 +179,13 @@ def estimate_code_graph_memory_bytes(state_path: os.PathLike[str] | str) -> int:
     return _CODE_GRAPH_FIXED_BYTES + min(observed_bytes, _CODE_GRAPH_DATABASE_BYTES_CAP)
 
 
-def _read_exact_snapshot(
-    snapshot: FileSnapshot,
-    limit: int,
-    cancellation: CancellationToken | None = None,
-) -> bytes:
-    """Read a regular non-reparse file once, bounded and identity checked."""
-
-    path = native_io_path(snapshot.path)
-    try:
-        path_stat = os.lstat(path)
-    except OSError as exc:
-        raise FileChangedError(f"cannot inspect {snapshot.path}: {exc}") from exc
-    file_attributes = int(getattr(path_stat, "st_file_attributes", 0))
-    reparse_attribute = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
-    if stat.S_ISLNK(path_stat.st_mode) or file_attributes & reparse_attribute:
-        raise FileChangedError(f"refusing link or reparse point: {snapshot.path}")
-    if not stat.S_ISREG(path_stat.st_mode):
-        raise FileChangedError(f"refusing non-regular file: {snapshot.path}")
-    if snapshot.size > limit:
-        raise ValueError(f"file exceeds configured code limit ({snapshot.size}>{limit})")
-
-    flags = os.O_RDONLY | int(getattr(os, "O_BINARY", 0))
-    flags |= int(getattr(os, "O_NOFOLLOW", 0))
-    descriptor: int | None = None
-    try:
-        descriptor = os.open(path, flags)
-        with os.fdopen(descriptor, "rb", buffering=0) as stream:
-            descriptor = None
-            before = os.fstat(stream.fileno())
-            if not stat.S_ISREG(before.st_mode) or not stat_matches_snapshot(snapshot, before):
-                raise FileChangedError(
-                    f"inventory identity changed before reading: {snapshot.path}"
-                )
-            chunks: list[bytes] = []
-            remaining = snapshot.size
-            while remaining:
-                if cancellation is not None:
-                    cancellation.checkpoint()
-                chunk = stream.read(min(1024 * 1024, remaining))
-                if not chunk:
-                    raise FileChangedError(f"unexpected end of file while reading: {snapshot.path}")
-                chunks.append(chunk)
-                remaining -= len(chunk)
-            if stream.read(1):
-                raise FileChangedError(f"file grew while reading: {snapshot.path}")
-            if cancellation is not None:
-                cancellation.checkpoint()
-            after = os.fstat(stream.fileno())
-            if not stat_matches_snapshot(snapshot, after):
-                raise FileChangedError(f"inventory identity changed while reading: {snapshot.path}")
-            return b"".join(chunks)
-    except FileChangedError:
-        raise
-    except OSError as exc:
-        raise FileChangedError(f"cannot read {snapshot.path}: {exc}") from exc
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-
-
-def _diagnostic(
-    code: str,
-    message: str,
-    *,
-    severity: DiagnosticSeverity = DiagnosticSeverity.ERROR,
-    confirmed: bool = True,
-) -> DiagnosticRecord:
-    return DiagnosticRecord(
-        source="neocortex-code-route",
-        code=code,
-        severity=severity,
-        message=message[:4096],
-        tool_name="neocortex-code-route",
-        tool_version="1",
-        confirmed=confirmed,
-        confidence=1.0 if confirmed else 0.7,
-    )
-
-
 # endregion [01]
 
 
 # region [02] Bounded route runtime
 
 
-class CodeRoute:
+class CodeRoute(CodeContentProcessor):
     """Analyze code artifacts incrementally without mutating source files."""
 
     route_name = "code"
@@ -395,131 +317,156 @@ class CodeRoute:
             cache_hits=counters["cache_hits"],
         )
 
-    def _skipped_observation(
+    def _reuse_cached_candidate(
         self,
+        state: CodeState,
         snapshot: FileSnapshot,
-        classification: ArtifactClassification,
-        status: AnalysisStatus,
-        diagnostic: DiagnosticRecord,
-        *,
+        run_counters: dict[str, int],
+        elapsed_nanoseconds: dict[str, int],
         raw: bytes | None = None,
-        text: str = "",
-        encoding: str | None = None,
-        parser_kind: str = "route-guard",
-        provenance: dict[str, object] | None = None,
-    ) -> SkippedCodeObservation:
-        raw_fingerprint = None if raw is None else fingerprint_bytes(raw)
-        return SkippedCodeObservation(
-            snapshot=snapshot,
-            classification=classification,
-            processing_signature=self.processing_signature,
-            status=status,
-            analyzer_id="neocortex-code-route",
-            analyzer_version="1",
-            parser_kind=parser_kind,
-            diagnostic=diagnostic,
-            encoding=encoding,
-            text_excerpt=text,
-            text_truncated=bool(text) and len(text) >= self.config.max_text_chars,
-            raw_xxh3_128=(None if raw_fingerprint is None else raw_fingerprint.xxh3_128),
-            raw_xxh3_64_guard=(None if raw_fingerprint is None else raw_fingerprint.xxh3_64_guard),
-            provenance=provenance or {},
+    ) -> bool:
+        fingerprint = None if raw is None else fingerprint_bytes(raw)
+        cached = state.reuse_cached(
+            snapshot,
+            self.processing_signature,
+            self.framework_run_id,
+            retry_errors=self.config.retry_errors,
+            retry_recoverable_errors=self.config.retry_recoverable_errors,
+            raw_xxh3_128=None if fingerprint is None else fingerprint.xxh3_128,
+            raw_xxh3_64_guard=None if fingerprint is None else fingerprint.xxh3_64_guard,
+            resolve_analyzer_identity=self._resolve_analyzer_identity,
+            commit=False,
+            elapsed_nanoseconds=elapsed_nanoseconds,
+        )
+        if cached is None:
+            return False
+        self._record_cache_hit(cached, run_counters)
+        return True
+
+    def _process_cached_or_oversized_candidate(
+        self,
+        state: CodeState,
+        snapshot: FileSnapshot,
+        counters: dict[str, int],
+        elapsed_nanoseconds: dict[str, int],
+    ) -> bool | None:
+        """Resolve cached or oversized observations on the SQLite owner."""
+
+        oversized = snapshot.size > self.config.max_file_bytes
+        if (self.config.cache_validation == "metadata" or oversized) and (
+            self._reuse_cached_candidate(state, snapshot, counters, elapsed_nanoseconds)
+        ):
+            return False
+        if not oversized:
+            return None
+        observation = self._skipped_observation(
+            snapshot,
+            classify_artifact(snapshot.path, ""),
+            AnalysisStatus.SKIPPED_LIMIT,
+            _diagnostic(
+                "file_limit",
+                f"file size {snapshot.size} exceeds limit {self.config.max_file_bytes}",
+                severity=DiagnosticSeverity.WARNING,
+            ),
+            provenance={
+                "observed_size": snapshot.size,
+                "max_file_bytes": self.config.max_file_bytes,
+            },
+        )
+        return self._store_candidate_result(
+            state, CodeCandidateResult(observation), counters, elapsed_nanoseconds
         )
 
-    def _analyze_bytes(
-        self, snapshot: FileSnapshot, raw: bytes
-    ) -> tuple[CodeAnalysis | SkippedCodeObservation, int, int]:
-        if looks_binary(raw):
-            classification = classify_artifact(snapshot.path, "")
-            return (
-                self._skipped_observation(
-                    snapshot,
-                    classification,
-                    AnalysisStatus.BINARY,
-                    _diagnostic(
-                        "binary_payload",
-                        "candidate contains binary control bytes and was not parsed",
-                        severity=DiagnosticSeverity.INFO,
-                    ),
-                    raw=raw,
-                    provenance={"binary_probe_bytes": min(len(raw), 8192)},
-                ),
-                0,
-                0,
-            )
+    def _prepare_candidate_work(
+        self,
+        state: CodeState,
+        snapshot: FileSnapshot,
+        counters: dict[str, int],
+        elapsed_nanoseconds: dict[str, int],
+    ) -> CodeCandidateTask | CodeCandidateResult | None:
+        """Verify full-cache content on the owner, inside its memory lease."""
 
-        text, encoding, encoding_evidence = decode_text(raw, snapshot.path)
-        truncated = len(text) > self.config.max_text_chars
-        if truncated:
-            text = text[: self.config.max_text_chars]
-        classification = classify_artifact(snapshot.path, text)
-        classification = replace(
-            classification,
-            evidence=tuple(dict.fromkeys((*classification.evidence, *encoding_evidence))),
-        )
-        source = CodeFileInput(
-            snapshot=snapshot,
-            text=text,
-            raw_bytes=raw,
-            encoding=encoding,
-            classification=classification,
-            processing_signature=self.processing_signature,
+        self.cancellation.checkpoint()
+        preloaded_raw: bytes | None = None
+        if self.config.cache_validation == "full":
+            try:
+                read_started = time.perf_counter_ns()
+                preloaded_raw = _read_exact_snapshot(
+                    snapshot, self.config.max_file_bytes, self.cancellation
+                )
+                elapsed_nanoseconds["read"] += time.perf_counter_ns() - read_started
+                counters["bytes_read"] += len(preloaded_raw)
+                self.cancellation.checkpoint()
+                if self._reuse_cached_candidate(
+                    state, snapshot, counters, elapsed_nanoseconds, preloaded_raw
+                ):
+                    return None
+            except CancellationRequested:
+                raise
+            except (FileChangedError, OSError, UnicodeError, ValueError) as exc:
+                return CodeCandidateResult(
+                    self.error_observation(snapshot, exc),
+                    stale_inventory=isinstance(exc, FileChangedError),
+                )
+        return CodeCandidateTask(
+            snapshot,
+            self.config,
+            self.processing_signature,
+            self.analyzers.specs,
+            preloaded_raw,
         )
 
-        policy_code = None
-        if classification.generated and not self.config.include_generated:
-            policy_code = "generated_excluded_by_policy"
-        elif classification.vendored and not self.config.include_vendored:
-            policy_code = "vendored_excluded_by_policy"
-        if policy_code is not None:
-            return (
-                self._skipped_observation(
-                    snapshot,
-                    classification,
-                    AnalysisStatus.TEXT_ONLY,
-                    _diagnostic(
-                        policy_code,
-                        "artifact remained searchable but structural analysis was disabled",
-                        severity=DiagnosticSeverity.INFO,
-                    ),
-                    raw=raw,
-                    text=text,
-                    encoding=encoding,
-                    parser_kind="policy-text-only",
-                    provenance={"policy": policy_code},
-                ),
-                len(text),
-                0,
-            )
+    def _store_candidate_result(
+        self,
+        state: CodeState,
+        outcome: CodeCandidateResult,
+        counters: dict[str, int],
+        elapsed_nanoseconds: dict[str, int],
+    ) -> bool:
+        """Publish in the SQLite owner while the result still holds its lease."""
 
-        started = time.perf_counter_ns()
-        analyzer = (
-            self.analyzers.analyzer_for(None)
-            if truncated
-            else self.analyzers.analyzer_for(classification.language)
+        self.cancellation.checkpoint()
+        result = outcome.observation
+        if result.status not in {AnalysisStatus.ERROR, AnalysisStatus.SKIPPED_LIMIT}:
+            snapshot = result.input.snapshot if isinstance(result, CodeAnalysis) else result.snapshot
+            try:
+                validate_code_snapshot(snapshot)
+            except FileChangedError as exc:
+                result = self.error_observation(snapshot, exc)
+                outcome = replace(outcome, observation=result, stale_inventory=True, text_chars=0)
+        counters["bytes_read"] += outcome.bytes_read
+        counters["text_chars"] += outcome.text_chars
+        counters["stale_inventory"] += int(outcome.stale_inventory)
+        elapsed_nanoseconds["read"] += outcome.read_ns
+        elapsed_nanoseconds["analyze"] += outcome.analyze_ns
+        persist_started = time.perf_counter_ns()
+        if isinstance(result, CodeAnalysis):
+            _, replaced_version = state.store_analysis(result, self.framework_run_id)
+            counters["symbols"] += len(result.symbols)
+            counters["references"] += len(result.references)
+            counters["diagnostics"] += len(result.diagnostics)
+            counters["text_only"] += int(result.status is AnalysisStatus.TEXT_ONLY)
+            counters["partial"] += int(result.status is AnalysisStatus.PARTIAL)
+            counters["generated"] += int(result.input.classification.generated)
+            counters["vendored"] += int(result.input.classification.vendored)
+        else:
+            _, replaced_version = state.store_skipped(result, self.framework_run_id)
+            counters["diagnostics"] += 1
+            counters["binary_skips"] += int(result.status is AnalysisStatus.BINARY)
+            counters["skipped_limit"] += int(result.status is AnalysisStatus.SKIPPED_LIMIT)
+            counters["text_only"] += int(result.status is AnalysisStatus.TEXT_ONLY)
+            counters["generated"] += int(result.classification.generated)
+            counters["vendored"] += int(result.classification.vendored)
+        elapsed_nanoseconds["persist"] += time.perf_counter_ns() - persist_started
+        counters["invalidated_versions"] += int(replaced_version)
+        counters["processed"] += 1
+        counters["errors"] += int(result.status is AnalysisStatus.ERROR)
+        self._emit(
+            counters["candidates"],
+            errors=counters["errors"],
+            cache_hits=counters["cache_hits"],
         )
-        analysis = analyzer.analyze(source, self.config)
-        analyze_ns = time.perf_counter_ns() - started
-        if truncated:
-            analysis = replace(
-                analysis,
-                status=AnalysisStatus.PARTIAL,
-                text_truncated=True,
-                diagnostics=(
-                    *analysis.diagnostics,
-                    _diagnostic(
-                        "text_limit",
-                        "searchable text was bounded by code max_text_chars",
-                        severity=DiagnosticSeverity.WARNING,
-                    ),
-                ),
-                provenance={
-                    **analysis.provenance,
-                    "text_limit_chars": self.config.max_text_chars,
-                    "native_parser_skipped": True,
-                },
-            )
-        return analysis, len(text), analyze_ns
+        return True
 
     def _process_candidate(
         self,
@@ -528,163 +475,30 @@ class CodeRoute:
         counters: dict[str, int],
         elapsed_nanoseconds: dict[str, int],
     ) -> bool:
-        """Process one candidate and report whether graph inputs changed."""
+        """Compatibility path for direct calls and gates without elastic capacity."""
 
-        if self.config.cache_validation == "metadata" or snapshot.size > self.config.max_file_bytes:
-            cached = state.reuse_cached(
-                snapshot,
-                self.processing_signature,
-                self.framework_run_id,
-                retry_errors=self.config.retry_errors,
-                retry_recoverable_errors=self.config.retry_recoverable_errors,
-                resolve_analyzer_identity=self._resolve_analyzer_identity,
-                commit=False,
-                elapsed_nanoseconds=elapsed_nanoseconds,
-            )
-            if cached is not None:
-                self._record_cache_hit(cached, counters)
-                return False
-
-        if snapshot.size > self.config.max_file_bytes:
-            classification = classify_artifact(snapshot.path, "")
-            observation = self._skipped_observation(
-                snapshot,
-                classification,
-                AnalysisStatus.SKIPPED_LIMIT,
-                _diagnostic(
-                    "file_limit",
-                    f"file size {snapshot.size} exceeds limit {self.config.max_file_bytes}",
-                    severity=DiagnosticSeverity.WARNING,
-                ),
-                provenance={
-                    "observed_size": snapshot.size,
-                    "max_file_bytes": self.config.max_file_bytes,
-                },
-            )
-            persist_started = time.perf_counter_ns()
-            _, replaced_version = state.store_skipped(observation, self.framework_run_id)
-            elapsed_nanoseconds["persist"] += time.perf_counter_ns() - persist_started
-            counters["processed"] += 1
-            counters["skipped_limit"] += 1
-            counters["diagnostics"] += 1
-            counters["invalidated_versions"] += int(replaced_version)
-            return True
-
+        quick_result = self._process_cached_or_oversized_candidate(
+            state, snapshot, counters, elapsed_nanoseconds
+        )
+        if quick_result is not None:
+            return quick_result
         with self._candidate_admission(snapshot):
-            self.cancellation.checkpoint()
-            preloaded_raw: bytes | None = None
-            preload_error: FileChangedError | OSError | UnicodeError | ValueError | None = None
-            if self.config.cache_validation == "full":
-                try:
-                    read_started = time.perf_counter_ns()
-                    preloaded_raw = _read_exact_snapshot(
-                        snapshot,
-                        self.config.max_file_bytes,
-                        self.cancellation,
-                    )
-                    elapsed_nanoseconds["read"] += time.perf_counter_ns() - read_started
-                    counters["bytes_read"] += len(preloaded_raw)
-                    raw_fingerprint = fingerprint_bytes(preloaded_raw)
-                    self.cancellation.checkpoint()
-                    cached = state.reuse_cached(
-                        snapshot,
-                        self.processing_signature,
-                        self.framework_run_id,
-                        retry_errors=self.config.retry_errors,
-                        retry_recoverable_errors=self.config.retry_recoverable_errors,
-                        raw_xxh3_128=raw_fingerprint.xxh3_128,
-                        raw_xxh3_64_guard=raw_fingerprint.xxh3_64_guard,
-                        resolve_analyzer_identity=self._resolve_analyzer_identity,
-                        commit=False,
-                        elapsed_nanoseconds=elapsed_nanoseconds,
-                    )
-                    if cached is not None:
-                        self._record_cache_hit(cached, counters)
-                        return False
-                except CancellationRequested:
-                    raise
-                except (
-                    FileChangedError,
-                    OSError,
-                    UnicodeError,
-                    ValueError,
-                ) as exc:
-                    preload_error = exc
-
-            try:
-                if preload_error is not None:
-                    raise preload_error
-                if preloaded_raw is None:
-                    read_started = time.perf_counter_ns()
-                    raw = _read_exact_snapshot(
-                        snapshot,
-                        self.config.max_file_bytes,
-                        self.cancellation,
-                    )
-                    elapsed_nanoseconds["read"] += time.perf_counter_ns() - read_started
-                    counters["bytes_read"] += len(raw)
-                else:
-                    raw = preloaded_raw
-                result, text_chars, analyze_ns = self._analyze_bytes(snapshot, raw)
-                self.cancellation.checkpoint()
-                counters["text_chars"] += text_chars
-                elapsed_nanoseconds["analyze"] += analyze_ns
-            except CancellationRequested:
-                raise
-            except (FileChangedError, OSError, UnicodeError, ValueError) as exc:
-                classification = classify_artifact(snapshot.path, "")
-                provenance: dict[str, object] = {
-                    "transient": isinstance(exc, FileChangedError),
-                }
-                if isinstance(exc, FileChangedError):
-                    provenance.update({"retryable": True, "recommendation": "retry"})
-                result = self._skipped_observation(
-                    snapshot,
-                    classification,
-                    AnalysisStatus.ERROR,
-                    _diagnostic(type(exc).__name__, str(exc)),
-                    provenance=provenance,
-                )
-                if isinstance(exc, FileChangedError):
-                    counters["stale_inventory"] += 1
-            except Exception as exc:
-                classification = classify_artifact(snapshot.path, "")
-                result = self._skipped_observation(
-                    snapshot,
-                    classification,
-                    AnalysisStatus.ERROR,
-                    _diagnostic("analyzer_failure", f"{type(exc).__name__}: {exc}"),
-                    provenance={"analyzer_failure": type(exc).__name__},
-                )
-
-            persist_started = time.perf_counter_ns()
-            if isinstance(result, CodeAnalysis):
-                _, replaced_version = state.store_analysis(result, self.framework_run_id)
-                counters["symbols"] += len(result.symbols)
-                counters["references"] += len(result.references)
-                counters["diagnostics"] += len(result.diagnostics)
-                counters["text_only"] += int(result.status is AnalysisStatus.TEXT_ONLY)
-                counters["partial"] += int(result.status is AnalysisStatus.PARTIAL)
-                counters["generated"] += int(result.input.classification.generated)
-                counters["vendored"] += int(result.input.classification.vendored)
-            else:
-                _, replaced_version = state.store_skipped(result, self.framework_run_id)
-                counters["diagnostics"] += 1
-                counters["binary_skips"] += int(result.status is AnalysisStatus.BINARY)
-                counters["text_only"] += int(result.status is AnalysisStatus.TEXT_ONLY)
-                counters["generated"] += int(result.classification.generated)
-                counters["vendored"] += int(result.classification.vendored)
-            elapsed_nanoseconds["persist"] += time.perf_counter_ns() - persist_started
-            counters["invalidated_versions"] += int(replaced_version)
-            counters["processed"] += 1
-            if result.status is AnalysisStatus.ERROR:
-                counters["errors"] += 1
-            self._emit(
-                counters["candidates"],
-                errors=counters["errors"],
-                cache_hits=counters["cache_hits"],
+            prepared = self._prepare_candidate_work(
+                state, snapshot, counters, elapsed_nanoseconds
             )
-            return True
+            if prepared is None:
+                return False
+            outcome = (
+                self.process_candidate(
+                    snapshot,
+                    prepared.preloaded_raw,
+                    cancellation=self.cancellation,
+                    reader=_read_exact_snapshot,
+                )
+                if isinstance(prepared, CodeCandidateTask)
+                else prepared
+            )
+            return self._store_candidate_result(state, outcome, counters, elapsed_nanoseconds)
 
     def _candidate_selected(
         self,
@@ -704,12 +518,71 @@ class CodeRoute:
                 return False
         return state.matches_selection(snapshot, self.config.selection)
 
+    def _analyze_parallel_inventory(
+        self,
+        state: CodeState,
+        run: _CodeRouteRun,
+        candidates: Iterable[FileSnapshot],
+        finish_observation: Callable[[bool], None],
+    ) -> None:
+        """Keep cache/SQLite in the owner and parse in elastic spawn workers."""
+
+        from neocortex.runtime.control.elastic_workers import ImmediateResult, elastic_map
+
+        def prepare(snapshot: FileSnapshot):
+            # A metadata hit may decompress durable text and rebuild FTS.
+            # Do that owner work only after CPU/RAM/I/O have been admitted.
+            quick_result = self._process_cached_or_oversized_candidate(
+                state, snapshot, run.counters, run.elapsed_nanoseconds
+            )
+            if quick_result is not None:
+                return ImmediateResult(quick_result)
+            prepared = self._prepare_candidate_work(
+                state, snapshot, run.counters, run.elapsed_nanoseconds
+            )
+            if isinstance(prepared, CodeCandidateTask):
+                return prepared
+            return ImmediateResult(prepared)
+
+        def estimated_bytes(snapshot: FileSnapshot) -> int:
+            if snapshot.size > self.config.max_file_bytes:
+                return _CODE_ANALYSIS_FIXED_BYTES
+            # Account for the bounded pipe serialization and simultaneous child
+            # and owner copies until SQLite publication consumes the result.
+            return 2 * estimate_code_analysis_memory_bytes(
+                snapshot.size, self.config.max_text_chars
+            )
+
+        worker: Callable[[CodeCandidateTask], CodeCandidateResult | bool | None] = process_code_candidate
+        with elastic_map(
+            worker,
+            candidates,
+            gate=self.memory_gate,
+            estimated_bytes=estimated_bytes,
+            native_threads=1,
+            io_slots=1,
+            io_device=lambda snapshot: str(snapshot.volume_id),
+            phase="analysis",
+            prepare=prepare,
+            executor_kind="process",
+            cancellation=self.cancellation,
+        ) as results:
+            for outcome in results:
+                self.cancellation.checkpoint()
+                changed = outcome if isinstance(outcome, bool) else (
+                    outcome is not None and self._store_candidate_result(
+                        state, outcome, run.counters, run.elapsed_nanoseconds
+                    )
+                )
+                finish_observation(changed)
+
     def _analyze_inventory(self, state: CodeState, run: _CodeRouteRun) -> None:
         project_scope = self._discover_project_scope()
         if project_scope is not None:
             run.counters["project_scope_enabled"] = 1
             run.counters["project_roots"] = project_scope.root_count
         pending_cache_updates = 0
+        observed_cache_hits = 0
 
         def commit_cache_batch() -> None:
             nonlocal pending_cache_updates
@@ -722,15 +595,22 @@ class CodeRoute:
             run.counters["cache_batches"] += 1
             pending_cache_updates = 0
 
-        try:
+        def finish_observation(changed: bool) -> None:
+            nonlocal pending_cache_updates, observed_cache_hits
+            run.graph_inputs_changed = run.graph_inputs_changed or changed
+            new_cache_hits = run.counters["cache_hits"] - observed_cache_hits
+            observed_cache_hits = run.counters["cache_hits"]
+            if not state.connection.in_transaction:
+                pending_cache_updates = 0
+            else:
+                pending_cache_updates += new_cache_hits
+                if pending_cache_updates >= 128:
+                    commit_cache_batch()
+
+        def candidates() -> Iterable[FileSnapshot]:
             for snapshot in self.dedup_index.snapshots(self.scan_id):
                 self.cancellation.checkpoint()
-                if not self._candidate_selected(
-                    state,
-                    snapshot,
-                    project_scope,
-                    run.counters,
-                ):
+                if not self._candidate_selected(state, snapshot, project_scope, run.counters):
                     continue
                 if (
                     self.config.max_documents is not None
@@ -738,20 +618,18 @@ class CodeRoute:
                 ):
                     break
                 run.counters["candidates"] += 1
-                cache_hits_before = run.counters["cache_hits"]
-                candidate_changed = self._process_candidate(
-                    state,
-                    snapshot,
-                    run.counters,
-                    run.elapsed_nanoseconds,
-                )
-                run.graph_inputs_changed = run.graph_inputs_changed or candidate_changed
-                if run.counters["cache_hits"] > cache_hits_before:
-                    pending_cache_updates += 1
-                    if pending_cache_updates >= 128:
-                        commit_cache_batch()
-                elif not state.connection.in_transaction:
-                    pending_cache_updates = 0
+                yield snapshot
+
+        try:
+            if callable(getattr(self.memory_gate, "worker_capacity", None)):
+                self._analyze_parallel_inventory(state, run, candidates(), finish_observation)
+            else:
+                for snapshot in candidates():
+                    finish_observation(
+                        self._process_candidate(
+                            state, snapshot, run.counters, run.elapsed_nanoseconds
+                        )
+                    )
         except BaseException:
             if state.connection.in_transaction:
                 state.connection.rollback()

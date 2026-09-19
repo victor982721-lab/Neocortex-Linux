@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,7 +18,13 @@ from neocortex.documents import document_organization_planning as planning
 from neocortex.documents.document_organization_recovery import OrganizationRecoveryRequired
 from neocortex.persistence.framework_state_writer import FrameworkState, RunBudgetExceeded
 from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
+from neocortex.runtime.control.global_resources import (
+    GlobalResourceCoordinator,
+    GlobalResourceLimits,
+    ResourceSample,
+)
 from neocortex.runtime.models import FrameworkConfig
+from neocortex.runtime.orchestration import orchestrator as orchestrator_module
 from neocortex.runtime.orchestration.organization_lifecycle import (
     organization_stage_state,
     register_organization_stages,
@@ -31,6 +38,57 @@ from neocortex.runtime.orchestration.route_registry import (
 )
 from tests.test_document_catalog_generation_publication import _upsert_docx_source
 from tests.test_framework_route_snapshot_concurrency import _populate
+
+
+@pytest.fixture
+def controlled_resources(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Keep real run-scoped admission and cancellation with stable capacity."""
+
+    capacity = 1024 * 1024 * 1024
+    sample = ResourceSample(
+        available_physical=2 * capacity, available_commit=2 * capacity,
+        total_physical=2 * capacity, total_commit=2 * capacity,
+        cpu_load_percent=0, external_cpu_cores=0, effective_cpu_capacity=4,
+        memory_pressure_some_percent=0, memory_pressure_full_percent=0,
+        io_pressure_some_percent=0, io_pressure_full_percent=0,
+    )
+    coordinators: list[GlobalResourceCoordinator] = []
+
+    def create(
+        route_order: tuple[str, ...], limits: GlobalResourceLimits, *,
+        cancellation: CancellationToken, checkpoint: Callable[[], None],
+        route_memory_budgets: Mapping[str, int],
+    ) -> GlobalResourceCoordinator:
+        coordinator = GlobalResourceCoordinator(
+            route_order,
+            replace(
+                limits, memory_budget_bytes=capacity, temp_budget_bytes=capacity,
+                min_free_memory_bytes=0, min_free_commit_bytes=0,
+                cpu_slots=4, native_thread_slots=4, max_cpu_load_percent=100,
+                wait_timeout_seconds=2, poll_interval_seconds=0.01,
+            ),
+            cpu_load_probe=lambda: 0.0, effective_cpu_probe=lambda: 4,
+            resource_probe=lambda: sample,
+            cancellation=cancellation, checkpoint=checkpoint,
+            route_memory_budgets=route_memory_budgets,
+        )
+        coordinators.append(coordinator)
+        return coordinator
+
+    # Preserve the orchestrator's active-scope reuse, stage registration and
+    # cancellation token; only replace the constructor's environmental inputs.
+    monkeypatch.setattr(orchestrator_module, "GlobalResourceCoordinator", create)
+    try:
+        yield
+        assert coordinators
+        for coordinator in coordinators:
+            summary = coordinator.summary()
+            assert summary.resident_bytes == summary.transient_bytes == summary.temp_bytes == 0
+            assert summary.cpu_slots_in_use == summary.native_threads == 0
+            assert all(coordinator.route_active_request_count(route) == 0 for route in summary.routes)
+    finally:
+        for coordinator in coordinators:
+            coordinator.close()
 
 
 def _sources(tmp_path: Path, count: int = 1) -> tuple[FrameworkConfig, list[Path]]:
@@ -232,8 +290,9 @@ def test_replay_source_snapshot_preparation_is_cancellable(
 
 
 @pytest.mark.parametrize("audio_unavailable", (False, True))
+@pytest.mark.usefixtures("controlled_resources")
 def test_ready_video_starts_while_unrelated_text_is_running(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, audio_unavailable: bool,
+    tmp_path: Path, audio_unavailable: bool,
 ) -> None:
     state_directory = tmp_path / "state"
     state_directory.mkdir()
@@ -263,7 +322,6 @@ def test_ready_video_starts_while_unrelated_text_is_running(
             "video": RouteAdapter("video", video, depends_on=("audio",)),
         },
     )
-    monkeypatch.setattr(orchestrator, "_resource_coordinator", lambda: None)
     with FrameworkState(state_directory / "framework.sqlite3") as state:
         run_id = _populate(state, tmp_path)
         state.publish_run_manifest(run_id, RunManifest(
@@ -277,9 +335,8 @@ def test_ready_video_starts_while_unrelated_text_is_running(
     assert ("audio" in results) is not audio_unavailable
 
 
-def test_ready_child_reserves_budget_before_submission(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
+@pytest.mark.usefixtures("controlled_resources")
+def test_ready_child_reserves_budget_before_submission(tmp_path: Path) -> None:
     state_directory = tmp_path / "state"
     state_directory.mkdir()
     child_calls: list[bool] = []
@@ -298,7 +355,6 @@ def test_ready_child_reserves_budget_before_submission(
             "video": RouteAdapter("video", lambda _context: child_calls.append(True) or {}, depends_on=("audio",)),
         },
     )
-    monkeypatch.setattr(orchestrator, "_resource_coordinator", lambda: None)
     with FrameworkState(state_directory / "framework.sqlite3") as state:
         run_id = _populate(state, tmp_path)
         state.publish_run_manifest(run_id, RunManifest(
@@ -314,6 +370,7 @@ def test_ready_child_reserves_budget_before_submission(
 
 
 @pytest.mark.parametrize("after_owner_commit", (False, True))
+@pytest.mark.usefixtures("controlled_resources")
 def test_initial_organization_interruption_resumes_without_content_reexecution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, after_owner_commit: bool,
 ) -> None:
@@ -330,7 +387,6 @@ def test_initial_organization_interruption_resumes_without_content_reexecution(
         raise KeyboardInterrupt("injected organization interruption")
 
     monkeypatch.setattr(organization, "plan_document_organization", interrupted)
-    monkeypatch.setattr(FrameworkOrchestrator, "_resource_coordinator", lambda _self: None)
     initial = FrameworkOrchestrator(config, route_registry=registry, lifecycle_stage_runner=semantic_calls.append)
     with pytest.raises(KeyboardInterrupt):
         initial.run_initial()
@@ -401,6 +457,7 @@ def test_organization_cancel_during_preparation_precedes_first_progress(
 
 
 @pytest.mark.parametrize("owner_change", ("generation", "missing"))
+@pytest.mark.usefixtures("controlled_resources")
 def test_interrupted_preparation_cannot_silently_adopt_changed_owner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, owner_change: str,
 ) -> None:
@@ -414,7 +471,6 @@ def test_interrupted_preparation_cannot_silently_adopt_changed_owner(
         raise KeyboardInterrupt("after durable preparation")
 
     monkeypatch.setattr(organization, "plan_document_organization", interrupted)
-    monkeypatch.setattr(FrameworkOrchestrator, "_resource_coordinator", lambda _self: None)
     with pytest.raises(KeyboardInterrupt):
         FrameworkOrchestrator(config, route_registry=registry).run_initial()
     source_run = calls[0]

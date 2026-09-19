@@ -428,9 +428,12 @@ expresados por el usuario siguen siendo acumulativos. Si una fuente, modelo o
 herramienta falta, el stage conserva `unavailable` o `blocked` y la corrida
 queda `partial`/`incomplete`, sin éxito vacío ni skip silencioso.
 
-La integración de catálogo se ejecuta después de cada productor y serializa
-únicamente la generación/CAS del owner compartido; la extracción permanece
-paralela. Las observaciones `protected`, `no_speech`, `no_audio` y
+La integración de catálogo se ejecuta después de cada productor. Cada fuente
+conserva exclusión propia; fuentes distintas preparan y clasifican en paralelo,
+con resultados acotados y publicación mediante el writer/CAS del catálogo.
+Video puede consumir Audio cuando su caché fuente está publicada y cerrada,
+aunque la clasificación de Audio continúe. El estado de Audio sigue pendiente
+hasta completar también esa clasificación. Las observaciones `protected`, `no_speech`, `no_audio` y
 `metadata_only` siguen consultables con cobertura parcial. FTS y derivados se
 reparan desde representaciones durables válidas; un reintento exige evidencia
 estructurada `retryable` y sólo se intenta una vez por archivo y corrida. Un
@@ -485,6 +488,23 @@ se omite WAL ni se confunde esa carrera con un main ausente; tampoco se promete
 obtener un snapshot de un owner que cambia continuamente durante la copia.
 
 ### Catálogo, Semantic y Knowledge
+
+El recorrido del catálogo usa paginación por clave con predicados indexables;
+una observación de Code comparte su validación de esquema durante la iteración.
+La política de texto v17 cuenta todos los caracteres, incluidos separadores,
+y consulta cancelación entre fragmentos vacíos. Su versión participa tanto en
+el marker de caché como en la identidad de replay y clasificación.
+Los prefijos Code y Video se transfieren como BLOB acotado y se decodifican
+según el encoding real de SQLite, preservando NUL y Unicode. La planificación
+de organización conserva claves y ordinales en una selección TEMP; carga como
+máximo una página de 128 payloads junto con la fila en curso y mantiene la
+transacción, el orden de decisiones, el progreso y el rollback originales.
+
+Las revisiones incrementales de Semantic usan ventanas acotadas ascendentes o
+descendentes y consultas de membresía por generación, tipo e identidad. La
+consulta numérica reserva el espacio de agrupación y selección además de los
+lotes de puntuación y la residencia ya concedida; no inicia una asignación que
+deba esperar indefinidamente contra sus propias reservas.
 
 Catálogo y Semantic son proyecciones reconstruibles con heads publicados.
 Knowledge crea un snapshot lógico sobre owners compatibles y fusiona rankings
@@ -651,6 +671,12 @@ cerrada con una abstención explicable en vez de presentar vecinos no calibrados
 
 ### Review y curación
 
+Los lectores de ReviewTask resuelven reemplazos por clave lógica y eventos por
+tarea, sin materializar el historial completo de otras fuentes. La vista
+publicada conserva el predecesor exacto cuando un reemplazo todavía no está
+publicado. Una página máxima valida también su fila adicional en lotes acotados
+dentro de la misma transacción antes de emitir el cursor.
+
 Framework conserva batches, tareas, decisiones y eventos. **CURRENT:**
 `curate plan` y `--curation-preview` componen propuestas existentes sin crear
 estado ni tocar archivos.
@@ -695,6 +721,12 @@ La sincronización de caches para move/rename usa lock ordering explícito sólo
 fixtures; `trash` conserva una política de invalidación separada.
 
 ### Code como contenido
+
+Los analizadores comparten un mapa de caracteres y bytes UTF-8 con la generación
+de fragmentos. Las conversiones de columnas Unicode usan checkpoints dispersos;
+la asignación de símbolos a fragmentos conserva el desempate por orden original
+mediante intervalos activos. Un manifiesto de sintaxis confirmada reutiliza su
+parseo y los errores conservan sus diagnósticos completos.
 
 Code detecta proyectos y lenguajes, extrae símbolos/relaciones, conserva
 versiones y permite búsqueda/reconstrucción. No ejecuta el código observado ni
@@ -911,11 +943,91 @@ consideran promovidos.
 
 ## Concurrencia y recuperación
 
-Los probes de control Linux incorporan cgroups v2 y afinidad a los datos del
-host. La memoria distingue límite duro y margen antes de presión por
-`memory.high`, y CPU conserva cuota fraccional para el diagnóstico y un número
-conservador de workers para los consumidores existentes. No introduce una
-política fija de recursos ni un segundo coordinador.
+La planificación de procesos contempla simultáneamente RAM y commit libres,
+residencia del intérprete y espacio para la tarea. La nueva concesión de un
+presupuesto nativo se ajusta durante la admisión, antes de configurar el backend.
+Después, un backend de ancho fijo conserva esa demanda al renovar su permiso;
+una reducción temporal de capacidad produce espera cancelable, no una reserva
+menor que los hilos que el modelo seguirá usando. El propietario del mapa
+elástico observa el deadline durante la espera de resultados y mantiene la
+excepción principal si también falla la limpieza.
+
+`GlobalResourceCoordinator` vive desde inventario y Dedup hasta las rutas,
+Catalog, Semantic y Knowledge del mismo run. Los workers heredan ese contexto;
+una entrada independiente posee y cierra su propio scope cuando lo necesita.
+La admisión comparte CPU, threads nativos, memoria transitoria, residencia,
+espacio temporal e I/O por dispositivo. Mantener un modelo o intérprete cargado
+reserva memoria sin ocupar CPU; los resultados conservan su reserva hasta que
+el owner los consume. Sólo un proceso propio identificado por PID y starttime
+puede aportar crédito de memoria privada ya materializada.
+El registro de un hijo verificado alimenta también al observador cuando Linux
+no expone los listados de hijos. Cada muestra vuelve a comprobar identidad y
+cgroup; el crédito exige memoria privada legible y una concesión todavía viva.
+Esto no convierte una observación incompleta del árbol o de CPU en completa.
+Las renovaciones conservan su contexto de apertura y cierre al pasar entre
+preparador, trabajador y consumidor. La proyección Code mantiene su reserva
+hasta cerrar, dentro de un contexto propio que las demás rutas no heredan.
+Los techos de memoria explícitos por formato limitan su agregado residente y
+transitorio en ese mismo ledger; se exigen junto al techo global. La configuración
+Framework distingue ausencia (`None`, automático) de un número explícito, también
+cuando coincide con un antiguo default. Los manifests de initial, route-only y
+resume conservan los valores de la invocación; no se infiere intención a partir
+de un valor histórico. Los constructores autónomos mantienen sus defaults locales.
+
+El observador Linux publica una muestra compartida cada 250 ms por defecto,
+con carga propia y externa, memoria, PSI, cgroups v2 y afinidad. Los gates
+reutilizan esa muestra y la topología se actualiza durante el run. La capacidad
+CPU incluye cuotas fraccionales, y la memoria distingue `memory.high`, límite
+duro y margen disponible. La carga propia no provoca una reducción circular de
+workers. Una observación incompleta conserva su estado desconocido.
+
+Sin techos explícitos, la capacidad crece hasta los recursos útiles disponibles
+para las unidades pendientes. No hay un máximo fijo de dos/cuatro workers por
+formato ni de ocho threads Semantic. Los pools crecen y retiran cohortes ociosas
+según disponibilidad; no cambian atributos privados de executors. Una reserva
+pequeña para el sistema y las estimaciones del trabajo evitan que ocupar RAM sin
+utilidad sustituya al procesamiento. La competencia externa reduce nuevas
+admisiones y los checkpoints renuevan la ejecución; la recuperación vuelve a
+abrir capacidad. El drenaje de un resultado ya terminado puede guardar sus
+datos y liberar RAM bajo presión, sin admitir nuevos buffers o trabajo pesado.
+La espera automática por capacidad dura hasta recuperación, cancelación o
+deadline del run; un timeout de espera es opcional. El deadline publicado se
+copia una vez desde el owner y se comprueba durante admisión sin reabrir SQLite.
+Los hijos reducen su propia prioridad y, sólo en una sesión privada comprobada,
+la de su autogroup. La política deja intactos al caller y a procesos ajenos.
+
+Text, DOCX, Office y Code separan preparación/publicación en el owner del
+análisis en procesos. Text aplica el timeout y límite de memoria dentro del
+parser aislado. Archive conserva identidad virtual y presupuesto por
+contenedor al paralelizar extracción; usa supervisores por contenedor y procesos
+para miembros mayores, evitando crear procesos para cada ZIP diminuto. PDF
+automático ejecuta MuPDF en procesos aislados; el modo local requiere un único
+worker explícito sin timeout de documento. Los procesos y modelos reutilizados
+mantienen su residencia contabilizada hasta cerrarse; cancelación espera su
+salida antes de retirar snapshots temporales.
+
+Dedup lee primero las muestras que pueden excluir candidatos grandes y calcula
+el hash completo de los supervivientes. Una muestra nunca prueba igualdad ni
+valida por sí sola una caché durable. Hashing usa workers de I/O acotados y
+publicación desde la conexión del owner; revalida identidad y versión de cambio.
+Semantic agrupa la tokenización exacta y prepara los chunks antes de abrir la
+transacción de escritura. Los límites nativos de BLAS se aplican y restauran
+bajo una exclusión compartida mediante `threadpoolctl`; su coste forma parte
+del grant de ejecución.
+
+Audio admite réplicas Whisper según CPU, RAM y, cuando el backend resuelto es
+CUDA, VRAM del dispositivo identificado. La reutilización de VRAM requiere
+atribución a procesos propios comprobados; una observación desconocida no
+autoriza capacidad supuesta. Los cambios de threads o workers no cambian la
+identidad del contenido procesado; cambiar CPU por CUDA sí cambia la firma
+efectiva del backend. Semantic conserva su proveedor CPU verificado.
+
+Video decodifica el plan seleccionado en un lote FFmpeg, con límites de salida,
+memoria para ambas representaciones de la captura y reserva temporal antes del
+productor. El análisis de escenas y keyframes conserva sus consultas propias.
+El OCR reutiliza sólo frames PNG exactamente iguales dentro del mismo archivo y
+conserva tiempo y motivo de cada selección. La captura comprueba cancelación
+durante lectura y espera, y recoge el proceso propio antes de devolver el error.
 
 Las superficies de ayuda y los contratos de configuración no importan motores
 ni Qt. El diagnóstico de paquetes usa requisitos de `pyproject.toml` en fuente
@@ -923,17 +1035,18 @@ o `Requires-Dist` del paquete instalado, sin una lista paralela de versiones;
 inspección de metadata, localización de ejecutable, archivos de modelo y éxito
 de procesamiento no son equivalentes.
 
-El coordinador limita CPU/memoria y registra fases. Writers toman exclusión
+El coordinador registra consumo, espera, capacidad y fases. Writers toman exclusión
 cooperativa; backup, restore, purge y state reset requieren exclusión más fuerte. Los
 subprocesos tardíos no pueden publicar sobre un head nuevo. Un fallo alrededor
 de la frontera de efecto produce un estado conciliable, no un reintento ciego.
 
 PDF transmite su token local a la admisión global. Los gates vuelven a consultar
-cancelación después del sondeo de memoria y antes de conceder recursos. Las dos
-entradas explícitas de carga CPU comparten presión e histéresis; el muestreo
-predeterminado conserva su papel de telemetría para evitar contar dos veces la
-carga propia. La estimación de trabajo sobre candidatos consulta cancelación
-mientras recorre la fuente y antes de entregar el presupuesto.
+cancelación después del sondeo de memoria y antes de conceder recursos. Las
+señales explícitas de CPU conservan presión e histéresis; el observador
+predeterminado controla capacidad con carga externa atribuible. La estimación
+de candidatos consulta cancelación durante el recorrido y el inventario consume
+su presupuesto mientras enumera. Los límites de workers son techos opcionales;
+no sustituyen la disponibilidad observada.
 
 La terminación de procesos aislados identifica el wrapper propio por PID y
 starttime y limpia su grupo original aunque el líder ya haya terminado. Este
@@ -949,8 +1062,12 @@ vista inmutable sólo para candidatos; eventos, ReviewTasks, acciones y lifecycl
 conservan el owner original. La copia vive hasta que terminan todos los
 workers, incluso ante error o cancelación, sin abrir un lector ordinario en el
 origen ni relajar los fences de `SQLiteReadSession`. Code recibe además una
-proyección efímera de sus filas admisibles producida por el owner de inventario,
-evitando reabrir un WAL grande desde el worker.
+proyección efímera de sus filas admisibles producida por el owner de inventario.
+Su buffer de memoria está acotado; al crecer se transfiere a un spool anónimo con
+espacio reservado antes de escribir. Se puede recorrer de nuevo sin consultar
+el owner y se cierra después de los workers. La estimación multimodal conserva
+el orden de los selectores MIME y omite sus solapamientos por precedencia,
+aprovechando la unicidad de path/MIME del owner sin acumular todos los paths.
 
 En `--all`, la misma frontera se conserva entre workers de ruta y stages
 posteriores. El progreso, transcript y estado público distinguen `complete`,

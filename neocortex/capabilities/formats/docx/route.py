@@ -19,7 +19,7 @@ import time
 import xml.etree.ElementTree as ET
 import zipfile
 import zlib
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator, cast
@@ -1038,6 +1038,61 @@ class _DocxCandidateOutcome:
     retryable_errors: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class _DocxWork:
+    snapshot: FileSnapshot
+    max_text_chars: int
+    cache_status: str = "new"
+    prior_reviewable: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _DocxWorkResult:
+    work: _DocxWork
+    document: _Extracted | None = None
+    failure: DocxFailure | None = None
+    completed: _DocxCandidateOutcome | None = None
+
+
+def _estimate_docx_work(work: _DocxWork) -> int:
+    try:
+        inspect_zip_structure(work.snapshot.path, max_members=MAX_ZIP_MEMBERS)
+        with zipfile.ZipFile(work.snapshot.path) as archive:
+            return _estimated_docx_memory_bytes(archive.infolist(), work.max_text_chars)
+    except (OSError, ValueError, RuntimeError, zipfile.BadZipFile, ZipStructureError):
+        # Invalid inputs still need a small admitted unit to publish a typed
+        # failure. The worker repeats validation against the current source.
+        return DOCX_BASE_WORKSPACE_BYTES
+
+
+def _extract_docx_work(work: _DocxWork) -> _DocxWorkResult:
+    """Process-only parser entry point: no state connections or corpus writes."""
+
+    from neocortex.runtime.control.elastic_workers import current_worker_cancellation
+
+    cancellation = current_worker_cancellation() or CancellationToken()
+    try:
+        cancellation.checkpoint()
+        if not stat_matches_snapshot(
+            work.snapshot, os.stat(native_io_path(work.snapshot.path), follow_symlinks=False),
+        ):
+            raise FileChangedError("DOCX metadata changed before extraction")
+        document = extract_docx(
+            work.snapshot.path, work.max_text_chars, cancellation=cancellation,
+        )
+        cancellation.checkpoint()
+        if not stat_matches_snapshot(
+            work.snapshot, os.stat(native_io_path(work.snapshot.path), follow_symlinks=False),
+        ):
+            raise FileChangedError("DOCX metadata changed during extraction")
+        return _DocxWorkResult(work, document=document)
+    except (
+        OSError, FileChangedError, RuntimeError, ValueError, zipfile.BadZipFile,
+        zlib.error, ET.ParseError, MemoryBudgetExceeded, ZipStructureError,
+    ) as exc:
+        return _DocxWorkResult(work, failure=classify_docx_exception(exc))
+
+
 class DocxRoute:
     def __init__(
         self,
@@ -1929,22 +1984,37 @@ class DocxRoute:
         review_batch: list[ReviewCandidate],
         reconciliations: list[ReviewCandidateReconciliation],
     ) -> _DocxCandidateOutcome:
+        work = _DocxWork(snapshot, self.config.max_text_chars)
+        with self.memory_gate.admit(_estimate_docx_work(work)):
+            if not stat_matches_snapshot(
+                snapshot, os.stat(native_io_path(snapshot.path), follow_symlinks=False),
+            ):
+                raise RuntimeError("DOCX metadata changed after inventory")
+            result = extract_docx(
+                snapshot.path, self.config.max_text_chars,
+                None, self.cancellation,
+            )
+            return self._store_extracted_candidate(
+                connection, snapshot, result, review_batch, reconciliations,
+            )
+
+    def _store_extracted_candidate(
+        self,
+        connection,
+        snapshot: FileSnapshot,
+        result: _Extracted,
+        review_batch: list[ReviewCandidate],
+        reconciliations: list[ReviewCandidateReconciliation],
+    ) -> _DocxCandidateOutcome:
+        from neocortex.runtime.control.global_resources import current_resource_grant
+        grant = current_resource_grant()
+        if grant is not None:
+            grant.checkpoint()
         if not stat_matches_snapshot(
             snapshot,
             os.stat(native_io_path(snapshot.path), follow_symlinks=False),
         ):
-            raise RuntimeError("DOCX metadata changed after inventory")
-        result = extract_docx(
-            snapshot.path,
-            self.config.max_text_chars,
-            self.memory_gate,
-            self.cancellation,
-        )
-        if not stat_matches_snapshot(
-            snapshot,
-            os.stat(native_io_path(snapshot.path), follow_symlinks=False),
-        ):
-            raise RuntimeError("DOCX metadata changed during extraction")
+            raise RuntimeError("DOCX metadata changed before publication")
         self._store_success(connection, snapshot, result)
         if result.status != "partial":
             self._queue_diagnostic_reconciliation(
@@ -2010,6 +2080,110 @@ class DocxRoute:
             retryable_errors=int(failure.retryable),
         )
 
+    @contextmanager
+    def _candidate_results(self, connection, review_batch, reconciliations):
+        def legacy_results():
+            for snapshot in self._candidates(connection):
+                yield _DocxWorkResult(_DocxWork(snapshot, self.config.max_text_chars))
+
+        if not callable(getattr(self.memory_gate, "worker_capacity", None)):
+            yield legacy_results()
+            return
+
+        from neocortex.runtime.control.elastic_workers import ImmediateResult, elastic_map
+
+        def prepare(work: _DocxWork):
+            try:
+                cache_status = self._cache_status(
+                    connection, work.snapshot, validate_representation=False,
+                )
+                outcome = self._consume_cached_candidate(
+                    connection, work.snapshot, cache_status, review_batch, reconciliations,
+                )
+                prepared = _DocxWork(
+                    work.snapshot, work.max_text_chars, cache_status,
+                    self._prior_reviewable(connection, work.snapshot) if outcome is None else False,
+                )
+            except _LiveDocxCachePathConflict:
+                # A conflict belongs to this identity; it must not abort other
+                # independent candidates or overwrite the still-live owner.
+                return ImmediateResult(_DocxWorkResult(
+                    work, completed=_DocxCandidateOutcome(errors=1),
+                ))
+            except (
+                OSError, FileChangedError, RuntimeError, ValueError, zipfile.BadZipFile,
+                zlib.error, ET.ParseError, MemoryBudgetExceeded, ZipStructureError,
+            ) as exc:
+                return ImmediateResult(_DocxWorkResult(
+                    work, completed=self._failure_outcome(
+                        connection, work.snapshot, exc, review_batch,
+                    ),
+                ))
+            if outcome is not None:
+                return ImmediateResult(_DocxWorkResult(prepared, completed=outcome))
+            return prepared
+
+        candidates = (
+            _DocxWork(snapshot, self.config.max_text_chars)
+            for snapshot in self._candidates(connection)
+        )
+
+        def admission_error(work: _DocxWork, exc: MemoryBudgetExceeded):
+            # Extraction demand can exceed the cap while its previously
+            # published representation remains cheap to validate and reuse.
+            # Inspect only bounded scalar metadata before reserving cache
+            # decoding; never replace a valid cache merely because parsing
+            # the original would require more memory.
+            row = connection.execute(
+                """SELECT d.size,d.mtime_ns,d.birthtime_ns,d.processing_signature,
+                COALESCE(d.text_chars,0)+COALESCE(SUM(p.text_chars),0) AS chars,
+                COALESCE(length(d.text_zlib),0)+COALESCE(SUM(length(p.text_zlib)),0)
+                    AS compressed_bytes,
+                COUNT(p.file_key) AS parts
+                FROM documents d LEFT JOIN document_parts p USING(file_key)
+                WHERE d.file_key=? GROUP BY d.file_key""",
+                (_file_key(work.snapshot),),
+            ).fetchone()
+            if (
+                row is not None
+                and row["size"] == work.snapshot.size
+                and row["mtime_ns"] == work.snapshot.mtime_ns
+                and row["birthtime_ns"] == work.snapshot.birthtime_ns
+                and row["processing_signature"] == self.config.processing_signature
+            ):
+                from neocortex.runtime.control.global_resources import CoordinatedMemoryGate
+                cache_bytes = (
+                    4 * 1024 * 1024 + max(0, int(row["chars"])) * 8
+                    + max(0, int(row["compressed_bytes"])) * 2
+                    + max(0, int(row["parts"])) * 512
+                )
+                with cast(CoordinatedMemoryGate, self.memory_gate).admit(
+                    cache_bytes, native_threads=1, io_slots=1,
+                    io_device=str(work.snapshot.volume_id), phase="docx.cache",
+                ):
+                    prepared = prepare(work)
+                if isinstance(prepared, ImmediateResult):
+                    return prepared
+                work = prepared
+            return ImmediateResult(_DocxWorkResult(
+                work, failure=classify_docx_exception(exc),
+            ))
+
+        with elastic_map(
+            _extract_docx_work, candidates, gate=self.memory_gate,
+            estimated_bytes=_estimate_docx_work, executor_kind="process",
+            cancellation=self.cancellation, prepare=prepare,
+            native_threads=1, io_slots=1,
+            io_device=lambda work: str(work.snapshot.volume_id), phase="docx.extract",
+            on_admission_error=admission_error,
+        ) as results:
+            try:
+                yield results
+            except CancellationRequested:
+                self._flush_reviews(review_batch, reconciliations)
+                connection.commit()
+                raise
+
     def run(self) -> DocxRouteSummary:
         self.cancellation.checkpoint()
         lock_path = self.config.state_path.with_suffix(
@@ -2073,82 +2247,102 @@ class DocxRoute:
                 if self.config.max_documents is None
                 else min(eligible, self.config.max_documents)
             )
-            for snapshot in self._candidates(connection):
-                self.cancellation.checkpoint()
-                try:
-                    # Classify cheaply here; _touch_cache_hit rechecks the
-                    # observation and validates all text/layout/parts once,
-                    # immediately before consuming a complete or partial hit.
-                    cache_status = self._cache_status(
-                        connection,
-                        snapshot,
-                        validate_representation=False,
-                    )
-                    outcome = self._consume_cached_candidate(
-                        connection,
-                        snapshot,
-                        cache_status,
-                        review_batch,
-                        review_reconciliations,
-                    )
-                    if outcome is None:
-                        prior_reviewable = self._prior_reviewable(connection, snapshot)
-                        if cache_status == "retry" or prior_reviewable:
-                            retried_documents += 1
+            elastic = callable(getattr(self.memory_gate, "worker_capacity", None))
+            with self._candidate_results(
+                connection, review_batch, review_reconciliations,
+            ) as results:
+                for prepared in results:
+                    snapshot = prepared.work.snapshot
+                    self.cancellation.checkpoint()
+                    try:
+                        if elastic:
+                            cache_status = prepared.work.cache_status
+                            outcome = prepared.completed
+                            prior_reviewable = prepared.work.prior_reviewable
                         else:
-                            new_documents += 1
-                        report(active=1)
-                        outcome = self._extract_candidate(
-                            connection,
-                            snapshot,
-                            review_batch,
-                            review_reconciliations,
-                        )
-                    cache_hits += outcome.cache_hits
-                    cached_errors += outcome.cached_errors
-                    extracted += outcome.extracted
-                    fts_documents_indexed += outcome.fts_documents_indexed
-                    errors += outcome.errors
-                    layouts += outcome.layouts
-                    partial_documents += outcome.partial_documents
-                    cached_partial_documents += outcome.cached_partial_documents
-                    review_candidates += outcome.review_candidates
-                    deletion_candidates += outcome.deletion_candidates
-                    retryable_errors += outcome.retryable_errors
-                except CancellationRequested:
-                    flush_reviews()
-                    connection.commit()
-                    raise
-                except _LiveDocxCachePathConflict:
-                    errors += 1
-                except (
-                    OSError,
-                    FileChangedError,
-                    RuntimeError,
-                    ValueError,
-                    zipfile.BadZipFile,
-                    zlib.error,
-                    ET.ParseError,
-                    MemoryBudgetExceeded,
-                    ZipStructureError,
-                ) as exc:
-                    outcome = self._failure_outcome(
-                        connection,
-                        snapshot,
-                        exc,
-                        review_batch,
-                    )
-                    errors += outcome.errors
-                    review_candidates += outcome.review_candidates
-                    deletion_candidates += outcome.deletion_candidates
-                    retryable_errors += outcome.retryable_errors
-                processed += 1
-                if len(review_batch) >= DOCX_REVIEW_BATCH:
-                    flush_reviews()
-                if processed % DOCX_COMMIT_BATCH == 0:
-                    flush_reviews()
-                    connection.commit()
-                report()
+                            cache_status = self._cache_status(
+                                connection, snapshot, validate_representation=False,
+                            )
+                            outcome = self._consume_cached_candidate(
+                                connection, snapshot, cache_status,
+                                review_batch, review_reconciliations,
+                            )
+                            prior_reviewable = (
+                                self._prior_reviewable(connection, snapshot)
+                                if outcome is None else False
+                            )
+                        if outcome is None:
+                            if cache_status == "retry" or prior_reviewable:
+                                retried_documents += 1
+                            else:
+                                new_documents += 1
+                            report(active=1)
+                            if prepared.failure is not None:
+                                raise DocxProcessingError(prepared.failure)
+                            if elastic:
+                                if prepared.document is None:
+                                    raise RuntimeError("DOCX worker returned no document")
+                                outcome = self._store_extracted_candidate(
+                                    connection, snapshot, prepared.document,
+                                    review_batch, review_reconciliations,
+                                )
+                            else:
+                                outcome = self._extract_candidate(
+                                    connection, snapshot, review_batch, review_reconciliations,
+                                )
+                        cache_hits += outcome.cache_hits
+                        cached_errors += outcome.cached_errors
+                        extracted += outcome.extracted
+                        fts_documents_indexed += outcome.fts_documents_indexed
+                        errors += outcome.errors
+                        layouts += outcome.layouts
+                        partial_documents += outcome.partial_documents
+                        cached_partial_documents += outcome.cached_partial_documents
+                        review_candidates += outcome.review_candidates
+                        deletion_candidates += outcome.deletion_candidates
+                        retryable_errors += outcome.retryable_errors
+                    except CancellationRequested:
+                        flush_reviews()
+                        connection.commit()
+                        raise
+                    except _LiveDocxCachePathConflict:
+                        errors += 1
+                    except (
+                        OSError, FileChangedError, RuntimeError, ValueError,
+                        zipfile.BadZipFile, zlib.error, ET.ParseError,
+                        MemoryBudgetExceeded, ZipStructureError,
+                    ) as exc:
+                        error_admission: AbstractContextManager[Any] = nullcontext()
+                        if elastic:
+                            from neocortex.runtime.control.global_resources import (
+                                CoordinatedMemoryGate, current_resource_grant,
+                            )
+                            grant = current_resource_grant()
+                            if grant is not None:
+                                grant.checkpoint()
+                            else:
+                                # Rejected work has no parser/result lease.
+                                # Its bounded diagnostic still uses the same
+                                # governor while the owner persists it.
+                                error_admission = cast(CoordinatedMemoryGate, self.memory_gate).admit(
+                                    64 * 1024, native_threads=1, io_slots=1,
+                                    io_device=str(snapshot.volume_id), phase="docx.failure",
+                                )
+                        with error_admission:
+                            outcome = self._failure_outcome(
+                                connection, snapshot, exc, review_batch,
+                            )
+                        errors += outcome.errors
+                        review_candidates += outcome.review_candidates
+                        deletion_candidates += outcome.deletion_candidates
+                        retryable_errors += outcome.retryable_errors
+                    processed += 1
+                    if len(review_batch) >= DOCX_REVIEW_BATCH:
+                        flush_reviews()
+                    if processed % DOCX_COMMIT_BATCH == 0:
+                        flush_reviews()
+                        connection.commit()
+                    report()
 
             flush_reviews()
             connection.commit()

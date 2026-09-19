@@ -503,7 +503,7 @@ class RustAnalyzer:
             dependencies=tuple(evidence.dependencies),
             diagnostics=tuple(evidence.diagnostics),
             metrics=tuple(evidence.metrics),
-            chunks=searchable_chunks(source.text, config.chunk_chars),
+            chunks=searchable_chunks(source.text, config.chunk_chars, source_map=source_map),
             provenance={
                 "parser": None,
                 "lexical_analyzer": self.analyzer_version,

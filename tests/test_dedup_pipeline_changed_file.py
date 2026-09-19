@@ -35,8 +35,10 @@ def test_changed_exact_candidate_is_not_representative_or_redundant(
     comparisons: list[tuple[str, str]] = []
     digest = bytes.fromhex("ab" * 16)
 
-    def exact_matcher(left, right, *, read_observer=None) -> bool:
+    def exact_matcher(left, right, *, read_observer=None, checkpoint=None) -> bool:
         del read_observer
+        if checkpoint is not None:
+            checkpoint()
         comparisons.append((Path(left.path).name, Path(right.path).name))
         if right.path == str(changed):
             raise FileChangedError("file changed while processing: changed.bin")

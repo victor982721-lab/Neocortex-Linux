@@ -17,6 +17,7 @@ import stat
 import zipfile
 import zlib
 import xml.etree.ElementTree as ET
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal, cast
@@ -73,6 +74,16 @@ DEFAULT_CLASSIFICATION_MAX_MEMBER_BYTES = 64 * 1024 * 1024
 DEFAULT_CLASSIFICATION_MAX_TOTAL_BYTES = 512 * 1024 * 1024
 DEFAULT_CLASSIFICATION_MAX_RATIO = 200.0
 MAX_PROJECT_MARKER_BYTES = 2 * 1024 * 1024
+_PACKAGE_CONTENT_MARKERS = frozenset({
+    "mimetype",
+    "[Content_Types].xml",
+    "word/document.xml",
+    "xl/workbook.xml",
+    "ppt/presentation.xml",
+    "content.xml",
+    "META-INF/manifest.xml",
+    "META-INF/container.xml",
+})
 
 _PROJECT_MANIFESTS = frozenset(
     {
@@ -193,7 +204,8 @@ def _stream_member(
     max_member_bytes: int,
     max_total_remaining: int,
     ratio_limit: float,
-) -> bytes:
+    retain_payload: bool,
+) -> tuple[int, bytes | None]:
     if info.flag_bits & 0x1:
         raise PermissionError("encrypted ZIP member requires a password")
     if _special_member(info):
@@ -218,12 +230,19 @@ def _stream_member(
             actual += len(chunk)
             if actual > max_member_bytes or actual > max_total_remaining:
                 raise MemoryError("ZIP decompression budget exhausted")
-            chunks.append(chunk)
+            if retain_payload:
+                if actual > MAX_PROJECT_MARKER_BYTES:
+                    # Keep the retained-marker bound even if a reader emits
+                    # more bytes than the declared size before EOF checking.
+                    chunks.clear()
+                    retain_payload = False
+                else:
+                    chunks.append(chunk)
     if actual != int(info.file_size):
         raise zipfile.BadZipFile(
             f"member produced {actual} bytes but declares {info.file_size}"
         )
-    return b"".join(chunks)
+    return actual, b"".join(chunks) if retain_payload else None
 
 
 def _package_kind(names: tuple[str, ...], declared_mime: str | None) -> tuple[str | None, str | None, tuple[str, ...]]:
@@ -285,12 +304,10 @@ def _classify_open_archive(
         return ArchiveUnitClassification(
             "storage_archive", "partial", "storage_archive", ("unsafe_member_name",), names, detail="unsafe member name present", structure=structure
         )
-    if len({name.casefold() for name in names}) != len(names):
-        duplicate_evidence = tuple(
-            f"duplicate_name:{name}" for name in sorted({name for name in names if names.count(name) > 1})[:16]
-        )
-    else:
-        duplicate_evidence = ()
+    duplicate_evidence = tuple(
+        f"duplicate_name:{name}"
+        for name in sorted(name for name, count in Counter(names).items() if count > 1)[:16]
+    )
     mimetype_infos = [info for info in infos if info.filename == "mimetype"]
     declared: str | None = None
     payloads: dict[str, bytes] = {}
@@ -299,26 +316,22 @@ def _classify_open_archive(
         for info in infos:
             if info.is_dir():
                 continue
-            payload = _stream_member(
+            retain_payload = (
+                info.filename in _PACKAGE_CONTENT_MARKERS
+                and int(info.file_size) <= MAX_PROJECT_MARKER_BYTES
+            )
+            actual, payload = _stream_member(
                 archive,
                 info,
                 max_member_bytes=max_member_bytes,
                 max_total_remaining=max_total_bytes - total,
                 ratio_limit=ratio_limit,
+                retain_payload=retain_payload,
             )
-            total += len(payload)
-            # Package marker contents are retained only while this bounded
-            # classification call is active; no payload is persisted here.
-            if info.filename in {
-                "mimetype",
-                "[Content_Types].xml",
-                "word/document.xml",
-                "xl/workbook.xml",
-                "ppt/presentation.xml",
-                "content.xml",
-                "META-INF/manifest.xml",
-                "META-INF/container.xml",
-            } and len(payload) <= MAX_PROJECT_MARKER_BYTES:
+            total += actual
+            # Every member is streamed through EOF/CRC validation.  Only the
+            # bounded XML/package markers need their payload kept in memory.
+            if payload is not None:
                 payloads[info.filename] = payload
         if len(mimetype_infos) > 1:
             return ArchiveUnitClassification(

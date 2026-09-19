@@ -140,6 +140,10 @@ class SourceRevisionMismatchError(RuntimeError):
     """Raised rather than persisting an embedding for mutated image bytes."""
 
 
+class SemanticExecutionProviderMismatch(ValueError):
+    """An execution provider does not match the published model identity."""
+
+
 class TextTokenLimitExceededError(ValueError):
     """Raised instead of allowing a production tokenizer to truncate text."""
 
@@ -247,6 +251,11 @@ class FastEmbedBackend:
         batch_size: int | None = None,
         parallel: int | None = None,
     ) -> None:
+        if model.provider == "fastembed-onnx-cpu" and tuple(providers) != ("CPUExecutionProvider",):
+            raise SemanticExecutionProviderMismatch(
+                "CPU model publications require CPUExecutionProvider; "
+                "CUDA requires a separately supported model and calibration contract"
+            )
         if importlib.util.find_spec("fastembed") is None:
             raise RuntimeError("FastEmbedBackend requires the optional fastembed package")
         if threads is not None and threads < 1:
@@ -287,14 +296,32 @@ class FastEmbedBackend:
         self._batch_size = selected_batch
         self._parallel = parallel
         self._tokenizer_lock = threading.RLock()
-        self._runtime_model = embedding_type(
-            model_name=model.model_id,
-            cache_dir=str(cache_dir),
-            threads=threads,
-            providers=tuple(providers),
-            lazy_load=True,
-            local_files_only=local_files_only,
-        )
+        self._embedding_type = embedding_type
+        self._runtime_kwargs = {
+            "model_name": model.model_id, "cache_dir": str(cache_dir),
+            "threads": threads, "providers": tuple(providers),
+            "lazy_load": True, "local_files_only": local_files_only,
+        }
+        self._runtime_model = embedding_type(**self._runtime_kwargs)
+
+    def configure_resources(self, *, threads: int) -> None:
+        """Recreate the local session at a drained boundary when threads change."""
+
+        if threads < 1:
+            raise ValueError("semantic threads must be positive")
+        with self._tokenizer_lock:
+            if self._runtime_kwargs["threads"] == threads and self._runtime_model is not None:
+                return
+            # Releasing the old session first avoids overlapping two copies of
+            # model weights outside the declared resident budget.
+            self._runtime_model = None
+            self._runtime_kwargs["threads"] = threads
+            self._runtime_model = self._embedding_type(**self._runtime_kwargs)
+            self._parallel = None
+
+    def close(self) -> None:
+        with self._tokenizer_lock:
+            self._runtime_model = None
 
     @property
     def model(self) -> EmbeddingModelSpec:
@@ -356,6 +383,7 @@ class FastEmbedBackend:
                             "token_count": token_count,
                             "token_limit": token_limit,
                             "token_truncated": False,
+                            "native_threads": self._runtime_kwargs["threads"],
                         },
                     ),
                 )
@@ -460,6 +488,7 @@ class FastEmbedBackend:
                     "backend": "fastembed",
                     "role": EmbeddingRole.IMAGE.value,
                     "model_id": self.model.model_id,
+                    "native_threads": self._runtime_kwargs["threads"],
                 },
             )
             for request, vector in zip(requests, vectors, strict=True)

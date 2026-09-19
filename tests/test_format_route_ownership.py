@@ -22,6 +22,9 @@ def test_route_owner_lock_is_scoped_released_and_retained(tmp_path: Path, route_
         value = object.__new__(route_class)
         value.config = SimpleNamespace(state_path=path)
         value.cancellation = CancellationToken()
+        value.memory_gate = None
+        value._provided_memory_gate = None
+        value._memory_limits = None
         value._validate = lambda: None
         value._run_locked = lambda: expected
         return value

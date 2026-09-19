@@ -21,6 +21,9 @@ from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, 
 
 from neocortex.workflow.actions.action_policy import same_snapshot
 from neocortex.runtime.control.cancellation import CancellationToken
+from neocortex.runtime.control.elastic_workers import current_worker_cancellation, elastic_map
+from ..media_resources import MediaTaskGate, media_gate_scope
+from neocortex.runtime.control.global_resources import current_resource_grant
 from neocortex.foundation.file_identity import file_key_from_snapshot
 from neocortex.safety.ocr_profiles import OCR_PROFILE_CHOICES, OcrProfileName
 from neocortex.foundation.processing_provenance import (
@@ -43,6 +46,7 @@ from .frames import (
     resolve_video_ffmpeg,
     sampled_video_frames,
     video_frame_scratch_root,
+    video_worker_memory_reservation,
 )
 from .models import (
     VIDEO_ROUTE_VERSION,
@@ -243,6 +247,8 @@ class VideoRouteConfig:
     # the default is derived from the state directory and never from corpus.
     scratch_directory: Path | None = None
 
+    workers: int | None = None
+
     def frame_sampling_config(self, *, run_id: int | str | None = None) -> VideoFrameSamplingConfig:
         scratch_directory = self.scratch_directory
         if scratch_directory is None:
@@ -388,6 +394,7 @@ class VideoRoute:
         self.framework_state = framework_state
         self.run_id = run_id
         self.progress = progress
+        self._provided_memory_gate = memory_gate
         self.memory_gate = memory_gate
         self.cancellation = cancellation or CancellationToken()
         self.media_probe = media_probe
@@ -397,6 +404,8 @@ class VideoRoute:
         self._recoverable_retry_keys: set[str] = set()
 
     def _validate(self) -> None:
+        if self.config.workers is not None and self.config.workers < 1:
+            raise ValueError("video workers must be positive or None")
         self.config.frame_sampling_config().validate()
         _require_positive_optional(self.config.max_documents, "max_documents")
         _require_positive_optional(self.config.max_file_bytes, "max_file_bytes")
@@ -434,6 +443,14 @@ class VideoRoute:
         return _VideoMetrics(candidate_pool=candidate_pool, eligible=eligible, selected=selected)
 
     def run(self) -> VideoRouteSummary:
+        self.cancellation.checkpoint()
+        with media_gate_scope(
+            "Video", self._provided_memory_gate, None, self.cancellation,
+        ) as gate:
+            self.memory_gate = gate
+            return self._run_with_resources()
+
+    def _run_with_resources(self) -> VideoRouteSummary:
         self.cancellation.checkpoint()
         self._validate()
         lock_path = self.config.state_path.with_suffix(
@@ -533,47 +550,59 @@ class VideoRoute:
         ocr_runtime: _OcrRuntime,
         metrics: _VideoMetrics,
     ) -> None:
-        for mime in sorted(VIDEO_MIME_TYPES):
-            self._run_mime_candidates(
-                connection,
-                mime,
-                signature,
-                ocr_runtime,
-                metrics,
-            )
-            if metrics.processed >= metrics.selected:
-                return
+        def candidates():
+            selected = 0
+            for mime in sorted(VIDEO_MIME_TYPES):
+                iterator = self.framework_state.iter_selected_route_candidates(
+                    self.run_id, mime, "video", self.config.selection,
+                )
+                try:
+                    for snapshot in iterator:
+                        if selected >= metrics.selected:
+                            return
+                        if self._exceeds_file_limit(snapshot):
+                            continue
+                        selected += 1
+                        store_video_inventory(connection, snapshot, mime, self.run_id)
+                        cached = cached_video_document(connection, snapshot, signature)
+                        if cached is not None and self._can_reuse_cached(cached, snapshot) and self._consume_cached(
+                            connection, snapshot, mime, cached, metrics,
+                        ):
+                            metrics.processed += 1
+                            self._commit_batch(connection, metrics)
+                            continue
+                        yield snapshot, mime
+                finally:
+                    close = getattr(iterator, "close", None)
+                    if close is not None:
+                        close()
 
-    def _run_mime_candidates(
-        self,
-        connection: sqlite3.Connection,
-        mime: str,
-        signature: str,
-        ocr_runtime: _OcrRuntime,
-        metrics: _VideoMetrics,
-    ) -> None:
-        iterator = self.framework_state.iter_selected_route_candidates(
-            self.run_id,
-            mime,
-            "video",
-            self.config.selection,
-        )
-        for snapshot in iterator:
-            if metrics.processed >= metrics.selected:
-                return
-            self.cancellation.checkpoint()
-            if self._exceeds_file_limit(snapshot):
-                continue
-            self._handle_candidate(
-                connection,
-                snapshot,
-                mime,
-                signature,
-                ocr_runtime,
-                metrics,
-            )
-            metrics.processed += 1
-            self._commit_batch(connection, metrics)
+        def inspect(item):
+            snapshot, mime = item
+            local = _VideoMetrics()
+            outcome: tuple[VideoMediaProbe, tuple[VideoFrameEvidence, ...], tuple[str, ...]] | VideoProcessingError | OSError
+            try:
+                outcome = self._inspect(snapshot, ocr_runtime, local, admitted=True)
+            except (VideoProcessingError, OSError) as exc:
+                outcome = exc
+            return snapshot, mime, outcome, local
+
+        with elastic_map(
+            inspect, candidates(), gate=MediaTaskGate(self.memory_gate),
+            max_workers=self.config.workers, estimated_bytes=video_worker_memory_reservation(self.config),
+            native_threads=1, io_slots=1, io_device=lambda item: f"dev:{item[0].volume_id:x}",
+            phase="video-inspect", cancellation=self.cancellation,
+        ) as results:
+            for snapshot, mime, outcome, local in results:
+                for name in ("ocr_attempts", "ocr_positive", "ocr_chars", "ocr_failures"):
+                    setattr(metrics, name, getattr(metrics, name) + getattr(local, name))
+                self._process_candidate(
+                    connection, snapshot, mime, signature, ocr_runtime, metrics,
+                    prepared=outcome,
+                )
+                metrics.processed += 1
+                connection.commit()
+                self._report(metrics)
 
     def _exceeds_file_limit(self, snapshot: FileSnapshot) -> bool:
         limit = self.config.max_file_bytes
@@ -745,9 +774,14 @@ class VideoRoute:
         signature: str,
         ocr_runtime: _OcrRuntime,
         metrics: _VideoMetrics,
+        *, prepared=None,
     ) -> None:
         try:
-            probe, frames, warnings = self._inspect(snapshot, ocr_runtime, metrics)
+            if isinstance(prepared, Exception):
+                raise prepared
+            probe, frames, warnings = (
+                self._inspect(snapshot, ocr_runtime, metrics) if prepared is None else prepared
+            )
             link = find_published_audio_link(self.config.audio_state_path, snapshot)
             store_video_success(
                 connection,
@@ -795,6 +829,7 @@ class VideoRoute:
         snapshot: FileSnapshot,
         ocr_runtime: _OcrRuntime,
         metrics: _VideoMetrics,
+        *, admitted: bool = False,
     ) -> tuple[
         VideoMediaProbe,
         tuple[VideoFrameEvidence, ...],
@@ -805,7 +840,7 @@ class VideoRoute:
             raise _source_changed("after inventory")
         admission = (
             self.memory_gate.admit(self.config.worker_memory_bytes)
-            if self.memory_gate is not None
+            if not admitted and self.memory_gate is not None and current_resource_grant() is None
             else nullcontext()
         )
         with admission:
@@ -848,11 +883,12 @@ class VideoRoute:
                 duration_seconds=sampling_duration,
                 frame_rate=primary.frame_rate,
                 config=self.config.frame_sampling_config(run_id=self.run_id),
-                cancellation=self.cancellation,
+                cancellation=current_worker_cancellation() or self.cancellation,
             ) as batch:
                 warnings.extend(batch.warnings)
+                memo: dict[tuple[str, str, str | None], _OcrEvidence] = {}
                 frames = tuple(
-                    self._inspect_frame(frame, ocr_runtime, metrics, warnings)
+                    self._inspect_frame(frame, ocr_runtime, metrics, warnings, memo=memo)
                     for frame in batch.frames
                 )
                 after = snapshot_path(snapshot.path)
@@ -866,18 +902,28 @@ class VideoRoute:
         ocr_runtime: _OcrRuntime,
         metrics: _VideoMetrics,
         warnings: list[str],
+        *, memo: dict | None = None,
     ) -> VideoFrameEvidence:
         # Sampling and frame OCR share the outer per-file reservation. Passing
         # the same coordinated gate into the existing image OCR path would
         # reacquire it recursively and double-count (or deadlock at the exact
         # configured budget) even though FFmpeg is no longer running here.
-        evidence = self.frame_ocr(frame.path, ocr_runtime, None)
-        metrics.ocr_attempts += int(evidence.attempted)
+        grant = current_resource_grant()
+        if grant is not None:
+            grant.checkpoint()
+        key = (frame.content_xxh3_128, ocr_runtime.signature, ocr_runtime.processing_provenance_json)
+        evidence = None if memo is None else memo.get(key)
+        memo_hit = evidence is not None
+        if evidence is None:
+            evidence = self.frame_ocr(frame.path, ocr_runtime, None)
+            if memo is not None:
+                memo[key] = evidence
+        metrics.ocr_attempts += int(evidence.attempted and not memo_hit)
         positive = evidence.available and bool(evidence.recognized_text)
         metrics.ocr_positive += int(positive)
         metrics.ocr_chars += len(evidence.recognized_text)
         if evidence.attempted and not evidence.available:
-            metrics.ocr_failures += 1
+            metrics.ocr_failures += int(not memo_hit)
             warnings.append("video_frame_ocr_error")
         return VideoFrameEvidence(
             frame_index=frame.index,

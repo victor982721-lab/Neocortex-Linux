@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import zlib
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -20,7 +21,7 @@ def _source(tmp_path: Path, count: int) -> tuple[Path, Path]:
     root.mkdir()
     database = tmp_path / "docx.sqlite3"
     initialize_docx_state(database)
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         for number in range(count):
             path = root / f"{number:04d}.docx"
             path.write_bytes(b"synthetic document")

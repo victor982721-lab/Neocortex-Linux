@@ -173,7 +173,8 @@ def test_visual_only_video_is_searchable_and_second_run_is_a_true_cache_hit(
     assert first.ocr_positive == 1
     assert not first.errors
     assert calls == {"samples": 1, "ocr": 1}
-    assert memory_gate.admissions == [config.worker_memory_bytes]
+    from neocortex.capabilities.formats.video.frames import video_worker_memory_reservation
+    assert memory_gate.admissions == [video_worker_memory_reservation(config)]
     assert first.processing_provenance is not None
     assert first.processing_provenance["configuration"]["ocr_profile"] == "configured"
     frame_ocr_component = next(
@@ -207,7 +208,8 @@ def test_visual_only_video_is_searchable_and_second_run_is_a_true_cache_hit(
     assert second.scene_frames == second.interval_frames == 1
     assert second.ocr_positive == 1
     assert calls == {"samples": 1, "ocr": 1}
-    assert memory_gate.admissions == [config.worker_memory_bytes]
+    from neocortex.capabilities.formats.video.frames import video_worker_memory_reservation
+    assert memory_gate.admissions == [video_worker_memory_reservation(config)]
     assert state.reconciliations
 
 

@@ -10,17 +10,18 @@ from .errors import FileChangedError
 
 @dataclass(frozen=True, slots=True)
 class FingerprintObservation:
-    """A requested digest and the full digest already read to validate it.
+    """A fresh sampled or complete digest with its physical change fence.
 
     ``ctime_ns`` is a change version, never a birth time or document revision.
     It only permits reuse inside the current planning observation; durable
-    cache lookup still reads content on every run.
+    cache lookup still reads content on every run. A sample has
+    ``full_digest=None``: it can exclude candidates but never prove equality.
     """
 
     snapshot: FileSnapshot
     algorithm: str
     digest: bytes
-    full_digest: bytes
+    full_digest: bytes | None
     ctime_ns: int
     computed: bool
     cache_hit: bool = False

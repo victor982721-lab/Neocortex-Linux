@@ -712,7 +712,12 @@ def _try_exact_index_page(
         if count < 8 or 0 < count % batch_size < 8:
             handle._fallback("scalar_page_or_tail")
             return None
+        from importlib.util import find_spec
+        if find_spec("threadpoolctl") is None:
+            handle._fallback("native_thread_control_unavailable")
+            return None
         checks = _Checks(cancellation_check)
+        from .semantic_resources import vector_scoring_scope, vector_workspace_scope
         try:
             page = _format.query_exact_view(
                 handle._view,
@@ -723,6 +728,14 @@ def _try_exact_index_page(
                 diagnostic_item_ids=(), diagnostics=None,
                 cancellation_check=checks.checkpoint, hydrate_provenance=True,
                 numeric=True, numeric_norms=True,
+                score_scope=lambda rows, dimensions: vector_scoring_scope(
+                    rows, dimensions, checkpoint=checks.checkpoint,
+                ),
+                workspace_scope=lambda estimated_bytes: vector_workspace_scope(
+                    estimated_bytes,
+                    score_bytes=min(batch_size, count) * (query.dimensions * 16 + 64),
+                    checkpoint=checks.checkpoint,
+                ),
                 _normalized_query_vector=normalized_query, _cancellation_already_checked=True,
             )
             _source_stable(handle._owner)

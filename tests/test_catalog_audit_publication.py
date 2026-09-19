@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 import json
 import sqlite3
 import zlib
@@ -33,7 +34,8 @@ def _seed_catalog_source(database: Path, source: Path) -> str:
     initialize_docx_state(database)
     snapshot = snapshot_path(source)
     file_key = f"{snapshot.volume_id}:{snapshot.file_id}"
-    with sqlite3.connect(database) as connection:
+    # Finish the producer's WAL lifecycle before the catalog fences its source.
+    with closing(sqlite3.connect(database)) as connection, connection:
         connection.execute(
             """INSERT INTO documents(
             file_key,path,size,mtime_ns,birthtime_ns,processing_signature,status,

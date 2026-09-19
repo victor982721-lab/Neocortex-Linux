@@ -131,6 +131,19 @@ class InventoryWorkBudget:
         self.cancellation_check = cancellation_check
         self.monotonic_clock = monotonic_clock
 
+    def checkpoint(self) -> None:
+        """Check the original deadline/cancellation without spending item quota."""
+
+        if self.cancellation_check is not None:
+            decision = self.cancellation_check()
+            if decision is not False and decision is not None:
+                raise InventoryScanCancelled("inventory scan cancelled")
+        if (
+            self.deadline_monotonic is not None
+            and self.monotonic_clock() >= self.deadline_monotonic
+        ):
+            raise InventoryScanDeadlineExceeded()
+
 
 class _InventoryWorkState:
     """Mutable admission/accounting state owned by one scanner invocation."""
@@ -145,16 +158,7 @@ class _InventoryWorkState:
         self.bytes_seen = bytes_seen
 
     def check(self, size: int = 0) -> None:
-        callback = self.budget.cancellation_check
-        if callback is not None:
-            decision = callback()
-            if decision is True:
-                raise InventoryScanCancelled("inventory scan cancelled")
-            if decision is not False and decision is not None:
-                raise InventoryScanCancelled("inventory scan cancelled")
-        deadline = self.budget.deadline_monotonic
-        if deadline is not None and self.budget.monotonic_clock() >= deadline:
-            raise InventoryScanDeadlineExceeded()
+        self.budget.checkpoint()
         if isinstance(size, bool) or not isinstance(size, int) or size < 0:
             raise ValueError("inventory file size must be a non-negative integer")
         if size == 0:

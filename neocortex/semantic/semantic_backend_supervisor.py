@@ -3,6 +3,7 @@
 from __future__ import annotations
 import json
 import multiprocessing
+import os
 import queue
 from pathlib import Path
 from typing import Any, Sequence
@@ -80,6 +81,9 @@ def _semantic_backend_worker(
 ) -> None:
     """Own the non-picklable ONNX runtime and never open Semantic SQLite."""
 
+    # The Rust tokenizer's global Rayon pool cannot be resized between calls.
+    # Keep exact counting sequential in this owned child; ONNX uses its grant.
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
     from .semantic_preparation import backend as build_backend
 
     try:
@@ -99,8 +103,15 @@ def _semantic_backend_worker(
             return
         operation, request_id, payload = task
         try:
+            output: object
             if operation == "embed":
                 output = tuple(embedding_backend.embed(payload))
+            elif operation == "configure_resources":
+                configure = getattr(embedding_backend, "configure_resources", None)
+                if not callable(configure):
+                    raise RuntimeError("semantic backend cannot reconfigure native threads")
+                configure(threads=int(payload))
+                output = embedding_backend.max_batch_size
             elif operation == "text_token_counts":
                 token_counter = getattr(embedding_backend, "text_token_counts", None)
                 if not callable(token_counter):
@@ -185,6 +196,19 @@ class DeadlineEmbeddingBackend(EmbeddingBackend):
     @property
     def max_batch_size(self) -> int:
         return self._max_batch_size
+
+    @property
+    def process_id(self) -> int | None:
+        return None if self._process is None else self._process.pid
+
+    def configure_resources(self, *, threads: int) -> None:
+        if threads < 1:
+            raise ValueError("semantic threads must be positive")
+        result = self._submit("configure_resources", threads)
+        if isinstance(result, bool) or not isinstance(result, int) or result < 1:
+            self._discard(terminate=True)
+            raise RuntimeError("semantic backend returned an invalid resource configuration")
+        self._max_batch_size = result
 
     def _discard(self, *, terminate: bool) -> None:
         process = self._process

@@ -118,7 +118,10 @@ def duplicate_plan_digest(connection: sqlite3.Connection, scan_id: int) -> bytes
 def _stable_proof_json(value: object) -> object:
     """Ignore compute-vs-cache provenance when identifying equal plan content."""
 
-    if not isinstance(value, str):
+    # Only JSON objects can contain top-level compute/cache provenance.
+    # Paths, roles, hashes, and scalar JSON retain their original bytes; do
+    # not parse them (and raise for each ordinary path) on every plan member.
+    if not isinstance(value, str) or not value.lstrip(" \t\r\n").startswith("{"):
         return value
     try:
         decoded = json.loads(value)

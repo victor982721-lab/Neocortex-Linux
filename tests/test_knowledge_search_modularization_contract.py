@@ -246,10 +246,18 @@ def test_knowledge_search_cold_import_orders_preserve_facade_identity(
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.parametrize("with_cancellation", (False, True))
 def test_full_plan_topology_dispatches_through_facade_seams_in_stable_order(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    with_cancellation: bool,
 ) -> None:
+    cancellation_calls = 0
+
+    def cancellation() -> None:
+        nonlocal cancellation_calls
+        cancellation_calls += 1
+
     plan = plan_knowledge_query(
         KnowledgeQuery(
             "which module uses controller.breaker before version",
@@ -390,12 +398,16 @@ def test_full_plan_topology_dispatches_through_facade_seams_in_stable_order(
         **kwargs: object,
     ) -> tuple[tuple[()], int]:
         assert rankings == {}
+        cancellation_check = kwargs.pop("cancellation_check")
+        assert callable(cancellation_check)
+        previous_calls = cancellation_calls
+        cancellation_check()
+        assert cancellation_calls > previous_calls if with_cancellation else cancellation_calls == 0
         assert kwargs == {
             "limit": plan.limit,
             "max_per_resource": plan.max_per_resource,
             "min_section_distance": plan.min_section_distance,
             "include_history": plan.include_history,
-            "cancellation_check": None,
         }
         calls.append("fusion")
         return (), 0
@@ -415,6 +427,7 @@ def test_full_plan_topology_dispatches_through_facade_seams_in_stable_order(
         plan,
         snapshot,
         clock_ns=lambda: next(ticks),
+        cancellation_check=cancellation if with_cancellation else None,
     )
 
     assert calls == [

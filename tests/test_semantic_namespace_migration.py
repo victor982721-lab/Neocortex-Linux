@@ -64,6 +64,7 @@ EXPECTED_MODULES = frozenset(
         "semantic_query_evidence",
         "semantic_query_variants",
         "semantic_repository_common",
+        "semantic_resources",
         "semantic_schema",
         "semantic_search_order",
         "semantic_search_repository",
@@ -82,7 +83,7 @@ EXPECTED_MODULES = frozenset(
     }
 )
 INTENTIONAL_NEW_MODULES = frozenset(
-    {"semantic_search_order", "semantic_vector_search"}
+    {"semantic_resources", "semantic_search_order", "semantic_vector_search"}
 )
 
 

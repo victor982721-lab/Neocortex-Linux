@@ -16,16 +16,22 @@ import io
 import inspect
 import json
 import os
+import pickle
 import re
 import sqlite3
 import stat
 import sys
+import tempfile
+import threading
 import time
 import xml.etree.ElementTree as ET
 import zipfile
 import zlib
-from contextlib import nullcontext
-from dataclasses import dataclass, field
+from collections import deque
+from collections.abc import Callable, Generator, Iterator, Sequence
+from contextlib import closing, contextmanager, nullcontext
+from contextvars import ContextVar
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
@@ -43,7 +49,7 @@ from neocortex.runtime.control.bounded_subprocess import (
     SubprocessOutputLimitError,
     run_bounded_capture,
 )
-from neocortex.runtime.control.cancellation import CancellationToken
+from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
 from neocortex.foundation.file_identity import file_key_from_snapshot
 from neocortex.platform.zip_safety import (
     DEFAULT_MAX_CENTRAL_DIRECTORY_BYTES,
@@ -102,6 +108,33 @@ MAX_MEMBER_SEGMENT_CHARS = 255
 MAX_EMBEDDED_DOCUMENT_MEMBERS = 20_000
 MAX_EMBEDDED_XML_BYTES = 64 * 1024 * 1024
 ARCHIVE_READ_CHUNK_BYTES = 64 * 1024
+_ARCHIVE_RESOURCES: ContextVar[tuple[Any, CancellationToken] | None] = ContextVar(
+    "archive_resources", default=None
+)
+
+
+@contextmanager
+def _archive_resource_scope(gate, cancellation: CancellationToken):
+    token = _ARCHIVE_RESOURCES.set((gate, cancellation))
+    try:
+        yield
+    finally:
+        _ARCHIVE_RESOURCES.reset(token)
+
+
+def _coordinated_archive_gate():
+    context = _ARCHIVE_RESOURCES.get()
+    if context is None or not callable(getattr(context[0], "worker_capacity", None)):
+        return None
+    return context[0]
+
+
+def _archive_cancellation() -> CancellationToken | None:
+    from neocortex.runtime.control.elastic_workers import current_worker_cancellation
+
+    worker = current_worker_cancellation()
+    context = _ARCHIVE_RESOURCES.get()
+    return worker if worker is not None else (None if context is None else context[1])
 
 
 @dataclass(frozen=True, slots=True)
@@ -740,24 +773,73 @@ def _extract_media_text(
         *(("--tesseract-cmd", config.tesseract_cmd) if config.tesseract_cmd else ()),
         *(("--tessdata-dir", config.tessdata_dir) if config.tessdata_dir else ()),
     )
+    gate = _coordinated_archive_gate()
+    cancellation = _archive_cancellation()
+    stdout_limit = max(64 * 1024, char_limit * 6 + 64 * 1024)
+    ocr_enabled = config.ocr_mode != "never"
+    # Tesseract is a sequential descendant of the PDF/image worker and
+    # inherits its address-space ceiling. Both may be resident concurrently.
+    child_resident_bound = config.pdf_worker_memory_bytes * (2 if ocr_enabled else 1)
+    # OCR retains at most one bounded page image and its text output at once.
+    temporary_bound = len(payload) + (
+        config.ocr_max_render_pixels * 8 + 256 * 1024 if ocr_enabled else 0
+    )
+    parent_grant = None
+    if gate is not None:
+        from neocortex.runtime.control.global_resources import current_resource_grant
+
+        parent_grant = current_resource_grant()
+        if parent_grant is not None:
+            parent_grant.release_cpu()
+    # The child's address-space ceiling is a conservative admission bound,
+    # not a measured RSS claim. Input/capture buffers and its stdin temporary
+    # are separate charges while the parent retains its ZIP/member payload.
+    admission = (
+        nullcontext()
+        if gate is None
+        else gate.admit(
+            len(payload) * 2 + stdout_limit + 256 * 1024,
+            resident_bytes=child_resident_bound,
+            temp_bytes=temporary_bound,
+            cpu_slots=1,
+            native_threads=1,
+            io_slots=1,
+            phase=f"archive-{kind}-worker",
+            cancellation=cancellation,
+        )
+    )
     try:
-        completed = run_bounded_capture(
-            command,
-            input_bytes=payload,
-            timeout_seconds=config.pdf_timeout_seconds,
-            stdout_limit_bytes=max(64 * 1024, char_limit * 6 + 64 * 1024),
-            stderr_limit_bytes=256 * 1024,
-            environment={
+        if cancellation is not None:
+            cancellation.checkpoint()
+        with admission as child_grant:
+            environment = {
                 **os.environ,
                 "OPENBLAS_NUM_THREADS": "1",
                 "OMP_NUM_THREADS": "1",
+                "OMP_THREAD_LIMIT": "1",
                 "MKL_NUM_THREADS": "1",
                 "NUMEXPR_NUM_THREADS": "1",
-            },
-            memory_limit_bytes=config.pdf_worker_memory_bytes,
-        )
+            }
+            if child_grant is not None:
+                environment = child_grant.subprocess_env(environment)
+            completed = run_bounded_capture(
+                command,
+                input_bytes=payload,
+                timeout_seconds=config.pdf_timeout_seconds,
+                stdout_limit_bytes=stdout_limit,
+                stderr_limit_bytes=256 * 1024,
+                environment=environment,
+                memory_limit_bytes=config.pdf_worker_memory_bytes,
+                cancellation=cancellation,
+                **({"on_started": child_grant.register_process} if child_grant is not None else {}),
+            )
+            if cancellation is not None:
+                cancellation.checkpoint()
     except (OSError, RuntimeError, SubprocessOutputLimitError) as exc:
         return None, False, f"{kind}_worker_error:{type(exc).__name__}", None
+    finally:
+        if parent_grant is not None:
+            parent_grant.checkpoint()
     try:
         result = json.loads(completed.stdout.decode("utf-8", "strict"))
     except (UnicodeError, json.JSONDecodeError):
@@ -974,6 +1056,99 @@ class _ContainerCounters:
     materialization_manifest_digest: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _MemberObservation:
+    member_chain: str
+    member_path: str
+    depth: int
+    info: zipfile.ZipInfo
+    content: _ExtractedContent
+    document_role: str
+    logical_document_chain: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _LogicalObservation:
+    member_chain: str
+    observation: LogicalDocumentEvidence
+    name: str
+    depth: int
+
+
+@dataclass(frozen=True, slots=True)
+class _IssueObservation:
+    member_chain: str | None
+    depth: int
+    code: str
+    detail: str
+
+
+class _ArchiveObservationSpool:
+    """One owned anonymous stream; never load a pickle supplied by the corpus.
+
+    Only the three in-process observation dataclasses are serialized. Each
+    record uses its own memo, so previous member text is not retained in RAM.
+    The task lease owns actual temporary bytes until the consumer closes it.
+    """
+
+    def __init__(self, config: ArchiveRouteConfig, grant) -> None:
+        self.stream = tempfile.TemporaryFile()
+        self.grant = grant
+        self.size = 0
+        self.max_record_size = 0
+        self.record_limit = (
+            config.max_total_text_chars * 4 + config.max_central_directory_bytes * 4 + 1024 * 1024
+        )
+        self.total_limit = (
+            config.max_total_text_chars * 8
+            + config.max_members * (MAX_MEMBER_NAME_CHARS * 8 + 20_000)
+            + config.max_central_directory_bytes * 4
+        )
+
+    def append(self, observation: _MemberObservation | _LogicalObservation | _IssueObservation):
+        payload = pickle.dumps(observation, protocol=5)
+        if len(payload) > self.record_limit or self.size + len(payload) + 8 > self.total_limit:
+            raise ArchiveExtractionError("archive_spool_limit", "archive observation spool is full")
+        new_size = self.size + len(payload) + 8
+        if self.grant is not None:
+            from neocortex.runtime.control.memory_runtime import MemoryBudgetExceeded
+
+            try:
+                self.grant.resize_temp_bytes(
+                    new_size, directory=tempfile.gettempdir(), file_descriptor=self.stream.fileno()
+                )
+            except MemoryBudgetExceeded as exc:
+                raise ArchiveExtractionError("archive_spool_limit", str(exc)) from exc
+        self.stream.write(len(payload).to_bytes(8, "little"))
+        self.stream.write(payload)
+        self.size = new_size
+        self.max_record_size = max(self.max_record_size, len(payload))
+
+    def observations(self):
+        self.stream.seek(0)
+        while header := self.stream.read(8):
+            if len(header) != 8:
+                raise ArchiveExtractionError("archive_spool_invalid", "truncated owned spool header")
+            size = int.from_bytes(header, "little")
+            if size > self.record_limit:
+                raise ArchiveExtractionError("archive_spool_invalid", "oversized owned spool record")
+            payload = self.stream.read(size)
+            if len(payload) != size:
+                raise ArchiveExtractionError("archive_spool_invalid", "truncated owned spool record")
+            observation = pickle.loads(payload)
+            if not isinstance(observation, (_MemberObservation, _LogicalObservation, _IssueObservation)):
+                raise ArchiveExtractionError("archive_spool_invalid", "unknown owned observation")
+            yield observation
+
+    def close(self) -> None:
+        stream = getattr(self, "stream", None)
+        if stream is not None:
+            stream.close()
+
+    def __del__(self) -> None:
+        self.close()
+
+
 def _member_key(container_key: str, member_chain: str) -> str:
     digest = xxhash.xxh3_128_hexdigest(
         f"{container_key}\x00{member_chain}".encode("utf-8", "surrogatepass")
@@ -1039,7 +1214,7 @@ def _prepare_container(
 
 
 def _record_issue(
-    connection: sqlite3.Connection,
+    connection: sqlite3.Connection | _ArchiveObservationSpool,
     container_key: str,
     counters: _ContainerCounters,
     *,
@@ -1051,6 +1226,9 @@ def _record_issue(
     counters.issues += 1
     if issue_diagnosis(code)[0] != "identification_only":
         counters.coverage_issues += 1
+    if isinstance(connection, _ArchiveObservationSpool):
+        connection.append(_IssueObservation(member_chain, depth, code, detail[:2_000]))
+        return
     connection.execute(
         """INSERT INTO archive_issues(
         container_key,member_chain,archive_depth,reason_code,detail,created_ns)
@@ -1147,8 +1325,36 @@ def _store_member(
     )
 
 
+def _observe_member(
+    connection: sqlite3.Connection | _ArchiveObservationSpool,
+    snapshot: FileSnapshot,
+    container_key: str,
+    member_chain: str,
+    member_path: str,
+    depth: int,
+    info: zipfile.ZipInfo,
+    content: _ExtractedContent,
+    signature: str,
+    run_id: int,
+    *,
+    document_role: str = "archive_member",
+    logical_document_chain: str | None = None,
+) -> None:
+    if isinstance(connection, _ArchiveObservationSpool):
+        connection.append(_MemberObservation(
+            member_chain, member_path, depth, info, content,
+            document_role, logical_document_chain,
+        ))
+        return
+    _store_member(
+        connection, snapshot, container_key, member_chain, member_path, depth,
+        info, content, signature, run_id, document_role=document_role,
+        logical_document_chain=logical_document_chain,
+    )
+
+
 def _store_logical_observation(
-    connection: sqlite3.Connection,
+    connection: sqlite3.Connection | _ArchiveObservationSpool,
     container_key: str,
     member_chain: str,
     observation: LogicalDocumentEvidence,
@@ -1156,25 +1362,31 @@ def _store_logical_observation(
     name: str,
     depth: int,
     counters: _ContainerCounters,
+    diagnose: bool = True,
 ) -> None:
-    connection.execute(
-        """INSERT INTO archive_logical_documents(
-        container_key,member_chain,physical_media_type,declared_mime,logical_kind,
-        proposed_extension,evidence_json,identification_status,integrity_status,opening_status)
-        VALUES(?,?,?,?,?,?,?,?,?,?)""",
-        (
-            container_key,
-            member_chain,
-            ARCHIVE_MIME,
-            observation.declared_mime,
-            observation.logical_kind,
-            observation.proposed_extension,
-            json.dumps(observation.evidence),
-            observation.identification_status,
-            observation.integrity_status,
-            observation.opening_status,
-        ),
-    )
+    if isinstance(connection, _ArchiveObservationSpool):
+        connection.append(_LogicalObservation(member_chain, observation, name, depth))
+    else:
+        connection.execute(
+            """INSERT INTO archive_logical_documents(
+            container_key,member_chain,physical_media_type,declared_mime,logical_kind,
+            proposed_extension,evidence_json,identification_status,integrity_status,opening_status)
+            VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (
+                container_key,
+                member_chain,
+                ARCHIVE_MIME,
+                observation.declared_mime,
+                observation.logical_kind,
+                observation.proposed_extension,
+                json.dumps(observation.evidence),
+                observation.identification_status,
+                observation.integrity_status,
+                observation.opening_status,
+            ),
+        )
+    if not diagnose:
+        return
     code = None
     if observation.identified:
         if PurePosixPath(name).suffix.casefold() != observation.proposed_extension:
@@ -1220,8 +1432,267 @@ def _metadata_content(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _ArchiveMemberWork:
+    info: zipfile.ZipInfo
+    name: str
+    member_chain: str
+    payload: bytes | None
+    zip_kind: str | None
+    content: _ExtractedContent | None
+    nested_observation: LogicalDocumentEvidence | None
+    config: ArchiveRouteConfig
+    extraction_required: bool = False
+
+
+_STOP_ARCHIVE_WALK = object()
+_ARCHIVE_PROCESS_MIN_BYTES = 256 * 1024
+
+
+class _ArchiveContainerGroup:
+    def __init__(self) -> None:
+        self.active = 0
+        self.lock = threading.Lock()
+
+    @contextmanager
+    def extracting(self):
+        with self.lock:
+            self.active += 1
+        token = _ARCHIVE_CONTAINER_GROUP.set(self)
+        try:
+            yield
+        finally:
+            _ARCHIVE_CONTAINER_GROUP.reset(token)
+            with self.lock:
+                self.active -= 1
+
+    def member_capacity(self, gate, config: ArchiveRouteConfig) -> int:
+        target = _archive_container_capacity(gate, config, media_possible=False)
+        with self.lock:
+            count = max(1, self.active)
+        # All maps use one route budget. Dividing the conservative parent+
+        # child target prevents every ZIP from growing a full independent
+        # pool and exhausting memory with idle interpreters. Re-evaluate it
+        # as peers finish and resources return.
+        return 0 if target == 0 else max(1, target // count)
+
+
+_ARCHIVE_CONTAINER_GROUP: ContextVar[_ArchiveContainerGroup | None] = ContextVar(
+    "archive_container_group", default=None
+)
+
+
+@contextmanager
+def _archive_work_admission(
+    *, phase: str, estimated_bytes: int = 0, cpu_slots: int = 1, temp_bytes: int = 0
+):
+    gate = _coordinated_archive_gate()
+    if gate is None:
+        yield None
+        return
+    from neocortex.runtime.control.global_resources import current_resource_grant, resource_grant_scope
+
+    parent = current_resource_grant()
+    resume_parent = parent is not None and parent.cpu_slots > 0
+    if resume_parent and parent is not None:
+        parent.release_cpu()
+    try:
+        with gate.admit(
+            estimated_bytes, cpu_slots=cpu_slots, native_threads=cpu_slots, io_slots=1, phase=phase,
+            cancellation=_archive_cancellation(), temp_bytes=temp_bytes,
+        ) as grant:
+            with resource_grant_scope(grant) if grant is not None else nullcontext():
+                yield grant
+    finally:
+        if resume_parent and parent is not None:
+            parent.checkpoint()
+
+
+def _archive_member_memory(work: _ArchiveMemberWork) -> int:
+    size = len(work.payload or b"")
+    return 4 * 1024 * 1024 + size * 2 + min(size, work.config.max_text_chars) * 12
+
+
+def _archive_member_uses_process(work: _ArchiveMemberWork) -> bool:
+    payload = work.payload or b""
+    return not (
+        payload.startswith(b"%PDF-")
+        or PurePosixPath(work.name).suffix.casefold() == ".pdf"
+        or _image_media_type(work.name, payload) is not None
+    )
+
+
+def _extract_archive_member(work: _ArchiveMemberWork) -> _ArchiveMemberWork:
+    """Pure text/XML runs in processes; media supervises its bounded child."""
+
+    from neocortex.runtime.control.elastic_workers import current_worker_cancellation
+
+    cancellation = current_worker_cancellation()
+    if cancellation is not None:
+        cancellation.checkpoint()
+    content = work.content
+    if content is None:
+        content = _extract_member_content(
+            work.name,
+            work.payload or b"",
+            zip_kind=None,
+            char_limit=work.config.max_text_chars,
+            budget=_WalkBudget(work.config.max_members, work.config.max_total_uncompressed_bytes),
+            config=work.config,
+        )
+    if cancellation is not None:
+        cancellation.checkpoint()
+    return replace(work, payload=None, content=content)
+
+
+def _iter_archive_members(
+    entries: Sequence[zipfile.ZipInfo],
+    prepare: Callable[[zipfile.ZipInfo], _ArchiveMemberWork | object | None],
+    *,
+    budget: _WalkBudget,
+    counters: _ContainerCounters,
+    config: ArchiveRouteConfig,
+    cancellation: CancellationToken,
+) -> Generator[_ArchiveMemberWork, None, None]:
+    """Drain siblings before nested packages so one shared budget stays exact."""
+
+    from neocortex.runtime.control.elastic_workers import ImmediateResult, elastic_map
+
+    gate = _coordinated_archive_gate()
+    group = _ARCHIVE_CONTAINER_GROUP.get()
+    # A new interpreter costs much more than a few tiny text members. Reserve
+    # persistent processes when declared *uncompressed* work can amortize it;
+    # short packages use their supervisors for bounded reads and brief parsing.
+    # This does not claim CPU parallelism for the Python work in those threads.
+    declared_work = sum(
+        info.file_size for info in entries if 0 < info.file_size <= config.max_member_bytes
+    )
+    executor_kind: Literal["thread", "process"] = (
+        "process" if declared_work >= _ARCHIVE_PROCESS_MIN_BYTES else "thread"
+    )
+    iterator = iter(entries)
+    exhausted = False
+    barrier: _ArchiveMemberWork | None = None
+
+    deferred: deque[zipfile.ZipInfo] = deque()
+    stopped = False
+
+    def batch() -> Iterator[zipfile.ZipInfo]:
+        nonlocal exhausted
+        while barrier is None and not stopped:
+            cancellation.checkpoint()
+            if deferred:
+                yield deferred.popleft()
+                continue
+            try:
+                info = next(iterator)
+            except StopIteration:
+                exhausted = True
+                return
+            # No blocking admissions or payload reads in source iteration:
+            # admitted workers may already be waiting for owner preparation.
+            yield info
+
+    def prepared(info: zipfile.ZipInfo):
+        nonlocal barrier, stopped
+        if stopped:
+            return ImmediateResult(None)
+        if barrier is not None:
+            # Speculation after a nested package stops before reading it or
+            # spending the shared budget. This deque is bounded by the map.
+            deferred.append(info)
+            return ImmediateResult(None)
+        work = prepare(info)
+        if work is _STOP_ARCHIVE_WALK:
+            stopped = True
+            deferred.clear()
+            return ImmediateResult(None)
+        if not isinstance(work, _ArchiveMemberWork):
+            return ImmediateResult(None)
+        if work.zip_kind not in {None, "corrupt_archive"}:
+            barrier = work
+            return ImmediateResult(None)
+        if work.content is not None:
+            return ImmediateResult(replace(work, payload=None))
+        if not _archive_member_uses_process(work):
+            require_capacity(
+                _archive_member_memory(work)
+                + config.pdf_worker_memory_bytes * (2 if config.ocr_mode != "never" else 1)
+                + len(work.payload or b"") * 2 + config.max_text_chars * 6 + 320 * 1024
+            )
+        return work
+
+    def require_capacity(demand: int) -> None:
+        from neocortex.runtime.control.memory_runtime import MemoryBudgetExceeded
+
+        interpreter = 64 * 1024 * 1024 if executor_kind == "process" else 0
+        if gate is not None:
+            try:
+                gate.worker_capacity(
+                    estimated_bytes=_archive_container_memory(config) + demand + interpreter,
+                    native_threads=1,
+                )
+            except MemoryBudgetExceeded as exc:
+                raise ArchiveExtractionError("archive_resource_limit", str(exc)) from exc
+
+    def estimate(info: zipfile.ZipInfo) -> int:
+        readable = (
+            0 < info.file_size <= config.max_member_bytes
+            and not info.is_dir() and not info.flag_bits & 0x1
+            and not _member_is_special(info)
+            and info.compress_type in _SUPPORTED_COMPRESSIONS
+            and _compression_ratio(info) <= config.max_compression_ratio
+        )
+        size = info.file_size if readable else 0
+        demand = 4 * 1024 * 1024 + size * 2 + min(size, config.max_text_chars) * 12
+        require_capacity(demand)
+        return demand
+
+    while (not exhausted or deferred) and not stopped:
+        with elastic_map(
+            _extract_archive_member,
+            batch(),
+            gate=gate,
+            capacity=(
+                None if group is None
+                else lambda: group.member_capacity(gate, config)
+            ),
+            estimated_bytes=estimate,
+            native_threads=1,
+            io_slots=1,
+            phase="archive-member-extract",
+            prepare=prepared,
+            executor_kind=executor_kind,
+            process_predicate=_archive_member_uses_process,
+            cancellation=cancellation,
+        ) as results:
+            for result in results:
+                if result is not None:
+                    yield result
+        if barrier is not None:
+            work, barrier = barrier, None
+            with _archive_work_admission(
+                phase="archive-package", estimated_bytes=_archive_member_memory(work)
+            ):
+                if work.content is None:
+                    remaining = config.max_total_text_chars - counters.text_chars
+                    content = (
+                        _metadata_content(
+                            detail="container text budget is exhausted",
+                            issue_code="archive_total_text_limit",
+                        )
+                        if remaining < 1 else _extract_member_content(
+                            work.name, work.payload or b"", zip_kind=work.zip_kind,
+                            char_limit=min(config.max_text_chars, remaining),
+                            budget=budget, config=config,
+                        )
+                    )
+                    work = replace(work, content=content)
+                yield work
+
+
 def _walk_zip(
-    connection: sqlite3.Connection,
+    connection: sqlite3.Connection | _ArchiveObservationSpool,
     archive: zipfile.ZipFile,
     snapshot: FileSnapshot,
     container_key: str,
@@ -1267,7 +1738,9 @@ def _walk_zip(
     is_component = component_chain is not None
     logical_text_parts: list[str] = []
     seen_names: set[str] = set()
-    for info in archive.infolist():
+    def prepare_entry(info: zipfile.ZipInfo):
+        payload: bytes | None = None
+        zip_kind: str | None = None
         cancellation.checkpoint()
         try:
             budget.observe_member()
@@ -1281,7 +1754,7 @@ def _walk_zip(
                 code=exc.code,
                 detail=str(exc),
             )
-            break
+            return _STOP_ARCHIVE_WALK
         counters.max_depth = max(counters.max_depth, depth)
         try:
             name = _normalized_member_name(info)
@@ -1297,7 +1770,7 @@ def _walk_zip(
                 code=exc.code,
                 detail=str(exc),
             )
-            continue
+            return None
         member_chain = f"{prefix}{name}"
         if name in seen_names:
             _record_issue(
@@ -1309,10 +1782,10 @@ def _walk_zip(
                 code="archive_duplicate_member",
                 detail=f"duplicate member name in one archive: {name}",
             )
-            continue
+            return None
         seen_names.add(name)
         if info.is_dir():
-            continue
+            return None
         counters.members += 1
         nested_observation: LogicalDocumentEvidence | None = None
         if info.flag_bits & 0x1:
@@ -1440,132 +1913,199 @@ def _walk_zip(
                         issue_code="archive_nested_corrupt",
                     )
                 else:
-                    remaining_text = config.max_total_text_chars - counters.text_chars
-                    if remaining_text < 1:
-                        content = _metadata_content(
-                            detail="container text budget is exhausted",
-                            issue_code="archive_total_text_limit",
-                        )
-                    else:
-                        content = _extract_member_content(
-                            name,
-                            payload,
-                            zip_kind=zip_kind,
-                            char_limit=min(config.max_text_chars, remaining_text),
-                            budget=budget,
-                            config=config,
-                        )
-
-        _store_member(
-            connection,
-            snapshot,
-            container_key,
-            member_chain,
-            name,
-            depth,
-            info,
-            content,
-            config.processing_signature,
-            run_id,
-            document_role=(
-                "document_component"
-                if is_component
-                else "logical_document"
-                if nested_observation is not None and nested_observation.identified
-                else "archive_member"
-            ),
-            logical_document_chain=(
-                component_chain
-                if is_component
-                else member_chain
-                if nested_observation is not None and nested_observation.identified
-                else None
-            ),
+                    content = None
+        return _ArchiveMemberWork(
+            info, name, member_chain, payload, zip_kind, content, nested_observation, config,
+            content is None,
         )
-        if (
-            is_component
-            and content.text
-            and logical_document is not None
-            and _embedded_part_selected(name, logical_document.logical_kind or "")
-        ):
-            logical_text_parts.append(content.text)
-        if content.text is None:
-            counters.metadata_only += 1
-        else:
-            counters.indexed += 1
-            counters.text_chars += len(content.text)
-        if content.issue_code:
-            _record_issue(
-                connection,
-                container_key,
-                counters,
-                member_chain=member_chain,
-                depth=depth,
-                code=content.issue_code,
-                detail=content.detail or content.issue_code,
-            )
 
-        if content.kind != "archive":
-            continue
-        counters.nested_archives += 1
-        if depth >= config.max_depth:
-            _record_issue(
-                connection,
-                container_key,
-                counters,
-                member_chain=member_chain,
-                depth=depth,
-                code="archive_depth_limit",
-                detail=f"nested ZIP depth exceeds configured limit {config.max_depth}",
-            )
-            continue
-        try:
-            remaining_members = config.max_members - budget.members_seen
-            if remaining_members < 1:
-                raise ArchiveExtractionError(
-                    "archive_member_count_limit",
-                    "no member budget remains for nested ZIP traversal",
+    def sequential_members():
+        for info in archive.infolist():
+            work = prepare_entry(info)
+            if work is _STOP_ARCHIVE_WALK:
+                break
+            if not isinstance(work, _ArchiveMemberWork):
+                continue
+            if work.content is None:
+                remaining = config.max_total_text_chars - counters.text_chars
+                content = (
+                    _metadata_content(
+                        detail="container text budget is exhausted",
+                        issue_code="archive_total_text_limit",
+                    ) if remaining < 1 else _extract_member_content(
+                        work.name, work.payload or b"", zip_kind=work.zip_kind,
+                        char_limit=min(config.max_text_chars, remaining),
+                        budget=budget, config=config,
+                    )
                 )
-            inspect_zip_bytes(
-                payload,
-                max_members=remaining_members,
-                max_central_directory_bytes=config.max_central_directory_bytes,
+                work = replace(work, content=content)
+            yield work
+
+    if _coordinated_archive_gate() is not None:
+        from neocortex.runtime.control.global_resources import current_resource_grant
+
+        structure_grant = current_resource_grant()
+        if structure_grant is not None:
+            # Central-directory and logical-package inspection are finished.
+            # Keep their memory; member jobs now own CPU and I/O execution.
+            structure_grant.release_cpu()
+    members = (
+        sequential_members()
+        if _coordinated_archive_gate() is None else _iter_archive_members(
+            archive.infolist(), prepare_entry, budget=budget, counters=counters,
+            config=config, cancellation=cancellation,
+        )
+    )
+    with closing(members):
+        for work in members:
+            info, name, member_chain = work.info, work.name, work.member_chain
+            payload = work.payload
+            nested_observation = work.nested_observation
+            content = work.content
+            if content is None:
+                raise RuntimeError("archive member was not extracted")
+            # Worker results arrive in original order. Only the owner spends the
+            # shared text budget, including results computed speculatively ahead.
+            if content.kind != "archive":
+                remaining = config.max_total_text_chars - counters.text_chars
+                if remaining < 1 and work.extraction_required:
+                    content = _metadata_content(
+                        detail="container text budget is exhausted",
+                        issue_code="archive_total_text_limit",
+                    )
+                elif content.text is not None and len(content.text) > remaining:
+                    content = replace(
+                        content, text=content.text[:remaining], detail="text_truncated",
+                        issue_code="archive_text_limit",
+                    )
+
+            _observe_member(
+                connection,
+                snapshot,
+                container_key,
+                member_chain,
+                name,
+                depth,
+                info,
+                content,
+                config.processing_signature,
+                run_id,
+                document_role=(
+                    "document_component"
+                    if is_component
+                    else "logical_document"
+                    if nested_observation is not None and nested_observation.identified
+                    else "archive_member"
+                ),
+                logical_document_chain=(
+                    component_chain
+                    if is_component
+                    else member_chain
+                    if nested_observation is not None and nested_observation.identified
+                    else None
+                ),
             )
-            with zipfile.ZipFile(io.BytesIO(payload)) as nested:
-                _walk_zip(
+            if (
+                is_component
+                and content.text
+                and logical_document is not None
+                and _embedded_part_selected(name, logical_document.logical_kind or "")
+            ):
+                logical_text_parts.append(content.text)
+            if content.text is None:
+                counters.metadata_only += 1
+            else:
+                counters.indexed += 1
+                counters.text_chars += len(content.text)
+            if content.issue_code:
+                _record_issue(
                     connection,
-                    nested,
-                    snapshot,
                     container_key,
-                    prefix=f"{member_chain}!/",
-                    depth=depth + 1,
-                    budget=budget,
-                    counters=counters,
-                    config=config,
-                    run_id=run_id,
-                    cancellation=cancellation,
-                    component_of=component_chain,
+                    counters,
+                    member_chain=member_chain,
+                    depth=depth,
+                    code=content.issue_code,
+                    detail=content.detail or content.issue_code,
                 )
-        except (
-            ArchiveExtractionError,
-            OSError,
-            RuntimeError,
-            ZipStructureError,
-            zipfile.BadZipFile,
-            zlib.error,
-        ) as exc:
-            code = exc.code if isinstance(exc, ArchiveExtractionError) else "archive_nested_corrupt"
-            _record_issue(
-                connection,
-                container_key,
-                counters,
-                member_chain=member_chain,
-                depth=depth,
-                code=code,
-                detail=f"{type(exc).__name__}: {exc}"[:2_000],
-            )
+
+            if content.kind != "archive":
+                continue
+            counters.nested_archives += 1
+            if depth >= config.max_depth:
+                _record_issue(
+                    connection,
+                    container_key,
+                    counters,
+                    member_chain=member_chain,
+                    depth=depth,
+                    code="archive_depth_limit",
+                    detail=f"nested ZIP depth exceeds configured limit {config.max_depth}",
+                )
+                continue
+            try:
+                if payload is None:
+                    raise RuntimeError("nested ZIP payload was released before traversal")
+                remaining_members = config.max_members - budget.members_seen
+                if remaining_members < 1:
+                    raise ArchiveExtractionError(
+                        "archive_member_count_limit",
+                        "no member budget remains for nested ZIP traversal",
+                    )
+                inspect_zip_bytes(
+                    payload,
+                    max_members=remaining_members,
+                    max_central_directory_bytes=config.max_central_directory_bytes,
+                )
+                with zipfile.ZipFile(io.BytesIO(payload)) as nested:
+                    from neocortex.runtime.control.global_resources import current_resource_grant
+
+                    parent_grant = current_resource_grant() if _coordinated_archive_gate() else None
+                    if parent_grant is not None:
+                        parent_grant.release_cpu()
+                    try:
+                        _walk_zip(
+                            connection,
+                            nested,
+                            snapshot,
+                            container_key,
+                            prefix=f"{member_chain}!/",
+                            depth=depth + 1,
+                            budget=budget,
+                            counters=counters,
+                            config=config,
+                            run_id=run_id,
+                            cancellation=cancellation,
+                            component_of=component_chain,
+                        )
+                    finally:
+                        if parent_grant is not None:
+                            parent_grant.checkpoint()
+            except (
+                ArchiveExtractionError,
+                OSError,
+                RuntimeError,
+                ZipStructureError,
+                zipfile.BadZipFile,
+                zlib.error,
+            ) as exc:
+                code = exc.code if isinstance(exc, ArchiveExtractionError) else "archive_nested_corrupt"
+                _record_issue(
+                    connection,
+                    container_key,
+                    counters,
+                    member_chain=member_chain,
+                    depth=depth,
+                    code=code,
+                    detail=f"{type(exc).__name__}: {exc}"[:2_000],
+                )
 
     if own_logical_document and logical_document is not None:
+        if _coordinated_archive_gate() is not None:
+            from neocortex.runtime.control.global_resources import current_resource_grant
+
+            final_grant = current_resource_grant()
+            if final_grant is not None:
+                final_grant.checkpoint(drain=True)
         # The root is a physical file-backed logical document, not a fabricated
         # ZIP entry. Depth/chain/role explicitly distinguish it from members.
         root_info = zipfile.ZipInfo(Path(snapshot.path).name)
@@ -1573,7 +2113,7 @@ def _walk_zip(
         root_info.CRC = 0  # no member CRC exists for the physical root
         text = "\n".join(logical_text_parts)[: config.max_total_text_chars]
         kind = logical_document.logical_kind or "archive"
-        _store_member(
+        _observe_member(
             connection,
             snapshot,
             container_key,
@@ -1935,6 +2475,132 @@ class _ContainerOutcome:
     counters: _ContainerCounters
 
 
+@dataclass(frozen=True, slots=True)
+class _ArchiveContainerTask:
+    snapshot: FileSnapshot
+    config: ArchiveRouteConfig
+    group: _ArchiveContainerGroup
+    cached: sqlite3.Row | None = None
+
+
+@dataclass(slots=True)
+class _PreparedArchiveContainer:
+    snapshot: FileSnapshot
+    counters: _ContainerCounters
+    spool: _ArchiveObservationSpool | None = None
+    failure: ArchiveExtractionError | None = None
+
+
+def _archive_container_memory(config: ArchiveRouteConfig) -> int:
+    return max(
+        1,
+        config.max_total_uncompressed_bytes
+        + min(config.max_total_text_chars * 8, 256 * 1024 * 1024),
+    )
+
+
+def _archive_container_capacity(
+    gate, config: ArchiveRouteConfig, *, media_possible: bool = True
+) -> int:
+    """Leave progress space for a member before admitting another ZIP parent."""
+
+    from neocortex.runtime.control.memory_runtime import MemoryBudgetExceeded
+
+    parent = _archive_container_memory(config)
+    member = min(config.max_member_bytes, config.max_total_uncompressed_bytes)
+    interpreter = 64 * 1024 * 1024
+    member_workspace = 4 * 1024 * 1024 + member * 2 + min(
+        member, config.max_text_chars
+    ) * 12
+    child = interpreter + member_workspace
+    if media_possible:
+        # A ZIP can contain disguised PDF/images: extensions cannot prove
+        # that only text will be processed. Leave enough room for one largest
+        # bounded native child per parent until contents have been inspected.
+        child += (
+            config.pdf_worker_memory_bytes * (2 if config.ocr_mode != "never" else 1)
+            + member * 2 + config.max_text_chars * 6 + 320 * 1024
+        )
+    try:
+        return gate.worker_capacity(estimated_bytes=parent + child, native_threads=0)
+    except MemoryBudgetExceeded:
+        # An archive may contain only short text despite a generous safety
+        # limit. Allow one parent; check actual member demand before its pool.
+        return gate.worker_capacity(max_workers=1, estimated_bytes=parent, native_threads=0)
+
+
+def _extract_archive_container(task: _ArchiveContainerTask) -> _PreparedArchiveContainer:
+    """Extract an independent ZIP to owned typed observations, without SQLite."""
+
+    with task.group.extracting():
+        return _extract_archive_container_owned(task)
+
+
+def _extract_archive_container_owned(task: _ArchiveContainerTask) -> _PreparedArchiveContainer:
+
+    from neocortex.runtime.control.global_resources import current_resource_grant
+    from neocortex.runtime.control.elastic_workers import current_worker_cancellation
+
+    grant = current_resource_grant()
+    context = _ARCHIVE_RESOURCES.get()
+    cancellation = current_worker_cancellation() or (
+        CancellationToken() if context is None else context[1]
+    )
+    config, snapshot = task.config, task.snapshot
+    counters = _ContainerCounters()
+    spool = _ArchiveObservationSpool(config, grant)
+    try:
+        cancellation.checkpoint()
+        _require_current_source(snapshot, "ZIP source changed after inventory")
+        with open(native_io_path(snapshot.path), "rb", buffering=0) as source:
+            if not stat_matches_snapshot(snapshot, os.fstat(source.fileno())):
+                raise ArchiveExtractionError(
+                    "archive_source_changed", "ZIP source changed before opening", retryable=True
+                )
+            inspect_zip_stream(
+                source, snapshot.size, max_members=config.max_members,
+                max_central_directory_bytes=config.max_central_directory_bytes,
+            )
+            source.seek(0)
+            with zipfile.ZipFile(source) as archive:
+                _walk_zip(
+                    spool, archive, snapshot, file_key_from_snapshot(snapshot),
+                    prefix="", depth=1,
+                    budget=_WalkBudget(config.max_members, config.max_total_uncompressed_bytes),
+                    counters=counters, config=config, run_id=0, cancellation=cancellation,
+                )
+            if not stat_matches_snapshot(snapshot, os.fstat(source.fileno())):
+                raise ArchiveExtractionError(
+                    "archive_source_changed", "ZIP source changed during traversal", retryable=True
+                )
+        _require_current_source(snapshot, "ZIP source path changed during traversal")
+        del archive
+        if grant is not None:
+            # Traversal buffers and nested ZIP objects have gone out of scope.
+            # Keep only enough RAM to decode/compress one owned record during
+            # publication; the anonymous stream retains its separate charge.
+            grant.shrink_transient_bytes(min(
+                _archive_container_memory(config),
+                4 * 1024 * 1024 + spool.max_record_size * 12,
+            ))
+        return _PreparedArchiveContainer(snapshot, counters, spool=spool)
+    except CancellationRequested:
+        spool.close()
+        raise
+    except ArchiveExtractionError as failure:
+        spool.close()
+        return _PreparedArchiveContainer(snapshot, counters, failure=failure)
+    except (OSError, RuntimeError, ZipStructureError, zipfile.BadZipFile, zlib.error) as exc:
+        spool.close()
+        corrupt_failure = ArchiveExtractionError(
+            "archive_corrupt_container", f"{type(exc).__name__}: {exc}"
+        )
+        return _PreparedArchiveContainer(snapshot, counters, failure=corrupt_failure)
+    except BaseException:
+        spool.close()
+        raise
+
+
 def _require_current_source(snapshot: FileSnapshot, message: str) -> None:
     try:
         current = snapshot_path(snapshot.path)
@@ -2034,6 +2700,14 @@ class ArchiveRoute:
             self.config.max_total_text_chars * 4,
             128 * 1024 * 1024,
         )
+        if callable(getattr(self.memory_gate, "worker_capacity", None)):
+            # Ordered extraction may retain several sibling payloads. Their
+            # total is still bounded by the shared decompression budget.
+            estimate += self.config.max_total_uncompressed_bytes - nested_payloads
+            return self.memory_gate.admit(
+                max(1, estimate), cpu_slots=0, native_threads=0,
+                phase="archive-retained", cancellation=self.cancellation,
+            )
         return self.memory_gate.admit(max(1, estimate))
 
     def _materialization_limits(self) -> ArchiveMaterializationLimits:
@@ -2167,7 +2841,13 @@ class ArchiveRoute:
                 ):
                     materialize_kwargs[name] = value
             materialize_callable: Any = materialize_archive
-            manifest = materialize_callable(snapshot.path, destination, **materialize_kwargs)
+            with _archive_work_admission(
+                phase="archive-materialize",
+                temp_bytes=self.config.max_total_uncompressed_bytes,
+            ):
+                manifest = materialize_callable(snapshot.path, destination, **materialize_kwargs)
+        except CancellationRequested:
+            raise
         except Exception as exc:
             counters.materialization_pending += 1
             _record_issue(
@@ -2200,7 +2880,7 @@ class ArchiveRoute:
         counters = _ContainerCounters()
         try:
             _require_current_source(snapshot, "ZIP source changed after inventory")
-            with self._memory_admission():
+            with _archive_resource_scope(self.memory_gate, self.cancellation), self._memory_admission():
                 try:
                     source_handle = open(native_io_path(snapshot.path), "rb", buffering=0)
                 except OSError as exc:
@@ -2279,6 +2959,46 @@ class ArchiveRoute:
                 f"{type(exc).__name__}: {exc}",
             ) from exc
 
+    def _publish_prepared_container(
+        self, connection: sqlite3.Connection, prepared: _PreparedArchiveContainer
+    ) -> _ContainerOutcome:
+        # elastic_map owns the bounded publication CPU admission and retains
+        # the container/spool lease until this result has been consumed.
+        if prepared.failure is not None:
+            raise prepared.failure
+        if prepared.spool is None:
+            raise RuntimeError("archive container has no observation spool")
+        snapshot, counters = prepared.snapshot, prepared.counters
+        _require_current_source(snapshot, "ZIP source changed before publication")
+        key = _prepare_container(connection, snapshot, self.config.processing_signature, self.run_id)
+        replay_counters = _ContainerCounters()
+        for observation in prepared.spool.observations():
+            self.cancellation.checkpoint()
+            if isinstance(observation, _MemberObservation):
+                _store_member(
+                    connection, snapshot, key, observation.member_chain,
+                    observation.member_path, observation.depth, observation.info,
+                    observation.content, self.config.processing_signature, self.run_id,
+                    document_role=observation.document_role,
+                    logical_document_chain=observation.logical_document_chain,
+                )
+            elif isinstance(observation, _LogicalObservation):
+                _store_logical_observation(
+                    connection, key, observation.member_chain, observation.observation,
+                    name=observation.name, depth=observation.depth,
+                    counters=replay_counters, diagnose=False,
+                )
+            else:
+                _record_issue(
+                    connection, key, replay_counters, member_chain=observation.member_chain,
+                    depth=observation.depth, code=observation.code, detail=observation.detail,
+                )
+        _require_current_source(snapshot, "ZIP source changed while publishing observations")
+        self._materialize_container(connection, snapshot, key, counters)
+        _require_current_source(snapshot, "ZIP source changed before container publication")
+        _publish_container(connection, snapshot, key, counters, self.run_id)
+        return _ContainerOutcome("partial" if counters.coverage_issues else "complete", counters)
+
     def run(self) -> ArchiveRouteSummary:
         self.cancellation.checkpoint()
         self._validate()
@@ -2286,7 +3006,10 @@ class ArchiveRoute:
             self.config.state_path.suffix + ".route.lock"
         )
         self.config.state_path.parent.mkdir(parents=True, exist_ok=True)
-        with FrameworkRunLock(lock_path):
+        with (
+            FrameworkRunLock(lock_path),
+            _archive_resource_scope(self.memory_gate, self.cancellation),
+        ):
             return self._run_locked()
 
     def _run_locked(self) -> ArchiveRouteSummary:
@@ -2336,15 +3059,26 @@ class ArchiveRoute:
                 "archive",
                 self.config.selection,
             )
-            for snapshot in iterator:
-                if processed >= selected_count:
-                    break
-                self.cancellation.checkpoint()
-                if (
-                    self.config.max_file_bytes is not None
-                    and snapshot.size > self.config.max_file_bytes
-                ):
-                    continue
+            def selected_candidates():
+                selected = 0
+                for snapshot in iterator:
+                    if selected >= selected_count:
+                        break
+                    self.cancellation.checkpoint()
+                    if (
+                        self.config.max_file_bytes is not None
+                        and snapshot.size > self.config.max_file_bytes
+                    ):
+                        continue
+                    selected += 1
+                    yield snapshot
+
+            def reuse_cached(snapshot):
+                nonlocal processed, cache_hits, cached_errors, complete, partial, errors
+                nonlocal members, indexed, metadata_only, nested, text_chars, issues
+                nonlocal fts_rows_repaired, materialization_applied, materialization_reused
+                nonlocal materialization_pending, materialization_collisions
+                nonlocal materialization_units_preserved, materialization_manifest_digest
                 cached = _cached_container(
                     connection,
                     snapshot,
@@ -2421,55 +3155,157 @@ class ArchiveRoute:
                         issues += cached_materialization.issues
                         processed += 1
                         report()
-                        continue
+                        return True
 
-                connection.execute("BEGIN IMMEDIATE")
-                try:
-                    outcome = self._process_container(connection, snapshot)
-                except ArchiveExtractionError as failure:
-                    connection.rollback()
-                    connection.execute("BEGIN IMMEDIATE")
+                return False
+
+            def uncached_candidates():
+                for snapshot in selected_candidates():
+                    if not reuse_cached(snapshot):
+                        yield snapshot
+
+            def prepared_containers():
+                if not callable(getattr(self.memory_gate, "worker_capacity", None)):
+                    yield from uncached_candidates()
+                    return
+                from neocortex.runtime.control.elastic_workers import ImmediateResult, elastic_map
+
+                group = _ArchiveContainerGroup()
+                selected = iter(selected_candidates())
+                exhausted = False
+                retries: deque[_ArchiveContainerTask] = deque()
+
+                def tasks():
+                    nonlocal exhausted
+                    while retries or not exhausted:
+                        if retries:
+                            yield retries.popleft()
+                            continue
+                        try:
+                            snapshot = next(selected)
+                        except StopIteration:
+                            exhausted = True
+                            return
+                        # This indexed metadata lookup does not decode a durable
+                        # representation. Cache verification/FTS repair is prepare.
+                        cached = _cached_container(connection, snapshot, self.config.processing_signature)
+                        if cached is not None and str(cached["status"]) == "error" and (
+                            self.config.retry_errors or (
+                                self.config.retry_recoverable_errors and cached["retryable"] == 1
+                            )
+                        ):
+                            cached = None
+                        yield _ArchiveContainerTask(snapshot, self.config, group, cached)
+
+                def prepare(task: _ArchiveContainerTask):
+                    if task.cached is None:
+                        return task
                     try:
-                        _store_container_error(
-                            connection,
-                            snapshot,
-                            self.config.processing_signature,
-                            self.run_id,
-                            failure,
-                        )
-                    except BaseException:
-                        connection.rollback()
-                        raise
-                    else:
-                        connection.commit()
-                    errors += 1
-                    issues += 1
-                except BaseException:
-                    connection.rollback()
-                    raise
-                else:
-                    connection.commit()
-                    complete += int(outcome.status == "complete")
-                    partial += int(outcome.status == "partial")
-                    members += outcome.counters.members
-                    indexed += outcome.counters.indexed
-                    metadata_only += outcome.counters.metadata_only
-                    nested += outcome.counters.nested_archives
-                    issues += outcome.counters.issues
-                    text_chars += outcome.counters.text_chars
-                    materialization_applied += outcome.counters.materialization_applied
-                    materialization_reused += outcome.counters.materialization_reused
-                    materialization_pending += outcome.counters.materialization_pending
-                    materialization_collisions += outcome.counters.materialization_collisions
-                    materialization_units_preserved += (
-                        outcome.counters.materialization_units_preserved
+                        if reuse_cached(task.snapshot):
+                            return ImmediateResult(None)
+                        # Damaged durable cache needs a fresh, larger extraction
+                        # admission after releasing its representation lease.
+                        return ImmediateResult(replace(task, cached=None))
+                    finally:
+                        # Cached apply may renew CPU around materialization.
+                        # Close those owner contexts here: this preparation
+                        # only returns ImmediateResult, so no parser follows.
+                        from neocortex.runtime.control.global_resources import current_resource_grant
+
+                        grant = current_resource_grant()
+                        if grant is not None:
+                            grant.release_cpu()
+
+                def estimate(task: _ArchiveContainerTask):
+                    if task.cached is None:
+                        return _archive_container_memory(self.config)
+                    try:
+                        chars = max(0, min(int(task.cached["text_chars"]), self.config.max_total_text_chars))
+                        count = max(0, min(int(task.cached["member_count"]), self.config.max_members))
+                    except (ValueError, TypeError, OverflowError):
+                        return _archive_container_memory(self.config)
+                    # Canonical and actual FTS projections coexist; names and
+                    # ancestor paths are bounded by the archive naming contract.
+                    return 4 * 1024 * 1024 + chars * 16 + count * 96 * 1024
+
+                worker: Callable[
+                    [_ArchiveContainerTask], _PreparedArchiveContainer | _ArchiveContainerTask | None
+                ] = _extract_archive_container
+                while not exhausted or retries:
+                    with elastic_map(
+                        worker, tasks(), gate=self.memory_gate,
+                        capacity=lambda: _archive_container_capacity(self.memory_gate, self.config),
+                        estimated_bytes=estimate, prepare=prepare,
+                        phase="archive-container", native_threads=0, io_slots=1,
+                        cancellation=self.cancellation,
+                    ) as results:
+                        for result in results:
+                            if isinstance(result, _ArchiveContainerTask):
+                                retries.append(result)
+                            elif result is not None:
+                                yield result
+
+            with closing(prepared_containers()) as prepared_results:
+                for prepared in prepared_results:
+                    snapshot = (
+                        prepared.snapshot if isinstance(prepared, _PreparedArchiveContainer)
+                        else prepared
                     )
-                    materialization_manifest_digest = (
-                        outcome.counters.materialization_manifest_digest
-                        or materialization_manifest_digest
-                    )
-                processed += 1
-                report()
+                    try:
+                        connection.execute("BEGIN IMMEDIATE")
+                        try:
+                            outcome = (
+                                self._publish_prepared_container(connection, prepared)
+                                if isinstance(prepared, _PreparedArchiveContainer)
+                                else self._process_container(connection, snapshot)
+                            )
+                        except ArchiveExtractionError as failure:
+                            connection.rollback()
+                            connection.execute("BEGIN IMMEDIATE")
+                            try:
+                                _store_container_error(
+                                    connection,
+                                    snapshot,
+                                    self.config.processing_signature,
+                                    self.run_id,
+                                    failure,
+                                )
+                            except BaseException:
+                                connection.rollback()
+                                raise
+                            else:
+                                connection.commit()
+                            errors += 1
+                            issues += 1
+                        except BaseException:
+                            connection.rollback()
+                            raise
+                        else:
+                            connection.commit()
+                            complete += int(outcome.status == "complete")
+                            partial += int(outcome.status == "partial")
+                            members += outcome.counters.members
+                            indexed += outcome.counters.indexed
+                            metadata_only += outcome.counters.metadata_only
+                            nested += outcome.counters.nested_archives
+                            issues += outcome.counters.issues
+                            text_chars += outcome.counters.text_chars
+                            materialization_applied += outcome.counters.materialization_applied
+                            materialization_reused += outcome.counters.materialization_reused
+                            materialization_pending += outcome.counters.materialization_pending
+                            materialization_collisions += outcome.counters.materialization_collisions
+                            materialization_units_preserved += (
+                                outcome.counters.materialization_units_preserved
+                            )
+                            materialization_manifest_digest = (
+                                outcome.counters.materialization_manifest_digest
+                                or materialization_manifest_digest
+                            )
+                        processed += 1
+                        report()
+                    finally:
+                        if isinstance(prepared, _PreparedArchiveContainer) and prepared.spool is not None:
+                            prepared.spool.close()
 
             pruned_containers = pruned_members = 0
             if (

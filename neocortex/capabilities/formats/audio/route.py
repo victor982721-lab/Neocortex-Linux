@@ -9,7 +9,10 @@ import math
 import sqlite3
 import time
 import zlib
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
+from neocortex.runtime.control.elastic_workers import current_worker_cancellation, elastic_map
+from neocortex.runtime.control.gpu_runtime import cuda_memory_snapshot
+from ..media_resources import ResidentMediaGate, current_media_resource, media_gate_scope
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Literal, Protocol
@@ -29,7 +32,7 @@ from neocortex.workflow.actions.action_policy import same_snapshot
 from .models import (
     AUDIO_ROUTE_VERSION,
     AudioProcessingError,
-    AudioRuntimeUnavailableError,  # noqa: F401 - stable route-level exception export
+    AudioRuntimeUnavailableError,
     AudioRouteConfig,
     AudioRouteSummary,
     MediaProbe,
@@ -221,6 +224,7 @@ class _TranscriberLease:
         self.processing: ProcessingProvenance | None = None
         self._resources = ExitStack()
         self._transcriber: Transcriber | None = None
+        self._gpu_reservation: tuple[str, int] | None = None
 
     def resolve_processing(self) -> ProcessingProvenance:
         """Resolve only after a current or reusable probe proves an audio stream."""
@@ -230,6 +234,32 @@ class _TranscriberLease:
                 self._route.config.device, self._route.config.compute_type,
             )
             self._runtime = runtime
+            if runtime.resolved_device == "cuda":
+                gpu = cuda_memory_snapshot()
+                if gpu is None:
+                    raise AudioRuntimeUnavailableError(
+                        "Whisper CUDA memory/identity is unavailable for model admission"
+                    )
+                coordinator = getattr(self._route.memory_gate, "coordinator", None)
+                if coordinator is None:
+                    raise AudioRuntimeUnavailableError("Whisper CUDA requires a coordinated GPU gate")
+                device_id = gpu.device_id
+
+                def available():
+                    current = cuda_memory_snapshot()
+                    return (current.available_bytes if current is not None
+                            and current.device_id == device_id else None)
+
+                def materialized():
+                    current = cuda_memory_snapshot()
+                    return (current.process_memory_bytes if current is not None
+                            and current.device_id == device_id else {})
+
+                coordinator.register_gpu_device(
+                    device_id, gpu.total_bytes, available_probe=available,
+                    materialized_probe=materialized,
+                )
+                self._gpu_reservation = device_id, _estimated_audio_memory_bytes(self._route.config)
             self.processing = self._route.config.processing_provenance(
                 backend_version=runtime.backend_version,
                 ctranslate2_version=runtime.ctranslate2_version,
@@ -242,9 +272,10 @@ class _TranscriberLease:
         self.resolve_processing()
         assert self._runtime is not None
         if self._transcriber is None:
-            self._resources.enter_context(
-                self._route.memory_gate.admit(_estimated_audio_memory_bytes(self._route.config))
-            )
+            if current_media_resource() is None:
+                self._resources.enter_context(
+                    self._route.memory_gate.admit(_estimated_audio_memory_bytes(self._route.config))
+                )
             self._transcriber = self._route.transcriber_factory(
                 self._route.config,
                 self._runtime,
@@ -282,6 +313,7 @@ class AudioRoute:
         self.transcriber_factory = transcriber_factory
         self.media_probe = media_probe
         self._recoverable_retry_keys: set[str] = set()
+        self._provided_memory_gate = memory_gate
         self.memory_gate = (
             memory_gate
             if memory_gate is not None
@@ -296,7 +328,11 @@ class AudioRoute:
             )
         )
 
+        self._memory_limits = getattr(self.memory_gate, "limits", None)
+
     def _validate(self) -> None:
+        if self.config.workers is not None and self.config.workers < 1:
+            raise ValueError("audio workers must be positive or None")
         positive_values = {
             "max_duration_seconds": self.config.max_duration_seconds,
             "max_transcript_chars": self.config.max_transcript_chars,
@@ -317,6 +353,14 @@ class AudioRoute:
             raise ValueError("audio language must be non-empty or automatic")
 
     def run(self) -> AudioRouteSummary:
+        self.cancellation.checkpoint()
+        with media_gate_scope(
+            "Audio", self._provided_memory_gate, self._memory_limits, self.cancellation,
+        ) as gate:
+            self.memory_gate = gate
+            return self._run_with_resources()
+
+    def _run_with_resources(self) -> AudioRouteSummary:
         self.cancellation.checkpoint()
         self._validate()
         lock_path = self.config.state_path.with_suffix(
@@ -416,41 +460,82 @@ class AudioRoute:
     ) -> None:
         if not metrics.selected:
             return
-        for mime in ordered_mimes:
-            iterator = self.framework_state.iter_selected_route_candidates(
-                self.run_id,
-                mime,
-                "audio",
-                self.config.selection,
-            )
-            for snapshot in iterator:
-                if metrics.processed >= metrics.selected:
-                    break
-                self.cancellation.checkpoint()
-                if self._exceeds_file_limit(snapshot):
-                    continue
-                _store_inventory(connection, snapshot, mime, self.run_id)
-                cached = _cached_document(connection, snapshot, signature)
-                if self._consume_cached(connection, snapshot, mime, cached, metrics, reviews):
-                    self._commit_batch(connection, metrics, reviews)
-                    continue
-                if self._consume_current_transcript(
-                    connection, snapshot, mime, lease, metrics, reviews
-                ):
-                    self._commit_batch(connection, metrics, reviews)
-                    continue
-                self._transcribe_candidate(
-                    connection,
-                    snapshot,
-                    mime,
-                    signature,
-                    lease,
-                    metrics,
-                    reviews,
+        model_bytes = _estimated_audio_memory_bytes(self.config)
+        result_bytes = max(64 * 1024 * 1024, self.config.max_transcript_chars * 8)
+        pool = ResidentMediaGate(
+            self.memory_gate, lambda: _TranscriberLease(self), resident_bytes=model_bytes,
+            cancellation=self.cancellation, variable_native_threads=True,
+            gpu_reservation=lambda: lease._gpu_reservation,
+        )
+
+        def candidates():
+            selected = 0
+            for mime in ordered_mimes:
+                iterator = self.framework_state.iter_selected_route_candidates(
+                    self.run_id, mime, "audio", self.config.selection,
                 )
-                self._commit_batch(connection, metrics, reviews)
-            if metrics.processed >= metrics.selected:
-                break
+                try:
+                    for snapshot in iterator:
+                        if selected >= metrics.selected:
+                            return
+                        if self._exceeds_file_limit(snapshot):
+                            continue
+                        selected += 1
+                        _store_inventory(connection, snapshot, mime, self.run_id)
+                        cached = _cached_document(connection, snapshot, signature)
+                        if self._consume_cached(connection, snapshot, mime, cached, metrics, reviews):
+                            continue
+                        if self._consume_current_transcript(connection, snapshot, mime, lease, metrics, reviews):
+                            continue
+                        try:
+                            probe = self._probe_candidate(snapshot)
+                            processing = lease.resolve_processing()
+                            cached = _cached_document(connection, snapshot, processing.signature)
+                            if self._consume_cached(connection, snapshot, mime, cached, metrics, reviews):
+                                continue
+                        except (AudioProcessingError, OSError) as exc:
+                            self._transcribe_candidate(
+                                connection, snapshot, mime, signature, lease, metrics, reviews,
+                                prepared=(None, exc),
+                            )
+                            continue
+                        yield snapshot, mime, probe
+                finally:
+                    close = getattr(iterator, "close", None)
+                    if close is not None:
+                        close()
+
+        def execute(payload):
+            snapshot, mime, probe = payload
+            local_lease = current_media_resource()
+            local_lease._runtime = lease._runtime
+            local_lease.processing = lease.processing
+            try:
+                _, result = self._transcribe(snapshot, local_lease, probe=probe)
+                return snapshot, mime, probe, result
+            except (AudioProcessingError, OSError) as exc:
+                return snapshot, mime, probe, exc
+
+        try:
+            with elastic_map(
+                execute, candidates(), gate=pool,
+                max_workers=min(self.config.workers or metrics.selected, metrics.selected),
+                estimated_bytes=lambda _payload: result_bytes, native_threads=1,
+                io_slots=1, io_device=lambda item: f"dev:{item[0].volume_id:x}",
+                phase="audio-transcribe", cancellation=self.cancellation,
+            ) as results:
+                for completed in results:
+                    if completed is not None:
+                        snapshot, mime, probe, outcome = completed
+                        self._transcribe_candidate(
+                            connection, snapshot, mime, signature, lease, metrics, reviews,
+                            prepared=(probe, outcome),
+                        )
+                    connection.commit()
+                    reviews.flush()
+                    self._report(metrics)
+        finally:
+            pool.close()
 
     def _consume_current_transcript(
         self,
@@ -580,14 +665,20 @@ class AudioRoute:
         lease: _TranscriberLease,
         metrics: _AudioRunMetrics,
         reviews: _AudioReviewBuffer,
+        *, prepared: tuple | None = None,
     ) -> None:
         try:
-            probe = self._probe_candidate(snapshot)
+            if prepared is not None and isinstance(prepared[1], Exception):
+                raise prepared[1]
+            probe = self._probe_candidate(snapshot) if prepared is None else prepared[0]
             signature = lease.resolve_processing().signature
             cached = _cached_document(connection, snapshot, signature)
             if self._consume_cached(connection, snapshot, mime, cached, metrics, reviews):
                 return
-            probe, result = self._transcribe(snapshot, lease, probe=probe)
+            if prepared is None:
+                probe, result = self._transcribe(snapshot, lease, probe=probe)
+            else:
+                result = prepared[1]
             _store_success(
                 connection,
                 snapshot,
@@ -648,7 +739,7 @@ class AudioRoute:
             probe = self._probe_candidate(snapshot)
         result = lease.acquire().transcribe(
             Path(snapshot.path),
-            cancellation=self.cancellation,
+            cancellation=current_worker_cancellation() or self.cancellation,
         )
         final = snapshot_path(snapshot.path)
         if not same_snapshot(snapshot, final):
@@ -661,6 +752,14 @@ class AudioRoute:
         return probe, result
 
     def _probe_candidate(self, snapshot: FileSnapshot) -> MediaProbe:
+        native = getattr(self.memory_gate, "native_budget", None)
+        admission = (native(16 * 1024 * 1024, max_threads=1, phase="audio-probe",
+                            io_slots=1, io_device=f"dev:{snapshot.volume_id:x}")
+                     if native is not None else nullcontext())
+        with admission:
+            return self._probe_candidate_admitted(snapshot)
+
+    def _probe_candidate_admitted(self, snapshot: FileSnapshot) -> MediaProbe:
         current = snapshot_path(snapshot.path)
         if not same_snapshot(snapshot, current):
             raise AudioProcessingError(

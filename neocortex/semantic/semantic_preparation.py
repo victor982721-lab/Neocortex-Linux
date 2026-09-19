@@ -143,6 +143,12 @@ class _ReadOnlyFastEmbedBackend:
     def max_batch_size(self) -> int:
         return self._delegate.max_batch_size
 
+    def configure_resources(self, *, threads: int) -> None:
+        self._delegate.configure_resources(threads=threads)
+
+    def close(self) -> None:
+        self._delegate.close()
+
     def embed(
         self,
         requests: Sequence[EmbeddingRequest],

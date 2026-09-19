@@ -11,6 +11,7 @@ import json
 import os
 import threading
 import time
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -45,7 +46,7 @@ def _upsert_docx_source(
     initialize_docx_state(database)
     snapshot = snapshot_path(source)
     file_key = f"{snapshot.volume_id}:{snapshot.file_id}"
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         connection.execute(
             """INSERT INTO documents(
             file_key,path,size,mtime_ns,birthtime_ns,processing_signature,status,
@@ -241,6 +242,8 @@ def test_cancelled_catalog_build_keeps_previous_projection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from neocortex.runtime.control.global_resources import current_resource_grant
+    previous_grant = current_resource_grant()
     source_database = tmp_path / "docx.sqlite3"
     first = tmp_path / "a-ieee.docx"
     second = tmp_path / "b-second.docx"
@@ -291,6 +294,7 @@ def test_cancelled_catalog_build_keeps_previous_projection(
         )
 
     assert _published_kinds(catalog) == before
+    assert current_resource_grant() is previous_grant
     with document_catalog_database(catalog, readonly=True) as connection:
         statuses = tuple(
             connection.execute(
@@ -904,10 +908,15 @@ def test_publication_cancellation_does_not_wait_again_to_record_failure(
     token = CancellationToken()
     timer = threading.Timer(0.05, token.cancel)
     cleanup: list[tuple[bool, int]] = []
+    writer_hold_started: float | None = None
     with sqlite3.connect(catalog, timeout=0) as blocker:
         def hold_writer_after_preparation(*args, **kwargs):
+            nonlocal writer_hold_started
             prepared = original_prepare(*args, **kwargs)
             blocker.execute("BEGIN IMMEDIATE")
+            # Measure cancellation and cleanup only after preparation has
+            # finished and this fixture actually holds the competing writer.
+            writer_hold_started = time.monotonic()
             timer.start()
             return prepared
 
@@ -920,7 +929,6 @@ def test_publication_cancellation_does_not_wait_again_to_record_failure(
 
         monkeypatch.setattr(catalog_module, "_prepare_catalog_publication", hold_writer_after_preparation)
         monkeypatch.setattr(catalog_module, "_fail_catalog_build", observe_failed_status)
-        started = time.monotonic()
         try:
             with pytest.raises(CancellationRequested) as raised:
                 update_document_catalog_source(
@@ -931,7 +939,8 @@ def test_publication_cancellation_does_not_wait_again_to_record_failure(
             if timer.ident is not None:
                 timer.join(timeout=1)
             blocker.rollback()
-        assert time.monotonic() - started < 1.0
+        assert writer_hold_started is not None
+        assert time.monotonic() - writer_hold_started < 1.0
         assert cleanup == [(False, 60_000)]
         assert any("could not be persisted" in note for note in raised.value.__notes__)
     with document_catalog_database(catalog, readonly=True) as connection:

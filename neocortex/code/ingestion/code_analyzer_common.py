@@ -24,6 +24,9 @@ from neocortex.semantic.semantic_models import fingerprint_bytes, fingerprint_te
 # region [01] Source coordinate mapping
 
 
+_UTF8_CHECKPOINT_CHARS = 256
+
+
 @dataclass(frozen=True, slots=True)
 class SourceMap:
     """Translate line/column coordinates to UTF-8 byte offsets."""
@@ -32,6 +35,8 @@ class SourceMap:
     lines: tuple[str, ...]
     line_char_offsets: tuple[int, ...]
     line_byte_offsets: tuple[int, ...]
+    _text_byte_length: int
+    _line_byte_checkpoints: tuple[tuple[int, ...], ...]
 
     @classmethod
     def build(cls, text: str) -> "SourceMap":
@@ -40,14 +45,30 @@ class SourceMap:
             lines = ("",)
         char_offsets: list[int] = []
         byte_offsets: list[int] = []
+        line_checkpoints: list[tuple[int, ...]] = []
         char_cursor = 0
         byte_cursor = 0
         for line in lines:
             char_offsets.append(char_cursor)
             byte_offsets.append(byte_cursor)
+            line_bytes = len(line.encode("utf-8"))
+            checkpoints: list[int] = []
+            if line_bytes != len(line) and len(line) > _UTF8_CHECKPOINT_CHARS:
+                # Sparse offsets cap every later Unicode prefix conversion at
+                # one small block, including minified/long single-line input.
+                checkpoints.append(0)
+                for start in range(0, len(line), _UTF8_CHECKPOINT_CHARS):
+                    checkpoints.append(
+                        checkpoints[-1]
+                        + len(line[start : start + _UTF8_CHECKPOINT_CHARS].encode("utf-8"))
+                    )
+            line_checkpoints.append(tuple(checkpoints))
             char_cursor += len(line)
-            byte_cursor += len(line.encode("utf-8"))
-        return cls(text, lines, tuple(char_offsets), tuple(byte_offsets))
+            byte_cursor += line_bytes
+        return cls(
+            text, lines, tuple(char_offsets), tuple(byte_offsets),
+            byte_cursor, tuple(line_checkpoints),
+        )
 
     def line_text(self, line_number: int) -> str:
         index = min(max(line_number - 1, 0), len(self.lines) - 1)
@@ -56,12 +77,25 @@ class SourceMap:
     def byte_offset(self, line_number: int, column: int, *, utf8_column: bool) -> int:
         index = min(max(line_number - 1, 0), len(self.lines) - 1)
         line = self.lines[index]
+        start_byte = self.line_byte_offsets[index]
+        end_byte = (
+            self.line_byte_offsets[index + 1]
+            if index + 1 < len(self.lines)
+            else self._text_byte_length
+        )
+        byte_length = end_byte - start_byte
         if utf8_column:
-            return self.line_byte_offsets[index] + min(
-                max(column, 0), len(line.encode("utf-8"))
-            )
-        prefix = line[: min(max(column, 0), len(line))]
-        return self.line_byte_offsets[index] + len(prefix.encode("utf-8"))
+            return start_byte + min(max(column, 0), byte_length)
+        column = min(max(column, 0), len(line))
+        if byte_length == len(line):
+            return start_byte + column
+        if column == len(line):
+            return end_byte
+        checkpoints = self._line_byte_checkpoints[index]
+        block = column // _UTF8_CHECKPOINT_CHARS if checkpoints else 0
+        prefix_bytes = checkpoints[block] if checkpoints else 0
+        prefix = line[block * _UTF8_CHECKPOINT_CHARS : column]
+        return start_byte + prefix_bytes + len(prefix.encode("utf-8"))
 
     def source_range(
         self,
@@ -104,12 +138,17 @@ class SourceMap:
 # region [02] Search chunks and fingerprints
 
 
-def searchable_chunks(text: str, max_chars: int) -> tuple[CodeChunk, ...]:
+def searchable_chunks(
+    text: str, max_chars: int, *, source_map: SourceMap | None = None,
+) -> tuple[CodeChunk, ...]:
     """Split text at line boundaries with a strict per-chunk character bound."""
 
     if not text:
         return ()
-    source_map = SourceMap.build(text)
+    if source_map is None:
+        source_map = SourceMap.build(text)
+    elif source_map.text != text:
+        raise ValueError("source map does not match chunk text")
     chunks: list[CodeChunk] = []
     start = 0
     cursor = 0
@@ -194,6 +233,21 @@ def comparison_fingerprints(
 
 
 # region [03] Manifest and project evidence
+
+
+_MANIFEST_SYNTAX_LANGUAGES = {
+    "cargo.toml": "toml",
+    "pyproject.toml": "toml",
+    "pipfile": "toml",
+    "package.json": "json",
+    "composer.json": "json",
+}
+
+
+def manifest_syntax_language(path: Path) -> str | None:
+    """Name the full-document syntax parser used by manifest extraction."""
+
+    return _MANIFEST_SYNTAX_LANGUAGES.get(path.name.casefold())
 
 
 def _manifest_range(text: str) -> SourceRange:
@@ -425,9 +479,10 @@ def manifest_evidence(
     """Parse common manifests with standard-library parsers and bounded output."""
 
     name = path.name.casefold()
-    if name in {"cargo.toml", "pyproject.toml", "pipfile"}:
+    syntax_language = manifest_syntax_language(path)
+    if syntax_language == "toml":
         return _toml_manifest_evidence(path, text)
-    if name in {"package.json", "composer.json"}:
+    if syntax_language == "json":
         return _json_manifest_evidence(path, text)
     if name == "go.mod":
         return _go_manifest_evidence(path, text)
@@ -443,5 +498,6 @@ __all__ = [
     "SourceMap",
     "comparison_fingerprints",
     "manifest_evidence",
+    "manifest_syntax_language",
     "searchable_chunks",
 ]

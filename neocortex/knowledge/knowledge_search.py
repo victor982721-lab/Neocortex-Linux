@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import cast
 
 from neocortex.semantic import semantic_service
+from neocortex.semantic.semantic_resources import governed_retrieval
+from .knowledge_resources import knowledge_phase, knowledge_result_budget
 from neocortex.code.code_contracts import CodeSearchHit, CodeSearchQuery, CodeSearchRelation
 from neocortex.code.ingestion.code_detection import LANGUAGE_EXTENSIONS
 from neocortex.code.code_schema import connect_code_state
@@ -970,6 +972,7 @@ def _new_search_execution(
     )
 
 
+@knowledge_phase
 def _run_lexical_phase(execution: _SearchExecution) -> None:
     execution.check_cancelled()
     cancellation = SQLiteCancellationBridge(execution.cancellation_check)
@@ -1051,6 +1054,7 @@ def _run_semantic_phase(execution: _SearchExecution) -> None:
     execution.add_reports(reports)
 
 
+@knowledge_phase
 def _run_exact_phase(execution: _SearchExecution) -> None:
     execution.check_cancelled()
     if not _planned(execution.plan, "exact"):
@@ -1094,6 +1098,7 @@ def _run_exact_phase(execution: _SearchExecution) -> None:
     )
 
 
+@knowledge_phase
 def _run_direct_phases(execution: _SearchExecution) -> None:
     execution.check_cancelled()
     if _planned(execution.plan, "structural_code"):
@@ -1160,6 +1165,7 @@ def _run_direct_phases(execution: _SearchExecution) -> None:
         )
 
 
+@knowledge_phase
 def _filter_and_apply_inventory(execution: _SearchExecution) -> RankingExecution:
     execution.check_cancelled()
     counts_before_filters = {name: len(values) for name, values in execution.rankings.items()}
@@ -1203,6 +1209,7 @@ def _filter_and_apply_inventory(execution: _SearchExecution) -> RankingExecution
     return report
 
 
+@knowledge_phase
 def _fuse_search_rankings(
     execution: _SearchExecution,
 ) -> tuple[tuple[KnowledgeHit, ...], int]:
@@ -1456,6 +1463,8 @@ def _finalize_search(
     )
 
 
+@governed_retrieval("knowledge")
+@knowledge_result_budget
 def execute_knowledge_search(
     paths: KnowledgeStatePaths,
     plan: KnowledgePlan,

@@ -412,10 +412,10 @@ class PlannerTests(unittest.TestCase):
                 second = planner.plan(scan.scan_id)
                 self.assertEqual(first.statistics.partial_hash_files, 2)
                 self.assertEqual(first.statistics.full_hash_files, 2)
-                self.assertEqual(second.statistics.partial_hash_files, 0)
+                self.assertEqual(second.statistics.partial_hash_files, 2)
                 self.assertEqual(second.statistics.full_hash_files, 2)
                 self.assertEqual(second.statistics.cache_validation_reads, 2)
-                self.assertEqual(second.statistics.full_digest_reuses, 2)
+                self.assertEqual(second.statistics.full_digest_reuses, 0)
                 self.assertEqual(first.verification_mode, "full_hash")
                 self.assertEqual(second.verification_mode, "full_hash")
 

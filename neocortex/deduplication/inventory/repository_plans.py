@@ -83,7 +83,7 @@ class PlanRepositoryMixin:
             CREATE TEMP TABLE planning_full_observations(
                 volume_id BLOB NOT NULL, file_id BLOB NOT NULL,
                 path TEXT NOT NULL, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL,
-                birthtime_ns INTEGER NOT NULL, full_digest BLOB NOT NULL, ctime_ns INTEGER NOT NULL,
+                birthtime_ns INTEGER NOT NULL, full_digest BLOB, ctime_ns INTEGER NOT NULL,
                 PRIMARY KEY(volume_id,file_id)
             ) WITHOUT ROWID;
             """
@@ -97,7 +97,7 @@ class PlanRepositoryMixin:
             self._connection.execute("DELETE FROM planning_full_observations")
 
     def store_planning_full_observations(self, rows: Iterable[FingerprintObservation]) -> None:
-        """Spill validated full digests with their in-run change version."""
+        """Spill observed change fences; a sample has no complete digest."""
 
         with self._connection:
             self._connection.executemany(
@@ -121,11 +121,26 @@ class PlanRepositoryMixin:
         if row is None:
             return None
         require_fingerprint_change_version(snapshot, int(row[1]))
+        if row[0] is None:
+            # The sample is still current, but the survivor must now read
+            # full content. A NULL digest is never promoted to full proof.
+            return None
         return FingerprintObservation(
             snapshot=snapshot, algorithm=FULL_ALGORITHM, digest=bytes(row[0]),
             full_digest=bytes(row[0]), ctime_ns=int(row[1]), computed=True,
             reused_full_digest=True,
         )
+
+    def planning_observed_change_version(self, snapshot: FileSnapshot) -> int | None:
+        """Read the sample fence on the writer thread for a detached worker."""
+
+        row = self._connection.execute(
+            "SELECT ctime_ns FROM planning_full_observations "
+            "WHERE volume_id=? AND file_id=? AND path=? AND size=? AND mtime_ns=? AND birthtime_ns=?",
+            (_id_blob(snapshot.volume_id), _id_blob(snapshot.file_id), snapshot.path,
+             snapshot.size, snapshot.mtime_ns, snapshot.birthtime_ns),
+        ).fetchone()
+        return None if row is None else int(row[0])
 
     def store_planning_observations(
         self, rows: Iterable[tuple[FileSnapshot, KeeperRank, int]],

@@ -4,6 +4,73 @@ Este archivo conserva cambios observables del producto. Métricas, receipts,
 comandos de auditoría y estado de una instalación pertenecen a evidencia fechada
 fuera de `docs/`.
 
+## 2026-09-19 — Menos recorridos repetidos y reservas completas
+
+- Catalog pagina por claves indexadas y comparte la observación del productor
+  Code durante cada iteración. Su política de texto v17 cuenta separadores y
+  comprueba cancelación también cuando los fragmentos están vacíos; la versión
+  invalida de forma coherente las clasificaciones y receipts anteriores.
+  La planificación de organización selecciona claves temporales y carga los
+  payloads por páginas, conservando orden, progreso y rollback transaccional.
+  Los prefijos de texto conservan NUL y Unicode en bases UTF-8 y UTF-16.
+- Semantic reutiliza ventanas de revisiones en ambos sentidos y busca sus
+  membresías por identidad completa. El índice numérico conserva una reserva
+  para agrupación y selección mientras puntúa lotes, incluidas las salidas de
+  cancelación y error.
+- ReviewTask consulta reemplazos y eventos mediante índices existentes y valida
+  la fila adicional de paginación dentro de la misma transacción. Las firmas de
+  procesamiento evitan canonicalizaciones duplicadas conservando sus bytes.
+- Code comparte los mapas de posiciones, acota conversiones Unicode, selecciona
+  propietarios de fragmentos mediante intervalos y reutiliza el parseo confirmado
+  de manifiestos. Office conserva una sola validación de replay junto al update
+  condicionado por identidad, firma y estado.
+- La clasificación ZIP verifica hasta EOF y CRC mediante bloques; sólo retiene
+  los marcadores necesarios y detecta duplicados en tiempo lineal. Image comparte
+  la estimación observada de cada candidato y Video calcula el hash sobre el
+  raster ya capturado.
+- El cálculo de trabajadores considera RAM y commit disponibles junto con su
+  residencia. Las esperas de trabajadores y bibliotecas nativas observan deadline
+  y cancelación, y una limpieza fallida conserva el error principal. La concesión
+  nativa inicial se ajusta a la capacidad viva; un modelo ya creado mantiene la
+  demanda que realmente utiliza.
+  Los techos explícitos de memoria por formato se conservan dentro del
+  coordinador compartido, sobre el agregado residente y transitorio de esa ruta;
+  su ausencia mantiene la capacidad automática.
+- Los hijos registrados por una concesión se incorporan al observador aunque
+  el sistema no exponga el listado de descendientes. Esto evita que PDF espere
+  contra una reserva cuya memoria privada ya es medible, conservando las
+  comprobaciones de identidad, cgroup, presión y liberación de la concesión.
+- Las renovaciones de ejecución se cierran en el contexto en que se abrieron,
+  aunque la tarea pase del preparador al trabajador y al consumidor. La reserva
+  retenida de la proyección Code permanece aislada de los contextos de las demás
+  rutas y sigue contabilizada hasta terminar su consumo.
+
+## 2026-09-19 — Capacidad adaptativa compartida
+
+- El coordinador distingue carga propia y externa, reutiliza muestras Linux
+  durante el run y adapta CPU, memoria e I/O con recuperación automática.
+  Inventario, Dedup, las nueve rutas, Catalog, Semantic y Knowledge comparten
+  el mismo presupuesto. Los techos de workers pasan a ser opcionales.
+- Los pools ajustan su concurrencia; modelos e intérpretes conservan residencia
+  sin reservar CPU mientras están ociosos. Los resultados mantienen memoria hasta
+  su consumo y pueden drenarse bajo presión. Text aplica límites efectivos de
+  memoria y tiempo en el parser aislado.
+- Dedup excluye candidatos mediante muestras antes de leer hashes completos y
+  paraleliza lecturas sin mover SQLite a los workers. La preparación de Code
+  usa un spool acotado y la estimación de candidatos evita un conjunto de paths
+  que crezca con todo el corpus.
+- Catalog prepara fuentes distintas en paralelo y mantiene sus fences y CAS al
+  publicar. Video puede empezar después de la publicación fuente de Audio sin
+  esperar su catálogo. Semantic agrupa tokenización exacta, prepara fuera de la
+  transacción y comparte el control de threads nativos con Knowledge.
+- Video extrae frames por lotes, conserva memoria y temporales hasta su consumo
+  y reutiliza OCR de frames idénticos sin perder tiempos ni procedencia. PDF
+  automático aísla MuPDF en procesos. Audio controla réplicas de modelos con
+  presupuestos de RAM y VRAM del dispositivo efectivo.
+- La espera por disponibilidad admite recuperación sin plazo fijo predeterminado,
+  conservando cancelación y deadline. Los hijos propios reciben menor prioridad
+  de planificación; la captura nativa atiende cancelación mientras está activa.
+
 ## 2026-09-19 — Recuperación acotada y menos trabajo al publicar
 
 - Semantic y Knowledge reutilizan la preparación de la consulta. La hidratación

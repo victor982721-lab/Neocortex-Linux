@@ -55,20 +55,22 @@ def test_video_sampler_registers_workspace_and_retires_it_on_success(
         lambda _path: "ffmpeg",
     )
 
-    def fake_extract(_source: Path, destination: Path, **kwargs: Any) -> ExtractedVideoFrame:
+    def fake_extract(_source: Path, scratch: Path, **kwargs: Any):
+        candidate = kwargs["plan"][0]
+        destination = scratch / "frame.png"
         destination.write_bytes(b"bounded frame")
-        return ExtractedVideoFrame(
+        return (ExtractedVideoFrame(
             -1,
-            kwargs["timestamp_ms"],
+            candidate.timestamp_ms,
             (),
             destination,
             1,
             1,
             "a" * 32,
-        )
+        ),)
 
     monkeypatch.setattr(
-        "neocortex.capabilities.formats.video.frames._extract_frame",
+        "neocortex.capabilities.formats.video.frames._extract_frames",
         fake_extract,
     )
 
@@ -133,7 +135,7 @@ def test_video_sampler_retains_registered_workspace_after_failure(
         )
 
     monkeypatch.setattr(
-        "neocortex.capabilities.formats.video.frames._extract_frame",
+        "neocortex.capabilities.formats.video.frames._extract_frames",
         failing_extract,
     )
 

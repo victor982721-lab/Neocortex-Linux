@@ -7,13 +7,13 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 import json
+import math
 import re
 import sqlite3
 import time
 import zlib
 from collections import deque
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from neocortex.foundation.hash_compat import xxhash
@@ -22,6 +22,9 @@ from neocortex.progress import ProgressCallback, ProgressEvent, ProgressMetric, 
 from neocortex.platform.policy import sqlite_path_collation
 
 from neocortex.runtime.control.cancellation import CancellationRequested, CancellationToken
+from neocortex.runtime.control.cpu_runtime import effective_cpu_count
+from neocortex.runtime.control.elastic_workers import elastic_map
+from neocortex.runtime.control.global_resources import current_resource_grant
 from .pdf_derived_queries import (
     list_layout_groups as list_layout_groups,
     search_pdf_state as search_pdf_state,
@@ -236,7 +239,7 @@ class PdfDerivedIndexer:
         state_path: Path,
         run_id: int,
         *,
-        workers: int,
+        workers: int | None,
         similarity_threshold: float,
         profile_timeout_seconds: float | None = None,
         retry_profile_errors: bool = False,
@@ -250,7 +253,9 @@ class PdfDerivedIndexer:
             raise ValueError("PDF similarity threshold must be between 0 and 1")
         self.state_path = state_path
         self.run_id = run_id
-        self.workers = max(1, workers)
+        if workers is not None and workers < 1:
+            raise ValueError("PDF profile workers must be positive or None")
+        self.workers = workers
         self.threshold = similarity_threshold
         self.profile_timeout_seconds = profile_timeout_seconds
         self.retry_profile_errors = bool(retry_profile_errors)
@@ -259,6 +264,16 @@ class PdfDerivedIndexer:
         self.profile_memory_bytes = profile_memory_bytes
         self.progress = progress
         self.cancellation = cancellation or CancellationToken()
+
+    def _checkpoint(self) -> None:
+        self.cancellation.checkpoint()
+        grant = current_resource_grant()
+        if grant is not None:
+            grant.checkpoint()
+
+    def _serial_phase(self):
+        return (self.resource_gate.admit(0, reservation_bytes=128 * 1024 * 1024)
+                if self.resource_gate is not None else nullcontext())
 
     def _check_disk(self) -> None:
         ensure_free_space(self.state_path, self.min_free_bytes)
@@ -269,37 +284,43 @@ class PdfDerivedIndexer:
             cancellation.checkpoint()
 
     def run(self) -> PdfDerivedSummary:
-        self.cancellation.checkpoint()
+        self._checkpoint()
         self._check_disk()
         started = time.perf_counter_ns()
-        fts_pages, fts_repaired = self._index_fts()
+        with self._serial_phase():
+            fts_pages, fts_repaired = self._index_fts()
         fts_elapsed = time.perf_counter_ns() - started
-        self.cancellation.checkpoint()
+        self._checkpoint()
         self._check_disk()
         started = time.perf_counter_ns()
-        text_signatures = self._build_text_signatures()
+        with self._serial_phase():
+            text_signatures = self._build_text_signatures()
         text_signatures_elapsed = time.perf_counter_ns() - started
-        self.cancellation.checkpoint()
+        self._checkpoint()
         self._check_disk()
         started = time.perf_counter_ns()
         profiles, profile_errors = self._build_profiles()
         profiles_elapsed = time.perf_counter_ns() - started
-        self.cancellation.checkpoint()
+        self._checkpoint()
         self._check_disk()
         started = time.perf_counter_ns()
-        text_pairs = self._build_similarity("text")
+        with self._serial_phase():
+            text_pairs = self._build_similarity("text")
         text_similarity_elapsed = time.perf_counter_ns() - started
-        self.cancellation.checkpoint()
+        self._checkpoint()
         self._check_disk()
         started = time.perf_counter_ns()
-        template_pairs = self._build_similarity("template")
+        with self._serial_phase():
+            template_pairs = self._build_similarity("template")
         template_similarity_elapsed = time.perf_counter_ns() - started
-        self.cancellation.checkpoint()
+        self._checkpoint()
         self._check_disk()
         started = time.perf_counter_ns()
-        layout_pairs = self._build_similarity("layout")
-        self.cancellation.checkpoint()
-        layout_groups = self._build_layout_groups()
+        with self._serial_phase():
+            layout_pairs = self._build_similarity("layout")
+        self._checkpoint()
+        with self._serial_phase():
+            layout_groups = self._build_layout_groups()
         layout_similarity_elapsed = time.perf_counter_ns() - started
         layout_pages = self._layout_page_count()
         return PdfDerivedSummary(
@@ -403,7 +424,7 @@ class PdfDerivedIndexer:
                 (self.run_id,),
             )
             for row in rows:
-                self.cancellation.checkpoint()
+                self._checkpoint()
                 text = zlib.decompress(row["text_zlib"]).decode("utf-8")
                 digest = xxhash.xxh3_128_hexdigest(text.encode("utf-8"))
                 connection.execute(
@@ -440,7 +461,7 @@ class PdfDerivedIndexer:
         built = pending_writes = 0
         with _database(self.state_path) as connection:
             for file_key in self._text_signature_candidates():
-                self.cancellation.checkpoint()
+                self._checkpoint()
                 counters = [0] * SIMHASH_BITS
                 window: deque[str] = deque(maxlen=SHINGLE_TOKENS)
                 token_count = 0
@@ -448,7 +469,7 @@ class PdfDerivedIndexer:
                     "SELECT text_zlib FROM pages WHERE file_key=? ORDER BY page_number",
                     (file_key,),
                 ):
-                    self.cancellation.checkpoint()
+                    self._checkpoint()
                     text = zlib.decompress(page[0]).decode("utf-8").casefold()
                     for match in TOKEN_RE.finditer(text):
                         token = match.group(0)
@@ -479,7 +500,7 @@ class PdfDerivedIndexer:
     def _text_signature_candidates(self):
         last_key = ""
         while True:
-            self.cancellation.checkpoint()
+            self._checkpoint()
             with _database(self.state_path) as connection:
                 rows = connection.execute(
                     """SELECT d.file_key FROM documents d
@@ -494,22 +515,27 @@ class PdfDerivedIndexer:
             if not rows:
                 return
             for row in rows:
-                self.cancellation.checkpoint()
+                self._checkpoint()
                 yield row[0]
             last_key = rows[-1][0]
 
     def _build_profiles(self) -> tuple[int, int]:
-        self.cancellation.checkpoint()
+        self._checkpoint()
         iterator = self._profile_candidates()
         total = self._profile_candidate_count()
-        pending: set[Future[bool]] = set()
-        completed = built = errors = 0
+        submitted = started = completed = built = errors = 0
         progress_started = time.monotonic()
         last_progress_at = progress_started
 
         def report_progress(*, finished: bool = False) -> None:
             nonlocal last_progress_at
             now = time.monotonic()
+            pending = max(0, submitted - completed)
+            active = min(
+                pending,
+                self.resource_gate.active_count if self.resource_gate is not None
+                else max(0, started - completed),
+            )
             emit_progress(
                 self.progress,
                 ProgressEvent(
@@ -521,7 +547,8 @@ class PdfDerivedIndexer:
                     "PDF",
                     finished,
                     (
-                        ProgressMetric("in_flight", len(pending)),
+                        ProgressMetric("in_flight", active),
+                        ProgressMetric("pending_admissions", pending - active),
                         ProgressMetric("remaining", max(0, total - completed)),
                         ProgressMetric("errors", errors),
                         ProgressMetric("elapsed_seconds", int(now - progress_started)),
@@ -531,52 +558,41 @@ class PdfDerivedIndexer:
             last_progress_at = now
 
         report_progress()
-        executor = ThreadPoolExecutor(max_workers=self.workers)
-        interrupted = False
-        try:
-            exhausted = False
-            while pending or not exhausted:
-                self.cancellation.checkpoint()
-                while not exhausted and len(pending) < self.workers * 2:
-                    self.cancellation.checkpoint()
-                    try:
-                        file_key, path, size = next(iterator)
-                    except StopIteration:
-                        exhausted = True
-                        break
-                    pending.add(
-                        executor.submit(self._profile_document_admitted, file_key, path, size)
-                    )
-                if not pending:
-                    continue
-                done, pending = wait(
-                    pending,
-                    timeout=0.1,
-                    return_when=FIRST_COMPLETED,
-                )
-                if (
-                    not done
-                    and time.monotonic() - last_progress_at >= PROFILE_PROGRESS_INTERVAL_SECONDS
-                ):
+
+        def candidates():
+            nonlocal submitted
+            for item in iterator:
+                submitted += 1
+                yield item
+
+        def prepare(item):
+            nonlocal started
+            started += 1
+            return item
+
+        def capacity():
+            if time.monotonic() - last_progress_at >= PROFILE_PROGRESS_INTERVAL_SECONDS:
+                report_progress()
+            if self.resource_gate is None:
+                return effective_cpu_count()
+            # The real document gate owns admission. Keep one waiter when
+            # capacity is zero so its timeout/cancellation remains observable.
+            return max(1, self.resource_gate.worker_capacity(
+                max_workers=self.workers, estimated_bytes=self.profile_memory_bytes,
+            ))
+
+        with elastic_map(
+            lambda item: self._profile_document_admitted(*item), candidates(),
+            capacity=capacity, prepare=prepare,
+            max_workers=self.workers, cancellation=self.cancellation,
+        ) as results:
+            for succeeded in results:
+                completed += 1
+                built += int(succeeded)
+                errors += int(not succeeded)
+                if time.monotonic() - last_progress_at >= PROFILE_PROGRESS_INTERVAL_SECONDS:
                     report_progress()
-                for future in done:
-                    completed += 1
-                    try:
-                        succeeded = future.result()
-                    except CancellationRequested:
-                        raise
-                    if succeeded:
-                        built += 1
-                    else:
-                        errors += 1
-                    report_progress()
-        except CancellationRequested:
-            interrupted = True
-            for future in pending:
-                future.cancel()
-            raise
-        finally:
-            executor.shutdown(wait=True, cancel_futures=interrupted)
+
         report_progress(finished=True)
         return built, errors
 
@@ -617,7 +633,7 @@ class PdfDerivedIndexer:
         last_size = -1
         last_path = ""
         while True:
-            self.cancellation.checkpoint()
+            self._checkpoint()
             with _database(self.state_path) as connection:
                 rows = connection.execute(
                     f"""SELECT file_key,path,size FROM documents
@@ -653,13 +669,13 @@ class PdfDerivedIndexer:
             if not rows:
                 return
             for row in rows:
-                self.cancellation.checkpoint()
+                self._checkpoint()
                 yield row["file_key"], row["path"], int(row["size"])
             last_size = int(rows[-1]["size"])
             last_path = rows[-1]["path"]
 
     def _profile_document_admitted(self, file_key: str, path: str, size: int) -> bool:
-        self.cancellation.checkpoint()
+        self._checkpoint()
         if self.resource_gate is None:
             return self._profile_document(file_key, path)
         with self.resource_gate.admit(
@@ -669,7 +685,7 @@ class PdfDerivedIndexer:
             return self._profile_document(file_key, path)
 
     def _profile_document(self, file_key: str, path: str) -> bool:
-        self.cancellation.checkpoint()
+        self._checkpoint()
         warning_count = 0
         warning_samples: tuple[str, ...] = ()
         try:
@@ -704,7 +720,7 @@ class PdfDerivedIndexer:
                     )
                 return stored
 
-            if self.profile_timeout_seconds is None:
+            if self.profile_timeout_seconds is None and self.workers == 1:
                 import fitz  # type: ignore[import-untyped]
 
                 fitz.TOOLS.mupdf_display_errors(False)
@@ -717,7 +733,7 @@ class PdfDerivedIndexer:
                 ):
                     def local_profiles():
                         for page_number in page_numbers:
-                            self.cancellation.checkpoint()
+                            self._checkpoint()
                             yield (
                                 page_number,
                                 _profile_page(document.load_page(page_number)),
@@ -743,7 +759,7 @@ class PdfDerivedIndexer:
             messages = stream_isolated_profiles(
                 path,
                 page_numbers,
-                timeout_seconds=self.profile_timeout_seconds,
+                timeout_seconds=math.inf if self.profile_timeout_seconds is None else self.profile_timeout_seconds,
                 cancellation=self.cancellation,
                 memory_limit_bytes=self.profile_memory_bytes,
             )
@@ -751,7 +767,7 @@ class PdfDerivedIndexer:
             def isolated_profiles():
                 nonlocal warning_count, warning_samples
                 for message in messages:
-                    self.cancellation.checkpoint()
+                    self._checkpoint()
                     if message[0] == "fatal":
                         raise RuntimeError(f"{message[1]}: {message[2]}")
                     if message[0] == "warnings":
@@ -867,7 +883,7 @@ class PdfDerivedIndexer:
             layout_batch: list[tuple] = []
 
             def flush() -> None:
-                self.cancellation.checkpoint()
+                self._checkpoint()
                 if not profile_batch:
                     return
                 self._check_disk()
@@ -888,7 +904,7 @@ class PdfDerivedIndexer:
                 layout_batch.clear()
 
             for offset, (page_number, profile) in enumerate(profiles, 1):
-                self.cancellation.checkpoint()
+                self._checkpoint()
                 layout = dict(profile["layout"])
                 profile_summary = {key: value for key, value in profile.items() if key != "layout"}
                 profile_batch.append(
@@ -963,7 +979,7 @@ class PdfDerivedIndexer:
                 (LAYOUT_VERSION, file_key),
             )
             for page_number, profile_json, layout_zlib in rows:
-                self.cancellation.checkpoint()
+                self._checkpoint()
                 if profile_json is None or layout_zlib is None:
                     return False
                 profile = json.loads(str(profile_json))
@@ -1042,7 +1058,7 @@ class PdfDerivedIndexer:
             raise
 
     def _build_similarity(self, kind: str) -> int:
-        self.cancellation.checkpoint()
+        self._checkpoint()
         if kind not in {"text", "template", "layout"}:
             raise ValueError(kind)
         active_digest = self._active_similarity_digest(kind)
@@ -1060,7 +1076,7 @@ class PdfDerivedIndexer:
             )
             inserted = 0
             for file_key, signature_hex in self._signature_rows(kind):
-                self.cancellation.checkpoint()
+                self._checkpoint()
                 signature = int(signature_hex, 16)
                 for band in range(SIMILARITY_BANDS):
                     bucket = (signature >> (band * SIMILARITY_BAND_BITS)) & (
@@ -1078,7 +1094,7 @@ class PdfDerivedIndexer:
             connection.commit()
             relation_writes = 0
             for file_key, signature_hex in self._signature_rows(kind):
-                self.cancellation.checkpoint()
+                self._checkpoint()
                 signature = int(signature_hex, 16)
                 candidates: set[str] = set()
                 for band in range(SIMILARITY_BANDS):
@@ -1096,7 +1112,7 @@ class PdfDerivedIndexer:
                     if len(candidates) >= MAX_CANDIDATES_PER_DOCUMENT:
                         break
                 for candidate in sorted(candidates)[:MAX_CANDIDATES_PER_DOCUMENT]:
-                    self.cancellation.checkpoint()
+                    self._checkpoint()
                     candidate_signature = self._signature_for(connection, kind, candidate)
                     if candidate_signature is None:
                         continue
@@ -1151,7 +1167,7 @@ class PdfDerivedIndexer:
     def _active_similarity_digest(self, kind: str) -> str:
         active = xxhash.xxh3_128()
         for file_key, signature_hex in self._signature_rows(kind):
-            self.cancellation.checkpoint()
+            self._checkpoint()
             active.update(file_key.encode("ascii"))
             active.update(bytes.fromhex(signature_hex))
         return active.hexdigest()
@@ -1212,7 +1228,7 @@ class PdfDerivedIndexer:
             if not rows:
                 return
             for row in rows:
-                self.cancellation.checkpoint()
+                self._checkpoint()
                 yield row[0], row[1]
             last_key = rows[-1][0]
 
@@ -1331,14 +1347,14 @@ class PdfDerivedIndexer:
                 return value
 
             for row in relations:
-                self.cancellation.checkpoint()
+                self._checkpoint()
                 left, right, score = str(row[0]), str(row[1]), float(row[2])
                 root_left, root_right = find(left), find(right)
                 if root_left != root_right:
                     parent[root_right] = root_left
             components: dict[str, list[str]] = {}
             for file_key in parent:
-                self.cancellation.checkpoint()
+                self._checkpoint()
                 components.setdefault(find(file_key), []).append(file_key)
 
             degree = dict.fromkeys(parent, 0)
@@ -1348,7 +1364,7 @@ class PdfDerivedIndexer:
                 WHERE run_id=? AND kind='layout_similar'""",
                 (relation_run_id,),
             ):
-                self.cancellation.checkpoint()
+                self._checkpoint()
                 left, right, score = str(row[0]), str(row[1]), float(row[2])
                 component = find(left)
                 if component != find(right):
@@ -1369,7 +1385,7 @@ class PdfDerivedIndexer:
             )
             group_count = 0
             for members in components.values():
-                self.cancellation.checkpoint()
+                self._checkpoint()
                 if len(members) < 2:
                     continue
                 members.sort()

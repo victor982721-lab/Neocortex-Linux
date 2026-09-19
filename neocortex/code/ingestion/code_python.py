@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import ast
+import heapq
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -830,26 +831,27 @@ def _main_guard(tree: ast.Module) -> ast.If | None:
 def _annotated_chunks(
     chunks: tuple[CodeChunk, ...], symbols: tuple[SymbolRecord, ...]
 ) -> tuple[CodeChunk, ...]:
-    annotated: list[CodeChunk] = []
-    for chunk in chunks:
-        containing = [
-            symbol
-            for symbol in symbols
-            if symbol.source_range.start_line
-            <= chunk.source_range.start_line
-            <= symbol.source_range.end_line
-        ]
-        owner = min(
-            containing,
-            key=lambda item: item.source_range.end_line - item.source_range.start_line,
-            default=None,
-        )
-        annotated.append(
-            replace(
-                chunk,
-                symbol_qualified_name=(None if owner is None else owner.qualified_name),
-                kind="python_source",
-            )
+    # Sweep start lines once.  The heap selects the narrowest live range;
+    # original symbol ordinal preserves the former stable tie-breaking rule.
+    ordered = sorted(enumerate(symbols), key=lambda item: item[1].source_range.start_line)
+    active: list[tuple[int, int, int, SymbolRecord]] = []
+    annotated = list(chunks)
+    cursor = 0
+    for chunk_index in sorted(range(len(chunks)), key=lambda index: chunks[index].source_range.start_line):
+        chunk = chunks[chunk_index]
+        line = chunk.source_range.start_line
+        while cursor < len(ordered) and ordered[cursor][1].source_range.start_line <= line:
+            ordinal, symbol = ordered[cursor]
+            span = symbol.source_range
+            heapq.heappush(active, (span.end_line - span.start_line, ordinal, span.end_line, symbol))
+            cursor += 1
+        while active and active[0][2] < line:
+            heapq.heappop(active)
+        owner = active[0][3] if active else None
+        annotated[chunk_index] = replace(
+            chunk,
+            symbol_qualified_name=(None if owner is None else owner.qualified_name),
+            kind="python_source",
         )
     return tuple(annotated)
 
@@ -928,7 +930,7 @@ class PythonAnalyzer:
                         "line_count", len(source_map.lines), provenance="text"
                     ),
                 ),
-                chunks=searchable_chunks(source.text, config.chunk_chars),
+                chunks=searchable_chunks(source.text, config.chunk_chars, source_map=source_map),
                 project_hints=hints,
                 provenance={"parser": "ast", "syntax_confirmed": False},
                 **fingerprints,
@@ -997,7 +999,7 @@ class PythonAnalyzer:
             ),
         ]
         chunks = _annotated_chunks(
-            searchable_chunks(source.text, config.chunk_chars), all_symbols
+            searchable_chunks(source.text, config.chunk_chars, source_map=source_map), all_symbols
         )
         return CodeAnalysis(
             input=source,

@@ -76,7 +76,7 @@ def test_run_delegates_phases_in_durable_order() -> None:
         side_effect=summarize
     )
 
-    assert route.run() is expected
+    assert route._run_with_resources() is expected
     assert calls == ["prepare", "extraction", "text_dedup", "derived", "summary"]
     route._run_extraction_phase.assert_called_once_with(plan)
     route._run_text_dedup_phase.assert_called_once_with(False)

@@ -168,9 +168,15 @@ def test_office_intact_fts_is_not_repaired_but_corruption_is(tmp_path: Path) -> 
         initialize_format_fts_lookup(conn, "document_fts")
         statements = []
         conn.set_trace_callback(statements.append)
-        assert _refresh_cached_path(conn, snapshot, "odt", 2) is False
+        assert _refresh_cached_path(
+            conn, snapshot, "odt", 2,
+            processing_signature="fixture-signature", cache_status="complete",
+        ) is False
         assert not any(statement.startswith(("DELETE FROM document_fts", "INSERT INTO document_fts")) for statement in statements)
         conn.set_trace_callback(None)
         conn.execute("UPDATE document_fts SET body='damaged'")
-        assert _refresh_cached_path(conn, snapshot, "odt", 3) is True
+        assert _refresh_cached_path(
+            conn, snapshot, "odt", 3,
+            processing_signature="fixture-signature", cache_status="complete",
+        ) is True
         assert conn.execute("SELECT body FROM document_fts").fetchone()[0] == "Body"

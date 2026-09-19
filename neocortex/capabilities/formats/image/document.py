@@ -454,6 +454,7 @@ def _run_document_ocr(
         stdout_limit_bytes=DOCUMENT_OCR_TSV_MAX_BYTES,
         stderr_limit_bytes=DOCUMENT_OCR_DIAGNOSTIC_MAX_BYTES,
         creationflags=CREATE_NO_WINDOW,
+        **_ocr_process_resources(),
     )
     if result.returncode != 0:
         detail = result.stderr.decode("utf-8", "replace")[:500]
@@ -491,12 +492,21 @@ def _run_document_osd(
         stdout_limit_bytes=DOCUMENT_OCR_DIAGNOSTIC_MAX_BYTES,
         stderr_limit_bytes=DOCUMENT_OCR_DIAGNOSTIC_MAX_BYTES,
         creationflags=CREATE_NO_WINDOW,
+        **_ocr_process_resources(),
     )
     if result.returncode != 0:
         detail = result.stderr.decode("utf-8", "replace")[:500]
         raise RuntimeError(detail or f"tesseract OSD exited with code {result.returncode}")
     output = (result.stdout + b"\n" + result.stderr).decode("utf-8", "replace")
     return parse_osd_output(output)
+
+
+def _ocr_process_resources() -> dict:
+    from neocortex.runtime.control.global_resources import current_resource_grant
+    from ..media_resources import native_subprocess_arguments
+
+    grant = current_resource_grant()
+    return dict(native_subprocess_arguments(grant))
 
 
 def _parse_document_tsv(payload: bytes) -> _DocumentTextAccumulator:

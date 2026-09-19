@@ -6,14 +6,11 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from neocortex.runtime.control.cancellation import CancellationToken
 from neocortex.capabilities.formats.video.frames import (
-    MAX_VIDEO_FRAME_BATCH_BYTES,
-    ExtractedVideoFrame,
     VideoFrameSamplingConfig,
     bounded_frame_dimensions,
     build_frame_plan,
@@ -104,64 +101,33 @@ def test_showinfo_parser_rejects_negative_nonfinite_and_out_of_range_values() ->
     assert parse_showinfo_timestamps(payload, duration_seconds=2.0) == (0, 1250)
 
 
-def test_sampler_stops_before_aggregate_ephemeral_disk_bound(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
+def test_sampler_bounds_native_batch_output_before_materializing_rasters(tmp_path, monkeypatch):
+    from neocortex.capabilities.formats.video.models import VideoProcessingError
+    from neocortex.runtime.control.bounded_subprocess import SubprocessOutputLimitError
+
     corpus = tmp_path / "corpus"
     corpus.mkdir()
     source = corpus / "fixture.mkv"
-    source.write_bytes(b"not-decoded-by-this-bounded-fixture")
-    frame_bytes = 63 * 1024 * 1024
-    retained: tuple[Path, ...]
+    source.write_bytes(b"fixture")
+    observed = []
 
-    def fake_extract(
-        _source: Path,
-        destination: Path,
-        **kwargs: Any,
-    ) -> ExtractedVideoFrame:
-        with destination.open("wb") as stream:
-            stream.truncate(frame_bytes)
-        return ExtractedVideoFrame(
-            -1,
-            kwargs["timestamp_ms"],
-            (),
-            destination,
-            1,
-            1,
-            "a" * 32,
-        )
+    def overflow(_command, **kwargs):
+        observed.append(kwargs["stdout_limit_bytes"])
+        raise SubprocessOutputLimitError("stdout", kwargs["stdout_limit_bytes"])
 
-    monkeypatch.setattr(
-        "neocortex.capabilities.formats.video.frames.resolve_video_ffmpeg",
-        lambda _path: "ffmpeg",
-    )
-    monkeypatch.setattr(
-        "neocortex.capabilities.formats.video.frames._extract_frame",
-        fake_extract,
-    )
-    with sampled_video_frames(
-        source,
-        corpus_root=corpus,
-        stream_index=0,
-        source_width=1,
-        source_height=1,
-        duration_seconds=12,
-        config=VideoFrameSamplingConfig(
-            max_frames=10,
-            interval_seconds=1,
-            include_scenes=False,
-            include_keyframes=False,
-        ),
-        cancellation=CancellationToken(),
-    ) as batch:
-        retained = tuple(frame.path for frame in batch.frames)
-        assert len(batch.frames) == MAX_VIDEO_FRAME_BATCH_BYTES // frame_bytes
-        assert batch.warnings == ("video_frame_batch_byte_limit",)
-        assert sum(path.stat().st_size for path in retained) <= MAX_VIDEO_FRAME_BATCH_BYTES
-
-    assert retained
-    assert all(not path.exists() for path in retained)
+    monkeypatch.setattr("neocortex.capabilities.formats.video.frames.resolve_video_ffmpeg", lambda _: "ffmpeg")
+    monkeypatch.setattr("neocortex.capabilities.formats.video.frames.run_bounded_capture", overflow)
+    with pytest.raises(VideoProcessingError) as raised:
+        with sampled_video_frames(
+            source, corpus_root=corpus, stream_index=0, source_width=1, source_height=1,
+            duration_seconds=12,
+            config=VideoFrameSamplingConfig(max_frames=10, interval_seconds=1,
+                                            include_scenes=False, include_keyframes=False),
+            cancellation=CancellationToken(),
+        ):
+            pytest.fail("oversized batch must not be published")
+    assert observed == [10 * (8 + 65536)]
+    assert raised.value.evidence["warnings"] == ["video_frame_batch_byte_limit"]
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is unavailable")

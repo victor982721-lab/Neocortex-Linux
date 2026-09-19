@@ -53,6 +53,7 @@ from .semantic_vector_search import (
     validate_vector_page,
 )
 from .semantic_schema import SemanticStateError, semantic_database
+from .semantic_resources import native_vector_operation
 from .semantic_sources import SEMANTIC_TITLE_POLICY, SEMANTIC_TITLE_SECTION_KIND
 
 TextEmbeddingScope = Literal["all", "content", "title"]
@@ -367,6 +368,7 @@ def _search_hit_from_score(
     )
 
 
+@native_vector_operation(lambda rows, query, _vector, _numpy: len(rows) * query.dimensions * 16)
 def _numpy_exact_search_hits(
     rows: Sequence[sqlite3.Row],
     query: ExactSearchQuery,
@@ -444,7 +446,11 @@ def _exact_search_hits(
         import numpy
     except ImportError:  # Base/source-only installs may omit the Semantic extra.
         return tuple(_exact_search_hit(row, query, query_vector) for row in rows)
-    return _numpy_exact_search_hits(rows, query, query_vector, numpy)
+    from neocortex.runtime.control.native_library_resources import NativeLibraryControlUnavailable
+    try:
+        return _numpy_exact_search_hits(rows, query, query_vector, numpy)
+    except NativeLibraryControlUnavailable:
+        return tuple(_exact_search_hit(row, query, query_vector) for row in rows)
 
 
 def _retain_exact_search_hit(

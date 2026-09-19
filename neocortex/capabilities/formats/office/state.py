@@ -375,6 +375,7 @@ def _cached_document(
     *,
     format_name: str | None = None,
     max_text_chars: int | None = None,
+    validate_representation: bool = True,
 ) -> sqlite3.Row | None:
     row = connection.execute(
         """SELECT file_key,format,path,size,mtime_ns,birthtime_ns,processing_signature,
@@ -392,7 +393,7 @@ def _cached_document(
     ).fetchone()
     if row is None or (format_name is not None and str(row["format"]) != format_name):
         return None
-    if row["status"] != "complete":
+    if row["status"] != "complete" or not validate_representation:
         return row
     text = _cached_office_representation(
         row,
@@ -487,7 +488,7 @@ def _cached_xlsx_cells_are_valid(
 ) -> bool:
     """Use the durable XLSX text projections to detect missing typed cells."""
 
-    expected: list[tuple[str, str, str, str, str, str | None, str | None]] = []
+    expected: Counter[tuple[str, str, str, str, str, str | None, str | None]] = Counter()
     for line in text.splitlines():
         if not line.startswith("XLSX_CELL "):
             continue
@@ -509,26 +510,24 @@ def _cached_xlsx_cells_are_valid(
             None if projection[name] is None else str(projection[name])
             for name in ("formula", "cached_value")
         )
-        expected.append(
-            (
-                _normalize_projection_text(projection["workbook"]),
-                _normalize_projection_text(projection["sheet"]),
-                _normalize_projection_text(projection["a1"]),
-                _normalize_projection_text(projection["type"]),
-                _normalize_projection_text(projection["value"]),
-                _normalize_projection_optional(values[0]),
-                _normalize_projection_optional(values[1]),
-            )
-        )
+        expected[(
+            _normalize_projection_text(projection["workbook"]),
+            _normalize_projection_text(projection["sheet"]),
+            _normalize_projection_text(projection["a1"]),
+            _normalize_projection_text(projection["type"]),
+            _normalize_projection_text(projection["value"]),
+            _normalize_projection_optional(values[0]),
+            _normalize_projection_optional(values[1]),
+        )] += 1
     if not expected:
         return True
     rows = connection.execute(
         """SELECT workbook,sheet,cell_reference,cell_type,value,formula,cached_value
         FROM xlsx_cells WHERE file_key=?""",
         (key,),
-    ).fetchall()
-    actual = [
-        (
+    )
+    for row in rows:
+        actual = (
             _normalize_projection_text(_path_basename(row["workbook"])),
             _normalize_projection_text(row["sheet"]),
             _normalize_projection_text(row["cell_reference"]),
@@ -537,9 +536,10 @@ def _cached_xlsx_cells_are_valid(
             _normalize_projection_optional(row["formula"]),
             _normalize_projection_optional(row["cached_value"]),
         )
-        for row in rows
-    ]
-    return Counter(expected) == Counter(actual)
+        if expected[actual] == 0:
+            return False
+        expected[actual] -= 1
+    return not any(expected.values())
 
 
 def _remove_path_conflict(
@@ -561,14 +561,26 @@ def _refresh_cached_path(
     format_name: str,
     run_id: int,
     *,
+    processing_signature: str,
+    cache_status: str,
     max_text_chars: int | None = None,
 ) -> bool | None:
     _remove_path_conflict(connection, snapshot)
-    connection.execute(
+    # Lock only the version classified as reusable.  Representation and typed
+    # cell validation below then share the writer transaction with the FTS
+    # effect, so a metadata probe never grants reuse on its own.
+    updated = connection.execute(
         """UPDATE documents SET format=?,path=?,last_seen_run_id=?,updated_ns=?
-        WHERE file_key=?""",
-        (format_name, snapshot.path, run_id, time.time_ns(), _file_key(snapshot)),
+        WHERE file_key=? AND format=? AND size=? AND mtime_ns=? AND birthtime_ns=?
+        AND processing_signature=? AND status=?""",
+        (
+            format_name, snapshot.path, run_id, time.time_ns(), _file_key(snapshot),
+            format_name, snapshot.size, snapshot.mtime_ns, snapshot.birthtime_ns,
+            processing_signature, cache_status,
+        ),
     )
+    if updated.rowcount != 1:
+        return None
     row = connection.execute(
         """SELECT file_key,format,path,title,author,text_zlib,text_chars,text_xxh3_128,
         part_count,status FROM documents WHERE file_key=?""",
@@ -584,7 +596,10 @@ def _refresh_cached_path(
         row,
         max_chars=max_text_chars if max_text_chars is not None else MAX_TOTAL_UNCOMPRESSED_BYTES,
     )
-    if text is None:
+    if text is None or (
+        format_name == "xlsx"
+        and not _cached_xlsx_cells_are_valid(connection, _file_key(snapshot), text)
+    ):
         return None
     expected = (
         snapshot.path,
@@ -661,7 +676,7 @@ def _store_success(
             file_key,workbook,sheet,sheet_ordinal,cell_reference,cell_type,value,
             raw_value,formula,cached_value,style_index,number_format)
             VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-            tuple(
+            (
                 (
                     _file_key(snapshot),
                     cell.workbook,

@@ -163,6 +163,7 @@ def test_code_tree_has_no_legacy_wrappers_or_orphaned_modules() -> None:
         "code_contracts.py",
         "code_retention.py",
         "code_route.py",
+        "code_processing.py",
         "code_schema.py",
         "code_state.py",
         "code_graph_generations.py",

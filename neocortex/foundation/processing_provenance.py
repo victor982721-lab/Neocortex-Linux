@@ -171,21 +171,26 @@ def build_processing_provenance(
         if name in names:
             raise ValueError(f"duplicate processing component: {name}")
         names.add(name)
-    normalized_components.sort(
-        key=lambda item: (
-            str(item["name"]),
-            json.dumps(item, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
+    # Ordinary string names are unique, so serialization cannot break a tie.
+    # Subclasses may customize comparison or conversion; retain the original
+    # composite key for them, including its canonical-JSON tie breaker.
+    if all(type(name) is str for name in names):
+        normalized_components.sort(key=lambda item: item["name"])
+    else:
+        normalized_components.sort(
+            key=lambda item: (
+                str(item["name"]),
+                json.dumps(item, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
+            )
         )
-    )
-    manifest = _canonical_value(
-        {
-            "schema": PROCESSING_PROVENANCE_SCHEMA,
-            "pipeline": pipeline,
-            "algorithm_version": algorithm_version,
-            "configuration": configuration,
-            "components": normalized_components,
-        }
-    )
+    # Reuse the already canonical component trees instead of visiting twice.
+    manifest = {
+        "schema": PROCESSING_PROVENANCE_SCHEMA,
+        "pipeline": _canonical_value(pipeline),
+        "algorithm_version": _canonical_value(algorithm_version),
+        "configuration": _canonical_value(configuration),
+        "components": normalized_components,
+    }
     manifest_json = json.dumps(
         manifest,
         ensure_ascii=True,

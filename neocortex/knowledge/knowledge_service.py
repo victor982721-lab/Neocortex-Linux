@@ -15,6 +15,7 @@ from importlib import import_module
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from neocortex import __version__
+from neocortex.semantic.semantic_resources import governed_retrieval
 
 from .knowledge_contracts import (
     ContextBundle,
@@ -435,6 +436,7 @@ class KnowledgeSearchService:
 
         return self._collect_snapshot(cancellation_check)
 
+    @governed_retrieval("knowledge")
     def search(
         self,
         query: KnowledgeQuery,
@@ -707,6 +709,7 @@ class KnowledgeSearchService:
         )
         return result, committed[0] if committed else None
 
+    @governed_retrieval("knowledge")
     def context(
         self,
         query: KnowledgeQuery,

@@ -72,7 +72,7 @@ class OfficeRouteConfig:
     memory_budget_bytes: int = 512 * 1024 * 1024
     min_free_memory_bytes: int = 1024 * 1024 * 1024
     min_free_commit_bytes: int = 1024 * 1024 * 1024
-    memory_wait_timeout_seconds: float = 60.0
+    memory_wait_timeout_seconds: float | None = None
 
     @property
     def processing_signature(self) -> str:

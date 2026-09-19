@@ -63,6 +63,9 @@ def _posix_isolated_target(
     """Create the child session and limits before invoking untrusted work."""
 
     os.setsid()
+    from .worker_priority import configure_worker_priority
+
+    configure_worker_priority(private_session=True)
     process_id = os.getpid()
     identity = _process_session_identity(process_id)
     if identity is None or identity[:2] != (process_id, process_id):

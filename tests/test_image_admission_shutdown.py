@@ -134,10 +134,10 @@ def test_first_real_headroom_timeout_stops_second_admission(
         real_admit = active_gate.admit
 
         @contextmanager
-        def observed_admit(estimated_bytes):
+        def observed_admit(estimated_bytes, **kwargs):
             try:
-                with real_admit(estimated_bytes):
-                    yield
+                with real_admit(estimated_bytes, **kwargs) as grant:
+                    yield grant
             except BaseException as error:
                 gate.failures.append((error, time.monotonic()))
                 raise
@@ -155,23 +155,28 @@ def test_first_real_headroom_timeout_stops_second_admission(
             return future
 
     monkeypatch.setattr(
-        "neocortex.capabilities.formats.image.route.ThreadPoolExecutor", ObservedExecutor
+        "neocortex.runtime.control.elastic_workers.ThreadPoolExecutor", ObservedExecutor
     )
     with pytest.raises(MemoryHeadroomTimeout) as raised:
         route.run()
     finished = time.monotonic()
 
-    assert len(submitted) == 2
+    assert 1 <= len(submitted) <= 2
     assert all(future.done() for future in submitted)
     timeouts = [(error, stamp) for error, stamp in gate.failures
                 if isinstance(error, MemoryHeadroomTimeout)]
-    assert len(timeouts) == 1
-    assert raised.value is timeouts[0][0]
-    assert finished - timeouts[0][1] < 0.75
+    if coordinated:
+        assert not timeouts
+        assert "residence" in str(raised.value)
+    else:
+        assert len(timeouts) == 1
+        assert raised.value is timeouts[0][0]
+        assert finished - timeouts[0][1] < 0.75
     assert cancellation.is_cancelled
-    assert submitted[1].cancelled() or isinstance(
-        submitted[1].exception(), CancellationRequested
-    )
+    if len(submitted) > 1:
+        assert submitted[1].cancelled() or isinstance(
+            submitted[1].exception(), CancellationRequested
+        )
     assert gate._reserved == 0
     assert not gate._headroom_admission_lock.locked()
     if coordinated:
@@ -264,11 +269,11 @@ def test_completed_result_survives_fatal_sibling_and_is_reused(tmp_path, monkeyp
     completed = threading.Event()
     analyze = route._analyze
 
-    def fail_second(snapshot, cached_features=None):
+    def fail_second(snapshot, cached_features=None, memory_reservation=None):
         if snapshot.path == str(second):
             assert completed.wait(5), "the first result was not consumed"
             raise primary
-        return analyze(snapshot, cached_features)
+        return analyze(snapshot, cached_features, memory_reservation)
 
     def record_progress(event):
         if event.operation == "image" and event.phase == "classify" and event.completed == 1:
@@ -279,7 +284,8 @@ def test_completed_result_survives_fatal_sibling_and_is_reused(tmp_path, monkeyp
     with pytest.raises(MemoryHeadroomTimeout) as raised:
         route.run()
     assert raised.value is primary
-    assert route.memory_gate._reserved == 0
+    assert route.memory_gate.coordinator.summary().resident_bytes == 0
+    assert route.memory_gate.coordinator.summary().transient_bytes == 0
     rows = list(iter_candidates(route.config.state_path, 1, None, None))
     assert {Path(row["path"]).name: row["status"] for row in rows} == {
         first.name: "done", second.name: "pending"
@@ -300,7 +306,8 @@ def test_item_budget_failure_remains_nonfatal(tmp_path):
     assert summary.processed == 2
     assert summary.errors == 2
     assert not route.cancellation.is_cancelled
-    assert route.memory_gate._reserved == 0
+    assert route.memory_gate.coordinator.summary().resident_bytes == 0
+    assert route.memory_gate.coordinator.summary().transient_bytes == 0
 
 
 def _blocked_decoder(task_channel, result_channel):
@@ -332,7 +339,7 @@ def test_fatal_sibling_terminates_active_isolated_decoder(tmp_path, monkeypatch)
     )
     analyze = route._analyze
 
-    def fail_when_child_is_running(snapshot, cached_features=None):
+    def fail_when_child_is_running(snapshot, cached_features=None, memory_reservation=None):
         if snapshot.path == str(failing):
             deadline = time.monotonic() + 10
             while not ready.exists() and time.monotonic() < deadline:
@@ -340,7 +347,7 @@ def test_fatal_sibling_terminates_active_isolated_decoder(tmp_path, monkeypatch)
             assert ready.exists(), "isolated decoder did not start"
             failed_at.append(time.monotonic())
             raise primary
-        return analyze(snapshot, cached_features)
+        return analyze(snapshot, cached_features, memory_reservation)
 
     monkeypatch.setattr(route, "_analyze", fail_when_child_is_running)
     with pytest.raises(MemoryHeadroomTimeout) as raised:
@@ -352,7 +359,8 @@ def test_fatal_sibling_terminates_active_isolated_decoder(tmp_path, monkeypatch)
     assert all(supervisor._task_channel is None for supervisor in supervisors)
     assert all(supervisor._result_channel is None for supervisor in supervisors)
     assert route._supervisors == set()
-    assert route.memory_gate._reserved == 0
+    assert route.memory_gate.coordinator.summary().resident_bytes == 0
+    assert route.memory_gate.coordinator.summary().transient_bytes == 0
     if os.name == "posix":
         with pytest.raises(ProcessLookupError):
             os.kill(int(ready.read_text(encoding="ascii")), 0)

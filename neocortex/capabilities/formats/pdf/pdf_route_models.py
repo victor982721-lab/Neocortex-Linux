@@ -48,8 +48,8 @@ class PdfRouteConfig:
     ocr_mode: Literal["auto", "never", "always"] = "auto"
     ocr_lang: str = "spa+eng"
     dpi: int = 200
-    workers: int = 4
-    ocr_workers: int = 2
+    workers: int | None = None
+    ocr_workers: int | None = None
     min_page_chars: int = 40
     max_page_text_chars: int = 5_000_000
     max_render_pixels: int = 40_000_000
@@ -78,9 +78,9 @@ class PdfRouteConfig:
     commit_backpressure_bytes: int | None = None
     memory_budget_bytes: int | None = None
     worker_memory_bytes: int = 512 * 1024 * 1024
-    memory_wait_timeout_seconds: float = 60.0
+    memory_wait_timeout_seconds: float | None = None
     large_document_bytes: int = 128 * 1024 * 1024
-    large_document_workers: int = 2
+    large_document_workers: int | None = None
     ocr_profile: OcrProfileName = "configured"
 
     @property

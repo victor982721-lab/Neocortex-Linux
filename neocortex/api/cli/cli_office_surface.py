@@ -49,7 +49,7 @@ def register_office_arguments(
         action="store_true",
         help="force one new attempt for unchanged cached Office errors",
     )
-    office.add_argument("--office-memory-budget-mb", type=int, default=512)
+    office.add_argument("--office-memory-budget-mb", type=int, help="aggregate route memory ceiling in MiB; default: automatic")
     office.add_argument("--office-min-free-memory-mb", type=int, default=1024)
     office.add_argument("--office-min-free-commit-mb", type=int, default=1024)
     office.add_argument("--office-memory-wait-timeout", type=float, default=60.0)
@@ -70,7 +70,7 @@ def validate_office_arguments(args: argparse.Namespace) -> None:
         raise SystemExit("--office-max-count must be positive")
     if args.office_max_text_chars < 1:
         raise SystemExit("--office-max-text-chars must be positive")
-    if args.office_memory_budget_mb < 1:
+    if args.office_memory_budget_mb is not None and args.office_memory_budget_mb < 1:
         raise SystemExit("--office-memory-budget-mb must be positive")
     if args.office_min_free_memory_mb < 0 or args.office_min_free_commit_mb < 0:
         raise SystemExit("Office memory headroom cannot be negative")

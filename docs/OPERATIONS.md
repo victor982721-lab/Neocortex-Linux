@@ -410,6 +410,18 @@ su grupo antes de escalar; no mates procesos por nombre genérico.
 
 ## Recursos y progreso
 
+La política de texto del catálogo v17 aplica el límite a la entrada completa del
+clasificador, incluidos los separadores. Al actualizar desde una política
+anterior, la siguiente clasificación invalida sus receipts y caché por versión;
+las ejecuciones posteriores vuelven a reutilizar resultados compatibles. Esta
+transición no requiere borrar estado ni reiniciar el corpus.
+
+La admisión nativa adopta la capacidad disponible antes de crear o configurar
+el backend. Whisper conserva los hilos del modelo ya construido durante un
+archivo; si su concesión deja de caber, espera en una frontera cooperativa hasta
+recuperar capacidad o recibir cancelación/deadline. No se cambia su contabilidad
+para aparentar una reconfiguración del modelo en ejecución.
+
 `ROUTE_REPLAY` separa trabajo nuevo de observaciones reutilizadas; por ejemplo,
 `transcribed` conserva su significado histórico de audios con transcripción y
 no implica llamadas nuevas al motor. `ROUTE_COVERAGE` identifica parciales y
@@ -444,6 +456,51 @@ En contenedores Linux los controladores consideran los límites aplicables de
 cgroups v2: memoria disponible del host y margen `memory.max - memory.current`
 en la jerarquía, además de cuota CPU y afinidad. No se presupone que
 `os.cpu_count()` ni `/proc/meminfo` representen los recursos utilizables.
+
+El procesamiento Framework usa capacidad automática de manera predeterminada.
+`--image-workers`, `--pdf-workers`, `--ocr-workers` y
+`--pdf-large-document-workers` permiten establecer techos opcionales; dejarlos
+sin configurar permite crecer con los recursos disponibles. Tampoco se necesita
+fijar `--global-cpu-slots` ni `--global-memory-budget-mb` para aprovechar una
+computadora libre. Si se configuran, esos límites siguen siendo autoritativos.
+Los límites de tamaño, duración y seguridad de cada formato conservan su función.
+
+Los presupuestos de memoria de Image, DOCX, Office y Audio también son opcionales
+en CLI y `ApplicationConfig`; `None` indica capacidad automática. Al indicar
+`--image-memory-budget-mb`, `--docx-memory-budget-mb`,
+`--office-memory-budget-mb`, `--audio-memory-budget-mb` o
+`--pdf-memory-budget-bytes`, el coordinador exige ese techo para el agregado
+residente y transitorio de la ruta, además del presupuesto global. Incluso un
+valor igual al antiguo default sigue siendo explícito. Las configuraciones de
+los constructores autónomos de cada ruta conservan sus defaults locales.
+En el scope Framework, las políticas de margen libre y plazo de espera pertenecen
+al coordinador compartido: se configuran con `--global-min-free-memory-mb`,
+`--global-min-free-commit-mb` y `--global-resource-wait-timeout`. Los valores locales
+de margen y espera se usan al construir un scope autónomo de la ruta.
+
+Al abrir otra aplicación que compite por CPU, RAM o I/O, el coordinador reduce
+admisiones y los workers renuevan su permiso en fronteras de trabajo. Al cerrar
+esa aplicación, vuelve a ampliar la concurrencia sin reiniciar el run. La
+muestra compartida tiene una cadencia predeterminada de 250 ms; el tiempo hasta
+ceder depende también de la operación nativa en curso. Los resultados terminados
+pueden persistirse para liberar memoria durante la pausa. Un modelo activo
+conserva su memoria hasta una frontera donde pueda cerrarse: una reserva liberada
+en el ledger nunca equivale por sí sola a memoria física devuelta.
+
+La espera por capacidad no expira automáticamente a los cinco minutos.
+`--global-resource-wait-timeout` permite fijar ese plazo de forma explícita;
+el deadline del run y la cancelación siguen comprobándose mientras se espera,
+también durante inventario y Dedup. Los procesos propios de cómputo reciben
+prioridad de planificación menor para favorecer aplicaciones competidoras,
+sin imponer un porcentaje máximo cuando hay CPU ociosa. En sesiones privadas
+también se ajusta su autogroup Linux si está disponible; la sesión del caller
+conserva su política.
+
+Para validar adaptación, compara un mismo conjunto de entradas en disponibilidad,
+competencia y recuperación, observando throughput, workers activos, threads
+nativos, memoria residente y espera. Debe aumentar trabajo útil al recuperarse
+la capacidad y preservar contenido, procedencia y replay. Un cambio del número
+de workers o threads no debe obligar a extraer de nuevo documentos válidos.
 
 Para subprocesses sin TTY, `NEOCORTEX_PROGRESS_STREAM=1` reutiliza `LineProgress`
 en stderr con flush; stdout queda reservado a la salida de la operación.

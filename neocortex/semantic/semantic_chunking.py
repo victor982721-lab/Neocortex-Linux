@@ -203,19 +203,26 @@ def _exact_token_count(
     token_counter: TextTokenCounter,
     expected_token_limit: int,
 ) -> tuple[int, int]:
-    counts, token_limit = token_counter((text,))
+    counts, token_limit = _exact_token_counts((text,), token_counter, expected_token_limit)
+    return counts[0], token_limit
+
+
+def _exact_token_counts(
+    texts: Sequence[str], token_counter: TextTokenCounter, expected_token_limit: int,
+) -> tuple[tuple[int, ...], int]:
+    counts, token_limit = token_counter(texts)
     if isinstance(token_limit, bool) or not isinstance(token_limit, int) or token_limit < 1:
         raise RuntimeError("text tokenizer returned an invalid token limit")
-    if len(counts) != 1:
+    if len(counts) != len(texts):
         raise RuntimeError("text tokenizer returned an invalid result count")
-    token_count = counts[0]
-    if isinstance(token_count, bool) or not isinstance(token_count, int):
-        raise RuntimeError("text tokenizer returned a non-integer token count")
-    if token_count < 0:
-        raise RuntimeError("text tokenizer returned a negative token count")
+    for token_count in counts:
+        if isinstance(token_count, bool) or not isinstance(token_count, int):
+            raise RuntimeError("text tokenizer returned a non-integer token count")
+        if token_count < 0:
+            raise RuntimeError("text tokenizer returned a negative token count")
     if token_limit != expected_token_limit:
         raise RuntimeError("text tokenizer limit changed during chunking")
-    return token_count, token_limit
+    return tuple(counts), token_limit
 
 
 def _fit_exact_token_budget(
@@ -224,17 +231,21 @@ def _fit_exact_token_budget(
     end: int,
     config: TextChunkingConfig,
     token_counter: TextTokenCounter,
+    *,
+    initial_count: int | None = None,
 ) -> tuple[int, str]:
     """Shrink one natural window until the production tokenizer accepts it."""
 
     while True:
         normalized = normalize_embedding_text(text[start:end])
         assert config.model_token_limit is not None
-        token_count, token_limit = _exact_token_count(
-            normalized,
-            token_counter,
-            config.model_token_limit,
-        )
+        if initial_count is None:
+            token_count, token_limit = _exact_token_count(
+                normalized, token_counter, config.model_token_limit,
+            )
+        else:
+            token_count, token_limit = initial_count, config.model_token_limit
+            initial_count = None
         if token_count <= token_limit:
             return end, normalized
         span = end - start
@@ -258,6 +269,44 @@ def _fit_exact_token_budget(
             min(config.min_natural_break_chars, next_span),
         )
         end = natural_end if start < natural_end < end else proposed_end
+
+
+def _window_end(source: str, cursor: int, config: TextChunkingConfig) -> int:
+    hard_end = min(len(source), cursor + config.max_chars)
+    end = _term_limited_end(source, cursor, hard_end, config.max_terms)
+    if end < len(source):
+        end = _natural_end(source, cursor, end, config.min_natural_break_chars)
+    return end if end > cursor else hard_end
+
+
+def _count_window_lookahead(
+    source: str, cursor: int, config: TextChunkingConfig, counter: TextTokenCounter,
+    *, max_windows: int = 32,
+) -> dict[tuple[int, int], int]:
+    """Batch exact counts, without assuming a rejected window's next offset.
+
+    Only accepted windows can consume the speculative suffix.  The first
+    rejection discards that suffix and resumes the original shrinking rule.
+    Neither token approximations nor chunk identity changes are introduced.
+    """
+
+    windows: list[tuple[int, int]] = []
+    texts: list[str] = []
+    limit = max(1, min(max_windows, (2 * 1024 * 1024) // config.max_chars))
+    while cursor < len(source) and len(windows) < limit:
+        while cursor < len(source) and source[cursor].isspace():
+            cursor += 1
+        if cursor >= len(source):
+            break
+        end = _window_end(source, cursor, config)
+        windows.append((cursor, end))
+        texts.append(normalize_embedding_text(source[cursor:end]))
+        if end >= len(source):
+            break
+        cursor = _next_start(source, cursor, end, config)
+    assert config.model_token_limit is not None
+    counts, _limit = _exact_token_counts(texts, counter, config.model_token_limit)
+    return dict(zip(windows, counts, strict=True))
 
 
 # endregion [02]
@@ -287,37 +336,38 @@ def iter_text_chunks(
     for section in sections:
         source = section.text
         cursor = 0
+        exact_counts: dict[tuple[int, int], int] = {}
+        lookahead = 32
         while cursor < len(source):
             while cursor < len(source) and source[cursor].isspace():
                 cursor += 1
             if cursor >= len(source):
                 break
-            hard_end = min(len(source), cursor + active_config.max_chars)
-            end = _term_limited_end(
-                source,
-                cursor,
-                hard_end,
-                active_config.max_terms,
-            )
-            if end < len(source):
-                end = _natural_end(
-                    source,
-                    cursor,
-                    end,
-                    active_config.min_natural_break_chars,
-                )
-            if end <= cursor:
-                end = min(len(source), cursor + active_config.max_chars)
+            end = _window_end(source, cursor, active_config)
             if token_counter is None:
                 normalized = normalize_embedding_text(source[cursor:end])
             else:
+                if (cursor, end) not in exact_counts:
+                    exact_counts = _count_window_lookahead(
+                        source, cursor, active_config, token_counter,
+                        max_windows=lookahead,
+                    )
+                original_end = end
                 end, normalized = _fit_exact_token_budget(
                     source,
                     cursor,
                     end,
                     active_config,
                     token_counter,
+                    initial_count=exact_counts.pop((cursor, end)),
                 )
+                if end != original_end:
+                    exact_counts.clear()
+                    # Dense/BPE-heavy text may reject every natural window.
+                    # Stop counting unusable speculative suffixes repeatedly.
+                    lookahead = 1
+                else:
+                    lookahead = min(32, lookahead * 2)
             if normalized:
                 if ordinal >= active_config.max_chunks_per_item:
                     raise ChunkLimitExceeded(

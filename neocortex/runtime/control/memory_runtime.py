@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from .cancellation import CancellationToken
-from .cgroup_runtime import cgroup_memory_snapshot
+from .cgroup_runtime import CgroupMemorySnapshot, cgroup_memory_snapshot
 
 
 # region [01] Live physical and commit capacity
@@ -57,11 +57,12 @@ def posix_physical_memory_snapshot(
     meminfo_path: Path = _PROC_MEMINFO,
     *,
     sysconf: Callable[[str], int] | None = None,
+    cgroup_snapshot: CgroupMemorySnapshot | None = None,
 ) -> tuple[int | None, int | None]:
     """Return usable physical capacity, bounded by host pressure and cgroup use."""
 
     total, available = _host_physical_memory_snapshot(meminfo_path, sysconf=sysconf)
-    cgroup = cgroup_memory_snapshot()
+    cgroup = cgroup_memory_snapshot() if cgroup_snapshot is None else cgroup_snapshot
     if cgroup.limit_bytes is not None:
         total = cgroup.limit_bytes if total is None else min(total, cgroup.limit_bytes)
     if cgroup.available_bytes is not None:
@@ -101,7 +102,11 @@ def _host_physical_memory_snapshot(
     return page_size * total_pages, page_size * available_pages
 
 
-def memory_snapshot() -> MemorySnapshot:
+def memory_snapshot(
+    *,
+    cgroup_snapshot: CgroupMemorySnapshot | None = None,
+    meminfo_path: Path = _PROC_MEMINFO,
+) -> MemorySnapshot:
     """Read live physical and commit headroom without retaining system state."""
 
     if os.name == "nt":
@@ -131,7 +136,12 @@ def memory_snapshot() -> MemorySnapshot:
             )
         return MemorySnapshot(None, None)
 
-    total_physical, available_physical = posix_physical_memory_snapshot()
+    if cgroup_snapshot is None and meminfo_path == _PROC_MEMINFO:
+        total_physical, available_physical = posix_physical_memory_snapshot()
+    else:
+        total_physical, available_physical = posix_physical_memory_snapshot(
+            meminfo_path, cgroup_snapshot=cgroup_snapshot
+        )
     return MemorySnapshot(
         available_physical,
         None,
@@ -151,7 +161,7 @@ class MemoryResourceLimits:
     memory_budget_bytes: int = 512 * 1024 * 1024
     min_free_memory_bytes: int = 1024 * 1024 * 1024
     min_free_commit_bytes: int = 1024 * 1024 * 1024
-    wait_timeout_seconds: float = 60.0
+    wait_timeout_seconds: float | None = None
 
 
 class MemoryBudgetExceeded(MemoryError):
@@ -174,7 +184,7 @@ class WeightedMemoryGate:
             raise ValueError("memory_budget_bytes must be positive")
         if limits.min_free_memory_bytes < 0 or limits.min_free_commit_bytes < 0:
             raise ValueError("memory headroom floors cannot be negative")
-        if limits.wait_timeout_seconds < 0:
+        if limits.wait_timeout_seconds is not None and limits.wait_timeout_seconds < 0:
             raise ValueError("wait_timeout_seconds cannot be negative")
         self.limits = limits
         self.cancellation = cancellation or CancellationToken()
@@ -184,7 +194,7 @@ class WeightedMemoryGate:
         self.peak_reserved_bytes = 0
         self.wait_count = 0
 
-    def _wait_for_headroom(self, deadline: float) -> None:
+    def _wait_for_headroom(self, deadline: float | None) -> None:
         while True:
             self.cancellation.checkpoint()
             with self._condition:
@@ -206,7 +216,7 @@ class WeightedMemoryGate:
             )
             if physical_ok and commit_ok:
                 return
-            if time.monotonic() >= deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 raise MemoryHeadroomTimeout(
                     "memoria disponible por debajo del margen seguro: "
                     f"fisica={snapshot.available_physical}, "
@@ -216,7 +226,7 @@ class WeightedMemoryGate:
             if self.cancellation.wait(0.25):
                 self.cancellation.checkpoint()
 
-    def _acquire_headroom_admission(self, deadline: float) -> None:
+    def _acquire_headroom_admission(self, deadline: float | None) -> None:
         """Serialize reserve+headroom without locking the active work context."""
 
         while True:
@@ -228,7 +238,7 @@ class WeightedMemoryGate:
                     self._headroom_admission_lock.release()
                     raise
                 return
-            remaining = deadline - time.monotonic()
+            remaining = 0.25 if deadline is None else deadline - time.monotonic()
             if remaining <= 0:
                 raise MemoryHeadroomTimeout("timeout esperando turno de admision de memoria")
             if self.cancellation.wait(min(remaining, 0.25)):
@@ -244,7 +254,8 @@ class WeightedMemoryGate:
                 f"presupuesto por ruta ({self.limits.memory_budget_bytes} bytes)"
             )
 
-        deadline = time.monotonic() + self.limits.wait_timeout_seconds
+        deadline = (None if self.limits.wait_timeout_seconds is None
+                    else time.monotonic() + self.limits.wait_timeout_seconds)
         waited = False
         reserved = False
         try:
@@ -256,7 +267,7 @@ class WeightedMemoryGate:
                         if not waited:
                             self.wait_count += 1
                             waited = True
-                        remaining = deadline - time.monotonic()
+                        remaining = 0.25 if deadline is None else deadline - time.monotonic()
                         if remaining <= 0:
                             raise MemoryHeadroomTimeout(
                                 "timeout esperando presupuesto agregado de memoria"

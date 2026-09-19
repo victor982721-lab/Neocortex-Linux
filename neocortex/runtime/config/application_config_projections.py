@@ -10,9 +10,19 @@ from __future__ import annotations
 from importlib import import_module
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 # region [01] Static contracts and public projection surface
+
+
+class _LocalMemoryBudget(TypedDict, total=False):
+    memory_budget_bytes: int
+
+
+def _local_memory_budget(value: int | None) -> _LocalMemoryBudget:
+    """Keep standalone owner defaults when Framework uses automatic capacity."""
+
+    return {} if value is None else {"memory_budget_bytes": value}
 
 
 class _DeferredTypeModule:
@@ -171,7 +181,7 @@ def audio_route_config_from_application(
         model_cache_directory=config.audio_model_cache_directory,
         local_models_only=config.audio_local_models_only,
         selection=config.selection,
-        memory_budget_bytes=config.audio_memory_budget_bytes,
+        **_local_memory_budget(config.audio_memory_budget_bytes),
         min_free_memory_bytes=config.audio_min_free_memory_bytes,
         min_free_commit_bytes=config.audio_min_free_commit_bytes,
         memory_wait_timeout_seconds=config.audio_memory_wait_timeout_seconds,
@@ -262,7 +272,7 @@ def docx_route_config_from_application(
         retry_errors=config.docx_retry_errors,
         retry_recoverable_errors=getattr(config, "retry_recoverable_errors", False),
         selection=config.selection,
-        memory_budget_bytes=config.docx_memory_budget_bytes,
+        **_local_memory_budget(config.docx_memory_budget_bytes),
         min_free_memory_bytes=config.docx_min_free_memory_bytes,
         min_free_commit_bytes=config.docx_min_free_commit_bytes,
         memory_wait_timeout_seconds=config.docx_memory_wait_timeout_seconds,
@@ -287,7 +297,7 @@ def image_route_config_from_application(
         retry_errors=config.image_retry_errors,
         retry_recoverable_errors=getattr(config, "retry_recoverable_errors", False),
         selection=config.selection,
-        memory_budget_bytes=config.image_memory_budget_bytes,
+        **_local_memory_budget(config.image_memory_budget_bytes),
         min_free_memory_bytes=config.image_min_free_memory_bytes,
         min_free_commit_bytes=config.image_min_free_commit_bytes,
         memory_wait_timeout_seconds=config.image_memory_wait_timeout_seconds,
@@ -316,7 +326,7 @@ def office_route_config_from_application(
         retry_errors=config.office_retry_errors,
         retry_recoverable_errors=getattr(config, "retry_recoverable_errors", False),
         selection=config.selection,
-        memory_budget_bytes=config.office_memory_budget_bytes,
+        **_local_memory_budget(config.office_memory_budget_bytes),
         min_free_memory_bytes=config.office_min_free_memory_bytes,
         min_free_commit_bytes=config.office_min_free_commit_bytes,
         memory_wait_timeout_seconds=config.office_memory_wait_timeout_seconds,

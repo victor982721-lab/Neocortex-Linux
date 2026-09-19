@@ -99,7 +99,9 @@ __all__ = (  # noqa: RUF022
 
 # region [01] Stable public classification contract
 
-CLASSIFIER_VERSION = "technical-document-classifier-v16"
+# v17 bounds the complete catalog text prefix, including page/chunk separators.
+# The shared signature invalidates both observer replay and per-document cache.
+CLASSIFIER_VERSION = "technical-document-classifier-v17"
 
 
 def document_classifier_signature(taxonomy: TechnicalTaxonomy) -> str:

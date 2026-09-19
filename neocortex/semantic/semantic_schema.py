@@ -44,6 +44,11 @@ _SEMANTIC_PERFORMANCE_INDEXES = (
         ON semantic_chunk_derivations(
             chunk_revision_id,refresh_token,publication_receipt_id,derivation_id)""",
     ),
+    (
+        "embedding_generation_members_item_revision_idx",
+        """CREATE INDEX IF NOT EXISTS embedding_generation_members_item_revision_idx
+        ON embedding_generation_members(generation_id,entity_kind,item_id,item_revision_id)""",
+    ),
 )
 _RETIRED_IMAGE_KEYS = frozenset(
     {

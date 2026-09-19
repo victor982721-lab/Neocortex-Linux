@@ -94,7 +94,7 @@ def register_audio_arguments(
         default=1800.0,
     )
     audio.add_argument("--audio-worker-memory-mb", type=int, default=4096)
-    audio.add_argument("--audio-memory-budget-mb", type=int, default=2048)
+    audio.add_argument("--audio-memory-budget-mb", type=int, help="aggregate route memory ceiling in MiB; default: automatic")
     audio.add_argument("--audio-min-free-memory-mb", type=int, default=2048)
     audio.add_argument("--audio-min-free-commit-mb", type=int, default=2048)
     audio.add_argument("--audio-memory-wait-timeout", type=float, default=300.0)
@@ -144,10 +144,11 @@ def validate_audio_arguments(args: argparse.Namespace) -> None:
         "audio_file_timeout",
         "audio_worker_startup_timeout",
         "audio_worker_memory_mb",
-        "audio_memory_budget_mb",
     ):
         if getattr(args, name) <= 0:
             raise SystemExit(f"--{name.replace('_', '-')} must be positive")
+    if args.audio_memory_budget_mb is not None and args.audio_memory_budget_mb < 1:
+        raise SystemExit("--audio-memory-budget-mb must be positive")
     if args.audio_min_free_memory_mb < 0 or args.audio_min_free_commit_mb < 0:
         raise SystemExit("audio memory headroom cannot be negative")
     if args.audio_memory_wait_timeout < 0:

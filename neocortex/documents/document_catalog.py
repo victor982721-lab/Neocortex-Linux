@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from neocortex.persistence.operational_freshness import next_operational_identity, require_operational_identity
-import codecs
 import hashlib
 import json
 import os
@@ -12,10 +11,11 @@ import stat
 import threading
 import time
 import zlib
-from contextlib import contextmanager
+from contextlib import closing, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, replace
 from collections.abc import Mapping
 from pathlib import Path
+from weakref import WeakValueDictionary
 
 from neocortex.platform.policy import sqlite_path_collation, stat_birthtime_ns
 from typing import TYPE_CHECKING, Iterator, Literal
@@ -39,6 +39,13 @@ from neocortex.persistence.sqlite_immutable import (
     sqlite_read_session,
 )
 
+from . import document_taxonomy as _taxonomy_module
+from .document_catalog_models import SourceCoverage, SourceDocument, SourceKind
+from .document_catalog_text import (
+    _load_leading_text,
+    _read_compressed_text_prefix as _read_compressed_text_prefix,
+    _decompress_prefix as _decompress_prefix,
+)
 from .document_taxonomy import (
     DocumentClassification,
     DocumentSignals,
@@ -95,6 +102,7 @@ from neocortex.platform.content_capability_manifest import (
 
 if TYPE_CHECKING:
     from neocortex.runtime.control.cancellation import CancellationToken
+    from neocortex.runtime.control.global_resources import ResourceGrant
 
 
 # region [01] Schema, connections and bounded source records
@@ -104,21 +112,51 @@ if TYPE_CHECKING:
 MAX_CLASSIFICATION_TEXT_CHARS = 64_000
 CATALOG_WRITE_BATCH = 100
 CATALOG_PROGRESS_INTERVAL = 25
-SourceKind = Literal[
-    "pdf",
-    "docx",
-    "xlsx",
-    "pptx",
-    "odt",
-    "text",
-    "audio",
-    "video",
-    "image",
-    "archive",
-    "code",
-]
-SourceCoverage = Literal["complete", "partial", "blocked"]
 _CATALOG_WRITE_LOCK = threading.RLock()
+_CATALOG_ACTIVE_WRITERS: dict[str, int] = {}
+_CATALOG_SOURCE_LOCKS_GUARD = threading.Lock()
+
+
+class _CatalogSourceLock:
+    def __init__(self) -> None:
+        self.lock = threading.RLock()
+
+
+_CATALOG_SOURCE_LOCKS: WeakValueDictionary[tuple[str, str], _CatalogSourceLock] = WeakValueDictionary()
+CATALOG_RESULT_BUFFER_BYTES = 8 * 1024 * 1024
+_DEFAULT_CATALOG_CLASSIFIER = classify_document
+_DEFAULT_CATALOG_CLASSIFIER_IDENTITY = (
+    _taxonomy_module.CLASSIFIER_VERSION, _taxonomy_module.NAMING_VERSION,
+)
+
+
+def _catalog_owner_key(path: Path) -> str:
+    return os.path.normcase(os.path.abspath(path))
+
+
+@contextmanager
+def _catalog_source_update(
+    catalog_path: Path, source_kind: SourceKind, cancellation: CancellationToken | None = None,
+):
+    """Serialize one publication owner, while other sources can compute."""
+
+    key = _catalog_owner_key(catalog_path), source_kind
+    with _CATALOG_SOURCE_LOCKS_GUARD:
+        owner = _CATALOG_SOURCE_LOCKS.get(key)
+        if owner is None:
+            owner = _CatalogSourceLock()
+            _CATALOG_SOURCE_LOCKS[key] = owner
+    while not owner.lock.acquire(timeout=0.1):
+        if cancellation is not None:
+            cancellation.checkpoint()
+    try:
+        if cancellation is not None:
+            cancellation.checkpoint()
+        yield
+    finally:
+        owner.lock.release()
+
+
 _PATH_COLLATION = sqlite_path_collation()
 _CATALOG_DOCUMENT_COLUMNS = (
     "source_kind",
@@ -159,29 +197,6 @@ _CATALOG_DOCUMENT_COLUMNS = (
     "updated_ns",
     "resource_binding_json",
 )
-
-
-@dataclass(frozen=True, slots=True)
-class SourceDocument:
-    source_kind: SourceKind
-    file_key: str
-    path: str
-    volume_id: str
-    file_id: str
-    size: int
-    mtime_ns: int
-    birthtime_ns: int
-    source_status: str
-    processing_signature: str
-    text_fingerprint: str | None
-    title: str
-    author: str
-    metadata: str
-    page_count: int | None = None
-    coverage: SourceCoverage = "complete"
-    text_truncated: bool = False
-    virtual: bool = False
-    resource_binding_json: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -481,17 +496,43 @@ def document_catalog_database(path: Path, *, readonly: bool = False):
             with sqlite_read_session(path, mode=mode, timeout_seconds=60.0) as connection:
                 yield connection
         return
-    connection = connect_document_catalog(path, readonly=readonly)
+    key = _catalog_owner_key(path)
+    # Opening/closing an owner can create or checkpoint WAL sidecars, even
+    # when no SQL transaction is in flight. Serialize these lifecycle effects
+    # with migrations and other catalog writers as well.
+    with _CATALOG_WRITE_LOCK:
+        connection = connect_document_catalog(path, readonly=readonly)
+        _CATALOG_ACTIVE_WRITERS[key] = _CATALOG_ACTIVE_WRITERS.get(key, 0) + 1
     try:
         yield connection
     finally:
-        connection.close()
+        with _CATALOG_WRITE_LOCK:
+            try:
+                connection.close()
+            finally:
+                remaining = _CATALOG_ACTIVE_WRITERS[key] - 1
+                if remaining:
+                    _CATALOG_ACTIVE_WRITERS[key] = remaining
+                else:
+                    del _CATALOG_ACTIVE_WRITERS[key]
 
 
 def initialize_document_catalog(path: Path) -> None:
     """Validate current state read-only or back up and migrate a known legacy catalog."""
 
     with _CATALOG_WRITE_LOCK:
+        if _CATALOG_ACTIVE_WRITERS.get(_catalog_owner_key(path), 0):
+            # An admitted catalog owner is already live. Validate through an
+            # owner-writable connection, never a public reader that would try
+            # to treat transient owner sidecars as an immutable database.
+            with document_catalog_database(path) as connection:
+                version = read_metadata_schema_version(connection, label="document catalog")
+                if version != CATALOG_SCHEMA_VERSION:
+                    raise RuntimeError("cannot migrate a catalog while another catalog owner is active")
+                validate_sqlite_schema_contract(
+                    connection, document_catalog_schema_contract(), label="document catalog", exact=True,
+                )
+            return
         prior = _read_catalog_version(path)
         if prior == CATALOG_SCHEMA_VERSION:
             return
@@ -1223,33 +1264,79 @@ def _source_document_is_in_scope(document: SourceDocument, root: Path) -> bool:
 
 
 def _preserve_catalog_outside_scope(
-    connection: sqlite3.Connection, build: CatalogBuild, root: Path
+    connection: sqlite3.Connection, build: CatalogBuild, root: Path,
+    *, cancellation: CancellationToken | None = None,
 ) -> None:
-    """Carry unchanged published rows outside this input into the next generation.
+    """Carry other scopes in bounded batches without locking their inspection.
 
-    Untagged historical archive references are retained, not reclassified or
-    retired by guessing a physical path. The organization reader keeps these
-    unresolved references advisory-only.
+    Untagged archive references remain advisory-only. Classification and scope
+    parsing do not turn them into physically movable resources.
     """
+
+    from neocortex.runtime.control.global_resources import resource_gate
+
     columns = ",".join(_CATALOG_DOCUMENT_COLUMNS)
-    rows = connection.execute(
-        "SELECT source_kind,file_key,path,resource_binding_json FROM documents "
-        "WHERE source_kind=? AND active=1 ORDER BY file_key",
-        (build.source_kind,),
+    gate = resource_gate("catalog")
+    database_path = Path(str(connection.execute("PRAGMA database_list").fetchone()[2]))
+    admission = nullcontext() if gate is None else gate.admit(
+        CATALOG_RESULT_BUFFER_BYTES, io_slots=1,
+        io_device=str(database_path.stat().st_dev), phase="catalog_preserve_scope",
     )
-    for row in rows:
-        raw = row["resource_binding_json"]
-        if raw is not None:
-            anchor = parse_resource_binding(raw)["physical_anchor_path"]
-        else:
-            anchor = None if row["source_kind"] == "archive" else str(row["path"])
-        if anchor is not None and _catalog_path_in_scope(anchor, root):
-            continue
-        connection.execute(
-            f"INSERT INTO catalog_generation_documents(generation_id,{columns}) "
-            f"SELECT ?,{columns} FROM documents WHERE source_kind=? AND file_key=?",
-            (build.generation_id, build.source_kind, row["file_key"]),
-        )
+    pending: list[str] = []
+
+    def flush() -> None:
+        if not pending:
+            return
+        with _CATALOG_WRITE_LOCK:
+            try:
+                connection.executemany(
+                    f"INSERT INTO catalog_generation_documents(generation_id,{columns}) "
+                    f"SELECT ?,{columns} FROM documents WHERE source_kind=? AND file_key=?",
+                    ((build.generation_id, build.source_kind, key) for key in pending),
+                )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        pending.clear()
+
+    with admission as grant:
+        after_key: str | None = None
+        while True:
+            if cancellation is not None:
+                cancellation.checkpoint()
+            if grant is not None:
+                grant.checkpoint()
+            # Finalize each read statement before acquiring a writer. Keeping
+            # a cursor open across a sibling's WAL commit could otherwise
+            # require upgrading a stale SQLite read snapshot to a writer.
+            # Keep the continuation comparison directly indexable: a nullable
+            # OR makes SQLite revisit the consumed prefix for every page.
+            after_predicate = "" if after_key is None else " AND file_key>?"
+            parameters = (
+                (build.source_kind, CATALOG_WRITE_BATCH) if after_key is None
+                else (build.source_kind, after_key, CATALOG_WRITE_BATCH)
+            )
+            rows = connection.execute(
+                "SELECT source_kind,file_key,path,resource_binding_json FROM documents "
+                f"WHERE source_kind=? AND active=1{after_predicate} "
+                "ORDER BY file_key LIMIT ?",
+                parameters,
+            ).fetchall()
+            if not rows:
+                break
+            after_key = str(rows[-1]["file_key"])
+            for row in rows:
+                raw = row["resource_binding_json"]
+                if raw is not None:
+                    anchor = parse_resource_binding(raw)["physical_anchor_path"]
+                else:
+                    anchor = None if row["source_kind"] == "archive" else str(row["path"])
+                if anchor is not None and _catalog_path_in_scope(anchor, root):
+                    continue
+                pending.append(str(row["file_key"]))
+            flush()
+
 
 
 def observed_source_fence(connection: sqlite3.Connection, manifest: CatalogPublicationManifest) -> str:
@@ -1325,7 +1412,11 @@ def _prepare_catalog_replay(
                 return None
             inputs = CatalogInputDigest()
             with _readonly_source(source_path, cancellation=cancellation) as source:
-                for document in _iter_source_documents(source, source_kind, verify_source_paths=verify_source_paths, source_root=source_root):
+                from neocortex.runtime.control.global_resources import current_resource_grant
+                grant = current_resource_grant()
+                for ordinal, document in enumerate(_iter_source_documents(source, source_kind, verify_source_paths=verify_source_paths, source_root=source_root)):
+                    if grant is not None and ordinal % 64 == 0:
+                        grant.checkpoint()
                     if cancellation is not None:
                         cancellation.checkpoint()
                     if source_root is not None and not _source_document_is_in_scope(document, source_root):
@@ -1363,48 +1454,158 @@ def try_reuse_catalog(
     immutable publication remain unchanged.
     """
 
-    prepared = _prepare_catalog_replay(
-        connection, source_path, source_kind, source_root=source_root,
-        root_identity=root_identity, taxonomy=taxonomy,
-        max_text_chars=max_text_chars, verify_source_paths=verify_source_paths,
-        cancellation=cancellation,
+    from neocortex.runtime.control.global_resources import resource_gate, resource_grant_scope
+
+    if not source_path.is_file():
+        return None
+    gate = resource_gate("catalog")
+    observation = nullcontext() if gate is None else gate.admit(
+        CATALOG_RESULT_BUFFER_BYTES, io_slots=1,
+        io_device=str(source_path.parent.stat().st_dev), phase="catalog_replay",
     )
+    with observation as grant, (nullcontext() if grant is None else resource_grant_scope(grant)):
+        prepared = _prepare_catalog_replay(
+            connection, source_path, source_kind, source_root=source_root,
+            root_identity=root_identity, taxonomy=taxonomy,
+            max_text_chars=max_text_chars, verify_source_paths=verify_source_paths,
+            cancellation=cancellation,
+        )
     if prepared is None:
         return None
     previous, catalog_fence, fence = prepared
-    try:
-        begin_catalog_write(connection, cancellation)
-        with catalog_sql_cancellation(connection, cancellation):
-            if not catalog_fence.matches(connection):
-                return None
-            if not _source_fence_matches(source_path, fence):
-                raise CatalogSourceDrift("catalog source changed during replay observation")
-            if source_root is not None and _catalog_input_root(source_root)[1] != root_identity:
-                raise CatalogSourceDrift("catalog replay root identity changed")
-            if cancellation is not None:
-                cancellation.checkpoint()
-            run_id = next_operational_identity(connection, "catalog", "catalog_runs", "catalog_run_id")
-            summary = CatalogUpdateSummary(
-                catalog_run_id=run_id, source_kind=source_kind, candidates=previous.input_count,
-                cache_hits=previous.input_count, publication_state="unchanged",
-                generation_id=previous.generation_id,
-                reused_from_catalog_run_id=previous.producer_catalog_run_id,
-            )
-            receipt = replace(previous, observation_catalog_run_id=run_id, source_fence_json=fence)
-            now = time.time_ns()
-            connection.execute(
-                "INSERT INTO catalog_runs(catalog_run_id,framework_run_id,source_kind,mode,status,started_ns,completed_ns,summary_json) "
-                "VALUES(?,?,?,'classify','completed',?,?,?)",
-                (run_id, framework_run_id, source_kind, now, now,
-                 json.dumps({**asdict(summary), RECEIPT_KEY: receipt.payload()}, sort_keys=True, separators=(",", ":"))),
-            )
-            if cancellation is not None:
-                cancellation.checkpoint()
-            connection.commit()
-            return summary
-    finally:
-        if connection.in_transaction:
-            connection.rollback()
+    with _CATALOG_WRITE_LOCK:
+        try:
+            begin_catalog_write(connection, cancellation)
+            with catalog_sql_cancellation(connection, cancellation):
+                if not catalog_fence.matches(connection):
+                    return None
+                if not _source_fence_matches(source_path, fence):
+                    raise CatalogSourceDrift("catalog source changed during replay observation")
+                if source_root is not None and _catalog_input_root(source_root)[1] != root_identity:
+                    raise CatalogSourceDrift("catalog replay root identity changed")
+                if cancellation is not None:
+                    cancellation.checkpoint()
+                run_id = next_operational_identity(connection, "catalog", "catalog_runs", "catalog_run_id")
+                summary = CatalogUpdateSummary(
+                    catalog_run_id=run_id, source_kind=source_kind, candidates=previous.input_count,
+                    cache_hits=previous.input_count, publication_state="unchanged",
+                    generation_id=previous.generation_id,
+                    reused_from_catalog_run_id=previous.producer_catalog_run_id,
+                )
+                receipt = replace(previous, observation_catalog_run_id=run_id, source_fence_json=fence)
+                now = time.time_ns()
+                connection.execute(
+                    "INSERT INTO catalog_runs(catalog_run_id,framework_run_id,source_kind,mode,status,started_ns,completed_ns,summary_json) "
+                    "VALUES(?,?,?,'classify','completed',?,?,?)",
+                    (run_id, framework_run_id, source_kind, now, now,
+                     json.dumps({**asdict(summary), RECEIPT_KEY: receipt.payload()}, sort_keys=True, separators=(",", ":"))),
+                )
+                if cancellation is not None:
+                    cancellation.checkpoint()
+                connection.commit()
+                return summary
+        finally:
+            if connection.in_transaction:
+                connection.rollback()
+
+
+@contextmanager
+def _catalog_classification_results(
+    source: sqlite3.Connection,
+    catalog: sqlite3.Connection,
+    source_kind: SourceKind,
+    taxonomy: TechnicalTaxonomy,
+    *,
+    classifier_signature: str,
+    source_root: Path | None,
+    max_text_chars: int,
+    verify_source_paths: bool,
+    cancellation: CancellationToken | None,
+    gate,
+):
+    from neocortex.runtime.control.elastic_workers import ImmediateResult, elastic_map
+    from .document_catalog_workers import (
+        CatalogClassificationResult, CatalogClassificationTask,
+        classify_catalog_task, retained_catalog_bytes,
+    )
+
+    documents = _iter_source_documents(
+        source, source_kind, verify_source_paths=verify_source_paths, source_root=source_root,
+    )
+    # The owner keeps this read session alive until every child has stopped.
+    # A live WAL source already resolves to the persistence kernel's private
+    # snapshot here; workers never copy the producer or open a writer.
+    source_view_path = Path(str(source.execute("PRAGMA database_list").fetchone()[2]))
+
+    def prepare(document: SourceDocument):
+        if cancellation is not None:
+            cancellation.checkpoint()
+        if document_classifier_signature(taxonomy) != classifier_signature:
+            raise RuntimeError("catalog classifier identity changed during classification")
+        if source_root is not None and not _source_document_is_in_scope(document, source_root):
+            return ImmediateResult(CatalogClassificationResult(document, outside_scope=True))
+        if verify_source_paths and not _catalog_source_is_virtual(document) and not _source_snapshot_is_current(document):
+            return ImmediateResult(CatalogClassificationResult(document, source_stale=True))
+        document = _attach_resource_binding(document)
+        if _catalog_cache_hit(
+            catalog, document, taxonomy, source_root=source_root, max_text_chars=max_text_chars,
+        ):
+            return ImmediateResult(CatalogClassificationResult(document, cache_hit=True))
+        return CatalogClassificationTask(
+            source_view_path, document, taxonomy, max_text_chars, classifier_signature,
+        )
+
+    process_compatible = (
+        classify_document is _DEFAULT_CATALOG_CLASSIFIER
+        and (_taxonomy_module.CLASSIFIER_VERSION, _taxonomy_module.NAMING_VERSION)
+        == _DEFAULT_CATALOG_CLASSIFIER_IDENTITY
+    )
+    if process_compatible:
+        taxonomy_bytes = retained_catalog_bytes(taxonomy)
+        with elastic_map(
+            classify_catalog_task, documents, prepare=prepare, gate=gate,
+            estimated_bytes=lambda document: CATALOG_RESULT_BUFFER_BYTES + 4 * (taxonomy_bytes + retained_catalog_bytes(document)),
+            executor_kind="process", native_threads=1, cancellation=cancellation,
+            io_slots=1, io_device=str(source_view_path.stat().st_dev), phase="catalog_classify",
+        ) as results:
+            yield results
+        return
+
+    def serial():
+        # A replaced classifier or runtime version is an explicit caller
+        # seam that spawn cannot inherit. Execute that actual owner callable
+        # under admission; never relabel a fresh worker's implementation.
+        for document in documents:
+            from neocortex.runtime.control.global_resources import resource_grant_scope
+            with gate.admit(
+                CATALOG_RESULT_BUFFER_BYTES + 4 * retained_catalog_bytes(document),
+                io_slots=1, io_device=str(source_view_path.stat().st_dev), phase="catalog_classify_local",
+            ) as grant, resource_grant_scope(grant):
+                prepared = prepare(document)
+                if isinstance(prepared, ImmediateResult):
+                    grant.release_cpu()
+                    yield prepared.value
+                    continue
+                document = prepared.document
+                try:
+                    text = _load_leading_text(
+                        source, document, max_text_chars=max_text_chars, cancellation=cancellation,
+                    )
+                    classification = classify_document(
+                        DocumentSignals(
+                            source_kind=document.source_kind, path=document.path,
+                            source_status=document.source_status, title=document.title,
+                            author=document.author, metadata=document.metadata,
+                            leading_text=text, page_count=document.page_count,
+                        ), taxonomy,
+                    )
+                    grant.release_cpu()
+                    yield CatalogClassificationResult(document, classification=classification)
+                except (UnicodeError, ValueError, zlib.error) as exc:
+                    grant.release_cpu()
+                    yield CatalogClassificationResult(document, error=exc.with_traceback(None))
+    with closing(serial()) as results:
+        yield results
 
 
 def update_document_catalog_source(
@@ -1421,19 +1622,58 @@ def update_document_catalog_source(
     cancellation: "CancellationToken | None" = None,
     source_root: Path | None = None,
 ) -> CatalogUpdateSummary:
-    """Classify one source cache incrementally with bounded text sampling."""
+    """Classify under the current resource scope, or own a standalone scope."""
 
-    # Resolve through the canonical capability registry before touching the
-    # catalog, so a new owner cannot silently enter the generic office reader
-    # without declaring its route, state database and consumers.
+    from neocortex.runtime.control.global_resources import (
+        CoordinatedMemoryGate, GlobalResourceCoordinator, GlobalResourceLimits,
+        resource_gate, resource_scope,
+    )
+
+    def update(gate) -> CatalogUpdateSummary:
+        return _update_document_catalog_source(
+            catalog_path, source_path, source_kind, gate=gate,
+            framework_run_id=framework_run_id, taxonomy_path=taxonomy_path,
+            max_text_chars=max_text_chars, verify_source_paths=verify_source_paths,
+            progress=progress, progress_operation=progress_operation,
+            cancellation=cancellation, source_root=source_root,
+        )
+    gate = resource_gate("catalog")
+    if gate is not None:
+        return update(gate)
+    coordinator = GlobalResourceCoordinator(("catalog",), GlobalResourceLimits(), cancellation=cancellation)
+    with resource_scope(coordinator):
+        gate = CoordinatedMemoryGate(coordinator, "catalog", cancellation=cancellation)
+        return update(gate)
+
+
+def _update_document_catalog_source(
+    catalog_path: Path,
+    source_path: Path,
+    source_kind: SourceKind,
+    *,
+    gate,
+    framework_run_id: int | None = None,
+    taxonomy_path: Path | None = None,
+    max_text_chars: int = MAX_CLASSIFICATION_TEXT_CHARS,
+    verify_source_paths: bool = True,
+    progress: ProgressCallback | None = None,
+    progress_operation: str | None = None,
+    cancellation: "CancellationToken | None" = None,
+    source_root: Path | None = None,
+) -> CatalogUpdateSummary:
+    """Classify sources concurrently, with bounded results and one SQL writer."""
+
+    from .document_catalog_workers import CatalogClassificationResult, retained_catalog_bytes
+
     content_capability_for_source(source_kind)
     scoped_root, root_identity = _catalog_input_root(source_root)
     if max_text_chars < 1:
         raise ValueError("max_text_chars must be positive")
     max_text_chars = min(max_text_chars, MAX_CLASSIFICATION_TEXT_CHARS)
     taxonomy = load_taxonomy(taxonomy_path)
+    classifier_signature = document_classifier_signature(taxonomy)
     initialize_document_catalog(catalog_path)
-    with _CATALOG_WRITE_LOCK, document_catalog_database(catalog_path) as catalog:
+    with _catalog_source_update(catalog_path, source_kind, cancellation), document_catalog_database(catalog_path) as catalog:
         try:
             reused = try_reuse_catalog(
                 catalog, source_path, source_kind,
@@ -1453,181 +1693,160 @@ def update_document_catalog_source(
             )
             return reused
         input_digest = CatalogInputDigest()
-        correction_fence = corrections_digest(catalog)
-        build = _begin_catalog_run(
-            catalog,
-            source_kind=source_kind,
-            framework_run_id=framework_run_id,
-            source_path=source_path,
-            source_root=scoped_root,
-            source_root_identity=root_identity,
-        )
+        with _CATALOG_WRITE_LOCK:
+            correction_fence = corrections_digest(catalog)
+            build = _begin_catalog_run(
+                catalog, source_kind=source_kind, framework_run_id=framework_run_id,
+                source_path=source_path, source_root=scoped_root, source_root_identity=root_identity,
+            )
         if not source_path.is_file():
             summary = CatalogUpdateSummary(
-                catalog_run_id=build.catalog_run_id,
-                source_kind=source_kind,
-                source_missing=True,
-                publication_state="unavailable",
+                catalog_run_id=build.catalog_run_id, source_kind=source_kind,
+                source_missing=True, publication_state="unavailable",
             )
-            _abandon_catalog_build(catalog, build, summary)
+            with _CATALOG_WRITE_LOCK:
+                _abandon_catalog_build(catalog, build, summary)
             _emit_catalog_progress(
-                progress,
-                operation=progress_operation or source_kind,
-                source_kind=source_kind,
-                completed=0,
-                total=0,
-                classified=0,
-                cache_hits=0,
-                errors=0,
-                review=0,
-                finished=True,
+                progress, operation=progress_operation or source_kind, source_kind=source_kind,
+                completed=0, total=0, classified=0, cache_hits=0, errors=0, review=0, finished=True,
             )
             return summary
         candidates = classified = hits = review = errors = source_stale = 0
+        pending: list[CatalogClassificationResult] = []
+        pending_bytes = 0
+        buffer_grant: ResourceGrant | None = None
+
+        def flush() -> None:
+            nonlocal pending_bytes
+            if not pending:
+                return
+            if cancellation is not None:
+                cancellation.checkpoint()
+            # No transaction or global exclusion is retained while preparing
+            # inputs, classifying, waiting for capacity, or filling this batch.
+            from neocortex.runtime.control.global_resources import current_resource_grant
+            current = current_resource_grant()
+            if current is not None:
+                current.release_cpu()
+            if buffer_grant is None:
+                raise RuntimeError("catalog result buffer has no resource lease")
+            # Existing resident results must be able to drain under memory
+            # pressure, including the final partial batch after map.close().
+            with buffer_grant.drain_admission(
+                io_slots=1, io_device=str(catalog_path.stat().st_dev), phase="catalog_write",
+            ), _CATALOG_WRITE_LOCK:
+                try:
+                    for result in pending:
+                        if result.cache_hit:
+                            _stage_cached_document(catalog, build, result.document)
+                        elif result.error is not None:
+                            _store_catalog_error(catalog, build, result.document, taxonomy, result.error)
+                        else:
+                            if result.classification is None:
+                                raise RuntimeError("catalog result lacks classification evidence")
+                            _store_classification(
+                                catalog, build, result.document, result.classification,
+                                source_root=scoped_root, max_text_chars=max_text_chars,
+                            )
+                    catalog.commit()
+                except BaseException:
+                    catalog.rollback()
+                    raise
+            pending.clear()
+            pending_bytes = 0
+
         try:
             if scoped_root is not None:
-                _preserve_catalog_outside_scope(catalog, build, scoped_root)
-            with _readonly_source(source_path, cancellation=cancellation) as source:
+                _preserve_catalog_outside_scope(catalog, build, scoped_root, cancellation=cancellation)
+            # Reserve retained results before starting any worker admissions.
+            # Oversize results are written while their original task lease is
+            # still alive; ordinary batches fit this persistent buffer lease.
+            buffer_scope = gate.resident(
+                CATALOG_RESULT_BUFFER_BYTES, resident_key=f"catalog-buffer:{id(catalog)}:{build.generation_id}",
+                phase="catalog_result_buffer",
+            )
+            with buffer_scope as buffer_grant, _readonly_source(source_path, cancellation=cancellation) as source:
                 candidate_total = _source_document_count(source, source_kind)
                 _emit_catalog_progress(
-                    progress,
-                    operation=progress_operation or source_kind,
-                    source_kind=source_kind,
-                    completed=0,
-                    total=candidate_total,
-                    classified=0,
-                    cache_hits=0,
-                    errors=0,
-                    review=0,
+                    progress, operation=progress_operation or source_kind, source_kind=source_kind,
+                    completed=0, total=candidate_total, classified=0, cache_hits=0, errors=0, review=0,
                 )
-                for document in _iter_source_documents(
-                    source,
-                    source_kind,
-                    verify_source_paths=verify_source_paths,
-                    source_root=scoped_root,
-                ):
-                    if cancellation is not None:
-                        cancellation.checkpoint()
-                    if scoped_root is not None and not _source_document_is_in_scope(
-                        document, scoped_root
-                    ):
-                        continue
-                    candidates += 1
-                    if (
-                        verify_source_paths
-                        and not _catalog_source_is_virtual(document)
-                        and not _source_snapshot_is_current(document)
-                    ):
-                        source_stale += 1
-                        continue
-                    document = _attach_resource_binding(document)
-                    input_digest.add(document)
-                    if _catalog_cache_hit(
-                        catalog,
-                        document,
-                        taxonomy,
-                        source_root=scoped_root,
-                        max_text_chars=max_text_chars,
-                    ):
-                        _stage_cached_document(catalog, build, document)
-                        hits += 1
-                    else:
-                        try:
-                            leading_text = _load_leading_text(
-                                source,
-                                document,
-                                max_text_chars=max_text_chars,
-                            )
-                            classification = classify_document(
-                                DocumentSignals(
-                                    source_kind=document.source_kind,
-                                    path=document.path,
-                                    source_status=document.source_status,
-                                    title=document.title,
-                                    author=document.author,
-                                    metadata=document.metadata,
-                                    leading_text=leading_text,
-                                    page_count=document.page_count,
-                                ),
-                                taxonomy,
-                            )
-                            _store_classification(
-                                catalog,
-                                build,
-                                document,
-                                classification,
-                                source_root=scoped_root,
-                                max_text_chars=max_text_chars,
-                            )
-                            classified += 1
-                            if (
-                                classification.uncertainty == "alta"
-                                or document.coverage != "complete"
-                            ):
-                                review += 1
-                        except (UnicodeError, ValueError, zlib.error) as exc:
-                            _store_catalog_error(
-                                catalog,
-                                build,
-                                document,
-                                taxonomy,
-                                exc,
-                            )
+                with _catalog_classification_results(
+                    source, catalog, source_kind, taxonomy, source_root=scoped_root,
+                    classifier_signature=classifier_signature,
+                    max_text_chars=max_text_chars, verify_source_paths=verify_source_paths,
+                    cancellation=cancellation, gate=gate,
+                ) as results:
+                    for result in results:
+                        if cancellation is not None:
+                            cancellation.checkpoint()
+                        if result.outside_scope:
+                            continue
+                        candidates += 1
+                        if result.source_stale:
+                            source_stale += 1
+                            continue
+                        if (
+                            result.classification is not None
+                            and result.classification.classifier_signature != classifier_signature
+                        ):
+                            raise RuntimeError("catalog classifier result identity differs from its job")
+                        # Admissions may finish out of order; only the ordered
+                        # consumer contributes to the durable input receipt.
+                        input_digest.add(result.document)
+                        retained = retained_catalog_bytes(result)
+                        if pending and pending_bytes + retained > CATALOG_RESULT_BUFFER_BYTES:
+                            flush()
+                        pending.append(result)
+                        pending_bytes += retained
+                        if result.cache_hit:
+                            hits += 1
+                        elif result.error is not None:
                             errors += 1
-                    if candidates % CATALOG_PROGRESS_INTERVAL == 0 or candidates == candidate_total:
-                        _emit_catalog_progress(
-                            progress,
-                            operation=progress_operation or source_kind,
-                            source_kind=source_kind,
-                            completed=candidates,
-                            total=candidate_total,
-                            classified=classified,
-                            cache_hits=hits,
-                            errors=errors,
-                            review=review,
-                        )
-                    if candidates % CATALOG_WRITE_BATCH == 0:
-                        catalog.commit()
+                        else:
+                            if result.classification is None:
+                                raise RuntimeError("catalog result lacks classification evidence")
+                            classified += 1
+                            if result.classification.uncertainty == "alta" or result.document.coverage != "complete":
+                                review += 1
+                        if len(pending) >= CATALOG_WRITE_BATCH or pending_bytes >= CATALOG_RESULT_BUFFER_BYTES:
+                            flush()
+                        if candidates % CATALOG_PROGRESS_INTERVAL == 0 or candidates == candidate_total:
+                            _emit_catalog_progress(
+                                progress, operation=progress_operation or source_kind, source_kind=source_kind,
+                                completed=candidates, total=candidate_total, classified=classified,
+                                cache_hits=hits, errors=errors, review=review,
+                            )
+                    flush()
             summary = CatalogUpdateSummary(
-                catalog_run_id=build.catalog_run_id,
-                source_kind=source_kind,
-                candidates=candidates,
-                classified=classified,
-                cache_hits=hits,
-                review_required=review,
-                errors=errors,
-                source_stale=source_stale,
+                catalog_run_id=build.catalog_run_id, source_kind=source_kind,
+                candidates=candidates, classified=classified, cache_hits=hits,
+                review_required=review, errors=errors, source_stale=source_stale,
             )
             if not _source_fence_matches(source_path, build.source_fence_json):
                 raise CatalogSourceDrift("catalog source changed before publication")
             if scoped_root is not None and _catalog_input_root(scoped_root)[1] != root_identity:
                 raise RuntimeError("catalog input root identity changed before publication")
-            if corrections_digest(catalog) != correction_fence:
-                raise CatalogSourceDrift("catalog corrections changed before publication")
+            if document_classifier_signature(taxonomy) != classifier_signature:
+                raise RuntimeError("catalog classifier identity changed before publication")
             evidence = None if errors or source_stale else CatalogClassificationEvidence(
                 input_digest=input_digest.digest, input_count=input_digest.count,
-                classifier_signature=document_classifier_signature(taxonomy),
+                classifier_signature=classifier_signature,
                 max_text_chars=max_text_chars, corrections_digest=correction_fence,
             )
             summary = _publish_catalog_build(
-                catalog, build, summary, classification_evidence=evidence,
-                cancellation=cancellation,
+                catalog, build, summary, classification_evidence=evidence, cancellation=cancellation,
+                expected_corrections_digest=correction_fence,
             )
             _emit_catalog_progress(
-                progress,
-                operation=progress_operation or source_kind,
-                source_kind=source_kind,
-                completed=candidates,
-                total=candidate_total,
-                classified=classified,
-                cache_hits=hits,
-                errors=errors,
-                review=review,
-                finished=True,
+                progress, operation=progress_operation or source_kind, source_kind=source_kind,
+                completed=candidates, total=candidate_total, classified=classified,
+                cache_hits=hits, errors=errors, review=review, finished=True,
             )
             return summary
         except BaseException as exc:
-            _fail_catalog_build(catalog, build, exc)
+            with _CATALOG_WRITE_LOCK:
+                _fail_catalog_build(catalog, build, exc)
             raise
 
 
@@ -1931,10 +2150,12 @@ def _prepare_catalog_publication(
     build: CatalogBuild,
     classification_evidence: CatalogClassificationEvidence | None,
     cancellation: CancellationToken | None,
+    *, expected_corrections_digest: str | None = None,
 ) -> tuple[CatalogReadFence, str, str, int]:
     """Read the staged digest and stale count before taking the writer lock."""
 
-    connection.commit()
+    with _CATALOG_WRITE_LOCK:
+        connection.commit()
     catalog_fence = CatalogReadFence.capture(connection)
     connection.execute("BEGIN DEFERRED")
     try:
@@ -1962,15 +2183,20 @@ def _prepare_catalog_publication(
                     (build.source_kind, build.generation_id),
                 ).fetchone()[0]
             )
-            if (
-                classification_evidence is not None
-                and corrections_digest(connection) != classification_evidence.corrections_digest
-            ):
+            correction_guard = (
+                classification_evidence.corrections_digest
+                if classification_evidence is not None else expected_corrections_digest
+            )
+            if correction_guard is not None and corrections_digest(connection) != correction_guard:
                 raise CatalogSourceDrift("catalog corrections changed during publication preparation")
             return catalog_fence, generation_digest, input_manifest_digest, stale
     finally:
         if connection.in_transaction:
             connection.rollback()
+
+
+class _CatalogPreparationStale(CatalogPublicationConflict):
+    """A fresh owner read may retry only while its original proof is intact."""
 
 
 def _publish_catalog_build(
@@ -1980,12 +2206,63 @@ def _publish_catalog_build(
     *,
     classification_evidence: CatalogClassificationEvidence | None = None,
     cancellation: CancellationToken | None = None,
+    expected_corrections_digest: str | None = None,
 ) -> CatalogUpdateSummary:
-    """Atomically project a complete generation if its base pointer is current."""
+    """Prepare outside exclusion, then publish a fresh complete proof by CAS.
 
-    catalog_fence, generation_digest, input_manifest_digest, stale = _prepare_catalog_publication(
-        connection, build, classification_evidence, cancellation,
-    )
+    Sibling sources may commit during an O(N) read. A bounded retry recomputes
+    the entire preparation, retaining the first staged generation's digest.
+    Changed staged evidence, source/root, corrections, physical owner, or base
+    publication still fail; retries never bless modified classification rows.
+    """
+
+    from neocortex.runtime.control.global_resources import resource_gate
+
+    gate = resource_gate("catalog")
+    database_path = Path(str(connection.execute("PRAGMA database_list").fetchone()[2]))
+    original_proof: tuple[str, str, tuple[str, tuple[int, ...] | None]] | None = None
+    for attempt in range(4):
+        if cancellation is not None:
+            cancellation.checkpoint()
+        admission = nullcontext() if gate is None else gate.admit(
+            CATALOG_RESULT_BUFFER_BYTES, io_slots=1,
+            io_device=str(database_path.stat().st_dev), phase="catalog_publication",
+        )
+        with admission:
+            prepared = _prepare_catalog_publication(
+                connection, build, classification_evidence, cancellation,
+                expected_corrections_digest=expected_corrections_digest,
+            )
+            fence, generation_digest, input_manifest_digest, _stale = prepared
+            owner_stamp = fence.database_stamp
+            owner_identity = (owner_stamp[0], None if owner_stamp[1] is None else owner_stamp[1][:2])
+            proof = (generation_digest, input_manifest_digest, owner_identity)
+            if original_proof is None:
+                original_proof = proof
+            elif proof != original_proof:
+                raise CatalogPublicationConflict("catalog evidence changed during publication preparation")
+            with _CATALOG_WRITE_LOCK:
+                try:
+                    return _commit_catalog_build(
+                        connection, build, summary, prepared,
+                        classification_evidence=classification_evidence, cancellation=cancellation,
+                    )
+                except _CatalogPreparationStale:
+                    if attempt == 3:
+                        raise
+    raise AssertionError("catalog publication retry must finish or raise")
+
+
+def _commit_catalog_build(
+    connection: sqlite3.Connection,
+    build: CatalogBuild,
+    summary: CatalogUpdateSummary,
+    prepared: tuple[CatalogReadFence, str, str, int],
+    *,
+    classification_evidence: CatalogClassificationEvidence | None,
+    cancellation: CancellationToken | None,
+) -> CatalogUpdateSummary:
+    catalog_fence, generation_digest, input_manifest_digest, stale = prepared
     try:
         begin_catalog_write(connection, cancellation)
         with catalog_sql_cancellation(connection, cancellation):
@@ -2026,7 +2303,7 @@ def _publish_catalog_build(
                     f"{current_generation_id!r}/{current_generation_digest!r}"
                 )
             if not catalog_fence.matches(connection):
-                raise CatalogPublicationConflict("catalog changed during publication preparation")
+                raise _CatalogPreparationStale("catalog changed during publication preparation")
             if build.source_path is not None and not _source_fence_matches(
                 Path(build.source_path), build.source_fence_json
             ):
@@ -2557,15 +2834,22 @@ def _iter_source_documents(
             AND v.analysis_status IN ('complete','partial','text_only','skipped_limit')
             ORDER BY f.current_path"""
         )
+        owner_schema_current: bool | None = None
         for row in rows:
             if source_root is not None and not _catalog_path_in_scope(
                 str(row["current_path"]), source_root
             ):
                 continue
+            if owner_schema_current is None:
+                # The live source cursor and owner reader share this SQLite
+                # observation. Read its declaration once, never retain it
+                # across separate observations or connections.
+                owner_schema_current = _code_owner_schema_is_current(connection)
             status = str(row["analysis_status"])
             file_key = f"code:{int(row['file_id'])}"
             identity = _code_source_identity(
-                connection, row, verify_source_paths=verify_source_paths
+                connection, row, verify_source_paths=verify_source_paths,
+                owner_schema_current=owner_schema_current,
             )
             volume_id, physical_file_id = identity.decimal_components
             metadata = {
@@ -2636,105 +2920,6 @@ def _iter_source_documents(
         )
 
 
-def _load_leading_text(
-    connection: sqlite3.Connection,
-    document: SourceDocument,
-    *,
-    max_text_chars: int,
-) -> str:
-    if document.source_kind == "video":
-        # Video OCR is stored in FTS rows rather than a document blob.  Read a
-        # bounded prefix in timestamp order so a long recording cannot turn a
-        # catalog pass into an unbounded memory operation.
-        video_chunks: list[str] = []
-        remaining = max_text_chars
-        rows = connection.execute(
-            """SELECT body FROM frame_fts WHERE file_key=?
-            ORDER BY timestamp_ms,rowid""",
-            (document.file_key,),
-        )
-        for row in rows:
-            if remaining <= 0:
-                break
-            text = str(row[0] or "")[:remaining]
-            if text:
-                video_chunks.append(text)
-                remaining -= len(text)
-        return "\n".join(video_chunks)
-    if document.source_kind == "code":
-        # Code keeps the current file version and may retain either the
-        # bounded source blob or chunk rows, depending on the analyzer.  The
-        # fallback preserves useful path/symbol evidence without inventing a
-        # complete source when the producer only published text-only output.
-        raw_file_id = document.file_key.removeprefix("code:")
-        try:
-            file_id = int(raw_file_id)
-        except ValueError as exc:
-            raise RuntimeError("code catalog identity is malformed") from exc
-        row = connection.execute(
-            """SELECT v.version_id,v.text_zlib FROM files AS f
-            JOIN file_versions AS v ON v.version_id=f.current_version_id
-            WHERE f.file_id=? AND f.status='current'""",
-            (file_id,),
-        ).fetchone()
-        if row is None:
-            return ""
-        if row["text_zlib"] is not None:
-            return _decompress_prefix(bytes(row["text_zlib"]), max_text_chars)
-        code_chunks: list[str] = []
-        remaining = max_text_chars
-        for chunk in connection.execute(
-            """SELECT text FROM code_chunks WHERE version_id=?
-            ORDER BY chunk_index""",
-            (int(row["version_id"]),),
-        ):
-            if remaining <= 0:
-                break
-            text = str(chunk[0] or "")[:remaining]
-            if text:
-                code_chunks.append(text)
-                remaining -= len(text)
-        return "\n".join(code_chunks)
-    if document.source_kind == "image":
-        row = connection.execute(
-            "SELECT ocr_text_zlib FROM images WHERE file_key=?",
-            (document.file_key,),
-        ).fetchone()
-        if row is None or row[0] is None:
-            return ""
-        return _decompress_prefix(bytes(row[0]), max_text_chars)
-    if document.source_kind != "pdf":
-        row = connection.execute(
-            "SELECT text_zlib FROM documents WHERE file_key=?",
-            (document.file_key,),
-        ).fetchone()
-        if row is None or row[0] is None:
-            return ""
-        return _decompress_prefix(bytes(row[0]), max_text_chars)
-    pdf_chunks: list[str] = []
-    remaining = max_text_chars
-    rows = connection.execute(
-        """SELECT text_zlib FROM pages WHERE file_key=?
-        ORDER BY page_number""",
-        (document.file_key,),
-    )
-    for row in rows:
-        if remaining <= 0:
-            break
-        text = _decompress_prefix(bytes(row[0]), remaining)
-        pdf_chunks.append(text)
-        remaining -= len(text)
-    return "\n".join(pdf_chunks)
-
-
-def _decompress_prefix(blob: bytes, max_chars: int) -> str:
-    decoder = zlib.decompressobj()
-    decoded = decoder.decompress(blob, max_chars * 4 + 4)
-    utf8_decoder = codecs.getincrementaldecoder("utf-8")(errors="strict")
-    text = utf8_decoder.decode(decoded, final=False)
-    return text[:max_chars]
-
-
 def _json_mapping(value: object) -> dict[str, object]:
     if value is None:
         return {}
@@ -2766,12 +2951,9 @@ def _split_file_key(file_key: str) -> tuple[str, str]:
         raise
 
 
-def _code_source_identity(
-    connection: sqlite3.Connection, row: sqlite3.Row, *, verify_source_paths: bool
-) -> FileIdentity:
-    """Decode the Code owner codec; legacy decimal needs independent evidence."""
-    volume, inode = str(row["volume_id"]), str(row["physical_file_id"])
-    hexadecimal = physical_identity_from_components(volume, inode, encoding="code-owner-hex")
+def _code_owner_schema_is_current(connection: sqlite3.Connection) -> bool:
+    """Validate the declaration within the caller's current source observation."""
+
     metadata = connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata'"
     ).fetchone()
@@ -2791,7 +2973,19 @@ def _code_source_identity(
             encoding="code-owner-schema",
             value=versions,
         )
-    if versions and str(versions[0][0]) in {"7", "8", "9"}:
+    return bool(versions and str(versions[0][0]) in {"7", "8", "9"})
+
+
+def _code_source_identity(
+    connection: sqlite3.Connection, row: sqlite3.Row, *, verify_source_paths: bool,
+    owner_schema_current: bool | None = None,
+) -> FileIdentity:
+    """Decode the Code owner codec; legacy decimal needs independent evidence."""
+    volume, inode = str(row["volume_id"]), str(row["physical_file_id"])
+    hexadecimal = physical_identity_from_components(volume, inode, encoding="code-owner-hex")
+    if owner_schema_current is None:
+        owner_schema_current = _code_owner_schema_is_current(connection)
+    if owner_schema_current:
         # A declared current producer always owns hex. Never reinterpret a
         # stale current identity as decimal just because that matches a path.
         return hexadecimal

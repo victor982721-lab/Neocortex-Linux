@@ -50,15 +50,18 @@ def test_default_media_projections_use_current_canonical_paths_and_root() -> Non
         compute_type=canonical.audio_compute_type,
         model_cache_directory=canonical.audio_model_cache_directory,
         local_models_only=canonical.audio_local_models_only,
+        memory_wait_timeout_seconds=canonical.audio_memory_wait_timeout_seconds,
     )
     office = office_route_config_from_application(canonical)
     expected_office = OfficeRouteConfig(
         state_path=Path("canonical-media-state") / "office.sqlite3",
+        memory_wait_timeout_seconds=canonical.office_memory_wait_timeout_seconds,
     )
     image = image_route_config_from_application(canonical)
     expected_image = ImageRouteConfig(
         state_path=Path("canonical-media-state") / "image.sqlite3",
         root=Path("canonical-media-root"),
+        memory_wait_timeout_seconds=canonical.image_memory_wait_timeout_seconds,
     )
 
     assert requested.image_database == Path("requested-media-state") / "image.sqlite3"

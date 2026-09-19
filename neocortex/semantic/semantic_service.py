@@ -22,6 +22,12 @@ from . import semantic_search_service as _search
 from . import semantic_status_service as _status
 from . import semantic_text_index as _text_index
 from .semantic_backend_supervisor import DeadlineEmbeddingBackend
+from .semantic_resources import (
+    CoordinatedEmbeddingBackend as _CoordinatedEmbeddingBackend,
+    governed_retrieval as _governed_retrieval,
+    model_resident_estimate as _model_resident_estimate,
+    semantic_backend_gate as _semantic_backend_gate,
+)
 from .semantic_backends import (
     EmbeddingBackend as EmbeddingBackend,
     FastEmbedBackend as FastEmbedBackend,
@@ -286,6 +292,11 @@ def _backend(
 ) -> EmbeddingBackend:
     from neocortex.runtime.control.read_operation import current_read_operation
     operation = current_read_operation()
+    if _semantic_backend_gate() is not None:
+        return _coordinated_backend(
+            model, cache_dir=cache_dir, local_files_only=local_files_only,
+            threads=threads, checkpoint=None if operation is None else operation.checkpoint,
+        )
     if operation is not None and operation.requires_supervision:
         operation.checkpoint()
         # The originating allowance remains the only deadline/clock and
@@ -306,6 +317,47 @@ def _backend(
     )
 
 
+def _coordinated_backend(
+    model: EmbeddingModelSpec, *, cache_dir: Path, local_files_only: bool,
+    threads: int | None, checkpoint: Callable[[], None] | None,
+) -> EmbeddingBackend:
+    gate = _semantic_backend_gate()
+    assert gate is not None
+    if local_files_only and model.provider.startswith("fastembed"):
+        _preparation.require_local_fastembed_model(model, cache_dir)
+    try:
+        resident_bytes = _model_resident_estimate(model, cache_dir)
+    except _preparation.SemanticModelUnavailableError:
+        if local_files_only:
+            raise
+        # Explicit model preparation can precede the local snapshot.  Bound
+        # that cold load conservatively without changing download authority.
+        resident_bytes = max(256 * 1024 * 1024, model.dimensions * 4 * 1024 * 1024)
+
+    def check() -> None:
+        from .semantic_source_budget import source_read_checkpoint
+
+        source_read_checkpoint()
+        if checkpoint is not None:
+            checkpoint()
+        gate.coordinator.cancellation.checkpoint()
+
+    def build(selected_threads: int) -> EmbeddingBackend:
+        # A supervised child permits cancellation during native work and
+        # supplies a verifiable PID for resident memory attribution.  The
+        # caller's original checkpoint remains the deadline authority.
+        return DeadlineEmbeddingBackend(
+            model, cache_dir=cache_dir, local_files_only=local_files_only,
+            threads=selected_threads,
+            work_budget=SemanticWorkBudget(cancellation_check=check),
+        )
+
+    return _CoordinatedEmbeddingBackend(
+        model, build, gate=gate, max_threads=threads,
+        resident_bytes=resident_bytes, checkpoint=check,
+    )
+
+
 def _index_backend_factory(work_budget: SemanticWorkBudget):
     def create(
         model: EmbeddingModelSpec,
@@ -314,6 +366,12 @@ def _index_backend_factory(work_budget: SemanticWorkBudget):
         local_files_only: bool,
         threads: int | None,
     ) -> EmbeddingBackend:
+        if (work_budget.deadline is not None and _semantic_backend_gate() is not None
+            and model.provider.startswith("fastembed")):
+            return _coordinated_backend(
+                model, cache_dir=cache_dir, local_files_only=local_files_only,
+                threads=threads, checkpoint=work_budget.checkpoint,
+            )
         if work_budget.deadline is None:
             return _backend(
                 model,
@@ -342,6 +400,7 @@ def _image_probe(backend: EmbeddingBackend) -> None:
     _preparation.image_probe(backend)
 
 
+@_governed_retrieval("semantic")
 def prepare_semantic_models(
     state_directory: Path,
     *,
@@ -501,6 +560,7 @@ def _grouped_text_records(
     )
 
 
+@_governed_retrieval("semantic")
 def index_text_embeddings(
     state_directory: Path,
     *,
@@ -554,6 +614,7 @@ def index_text_embeddings(
         budget.close_registered_resources()
 
 
+@_governed_retrieval("semantic")
 def index_image_embeddings(
     state_directory: Path,
     *,
@@ -640,6 +701,7 @@ def _default_lexical_paths(state_directory: Path) -> LexicalStatePaths:
     return _search.default_lexical_paths(state_directory)
 
 
+@_governed_retrieval("semantic")
 def search_semantic_index(
     state_directory: Path,
     query: str,
@@ -712,6 +774,7 @@ def search_semantic_index(
     return type(result)(result.query, result.rankings, result.lexical_rankings, visible)
 
 
+@_governed_retrieval("semantic")
 def calibrate_image_retrieval(
     state_directory: Path,
     dataset_path: Path,
@@ -792,6 +855,7 @@ def _selected_prototype_indices(
     )
 
 
+@_governed_retrieval("semantic")
 def classify_semantic_index(
     state_directory: Path,
     *,

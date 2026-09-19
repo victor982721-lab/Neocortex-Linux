@@ -7,6 +7,7 @@ from neocortex.runtime.control.locking import FrameworkRunLock
 from ..fts_lookup import initialize_format_fts_lookup
 
 import sqlite3
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any as Any
@@ -82,6 +83,57 @@ class _OfficeCandidateOutcome:
     reviews: int = 0
     deletion_candidates: int = 0
     retryable_errors: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _OfficeWork:
+    snapshot: FileSnapshot
+    format_name: Literal["xlsx", "pptx", "odt"]
+    max_text_chars: int
+
+
+@dataclass(frozen=True, slots=True)
+class _OfficeWorkResult:
+    work: _OfficeWork
+    document: ExtractedOfficeDocument | None = None
+    failure: tuple[str, str, ReviewRecommendation, bool] | None = None
+    cached: bool = False
+    cached_error: bool = False
+
+
+def _extract_office_work(work: _OfficeWork) -> _OfficeWorkResult:
+    """Read untrusted content in a process; the owner alone writes its state."""
+
+    from neocortex.runtime.control.elastic_workers import current_worker_cancellation
+
+    cancellation = current_worker_cancellation() or CancellationToken()
+    try:
+        cancellation.checkpoint()
+        if not same_snapshot(work.snapshot, snapshot_path(work.snapshot.path)):
+            raise OfficeExtractionError(
+                "office_source_changed", "office source changed before extraction",
+                recommendation="retry", retryable=True,
+            )
+        document = extract_office_document(
+            Path(work.snapshot.path), work.format_name,
+            max_text_chars=work.max_text_chars, cancellation=cancellation,
+        )
+        cancellation.checkpoint()
+        if not same_snapshot(work.snapshot, snapshot_path(work.snapshot.path)):
+            raise OfficeExtractionError(
+                "office_source_changed", "office source changed during extraction",
+                recommendation="retry", retryable=True,
+            )
+        return _OfficeWorkResult(work, document=document)
+    except OfficeExtractionError as exc:
+        return _OfficeWorkResult(
+            work, failure=(exc.code, str(exc), exc.recommendation, exc.retryable),
+        )
+    except OSError as exc:
+        return _OfficeWorkResult(
+            work,
+            failure=("office_io_error", f"{type(exc).__name__}: {exc}", "retry", True),
+        )
 
 
 @dataclass(slots=True)
@@ -227,6 +279,8 @@ class OfficeRoute:
             snapshot,
             format_name,
             self.run_id,
+            processing_signature=self.config.processing_signature,
+            cache_status=status,
             max_text_chars=self.config.max_text_chars,
         )
         if fts_repaired is None:
@@ -248,6 +302,8 @@ class OfficeRoute:
         self,
         snapshot: FileSnapshot,
         format_name: Literal["xlsx", "pptx", "odt"],
+        *,
+        admitted: bool = False,
     ) -> ExtractedOfficeDocument:
         current = snapshot_path(snapshot.path)
         if not same_snapshot(snapshot, current):
@@ -257,9 +313,10 @@ class OfficeRoute:
                 recommendation="retry",
                 retryable=True,
             )
-        with self.memory_gate.admit(
+        admission = nullcontext() if admitted else self.memory_gate.admit(
             _estimated_office_memory_bytes(snapshot, self.config.max_text_chars)
-        ):
+        )
+        with admission:
             document = extract_office_document(
                 Path(snapshot.path),
                 format_name,
@@ -283,48 +340,25 @@ class OfficeRoute:
         format_name: Literal["xlsx", "pptx", "odt"],
         reconciliations: list[ReviewCandidateReconciliation],
     ) -> _OfficeCandidateOutcome:
-        try:
-            document = self._extract_snapshot(snapshot, format_name)
-            _store_success(
-                connection,
-                snapshot,
-                document,
-                self.config.processing_signature,
-                self.run_id,
-            )
-            self._queue_success(
-                reconciliations,
-                snapshot,
-                "Office extraction completed without structural errors",
-            )
-            return _OfficeCandidateOutcome(extracted=1)
-        except OfficeExtractionError as exc:
-            failure = exc
-        except (OSError, sqlite3.Error) as exc:
-            failure = OfficeExtractionError(
-                "office_io_error",
-                f"{type(exc).__name__}: {exc}",
-                recommendation="retry",
-                retryable=True,
-            )
-        _store_error(
-            connection,
-            snapshot,
-            format_name,
-            self.config.processing_signature,
-            self.run_id,
-            failure,
-        )
-        self.framework_state.store_review_candidates(
-            self.run_id,
-            (_review_candidate(snapshot, failure),),
-        )
-        return _OfficeCandidateOutcome(
-            errors=1,
-            reviews=1,
-            deletion_candidates=int(failure.recommendation == "deletion_candidate"),
-            retryable_errors=int(failure.retryable),
-        )
+        work = _OfficeWork(snapshot, format_name, self.config.max_text_chars)
+        # Retain the document's reservation while compression and the SQLite
+        # writer still own its text/cells, including the legacy direct route.
+        with self.memory_gate.admit(
+            _estimated_office_memory_bytes(snapshot, self.config.max_text_chars)
+        ):
+            try:
+                document = self._extract_snapshot(snapshot, format_name, admitted=True)
+                result = _OfficeWorkResult(work, document=document)
+            except OfficeExtractionError as exc:
+                result = _OfficeWorkResult(
+                    work, failure=(exc.code, str(exc), exc.recommendation, exc.retryable),
+                )
+            except OSError as exc:
+                result = _OfficeWorkResult(
+                    work,
+                    failure=("office_io_error", f"{type(exc).__name__}: {exc}", "retry", True),
+                )
+            return self._persist_elastic_result(connection, result, reconciliations)
 
     def run(self) -> OfficeRouteSummary:
         self.cancellation.checkpoint()
@@ -361,6 +395,9 @@ class OfficeRoute:
         metrics: _OfficeRunMetrics,
         reconciliations: list[ReviewCandidateReconciliation],
     ) -> None:
+        if callable(getattr(self.memory_gate, "worker_capacity", None)):
+            self._run_elastic_candidates(connection, metrics, reconciliations)
+            return
         for mime, format_name in OFFICE_MIME_FORMATS.items():
             self._run_mime_candidates(
                 connection,
@@ -371,6 +408,118 @@ class OfficeRoute:
             )
             if metrics.processed >= metrics.selected:
                 return
+
+    def _run_elastic_candidates(
+        self,
+        connection: sqlite3.Connection,
+        metrics: _OfficeRunMetrics,
+        reconciliations: list[ReviewCandidateReconciliation],
+    ) -> None:
+        from neocortex.runtime.control.elastic_workers import ImmediateResult, elastic_map
+
+        def candidates():
+            selected = 0
+            for mime, format_name in OFFICE_MIME_FORMATS.items():
+                for snapshot in self.framework_state.iter_selected_route_candidates(
+                    self.run_id, mime, "office", self.config.selection,
+                ):
+                    self.cancellation.checkpoint()
+                    if selected >= metrics.selected:
+                        return
+                    if self._exceeds_file_limit(snapshot):
+                        continue
+                    selected += 1
+                    yield _OfficeWork(snapshot, format_name, self.config.max_text_chars)
+
+        def prepare(work: _OfficeWork):
+            _store_inventory(connection, work.snapshot, work.format_name, self.run_id)
+            cached = _cached_document(
+                connection, work.snapshot, self.config.processing_signature,
+                format_name=work.format_name, max_text_chars=work.max_text_chars,
+                validate_representation=False,
+            )
+            consumed, cached_error = self._consume_cached(
+                connection, work.snapshot, work.format_name, cached, reconciliations,
+            )
+            if consumed:
+                return ImmediateResult(_OfficeWorkResult(
+                    work, cached=True, cached_error=cached_error,
+                ))
+            return work
+
+        with elastic_map(
+            _extract_office_work, candidates(), gate=self.memory_gate,
+            estimated_bytes=lambda work: _estimated_office_memory_bytes(
+                work.snapshot, work.max_text_chars,
+            ),
+            executor_kind="process", cancellation=self.cancellation,
+            prepare=prepare, phase="office.extract", native_threads=1, io_slots=1,
+            io_device=lambda work: str(work.snapshot.volume_id),
+        ) as results:
+            for result in results:
+                self.cancellation.checkpoint()
+                if result.cached:
+                    metrics.cache_hits += 1
+                    metrics.cached_errors += int(result.cached_error)
+                else:
+                    metrics.apply(self._persist_elastic_result(
+                        connection, result, reconciliations,
+                    ))
+                metrics.processed += 1
+                self._commit_batch(connection, metrics, reconciliations)
+
+    def _persist_elastic_result(
+        self,
+        connection: sqlite3.Connection,
+        result: _OfficeWorkResult,
+        reconciliations: list[ReviewCandidateReconciliation],
+    ) -> _OfficeCandidateOutcome:
+        from neocortex.runtime.control.global_resources import current_resource_grant
+        grant = current_resource_grant()
+        if grant is not None:
+            grant.checkpoint()
+        snapshot = result.work.snapshot
+        try:
+            if result.failure is not None:
+                code, detail, recommendation, retryable = result.failure
+                raise OfficeExtractionError(
+                    code, detail, recommendation=recommendation, retryable=retryable,
+                )
+            if result.document is None:
+                raise RuntimeError("Office worker returned no document")
+            if not same_snapshot(snapshot, snapshot_path(snapshot.path)):
+                raise OfficeExtractionError(
+                    "office_source_changed", "office source changed before publication",
+                    recommendation="retry", retryable=True,
+                )
+            _store_success(
+                connection, snapshot, result.document,
+                self.config.processing_signature, self.run_id,
+            )
+            self._queue_success(
+                reconciliations, snapshot,
+                "Office extraction completed without structural errors",
+            )
+            return _OfficeCandidateOutcome(extracted=1)
+        except OfficeExtractionError as exc:
+            failure = exc
+        except (OSError, sqlite3.Error) as exc:
+            failure = OfficeExtractionError(
+                "office_io_error", f"{type(exc).__name__}: {exc}",
+                recommendation="retry", retryable=True,
+            )
+        _store_error(
+            connection, snapshot, result.work.format_name,
+            self.config.processing_signature, self.run_id, failure,
+        )
+        self.framework_state.store_review_candidates(
+            self.run_id, (_review_candidate(snapshot, failure),),
+        )
+        return _OfficeCandidateOutcome(
+            errors=1, reviews=1,
+            deletion_candidates=int(failure.recommendation == "deletion_candidate"),
+            retryable_errors=int(failure.retryable),
+        )
 
     def _run_mime_candidates(
         self,
@@ -415,6 +564,7 @@ class OfficeRoute:
             self.config.processing_signature,
             format_name=format_name,
             max_text_chars=self.config.max_text_chars,
+            validate_representation=False,
         )
         consumed, cached_error = self._consume_cached(
             connection,

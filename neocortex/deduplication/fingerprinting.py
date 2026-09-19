@@ -191,18 +191,26 @@ def _adaptive_buffer_capacity(file_size: int, chunk_size: int) -> int:
 def full_fingerprint(
     snapshot: FileSnapshot, *, chunk_size: int = DEFAULT_IO_CHUNK_SIZE,
     read_observer: Callable[[int], None] | None = None,
+    checkpoint: Callable[[], None] | None = None,
 ) -> bytes:
     """Return an XXH3-128 digest after streaming the entire file once."""
 
     chunk_size = _validated_io_chunk_size(chunk_size)
     hasher = xxhash.xxh3_128()
     try:
+        if checkpoint is not None:
+            checkpoint()
         with _open_regular_stream(snapshot) as stream:
             before_ctime_ns = os.fstat(stream.fileno()).st_ctime_ns
             buffer = bytearray(_adaptive_buffer_capacity(snapshot.size, chunk_size))
             view = memoryview(buffer)
             bytes_read = 0
-            while count := cast(Any, stream).readinto(buffer):
+            while True:
+                if checkpoint is not None:
+                    checkpoint()
+                count = cast(Any, stream).readinto(buffer)
+                if not count:
+                    break
                 bytes_read += count
                 if read_observer is not None:
                     read_observer(count)
@@ -225,6 +233,7 @@ def full_fingerprint(
 def partial_fingerprint(
     snapshot: FileSnapshot, *, sample_size: int = DEFAULT_SAMPLE_SIZE,
     read_observer: Callable[[int], None] | None = None,
+    checkpoint: Callable[[], None] | None = None,
 ) -> bytes:
     """Hash deterministic first/middle/last ranges, including their offsets."""
 
@@ -236,9 +245,13 @@ def partial_fingerprint(
     hasher.update(b"T_DEDUP_PARTIAL_V1\0")
     hasher.update(struct.pack("<QQ", size, sample_size))
     try:
+        if checkpoint is not None:
+            checkpoint()
         with _open_regular_stream(snapshot) as stream:
             before_ctime_ns = os.fstat(stream.fileno()).st_ctime_ns
             for offset in offsets:
+                if checkpoint is not None:
+                    checkpoint()
                 stream.seek(offset)
                 expected = min(sample_size, size - offset)
                 data = stream.read(expected)
@@ -265,6 +278,7 @@ def files_equal_exact(
     *,
     chunk_size: int = DEFAULT_IO_CHUNK_SIZE,
     read_observer: Callable[[int], None] | None = None,
+    checkpoint: Callable[[], None] | None = None,
 ) -> bool:
     """Perform the final byte comparison required before a destructive policy."""
 
@@ -272,6 +286,8 @@ def files_equal_exact(
     if left.size != right.size:
         return False
     try:
+        if checkpoint is not None:
+            checkpoint()
         with _open_regular_stream(left) as left_stream, _open_regular_stream(right) as right_stream:
             left_ctime_ns = os.fstat(left_stream.fileno()).st_ctime_ns
             right_ctime_ns = os.fstat(right_stream.fileno()).st_ctime_ns
@@ -283,6 +299,8 @@ def files_equal_exact(
             equal = True
             bytes_compared = 0
             while True:
+                if checkpoint is not None:
+                    checkpoint()
                 left_count = cast(Any, left_stream).readinto(left_buffer)
                 right_count = cast(Any, right_stream).readinto(right_buffer)
                 if read_observer is not None:

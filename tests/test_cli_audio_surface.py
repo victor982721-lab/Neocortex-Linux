@@ -189,8 +189,9 @@ EXPECTED_AUDIO_ACTIONS = (
     _expected_store(
         "--audio-memory-budget-mb",
         "audio_memory_budget_mb",
-        default=2048,
+        default=None,
         type_name="int",
+        help_text="aggregate route memory ceiling in MiB; default: automatic",
     ),
     _expected_store(
         "--audio-min-free-memory-mb",
@@ -268,6 +269,8 @@ EXPECTED_AUDIO_HELP = (
     "  --audio-worker-startup-timeout AUDIO_WORKER_STARTUP_TIMEOUT\n"
     "  --audio-worker-memory-mb AUDIO_WORKER_MEMORY_MB\n"
     "  --audio-memory-budget-mb AUDIO_MEMORY_BUDGET_MB\n"
+    "                        aggregate route memory ceiling in MiB; default:\n"
+    "                        automatic\n"
     "  --audio-min-free-memory-mb AUDIO_MIN_FREE_MEMORY_MB\n"
     "  --audio-min-free-commit-mb AUDIO_MIN_FREE_COMMIT_MB\n"
     "  --audio-memory-wait-timeout AUDIO_MEMORY_WAIT_TIMEOUT\n"

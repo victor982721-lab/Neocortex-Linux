@@ -392,27 +392,17 @@ def default_semantic_model_cache(state_directory: Path) -> Path:
 def default_semantic_threads() -> int:
     from neocortex.runtime.control.cpu_runtime import effective_cpu_count
 
-    return max(1, min(8, effective_cpu_count()))
+    return max(1, effective_cpu_count())
 
 
 def default_semantic_parallel(threads: int) -> int | None:
-    """Choose bounded FastEmbed batch parallelism without oversubscription."""
+    """Keep the granted ONNX session as the only native CPU execution owner."""
 
     if threads < 1:
         raise ValueError("semantic threads must be positive")
-    # The production generation runner is itself a multiprocessing child.
-    # FastEmbed's parallel implementation creates a process pool even for a
-    # value of one, so nested workers must receive ``None`` rather than 1.
-    # Python rejects those grandchildren for nested/daemonic workers.
-    import multiprocessing
-
-    process = multiprocessing.current_process()
-    if process.daemon or process.name != "MainProcess":
-        return None
-    # ``threads`` controls ONNX intra-model work; ``parallel`` overlaps
-    # independent FastEmbed batches. Two workers are useful on the supported
-    # hosts, while smaller thread pools stay single-worker to bound memory.
-    return max(1, min(2, threads // 8))
+    # Even parallel=1 creates a FastEmbed process pool.  Its own copies of the
+    # session multiply both the threads and the resident model reservation.
+    return None
 
 
 # endregion [04]

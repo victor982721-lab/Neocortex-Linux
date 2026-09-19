@@ -8,7 +8,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from .cgroup_runtime import cgroup_cpu_snapshot
+from .cgroup_runtime import CgroupCpuSnapshot, cgroup_cpu_snapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,9 +18,13 @@ class CpuCapacitySnapshot:
     cgroup_quota_cpus: float | None
     cgroup_cpuset_count: int | None
     effective_cpus: float
+    affinity_cpus: frozenset[int] | None = None
 
 
-def cpu_capacity_snapshot() -> CpuCapacitySnapshot:
+def cpu_capacity_snapshot(
+    *,
+    cgroup_snapshot: CgroupCpuSnapshot | None = None,
+) -> CpuCapacitySnapshot:
     """Read capacity without confusing logical CPUs with usable CPU bandwidth."""
 
     detected = os.cpu_count()
@@ -31,7 +35,7 @@ def cpu_capacity_snapshot() -> CpuCapacitySnapshot:
             affinity = getaffinity(0)
         except (OSError, ValueError):
             pass
-    cgroup = cgroup_cpu_snapshot()
+    cgroup = cgroup_cpu_snapshot() if cgroup_snapshot is None else cgroup_snapshot
     capacities: list[float] = []
     if detected is not None and detected > 0:
         capacities.append(detected)
@@ -57,6 +61,7 @@ def cpu_capacity_snapshot() -> CpuCapacitySnapshot:
         quota,
         cpuset_count,
         min(capacities, default=1.0),
+        None if affinity is None else frozenset(affinity),
     )
 
 
@@ -110,7 +115,9 @@ def _proc_cpu_times() -> CpuTimes | None:
     if len(values) < 4:
         return None
     idle = values[3] + (values[4] if len(values) > 4 else 0)
-    return CpuTimes(idle, sum(values))
+    # guest/guest_nice are already included in user/nice. Summing all ten
+    # counters counts guest CPU twice on virtualization hosts.
+    return CpuTimes(idle, sum(values[:8]))
 
 
 def cpu_times() -> CpuTimes | None:

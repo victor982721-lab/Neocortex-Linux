@@ -33,9 +33,9 @@ class MemorySnapshot:
 class PdfResourceLimits:
     min_free_bytes: int = 512 * MIB
     memory_backpressure_bytes: int | None = None
-    memory_wait_timeout_seconds: float = 60.0
+    memory_wait_timeout_seconds: float | None = None
     large_document_bytes: int = 128 * MIB
-    large_document_workers: int = 2
+    large_document_workers: int | None = None
     memory_budget_bytes: int | None = None
     worker_memory_bytes: int = 512 * MIB
     commit_backpressure_bytes: int | None = None
@@ -110,13 +110,13 @@ def ensure_free_space(path: Path, minimum_bytes: int) -> None:
 
 def wait_for_available_memory(
     minimum_bytes: int,
-    timeout_seconds: float,
+    timeout_seconds: float | None,
     minimum_commit_bytes: int = 0,
     cancellation: CancellationToken | None = None,
 ) -> None:
     if minimum_bytes <= 0 and minimum_commit_bytes <= 0:
         return
-    deadline = time.monotonic() + timeout_seconds
+    deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
     while True:
         if cancellation is not None:
             cancellation.checkpoint()
@@ -129,7 +129,7 @@ def wait_for_available_memory(
         commit_ok = commit is None or commit >= minimum_commit_bytes
         if physical_ok and commit_ok:
             return
-        if time.monotonic() >= deadline:
+        if deadline is not None and time.monotonic() >= deadline:
             raise PdfResourceError(
                 "memory headroom remained below its configured floor; "
                 f"physical={available} floor={minimum_bytes} "
@@ -210,9 +210,9 @@ class PdfResourceGate:
         route_name: str = "pdf",
         cancellation: CancellationToken | None = None,
     ):
-        if limits.large_document_workers < 1:
+        if limits.large_document_workers is not None and limits.large_document_workers < 1:
             raise ValueError("large_document_workers must be positive")
-        if limits.memory_wait_timeout_seconds < 0:
+        if limits.memory_wait_timeout_seconds is not None and limits.memory_wait_timeout_seconds < 0:
             raise ValueError("memory_wait_timeout_seconds cannot be negative")
         if limits.worker_memory_bytes < 1:
             raise ValueError("worker_memory_bytes must be positive")
@@ -251,7 +251,18 @@ class PdfResourceGate:
             else limits.memory_budget_bytes
         )
         self._budget = _ReservationBudget(self.memory_budget_bytes)
-        self._large_slots = threading.BoundedSemaphore(limits.large_document_workers)
+        self._large_slots = (None if limits.large_document_workers is None
+                             else threading.BoundedSemaphore(limits.large_document_workers))
+
+    def worker_capacity(self, *, max_workers=None, estimated_bytes=None):
+        if self.global_coordinator is not None:
+            return self.global_coordinator.worker_capacity(
+                self.route_name, max_workers=max_workers,
+                estimated_bytes=estimated_bytes or self.limits.worker_memory_bytes, native_threads=1,
+            )
+        from neocortex.runtime.control.cpu_runtime import effective_cpu_count
+        capacity = min(effective_cpu_count(), self.memory_budget_bytes // (estimated_bytes or self.limits.worker_memory_bytes))
+        return max(1, min(capacity, max_workers) if max_workers is not None else capacity)
 
     @property
     def wait_count(self) -> int:
@@ -269,8 +280,9 @@ class PdfResourceGate:
 
     @contextmanager
     def admit(self, size: int, *, reservation_bytes: int | None = None):
-        large = size >= self.limits.large_document_bytes
+        large = self._large_slots is not None and size >= self.limits.large_document_bytes
         if large:
+            assert self._large_slots is not None
             while not self._large_slots.acquire(timeout=0.25):
                 self.cancellation.checkpoint()
         try:
@@ -279,11 +291,12 @@ class PdfResourceGate:
             if self.global_coordinator is not None:
                 try:
                     with self.global_coordinator.admit(
-                        self.route_name, requested, 1, cancellation=self.cancellation
-                    ):
+                        self.route_name, requested, 1, native_threads=1, io_slots=1, phase="pdf-document",
+                        cancellation=self.cancellation
+                    ) as grant:
                         ensure_free_space(self.state_path, self.limits.min_free_bytes)
                         self.cancellation.checkpoint()
-                        yield
+                        yield grant
                 except MemoryError as exc:
                     raise PdfResourceError(str(exc)) from exc
             else:
@@ -299,6 +312,7 @@ class PdfResourceGate:
                     yield
         finally:
             if large:
+                assert self._large_slots is not None
                 self._large_slots.release()
 
 

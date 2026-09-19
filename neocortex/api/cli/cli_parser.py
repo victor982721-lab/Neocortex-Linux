@@ -682,15 +682,17 @@ def build_parser() -> argparse.ArgumentParser:
     global_resources.add_argument(
         "--global-resource-wait-timeout",
         type=float,
-        default=300.0,
+        default=None,
         help=(
-            "seconds to wait for live physical/commit headroom when no "
-            "NeoCortex work is active; ordinary contention between bounded "
-            "route jobs does not expire"
+            "optional seconds to wait for live system headroom; by default "
+            "wait cooperatively for recovery, cancellation or the run deadline"
         ),
     )
     image = parser.add_argument_group("Image route")
-    image.add_argument("--image-workers", type=int, default=4)
+    image.add_argument(
+        "--image-workers", type=int, default=None,
+        help="optional worker ceiling; default adapts to all available capacity",
+    )
     image.add_argument(
         "--image-max-mb",
         dest="image_max_file_bytes",
@@ -712,7 +714,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="force one new attempt for unchanged cached image errors",
     )
-    image.add_argument("--image-memory-budget-mb", type=int, default=512)
+    image.add_argument("--image-memory-budget-mb", type=int, help="aggregate route memory ceiling in MiB; default: automatic")
     image.add_argument("--image-min-free-memory-mb", type=int, default=1024)
     image.add_argument("--image-min-free-commit-mb", type=int, default=1024)
     image.add_argument("--image-memory-wait-timeout", type=float, default=60.0)
@@ -936,12 +938,14 @@ def build_parser() -> argparse.ArgumentParser:
     pdf.add_argument(
         "--pdf-workers",
         type=int,
-        default=4,
+        default=None,
+        help="optional worker ceiling; default adapts to all available capacity",
     )
     pdf.add_argument(
         "--ocr-workers",
         type=int,
-        default=2,
+        default=None,
+        help="optional OCR worker ceiling; default shares the available CPU budget",
     )
     pdf.add_argument(
         "--pdf-min-page-chars",
@@ -1109,10 +1113,10 @@ def build_parser() -> argparse.ArgumentParser:
     pdf.add_argument(
         "--pdf-large-document-workers",
         type=int,
-        default=2,
+        default=None,
         help=(
-            "maximum concurrent PDFs above the large-document threshold; "
-            "memory and commit coordinators still gate admission"
+            "optional worker ceiling for large PDFs; defaults to all available "
+            "capacity admitted by the shared coordinator"
         ),
     )
     direct = pdf.add_mutually_exclusive_group()

@@ -9,7 +9,6 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 import sqlite3
 import threading
-import time
 from pathlib import Path
 from types import SimpleNamespace
 import zlib
@@ -479,7 +478,7 @@ def test_partial_and_protected_facts_remain_queryable_without_fabricated_text(
     assert all(row[3] is None for row in rows)
 
 
-def test_independent_multimodal_catalog_producers_serialize_and_replay(
+def test_independent_multimodal_catalog_producers_overlap_and_replay(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -567,6 +566,7 @@ def test_independent_multimodal_catalog_producers_serialize_and_replay(
     active = 0
     max_active = 0
     activity_lock = threading.Lock()
+    started_together = threading.Barrier(4)
 
     def recording_update(*args: object, **kwargs: object):
         nonlocal active, max_active
@@ -574,10 +574,9 @@ def test_independent_multimodal_catalog_producers_serialize_and_replay(
             active += 1
             max_active = max(max_active, active)
         try:
-            # This sleep is outside the catalog module's own lock.  It makes
-            # an orchestration-level race observable if route_registry does
-            # not serialize the complete generation/CAS call.
-            time.sleep(0.02)
+            # Route orchestration permits source computation to overlap.
+            # The catalog owns short SQL transactions and publication CAS.
+            started_together.wait(timeout=5)
             return original_update(*args, **kwargs)
         finally:
             with activity_lock:
@@ -591,7 +590,7 @@ def test_independent_multimodal_catalog_producers_serialize_and_replay(
     with ThreadPoolExecutor(max_workers=4) as executor:
         first = tuple(executor.map(run_kind, source_by_kind))
 
-    assert max_active == 1
+    assert max_active == 4
     assert [summary.candidates for summaries in first for summary in summaries] == [1] * 4
     with document_catalog_database(catalog, readonly=True) as connection:
         assert connection.execute("SELECT COUNT(*) FROM documents WHERE active=1").fetchone()[0] == 4
@@ -605,7 +604,7 @@ def test_independent_multimodal_catalog_producers_serialize_and_replay(
     with ThreadPoolExecutor(max_workers=4) as executor:
         replay = tuple(executor.map(run_kind, source_by_kind))
 
-    assert max_active == 1
+    assert max_active == 4
     assert [summary.cache_hits for summaries in replay for summary in summaries] == [1] * 4
     assert [summary.classified for summaries in replay for summary in summaries] == [0] * 4
 

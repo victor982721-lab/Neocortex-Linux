@@ -209,7 +209,12 @@ def test_public_cancellation_terminates_blocked_encoder(tmp_path, monkeypatch):
             worker_target=_blocked_startup_worker, **kwargs)
     monkeypatch.setattr(semantic_service, "DeadlineEmbeddingBackend", create)
     def execute(paths, plan, snapshot, **kwargs):
-        semantic_service._backend(_model(), cache_dir=tmp_path, local_files_only=True, threads=1)
+        backend = semantic_service._backend(
+            _model(), cache_dir=tmp_path, local_files_only=True, threads=1,
+        )
+        # Coordinated models start only when useful work is requested.  Enter
+        # that real supervised startup before expiring the public allowance.
+        backend.text_token_counts(("deadline probe",))
         pytest.fail("expired encoder must not return a result")
     service = KnowledgeSearchService(KnowledgeStatePaths.from_directory(tmp_path),
         snapshot_collector=lambda *args, **kwargs: _snapshot("same"), search_executor=execute)
