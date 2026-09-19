@@ -338,7 +338,8 @@ frontera física.
 
 La fuente de verdad de esa política vive en
 `neocortex.workflow.actions.redlist`: cada entrada se compara contra el
-basename exacto o un sufijo de `Path.suffixes`, sin leer payload ni invocar
+basename exacto o el sufijo final de `Path.suffix` (los puntos intermedios de
+versiones no cuentan), sin leer payload ni invocar
 clasificadores de Code. El pre-filtro conserva `policy_digest`, token de
 redlist, identidad y receipt en `file_actions`; un fallo parcial o
 `recovery_required` aborta antes de dedupe y no reintenta la acción.

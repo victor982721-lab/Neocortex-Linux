@@ -52,6 +52,13 @@ def test_redlist_matches_names_and_suffixes_case_insensitively() -> None:
     assert redlist_match("/root/report.keep") is None
 
 
+def test_redlist_does_not_treat_intermediate_version_dots_as_extensions() -> None:
+    assert redlist_match("/root/0.1.- Reporte.xlsx") is None
+    assert redlist_match("/root/Informe_Rev.A.pdf") is None
+    assert redlist_match("/root/WhatsApp_Image_2026-04-09_at_3.04.43_PM.jpeg") is None
+    assert redlist_match("/root/rsc.io panicnil v1.1.0 - 522dacd0.txt") is None
+
+
 def test_redlist_policy_is_stable_and_metadata_binding_does_not_read_payload() -> None:
     assert len(REDLIST_ENTRIES) > 150
     assert redlist_policy_digest().startswith("sha256:")
