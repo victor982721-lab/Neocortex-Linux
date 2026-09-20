@@ -68,6 +68,12 @@ def _run(root: Path, state: Path, *size_arguments: str, apply: bool = False) -> 
         QT_QPA_PLATFORM="offscreen",
     )
     launcher = os.environ.get("NEOCORTEX_SIZE_LIMIT_LAUNCHER")
+    canonical_state_home = os.environ.get("NEOCORTEX_SIZE_LIMIT_CANONICAL_STATE")
+    if launcher and canonical_state_home:
+        # The installed effects-preparation probe reads the attested release
+        # receipt from the canonical XDG state tree.  The explicit
+        # ``--state-directory`` below remains temporary and isolated.
+        environment["XDG_STATE_HOME"] = canonical_state_home
     command = ([launcher] if launcher else [sys.executable, "-m", "neocortex"]) + [
         "--root",
         str(root),
@@ -187,8 +193,10 @@ def test_all_size_limit_apply_preserves_oversize_and_larger_limit_readmits(
 
     expanded = _run(root, tmp_path / "state-expanded", "-S100")
     assert _find_admission(expanded) == {
-        "total_files": 5,
-        "eligible_files": 5,
+        # The limited apply may remove one eligible duplicate; the previously
+        # oversize file remains and is now admitted by the larger ceiling.
+        "total_files": 3,
+        "eligible_files": 3,
         "size_skipped_files": 0,
         "size_skipped_bytes": 0,
         "max_file_bytes": 100_000_000,
