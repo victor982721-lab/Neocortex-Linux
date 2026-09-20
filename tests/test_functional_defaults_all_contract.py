@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from neocortex.api.cli.cli_app import main
-from neocortex.api.cli.cli_config import framework_config_from_args
 from neocortex.api.cli.cli_parser import build_parser
 from neocortex.api.cli.cli_semantic import (
     _integrated_semantic_budget,

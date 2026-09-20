@@ -613,12 +613,9 @@ adoptados) nunca son candidatas ni se modifican.
 |---|---|---|
 | Consulta | `help`, `status`, `search`, `ask`, `inspect`, `--models-status`, `databases status`, `curate scan` | Lee publicaciones existentes; no recorre corpus ni crea estado |
 | Verificación advisory | `curate verify` | Lee archivos regulares y estado publicado; no crea `file_actions` ni modifica el corpus |
-| Producción de estado | rutas, Semantic, catálogo, Review refresh, `curate review/decide` | Escribe owners; no modifica originales ni autoriza efectos |
-| Grant de autorización | `curate authorize` | Escribe un grant acotado; no aplica ni verifica un efecto físico |
+| Producción de estado | rutas, Semantic, catálogo | Escribe owners; no modifica originales ni autoriza efectos |
 | Descarga | `--models-prepare` | Adquiere modelos de forma explícita |
 | Estado destructivo | `--factory-reset`, `databases restore`, `databases purge` con `--apply` | Factory reset usa una invocación explícita y locks; restore/purge conservan sus propios contratos |
-| Aplicación grant-bound | `curate apply` | Requiere confirmación exacta y conserva su autoridad independiente |
-| Conciliación | `curate reconcile` | Registra evidencia bounded; no reintenta ni modifica corpus |
 | Mantenimiento de scratch registrado | `maintenance --scope owned-temp|audit-work` | Plan limitado a `state_directory/scratch`; `--apply` sólo retira scratch propio `completed`, sin KIO |
 | Auditoría histórica | `maintenance --scope historical-temp --maintenance-audit-root PATH` | Plan read-only sobre una raíz absoluta explícita; selección exacta y prepare/approve/apply con recibo privado; sin `/tmp` por defecto, corpus ni SQLite |
 | Diagnóstico externo | `external-maintenance --external-root PATH --external-category CATEGORY` | Observación metadata-only bounded; siempre read-only, sin owner implícito, `--apply`, red, SQLite, KIO o sudo |
@@ -635,7 +632,6 @@ Neocortex ask "consulta" --scope personal --limit 12
 Neocortex ask "¿Qué PDFs están protegidos?" --scope all --json
 Neocortex ask "¿Qué errores tienen mis archivos?" --scope personal --cursor TOKEN --json
 Neocortex inspect lineage IDENTIFICADOR --scope personal
-Neocortex review value --scope personal --limit 50
 Neocortex --models-status --models-json
 Neocortex databases status --json
 ```
@@ -655,9 +651,6 @@ Las preguntas explícitas sobre errores, protección, incidencias ZIP o posibles
 duplicados se enrutan a los owners diagnósticos mediante `ask`; el resultado
 conserva el snapshot, el cursor y la distinción entre archivo, procesamiento,
 índice, política y condición documental, sin autorizar acciones.
-
-`review value --refresh` es diferente: avanza una página durable de Review en
-Framework. No modifica corpus ni concede autorización.
 
 ## Procesamiento de contenido
 

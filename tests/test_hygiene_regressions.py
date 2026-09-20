@@ -350,7 +350,7 @@ def test_retirement_batch_reads_registry_linearly_at_scale(tmp_path: Path) -> No
         original_read = registry._read_manifest_payload
         reads = 0
 
-        def counted(path: Path):
+        def counted(path: Path, original_read=original_read):
             nonlocal reads
             reads += 1
             return original_read(path)

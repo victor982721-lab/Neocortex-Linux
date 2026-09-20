@@ -207,54 +207,6 @@ def test_index_direction_collation_and_predicate_are_contractual(
         connection.close()
 
 
-def test_windows_pdf_and_docx_path_schema_contract_is_nocase() -> None:
-    collation = sqlite_path_collation(platform_name="nt")
-    assert collation == "NOCASE"
-    connection = sqlite3.connect(":memory:")
-    try:
-        for statement in pdf_schema._pdf_table_ddl(collation):
-            connection.execute(statement)
-        for statement in pdf_schema._pdf_index_ddl(collation):
-            connection.execute(statement)
-        table_sql = {
-            str(row[0]): str(row[1]).upper()
-            for row in connection.execute("SELECT name,sql FROM sqlite_master WHERE type='table'")
-        }
-        assert "PATH TEXT NOT NULL COLLATE NOCASE" in table_sql["documents"]
-        assert "PATH TEXT NOT NULL COLLATE NOCASE" in table_sql["pdf_inventory"]
-        assert _key_collations(connection, "documents_path_idx") == ("NOCASE",)
-    finally:
-        connection.close()
-
-    connection = sqlite3.connect(":memory:")
-    try:
-        for statement in docx_schema._docx_table_ddl(collation):
-            connection.execute(statement)
-        for statement in docx_schema._docx_path_index_ddl(collation):
-            connection.execute(statement)
-        table_sql = {
-            str(row[0]): str(row[1]).upper()
-            for row in connection.execute("SELECT name,sql FROM sqlite_master WHERE type='table'")
-        }
-        assert "PATH TEXT NOT NULL COLLATE NOCASE" in table_sql["documents"]
-        assert "PATH TEXT NOT NULL COLLATE NOCASE" in table_sql["docx_inventory"]
-        assert "PDF_PATH TEXT COLLATE NOCASE" in table_sql["pdf_counterparts"]
-        assert _key_collations(connection, "docx_documents_path_idx") == ("NOCASE",)
-        assert _key_collations(connection, "docx_documents_review_idx") == (
-            "BINARY",
-            "BINARY",
-            "NOCASE",
-        )
-        counterpart_pk = next(
-            str(row[1])
-            for row in connection.execute("PRAGMA index_list(pdf_counterparts)")
-            if str(row[3]) == "pk"
-        )
-        assert _key_collations(connection, counterpart_pk) == ("BINARY", "NOCASE")
-    finally:
-        connection.close()
-
-
 @pytest.mark.skipif(
     sqlite_path_collation() != "BINARY",
     reason="case-distinct path identity is the POSIX contract",

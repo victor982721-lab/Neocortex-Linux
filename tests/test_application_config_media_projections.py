@@ -14,7 +14,6 @@ from neocortex.runtime.config.application_config import (
     office_route_config_from_application,
 )
 from neocortex.capabilities.formats.audio.models import AudioRouteConfig
-from neocortex.runtime.config.app_paths import source_repository_directory
 from neocortex.capabilities.formats.image.contracts import ImageRouteConfig
 from neocortex.capabilities.formats.office.route import OfficeRouteConfig
 from neocortex.safety.route_filters import CandidateSelection

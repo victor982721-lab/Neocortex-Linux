@@ -69,7 +69,7 @@ def test_route_snapshot_projection_preserves_review_selection_and_cancellation(
         with state._connection:
             state._connection.execute(
                 """
-                INSERT INTO review_candidates(
+                INSERT INTO findings(
                     route_name,volume_id,file_id,reason_code,path,size,mtime_ns,
                     birthtime_ns,source_status,recommendation,retryable,confidence,
                     evidence_json,detector_version,status,first_detected_ns,
@@ -127,7 +127,7 @@ def test_route_projection_joins_historical_reviews_by_indexed_identity(tmp_path:
         ))
         with state._connection:
             state._connection.executemany(
-                """INSERT INTO review_candidates(
+                """INSERT INTO findings(
                     route_name,volume_id,file_id,reason_code,path,size,mtime_ns,
                     birthtime_ns,source_status,recommendation,retryable,confidence,
                     evidence_json,detector_version,status,first_detected_ns,
@@ -152,12 +152,12 @@ def test_route_projection_joins_historical_reviews_by_indexed_identity(tmp_path:
             with state.route_candidate_snapshot(run_id=run_id) as snapshot:
                 with immutable_sqlite_database(snapshot) as reader:
                     assert reader.execute("SELECT COUNT(*) FROM route_candidates").fetchone()[0] == count
-                    assert reader.execute("SELECT COUNT(*) FROM review_candidates").fetchone()[0] == 0
+                    assert reader.execute("SELECT COUNT(*) FROM findings").fetchone()[0] == 0
             assert source_instructions < 300_000
         finally:
             state._connection.set_progress_handler(None, 0)
             state._connection.set_trace_callback(None)
-        review_query = next(query for query in source_queries if "FROM review_candidates r" in query)
+        review_query = next(query for query in source_queries if "FROM findings r" in query)
         plan = tuple(str(row[3]) for row in state._connection.execute("EXPLAIN QUERY PLAN " + review_query))
         assert any(
             "route_candidates_identity_idx" in step

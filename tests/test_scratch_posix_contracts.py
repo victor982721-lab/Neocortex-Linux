@@ -127,8 +127,12 @@ def test_active_socket_blocks_fixture_and_restores_prepared_permissions(tmp_path
         active = socket.socket(socket.AF_UNIX)
     except PermissionError:
         pytest.skip("sandbox denies AF_UNIX socket creation; type rejection is tested independently")
+    socket_path = workspace.path / "socket"
+    if len(str(socket_path)) >= 100:
+        active.close()
+        pytest.skip("temporary workspace path exceeds the AF_UNIX address limit")
     with active:
-        active.bind(str(workspace.path / "socket"))
+        active.bind(str(socket_path))
         active.listen()
         assert manager.plan().records[0].issue == "socket_payload"
         with pytest.raises(scratch.ScratchSecurityError, match="socket_payload"):

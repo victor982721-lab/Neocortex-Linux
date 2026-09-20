@@ -39,7 +39,7 @@ class _FakeArtifactRegistry:
 
 
 def _manifest(workspace: object) -> dict[str, Any]:
-    path = getattr(workspace, "path")
+    path = workspace.path
     return json.loads((path / "manifest.json").read_text(encoding="utf-8"))
 
 

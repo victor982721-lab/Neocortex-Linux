@@ -37,6 +37,8 @@ from neocortex.safety.route_filters import CandidateSelection
 from neocortex.persistence.framework_route_state import (
     FrameworkRouteState,
     ReviewCandidateReconciliation,
+    reconcile_findings_batch_compat,
+    store_findings_compat,
 )
 from .frames import (
     VIDEO_FRAME_SAMPLING_POLICY,
@@ -947,7 +949,8 @@ class VideoRoute:
         *,
         source_status: Literal["partial", "error"] = "error",
     ) -> None:
-        self.framework_state.store_findings(
+        store_findings_compat(
+            self.framework_state,
             self.run_id,
             (_review_candidate(snapshot, failure, source_status=source_status),),
         )
@@ -966,7 +969,8 @@ class VideoRoute:
                 ),
                 source_status="partial",
             )
-        self.framework_state.reconcile_findings_batch(
+        reconcile_findings_batch_compat(
+            self.framework_state,
             self.run_id,
             "video",
             (

@@ -170,47 +170,6 @@ def test_pdf_multi_error_records_keep_distinct_ids_for_one_file(
     }
 
 
-def test_protected_pdf_and_disposal_use_advisory_framework_owner_page(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[dict[str, object]] = []
-
-    class Cursor:
-        def to_token(self) -> str:
-            return "next-review"
-
-    class Page:
-        availability = "ready"
-        snapshot_id = "sha256:" + "b" * 64
-        total_matching = 1
-        next_cursor = Cursor()
-
-        def to_dict(self):
-            return {"items": [{
-                "route_name": "pdf", "volume_id": "1", "file_id": "2",
-                "reason_code": "pdf_password_required", "recommendation": "keep_protected",
-            }]}
-
-    import neocortex.workflow.review.review_candidate_query as review_query
-
-    def fake(database, **kwargs):
-        calls.append({"database": database, **kwargs})
-        return Page()
-
-    monkeypatch.setattr(review_query, "list_review_candidates_page", fake)
-    service = KnowledgeOperationalQueryService()
-    protected = service.query(_request(tmp_path, "¿Qué PDFs están protegidos?", cursor="cursor-review"))
-    disposal = service.query(_request(tmp_path, "¿Qué duplicados se pueden eliminar?"))
-
-    assert calls[0]["route_name"] == "pdf" and calls[0]["recommendation"] == "keep_protected"
-    assert calls[0]["after"] == "cursor-review"
-    assert calls[1]["recommendation"] == "deletion_candidate"
-    assert protected.facts[0].scope is AssetProblemScope.PROCESSING
-    assert disposal.facts[0].scope is AssetProblemScope.POLICY
-    assert disposal.facts[0].provenance["mutation_authorized"] is False
-    assert protected.next_cursor == disposal.next_cursor == "next-review"
-
-
 def test_owner_failure_is_typed_and_does_not_publish_partial_facts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -6,7 +6,6 @@ import io
 import sqlite3
 import zipfile
 from collections.abc import Iterable, Mapping
-from dataclasses import replace
 from pathlib import Path
 from typing import cast
 

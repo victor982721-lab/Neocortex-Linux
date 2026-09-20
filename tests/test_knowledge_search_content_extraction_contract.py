@@ -204,7 +204,7 @@ def _candidate() -> KnowledgeCandidate:
         f"resource:file:{physical}",
         "pdf",
         "pdf",
-        PhysicalIdentityRef("windows_file_id_birthtime", physical, 1),
+        PhysicalIdentityRef("posix_device_inode_birthtime", physical, 1),
         "C:/fixture/report.pdf",
     )
     revision = RevisionRef(

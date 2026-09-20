@@ -2,16 +2,11 @@ from __future__ import annotations
 
 # region [01] Imports and result fixtures
 
-import argparse
 import inspect
 import json
 import sys
-import time
-from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
-from types import TracebackType
-from typing import Literal
 from unittest.mock import patch
 
 import pytest
@@ -56,7 +51,6 @@ from neocortex.semantic.semantic_service import (
 )
 from neocortex.semantic.semantic_work_budget import (
     SemanticIndexDeadlineExceeded,
-    SemanticWorkBudget,
 )
 from tests.internal_paths_test_support import disjoint_internal_paths_policy
 

@@ -3416,7 +3416,7 @@ def test_apply_synchronizes_current_and_pending_path_caches(tmp_path: Path) -> N
                 run_id INTEGER NOT NULL,path TEXT NOT NULL,volume_id TEXT NOT NULL,
                 file_id TEXT NOT NULL,PRIMARY KEY(run_id,path)
             );
-            CREATE TABLE review_candidates(
+            CREATE TABLE findings(
                 path TEXT NOT NULL,volume_id TEXT NOT NULL,file_id TEXT NOT NULL,
                 status TEXT NOT NULL
             );
@@ -3432,7 +3432,7 @@ def test_apply_synchronizes_current_and_pending_path_caches(tmp_path: Path) -> N
             (1, str(source), str(snapshot.volume_id), str(snapshot.file_id)),
         )
         framework.execute(
-            "INSERT INTO review_candidates VALUES(?,?,?,?)",
+            "INSERT INTO findings VALUES(?,?,?,?)",
             (str(source), str(snapshot.volume_id), str(snapshot.file_id), "open"),
         )
         framework.execute(
@@ -3535,7 +3535,7 @@ def test_apply_synchronizes_current_and_pending_path_caches(tmp_path: Path) -> N
         assert framework.execute("SELECT path FROM route_candidates").fetchone()[0] == str(
             destination
         )
-        assert framework.execute("SELECT path FROM review_candidates").fetchone()[0] == str(
+        assert framework.execute("SELECT path FROM findings").fetchone()[0] == str(
             destination
         )
         corrected = framework.execute(

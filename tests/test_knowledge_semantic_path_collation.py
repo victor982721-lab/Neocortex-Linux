@@ -15,7 +15,6 @@ from neocortex.platform.policy import sqlite_path_collation
 
 _PLATFORM_CASES = (
     pytest.param("posix", False, id="linux-binary"),
-    pytest.param("nt", True, id="windows-nocase"),
 )
 
 

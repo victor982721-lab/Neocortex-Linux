@@ -159,8 +159,8 @@ def _insert_generation(connection: sqlite3.Connection, generation_id: int = 1) -
 )
 @pytest.mark.parametrize(
     ("platform_name", "expected_count"),
-    (("posix", 2), ("nt", 1)),
-    ids=("posix-binary", "windows-nocase"),
+    (("posix", 2),),
+    ids=("posix-binary",),
 )
 def test_document_path_identity_follows_platform_in_both_orders(
     paths: tuple[str, str],
@@ -200,8 +200,8 @@ def test_document_path_identity_follows_platform_in_both_orders(
 
 @pytest.mark.parametrize(
     ("platform_name", "allows_case_distinct"),
-    (("posix", True), ("nt", False)),
-    ids=("posix-binary", "windows-nocase"),
+    (("posix", True),),
+    ids=("posix-binary",),
 )
 def test_generation_and_plan_unique_paths_follow_platform(
     platform_name: str,

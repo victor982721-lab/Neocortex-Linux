@@ -126,9 +126,6 @@ def _make_source_fixture(
             InventoryCheckpoint(
                 str(boundary.access_policy.root),
                 scan.scan_id,
-                "C:",
-                1,
-                11,
                 True,
                 boundary.exclusion_policy.signature,
             )

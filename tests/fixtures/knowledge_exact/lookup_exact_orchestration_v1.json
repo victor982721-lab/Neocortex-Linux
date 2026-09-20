@@ -1,7 +1,7 @@
 {
   "schema": "neocortex-lookup-exact-orchestration/v1",
   "ground_truth_status": "captured_before_rc21_refactor",
-  "semantic_result_xxh3_128": "f6e895b681a2f974e1396a3e79292e26",
+  "semantic_result_xxh3_128": "2295eea3f914f9528499aeb8f7c1a416",
   "semantic_digest_scope": "complete_result_excluding_top_level_and_report_sqlite_steps",
   "expected": {
     "result_xxh3_128": "8c8767fff9a5fd3ad8a361dc1b0927cd",

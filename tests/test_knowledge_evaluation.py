@@ -268,8 +268,6 @@ def test_runner_crosses_live_planner_fusion_context_and_snapshot_service(
 def test_metrics_use_nontrivial_formulas_and_explicit_integrity_denominators() -> None:
     report = evaluate_golden_suite(load_golden_suite(FIXTURE), cutoff_k=2)
     scenarios = {item.category: item for item in report.scenarios}
-    intermediate_ndcg = 7 / (7 + 3 / math.log2(3))
-
     assert report.retrieval.evaluated_queries == 10
     assert report.retrieval.relevant_evidence == 16
     assert report.retrieval.covered_evidence == 13

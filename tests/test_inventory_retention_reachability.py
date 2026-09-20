@@ -21,14 +21,11 @@ def _policy() -> InventoryExclusionPolicy:
     return InventoryExclusionPolicy.compile(())
 
 
-def _checkpoint(root: Path, scan_id: int, next_usn: int) -> InventoryCheckpoint:
+def _checkpoint(root: Path, scan_id: int) -> InventoryCheckpoint:
     policy = _policy()
     return InventoryCheckpoint(
         str(root),
         scan_id,
-        "fixture:",
-        7,
-        next_usn,
         True,
         policy.signature,
     )
@@ -57,10 +54,10 @@ def test_prune_retains_old_published_plan_payload_and_its_inventory_source(
 
         # Create enough newer publications for the first scan to be outside
         # the ordinary current/previous payload window.
-        for next_usn in (10, 20, 30):
-            (root / "first.bin").write_bytes(f"{next_usn}".encode())
+        for payload in (b"ten", b"twenty", b"thirty"):
+            (root / "first.bin").write_bytes(payload)
             newer = index.scan(root, exclusion_policy=policy)
-            index.bind_inventory_checkpoint(_checkpoint(root, newer.scan_id, next_usn))
+            index.bind_inventory_checkpoint(_checkpoint(root, newer.scan_id))
 
         removed = index.prune_obsolete_state(protected_scan_ids=())
 
@@ -99,14 +96,14 @@ def test_prune_retains_complete_successor_component_for_published_checkpoint(
 
     with DedupIndex(database) as index:
         original = index.scan(root, exclusion_policy=policy)
-        index.bind_inventory_checkpoint(_checkpoint(root, original.scan_id, 10))
+        index.bind_inventory_checkpoint(_checkpoint(root, original.scan_id))
 
         source.write_bytes(b"two")
         second_snapshot = snapshot_path(source)
         index.apply_reconciliation(
             original.scan_id,
             upserts=(second_snapshot,),
-            checkpoint=_checkpoint(root, original.scan_id, 20),
+            checkpoint=_checkpoint(root, original.scan_id),
         )
         second = index.current_scan_id(original.scan_id)
 
@@ -115,7 +112,7 @@ def test_prune_retains_complete_successor_component_for_published_checkpoint(
         index.apply_reconciliation(
             original.scan_id,
             upserts=(third_snapshot,),
-            checkpoint=_checkpoint(root, original.scan_id, 30),
+            checkpoint=_checkpoint(root, original.scan_id),
         )
         third = index.current_scan_id(original.scan_id)
         assert (original.scan_id, second, third) == (1, 2, 3)

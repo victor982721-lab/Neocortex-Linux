@@ -119,14 +119,6 @@ def test_canonical_factory_captures_only_declared_safe_codex_content(
 ) -> None:
     layout = _create_layout(tmp_path)
 
-    def unexpected_known_folder_lookup() -> Path:
-        raise AssertionError("injected Documents path must be authoritative")
-
-    monkeypatch.setattr(
-        protected_content_module,
-        "_windows_documents_directory",
-        unexpected_known_folder_lookup,
-    )
     policy = _capture(layout)
     by_role = {entry.role: entry for entry in policy.entries}
 

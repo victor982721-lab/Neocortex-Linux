@@ -53,7 +53,11 @@ from neocortex.platform.zip_safety import (
     inspect_zip_structure,
 )
 from neocortex.workflow.findings import ReviewCandidate, ReviewRecommendation
-from neocortex.persistence.framework_route_state import ReviewCandidateReconciliation
+from neocortex.persistence.framework_route_state import (
+    ReviewCandidateReconciliation,
+    reconcile_findings_batch_compat,
+    store_findings_compat,
+)
 from neocortex.capabilities.formats.xml_safety import safe_xml_fromstring
 from .integrity import (
     classify_docx_exception,
@@ -1905,13 +1909,15 @@ class DocxRoute:
         reconciliations: list[ReviewCandidateReconciliation],
     ) -> None:
         if review_batch:
-            self.framework_state.store_findings(
+            store_findings_compat(
+                self.framework_state,
                 self.run_id,
                 tuple(review_batch),
             )
             review_batch.clear()
         if reconciliations:
-            self.framework_state.reconcile_findings_batch(
+            reconcile_findings_batch_compat(
+                self.framework_state,
                 self.run_id,
                 "docx",
                 tuple(reconciliations),

@@ -227,7 +227,7 @@ def test_excerpt_expansion_reuses_graph_without_changing_projection(monkeypatch)
     projected_again = copy.deepcopy(payload)
     original_graph(projected_again, entries)
     assert projected_again == payload
-    assert payload.get("entities")
+    assert payload.get("citations")
     assert calls["graph"] <= 9
     assert calls["measure"] > calls["graph"]
     assert all(

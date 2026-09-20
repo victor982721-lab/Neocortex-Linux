@@ -26,7 +26,6 @@ from neocortex.runtime.orchestration import orchestrator as orchestrator_module
 from neocortex.runtime.control.global_resources import GlobalResourceSummary
 from neocortex.runtime.orchestration.orchestrator import (
     FrameworkOrchestrator,
-    RouteExecutionError,
     build_normal_inventory_boundary,
 )
 from neocortex.safety.route_filters import CandidateSelection
@@ -55,9 +54,6 @@ def _bind_policy_checkpoint(
         InventoryCheckpoint(
             str(boundary.access_policy.root),
             scan.scan_id,
-            "C:",
-            1,
-            11,
             True,
             boundary.exclusion_policy.signature,
         )
@@ -878,7 +874,7 @@ def test_framework_selection_streams_path_and_review_intersection(tmp_path) -> N
         )
         with state._connection:
             state._connection.execute(
-                """INSERT INTO review_candidates(
+                """INSERT INTO findings(
                 route_name,volume_id,file_id,reason_code,path,size,mtime_ns,
                 birthtime_ns,source_status,recommendation,retryable,confidence,
                 evidence_json,detector_version,status,first_detected_ns,

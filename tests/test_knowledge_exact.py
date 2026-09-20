@@ -7,7 +7,6 @@
 # region [01] Dependencias del módulo
 from __future__ import annotations
 
-import inspect
 import json
 import sqlite3
 import zlib
@@ -21,7 +20,6 @@ from neocortex.deduplication.fingerprinting import FULL_ALGORITHM, PARTIAL_ALGOR
 from neocortex.deduplication.persistence import initialize_inventory_schema
 from neocortex.knowledge import knowledge_exact as knowledge_exact_module
 from neocortex.documents.document_catalog import initialize_document_catalog
-from neocortex.documents.document_resource_binding import build_resource_binding
 from neocortex.foundation.file_identity import FileIdentity
 from neocortex.foundation.hash_compat import HASH_ALGORITHM_128
 from neocortex.knowledge.knowledge_contracts import (
@@ -49,7 +47,6 @@ from neocortex.knowledge.knowledge_planner import (
 )
 from neocortex.knowledge.knowledge_snapshot import KnowledgeStatePaths
 from neocortex.semantic.semantic_models import fingerprint_text
-from neocortex.platform.policy import sqlite_path_collation
 # endregion [01]
 
 # region [02] Implementación
@@ -930,44 +927,6 @@ def test_inventory_checkpoint_change_after_snapshot_abstains(tmp_path: Path) -> 
     assert result.matches == ()
     assert result.reports[0].status is ExactLookupStatus.PARTIAL
     assert result.reports[0].reason == "inventory_changed_after_snapshot"
-
-
-def test_stable_match_ids_use_observed_resource_evidence_not_query_term(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        knowledge_exact_module,
-        "_PATH_COLLATION",
-        sqlite_path_collation(platform_name="nt"),
-    )
-    state = tmp_path / "state"
-    state.mkdir()
-    _create_inventory(state / "dedup.sqlite3")
-    paths = KnowledgeStatePaths.from_directory(state)
-    snapshot = _snapshot(_inventory_owner())
-
-    upper = lookup_exact(
-        paths,
-        snapshot,
-        ExactLookupRequest(
-            (ExactLookupTerm(ExactLookupKind.PATH, "C:/docs/A%_# report.pdf"),),
-            owner_scope=("inventory",),
-        ),
-    ).matches[0]
-    lower = lookup_exact(
-        paths,
-        snapshot,
-        ExactLookupRequest(
-            (ExactLookupTerm(ExactLookupKind.PATH, "c:/docs/a%_# REPORT.pdf"),),
-            owner_scope=("inventory",),
-        ),
-    ).matches[0]
-
-    assert upper.term.term_id != lower.term.term_id
-    assert upper.revision.revision_id == lower.revision.revision_id
-    assert upper.evidence.evidence_id == lower.evidence.evidence_id
-    assert upper.match_id == lower.match_id
 
 
 def test_owner_lookahead_contributes_to_omitted_match_count(tmp_path: Path) -> None:

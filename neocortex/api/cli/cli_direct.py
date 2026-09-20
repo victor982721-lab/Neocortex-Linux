@@ -4,14 +4,9 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from neocortex.foundation.hash_compat import (
-    STABLE_KEY_ALGORITHM,
-    stable_sha256_128_hexdigest,
-)
 
 if TYPE_CHECKING:
     from neocortex.safety.internal_paths import InternalPathsPolicy

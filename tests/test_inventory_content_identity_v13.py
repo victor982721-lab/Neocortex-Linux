@@ -33,7 +33,7 @@ def test_same_size_same_mtime_reconciliation_creates_successor_and_hides_old_pla
     with DedupIndex(tmp_path / "inventory.sqlite3") as index:
         original = index.scan(root, exclusion_policy=policy)
         index.bind_inventory_checkpoint(
-            InventoryCheckpoint(str(root), original.scan_id, None, None, None, True, policy.signature)
+            InventoryCheckpoint(str(root), original.scan_id, True, policy.signature)
         )
         plan = DedupPlanner(index).plan(original.scan_id, preview_limit=None)
         assert plan.group_count == 1
@@ -51,7 +51,7 @@ def test_same_size_same_mtime_reconciliation_creates_successor_and_hides_old_pla
             original.scan_id,
             upserts=(rewritten,),
             checkpoint=InventoryCheckpoint(
-                str(root), original.scan_id, None, None, None, True, policy.signature
+                str(root), original.scan_id, True, policy.signature
             ),
         )
 

@@ -57,6 +57,8 @@ from neocortex.workflow.findings import ReviewCandidate
 from neocortex.persistence.framework_route_state import (
     FrameworkRouteState,
     ReviewCandidateReconciliation,
+    reconcile_findings_batch_compat,
+    store_findings_compat,
 )
 
 
@@ -199,7 +201,8 @@ class _AudioReviewBuffer:
         snapshot: FileSnapshot,
         failure: AudioProcessingError,
     ) -> None:
-        self.framework_state.store_findings(
+        store_findings_compat(
+            self.framework_state,
             self.run_id,
             (_review_candidate(snapshot, failure),),
         )
@@ -207,7 +210,8 @@ class _AudioReviewBuffer:
     def flush(self) -> None:
         if not self.reconciliations:
             return
-        self.framework_state.reconcile_findings_batch(
+        reconcile_findings_batch_compat(
+            self.framework_state,
             self.run_id,
             "audio",
             tuple(self.reconciliations),

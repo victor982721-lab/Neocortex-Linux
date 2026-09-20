@@ -114,7 +114,7 @@ def test_knowledge_original_intent_survives_isolated_image_step_and_public_seman
     paths = KnowledgeStatePaths(
         **{name: tmp_path / f"{name}.sqlite3" for name in (
             "inventory", "framework", "catalog", "pdf", "docx", "office", "audio",
-            "image", "semantic", "code",
+            "image", "semantic",
         )}
     )
     assert paths.semantic == database

@@ -12,8 +12,7 @@ from pathlib import Path
 import pytest
 from neocortex.foundation.hash_compat import HASH_ALGORITHM_128
 
-from tests.portable_inventory import PortableInventoryCursor
-from neocortex.deduplication import DedupIndex, InventoryCheckpoint, ScanSummary
+from neocortex.deduplication import DedupIndex
 from neocortex.integrations.inventory import inventory_boundary as inventory_boundary_module
 from neocortex.safety.corpus_access import (
     CorpusAccessPolicy,
@@ -24,12 +23,9 @@ from neocortex.safety.internal_paths import (
     InternalPathsPolicy,
 )
 from neocortex.runtime.orchestration.orchestrator import (
-    FrameworkOrchestrator,
-    NormalInventoryBoundary,
     build_normal_inventory_boundary,
     initialize_authorized_state_directory,
 )
-from neocortex.runtime.models import FrameworkConfig
 from neocortex.safety.protected_content import (
     ProtectedContentError,
     ProtectedContentPolicy,
@@ -573,184 +569,5 @@ def test_signed_normal_run_helper_persists_exact_effective_signature(
         )
 
         assert state.source_inventory_policy_signature(run_id) == (expected.effective_signature)
-
-
-
-
-def _publish_completed_owner(
-    state: FrameworkState,
-    root: Path,
-    scan: ScanSummary,
-    signature: str,
-    cursor: PortableInventoryCursor,
-) -> int:
-    run_id = state.begin_initial_run(
-        root,
-        cursor,
-        inventory_policy_signature=signature,
-    )
-    state.publish_initial_routing_snapshot(run_id, scan.scan_id, 0, 1, "full", 0)
-    state.complete_initial_run(run_id, scan.scan_id, cursor, 0, 1, "full")
-    return run_id
-
-
-def _bind_checkpoint(
-    index: DedupIndex,
-    boundary: NormalInventoryBoundary,
-    scan: ScanSummary,
-    cursor: PortableInventoryCursor,
-) -> None:
-    index.bind_inventory_checkpoint(
-        InventoryCheckpoint(
-            str(boundary.access_policy.root),
-            scan.scan_id,
-            cursor.volume,
-            cursor.journal_id,
-            cursor.next_usn,
-            True,
-            boundary.exclusion_policy.signature,
-        )
-    )
-
-
-@pytest.mark.skip(reason="portable Linux inventory no longer exposes journal/checkpoint migration")
-def test_normal_incremental_gate_requires_exact_three_owner_binding(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "corpus"
-    state_directory = tmp_path / "state"
-    root.mkdir()
-    state_directory.mkdir()
-    (root / "one.txt").write_text("one", encoding="utf-8")
-    boundary = build_normal_inventory_boundary(root, state_directory)
-    cursor = PortableInventoryCursor(root.drive, 7, 100)
-    orchestrator = FrameworkOrchestrator(
-        FrameworkConfig(root=root, state_directory=state_directory)
-    )
-
-    with (
-        DedupIndex(state_directory / "dedup.sqlite3") as index,
-        FrameworkState(state_directory / "framework.sqlite3") as state,
-    ):
-        scan = index.scan(root, exclusion_policy=boundary.exclusion_policy)
-        _bind_checkpoint(index, boundary, scan, cursor)
-        owner = _publish_completed_owner(
-            state,
-            root,
-            scan,
-            boundary.effective_signature,
-            cursor,
-        )
-
-        allowed, reason, source_run_id = orchestrator._normal_incremental_gate(
-            state=state,
-            dedup_index=index,
-            boundary=boundary,
-            journal_before=cursor,
-        )
-
-    assert allowed
-    assert reason == "latest_durable_checkpoint_match"
-    assert source_run_id == owner
-
-
-@pytest.mark.skip(reason="portable Linux inventory no longer exposes journal/checkpoint migration")
-def test_normal_incremental_gate_never_falls_back_past_newest_policy(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "corpus"
-    state_directory = tmp_path / "state"
-    root.mkdir()
-    state_directory.mkdir()
-    (root / "one.txt").write_text("one", encoding="utf-8")
-    boundary = build_normal_inventory_boundary(root, state_directory)
-    cursor = PortableInventoryCursor(root.drive, 7, 100)
-    orchestrator = FrameworkOrchestrator(
-        FrameworkConfig(root=root, state_directory=state_directory)
-    )
-
-    with (
-        DedupIndex(state_directory / "dedup.sqlite3") as index,
-        FrameworkState(state_directory / "framework.sqlite3") as state,
-    ):
-        scan = index.scan(root, exclusion_policy=boundary.exclusion_policy)
-        _bind_checkpoint(index, boundary, scan, cursor)
-        _publish_completed_owner(
-            state,
-            root,
-            scan,
-            boundary.effective_signature,
-            cursor,
-        )
-        _publish_completed_owner(
-            state,
-            root,
-            scan,
-            "effective-inventory-policy-v1:xxh3_128:" + "0" * 32,
-            cursor,
-        )
-
-        allowed, reason, source_run_id = orchestrator._normal_incremental_gate(
-            state=state,
-            dedup_index=index,
-            boundary=boundary,
-            journal_before=cursor,
-        )
-
-    assert not allowed
-    assert reason == "no_matching_latest_durable_run"
-    assert source_run_id is None
-
-
-@pytest.mark.skip(reason="portable Linux inventory no longer exposes journal/checkpoint migration")
-def test_failed_checkpoint_owner_forces_full_inventory(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "corpus"
-    state_directory = tmp_path / "state"
-    root.mkdir()
-    state_directory.mkdir()
-    source = root / "one.txt"
-    source.write_text("one", encoding="utf-8")
-    boundary = build_normal_inventory_boundary(root, state_directory)
-    cursor = PortableInventoryCursor(root.drive, 7, 100)
-    orchestrator = FrameworkOrchestrator(
-        FrameworkConfig(root=root, state_directory=state_directory)
-    )
-
-    with (
-        DedupIndex(state_directory / "dedup.sqlite3") as index,
-        FrameworkState(state_directory / "framework.sqlite3") as state,
-    ):
-        completed_scan = index.scan(root, exclusion_policy=boundary.exclusion_policy)
-        _bind_checkpoint(index, boundary, completed_scan, cursor)
-        _publish_completed_owner(
-            state,
-            root,
-            completed_scan,
-            boundary.effective_signature,
-            cursor,
-        )
-        source.write_text("changed", encoding="utf-8")
-        failed_scan = index.scan(root, exclusion_policy=boundary.exclusion_policy)
-        _bind_checkpoint(index, boundary, failed_scan, cursor)
-        failed_run = state.begin_initial_run(
-            root,
-            cursor,
-            inventory_policy_signature=boundary.effective_signature,
-        )
-        state.fail_initial_run(failed_run)
-
-        allowed, reason, source_run_id = orchestrator._normal_incremental_gate(
-            state=state,
-            dedup_index=index,
-            boundary=boundary,
-            journal_before=cursor,
-        )
-
-    assert not allowed
-    assert reason == "checkpoint_scan_mismatch"
-    assert source_run_id is not None
-
 
 # endregion [02]

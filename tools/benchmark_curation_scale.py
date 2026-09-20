@@ -327,7 +327,7 @@ def _scan_with_metrics(
                 progress=progress,
             )
             index.bind_inventory_checkpoint(
-                InventoryCheckpoint(str(corpus), summary.scan_id, None, None, None, True)
+                InventoryCheckpoint(str(corpus), summary.scan_id)
             )
             _check_deadline(deadline)
     elapsed = time.perf_counter() - started

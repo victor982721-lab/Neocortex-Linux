@@ -14,7 +14,6 @@ from neocortex.runtime.control.global_resources import (
     GlobalResourceCoordinator,
     GlobalResourceLimits,
     current_resource_coordinator,
-    resource_scope,
 )
 from neocortex.runtime.control.memory_runtime import MemorySnapshot
 from neocortex.runtime.control.cancellation import CancellationToken

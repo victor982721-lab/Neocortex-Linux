@@ -447,36 +447,6 @@ def test_linux_case_distinct_office_paths_survive_both_processing_orders(
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
-@pytest.mark.parametrize("reverse", (False, True))
-def test_office_windows_path_identity_schema_remains_nocase(reverse: bool) -> None:
-    connection = sqlite3.connect(":memory:")
-    try:
-        for statement in office_state_module._office_v1_schema_ddl(
-            sqlite_path_collation(platform_name="nt")
-        ) + office_state_module._office_xlsx_schema_ddl(sqlite_path_collation(platform_name="nt")):
-            connection.execute(statement)
-        assert _index_key_collations(connection, "office_documents_path_idx") == ("NOCASE",)
-        assert _index_key_collations(connection, "office_inventory_path_idx") == ("NOCASE",)
-        assert _index_key_collations(connection, "xlsx_cells_location_idx")[0] == ("NOCASE")
-        paths = ("C:/Corpus/Case.xlsx", "C:/Corpus/case.xlsx")
-        ordered = tuple(reversed(paths)) if reverse else paths
-        connection.execute(
-            """INSERT INTO office_inventory(
-            file_key,format,path,size,mtime_ns,birthtime_ns,last_seen_run_id)
-            VALUES('first','xlsx',?,1,2,3,4)""",
-            (ordered[0],),
-        )
-        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
-            connection.execute(
-                """INSERT INTO office_inventory(
-                file_key,format,path,size,mtime_ns,birthtime_ns,last_seen_run_id)
-                VALUES('second','xlsx',?,1,2,3,4)""",
-                (ordered[1],),
-            )
-    finally:
-        connection.close()
-
-
 def test_office_route_extracts_caches_and_classifies_all_supported_formats(
     tmp_path: Path,
 ) -> None:

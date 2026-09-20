@@ -201,7 +201,7 @@ def test_all_apply_prefilters_the_corpus_before_planning_and_never_leaves_root(
     monkeypatch.setattr(FrameworkOrchestrator, "_prepare_run_contract", lambda *_args: None)
     monkeypatch.setattr(
         "neocortex.runtime.orchestration.orchestrator.builtin_route_registry",
-        lambda: {},
+        dict,
     )
     result = FrameworkOrchestrator(
         FrameworkConfig(root=root, state_directory=state, route="all", apply_actions=True),

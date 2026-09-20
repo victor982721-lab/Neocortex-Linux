@@ -16,9 +16,6 @@ from neocortex.deduplication import FileSnapshot
 from neocortex.persistence.framework_connection import connect_existing_framework
 from neocortex.workflow.findings import (
     FINDING_RECOMMENDATIONS,
-    MAX_EVIDENCE_BYTES,
-    MAX_IDENTIFIER_CHARS,
-    ReviewCandidate,
     ReviewRecommendation,
     serialized_evidence,
 )
@@ -224,7 +221,7 @@ def _review_candidate_record(row: sqlite3.Row) -> ReviewCandidateRecord:
         birthtime_ns=int(row["birthtime_ns"]),
         reason_code=str(row["reason_code"]),
         source_status=str(row["source_status"]),
-        recommendation=str(row["recommendation"]),  # type: ignore[arg-type]
+        recommendation=str(row["recommendation"]),
         retryable=bool(row["retryable"]),
         confidence=float(row["confidence"]),
         evidence=evidence,
@@ -272,7 +269,7 @@ def list_review_candidates(
         rows = connection.execute(
             "SELECT "
             + _REVIEW_CANDIDATE_COLUMNS
-            + " FROM review_candidates WHERE "
+            + " FROM findings WHERE "
             + " AND ".join(clauses)
             + """ ORDER BY
             CASE recommendation
@@ -311,7 +308,7 @@ def get_review_candidate(
         row = connection.execute(
             "SELECT "
             + _REVIEW_CANDIDATE_COLUMNS
-            + """ FROM review_candidates WHERE route_name=? AND volume_id=?
+            + """ FROM findings WHERE route_name=? AND volume_id=?
             AND file_id=? AND reason_code=?""",
             (route_name, f"{volume_id:x}", f"{file_id:x}", reason_code),
         ).fetchone()
@@ -381,7 +378,7 @@ def _review_decision_record(row: sqlite3.Row) -> ReviewDecisionRecord:
         reason_code=str(row["reason_code"]),
         candidate_generation=int(row["candidate_generation"]),
         source_status=source_status,
-        recommendation=recommendation,  # type: ignore[arg-type]
+        recommendation=recommendation,
         retryable=retryable,
         confidence=confidence,
         evidence=evidence,

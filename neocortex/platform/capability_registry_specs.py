@@ -546,7 +546,6 @@ CAPABILITY_SPEC_PAYLOADS: Final = (
         "test_roots": [
             "tests/test_application_config_media_projections.py",
             "tests/test_capability_registry.py",
-            "tests/test_cli_review_office.py",
             "tests/test_office_route.py",
             "tests/test_route_schema_contracts.py",
             "tests/test_text_derivation_route.py",

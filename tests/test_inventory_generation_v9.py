@@ -74,7 +74,7 @@ def _create_populated_v8(
             connection.execute("UPDATE inventory_checkpoints SET unexpected='preserve-me'")
 
 
-def test_fresh_current_schema_publishes_a_snapshot_without_inventing_usn(
+def test_fresh_current_schema_publishes_a_portable_snapshot_without_a_cursor(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "inventory.sqlite3"
@@ -90,9 +90,6 @@ def test_fresh_current_schema_publishes_a_snapshot_without_inventing_usn(
             InventoryCheckpoint(
                 str(root),
                 scan.scan_id,
-                None,
-                None,
-                None,
                 True,
                 policy.signature,
             )
@@ -102,12 +99,7 @@ def test_fresh_current_schema_publishes_a_snapshot_without_inventing_usn(
 
     assert checkpoint is not None
     assert checkpoint.valid
-    assert not checkpoint.journal_available
-    assert (checkpoint.volume, checkpoint.journal_id, checkpoint.next_usn) == (
-        None,
-        None,
-        None,
-    )
+    assert checkpoint.inventory_policy_signature == policy.signature
     assert [Path(item.path).name for item in published] == ["source.py"]
     with sqlite3.connect(database) as connection:
         assert connection.execute(
@@ -119,29 +111,6 @@ def test_fresh_current_schema_publishes_a_snapshot_without_inventing_usn(
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         inventory_schema_module.validate_inventory_schema(connection)
-
-
-def test_current_schema_rejects_a_partial_optional_usn_cursor(tmp_path: Path) -> None:
-    database = tmp_path / "inventory.sqlite3"
-    root = tmp_path / "corpus"
-    root.mkdir()
-    (root / "source.py").write_text("VALUE = 1\n", encoding="utf-8")
-    policy = InventoryExclusionPolicy.compile()
-
-    with DedupIndex(database) as index:
-        scan = index.scan(root, exclusion_policy=policy)
-        with pytest.raises(InventoryError, match="partial USN cursor"):
-            index.bind_inventory_checkpoint(
-                InventoryCheckpoint(
-                    str(root),
-                    scan.scan_id,
-                    None,
-                    9,
-                    None,
-                    True,
-                    policy.signature,
-                )
-            )
 
 
 def test_v8_to_current_preserves_published_evidence_and_is_idempotent(

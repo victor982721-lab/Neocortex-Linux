@@ -100,7 +100,7 @@ def framework_selection_predicate(
     if selection.recommendations:
         placeholders = ",".join("?" for _ in selection.recommendations)
         clauses.append(
-            "EXISTS(SELECT 1 FROM review_candidates r "
+            "EXISTS(SELECT 1 FROM findings r "
             f"WHERE r.route_name=? AND r.volume_id={candidate_alias}.volume_id "
             f"AND r.file_id={candidate_alias}.file_id AND r.status='open' "
             f"AND r.recommendation IN ({placeholders}))"

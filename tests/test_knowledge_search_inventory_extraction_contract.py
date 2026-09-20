@@ -175,7 +175,7 @@ def _candidate(
         f"resource:file:{physical}",
         "pdf",
         "pdf",
-        PhysicalIdentityRef("windows_file_id_birthtime", physical, 1),
+        PhysicalIdentityRef("posix_device_inode_birthtime", physical, 1),
         f"C:/fixture/{marker}.pdf",
     )
     revision = RevisionRef(
@@ -750,7 +750,7 @@ def test_inventory_identity_primitives_and_canonical_physical_identity() -> None
             "resource:file:01:2:3",
             "pdf",
             "pdf",
-            PhysicalIdentityRef("windows_file_id_birthtime", "01:2:3", 1),
+            PhysicalIdentityRef("posix_device_inode_birthtime", "01:2:3", 1),
         ),
         ResourceRef(
             "resource:file:1:2:3",
@@ -759,17 +759,17 @@ def test_inventory_identity_primitives_and_canonical_physical_identity() -> None
             PhysicalIdentityRef("owner_file_key", "1:2:3", 1),
         ),
         ResourceRef(
-            "resource:file:1:2:-1",
+            "resource:file:1:2:-2",
             "pdf",
             "pdf",
-            PhysicalIdentityRef("windows_file_id_birthtime", "1:2:-1", 1),
+            PhysicalIdentityRef("posix_device_inode_birthtime", "1:2:-2", 1),
         ),
         ResourceRef(
             "resource:file:1:2:3:4",
             "pdf",
             "pdf",
             PhysicalIdentityRef(
-                "windows_file_id_birthtime",
+                "posix_device_inode_birthtime",
                 "1:2:3:4",
                 1,
             ),

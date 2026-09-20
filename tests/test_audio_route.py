@@ -484,35 +484,6 @@ def test_linux_case_distinct_audio_paths_survive_both_processing_orders(
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
-@pytest.mark.parametrize("reverse", (False, True))
-def test_audio_windows_path_identity_schema_remains_nocase(reverse: bool) -> None:
-    connection = sqlite3.connect(":memory:")
-    try:
-        for statement in audio_state_module._audio_schema_ddl(
-            sqlite_path_collation(platform_name="nt")
-        ):
-            connection.execute(statement)
-        assert _index_key_collations(connection, "audio_documents_path_idx") == ("NOCASE",)
-        assert _index_key_collations(connection, "audio_inventory_path_idx") == ("NOCASE",)
-        paths = ("C:/Corpus/Case.opus", "C:/Corpus/case.opus")
-        ordered = tuple(reversed(paths)) if reverse else paths
-        connection.execute(
-            """INSERT INTO audio_inventory(
-            file_key,path,mime,size,mtime_ns,birthtime_ns,last_seen_run_id)
-            VALUES('first',?,'audio/opus',1,2,3,4)""",
-            (ordered[0],),
-        )
-        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
-            connection.execute(
-                """INSERT INTO audio_inventory(
-                file_key,path,mime,size,mtime_ns,birthtime_ns,last_seen_run_id)
-                VALUES('second',?,'audio/opus',1,2,3,4)""",
-                (ordered[1],),
-            )
-    finally:
-        connection.close()
-
-
 def test_audio_route_transcribes_segments_and_reuses_cache(tmp_path: Path) -> None:
     source = tmp_path / "PTT-2026-01-01.opus"
     source.write_bytes(b"OggS deterministic fixture")

@@ -242,32 +242,35 @@ class PlannerTests(unittest.TestCase):
                 ).fetchone()[0]
             self.assertEqual(version, str(INVENTORY_SCHEMA_VERSION))
 
-    def test_reuses_inventory_checkpoint_and_advances_it_with_changes(self) -> None:
+    def test_reuses_inventory_checkpoint_and_advances_generation_with_changes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             root = base / "corpus"
             root.mkdir()
             original = root / "original.bin"
             original.write_bytes(b"original")
+            successor_scan_id = None
             with DedupIndex(base / "state.db") as index:
                 scan = index.scan(root, excluded_paths=())
                 index.bind_inventory_checkpoint(
-                    InventoryCheckpoint(str(root), scan.scan_id, "C:", 7, 100)
+                    InventoryCheckpoint(str(root), scan.scan_id)
                 )
                 created = root / "created.bin"
                 created.write_bytes(b"created")
                 index.apply_reconciliation(
                     scan.scan_id,
                     upserts=(snapshot_path(created),),
-                    checkpoint=InventoryCheckpoint(str(root), scan.scan_id, "C:", 7, 120),
+                    checkpoint=InventoryCheckpoint(str(root), scan.scan_id),
                 )
                 index.refresh_scan_aggregates(scan.scan_id)
+                successor_scan_id = index.current_scan_id(scan.scan_id)
                 checkpoint = index.inventory_checkpoint(root)
                 summary = index.scan_summary(scan.scan_id)
                 names = {Path(item.path).name for item in index.snapshots(scan.scan_id)}
             assert checkpoint is not None
-            self.assertEqual(checkpoint.next_usn, 120)
             self.assertTrue(checkpoint.valid)
+            self.assertEqual(checkpoint.scan_id, successor_scan_id)
+            self.assertIsNotNone(checkpoint.inventory_policy_signature)
             self.assertEqual(summary.files_seen, 2)
             self.assertEqual(names, {"original.bin", "created.bin"})
 

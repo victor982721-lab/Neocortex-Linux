@@ -33,7 +33,7 @@ from neocortex.workflow.actions.actions import FrameworkActions
 from neocortex.platform.content_types import DetectedType
 from neocortex.safety.corpus_access import ProtectedAnalysisRootError
 from neocortex.runtime.models import ActionSummary
-from neocortex.persistence.framework_schema import SCHEMA_VERSION
+from neocortex.persistence.framework_schema import FrameworkStateIncompatible
 from neocortex.persistence.framework_state_writer import FrameworkState
 from tests.internal_paths_test_support import begin_signed_normal_run
 
@@ -1045,7 +1045,7 @@ class FingerprintCacheSafetyTests(unittest.TestCase):
 
 
 class ContentTypeCacheSafetyTests(unittest.TestCase):
-    def test_legacy_detection_never_matches_a_new_birth_time(self) -> None:
+    def test_legacy_detection_requires_explicit_factory_reset(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             database = Path(temporary) / "framework.sqlite3"
             with closing(sqlite3.connect(database)) as connection:
@@ -1056,67 +1056,12 @@ class ContentTypeCacheSafetyTests(unittest.TestCase):
                         value TEXT NOT NULL
                     ) WITHOUT ROWID;
                     INSERT INTO metadata VALUES('schema_version', '10');
-                    CREATE TABLE content_type_cache(
-                        volume_id TEXT NOT NULL,
-                        file_id TEXT NOT NULL,
-                        size INTEGER NOT NULL,
-                        mtime_ns INTEGER NOT NULL,
-                        detector_version TEXT NOT NULL,
-                        status TEXT NOT NULL,
-                        mime TEXT,
-                        canonical_extension TEXT,
-                        accepted_extensions_json TEXT,
-                        evidence TEXT,
-                        last_seen_run_id INTEGER NOT NULL DEFAULT 0,
-                        updated_ns INTEGER NOT NULL,
-                        PRIMARY KEY(volume_id,file_id,detector_version)
-                    ) WITHOUT ROWID;
-                    INSERT INTO content_type_cache VALUES(
-                        '7','b',100,200,'detector-v1','unknown',
-                        NULL,NULL,NULL,NULL,1,1
-                    );
                     """
                 )
                 connection.commit()
 
-            snapshot = FileSnapshot("unused.bin", 7, 11, 100, 200, 300)
-            detected = DetectedType(
-                "application/pdf",
-                ".pdf",
-                frozenset({".pdf"}),
-                "test-evidence",
-            )
-            with FrameworkState(database) as state:
-                self.assertEqual(
-                    state.get_content_type_cache(snapshot, "detector-v1"),
-                    (False, None),
-                )
-                with closing(sqlite3.connect(database)) as connection:
-                    version = connection.execute(
-                        "SELECT value FROM metadata WHERE key='schema_version'"
-                    ).fetchone()[0]
-                    legacy_birthtime = connection.execute(
-                        "SELECT birthtime_ns FROM content_type_cache"
-                    ).fetchone()[0]
-                self.assertEqual(version, str(SCHEMA_VERSION))
-                self.assertEqual(legacy_birthtime, -1)
-
-                state.store_content_type_cache(
-                    snapshot,
-                    "detector-v1",
-                    detected,
-                    run_id=2,
-                )
-                self.assertEqual(
-                    state.get_content_type_cache(snapshot, "detector-v1"),
-                    (True, detected),
-                )
-
-            with closing(sqlite3.connect(database)) as connection:
-                refreshed_birthtime = connection.execute(
-                    "SELECT birthtime_ns FROM content_type_cache"
-                ).fetchone()[0]
-            self.assertEqual(refreshed_birthtime, snapshot.birthtime_ns)
+            with self.assertRaises(FrameworkStateIncompatible):
+                FrameworkState(database)
 
 
 # endregion [06]

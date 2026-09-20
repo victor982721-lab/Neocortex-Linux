@@ -3,19 +3,14 @@ from __future__ import annotations
 
 import os
 import queue
-import sqlite3
-import tempfile
 import threading
 import time
 import unittest
-from contextlib import closing
-from pathlib import Path
 from types import SimpleNamespace
 import pytest
 
 from unittest.mock import Mock, patch
 
-from neocortex.api.public import FrameworkConfig, FrameworkOrchestrator, RouteAdapter
 from neocortex.runtime.control.cancellation import (
     CancellationRequested,
     CancellationToken,
@@ -32,7 +27,6 @@ from neocortex.runtime.control.global_resources import (
 )
 from neocortex.runtime.control.memory_runtime import MemorySnapshot
 from neocortex.runtime.control.isolated_process import isolated_spawn_process
-from neocortex.progress import RecordingProgress
 
 
 TEST_CAPABILITIES = ("base", "documents")
@@ -157,64 +151,6 @@ class FrameworkCancellationTests(unittest.TestCase):
             id(callback),
             console_cancellation._FAILED_UNREGISTRATIONS,
         )
-
-    def test_keyboard_interrupt_cancels_other_routes_and_persists_state(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
-            corpus = base / "corpus"
-            state = base / "state"
-            corpus.mkdir()
-            journal = SyntheticUsnJournal(corpus).start()
-            self.addCleanup(journal.close)
-            waiting_started = threading.Event()
-            cancellation_wakes: list[bool] = []
-
-            def waiting_route(context):
-                waiting_started.set()
-                cancellation_wakes.append(context.cancellation.wait(5))
-                context.cancellation.checkpoint()
-
-            def interrupting_route(_context):
-                if not waiting_started.wait(1):
-                    raise RuntimeError("waiting route did not start")
-                raise KeyboardInterrupt
-
-            registry = {
-                "waiting": RouteAdapter("waiting", waiting_route),
-                "interrupt": RouteAdapter("interrupt", interrupting_route),
-            }
-            orchestrator = FrameworkOrchestrator(
-                FrameworkConfig(
-                    root=corpus,
-                    state_directory=state,
-                    route="waiting,interrupt",
-                    global_memory_budget_bytes=128 * 1024 * 1024,
-                    global_min_free_memory_bytes=0,
-                    global_min_free_commit_bytes=0,
-                    global_cpu_slots=2,
-                ),
-                route_registry=registry,
-            )
-
-            with self.assertRaises(KeyboardInterrupt):
-                orchestrator.run_initial()
-            self.assertEqual(cancellation_wakes, [True])
-
-            with closing(sqlite3.connect(state / "framework.sqlite3")) as connection:
-                run_status = connection.execute(
-                    "SELECT status FROM initial_runs ORDER BY run_id DESC LIMIT 1"
-                ).fetchone()[0]
-                route_statuses = dict(
-                    connection.execute(
-                        "SELECT route_name,status FROM route_runs "
-                        "WHERE run_id=(SELECT MAX(run_id) FROM initial_runs)"
-                    )
-                )
-            self.assertEqual(run_status, "cancelled")
-            self.assertEqual(
-                route_statuses,
-                {"waiting": "cancelled", "interrupt": "cancelled"},
-            )
 
 # endregion [01]
 

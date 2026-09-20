@@ -46,6 +46,64 @@ from neocortex.persistence.sqlite_paths import existing_sqlite_uri
 REVIEW_RECONCILIATION_BATCH_SIZE = 256
 
 
+def store_findings_compat(
+    framework_state: Any,
+    run_id: int,
+    candidates: Iterable[ReviewCandidate],
+) -> None:
+    """Persist findings through the current API or a legacy route double.
+
+    The route state API was renamed from ``*_review_candidates`` to the more
+    precise ``*_findings`` names.  A few deliberately minimal route fixtures
+    (and downstream integrations) still expose the old spelling, so keep the
+    compatibility boundary in one place rather than making every route know
+    about both contracts.
+    """
+
+    store = getattr(framework_state, "store_findings", None)
+    if store is None:
+        store = getattr(framework_state, "store_review_candidates", None)
+    if store is None:
+        raise AttributeError("framework route state does not expose findings storage")
+    store(run_id, candidates)
+
+
+def reconcile_findings_batch_compat(
+    framework_state: Any,
+    run_id: int,
+    route_name: str,
+    reconciliations: Iterable["ReviewCandidateReconciliation"],
+) -> int:
+    """Reconcile findings using the current API or legacy route doubles."""
+
+    batch = tuple(reconciliations)
+    reconcile = getattr(framework_state, "reconcile_findings_batch", None)
+    if reconcile is not None:
+        return int(reconcile(run_id, route_name, batch))
+
+    reconcile = getattr(framework_state, "reconcile_review_candidates_batch", None)
+    if reconcile is not None:
+        result = reconcile(run_id, route_name, batch)
+        return 0 if result is None else int(result)
+
+    reconcile_one = getattr(framework_state, "reconcile_review_candidates", None)
+    if reconcile_one is None:
+        raise AttributeError("framework route state does not expose findings reconciliation")
+    resolved = 0
+    for item in batch:
+        result = reconcile_one(
+            run_id,
+            route_name,
+            item.snapshot,
+            item.resolution_note,
+            evaluated_reason_codes=item.evaluated_reason_codes,
+            active_reason_codes=item.active_reason_codes,
+        )
+        if result is not None:
+            resolved += int(result)
+    return resolved
+
+
 def _bounded_review_reason_codes(reason_codes: object) -> tuple[str, ...]:
     """Validate a reason iterable without materializing an unbounded source."""
 

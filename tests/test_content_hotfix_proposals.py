@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import io
-import json
-import os
 import sqlite3
 import zipfile
 from pathlib import Path

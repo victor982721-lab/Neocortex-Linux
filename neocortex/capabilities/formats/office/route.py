@@ -25,6 +25,8 @@ from neocortex.safety.route_filters import CandidateSelection as CandidateSelect
 from neocortex.persistence.framework_route_state import (
     FrameworkRouteState,
     ReviewCandidateReconciliation,
+    reconcile_findings_batch_compat,
+    store_findings_compat,
 )
 from .extraction import extract_office_document as _extract_office_document
 from .models import (
@@ -247,7 +249,8 @@ class OfficeRoute:
     ) -> None:
         if not reconciliations:
             return
-        self.framework_state.reconcile_findings_batch(
+        reconcile_findings_batch_compat(
+            self.framework_state,
             self.run_id,
             "office",
             tuple(reconciliations),
@@ -292,7 +295,8 @@ class OfficeRoute:
                 "current Office cache completed without structural errors",
             )
             return True, False
-        self.framework_state.store_findings(
+        store_findings_compat(
+            self.framework_state,
             self.run_id,
             (_review_candidate(snapshot, _cached_office_failure(cached)),),
         )
@@ -512,7 +516,8 @@ class OfficeRoute:
             connection, snapshot, result.work.format_name,
             self.config.processing_signature, self.run_id, failure,
         )
-        self.framework_state.store_findings(
+        store_findings_compat(
+            self.framework_state,
             self.run_id, (_review_candidate(snapshot, failure),),
         )
         return _OfficeCandidateOutcome(

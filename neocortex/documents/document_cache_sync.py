@@ -847,14 +847,14 @@ def _sync_framework_cache(
             (new_path, *volume_values, *file_values, old_path),
         )
         updated += cursor.rowcount
-    if _table_exists(connection, "review_candidates"):
+    if _table_exists(connection, "findings"):
         _require_columns(
             connection,
-            "review_candidates",
+            "findings",
             {"path", "volume_id", "file_id", "status"},
         )
         cursor = connection.execute(
-            "UPDATE review_candidates SET path=? "
+            "UPDATE findings SET path=? "
             f"WHERE volume_id IN ({volume_placeholders}) "
             f"AND file_id IN ({file_placeholders}) "
             f"AND status='open' AND path=? COLLATE {_PATH_COLLATION}",

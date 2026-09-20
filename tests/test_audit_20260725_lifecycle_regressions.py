@@ -301,8 +301,8 @@ def test_retention_query_interrupt_is_translated_to_domain_cancellation(
         )
 
 
-def _checkpoint(root: Path, scan_id: int, next_usn: int) -> InventoryCheckpoint:
-    return InventoryCheckpoint(str(root), scan_id, "fixture:", 7, next_usn)
+def _checkpoint(root: Path, scan_id: int) -> InventoryCheckpoint:
+    return InventoryCheckpoint(str(root), scan_id)
 
 
 def test_inventory_prune_preserves_previous_and_explicit_cross_store_holds(
@@ -314,13 +314,13 @@ def test_inventory_prune_preserves_previous_and_explicit_cross_store_holds(
     source.write_bytes(b"one")
     with DedupIndex(tmp_path / "dedup.sqlite3") as index:
         first = index.scan(root, excluded_paths=())
-        index.bind_inventory_checkpoint(_checkpoint(root, first.scan_id, 10))
+        index.bind_inventory_checkpoint(_checkpoint(root, first.scan_id))
         source.write_bytes(b"two")
         second = index.scan(root, excluded_paths=())
-        index.bind_inventory_checkpoint(_checkpoint(root, second.scan_id, 20))
+        index.bind_inventory_checkpoint(_checkpoint(root, second.scan_id))
         source.write_bytes(b"three")
         third = index.scan(root, excluded_paths=())
-        index.bind_inventory_checkpoint(_checkpoint(root, third.scan_id, 30))
+        index.bind_inventory_checkpoint(_checkpoint(root, third.scan_id))
 
         index.prune_obsolete_state(protected_scan_ids=(first.scan_id,))
 
@@ -337,10 +337,10 @@ def test_inventory_prune_without_dependency_proof_fails_closed(
     (root / "item.bin").write_bytes(b"one")
     with DedupIndex(tmp_path / "dedup.sqlite3") as index:
         first = index.scan(root, excluded_paths=())
-        index.bind_inventory_checkpoint(_checkpoint(root, first.scan_id, 10))
+        index.bind_inventory_checkpoint(_checkpoint(root, first.scan_id))
         (root / "item.bin").write_bytes(b"two")
         second = index.scan(root, excluded_paths=())
-        index.bind_inventory_checkpoint(_checkpoint(root, second.scan_id, 20))
+        index.bind_inventory_checkpoint(_checkpoint(root, second.scan_id))
 
         removed = index.prune_obsolete_state()
 
@@ -362,13 +362,13 @@ def test_inventory_prune_removes_only_older_unheld_payload(tmp_path: Path) -> No
     source.write_bytes(b"one")
     with DedupIndex(tmp_path / "dedup.sqlite3") as index:
         first = index.scan(root, excluded_paths=())
-        index.bind_inventory_checkpoint(_checkpoint(root, first.scan_id, 10))
+        index.bind_inventory_checkpoint(_checkpoint(root, first.scan_id))
         source.write_bytes(b"two")
         second = index.scan(root, excluded_paths=())
-        index.bind_inventory_checkpoint(_checkpoint(root, second.scan_id, 20))
+        index.bind_inventory_checkpoint(_checkpoint(root, second.scan_id))
         source.write_bytes(b"three")
         third = index.scan(root, excluded_paths=())
-        index.bind_inventory_checkpoint(_checkpoint(root, third.scan_id, 30))
+        index.bind_inventory_checkpoint(_checkpoint(root, third.scan_id))
 
         removed = index.prune_obsolete_state(protected_scan_ids=())
 

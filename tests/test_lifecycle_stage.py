@@ -226,9 +226,6 @@ def test_two_recovery_attempts_keep_24_route_inputs_idempotent(tmp_path: Path) -
             InventoryCheckpoint(
                 str(root),
                 scan.scan_id,
-                "C:",
-                1,
-                11,
                 True,
                 boundary.exclusion_policy.signature,
             )

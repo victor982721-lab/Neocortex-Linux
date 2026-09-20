@@ -6,7 +6,6 @@ from argparse import Namespace
 from pathlib import Path
 from typing import Any, cast
 
-import pytest
 
 from neocortex.deduplication import FileSnapshot
 from neocortex.persistence.framework_state_writer import FrameworkState

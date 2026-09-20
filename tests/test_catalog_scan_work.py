@@ -10,7 +10,6 @@ import pytest
 
 from neocortex.documents import document_catalog as catalog
 from neocortex.documents.document_catalog_schema import create_document_catalog_schema
-from neocortex.documents.document_resource_binding import ResourceBindingError
 
 
 def _catalog_rows(connection: sqlite3.Connection, root: Path, count: int) -> None:

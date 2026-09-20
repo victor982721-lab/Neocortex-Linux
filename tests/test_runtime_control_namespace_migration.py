@@ -17,7 +17,6 @@ MODULES = (
     "console_cancellation",
     "cpu_runtime",
     "global_resources",
-    "incremental_gate",
     "isolated_process",
     "locking",
     "memory_runtime",

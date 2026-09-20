@@ -90,9 +90,8 @@ def test_current_schema_persists_v8_policy_signature_and_is_idempotent(
             InventoryCheckpoint(
                 str(root),
                 scan.scan_id,
-                "fixture:",
-                9,
-                123,
+                True,
+                policy.signature,
             )
         )
         checkpoint = index.inventory_checkpoint(root)
@@ -197,9 +196,6 @@ def test_checkpoint_rejects_a_signature_that_differs_from_its_scan(
                 InventoryCheckpoint(
                     str(root),
                     scan.scan_id,
-                    "fixture:",
-                    9,
-                    123,
                     True,
                     "inventory-exclusion-policy-v1:xxh3_128:wrong",
                 )
